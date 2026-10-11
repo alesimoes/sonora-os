@@ -1,0 +1,34 @@
+[Unit]
+Description=Sonora boot smoke test
+Documentation=file:///usr/local/bin/sonora-smoketest
+
+# The shipped image must never power itself off, so this runs only when the
+# kernel command line explicitly asks for it.
+ConditionKernelCommandLine=sonora.smoketest
+
+# After the session unit, so there is an engine to find. Not Requires: if the
+# session failed to start, that is exactly what the test must report rather
+# than a reason to skip.
+After=multi-user.target sonora-session.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/bin/sonora-smoketest
+
+# The engine owns tty1, so results go to the serial console where the harness
+# can read them.
+StandardOutput=journal+console
+StandardError=journal+console
+
+# Hard ceiling. TimeoutStartSec alone only kills the service -- the guest
+# would stay powered on until the harness clock ran out, which costs five
+# minutes and tells nobody anything. The actions are what actually power it
+# off, including when a check wedges before the script reaches its own
+# poweroff. pw-link against a stalled PipeWire is the likely candidate.
+TimeoutStartSec=180
+FailureAction=poweroff-force
+SuccessAction=poweroff-force
+
+[Install]
+WantedBy=multi-user.target

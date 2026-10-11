@@ -9,7 +9,10 @@ set -e
 if ! id sonora >/dev/null 2>&1; then
   useradd --create-home --uid 1000 --shell /bin/bash sonora
 fi
-usermod -aG audio,video,plugdev,disk sonora
+# No `disk` group: that is raw block-device access, and this account has
+# no password. The engine needs write permission on its session
+# directory, which is ownership, not block access.
+usermod -aG audio,video,plugdev sonora
 passwd -d sonora
 
 install -d -o sonora -g sonora /home/sonora/Sessions
@@ -47,6 +50,7 @@ install -D -m 0644 /usr/share/sonora/wireplumber-sonora.conf \
 # filesystem actually carries them.
 chmod 0755 /usr/local/bin/sonora-engine
 chmod 0755 /usr/local/bin/sonora-wait-for-audio
+chmod 0755 /usr/local/bin/sonora-smoketest
 
 # The engine must exist, or the image boots into a Restart=always loop against
 # a missing file. Fail the build instead.
@@ -54,11 +58,25 @@ if [ ! -x /usr/local/bin/sonora-engine ]; then
   echo "E: sonora-engine was not staged into the image." >&2
   exit 1
 fi
+if [ ! -x /usr/local/bin/sonora-smoketest ]; then
+  echo "E: sonora-smoketest is missing; the boot test cannot run." >&2
+  exit 1
+fi
 
 # --- services ---
 systemctl enable sonora-session.service
+# Safe to enable unconditionally: the unit carries
+# ConditionKernelCommandLine=sonora.smoketest, so on a shipped image it
+# is inert. Without enabling it the test silently never runs, which is
+# worse than not having it.
+systemctl enable sonora-smoketest.service
 # No display manager and no login prompt on tty1: the unit owns that tty.
 systemctl disable getty@tty1.service || true
+# systemd-getty-generator creates serial-getty@<tty> for every console= on the
+# kernel command line. The operator must never reach a shell, and this account
+# has no password, so mask it rather than relying on no serial port existing.
+systemctl mask serial-getty@ttyS0.service || true
+systemctl mask serial-getty@ttyS1.service || true
 systemctl set-default multi-user.target
 
 # PipeWire runs in the user session, which systemd will not start for a user

@@ -1,6 +1,8 @@
 # Build output
 build/
 build-container/
+# Kernel, initrd and serial logs extracted by the QEMU boot test.
+build-qemu/
 *.o
 *.a
 compile_commands.json

@@ -2,6 +2,23 @@
 # live-build reads this on `lb config`, so the image is reproducible from the
 # repository alone rather than from whatever flags someone typed.
 #
+# There is deliberately no console= here, and it was a mistake to add one.
+#
+# Userspace writing to /dev/console reaches only the *last* console= on the
+# line, so `console=tty0 console=ttyS0` sent systemd's boot status and the
+# emergency prompt to the serial port -- leaving the attached monitor blank on
+# any board with a 16550 at 0x3f8, which is the opposite of the intent. It was
+# self-defeating anyway, since `quiet` suppresses the kernel messages that
+# would have been worth reading there.
+#
+# Worse, systemd-getty-generator instantiates serial-getty@ttyS0 from a
+# console= entry, which put a login prompt on a passwordless account on a
+# machine whose whole design is that the operator never reaches a shell.
+#
+# The boot smoke test passes console=ttyS0 in its own QEMU -append, which is
+# where a test-only parameter belongs. The chroot hook also masks the serial
+# gettys, so adding a console= back does not silently reopen that door.
+#
 # --linux-flavours rt-amd64 is load-bearing. Listing linux-image-rt-amd64 in a
 # package list instead installs the RT kernel but leaves the generic one as the
 # bootstrap flavour, so /live/vmlinuz and the default menu entry both point at
