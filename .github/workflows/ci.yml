@@ -79,6 +79,30 @@ jobs:
       - name: Record and verify
         run: tools/test-engine-docker.sh
 
+  modes:
+    name: Executable bits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # These files are committed from Windows, where there is no exec bit, so
+      # git records 100644 unless someone sets it explicitly. live-build
+      # silently ignores a non-executable auto/config and hooks, which would
+      # cost us the RT kernel flavour on a fresh clone and look like nothing
+      # at all. Checked rather than remembered.
+      - name: Every script must be executable in the index
+        run: |
+          missing=0
+          for f in tools/*.sh tools/*.py iso/auto/config                    iso/config/hooks/normal/*.hook.chroot                    iso/config/includes.chroot/usr/local/bin/*; do
+            mode=$(git ls-files -s "$f" | cut -d' ' -f1)
+            if [ "$mode" != "100755" ]; then
+              echo "::error file=$f::mode $mode, expected 100755."
+              echo "  fix with: git update-index --chmod=+x $f"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
   shellcheck:
     name: Shell scripts
     runs-on: ubuntu-latest

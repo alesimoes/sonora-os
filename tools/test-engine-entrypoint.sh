@@ -29,7 +29,9 @@ eval "$(dbus-launch --sh-syntax)"
 
 cleanup() {
   for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
-    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
   done
 }
 trap cleanup EXIT
