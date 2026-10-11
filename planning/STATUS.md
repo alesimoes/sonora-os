@@ -8,6 +8,10 @@ end of its run. Keep it short: what is true now, not a diary.
 - **Build state:** engine not yet compiled on Linux. The code is written and
   the CMake project is complete, but nothing in this repository has been run.
   Treat every claim about it as unverified until CI goes green.
+- A review of the initial commit already found three missing includes and a
+  case where losing the audio server left the engine showing REC while
+  capturing nothing (fixed in `dafebe6`). That is the expected yield from
+  uncompiled code, and the reason CI is the next task rather than features.
 
 ## In flight
 
@@ -22,7 +26,9 @@ end of its run. Keep it short: what is true now, not a diary.
 | Item | Blocked on |
 |---|---|
 | ISO build | Docker daemon is not running on the owner machine |
-| GitHub remote | `gh` CLI is not installed; repository not created yet |
+| First push | `gh` CLI is not installed. The remote is configured as
+  `github.com/alesimoes/sonora-os`; the repository itself still has to be
+  created before `git push` will work. |
 
 ## Next decision needed from the owner
 
