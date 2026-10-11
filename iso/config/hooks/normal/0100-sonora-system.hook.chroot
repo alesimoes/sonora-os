@@ -14,6 +14,20 @@ passwd -d sonora
 
 install -d -o sonora -g sonora /home/sonora/Sessions
 
+# --- make pipewire-jack the system-wide JACK ---
+# pipewire-jack installs its libjack into pipewire-0.3/jack/ rather than the
+# default library path, and ships the drop-in that fixes that as an example
+# only. Without this the engine links against nothing and dies at startup with
+# "Cannot connect to server socket", then the unit restarts it forever.
+install -D -m 0644   /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf   /etc/ld.so.conf.d/pipewire-jack.conf
+ldconfig
+
+# Prove it resolved, rather than discovering it on a boot.
+if ! ldconfig -p | grep -q "libjack.so.0"; then
+  echo "E: libjack.so.0 does not resolve; the engine will not start." >&2
+  exit 1
+fi
+
 # --- audio tuning ---
 install -D -m 0644 /usr/share/sonora/limits-audio.conf \
   /etc/security/limits.d/95-audio.conf

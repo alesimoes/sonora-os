@@ -13,7 +13,12 @@ wireplumber
 
 # Audio tooling the engine and diagnostics need.
 alsa-utils
-libjack-jackd2-0
+
+# libjack-jackd2-0 is deliberately NOT here. It installs a libjack.so.0 into
+# the default library path, which wins over the one pipewire-jack ships in
+# pipewire-0.3/jack/, and our engine then tries to reach a jackd that does not
+# exist: "Cannot connect to server socket". The hook makes pipewire-jack the
+# system-wide JACK instead.
 
 # Firmware, so unknown hardware has a chance of working on first boot.
 firmware-linux

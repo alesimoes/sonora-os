@@ -23,7 +23,10 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/sonora
 
 ExecStartPre=/usr/local/bin/sonora-wait-for-audio
-ExecStart=/usr/local/bin/sonora-engine --dir /home/sonora/Sessions/Untitled
+# --wait-for-inputs matters at boot: PipeWire can be up before a USB
+# interface is enumerated, and a take that starts first records a silent
+# head with nothing to indicate why.
+ExecStart=/usr/local/bin/sonora-engine --dir /home/sonora/Sessions/Untitled --wait-for-inputs 60
 
 # The operator must never land on a shell. If the engine dies, bring it back.
 Restart=always

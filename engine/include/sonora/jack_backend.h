@@ -22,7 +22,14 @@ public:
     bool open(const std::string& client_name, Session* session);
 
     // Connects each input port to the matching hardware capture port.
+    // Returns how many connections were made. Zero means every track will
+    // record silence, so callers must not ignore it.
     int auto_connect_inputs();
+
+    // How many of our input ports have something connected to them right now.
+    // Asked at record time rather than trusting the connect-time count, since
+    // a port can be unpatched after we connected it.
+    int connected_input_count() const;
 
     bool activate();
     void close();

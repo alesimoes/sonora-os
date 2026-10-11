@@ -1,0 +1,58 @@
+# Runtime for testing the engine without hardware and without booting.
+#
+# This image mirrors the ISO audio stack on purpose: same Debian release, same
+# pipewire-jack, no jackd2, and the same pinned quantum and rate. A pass here
+# is only meaningful if it was a pass against the configuration we ship.
+#
+# It is still not the image. A container shares the host kernel, so this says
+# nothing about the RT kernel, real interface latency, the bootloader, or
+# systemd bringing the session up. Those need QEMU or hardware.
+#
+# Build context is the repository root, so audio-stack/ can be copied in.
+FROM debian:trixie
+
+# libjack-jackd2-0 is deliberately absent, exactly as in the ISO package list:
+# it installs a libjack.so.0 into the default library path that wins over the
+# one pipewire-jack ships, and the engine then looks for a jackd that is not
+# running.
+#
+# dbus-x11 is here for dbus-launch, which wireplumber needs; the dbus package
+# alone does not provide it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pipewire \
+      pipewire-bin \
+      pipewire-jack \
+      pipewire-audio \
+      libspa-0.2-modules \
+      wireplumber \
+      dbus \
+      dbus-x11 \
+      python3 \
+      procps \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The same drop-in the chroot hook installs, for the same reason. Testing
+# against a different JACK than the image ships would make a pass meaningless.
+RUN install -D -m 0644 \
+      /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf \
+      /etc/ld.so.conf.d/pipewire-jack.conf \
+    && ldconfig \
+    && ldconfig -p | grep -q libjack.so.0
+
+# The pinned quantum and rate, from the same file the image installs. Without
+# this the dummy driver picks its own quantum -- 2048 in practice -- and the
+# test would be measuring a block size we never ship.
+COPY audio-stack/pipewire-sonora.conf /etc/pipewire/pipewire.conf.d/99-sonora.conf
+
+# PipeWire refuses to run as root in its default configuration, and running the
+# engine as root would hide any permissions problem the real image has.
+RUN useradd --create-home --uid 1000 sonora && usermod -aG audio sonora
+
+COPY tools/test-engine-entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY tools/verify-recording.py /usr/local/bin/verify-recording.py
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/verify-recording.py
+
+USER sonora
+WORKDIR /home/sonora
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

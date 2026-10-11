@@ -57,6 +57,14 @@ int JackBackend::auto_connect_inputs() {
     return connected;
 }
 
+int JackBackend::connected_input_count() const {
+    int n = 0;
+    for (jack_port_t* p : in_ports_) {
+        if (jack_port_connected(p) > 0) ++n;
+    }
+    return n;
+}
+
 bool JackBackend::activate() {
     if (!client_) return false;
     if (jack_activate(client_) != 0) {
