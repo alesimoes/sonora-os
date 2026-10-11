@@ -40,7 +40,7 @@ end of its run. Keep it short: what is true now, not a diary.
 
 | Item | Owner | State |
 |---|---|---|
-| First compile and `ctest` run | distro-engineer | done, both tests pass |
+| First compile and `ctest` run | distro-engineer | done, all three tests pass |
 | `live-build` configuration | distro-engineer | builds; contents verified |
 | Autostart into the engine | distro-engineer | boots and starts the engine in QEMU |
 | Container recording test | rt-engineer | passing, wired into CI |
