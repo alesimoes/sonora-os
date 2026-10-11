@@ -6,6 +6,21 @@
 
 ## Context
 
+This is a professional recording, editing and mixing system. That framing is
+load-bearing rather than aspirational, and it decides arguments that would
+otherwise be matters of taste:
+
+- **A dropped sample is a defect, not a performance characteristic.** No
+  interface frame rate, no visual effect and no convenience is worth an xrun.
+- **Losing a take is the worst outcome in the product.** It outranks crashes,
+  it outranks a wrong reading on screen, and it outranks every feature.
+- **A control that lies is worse than a control that is missing.** An engineer
+  trusts the meter and finds out after the take; this is why the engine refuses
+  to record with nothing connected rather than showing a plausible zero.
+- **The target hardware is a studio machine,** not an arbitrary one. That is
+  what makes the GPU requirement below reasonable.
+
+
 The engine has no graphical interface. What exists is a terminal display in
 `engine/src/main.cpp`: `draw()` clears the screen, prints the transport clock
 and one ASCII meter per track at 20 fps, and the main loop reads raw keystrokes
@@ -128,16 +143,66 @@ will not start: an appliance that can still record from a tty is worth more
 than a tidier `main.cpp`. The GUI must never become the only way to run the
 engine.
 
-### The GPU becomes a hardware dependency
+### Measured: the runtime cost is 375 MB, not 200 MB
 
-The scene graph wants a working Mesa driver. Software rasterisation
-(`llvmpipe`) will not hold 60 Hz across 18 meters and a scrolling waveform, and
-if it tried it would do so by burning CPU the audio thread needs. This cuts
-against the charter rule that the image must boot the same way on hardware we
-have never seen. The rule that follows: the UI **detects its rendering path at
-start-up and says which one it got, loudly**, degrading to a lower frame rate or
-to the terminal UI rather than silently thrashing the CPU during a take.
-Choosing a lower meter rate is acceptable; dropping samples is not.
+Measured 2026-10-11 in a Debian trixie container, installing the runtime set
+the image would need -- `libqt6gui6`, `libqt6widgets6`, `libqt6quick6`, the
+QtQuick and QtQuick.Controls QML modules, `libgl1-mesa-dri`, `libglx-mesa0`,
+`libegl-mesa0`, `cage`, `seatd` and a font -- with no development packages:
+
+    before:  127 MB
+    after:   502 MB
+    delta:   375 MB   (166 packages)
+
+That is uncompressed on-disk size. The image ships it through squashfs, which
+on this package mix should land somewhere near half, so expect the ISO to grow
+from 867 MB to roughly 1.0--1.1 GB. The compressed figure is an expectation,
+not a measurement; the 375 MB is measured.
+
+**The 200 MB in the options presented to the owner was wrong, and the error
+was the display side, exactly where the architect said nobody had costed it.**
+Qt itself is the smaller half. `libLLVM.so.19.1` alone is 124 MB, pulled in by
+`mesa-libgallium`, because Mesa's Gallium drivers compile shaders through LLVM.
+
+An open question that follows, worth real money in boot time and size: with a
+GPU now a stated requirement, which drivers do we actually ship? Intel's
+`iris` does not need LLVM. `radeonsi` and the software fallback `llvmpipe` do.
+Dropping LLVM would cut a third of this delta, at the cost of not booting
+usefully on AMD or on a machine with no driver at all. That decision needs the
+target hardware named, and it is not made here.
+
+Either way this stays inside the 1.5 GB budget below.
+
+### A working GPU is a stated hardware requirement
+
+**Decided by the owner, 2026-10-11:** a machine used for professional
+recording, editing and mixing is expected to have a GPU, and the UI may depend
+on one. This closes what this ADR first listed as an open question.
+
+The reasoning is the system's own framing. This is not a utility that has to
+run on whatever is lying around; it is a studio tool, and a studio machine
+driving an 18-channel interface with a scrolling waveform and eighteen meters
+is already a machine with a graphics adapter. Requiring a working Mesa driver
+costs us nothing a real target lacks.
+
+Software rasterisation (`llvmpipe`) will not hold 60 Hz across 18 meters and a
+scrolling waveform, and attempting it would burn CPU the audio thread needs.
+So the requirement is not a preference to be degraded around; it is the
+supported configuration.
+
+What still follows, because the image must behave predictably on hardware we
+have never seen:
+
+- The UI **determines its rendering path at start-up and says which one it
+  got, loudly.** A machine that silently fell back to software rendering and
+  then caused xruns mid-take is the failure this project keeps finding in other
+  forms.
+- On a machine with no usable driver it falls back to the terminal UI rather
+  than thrashing. That is a diagnostic path, not a second supported product:
+  the operator is told the machine is not fit for the job, and the engine still
+  records, because refusing to record would be worse.
+- Lowering the meter rate to protect the callback is always acceptable.
+  Dropping samples never is.
 
 ### Process shape: the GUI is in the engine's address space
 

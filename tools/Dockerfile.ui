@@ -1,0 +1,60 @@
+# Qt 6 build and run environment, with a headless display so the interface can
+# be built, run and screenshotted without booting the image and without any
+# audio hardware.
+#
+# Mirrors the ISO base (Debian trixie) and the audio stack, so the GUI is
+# exercised against the same PipeWire and the same pinned quantum it will ship
+# with. The display side is deliberately NOT what ships: this uses llvmpipe,
+# which ADR-0006 says cannot hold 60 Hz across 18 meters. That makes this
+# harness good for correctness, layout and screenshots, and useless for any
+# frame-rate claim. Frame rate is measured on real hardware or not at all.
+#
+# Build context is the repository root.
+FROM debian:trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      pkg-config \
+      qt6-base-dev \
+      qt6-declarative-dev \
+      qt6-declarative-dev-tools \
+      libqt6opengl6-dev \
+      qml6-module-qtquick \
+      qml6-module-qtquick-window \
+      qml6-module-qtquick-layouts \
+      qml6-module-qtquick-controls \
+      libgl1-mesa-dri \
+      libglx-mesa0 \
+      libegl-mesa0 \
+      xvfb \
+      x11-utils \
+      imagemagick \
+      libjack-jackd2-dev \
+      pipewire \
+      pipewire-bin \
+      pipewire-jack \
+      pipewire-audio \
+      libspa-0.2-modules \
+      wireplumber \
+      dbus \
+      dbus-x11 \
+      python3 \
+      procps \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Same drop-in the image installs: pipewire-jack must win over any other
+# libjack, or the engine looks for a jackd that is not running.
+RUN install -D -m 0644 \
+      /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf \
+      /etc/ld.so.conf.d/pipewire-jack.conf \
+    && ldconfig \
+    && ldconfig -p | grep -q libjack.so.0
+
+COPY audio-stack/pipewire-sonora.conf /etc/pipewire/pipewire.conf.d/99-sonora.conf
+
+RUN useradd --create-home --uid 1000 sonora && usermod -aG audio,video sonora
+
+USER sonora
+WORKDIR /home/sonora

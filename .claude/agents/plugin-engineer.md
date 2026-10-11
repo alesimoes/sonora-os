@@ -46,6 +46,26 @@ waited on.
 not hypothetical. Check what it declares against what it does, and refuse to
 load one that disagrees.
 
+**Never wait on a plugin.** The callback budget at quantum 128 is 2.67 ms for
+every track, so a plugin that has not returned by its deadline is dropped for
+that block and the engine carries on. A dropped plugin for one block is an
+audible artefact; a missed callback is a hole in all eighteen tracks. A plugin
+that misses repeatedly leaves the graph and the operator is told which one.
+Limping silently is worse than failing clearly.
+
+**Plugin delay compensation is sample-accurate or it is wrong.** A look-ahead
+limiter returns a sample from N back, so a track with 2048 samples of plugin
+latency arrives 42 ms after a track with none. On a drum kit that is a comb
+filter the operator hears as bad playing rather than as a bug. The alignment is
+recomputed off the audio thread and swapped in atomically; the callback never
+computes a delay graph. The latency each track carries must be visible, because
+a number the system knows and does not show is one the engineer discovers
+mid-session.
+
+Read `brain/specs/plugin-latency-compensation.md` before designing any of
+this. It records the arithmetic, the collision between out-of-process hosting
+and a 2.67 ms budget, and what is still open.
+
 ## Interchange standard
 
 Round-trip, in both directions, and diff. An AAF export that another DAW opens

@@ -11,6 +11,7 @@ One line per entry. Agents read this before opening anything else.
 - [ADR-0006](decisions/ADR-0006-qt6-ui-toolkit.md) — Qt 6 for the shell, custom GPU scene-graph items for meters and timeline; the UI pulls at 60 Hz, the audio thread never pushes.
 
 ## Specs
+- [Plugin latency compensation](specs/plugin-latency-compensation.md) — real-time plugin playback, PDC, and why the graph must be parallel from the start.
 - [BWF](specs/bwf-broadcast-wave.md) — the `bext` chunk layout we write, field by field.
 
 ## Research
