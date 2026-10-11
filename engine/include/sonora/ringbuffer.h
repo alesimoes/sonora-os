@@ -27,13 +27,27 @@ public:
 
     std::size_t capacity() const { return capacity_; }
 
+    // Consumer side. Acquire on write_ pairs with the producer's release
+    // store, which is what makes the data it wrote visible to us. read_ is
+    // ours, so a relaxed load of it is enough.
     std::size_t read_space() const {
         const std::size_t w = write_.load(std::memory_order_acquire);
         const std::size_t r = read_.load(std::memory_order_relaxed);
         return w - r;
     }
 
-    std::size_t write_space() const { return capacity_ - read_space() - 1; }
+    // Producer side, and the roles are reversed: acquire goes on read_.
+    //
+    // This is not symmetry for its own sake. The consumer stores read_ with
+    // release *after* its memcpy has finished. If we loaded read_ relaxed we
+    // could observe the advanced index without synchronising with that copy,
+    // and then overwrite bytes the consumer is still reading. ThreadSanitizer
+    // caught exactly that, in CI, before any hardware did.
+    std::size_t write_space() const {
+        const std::size_t r = read_.load(std::memory_order_acquire);
+        const std::size_t w = write_.load(std::memory_order_relaxed);
+        return capacity_ - (w - r) - 1;
+    }
 
     // Returns the number of items actually written (may be short).
     std::size_t write(const T* src, std::size_t count) {

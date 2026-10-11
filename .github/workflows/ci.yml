@@ -42,6 +42,13 @@ jobs:
       # The ring buffer is the one piece of genuinely concurrent code in the
       # tree, so a data race in it is worth a dedicated job. TSan is the only
       # thing that reliably catches a wrong memory ordering.
+      # Newer kernels randomise more address bits than TSan's shadow mapping
+      # expects, and it aborts with "unexpected memory mapping" before running
+      # a single test. That looks like a test failure and is not one, so pin
+      # it rather than letting the job go flaky.
+      - name: Make ASLR compatible with the sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: Build with TSan
         run: |
           cmake -S engine -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
