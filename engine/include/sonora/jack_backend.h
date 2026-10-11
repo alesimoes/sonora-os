@@ -3,6 +3,7 @@
 
 #include <jack/jack.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,13 @@ public:
     // Count of JACK xruns since open: the headline stability number.
     uint32_t xruns() const { return xruns_; }
 
+    // True once the server has gone away. The callback stops being
+    // called at that point, so a recording in progress would sit there
+    // looking healthy while receiving nothing. Callers must poll this.
+    bool server_gone() const {
+        return server_gone_.load(std::memory_order_acquire);
+    }
+
     const std::string& error() const { return error_; }
 
 private:
@@ -43,7 +51,8 @@ private:
     std::vector<const float*> in_bufs_;  // reused each block, never allocated
     Session* session_ = nullptr;
     uint32_t xruns_ = 0;
-    bool server_gone_ = false;
+    // Written from the JACK shutdown thread, read from main.
+    std::atomic<bool> server_gone_{false};
     std::string error_;
 };
 

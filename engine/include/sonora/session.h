@@ -50,7 +50,6 @@ private:
     std::unique_ptr<Transport> transport_;
     std::vector<std::unique_ptr<Track>> tracks_;
     std::unique_ptr<DiskThread> disk_;
-    std::vector<float> interleave_scratch_;  // sized up front, never in process()
 };
 
 }  // namespace sonora

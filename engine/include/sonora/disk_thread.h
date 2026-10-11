@@ -29,6 +29,9 @@ private:
 
     std::vector<Track*> tracks_;
     std::size_t chunk_frames_;
+    // Owned by the disk thread only. Grown on first use, then reused, so
+    // the 10 ms drain loop does not allocate on every wake.
+    std::vector<float> scratch_;
     std::thread thread_;
     std::atomic<bool> running_{false};
 };

@@ -40,9 +40,6 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
 
     // 64 kframes per disk write keeps syscall count low without stalling.
     disk_ = std::make_unique<DiskThread>(std::move(raw), 65536);
-
-    // Worst case a single process() call needs: one block of the widest track.
-    interleave_scratch_.resize(8192 * cfg_.channels_per_track);
 }
 
 Session::~Session() { stop(); }

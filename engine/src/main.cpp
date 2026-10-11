@@ -3,6 +3,7 @@
 // sonora-engine: the recording core. Phase 1 drives it from a terminal UI so
 // the audio path can be proven before any graphical shell exists.
 
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -120,7 +121,16 @@ int main(int argc, char** argv) {
     term.raw();
 
     int take = 1;
+    bool server_lost = false;
     while (!g_quit) {
+        // The server dying stops the callback without stopping us. Close
+        // the take so what was captured is a valid file, then let the
+        // service unit restart us against a fresh server.
+        if (jack.server_gone()) {
+            server_lost = true;
+            break;
+        }
+
         char c = 0;
         if (::read(STDIN_FILENO, &c, 1) == 1) {
             if (c == 'q') break;
@@ -150,5 +160,10 @@ int main(int argc, char** argv) {
     session.stop();
     jack.close();
     std::printf("\nsonora: session written to %s\n", cfg.dir.c_str());
+
+    if (server_lost) {
+        std::fprintf(stderr, "sonora: the audio server went away.\n");
+        return 1;
+    }
     return 0;
 }

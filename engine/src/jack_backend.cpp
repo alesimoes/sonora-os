@@ -99,7 +99,10 @@ int JackBackend::xrun_cb(void* arg) {
 }
 
 void JackBackend::shutdown_cb(void* arg) {
-    static_cast<JackBackend*>(arg)->server_gone_ = true;
+    // Called from a JACK thread. Only flag it: the client handle is
+    // already dead, so calling back into the API here is not allowed.
+    static_cast<JackBackend*>(arg)->server_gone_.store(
+        true, std::memory_order_release);
 }
 
 }  // namespace sonora

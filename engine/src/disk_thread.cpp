@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/disk_thread.h"
 
+#include <algorithm>
 #include <chrono>
 #include <vector>
 
@@ -32,8 +33,6 @@ uint32_t DiskThread::total_overruns() const {
 }
 
 void DiskThread::run() {
-    // Buffer sized for the widest track we may encounter.
-    std::vector<float> scratch;
     while (running_.load(std::memory_order_relaxed)) {
         drain_once();
         // Wake often enough that the rings never approach full, but not so
@@ -43,7 +42,6 @@ void DiskThread::run() {
 }
 
 void DiskThread::drain_once() {
-    std::vector<float> scratch;
     for (Track* t : tracks_) {
         if (!t->writer().is_open()) continue;
         RingBuffer<float>& ring = t->capture_ring();
@@ -57,10 +55,10 @@ void DiskThread::drain_once() {
 
             const std::size_t frames = std::min(avail_frames, chunk_frames_);
             const std::size_t samples = frames * ch;
-            if (scratch.size() < samples) scratch.resize(samples);
+            if (scratch_.size() < samples) scratch_.resize(samples);
 
-            ring.read(scratch.data(), samples);
-            t->writer().write(scratch.data(), frames);
+            ring.read(scratch_.data(), samples);
+            t->writer().write(scratch_.data(), frames);
         }
     }
 }
