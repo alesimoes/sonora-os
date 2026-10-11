@@ -5,6 +5,40 @@ build-container/
 *.a
 compile_commands.json
 
+# The engine binary is staged into the image by tools/build-iso.sh. It is a
+# build artefact, not source.
+iso/config/includes.chroot/usr/local/bin/sonora-engine
+
+# `lb config` writes its own defaults into iso/config on every run: its stock
+# hooks, package lists and a dozen stage directories. Only the files we author
+# are tracked, so the generated siblings are ignored by name rather than by
+# cleaning up after each build.
+iso/config/binary
+iso/config/bootstrap
+iso/config/chroot
+iso/config/common
+iso/config/source
+iso/config/apt
+iso/config/archives
+iso/config/bootloaders/
+iso/config/debian-installer/
+iso/config/includes/
+iso/config/includes.binary/
+iso/config/includes.bootstrap/
+iso/config/includes.installer/
+iso/config/includes.source/
+iso/config/includes.chroot_after_packages/
+iso/config/includes.chroot_before_packages/
+iso/config/packages/
+iso/config/packages.binary/
+iso/config/packages.chroot/
+iso/config/preseed/
+iso/config/rootfs/
+iso/config/hooks/live/
+iso/config/package-lists/live.list.chroot
+# Stock live-build hooks are numbered 1000 and above; ours is 0100.
+iso/config/hooks/normal/[1-9][0-9][0-9][0-9]-*
+
 # live-build artefacts. The cache is large and the chroot is machine-specific.
 iso/.build/
 iso/cache/

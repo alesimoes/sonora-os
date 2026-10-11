@@ -18,6 +18,8 @@ without asking a question.
 - [ ] `tools/write-usb.sh`: write the ISO and create the persistence partition.
 - [ ] Boot test on real hardware; record the xrun count in
       `brain/research/`.
+- [ ] QEMU boot smoke test in CI: assert the engine process is running after
+      boot. A missing binary in the image should fail CI, not a USB stick.
 
 ## Phase 2
 
