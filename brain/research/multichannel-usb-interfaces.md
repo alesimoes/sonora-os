@@ -1,7 +1,13 @@
 # Multichannel USB interfaces on the appliance
 
-Context: the owner intends to connect a Behringer UMC-series interface. This
-note records what was established, and is explicit about what was not.
+Context: the target interface is a **Behringer UMC1820**, confirmed by the
+owner on 2026-10-11. USB audio class compliant, so no vendor driver is
+involved. This note records what was established, and is explicit about what
+was not.
+
+A UMC1820 is the awkward case rather than the easy one: it is a high
+channel-count device, and every assumption that holds for a stereo interface
+fails on it quietly. All three of the engine fixes below exist because of it.
 
 ## Verified here, by reading the shipped code
 
@@ -37,22 +43,36 @@ interface records channel 10 onto track 3 with nothing looking wrong. Hence
 `sonora::natural_less` in `engine/include/sonora/port_order.h`, with the
 18-channel case as a test in `engine/tests/test_port_order.cpp`.
 
+## Verified by booting the image
+
+Measured 2026-10-11 in QEMU with an emulated `intel-hda` card, via
+`tools/test-boot-qemu.sh`. The rule works: WirePlumber selected the Pro Audio
+profile, and the node names carry it.
+
+    alsa_input.pci-0000_00_04.0.pro-input-0:capture_AUX0
+    alsa_input.pci-0000_00_04.0.pro-input-0:capture_AUX1
+
+`pro-input-0` is the profile showing up in the node name, and `capture_AUX<n>`
+is the per-channel port naming the engine sorts with `natural_less`. Without
+the rule these would have been a stereo `analog-stereo` node instead.
+
+So the *mechanism* is no longer an assumption. What it was tested against is a
+two-channel emulated device, which proves the profile is applied and the port
+naming is what we expect, and proves nothing about channel count.
+
 ## Reasoned, not verified
 
-The Pro Audio profile is the standard way to get per-channel ports out of a
-multichannel card, and the default profile presents a stereo pair. This is
-consistently documented by PipeWire and by every multichannel-interface guide,
-and it is why the rule above exists. We have not observed it on a UMC, so
-treat the specific claim "a UMC1820 appears as 2 channels without this" as
-expected behaviour rather than a measurement.
+That a UMC1820 presents as a stereo pair *without* the rule, and all 18
+channels *with* it, remains expected behaviour rather than a measurement. The
+profile mechanism is confirmed; the device is not.
 
 ## Not established at all
 
-- **Which model.** UMC channel counts differ enormously: a UMC204HD has 2
-  inputs, a UMC404HD has 4, a UMC1820 has 10 analog plus ADAT for 18 over USB.
-  Nothing in the project should assume a number, which is why
-  `--tracks auto` exists and sizes the session from the ports the server
-  offers.
+- **The actual channel count the device presents.** The UMC1820 is specified
+  as 18 in / 20 out over USB, combining its analog inputs with ADAT. How many
+  capture ports PipeWire exposes in the Pro Audio profile, and whether that
+  number changes with the ADAT clock state or the sample rate, has not been
+  observed. `--tracks auto` exists so the project never has to assume it.
 - **Whether the class-compliant path needs any quirk.** These interfaces are
   USB audio class compliant and should need no driver, but we have not checked
   whether this one needs `snd-usb-audio` module options, nor what the lowest

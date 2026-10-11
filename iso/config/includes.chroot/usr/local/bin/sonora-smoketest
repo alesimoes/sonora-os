@@ -1,0 +1,151 @@
+#!/bin/sh
+# Boot smoke test. Runs only when the kernel command line asks for it, prints
+# one line per check to the console, then powers the machine off.
+#
+# Every check here corresponds to a defect that actually happened. The ones
+# worth understanding:
+#
+#   - The kernel check exists because an image once installed the RT kernel
+#     and booted the generic one. It booted, it recorded, nothing complained.
+#
+#   - The restart check exists because sonora-session.service is
+#     Restart=always. An engine that starts, runs two seconds and dies is
+#     "active" most of the time, so sampling pgrep once would call that a pass.
+#     Restart=always is there to protect the operator, not to hide failure
+#     from the test.
+#
+#   - The capture-port check exists because the whole point of the Pro Audio
+#     profile is channel count, and a count that is merely logged is a count
+#     nobody is checking.
+
+FAILED=0
+
+check() {
+  name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "SMOKETEST ok    $name"
+  else
+    echo "SMOKETEST FAIL  $name"
+    FAILED=1
+  fi
+}
+
+fail() {
+  echo "SMOKETEST FAIL  $1"
+  FAILED=1
+}
+
+# How many capture ports we insist on. Overridable from the kernel command
+# line, so the same image can be asserted against a real interface:
+#   sonora.expect_capture=18
+EXPECT_CAPTURE=1
+for word in $(cat /proc/cmdline); do
+  case "$word" in
+    sonora.expect_capture=*) EXPECT_CAPTURE="${word#sonora.expect_capture=}" ;;
+  esac
+done
+
+echo "SMOKETEST begin"
+
+# --- 1. nothing failed on the way up ---
+# Deliberately not `is-active multi-user.target`: this unit is ordered after
+# that target and pulled in by it, so that check cannot fail and is worthless.
+#
+# Also deliberately not `is-system-running`: it returns "starting" until every
+# queued job finishes, and this unit is one of those jobs, so it can never see
+# "running" from in here. That check was written, it failed the boot test for
+# a healthy system, and this is the replacement.
+#
+# Asking for failed units directly is the real question, and answerable now.
+FAILED_UNITS="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null)"
+echo "SMOKETEST info  system state $(systemctl is-system-running 2>/dev/null) (this unit is itself still a running job)"
+if [ -z "$FAILED_UNITS" ]; then
+  echo "SMOKETEST ok    no failed units"
+else
+  fail "units failed during boot"
+  printf '%s\n' "$FAILED_UNITS" | sed 's/^/SMOKETEST info    /'
+fi
+
+# --- 2. the engine is running, and has not been restarting ---
+i=0
+while [ "$i" -lt 30 ]; do
+  pgrep -x sonora-engine >/dev/null 2>&1 && break
+  i=$((i + 1))
+  sleep 1
+done
+check "sonora-engine process alive" pgrep -x sonora-engine
+check "sonora-session.service active" systemctl is-active --quiet sonora-session.service
+
+# Restart=always makes a crash loop look healthy if you only sample once.
+RESTARTS="$(systemctl show -p NRestarts --value sonora-session.service 2>/dev/null)"
+echo "SMOKETEST info  session restarts $RESTARTS"
+if [ "$RESTARTS" = "0" ]; then
+  echo "SMOKETEST ok    engine has not restarted"
+else
+  fail "engine restarted $RESTARTS times"
+fi
+
+# Hold still and confirm it is the same process, so a loop that restarts
+# slower than the check above cannot slip through either.
+PID_BEFORE="$(pgrep -x sonora-engine | head -1)"
+sleep 10
+PID_AFTER="$(pgrep -x sonora-engine | head -1)"
+if [ -n "$PID_BEFORE" ] && [ "$PID_BEFORE" = "$PID_AFTER" ]; then
+  echo "SMOKETEST ok    engine survived 10s (pid $PID_AFTER)"
+else
+  fail "engine pid changed: $PID_BEFORE then $PID_AFTER"
+fi
+
+# --- 3. the kernel is the real-time one ---
+# The latency premise of the project rests on this and nothing else in the
+# system would report it.
+echo "SMOKETEST info  kernel $(uname -r)"
+check "kernel is -rt-" sh -c 'uname -r | grep -q -- "-rt-"'
+
+# --- supporting checks, each one a defect that already happened ---
+check "libjack resolves" sh -c 'ldconfig -p | grep -q "libjack.so.0"'
+check "libjack is pipewire's" sh -c 'ldconfig -p | grep "libjack.so.0" | grep -q pipewire'
+check "engine is executable" test -x /usr/local/bin/sonora-engine
+check "operator account exists" id sonora
+check "operator is in audio group" sh -c 'id -nG sonora | grep -qw audio'
+check "operator is NOT in disk group" sh -c '! id -nG sonora | grep -qw disk'
+check "rt limits installed" test -f /etc/security/limits.d/95-audio.conf
+check "pipewire quantum pinned" sh -c 'grep -q "default.clock.quantum" /etc/pipewire/pipewire.conf.d/99-sonora.conf'
+check "wireplumber pro-audio rule" sh -c 'grep -q "pro-audio" /etc/wireplumber/wireplumber.conf.d/99-sonora.conf'
+check "pipewire running" pgrep -x pipewire
+check "no serial login prompt" sh -c '! systemctl is-active --quiet "serial-getty@ttyS0.service"'
+
+# --- 4. how many capture channels the audio server really offers ---
+# Counted and asserted, not just printed. A UMC1820 appearing as two channels
+# instead of eighteen is precisely the failure the pro-audio rule exists to
+# prevent, and it would otherwise show up as a cheerful info line.
+PORTS="$(su - sonora -c 'XDG_RUNTIME_DIR=/run/user/1000 pw-link -o 2>/dev/null' 2>/dev/null)"
+# capture_AUX<n> is how the Pro Audio profile names an audio channel. A bare
+# "capture" match also counts "Midi Through Port-0 (capture)", inflating the
+# number on any machine that has a MIDI bridge.
+CAPTURE_COUNT="$(printf '%s\n' "$PORTS" | grep -c "capture_AUX" 2>/dev/null)"
+echo "SMOKETEST info  capture ports: $CAPTURE_COUNT (expected at least $EXPECT_CAPTURE)"
+printf '%s\n' "$PORTS" | sed 's/^/SMOKETEST info    /'
+if [ "$CAPTURE_COUNT" -ge "$EXPECT_CAPTURE" ] 2>/dev/null; then
+  echo "SMOKETEST ok    capture ports present"
+else
+  fail "only $CAPTURE_COUNT capture ports, expected $EXPECT_CAPTURE"
+fi
+
+# The Pro Audio profile shows up in the node name, which is the cheapest proof
+# the wireplumber rule was actually applied rather than merely present.
+if printf '%s\n' "$PORTS" | grep -q "pro-input"; then
+  echo "SMOKETEST ok    pro-audio profile applied"
+else
+  fail "no pro-input node; the pro-audio profile was not applied"
+fi
+
+if [ "$FAILED" = "0" ]; then
+  echo "SMOKETEST RESULT pass"
+else
+  echo "SMOKETEST RESULT fail"
+fi
+
+sync
+systemctl poweroff --no-block

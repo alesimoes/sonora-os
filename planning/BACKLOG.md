@@ -18,11 +18,14 @@ without asking a question.
 - [ ] `tools/write-usb.sh`: write the ISO and create the persistence partition.
 - [ ] Boot test on real hardware; record the xrun count in
       `brain/research/`.
-- [ ] QEMU boot smoke test in CI. It must assert three things, because each
-      one has already broken once and only the first is obvious:
-      the system reaches `multi-user.target`; `sonora-engine` is running;
-      and `uname -r` contains `-rt-`. An image that boots and records on the
-      wrong kernel passes any looser test.
+- [x] QEMU boot smoke test. 19 checks: a running engine that holds its PID,
+      `-rt-` in `uname -r`, no failed units, no serial login prompt, and one
+      check per defect found so far. `tools/test-boot-qemu.sh`.
+- [x] A way to watch it boot by hand: `tools/run-qemu.sh`, going through the
+      real bootloader with the shipped command line.
+- [ ] Run the boot test in CI. Needs the ISO built first, which takes tens of
+      minutes, so it belongs in a separate workflow on a schedule or manual
+      dispatch rather than on every push.
 
 ## Blocked on hardware the project does not have
 

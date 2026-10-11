@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SECONDS_TO_RECORD="${RECORD_SECONDS:-3}"
-TRACKS="${TRACKS:-4}"
+TRACKS="${TRACKS:-18}"
 RATE="${RATE:-48000}"
 SESSION_DIR=/home/sonora/Sessions/test
 

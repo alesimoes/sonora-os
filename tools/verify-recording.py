@@ -9,18 +9,36 @@ the properties that matter and says which one failed. A test that only asserts
 import argparse
 import math
 import os
+import re
 import struct
 import sys
 import wave
 
 
 def tone_hz(track_index):
-    # Distinct, non-harmonic frequencies so a channel written to the wrong file
-    # is detectable rather than merely suspicious.
-    return 220.0 * (1.5 ** track_index)
+    """One distinct frequency per track, all safely below Nyquist.
+
+    The first version of this was 220 * 1.5**n, which reaches 216 kHz by
+    track 18 -- far above Nyquist at 48 kHz, so those tracks recorded aliased
+    tones. The RMS check passed anyway, because a folded sine has the same
+    amplitude as the one that produced it. Only the frequency check below
+    exposed it.
+
+    Linear spacing keeps track 18 at 5.6 kHz. The offsets are not integer
+    ratios of each other, so even a nonlinearity somewhere in the path cannot
+    make one track's harmonic look like another track's fundamental.
+    """
+    return 250.0 + 317.0 * track_index
 
 
 def generate(path, tracks, rate, seconds):
+    nyquist = rate / 2.0
+    highest = tone_hz(tracks - 1)
+    if highest >= nyquist * 0.9:
+        raise SystemExit(
+            f"test signal would alias: track {tracks} tone is {highest:.0f} Hz"
+            f" against a Nyquist of {nyquist:.0f} Hz")
+
     frames = int(rate * seconds)
     with wave.open(path, "wb") as w:
         w.setnchannels(tracks)
@@ -56,6 +74,45 @@ def read_bext_time_reference(path):
                 return (high << 32) | low
 
 
+def goertzel_power(samples, rate, freq):
+    """Energy at one frequency, via the Goertzel algorithm.
+
+    Cheaper and more direct than an FFT when the question is "is *this* tone
+    present", which is exactly the question here.
+    """
+    n = len(samples)
+    if n == 0:
+        return 0.0
+    k = int(0.5 + (n * freq) / rate)
+    omega = (2.0 * math.pi * k) / n
+    coeff = 2.0 * math.cos(omega)
+    s_prev = 0.0
+    s_prev2 = 0.0
+    for x in samples:
+        s = x + coeff * s_prev - s_prev2
+        s_prev2 = s_prev
+        s_prev = s
+    return s_prev2 * s_prev2 + s_prev * s_prev - coeff * s_prev * s_prev2
+
+
+def dominant_track(samples, rate, tracks):
+    """Which track's tone is loudest in these samples.
+
+    This is what catches a channel written to the wrong file. Checking only
+    that each file has signal would pass on any permutation of the inputs,
+    and a permutation is precisely what a lexicographic port sort produces on
+    an 18-channel interface.
+    """
+    best_index = -1
+    best_power = 0.0
+    for i in range(tracks):
+        p = goertzel_power(samples, rate, tone_hz(i))
+        if p > best_power:
+            best_power = p
+            best_index = i
+    return best_index, best_power
+
+
 def rms_dbfs(samples):
     if not samples:
         return -999.0
@@ -81,6 +138,14 @@ def read_int24_mono(path, limit_frames):
             v -= 0x1000000
         out.append(v / 8388608.0)
     return out
+
+
+def track_index_from_name(name):
+    """"Audio 7_01.wav" -> 6. Returns None if the name is not ours."""
+    m = re.match(r"Audio (\d+)_\d+\.wav$", name)
+    if not m:
+        return None
+    return int(m.group(1)) - 1
 
 
 def check(directory, tracks, rate, seconds):
@@ -143,6 +208,23 @@ def check(directory, tracks, rate, seconds):
             failures.append(
                 f"{name}: {level:.1f} dBFS is hotter than the source, so the"
                 " engine added gain")
+
+        # --- is this the channel it is supposed to be? ---
+        # Track N must carry tone N. Without this the whole suite passes on
+        # any permutation of the inputs, which is what a lexicographic port
+        # sort produces, and the reason the file count was raised to 18.
+        expected = track_index_from_name(name)
+        if expected is None:
+            failures.append(f"{name}: cannot tell which track this is")
+        elif level >= -60.0:
+            got, _ = dominant_track(samples, rate, tracks)
+            if got != expected:
+                failures.append(
+                    f"{name}: carries tone {got} ({tone_hz(got):.0f} Hz) but"
+                    f" should carry tone {expected}"
+                    f" ({tone_hz(expected):.0f} Hz) -- channels are crossed")
+            else:
+                print(f"    tone:  {tone_hz(expected):.0f} Hz, correct track")
 
     if failures:
         print()
