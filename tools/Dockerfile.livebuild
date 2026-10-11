@@ -1,0 +1,17 @@
+# live-build environment. Must run privileged: it chroots and uses loop devices.
+FROM debian:trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      live-build \
+      debootstrap \
+      squashfs-tools \
+      xorriso \
+      isolinux \
+      syslinux-common \
+      grub-efi-amd64-bin \
+      mtools \
+      dosfstools \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]

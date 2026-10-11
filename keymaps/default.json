@@ -1,0 +1,17 @@
+{
+  "name": "Default",
+  "comment": "Matches what engine/src/main.cpp handles today. Phase 1 only.",
+  "bindings": {
+    "space": "transport.toggle_record",
+    "1": "track.toggle_arm.1",
+    "2": "track.toggle_arm.2",
+    "3": "track.toggle_arm.3",
+    "4": "track.toggle_arm.4",
+    "5": "track.toggle_arm.5",
+    "6": "track.toggle_arm.6",
+    "7": "track.toggle_arm.7",
+    "8": "track.toggle_arm.8",
+    "a": "track.arm_all",
+    "q": "app.quit"
+  }
+}

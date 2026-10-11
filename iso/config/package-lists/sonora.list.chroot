@@ -1,0 +1,36 @@
+# Real-time kernel. ADR-0002: packaged by Debian so we do not maintain one.
+linux-image-rt-amd64
+
+# Audio server. ADR-0003: PipeWire only, no jackd. pipewire-jack provides the
+# API our engine links against.
+pipewire
+pipewire-pulse
+pipewire-jack
+libspa-0.2-modules
+wireplumber
+
+# Audio tooling the engine and diagnostics need.
+alsa-utils
+libjack-jackd2-0
+
+# Firmware, so unknown hardware has a chance of working on first boot.
+firmware-linux
+firmware-sof-signed
+
+# Storage for session disks.
+e2fsprogs
+exfatprogs
+dosfstools
+parted
+
+# Minimum to run the engine on a tty with no desktop.
+kbd
+console-setup
+util-linux
+
+# Diagnostics. An appliance that cannot be debugged in the room is not useful.
+pciutils
+usbutils
+htop
+less
+nano

@@ -1,0 +1,38 @@
+[Unit]
+Description=Sonora recording session
+# The engine is a PipeWire client, so the server has to exist first. We wait on
+# the socket rather than the service: the unit being active does not mean the
+# socket is accepting connections yet.
+After=sound.target systemd-user-sessions.service
+Wants=sound.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=sonora
+Group=sonora
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=tty
+
+Environment=HOME=/home/sonora
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/sonora
+
+ExecStartPre=/usr/local/bin/sonora-wait-for-audio
+ExecStart=/usr/local/bin/sonora-engine --dir /home/sonora/Sessions/Untitled
+
+# The operator must never land on a shell. If the engine dies, bring it back.
+Restart=always
+RestartSec=1
+
+# Audio threads need to outrank everything else on the machine.
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+Nice=-10
+
+[Install]
+WantedBy=multi-user.target

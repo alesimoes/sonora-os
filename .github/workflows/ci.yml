@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    name: Engine build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libjack-jackd2-dev
+
+      - name: Configure
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    name: Thread and address sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libjack-jackd2-dev
+
+      # The ring buffer is the one piece of genuinely concurrent code in the
+      # tree, so a data race in it is worth a dedicated job. TSan is the only
+      # thing that reliably catches a wrong memory ordering.
+      - name: Build with TSan
+        run: |
+          cmake -S engine -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
+          cmake --build build-tsan -j"$(nproc)"
+
+      - name: Run under TSan
+        run: ctest --test-dir build-tsan --output-on-failure
+
+      - name: Build with ASan and UBSan
+        run: |
+          cmake -S engine -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan -j"$(nproc)"
+
+      - name: Run under ASan and UBSan
+        run: ctest --test-dir build-asan --output-on-failure
+
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Check
+        run: shellcheck tools/*.sh iso/auto/config

@@ -1,0 +1,32 @@
+# Build output
+build/
+build-container/
+*.o
+*.a
+compile_commands.json
+
+# live-build artefacts. The cache is large and the chroot is machine-specific.
+iso/.build/
+iso/cache/
+iso/chroot/
+iso/binary/
+iso/local/
+iso/*.iso
+iso/*.log
+iso/*.contents
+iso/*.files
+iso/*.packages
+iso/chroot.files
+
+# Recorded audio must never be committed.
+*.wav
+*.aiff
+*.flac
+Sessions/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

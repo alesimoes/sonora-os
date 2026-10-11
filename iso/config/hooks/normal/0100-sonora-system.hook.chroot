@@ -1,0 +1,33 @@
+#!/bin/sh
+# Runs inside the chroot during `lb build`. Creates the operator account and
+# installs the tuning that audio-stack/ documents.
+set -e
+
+# --- operator account ---
+# uid 1000 is hard-coded because the systemd unit sets XDG_RUNTIME_DIR to
+# /run/user/1000. If these two disagree the engine cannot reach PipeWire.
+if ! id sonora >/dev/null 2>&1; then
+  useradd --create-home --uid 1000 --shell /bin/bash sonora
+fi
+usermod -aG audio,video,plugdev,disk sonora
+passwd -d sonora
+
+install -d -o sonora -g sonora /home/sonora/Sessions
+
+# --- audio tuning ---
+install -D -m 0644 /usr/share/sonora/limits-audio.conf \
+  /etc/security/limits.d/95-audio.conf
+install -D -m 0644 /usr/share/sonora/sysctl-sonora.conf \
+  /etc/sysctl.d/99-sonora.conf
+install -D -m 0644 /usr/share/sonora/pipewire-sonora.conf \
+  /etc/pipewire/pipewire.conf.d/99-sonora.conf
+
+# --- services ---
+systemctl enable sonora-session.service
+# No display manager and no login prompt on tty1: the unit owns that tty.
+systemctl disable getty@tty1.service || true
+systemctl set-default multi-user.target
+
+# PipeWire runs in the user session, which systemd will not start for a user
+# who never logs in interactively. Lingering starts it at boot instead.
+loginctl enable-linger sonora || true

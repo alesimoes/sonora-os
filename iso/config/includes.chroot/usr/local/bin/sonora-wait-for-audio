@@ -1,0 +1,20 @@
+#!/bin/sh
+# The engine refuses to start without a reachable server (ADR-0003), and the
+# unit restarts it on failure. Without this wait the two would spin against
+# each other during boot, so we block here until the server answers.
+set -e
+
+TIMEOUT=30
+i=0
+while [ "$i" -lt "$TIMEOUT" ]; do
+  if pw-cli info 0 >/dev/null 2>&1; then
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
+echo "sonora: no audio server after ${TIMEOUT}s; starting anyway." >&2
+# Exit 0 regardless: the engine prints a clear diagnostic of its own, which is
+# more useful to whoever is standing at the machine than a silent unit failure.
+exit 0

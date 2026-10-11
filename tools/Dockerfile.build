@@ -1,0 +1,12 @@
+# Toolchain for building the engine and its tests.
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      pkg-config \
+      libjack-jackd2-dev \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]

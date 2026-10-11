@@ -1,0 +1,18 @@
+#!/bin/sh
+# live-build reads this on `lb config`, so the image is reproducible from the
+# repository alone rather than from whatever flags someone typed.
+set -e
+
+lb config noauto \
+  --distribution trixie \
+  --architectures amd64 \
+  --archive-areas "main contrib non-free non-free-firmware" \
+  --binary-images iso-hybrid \
+  --bootappend-live "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs" \
+  --debian-installer none \
+  --iso-application "SonoraOS" \
+  --iso-publisher "SonoraOS" \
+  --iso-volume "SONORA" \
+  --memtest none \
+  --apt-recommends false \
+  "${@}"
