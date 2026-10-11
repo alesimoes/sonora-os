@@ -19,9 +19,18 @@ change gets from an idea to a commit.
 | `architect` | Decisions spanning components; ADRs | The shape of the solution is not obvious |
 | `rt-engineer` | `engine/` — the audio core | Implementing engine work |
 | `distro-engineer` | `iso/`, `audio-stack/`, `tools/` | Implementing image work |
+| `driver-engineer` | Hardware: USB interfaces, ALSA, control surfaces, clock and sync | The system has to talk to a physical device |
+| `ui-engineer` | The operator-facing interface, `keymaps/`, the workflow layer | Anything the engineer in the room sees or touches |
+| `plugin-engineer` | LV2 and VST3 hosting, AAF and `.ptx` interchange | Loading third-party code, or reading another DAW's files |
 | `researcher` | `brain/research/`, `brain/specs/` | A task depends on a fact nobody has established |
 | `code-reviewer` | The review gate | Every diff, before commit |
 | `rt-safety-auditor` | The audio thread call graph | Callback graph changed, or xruns appeared |
+| `integrator` | The merge gate | A feature branch is ready to land on `main` |
+
+The three implementer roles do not overlap by accident. A plugin crash must
+not take the session down, a device that enumerates is not a device that
+works, and a meter that lies is worse than a meter that is missing — each of
+those is a different kind of care, and each charter says so.
 
 ## Who reviews the code
 
@@ -40,16 +49,25 @@ implementer fixes; the reviewer re-reads the fix.
 ## The loop
 
 1. Pick the top ready item from `planning/BACKLOG.md`.
-2. If it needs a decision → `architect`. If it needs a fact → `researcher`.
-3. Implement with `rt-engineer` or `distro-engineer`.
-4. Build and test: the `build-engine` or `build-iso` skill.
-5. Review: `code-reviewer`. For callback changes, also `rt-safety-auditor`.
-6. Fix findings, re-review.
-7. Record what was learned: the `brain-write` skill. Update `STATUS.md`.
-8. Commit.
+2. `git checkout -b feature/<name>`. Work does not happen on `main`.
+3. If it needs a decision → `architect`. If it needs a fact → `researcher`.
+4. Implement with the role that owns the files: `rt-engineer`,
+   `distro-engineer`, `driver-engineer`, `ui-engineer` or `plugin-engineer`.
+5. Build and test: `build-engine`, `build-iso`, or the boot and recording
+   harnesses in `tools/`.
+6. Review: `code-reviewer`. For callback changes, also `rt-safety-auditor`.
+   An implementer does not review its own work.
+7. Fix findings. Have the reviewer read the fix.
+8. Record what was learned: the `brain-write` skill. Update `STATUS.md`.
+9. Commit locally. Push the branch and open a PR only once the feature works
+   and the tests have been run.
+10. `integrator` gates the merge: CI green, every claim in the description
+    reproduced, nothing unwanted in the diff, brain current. It merges, or it
+    says what is wrong and stops.
 
-Step 7 is the one that gets skipped, and skipping it is what makes the next
-session repeat work already done.
+Step 8 is the one that gets skipped, and skipping it is what makes the next
+session repeat work already done. Step 9 is the one I got wrong first: pushing
+every commit put six broken intermediate states on a public repository.
 
 ## Running it unattended
 
