@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,20 @@ int main() {
         CHECK(bext > 0);
         CHECK(read_u32(b, bext + 338) == 2);  // low word
         CHECK(read_u32(b, bext + 342) == 1);  // high word
+    }
+
+    // --- a NaN sample becomes silence instead of garbage ---
+    {
+        sonora::WavWriter w;
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const float nan_sample = std::numeric_limits<float>::quiet_NaN();
+        std::vector<float> frames{nan_sample, 0.5f};
+        CHECK(w.write(frames.data(), frames.size()));
+        CHECK(w.close());
+
+        const auto b = slurp(path);
+        const long data = find_chunk(b, "data");
+        CHECK(b[data] == 0x00 && b[data + 1] == 0x00 && b[data + 2] == 0x00);
     }
 
     // --- float32 writes 4 bytes per sample and reports IEEE float ---

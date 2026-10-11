@@ -6,6 +6,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE=sonora-livebuild:trixie
 
+# Git Bash on Windows rewrites anything that looks like a Unix path before it
+# reaches the executable, so a container path like /src arrives as
+# C:/Program Files/Git/src. MSYS2_ARG_CONV_EXCL turns that off, which means we
+# must hand Docker a Windows-shaped host path ourselves.
+host_path() {
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    (cd "$1" && pwd -W)
+  else
+    printf '%s' "$1"
+  fi
+}
+
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+  export MSYS2_ARG_CONV_EXCL='*'
+fi
+
 run_live_build() {
   cd "$ROOT/iso"
   lb clean --purge
@@ -26,10 +42,10 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
-docker build -t "$IMAGE" -f "$ROOT/tools/Dockerfile.livebuild" "$ROOT/tools"
+docker build -t "$IMAGE" -f "$(host_path "$ROOT/tools")/Dockerfile.livebuild" "$(host_path "$ROOT/tools")"
 # live-build needs to mount, create loop devices and chroot: hence privileged.
 docker run --rm --privileged \
-  -v "$ROOT:/src" -w /src/iso "$IMAGE" bash -lc '
+  -v "$(host_path "$ROOT"):/src" -w /src/iso "$IMAGE" bash -lc '
   set -euo pipefail
   lb clean --purge
   lb config

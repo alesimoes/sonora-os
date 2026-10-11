@@ -14,10 +14,20 @@ void put_u32(std::FILE* f, uint32_t v) { std::fwrite(&v, 4, 1, f); }
 void put_tag(std::FILE* f, const char tag[4]) { std::fwrite(tag, 1, 4, f); }
 
 int32_t float_to_int24(float s) {
-    // Clamp before scaling: a sample above 1.0 must pin to full scale rather
-    // than wrap around to the opposite polarity.
-    s = std::max(-1.0f, std::min(1.0f, s));
-    const float scaled = s * 8388607.0f;
+    // A NaN would make every comparison below false and leave lrintf with
+    // undefined behaviour, writing garbage into the file. One bad sample is
+    // worth a branch to contain.
+    if (std::isnan(s)) return 0;
+
+    // Scale by 2^23, not by 2^23-1: -1.0 then lands exactly on the most
+    // negative code and the whole 24-bit range is used.
+    const float scaled = s * 8388608.0f;
+
+    // Clamping happens on the scaled value rather than on the input, because
+    // +1.0 scales to 8388608, which is one past the largest code. Clamping
+    // the input to 1.0 first would not have prevented that.
+    if (scaled >= 8388607.0f) return 8388607;
+    if (scaled <= -8388608.0f) return -8388608;
     return static_cast<int32_t>(std::lrintf(scaled));
 }
 
