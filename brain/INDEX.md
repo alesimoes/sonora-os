@@ -13,7 +13,7 @@ One line per entry. Agents read this before opening anything else.
 - [BWF](specs/bwf-broadcast-wave.md) — the `bext` chunk layout we write, field by field.
 
 ## Research
-_(empty — first notes land when the researcher agent runs)_
+- [Multichannel USB interfaces](research/multichannel-usb-interfaces.md) — Pro Audio profile, WirePlumber state hooks, port ordering; what is verified and what is not.
 
 ## Postmortems
 - [2026-10-11 RT kernel not default](postmortems/2026-10-11-rt-kernel-not-default.md) — the image installed the RT kernel but booted the generic one; no symptom except unexplained xruns.

@@ -24,6 +24,14 @@ without asking a question.
       and `uname -r` contains `-rt-`. An image that boots and records on the
       wrong kernel passes any looser test.
 
+## Blocked on hardware the project does not have
+
+- [ ] Confirm the Pro Audio profile actually exposes every channel on the
+      owner's Behringer UMC, and record the model and channel count in
+      `brain/research/multichannel-usb-interfaces.md`.
+- [ ] First real latency figure: lowest quantum that holds with zero xruns on
+      that interface, on the RT kernel.
+
 ## Phase 2
 
 - [ ] Playback path: read from disk into a ring, mix, feed the output ports.

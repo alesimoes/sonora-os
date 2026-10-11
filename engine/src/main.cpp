@@ -213,7 +213,12 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
             cfg.dir = argv[++i];
         } else if (std::strcmp(argv[i], "--tracks") == 0 && i + 1 < argc) {
-            cfg.track_count = std::atoi(argv[++i]);
+            ++i;
+            if (std::strcmp(argv[i], "auto") == 0) {
+                cfg.track_count = 0;  // resolved below, once we can ask
+            } else {
+                cfg.track_count = std::atoi(argv[i]);
+            }
         } else if (std::strcmp(argv[i], "--rate") == 0 && i + 1 < argc) {
             cfg.sample_rate = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--float") == 0) {
@@ -229,7 +234,7 @@ int main(int argc, char** argv) {
             std::printf(
                 "usage: sonora-engine [options]\n"
                 "  --dir PATH        session directory\n"
-                "  --tracks N        track count (default 8)\n"
+                "  --tracks N|auto   track count, or one per capture channel\n"
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
@@ -250,6 +255,20 @@ int main(int argc, char** argv) {
                      "sonora: --record needs at least one armed track;"
                      " pass --arm-all.\n");
         return 2;
+    }
+
+    if (cfg.track_count == 0) {
+        // One track per capture channel the interface offers. Guessing a
+        // number means either silent tracks or inputs nobody is recording.
+        const int channels = sonora::probe_capture_channels("sonora-probe");
+        if (channels == 0) {
+            std::fprintf(stderr,
+                         "sonora: --tracks auto found no capture channels."
+                         " Is the interface connected?\n");
+            return 1;
+        }
+        cfg.track_count = channels;
+        std::printf("sonora: %d capture channels detected\n", channels);
     }
 
     sonora::Session session(cfg);

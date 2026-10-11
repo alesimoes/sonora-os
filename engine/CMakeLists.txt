@@ -39,3 +39,7 @@ add_test(NAME ringbuffer COMMAND test_ringbuffer)
 add_executable(test_wav_writer tests/test_wav_writer.cpp)
 target_link_libraries(test_wav_writer PRIVATE sonora_core)
 add_test(NAME wav_writer COMMAND test_wav_writer)
+
+add_executable(test_port_order tests/test_port_order.cpp)
+target_link_libraries(test_port_order PRIVATE sonora_core)
+add_test(NAME port_order COMMAND test_port_order)

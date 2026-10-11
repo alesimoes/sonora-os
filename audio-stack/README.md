@@ -7,6 +7,7 @@ machine that records and a machine that drops samples.
 |---|---|---|
 | `limits-audio.conf` | `/etc/security/limits.d/95-audio.conf` | RT priority and locked memory for the `audio` group |
 | `pipewire-sonora.conf` | `/etc/pipewire/pipewire.conf.d/99-sonora.conf` | Pins the rate and the quantum |
+| `wireplumber-sonora.conf` | `/etc/wireplumber/wireplumber.conf.d/99-sonora.conf` | Pro Audio profile, and no remembered state |
 | `sysctl-sonora.conf` | `/etc/sysctl.d/99-sonora.conf` | Kernel knobs that affect latency |
 
 ## Why each knob
@@ -24,6 +25,12 @@ busy USB or network interrupt runs ahead of the audio thread.
 
 **Pinned quantum** — the quantum is our block size. If PipeWire renegotiates it
 mid-session, latency compensation shifts under a take in progress.
+
+**Pro Audio profile** — the one that decides whether a multichannel interface
+exists. In the default profile a card is a stereo pair, so a Behringer UMC1820
+offers two channels and the other sixteen are not visible to the engine at all:
+not silent, not an error, absent. Pro Audio exposes every channel as its own
+port with nothing in the signal path.
 
 ## Not configured here, and deliberately
 

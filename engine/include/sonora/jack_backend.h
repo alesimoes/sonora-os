@@ -13,6 +13,14 @@ class Session;
 
 // Audio backend speaking the JACK API. On the target system this binds to
 // PipeWire's JACK implementation, so no jackd is involved.
+// Counts the physical capture channels the server is offering, using a
+// throwaway client. The session has to be sized before the real backend can
+// register its ports, so this cannot be a member: it answers the question that
+// decides how many tracks to create.
+//
+// Returns 0 if the server is unreachable or offering nothing.
+int probe_capture_channels(const std::string& client_name);
+
 class JackBackend {
 public:
     JackBackend() = default;
@@ -21,9 +29,14 @@ public:
     // Returns false and fills error() if the server is unreachable.
     bool open(const std::string& client_name, Session* session);
 
+    // Physical capture ports the server is offering, in channel order.
+    // Used to size a session to the interface instead of guessing.
+    std::vector<std::string> capture_ports() const;
+
     // Connects each input port to the matching hardware capture port.
     // Returns how many connections were made. Zero means every track will
-    // record silence, so callers must not ignore it.
+    // record silence, and fewer than the track count means some tracks will,
+    // so callers must not ignore it.
     int auto_connect_inputs();
 
     // How many of our input ports have something connected to them right now.

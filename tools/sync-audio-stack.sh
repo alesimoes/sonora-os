@@ -8,6 +8,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$ROOT/iso/config/includes.chroot/usr/share/sonora"
 
 mkdir -p "$DEST"
-for f in limits-audio.conf sysctl-sonora.conf pipewire-sonora.conf; do
+for f in limits-audio.conf sysctl-sonora.conf pipewire-sonora.conf wireplumber-sonora.conf; do
   cp -v "$ROOT/audio-stack/$f" "$DEST/$f"
 done

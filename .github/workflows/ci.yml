@@ -60,6 +60,18 @@ jobs:
       - name: Run under ASan and UBSan
         run: ctest --test-dir build-asan --output-on-failure
 
+  record:
+    name: Records audio against PipeWire
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The unit tests cover the data path; this covers the thing the product
+      # is for. It caught an engine that recorded silence from unconnected
+      # ports and reported success, which no unit test would have.
+      - name: Record and verify
+        run: tools/test-engine-docker.sh
+
   shellcheck:
     name: Shell scripts
     runs-on: ubuntu-latest
@@ -68,4 +80,4 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot

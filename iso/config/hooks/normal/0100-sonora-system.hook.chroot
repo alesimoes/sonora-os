@@ -35,6 +35,10 @@ install -D -m 0644 /usr/share/sonora/sysctl-sonora.conf \
   /etc/sysctl.d/99-sonora.conf
 install -D -m 0644 /usr/share/sonora/pipewire-sonora.conf \
   /etc/pipewire/pipewire.conf.d/99-sonora.conf
+# Without this a multichannel interface appears as a stereo pair and most of
+# its inputs are invisible to the engine. See the file for why.
+install -D -m 0644 /usr/share/sonora/wireplumber-sonora.conf \
+  /etc/wireplumber/wireplumber.conf.d/99-sonora.conf
 
 # --- executable bits ---
 # includes.chroot is copied from the build host, and when that host is Windows

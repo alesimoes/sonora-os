@@ -1,11 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/jack_backend.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
+#include "sonora/port_order.h"
 #include "sonora/session.h"
 
 namespace sonora {
+
+int probe_capture_channels(const std::string& client_name) {
+    jack_status_t status{};
+    jack_client_t* probe =
+        jack_client_open(client_name.c_str(), JackNoStartServer, &status);
+    if (!probe) return 0;
+
+    int n = 0;
+    const char** hw = jack_get_ports(probe, nullptr, JACK_DEFAULT_AUDIO_TYPE,
+                                     JackPortIsOutput | JackPortIsPhysical);
+    if (hw) {
+        while (hw[n] != nullptr) ++n;
+        jack_free(hw);
+    }
+    jack_client_close(probe);
+    return n;
+}
 
 JackBackend::~JackBackend() { close(); }
 
@@ -41,19 +63,50 @@ bool JackBackend::open(const std::string& client_name, Session* session) {
     return true;
 }
 
-int JackBackend::auto_connect_inputs() {
-    if (!client_) return 0;
+std::vector<std::string> JackBackend::capture_ports() const {
+    std::vector<std::string> out;
+    if (!client_) return out;
+
     const char** hw = jack_get_ports(client_, nullptr, JACK_DEFAULT_AUDIO_TYPE,
                                      JackPortIsOutput | JackPortIsPhysical);
-    if (!hw) return 0;
+    if (!hw) return out;
+    for (int i = 0; hw[i] != nullptr; ++i) out.emplace_back(hw[i]);
+    jack_free(hw);
+
+    std::sort(out.begin(), out.end(), natural_less);
+    return out;
+}
+
+int JackBackend::auto_connect_inputs() {
+    if (!client_) return 0;
+
+    const std::vector<std::string> hw = capture_ports();
+    if (hw.empty()) return 0;
 
     int connected = 0;
-    for (std::size_t i = 0; i < in_ports_.size() && hw[i] != nullptr; ++i) {
-        if (jack_connect(client_, hw[i], jack_port_name(in_ports_[i])) == 0) {
+    const std::size_t n = std::min(hw.size(), in_ports_.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (jack_connect(client_, hw[i].c_str(),
+                         jack_port_name(in_ports_[i])) == 0) {
             ++connected;
         }
     }
-    jack_free(hw);
+
+    // A count mismatch either way is worth saying out loud. More tracks than
+    // channels means the extra tracks record silence; more channels than
+    // tracks means inputs the operator plugged in are not being captured.
+    if (hw.size() < in_ports_.size()) {
+        std::fprintf(stderr,
+                     "sonora: %zu capture channels for %zu tracks;"
+                     " tracks %zu and above will be silent.\n",
+                     hw.size(), in_ports_.size(), hw.size() + 1);
+    } else if (hw.size() > in_ports_.size()) {
+        std::fprintf(stderr,
+                     "sonora: %zu capture channels but only %zu tracks;"
+                     " channels %zu and above are not being recorded.\n",
+                     hw.size(), in_ports_.size(), in_ports_.size() + 1);
+    }
+
     return connected;
 }
 
