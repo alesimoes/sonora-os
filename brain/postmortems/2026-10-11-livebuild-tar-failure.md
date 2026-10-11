@@ -60,6 +60,24 @@ The engine is built in the Debian trixie container and runs on a Debian trixie
 image, so it links against the same `libjack-jackd2-0`. If the image base and
 the build base ever diverge, this breaks at boot with a missing-symbol error.
 
+## Fourth defect, found on the very next build
+
+Staging the engine failed with "no binary was found to stage", even though the
+binary was sitting right there. The check was `[[ -x "$candidate" ]]`, and a
+Windows filesystem does not carry an exec bit: the freshly compiled binary
+reports mode 644 on the host. The test is now `-f`.
+
+The same cause had a worse second half. `includes.chroot` is copied from the
+build host into the image, so the engine would have arrived in the image as
+mode 644 and systemd would have failed to start it with a bare permission
+error -- an error that says nothing about Windows, bind mounts or exec bits.
+Host file modes are now treated as unreliable, and the chroot hook sets the
+modes itself, where the filesystem really carries them. The hook also fails
+the build outright if the engine is not present.
+
+Rule worth keeping: never let a file mode set on the build host matter to the
+image. Set it in the chroot.
+
 ## Guard against recurrence
 
 There is no unit test for an ISO build. What replaces one:

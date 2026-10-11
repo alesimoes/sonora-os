@@ -54,7 +54,9 @@ STAGE="$ROOT/iso/config/includes.chroot/usr/local/bin"
 mkdir -p "$STAGE"
 ENGINE=""
 for candidate in "$ROOT/build/sonora-engine" "$ROOT/build-container/sonora-engine"; do
-  [[ -x "$candidate" ]] && ENGINE="$candidate"
+  # -f, not -x: a Windows filesystem does not carry an exec bit, so the
+  # freshly built binary shows up as mode 644 here.
+  [[ -f "$candidate" ]] && ENGINE="$candidate"
 done
 [[ -n "$ENGINE" ]] || {
   echo "error: the engine was built but no binary was found to stage." >&2

@@ -22,6 +22,21 @@ install -D -m 0644 /usr/share/sonora/sysctl-sonora.conf \
 install -D -m 0644 /usr/share/sonora/pipewire-sonora.conf \
   /etc/pipewire/pipewire.conf.d/99-sonora.conf
 
+# --- executable bits ---
+# includes.chroot is copied from the build host, and when that host is Windows
+# the files arrive mode 644. systemd would then fail to start the engine with a
+# permission error that says nothing about why. Set the modes here, where the
+# filesystem actually carries them.
+chmod 0755 /usr/local/bin/sonora-engine
+chmod 0755 /usr/local/bin/sonora-wait-for-audio
+
+# The engine must exist, or the image boots into a Restart=always loop against
+# a missing file. Fail the build instead.
+if [ ! -x /usr/local/bin/sonora-engine ]; then
+  echo "E: sonora-engine was not staged into the image." >&2
+  exit 1
+fi
+
 # --- services ---
 systemctl enable sonora-session.service
 # No display manager and no login prompt on tty1: the unit owns that tty.
