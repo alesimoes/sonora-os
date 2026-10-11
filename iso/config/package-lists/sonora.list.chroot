@@ -1,5 +1,7 @@
-# Real-time kernel. ADR-0002: packaged by Debian so we do not maintain one.
-linux-image-rt-amd64
+# The RT kernel is NOT listed here. It comes from --linux-flavours rt-amd64 in
+# auto/config, which is what makes it the bootstrap flavour and therefore the
+# kernel the default boot entry actually loads. Listing it here as well would
+# pull in the generic kernel alongside it.
 
 # Audio server. ADR-0003: PipeWire only, no jackd. pipewire-jack provides the
 # API our engine links against.

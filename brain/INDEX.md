@@ -16,4 +16,5 @@ One line per entry. Agents read this before opening anything else.
 _(empty — first notes land when the researcher agent runs)_
 
 ## Postmortems
+- [2026-10-11 RT kernel not default](postmortems/2026-10-11-rt-kernel-not-default.md) — the image installed the RT kernel but booted the generic one; no symptom except unexplained xruns.
 - [2026-10-11 debootstrap tar failure](postmortems/2026-10-11-livebuild-tar-failure.md) — live-build cannot build a chroot on a Windows bind mount; also caught a masked exit code and a missing engine install.

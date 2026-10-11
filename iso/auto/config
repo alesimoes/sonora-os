@@ -1,11 +1,18 @@
 #!/bin/sh
 # live-build reads this on `lb config`, so the image is reproducible from the
 # repository alone rather than from whatever flags someone typed.
+#
+# --linux-flavours rt-amd64 is load-bearing. Listing linux-image-rt-amd64 in a
+# package list instead installs the RT kernel but leaves the generic one as the
+# bootstrap flavour, so /live/vmlinuz and the default menu entry both point at
+# the non-RT kernel. The machine then boots without RT and nothing says so --
+# the only symptom is xruns nobody can explain.
 set -e
 
 lb config noauto \
   --distribution trixie \
   --architectures amd64 \
+  --linux-flavours rt-amd64 \
   --archive-areas "main contrib non-free non-free-firmware" \
   --binary-images iso-hybrid \
   --bootappend-live "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs" \

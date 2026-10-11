@@ -18,8 +18,11 @@ without asking a question.
 - [ ] `tools/write-usb.sh`: write the ISO and create the persistence partition.
 - [ ] Boot test on real hardware; record the xrun count in
       `brain/research/`.
-- [ ] QEMU boot smoke test in CI: assert the engine process is running after
-      boot. A missing binary in the image should fail CI, not a USB stick.
+- [ ] QEMU boot smoke test in CI. It must assert three things, because each
+      one has already broken once and only the first is obvious:
+      the system reaches `multi-user.target`; `sonora-engine` is running;
+      and `uname -r` contains `-rt-`. An image that boots and records on the
+      wrong kernel passes any looser test.
 
 ## Phase 2
 
