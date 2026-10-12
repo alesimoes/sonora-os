@@ -650,6 +650,69 @@ int test_session_commands() {
     return result;
 }
 
+// --- arming is fixed for the length of a take ---
+//
+// Session::process() writes a track only while it is armed, but its file stays
+// open: disarming mid-take and re-arming resumed the file with no gap, so
+// that track came out shorter than the rest and out of sync from that point.
+// Arming a track with no file open filled a ring nobody drained and counted
+// overruns. So every arming command refuses during a take, and says why.
+int test_arming_locked_during_take() {
+    sonora::SessionConfig cfg;
+    cfg.dir = "test_keymap_arming";
+    cfg.track_count = 3;
+    cfg.ring_seconds = 0.25;
+    std::string recorded;
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        CommandRegistry reg;
+        int take = 1;
+        bool quit = false;
+        sonora::install_session_commands(reg, s, take, quit);
+
+        CommandContext first;
+        first.target = 0;
+        CommandContext second;
+        second.target = 1;
+        CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
+        s.disk().start();
+        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        recorded = s.tracks()[0]->writer().path();
+
+        struct Attempt {
+            const char* command;
+            CommandContext ctx;
+        };
+        const Attempt attempts[] = {
+            {"track.toggle_arm", first},   // would leave a gap in track 1
+            {"track.toggle_arm", second},  // would fill a ring with no file
+            {"track.arm_all", {}},
+            {"track.disarm_all", {}},
+        };
+        for (const Attempt& a : attempts) {
+            std::string why;
+            CHECK(reg.dispatch(a.command, a.ctx, why) == DispatchResult::Failed);
+            CHECK(mentions(why, "during a take"));
+            CHECK(s.tracks()[0]->rec_armed());
+            CHECK(!s.tracks()[1]->rec_armed());
+            CHECK(!s.tracks()[2]->rec_armed());
+        }
+
+        // Once the take is closed, arming works again.
+        CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
+        CHECK(reg.dispatch("track.toggle_arm", second) == DispatchResult::Ok);
+        CHECK(s.tracks()[1]->rec_armed());
+        CHECK(reg.dispatch("track.disarm_all") == DispatchResult::Ok);
+        CHECK(!s.tracks()[0]->rec_armed());
+    }
+    std::remove(recorded.c_str());
+    std::remove((cfg.dir + "/Audio Files").c_str());
+    std::remove(cfg.dir.c_str());
+    return 0;
+}
+
 // --- the corrections in brain/research/protools-logic-key-bindings.md §8 ---
 int test_profile_corrections() {
     struct Expect {
@@ -744,6 +807,7 @@ int main() {
         failures += test_targetless_arm_does_not_count(device,
                                                        implemented);
         failures += test_session_commands();
+        failures += test_arming_locked_during_take();
         failures += test_profile_corrections();
         if (failures != 0) {
             std::fprintf(stderr, "FAIL %d regression tests\n", failures);

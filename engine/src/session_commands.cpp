@@ -52,23 +52,49 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return true;
     });
 
-    reg.install("track.toggle_arm", [&](const CommandContext& ctx) {
+    // Arming is fixed for the length of a take. process() writes a track
+    // only while it is armed but leaves its file open, so a track disarmed
+    // and re-armed mid-take resumes with no gap and drifts out of sync with
+    // the others; a track armed mid-take has no file, and its ring fills and
+    // counts overruns. Refusing here keeps the audio thread as it is.
+    const auto take_running = [&session](std::string& why) {
+        if (session.transport().state() != TransportState::Recording) {
+            return false;
+        }
+        why = "arming cannot change during a take; stop first";
+        return true;
+    };
+
+    reg.install("track.toggle_arm",
+                [&session, take_running](const CommandContext& ctx,
+                                         std::string& why) {
         // No selection exists yet, and guessing a track is the
         // port-ordering defect in another form.
-        if (!ctx.has_target()) return false;
+        if (!ctx.has_target()) {
+            why = "no track given, and there is no selection yet";
+            return false;
+        }
         const std::size_t idx = static_cast<std::size_t>(ctx.target);
-        if (idx >= session.tracks().size()) return false;
+        if (idx >= session.tracks().size()) {
+            why = "there is no track " + std::to_string(idx + 1);
+            return false;
+        }
+        if (take_running(why)) return false;
         auto& tr = session.tracks()[idx];
         tr->set_rec_armed(!tr->rec_armed());
         return true;
     });
 
-    reg.install("track.arm_all", [&](const CommandContext&) {
+    reg.install("track.arm_all",
+                [&session, take_running](const CommandContext&, std::string& why) {
+        if (take_running(why)) return false;
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
         return true;
     });
 
-    reg.install("track.disarm_all", [&](const CommandContext&) {
+    reg.install("track.disarm_all",
+                [&session, take_running](const CommandContext&, std::string& why) {
+        if (take_running(why)) return false;
         for (const auto& tr : session.tracks()) tr->set_rec_armed(false);
         return true;
     });
