@@ -92,6 +92,11 @@ bool Session::start_recording(int take_number, std::string* error) {
         std::snprintf(file, sizeof(file), "%s/%s_%02d.wav",
                       audio_dir(cfg_.dir).c_str(), t->name().c_str(),
                       take_number);
+        // Neither other thread touches this ring now: the audio thread
+        // writes it only once the transport says Recording, the disk thread
+        // reads it only once the track is published below. Both of those are
+        // release stores that come after this, which is what makes these
+        // relaxed index stores safe.
         t->capture_ring().reset();
         if (!t->writer().open(file, cfg_.sample_rate, t->channels(),
                               cfg_.format, origin)) {
@@ -120,6 +125,9 @@ bool Session::start_recording(int take_number, std::string* error) {
         if (error) *error = "no track is armed";
         return false;
     }
+    // Only now may the disk thread see these writers; until here the
+    // rollback above could close them under it. See Track::set_draining().
+    for (Track* t : opened) t->set_draining(true);
     transport_->set_state(TransportState::Recording);
     return true;
 }
@@ -127,8 +135,12 @@ bool Session::start_recording(int take_number, std::string* error) {
 void Session::stop() {
     transport_->set_state(TransportState::Stopped);
     // Let the disk thread flush what is still buffered before we close files.
+    // stop() joins it, so after this line nothing else uses the writers.
     if (disk_) disk_->stop();
-    for (auto& t : tracks_) t->writer().close();
+    for (auto& t : tracks_) {
+        t->set_draining(false);
+        t->writer().close();
+    }
 }
 
 void Session::process(const float* const* inputs, uint32_t nframes) {

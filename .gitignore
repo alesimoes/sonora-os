@@ -1,6 +1,9 @@
 # Build output
 build/
 build-container/
+# The sanitizer builds, named as in .github/workflows/ci.yml.
+build-tsan/
+build-asan/
 # Kernel, initrd and serial logs extracted by the QEMU boot test.
 build-qemu/
 *.o

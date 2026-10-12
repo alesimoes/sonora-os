@@ -189,6 +189,49 @@ int test_partial_take_is_refused() {
     return 0;
 }
 
+// A take begins with its own audio. Samples the previous take left in a ring
+// -- here, a take stopped with no disk thread to drain it -- must never reach
+// the head of the next file. Under TSan this is also where the disk thread
+// and the interface thread meet over the writer and the ring.
+int test_take_starts_with_its_own_samples() {
+    const sonora::SessionConfig cfg = config("test_takes_head", 1);
+    const std::string audio = cfg.dir + "/Audio Files/";
+    wipe(cfg.dir);
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        s.tracks()[0]->set_rec_armed(true);
+
+        float old_block[64];
+        for (float& f : old_block) f = 0.25f;
+        const float* old_inputs[1] = {old_block};
+        CHECK(s.start_recording(1));
+        s.process(old_inputs, 64);
+        s.stop();  // no disk thread ran: 64 frames are still in the ring
+
+        float new_block[64];
+        for (float& f : new_block) f = -0.5f;
+        const float* new_inputs[1] = {new_block};
+        s.disk().start();
+        CHECK(s.start_recording(2));
+        s.process(new_inputs, 64);
+        s.stop();
+        CHECK(s.tracks()[0]->writer().frames_written() == 64);
+    }
+    // -0.5 in 24-bit little-endian is 0xC00000; 0.25 would be 0x200000.
+    const std::string b = slurp(audio + "Audio 1_02.wav");
+    const std::size_t data = b.find("data");
+    CHECK(data != std::string::npos);
+    CHECK(b.size() == data + 8 + 64 * 3);
+    for (std::size_t i = data + 8; i < b.size(); i += 3) {
+        CHECK(static_cast<unsigned char>(b[i]) == 0x00);
+        CHECK(static_cast<unsigned char>(b[i + 1]) == 0x00);
+        CHECK(static_cast<unsigned char>(b[i + 2]) == 0xC0);
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -196,6 +239,7 @@ int main() {
     failures += test_next_free_take();
     failures += test_restart_never_overwrites();
     failures += test_partial_take_is_refused();
+    failures += test_take_starts_with_its_own_samples();
     if (failures != 0) {
         std::fprintf(stderr, "FAIL %d take tests\n", failures);
         return 1;

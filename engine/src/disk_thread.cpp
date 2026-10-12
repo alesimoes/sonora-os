@@ -43,7 +43,9 @@ void DiskThread::run() {
 
 void DiskThread::drain_once() {
     for (Track* t : tracks_) {
-        if (!t->writer().is_open()) continue;
+        // Not writer().is_open(): that reads the FILE* the interface thread
+        // is writing in open(). The flag is the synchronised way to ask.
+        if (!t->draining()) continue;
         RingBuffer<float>& ring = t->capture_ring();
         const std::size_t ch = t->channels();
 
