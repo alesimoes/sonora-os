@@ -111,6 +111,13 @@ than killing the engine or stopping it mid-take. Ctrl+V and Ctrl+O are
 delivered too. To leave the engine, use the profile's quit key; systemd's
 SIGTERM and `kill` still stop it cleanly.
 
+The one exception: if no key the profile has can run `app.quit`, even after
+repair, the keyboard would have no way out at all. Then Ctrl+C is left to the
+terminal -- it raises SIGINT and the engine closes the take and exits cleanly
+-- and a notice says so. The profile is measured again against what the
+keyboard can still send, so a binding on Ctrl+C is not counted, nor listed in
+the footer. Ctrl+Z and Ctrl+\ stay keys.
+
 The check above is made against the mode the terminal actually accepted, read
 back after setting it: a control byte the line discipline would still eat is
 not counted as a way to reach anything.

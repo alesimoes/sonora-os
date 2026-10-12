@@ -719,6 +719,32 @@ bool needs_selection(const Binding& b) {
            !b.ctx.has_target();
 }
 
+namespace {
+
+bool runs_member(const Binding& b, const std::vector<std::string>& group,
+                 const std::vector<KeyChord>& device,
+                 const std::function<bool(const std::string&)>& implemented) {
+    if (needs_selection(b) || !implemented(b.command) ||
+        !contains_chord(device, b.chord)) {
+        return false;
+    }
+    for (const auto& id : group) {
+        if (b.command == id) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+bool KeyMap::reaches(
+    const std::vector<std::string>& group, const std::vector<KeyChord>& device,
+    const std::function<bool(const std::string&)>& implemented) const {
+    for (const Binding& b : bindings_) {
+        if (runs_member(b, group, device, implemented)) return true;
+    }
+    return false;
+}
+
 bool KeyMap::parse_chord(const std::string& spec, KeyChord& out,
                          std::string& error) {
     if (spec.empty()) {
@@ -1221,14 +1247,7 @@ std::vector<std::string> KeyMap::ensure_essentials(
     const auto& groups = essential_commands();
 
     const auto usable = [&](const Binding& b, const Group& group) {
-        if (needs_selection(b) || !implemented(b.command) ||
-            !contains_chord(device, b.chord)) {
-            return false;
-        }
-        for (const auto& id : group) {
-            if (b.command == id) return true;
-        }
-        return false;
+        return runs_member(b, group, device, implemented);
     };
     const auto satisfied = [&](const std::vector<Binding>& bindings,
                                const Group& group) {

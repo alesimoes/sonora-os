@@ -2,6 +2,7 @@
 #include "sonora/keymap.h"
 
 #include <termios.h>
+#include <unistd.h>
 
 #include <cstddef>
 #include <cstdio>
@@ -202,7 +203,7 @@ std::vector<TerminalInput::Result> results_of(const char* bytes, std::size_t n,
 // Ctrl+Q -- Pro Tools' quit -- was eaten; and ISIG on, so Ctrl+C killed the
 // engine and Ctrl+Z stopped it with a take open. Every one of those chords
 // was in terminal_chords(), so ensure_essentials() believed them.
-int test_key_reading_mode() {
+termios cooked_console() {
     termios cooked{};
     cooked.c_iflag = ICRNL | IXON | IXOFF | BRKINT;
     cooked.c_oflag = OPOST | ONLCR;
@@ -221,6 +222,11 @@ int test_key_reading_mode() {
     cooked.c_cc[VDISCARD] = 0x0f;
     cooked.c_cc[VMIN] = 1;
     cooked.c_cc[VTIME] = 0;
+    return cooked;
+}
+
+int test_key_reading_mode() {
+    const termios cooked = cooked_console();
 
     // The model has to be able to see the defect, or passing proves nothing:
     // the old mode, ICANON and ECHO cleared and nothing else.
@@ -277,6 +283,69 @@ int test_key_reading_mode() {
     CHECK(new_device.size() == everything.size());
     for (const KeyChord& c : everything) CHECK(sendable(new_device, c));
     return failures == 0 ? 0 : 1;
+}
+
+// --- a profile that cannot quit keeps Ctrl+C ---
+//
+// The key-reading mode turns ISIG off so Ctrl+C can be edit.copy. When no key
+// the profile has can run app.quit -- and ensure_essentials() could not repair
+// that -- the operator had no keyboard way out at all. main.cpp then switches
+// to this mode, in which Ctrl+C raises SIGINT and the engine stops cleanly,
+// and measures the profile against what is left.
+int test_interrupt_key_when_nothing_quits(const Implemented& implemented) {
+    termios cooked = cooked_console();
+    // Whatever the console had, the notice promises Ctrl+C.
+    cooked.c_cc[VINTR] = static_cast<cc_t>(_POSIX_VDISABLE);
+    const termios mode = sonora::interrupt_key_mode(cooked);
+    CHECK((mode.c_lflag & ISIG) != 0);
+    CHECK((mode.c_lflag & (ICANON | ECHO | IEXTEN)) == 0);
+    CHECK((mode.c_iflag & (IXON | IXOFF)) == 0);
+    CHECK(mode.c_cc[VINTR] == 0x03);
+    CHECK(!sonora::tty_delivers_byte(mode, 0x03));
+    // Only the interrupt: Ctrl+Z stopping the engine with a take open, or
+    // Ctrl+\ dumping core, is no way out.
+    CHECK(sonora::tty_delivers_byte(mode, 0x1a));
+    CHECK(sonora::tty_delivers_byte(mode, 0x1c));
+    CHECK(sonora::tty_delivers_byte(mode, 'q'));
+
+    const std::vector<KeyChord> device = KeyMap::terminal_chords(
+        [&mode](unsigned char b) { return sonora::tty_delivers_byte(mode, b); });
+    const std::vector<KeyChord> everything = KeyMap::terminal_chords();
+    CHECK(device.size() + 2 == everything.size());
+    for (const char* gone : {"ctrl+c", "alt+ctrl+c"}) {
+        KeyChord c;
+        std::string why;
+        CHECK(KeyMap::parse_chord(gone, c, why));
+        CHECK(!sendable(device, c));
+    }
+
+    const std::vector<std::string>& quit = group_containing("app.quit");
+    CHECK(!quit.empty());
+    {
+        KeyMap m;
+        std::string err;
+        // q is the only arm key, so the default's quit cannot have it.
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "q": "track.arm_all",
+            "space": "transport.toggle_record" } })", m, err));
+        m.ensure_essentials(everything, implemented);
+        CHECK(!m.reaches(quit, everything, implemented));
+
+        // Measured again under the new mode, what worked still works.
+        KeyMap again;
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "ctrl+z": { "command": "track.toggle_arm", "target": 1 },
+            "space": "transport.toggle_record" } })", again, err));
+        again.ensure_essentials(device, implemented);
+        CHECK(again.resolve("ctrl+z")->command == "track.toggle_arm");
+        CHECK(again.reaches(group_containing("track.toggle_arm"), device,
+                            implemented));
+    }
+    {
+        KeyMap d = KeyMap::built_in_default();
+        CHECK(d.reaches(quit, everything, implemented));
+    }
+    return 0;
 }
 
 // --- the escape timeout ---
@@ -855,6 +924,7 @@ int main() {
         const std::vector<KeyChord> device = KeyMap::terminal_chords();
         int failures = 0;
         failures += test_key_reading_mode();
+        failures += test_interrupt_key_when_nothing_quits(implemented);
         failures += test_linux_console_function_keys();
         failures += test_escape_starts_a_new_sequence();
         failures += test_escape_timeout();

@@ -40,7 +40,15 @@ struct TermiosGuard {
         if (tcgetattr(STDIN_FILENO, &saved) != 0) return;
         is_tty = true;
         current = saved;
-        const termios t = sonora::key_reading_mode(saved);
+        apply(sonora::key_reading_mode(saved));
+    }
+    // True if Ctrl+C now raises SIGINT, as read back from the terminal.
+    bool keep_interrupt_key() {
+        if (!is_tty) return false;
+        apply(sonora::interrupt_key_mode(saved));
+        return (current.c_lflag & ISIG) && current.c_cc[VINTR] == 0x03;
+    }
+    void apply(const termios& t) {
         if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == 0) active = true;
         // tcsetattr reports success if it applied any part of the change, so
         // what the keyboard can reach is read back rather than assumed.
@@ -415,8 +423,9 @@ int main(int argc, char** argv) {
     }
     session.disk().start();
 
-    // From systemd and kill. The keyboard no longer raises either: the key
-    // reading mode turns ISIG off, because Ctrl+C is edit.copy in a profile.
+    // From systemd and kill. The keyboard raises neither -- the key reading
+    // mode turns ISIG off, because Ctrl+C is edit.copy in a profile -- unless
+    // the profile cannot quit; see keep_interrupt_key().
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 
@@ -452,12 +461,39 @@ int main(int argc, char** argv) {
     // "cmd+q" and "ctrl+shift+z" are real bindings that this input device
     // cannot send, and a profile whose only way to arm a track is one of those
     // cannot record however correct the file is.
-    const std::vector<sonora::KeyChord> device = sonora::KeyMap::terminal_chords(
-        [&term](unsigned char byte) { return term.delivers(byte); });
-    const std::vector<std::string> notices = keymap.ensure_essentials(
-        device, [&commands](const std::string& id) {
-            return commands.implemented(id);
-        });
+    const auto implemented = [&commands](const std::string& id) {
+        return commands.implemented(id);
+    };
+    const auto terminal_device = [&term]() {
+        return sonora::KeyMap::terminal_chords(
+            [&term](unsigned char byte) { return term.delivers(byte); });
+    };
+    std::vector<sonora::KeyChord> device = terminal_device();
+    const sonora::KeyMap as_loaded = keymap;
+    std::vector<std::string> notices = keymap.ensure_essentials(device, implemented);
+
+    // With signals off and no key that runs app.quit, nothing on the keyboard
+    // could leave the engine. Ctrl+C is then given back to the terminal, and
+    // the profile is measured again against what the keyboard can still send
+    // -- Ctrl+C is no longer one of those keys, and the footer must not say
+    // it is.
+    const std::vector<std::string>* quit_group = nullptr;
+    for (const auto& g : sonora::KeyMap::essential_commands()) {
+        for (const auto& id : g) {
+            if (id == "app.quit") quit_group = &g;
+        }
+    }
+    if (quit_group != nullptr &&
+        !keymap.reaches(*quit_group, device, implemented) && term.is_tty) {
+        const bool interrupt = term.keep_interrupt_key();
+        device = terminal_device();
+        keymap = as_loaded;
+        notices = keymap.ensure_essentials(device, implemented);
+        if (interrupt) {
+            notices.push_back("Ctrl+C leaves the engine: no key in this profile"
+                              " can, so it is not passed to the profile");
+        }
+    }
     for (const std::string& n : notices) {
         std::fprintf(stderr, "sonora: key map \"%s\": %s\n",
                      keymap.name().c_str(), n.c_str());

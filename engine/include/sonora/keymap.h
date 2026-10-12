@@ -120,6 +120,14 @@ public:
         const std::vector<KeyChord>& device,
         const std::function<bool(const std::string&)>& implemented);
 
+    // Whether some binding in this map runs a member of `group`, on a chord
+    // `device` can produce, with a handler `implemented` says exists. The
+    // test ensure_essentials() repairs against, for a caller that needs to
+    // know the outcome for one group rather than read the notices.
+    bool reaches(const std::vector<std::string>& group,
+                 const std::vector<KeyChord>& device,
+                 const std::function<bool(const std::string&)>& implemented) const;
+
     // Rejected above this, rather than narrowed into whichever track the
     // low bits happen to name. No interface has a thousand inputs; a file
     // asking for track 4294967297 is a mistake, not a configuration.

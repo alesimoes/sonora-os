@@ -35,6 +35,16 @@ termios key_reading_mode(const termios& saved) {
     return t;
 }
 
+termios interrupt_key_mode(const termios& saved) {
+    termios t = key_reading_mode(saved);
+    t.c_lflag |= ISIG;
+    // Set rather than inherited, because the notice on screen names Ctrl+C.
+    t.c_cc[VINTR] = 0x03;
+    t.c_cc[VQUIT] = static_cast<cc_t>(_POSIX_VDISABLE);
+    t.c_cc[VSUSP] = static_cast<cc_t>(_POSIX_VDISABLE);
+    return t;
+}
+
 bool tty_delivers_byte(const termios& t, unsigned char byte) {
     // Canonical mode hands nothing over until a line is complete, so no key
     // arrives as a key at all.
