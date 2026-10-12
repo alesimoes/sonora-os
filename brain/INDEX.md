@@ -17,6 +17,7 @@ One line per entry. Agents read this before opening anything else.
 
 ## Research
 - [Multichannel USB interfaces](research/multichannel-usb-interfaces.md) — Pro Audio profile, WirePlumber state hooks, port ordering; what is verified and what is not.
+- [ADR-0007 measurements](research/adr-0007-measurements.md): the six "Unverified" items. RTSan is available (`clang-22` in trixie main; the default clang 19 lacks it). 8-byte atomics are lock-free on amd64 and arm64. Container IPC figures: socket and seqlock costs are fine, but a seqlock publisher must be paced and spinning at FIFO hits RT throttling. `snd-dummy model=rme9652` gives 26 ordered AUX ports in QEMU. cage maximizes parentless X11 editors.
 - [Pro Tools and Logic key bindings](research/protools-logic-key-bindings.md) — every binding in both profiles checked against Avid's and Apple's own guides; corrections, collisions, the Commands Keyboard Focus problem, and what the schema cannot express.
 
 ## Postmortems

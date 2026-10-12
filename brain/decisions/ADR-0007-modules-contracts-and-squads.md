@@ -813,6 +813,10 @@ invariants. Nothing for interchange until the session format spec exists.
 
 ## Unverified
 
+*All six items were measured on 2026-10-12. The results and the changes
+they make are in "Update, 2026-10-12" below. The list is kept as
+written.*
+
 Stated so nobody treats them as measured. Each line names the measurement that
 settles it, for the researcher:
 
@@ -842,6 +846,130 @@ settles it, for the researcher:
    Confirm on the target toolchain that `std::atomic<float>` and
    `std::atomic<uint64_t>` are always lock-free on x86-64 (expected, not
    checked).
+
+## Update, 2026-10-12: the Unverified items measured
+
+Source: `brain/research/adr-0007-measurements.md`. Those figures come from a
+container on a Hyper-V guest with a generic kernel. They give orders of
+magnitude and show qualitative behaviour. They are not appliance figures.
+The decided text above stands. The changes below are additions and
+tightenings. None of them changes an owner decision.
+
+1. **`SONORA_RT` becomes the attribute (item 3, resolved).** RTSan and
+   `[[clang::nonblocking]]` work with `clang-22` from trixie main and
+   `clang-21` from trixie-backports. They do not work with trixie's default
+   `clang` 19. The rule in §2 is refined as follows:
+   - RT entry points are declared `noexcept SONORA_RT`, in that order, before
+     `override` or `= 0`. The attribute is a function-*type* attribute, so
+     its position matters.
+   - `SONORA_RT` expands to `[[clang::nonblocking]]` under a Clang that
+     supports it, and to nothing elsewhere. GCC 14 stays the compiler of the
+     shipped build.
+   - The new CI job is an **RTSan build of its own** (`clang-22`,
+     `-fsanitize=realtime`). It cannot be combined with ASan or TSan.
+   - `-Wfunction-effects` is **advisory at first**, because libstdc++ inference
+     produces noise. It is promoted to an error per module once that module's
+     RT functions are clean.
+   - The runtime check is the gate, and it catches only what tests execute.
+     That raises the value of the `drivers/fake` conformance suite and its
+     fault injections.
+   - A deliberate `ScopedDisabler` is an RT exception and needs the auditor's
+     sign-off.
+   - Still open: whether `pipewire-jack`'s libjack trips RTSan from inside
+     the callback.
+2. **Shared-memory atomics (item 6, resolved for amd64 and the arm64
+   compiler).** `float`, `double`, `uint32_t`, `uint64_t`, `int64_t` and
+   `bool` are always lock-free with GCC 14 on both. 16-byte atomics are
+   **not**: they go through libatomic's lock table. So:
+   - every atomic type used in `EngineStateBlock` and `ChannelHeader` gets
+     its own `static_assert(...::is_always_lock_free)`, not just
+     `uint64_t`;
+   - **no `std::atomic` wider than 8 bytes may sit in shared memory.** A
+     wider value goes under the seqlock.
+3. **The state publisher must be paced (item 1: the assumption holds, and
+   there is a new constraint).**
+   - In the container, a 64-byte `SOCK_SEQPACKET` round trip measured p50
+     60 µs, p99 158 µs, max 484 µs.
+   - A pessimistic 64 KiB seqlock read at the UI's rates measured p99 25 µs.
+   - But a writer that republished without pause starved the reader: p99 41
+     ms, reads abandoned after 100 ms.
+
+   This binds `engine/control` and `StateView`:
+   - The publisher thread runs **on a fixed timer** (100 Hz–1 kHz measured
+     clean). Each write must be short compared with the period. It never
+     republishes in a loop and never publishes "on change" without a
+     minimum interval.
+   - `StateView` reads use a **bounded** number of seqlock retries. When the
+     bound is reached, the reader reports the snapshot as stale for that
+     tick, and the interface shows it as such. The UI thread never spins
+     indefinitely on engine state. This is an additive change to §4.1's
+     `StateView`: snapshots carry a `stale` flag.
+   - M4 includes a regression test: a paced writer at the maximum rate must
+     not starve a 60 Hz reader.
+4. **Plugin wake mechanism (item 2): still open, and narrowed.**
+   - Futex and eventfd were equivalent in the container: a round trip p50
+     about 60 µs and p99 210–245 µs, about 8 % of a 2.67 ms period at p99.
+   - **Spinning at `SCHED_FIFO` is ruled out.** It ran into RT throttling,
+     with stalls of about 50 ms.
+   - Making spinning work would need `sched_rt_runtime_us=-1`, which removes
+     the kernel's protection against a runaway RT thread. On an appliance
+     that must never hang, that trade is rejected here.
+   - The futex-versus-eventfd choice, and the auditor's ruling on a wake
+     syscall from the audio thread, wait for the RT kernel on bare metal.
+     They feed the Phase 4 plugin ADR (M9).
+   - A futex worst case above one period was seen on the generic kernel.
+     That confirms `collect(..., deadline_ns)` must drop the block, never
+     wait.
+5. **Virtual multichannel card (item 4, partly resolved).**
+   - `snd-dummy model=rme9652` presents **26** ordered
+     `capture_AUX0..AUX25` ports through the real ALSA → PipeWire → JACK
+     path in the image kernel, with no extra configuration. It is the
+     preferred stand-in for the driver squad's virtual-card CI test, with
+     `--tracks 18` taking the first 18.
+   - Exactly 18 ports needs `snd-aloop` plus a test-only WirePlumber rule
+     that sets **both** `audio.channels` and `audio.position`. With the
+     channel count alone, the ports silently become `capture_1..capture_18`.
+   - Registry ids were *not* in channel order for monitor ports. That
+     confirms `natural_less` over names is the rule.
+
+   Consequences for §4.2 and §10:
+   - `drivers/fake` adds two injections: ports named without `AUX`
+     (`capture_1..N`), and ids out of channel order.
+   - Any virtual-card assertion counts ports **per node**, not across nodes.
+6. **Plugin editors under the kiosk compositor (item 5): a real constraint,
+   open.**
+   - Under `cage` 0.2.0 with Xwayland, a parentless X11 window is forced
+     full screen over the UI and its size hints are ignored.
+   - A window with `WM_TRANSIENT_FOR` is centred at its own size.
+   - An override-redirect popup was drawn at the screen origin.
+   - An X11 editor cannot name a native Wayland surface as its parent. The
+     options are therefore:
+     - (a) the Qt UI runs on X11 under Xwayland (`QT_QPA_PLATFORM=xcb`), so
+       it can be the editor's transient parent;
+     - (b) the plugin host creates its own X11 anchor window, which cage then
+       shows full screen over the UI whenever an editor is open;
+     - (c) a different kiosk compositor, or a small custom policy.
+
+   None was tested with real Qt or a real plugin. This is recorded as an
+   **open constraint on the Phase 4 plugin ADR and on the ADR that chooses
+   the compositor** (ADR-0006 leaves the compositor open). It also
+   constrains ADR-0006's stated Wayland-kiosk direction.
+
+   **Effect on ADR-0007's contracts:** none to code now. The plugin contract
+   (§4.3) is Phase 4 and not yet written. It does fix one requirement the
+   Phase 4 ADR must meet. Under (a), and possibly (c), the plugin host needs
+   a window reference that belongs to the UI. The UI is a client of the
+   engine, not of the host. So `HostControl`'s editor operation must accept
+   an **opaque parent-window token** that the UI supplies and that is
+   carried UI → engine → host. Its meaning depends on the display server,
+   which the protocol does not interpret. No contract in §4.1 has to change
+   today: the token fits `CommandRequest::argument`, or a later additive
+   message.
+
+**What still needs bare metal and the RT kernel:** every IPC figure above,
+attribution of any xrun to a reader, the wake syscall's cost on the audio
+thread, RTSan on arm64, and the engine actually recording from the virtual
+cards. These are in `planning/BACKLOG.md`.
 
 ## Alternatives rejected
 
