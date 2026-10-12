@@ -67,6 +67,24 @@ without asking a question.
       with a real LV2/VST3 editor. Check whether upstream cage still
       misplaces override-redirect popups. Needed before the Phase 4 plugin
       ADR and the compositor ADR. researcher, then architect.
+- [ ] M4: fix the key map comment "Matches what engine/src/main.cpp handles
+      today" in `keymaps/default.json` **and** in the copy of that profile
+      embedded in `ui/keymap/src/keymap.cpp`, in the same commit, once
+      commands are handled in `engine/control`. ui-engineer.
+- [ ] M4 before M5: remove the illegal edges `engine/app` → `ui/keymap`,
+      `ui/tui` and `test_keymap` → `engine/control`, `ui/tui`. M5's check
+      would flag them (ADR-0007, "lessons from M1", item 1). rt-engineer
+      with ui-engineer.
+- [ ] M5: add the §7 ctest labels, one per top-level module directory.
+- [ ] With or right after the M1 merge, update docs that name pre-M1 paths
+      (`engine/src`, `engine/include`, `engine/tests`):
+      `brain/specs/bwf-broadcast-wave.md`,
+      `brain/specs/plugin-latency-compensation.md`,
+      `brain/research/multichannel-usb-interfaces.md`,
+      `brain/research/adr-0007-measurements.md`,
+      `brain/research/protools-logic-key-bindings.md`, and the agent
+      charters in M6. (`keymaps/README.md` is already done on the M1 branch.) ADRs
+      and postmortems keep the paths they were written with.
 
 ## Phase 2
 
