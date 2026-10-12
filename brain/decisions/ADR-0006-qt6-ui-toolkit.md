@@ -320,3 +320,20 @@ a stack we do not control, which is the opposite of ADR-0002's reason for
 choosing a frozen base. Remote monitoring from a tablet remains attractive and
 can be added later as a *secondary* surface over the same pull-based state,
 without being the primary interface.
+
+## Amendment, 2026-10-12
+
+The process shape in "Process shape: the GUI is in the engine's address
+space" is **superseded by ADR-0007 §3**, decided by the owner 2026-10-12. The
+engine runs headless. The Qt UI, the terminal UI and control surfaces are
+separate client processes. They talk to the engine over a Unix socket and
+read a shared state block that they map read-only. A UI crash therefore no
+longer takes the take with it.
+
+The rest of this ADR stands unchanged:
+- the UI pulls at 60 Hz and the audio thread never pushes;
+- no Qt object is reachable from the callback;
+- scene-graph rendering for meters and timeline;
+- the GPU requirement and the licensing rules.
+
+The text above is left as it was decided.

@@ -3,6 +3,16 @@
 Phases are sequential; work inside a phase can run in parallel. A phase closes
 only when its exit criteria are *measured*, not when the code exists.
 
+Exception, decided by the owner 2026-10-12 (ADR-0007 §10): some Phase 3 and
+Phase 4 work is open early, run by parallel squads.
+- Phase 3: only what has engine state today (shell, transport, meters,
+  arming, key routing), with no timeline editing.
+- Phase 4: plugin work host-side and measurement only, with nothing in
+  `engine/`.
+
+Neither phase is open beyond that, and Phase 1 still closes only on its own
+measured exit criteria.
+
 ## Phase 0 — Foundations (done)
 
 Repository, harness, ADRs, real-time audio core, BWF writer, unit tests.
