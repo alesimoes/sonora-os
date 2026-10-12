@@ -87,13 +87,21 @@ A repair never costs the profile an essential it already had. The default's
 key goes on a chord the profile leaves free if there is one; otherwise it may
 take over a single chord, preferring one whose binding cannot work in this
 build, and only if everything that worked before still works. If neither is
-possible the notice says the keyboard cannot do it. With the shipped profiles
-that means: `protools.json` and `logic.json` both start a take with
-`transport.record` and stop it with `space`, which is `transport.toggle_play`
--- and there is no playback yet -- so `space` becomes `transport.toggle_record`
-in both. It stops a take as those applications' Space does, and starts one
-where they would play. `logic.json`'s quit is `cmd+q`, so `q` is bound to
-`app.quit`.
+possible the notice says the keyboard cannot do it.
+
+One repair does not come from the default. A profile that starts a take on a
+key of its own but stops it with a play/stop key (`transport.toggle_play`)
+this build cannot run gets `transport.stop` on that play/stop key. The
+default's substitute would be `transport.toggle_record`, and on Space that
+starts a take exactly where the operator expects playback; `transport.stop`
+stops a take as the application's Space does and never starts one.
+
+With the shipped profiles that means: `protools.json` starts a take with
+`ctrl+space` or `f12` and `logic.json` with `r` (both `transport.record`), and
+both stop with `space`, which is `transport.toggle_play` -- and there is no
+playback yet -- so `space` becomes `transport.stop` in both. Pressed while
+stopped it does nothing. `logic.json`'s quit is `cmd+q`, so `q` is bound to
+`app.quit` from the default.
 
 `engine/tests/test_keymap.cpp` sweeps all 256 bytes against every shipped
 profile and fails if none of them arms a track, and pins the exact repairs

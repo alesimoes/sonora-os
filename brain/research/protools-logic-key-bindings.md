@@ -753,10 +753,12 @@ implemented: it starts a take, and does nothing if one is already running. The
 essentials check now also asks whether a take can be *stopped*, separately
 from started, because Pro Tools starts on Command+Space and stops on Space.
 Space is `transport.toggle_play`, and there is no playback yet, so at start-up
-the engine rebinds `space` to `transport.toggle_record` and says so. That
-stops a take exactly as Pro Tools' Space does; where Pro Tools would play, it
-starts one. Logic gets the same repair for the same reason. Once playback
-exists and `transport.toggle_play` can stop a take, the repair goes away.
+the engine rebinds `space` to `transport.stop` and says so. That stops a take
+exactly as Pro Tools' Space does; where Pro Tools would play, it does nothing.
+(An earlier version rebound it to `transport.toggle_record`, which started a
+take where the operator expected playback.) Logic gets the same repair for the
+same reason. Once playback exists and `transport.toggle_play` can stop a take,
+the repair goes away.
 
 **Found while applying, not in the list above.** LP-A's event-editor prose
 (page 466 of the PDF) gives "Deselect All (or press Option-Shift-D)". That is

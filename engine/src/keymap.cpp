@@ -1245,6 +1245,17 @@ std::vector<std::string> KeyMap::ensure_essentials(
     std::vector<std::string> report;
     const KeyMap fallback = built_in_default();
     const auto& groups = essential_commands();
+    const std::vector<Binding> as_given = bindings_;
+    const auto group_with = [&groups](const char* id) -> const Group* {
+        for (const auto& g : groups) {
+            for (const auto& member : g) {
+                if (member == id) return &g;
+            }
+        }
+        return nullptr;
+    };
+    const Group* const start_group = group_with("transport.record");
+    const Group* const stop_group = group_with("transport.stop");
 
     const auto usable = [&](const Binding& b, const Group& group) {
         return runs_member(b, group, device, implemented);
@@ -1276,6 +1287,42 @@ std::vector<std::string> KeyMap::ensure_essentials(
         const std::string names = join(group, " or ");
 
         std::vector<std::string> took;
+
+        // A profile that starts a take on a key of its own and stops it on
+        // its play/stop key -- Pro Tools' Ctrl+Space and Space, Logic's R and
+        // Space -- has a dead play/stop key, because there is no playback.
+        // The default's substitute, toggle_record, would make that key start
+        // a take where the operator expects playback; transport.stop on it
+        // stops a take as the application's Space does and never starts one.
+        // Only a play/stop key that cannot work in this build is taken.
+        if (&group == stop_group && start_group != nullptr &&
+            satisfied(as_given, *start_group)) {
+            for (std::size_t at = 0; at < bindings_.size(); ++at) {
+                const Binding& occupant = bindings_[at];
+                if (occupant.command != "transport.toggle_play" ||
+                    implemented(occupant.command)) {
+                    continue;
+                }
+                std::vector<Binding> after = bindings_;
+                after[at].command = "transport.stop";
+                after[at].ctx = CommandContext{};
+                after[at].comment =
+                    "substituted for a missing essential; see keymaps/README.md";
+                if (!usable(after[at], group) || !keeps_what_works(after)) continue;
+                took.push_back(describe(after[at]) + " (was " + occupant.command +
+                               ")");
+                bindings_ = std::move(after);
+                break;
+            }
+            if (!took.empty()) {
+                report.push_back("no key this terminal can send runs " + names +
+                                 "; this profile's own play/stop key now stops"
+                                 " a take, and never starts one: " +
+                                 join(took, ", "));
+                continue;
+            }
+        }
+
         bool default_has_one = false;
         for (const Binding& src : fallback.bindings_) {
             if (!usable(src, group)) continue;

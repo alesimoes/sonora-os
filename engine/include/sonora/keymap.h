@@ -110,7 +110,9 @@ public:
 
     // Checks every essential group against the chords `device` can produce
     // and the commands `implemented` says this build has wired up, and
-    // repairs what it can from built_in_default(). Returns one line per
+    // repairs what it can: a profile with a record key of its own gets
+    // transport.stop on its dead play/stop key, and everything else comes
+    // from built_in_default(). Returns one line per
     // finding for the caller to put in front of the operator; an empty return
     // means the keyboard can record.
     //

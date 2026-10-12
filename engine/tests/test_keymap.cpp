@@ -682,8 +682,12 @@ int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
         }
     }
     {
-        // A chord whose binding cannot work in this build may be taken, and
-        // the notice names what it used to do.
+        // A profile that starts a take on its own key and stops on its
+        // play/stop key -- Pro Tools' ctrl+space and space -- gets
+        // transport.stop on that key, not the default's toggle_record. Space
+        // pressed while stopped means "play" there; with toggle_record it
+        // started a junk take. The notice names what the key used to do, and
+        // does not claim the substitute came from the built-in default.
         KeyMap m;
         std::string err;
         CHECK(loads(R"({ "name": "x", "bindings": {
@@ -694,7 +698,27 @@ int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
         const std::vector<std::string> notices =
             m.ensure_essentials(device, implemented);
         CHECK(notices.size() == 1);
-        CHECK(mentions(notices[0], "was transport.toggle_play"));
+        CHECK(mentions(notices[0], "\"space\" -> transport.stop"
+                                   " (was transport.toggle_play)"));
+        CHECK(!mentions(notices[0], "built-in default"));
+        CHECK(m.resolve("space")->command == "transport.stop");
+        for (const auto& g : KeyMap::essential_commands()) {
+            CHECK(satisfied(m, g, device, implemented));
+        }
+    }
+    {
+        // With no start key of its own, the default's toggle_record is what
+        // starts a take at all, and it goes on the play/stop key as before.
+        KeyMap m;
+        std::string err;
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "space": "transport.toggle_play",
+            "1": { "command": "track.toggle_arm", "target": 1 },
+            "q": "app.quit" } })", m, err));
+        const std::vector<std::string> notices =
+            m.ensure_essentials(device, implemented);
+        CHECK(notices.size() == 1);
+        CHECK(mentions(notices[0], "built-in default"));
         CHECK(m.resolve("space")->command == "transport.toggle_record");
         for (const auto& g : KeyMap::essential_commands()) {
             CHECK(satisfied(m, g, device, implemented));
@@ -1658,22 +1682,26 @@ int main() {
         //
         // Pro Tools starts a take on ctrl+space and f12 (transport.record)
         // and stops it on space, which is transport.toggle_play -- and there
-        // is no playback to toggle. So space becomes toggle_record: it stops
-        // a take as Pro Tools' space does, and starts one where Pro Tools
-        // would play. ctrl+q needs no repair now that flow control is off.
-        // Logic is the same for space, and its quit is cmd+q, which no
+        // is no playback to toggle. So space becomes transport.stop: it stops
+        // a take as Pro Tools' space does, and does nothing where Pro Tools
+        // would play, rather than starting a take nobody asked for. ctrl+q
+        // needs no repair now that flow control is off. Logic is the same for
+        // space, with r as its record key, and its quit is cmd+q, which no
         // terminal can send, so q is bound to app.quit.
         {
+            const char* const space_stops =
+                "\"space\" -> transport.stop (was transport.toggle_play)";
             struct Expected {
                 const char* file;
                 std::size_t notices;
-                const char* says;
+                std::vector<const char*> says;
+                const char* space;  // what space runs after repair
             };
             const Expected expected[] = {
-                {"default.json", 0, ""},
-                {"protools.json", 1, "\"space\" -> transport.toggle_record"
-                                     " (was transport.toggle_play)"},
-                {"logic.json", 2, "\"q\" -> app.quit"},
+                {"default.json", 0, {}, "transport.toggle_record"},
+                {"protools.json", 1, {space_stops}, "transport.stop"},
+                {"logic.json", 2, {space_stops, "\"q\" -> app.quit"},
+                 "transport.stop"},
             };
             for (const Expected& e : expected) {
                 KeyMap map;
@@ -1682,16 +1710,28 @@ int main() {
                                             e.file, map, err));
                 const std::vector<std::string> notices =
                     map.ensure_essentials(device, implemented);
-                bool said = e.notices == 0;
-                for (const std::string& n : notices) {
-                    said = said || mentions(n, e.says);
+                bool said = true;
+                for (const char* want : e.says) {
+                    bool found = false;
+                    for (const std::string& n : notices) {
+                        found = found || mentions(n, want);
+                    }
+                    if (!found) {
+                        std::fprintf(stderr, "FAIL %s: no notice says %s\n",
+                                     e.file, want);
+                        said = false;
+                    }
                 }
                 if (notices.size() != e.notices || !said) {
-                    std::fprintf(stderr, "FAIL %s: %zu notices, expected %zu"
-                                 " including \"%s\"\n", e.file, notices.size(),
-                                 e.notices, e.says);
+                    std::fprintf(stderr, "FAIL %s: %zu notices, expected %zu\n",
+                                 e.file, notices.size(), e.notices);
+                    for (const std::string& n : notices) {
+                        std::fprintf(stderr, "  %s\n", n.c_str());
+                    }
                     return 1;
                 }
+                CHECK(map.resolve("space") != nullptr);
+                CHECK(map.resolve("space")->command == e.space);
             }
         }
 
