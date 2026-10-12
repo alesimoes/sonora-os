@@ -21,8 +21,18 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   export MSYS2_ARG_CONV_EXCL='*'
 fi
 
+# A build tree configured before ADR-0007's M1 has engine/ as its source
+# directory, and cmake refuses to reuse it for the root. It holds only build
+# output, so it is started afresh rather than failing every old checkout once.
+forget_pre_m1_tree() {
+  if grep -qs '^CMAKE_HOME_DIRECTORY:INTERNAL=.*/engine$' "$1/CMakeCache.txt"; then
+    rm -rf "$1"
+  fi
+}
+
 native_build() {
-  cmake -S "$ROOT/engine" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release
+  forget_pre_m1_tree "$ROOT/build"
+  cmake -S "$ROOT" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release
   cmake --build "$ROOT/build" -j"$(nproc)"
   ctest --test-dir "$ROOT/build" --output-on-failure
 }
@@ -47,7 +57,11 @@ docker build -t "$IMAGE" -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(hos
 # The build directory is container-specific; keep it out of the host tree.
 docker run --rm -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
   set -euo pipefail
-  cmake -S engine -B build-container -DCMAKE_BUILD_TYPE=Release
+  # forget_pre_m1_tree, inside the container where the tree was configured.
+  if grep -qs "^CMAKE_HOME_DIRECTORY:INTERNAL=.*/engine\$" build-container/CMakeCache.txt; then
+    rm -rf build-container
+  fi
+  cmake -S . -B build-container -DCMAKE_BUILD_TYPE=Release
   cmake --build build-container -j"$(nproc)"
   ctest --test-dir build-container --output-on-failure
 '

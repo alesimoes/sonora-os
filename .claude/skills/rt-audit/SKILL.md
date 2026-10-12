@@ -10,8 +10,8 @@ on the audio thread waited.
 
 ## Scope of the audit
 
-Start at `JackBackend::process_cb` in `engine/src/jack_backend.cpp` and follow
-every call transitively. That is the audit surface. Anything on it must not
+Start at `JackBackend::process_cb` in `drivers/jack/src/jack_backend.cpp` and
+follow every call transitively. That is the audit surface. Anything on it must not
 allocate, free, lock, wait, perform a syscall, or throw.
 
 For the detailed method and the list of standard-library traps, use the
@@ -20,7 +20,7 @@ than a general review.
 
 ## A first pass by hand
 
-    grep -rn "new \|malloc\|push_back\|resize\|reserve\|lock\|mutex\|printf\|fopen\|fwrite" engine/src engine/include
+    grep -rn "new \|malloc\|push_back\|resize\|reserve\|lock\|mutex\|printf\|fopen\|fwrite" common contracts engine drivers ui
 
 Then decide, for each hit, which thread reaches it. Hits inside
 `disk_thread.cpp` and `wav_writer.cpp` are expected and correct: that thread is
