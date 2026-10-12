@@ -16,6 +16,12 @@ without asking a question.
 - [ ] Udev rule naming the first class-compliant USB interface so port
       auto-connection is stable across reboots.
 - [ ] `tools/write-usb.sh`: write the ISO and create the persistence partition.
+- [ ] A verified way to write the stick from Windows, where the owner works.
+      The first attempt (`write-usb-windows.ps1`, removed 2026-10-12) opened
+      `\.\PhysicalDrive` with one leading backslash, which .NET resolves to
+      `C:\PhysicalDrive`; it erased the stick and then wrote nothing. Check any
+      Windows device path byte for byte: a doubled backslash sent through the
+      agent's shell tool can arrive as a single one.
 - [ ] Boot test on real hardware; record the xrun count in
       `brain/research/`.
 - [x] QEMU boot smoke test. 19 checks: a running engine that holds its PID,
@@ -55,3 +61,12 @@ without asking a question.
   changing.
 - No RT priority is requested for the audio thread yet; PipeWire sets it for
   its own client thread, which is enough until we own threads.
+- `KeyMap::terminal_chords()` assumes xterm's modifier encoding. On the Linux
+  console (tty1, where the appliance runs) Alt+Fn and Alt+Left/Right switch
+  virtual terminals, Shift+PgUp/PgDn scroll the console, and Ctrl/Shift+arrow
+  send no modifier parameter at all, so those chords never reach the engine
+  but are counted as sendable by `ensure_essentials()` and listed in the
+  footer. No shipped essential depends on one today; a profile that put its
+  only arm, record, stop or quit key there would pass the check and not work.
+  Fix by deriving the device set from the console's keymap (`dumpkeys`), or
+  by a tty1-specific table.

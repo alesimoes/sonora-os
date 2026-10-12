@@ -4,41 +4,118 @@
 // the audio path can be proven before any graphical shell exists.
 
 #include <cmath>
-#include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <termios.h>
 #include <unistd.h>
 
+#include "sonora/command.h"
 #include "sonora/jack_backend.h"
+#include "sonora/keymap.h"
+#include "sonora/quit_signals.h"
 #include "sonora/session.h"
+#include "sonora/session_commands.h"
+#include "sonora/tty_mode.h"
 
 namespace {
 
-volatile std::sig_atomic_t g_quit = 0;
-void on_signal(int) { g_quit = 1; }
-
 struct TermiosGuard {
     termios saved{};
+    termios current{};
+    bool is_tty = false;
     bool active = false;
 
     void raw() {
+        // Not a terminal: bytes arrive exactly as written, with no line
+        // discipline to eat any of them.
         if (tcgetattr(STDIN_FILENO, &saved) != 0) return;
-        termios t = saved;
-        t.c_lflag &= ~(ICANON | ECHO);
-        t.c_cc[VMIN] = 0;
-        t.c_cc[VTIME] = 0;
+        is_tty = true;
+        current = saved;
+        apply(sonora::key_reading_mode(saved));
+    }
+    // True if Ctrl+C now raises SIGINT, as read back from the terminal.
+    bool keep_interrupt_key() {
+        if (!is_tty) return false;
+        apply(sonora::interrupt_key_mode(saved));
+        return (current.c_lflag & ISIG) && current.c_cc[VINTR] == 0x03;
+    }
+    void apply(const termios& t) {
         if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == 0) active = true;
+        // tcsetattr reports success if it applied any part of the change, so
+        // what the keyboard can reach is read back rather than assumed.
+        tcgetattr(STDIN_FILENO, &current);
+    }
+    bool delivers(unsigned char byte) const {
+        return !is_tty || sonora::tty_delivers_byte(current, byte);
     }
     ~TermiosGuard() {
         if (active) tcsetattr(STDIN_FILENO, TCSANOW, &saved);
     }
 };
 
-void draw(sonora::Session& s, sonora::JackBackend& jack, int take) {
+// Everything after the last '.' in a command id. Short enough for a footer,
+// and unambiguous in practice: "toggle_record", "arm_all", "quit".
+std::string short_name(const std::string& command) {
+    const std::size_t dot = command.rfind('.');
+    return dot == std::string::npos ? command : command.substr(dot + 1);
+}
+
+// Builds the footer out of the loaded key map, so what it says is what the
+// keyboard does. The literal it replaces read "space=rec/stop 1-8=arm
+// a=arm all q=quit" under every profile; under protools.json all four of
+// those were wrong. Only chords this terminal can send and commands this
+// build implements are listed -- a footer advertising a key that reports
+// "not implemented" is the same lie in a politer font.
+std::vector<std::string> build_help(const sonora::KeyMap& map,
+                                    const sonora::CommandRegistry& reg,
+                                    const std::vector<sonora::KeyChord>& device) {
+    std::vector<std::string> entries;
+    for (const auto& b : map.bindings()) {
+        if (!reg.implemented(b.command) || sonora::needs_selection(b)) continue;
+        bool sendable = false;
+        for (const auto& c : device) {
+            if (c == b.chord) {
+                sendable = true;
+                break;
+            }
+        }
+        if (!sendable) continue;
+        std::string e = sonora::KeyMap::chord_to_string(b.chord) + "=" +
+                        short_name(b.command);
+        if (b.ctx.has_target()) e += std::to_string(b.ctx.target + 1);
+        entries.push_back(std::move(e));
+    }
+
+    std::vector<std::string> lines;
+    if (entries.empty()) {
+        // Reachable only if ensure_essentials() could not repair the profile,
+        // in which case its notice is already on screen saying so.
+        lines.push_back("no key in this profile does anything this build"
+                        " implements");
+        return lines;
+    }
+    std::string line;
+    for (const std::string& e : entries) {
+        if (!line.empty() && line.size() + e.size() + 2 > 74) {
+            lines.push_back(line);
+            line.clear();
+        }
+        if (!line.empty()) line += "  ";
+        line += e;
+    }
+    if (!line.empty()) lines.push_back(line);
+    return lines;
+}
+
+void draw(sonora::Session& s, sonora::JackBackend& jack, int take,
+          const std::string& status, const std::vector<std::string>& help,
+          const std::vector<std::string>& notices) {
     using sonora::TransportState;
     const auto st = s.transport().state();
     const char* label = st == TransportState::Recording ? "REC "
@@ -65,7 +142,17 @@ void draw(sonora::Session& s, sonora::JackBackend& jack, int take) {
                     peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak))
                                 : -99.9);
     }
-    std::printf("\n  space=rec/stop  1-8=arm  a=arm all  q=quit\n");
+    std::putchar('\n');
+    for (const std::string& l : help) std::printf("  %s\n", l.c_str());
+    // Redrawn every frame on purpose: these say the profile cannot do
+    // something it claims to, and the screen clear at the top of this function
+    // would otherwise erase the start-up message after one frame.
+    for (const std::string& n : notices) {
+        std::printf("  \033[33m!\033[0m %s\n", n.c_str());
+    }
+    // A key that did nothing is the failure keymaps/README.md warns about, so
+    // say what happened rather than leaving the operator guessing.
+    if (!status.empty()) std::printf("  %s\n", status.c_str());
     std::fflush(stdout);
 }
 
@@ -81,7 +168,7 @@ int wait_for_inputs(sonora::JackBackend& jack, double seconds) {
     std::fflush(stdout);
 
     double waited = 0.0;
-    while (waited < seconds && !g_quit) {
+    while (waited < seconds && !sonora::quit_requested()) {
         ::usleep(100000);
         waited += 0.1;
         const int n = jack.connected_input_count();
@@ -108,8 +195,11 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
         return 1;
     }
 
-    if (!session.start_recording(1)) {
-        std::fprintf(stderr, "sonora: no track could be opened for writing.\n");
+    // Never take 1 unconditionally: a test run against a session folder that
+    // already holds takes must add one, not replace one.
+    std::string why;
+    if (!session.start_recording(session.next_free_take(), &why)) {
+        std::fprintf(stderr, "sonora: cannot record: %s\n", why.c_str());
         return 1;
     }
 
@@ -122,7 +212,8 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
     const double deadline = seconds * 2.0 + 5.0;
     double waited = 0.0;
 
-    while (!g_quit && session.transport().playhead() < target) {
+    while (!sonora::quit_requested() &&
+           session.transport().playhead() < target) {
         if (jack.server_gone()) {
             std::fprintf(stderr, "sonora: the audio server went away.\n");
             session.stop();
@@ -208,6 +299,7 @@ int main(int argc, char** argv) {
     double record_seconds = 0.0;  // 0 means interactive
     double wait_for_inputs_seconds = 0.0;
     bool arm_all = false;
+    std::string keymap_path;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -230,6 +322,8 @@ int main(int argc, char** argv) {
             wait_for_inputs_seconds = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--arm-all") == 0) {
             arm_all = true;
+        } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
+            keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(
                 "usage: sonora-engine [options]\n"
@@ -238,6 +332,7 @@ int main(int argc, char** argv) {
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
+                "  --keymap PATH     key map to use instead of the built-in one\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
                 "                    wait for a capture connection before recording\n");
@@ -255,6 +350,26 @@ int main(int argc, char** argv) {
                      "sonora: --record needs at least one armed track;"
                      " pass --arm-all.\n");
         return 2;
+    }
+
+    // Before anything that waits: wait_for_inputs() can sit for a minute at
+    // boot, and a SIGTERM or hangup in that time must still end in a clean
+    // stop. The keyboard raises none of these -- the key reading mode turns
+    // ISIG off, because Ctrl+C is edit.copy in a profile -- unless the
+    // profile cannot quit; see keep_interrupt_key().
+    sonora::install_quit_signals();
+
+    // Loaded before anything touches hardware: a bad key map is a startup
+    // error, not something to discover halfway into a session.
+    sonora::KeyMap keymap = sonora::KeyMap::built_in_default();
+    if (!keymap_path.empty()) {
+        std::string err;
+        if (!sonora::KeyMap::load_file(keymap_path, keymap, err)) {
+            std::fprintf(stderr, "sonora: %s\n", err.c_str());
+            return 2;
+        }
+        std::printf("sonora: key map \"%s\", %zu bindings\n",
+                    keymap.name().c_str(), keymap.bindings().size());
     }
 
     if (cfg.track_count == 0) {
@@ -313,8 +428,6 @@ int main(int argc, char** argv) {
     }
     session.disk().start();
 
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
 
     if (arm_all) {
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
@@ -327,12 +440,77 @@ int main(int argc, char** argv) {
         return rc;
     }
 
+    // From the folder, not from 1: systemd restarts the engine every time it
+    // exits, and a counter that started over numbered the next take like the
+    // last session's first one.
+    int take = session.next_free_take();
+    bool server_lost = false;
+    bool quit = false;
+    std::string status;
+
+    sonora::CommandRegistry commands;
+    sonora::install_session_commands(commands, session, take, quit);
+
+    // The terminal mode is set before anything is measured against it: which
+    // control bytes reach us depends on it, and a check made against the
+    // cooked mode would believe Ctrl+Q quits when flow control eats it.
     TermiosGuard term;
     term.raw();
 
-    int take = 1;
-    bool server_lost = false;
-    while (!g_quit) {
+    // Checked against the terminal, not against a keyboard in the abstract:
+    // "cmd+q" and "ctrl+shift+z" are real bindings that this input device
+    // cannot send, and a profile whose only way to arm a track is one of those
+    // cannot record however correct the file is.
+    const auto implemented = [&commands](const std::string& id) {
+        return commands.implemented(id);
+    };
+    const auto terminal_device = [&term]() {
+        return sonora::KeyMap::terminal_chords(
+            [&term](unsigned char byte) { return term.delivers(byte); });
+    };
+    std::vector<sonora::KeyChord> device = terminal_device();
+    const sonora::KeyMap as_loaded = keymap;
+    std::vector<std::string> notices = keymap.ensure_essentials(device, implemented);
+
+    // With signals off and no key that runs app.quit, nothing on the keyboard
+    // could leave the engine. Ctrl+C is then given back to the terminal, and
+    // the profile is measured again against what the keyboard can still send
+    // -- Ctrl+C is no longer one of those keys, and the footer must not say
+    // it is.
+    const std::vector<std::string>* quit_group = nullptr;
+    for (const auto& g : sonora::KeyMap::essential_commands()) {
+        for (const auto& id : g) {
+            if (id == "app.quit") quit_group = &g;
+        }
+    }
+    if (quit_group != nullptr &&
+        !keymap.reaches(*quit_group, device, implemented) && term.is_tty) {
+        const bool interrupt = term.keep_interrupt_key();
+        device = terminal_device();
+        keymap = as_loaded;
+        notices = keymap.ensure_essentials(device, implemented);
+        if (interrupt) {
+            notices.push_back("Ctrl+C leaves the engine: no key in this profile"
+                              " can, so it is not passed to the profile");
+        }
+    }
+    for (const std::string& n : notices) {
+        std::fprintf(stderr, "sonora: key map \"%s\": %s\n",
+                     keymap.name().c_str(), n.c_str());
+    }
+    const std::vector<std::string> help = build_help(keymap, commands, device);
+
+    sonora::TerminalInput input;
+    // A message stays up for about two seconds. Clearing it only on the next
+    // successful dispatch left "not implemented in this build" on screen
+    // indefinitely, which stops being information and becomes furniture.
+    int status_frames = 0;
+    const auto say = [&status, &status_frames](std::string message) {
+        status = std::move(message);
+        status_frames = 40;
+    };
+
+    while (!sonora::quit_requested() && !quit) {
         // The server dying stops the callback without stopping us. Close
         // the take so what was captured is a valid file, then let the
         // service unit restart us against a fresh server.
@@ -341,29 +519,36 @@ int main(int argc, char** argv) {
             break;
         }
 
-        char c = 0;
-        if (::read(STDIN_FILENO, &c, 1) == 1) {
-            if (c == 'q') break;
-            if (c == ' ') {
-                if (session.transport().state() ==
-                    sonora::TransportState::Recording) {
-                    session.stop();
-                    session.disk().start();  // ready for the next take
-                    ++take;
+        // Read whatever is waiting, not one byte: an arrow key is three
+        // bytes, F5 is five, and a reader that takes one at a time dispatched
+        // the tail of every sequence as individual key presses. A frame in
+        // which nothing arrives is what lets a lone Escape be the Escape key;
+        // see TerminalInput::frame.
+        char buf[64];
+        const ssize_t n = ::read(STDIN_FILENO, buf, sizeof buf);
+        for (const auto& e : input.frame(buf, static_cast<long>(n))) {
+            if (e.result == sonora::TerminalInput::Result::Unrecognised) {
+                say("that key means nothing here");
+                continue;
+            }
+            if (const sonora::Binding* b = keymap.resolve(e.chord)) {
+                std::string why;
+                const sonora::DispatchResult d =
+                    commands.dispatch(b->command, b->ctx, why);
+                if (d == sonora::DispatchResult::Ok) {
+                    status.clear();
+                    status_frames = 0;
                 } else {
-                    session.start_recording(take);
+                    say(b->command + ": " +
+                        (why.empty() ? sonora::dispatch_result_text(d) : why));
                 }
-            } else if (c == 'a') {
-                for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
-            } else if (c >= '1' && c <= '8') {
-                const std::size_t idx = static_cast<std::size_t>(c - '1');
-                if (idx < session.tracks().size()) {
-                    auto& tr = session.tracks()[idx];
-                    tr->set_rec_armed(!tr->rec_armed());
-                }
+            } else {
+                say(sonora::KeyMap::chord_to_string(e.chord) + " is not bound");
             }
         }
-        draw(session, jack, take);
+
+        draw(session, jack, take, status, help, notices);
+        if (status_frames > 0 && --status_frames == 0) status.clear();
         ::usleep(50000);  // 20 fps is plenty for meters
     }
 

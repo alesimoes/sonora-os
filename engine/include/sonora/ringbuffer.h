@@ -77,6 +77,9 @@ public:
         return count;
     }
 
+    // Only while neither producer nor consumer is using the ring. The relaxed
+    // stores are made visible to them by whatever release store hands the
+    // ring back -- see Track::set_draining().
     void reset() {
         read_.store(0, std::memory_order_relaxed);
         write_.store(0, std::memory_order_relaxed);

@@ -8,12 +8,16 @@ One line per entry. Agents read this before opening anything else.
 - [ADR-0003](decisions/ADR-0003-pipewire-jack-api.md) — PipeWire as the server, JACK API as our client interface.
 - [ADR-0004](decisions/ADR-0004-no-proprietary-reverse-engineering.md) — workflow cloning is in scope, binary reverse engineering is not.
 - [ADR-0005](decisions/ADR-0005-usb-boot-persistence.md) — hybrid ISO plus a persistence partition for projects.
+- [ADR-0006](decisions/ADR-0006-qt6-ui-toolkit.md) — Qt 6 for the shell, custom GPU scene-graph items for meters and timeline; the UI pulls at 60 Hz, the audio thread never pushes.
+- [ADR-0007](decisions/ADR-0007-modules-contracts-and-squads.md) — modules by owner (`contracts/`, `common/`, `engine/`, `drivers/`, `ui/`, `plugins/`, `interchange/`), a dependency DAG enforced in CI, the RT boundary by module, contract change rules, squad mechanics and a six-step migration; engine and UI as separate processes, and Phase 3/4 work opened early under a fixed scope (both owner decisions, 2026-10-12).
 
 ## Specs
+- [Plugin latency compensation](specs/plugin-latency-compensation.md) — real-time plugin playback, PDC, and why the graph must be parallel from the start.
 - [BWF](specs/bwf-broadcast-wave.md) — the `bext` chunk layout we write, field by field.
 
 ## Research
 - [Multichannel USB interfaces](research/multichannel-usb-interfaces.md) — Pro Audio profile, WirePlumber state hooks, port ordering; what is verified and what is not.
+- [Pro Tools and Logic key bindings](research/protools-logic-key-bindings.md) — every binding in both profiles checked against Avid's and Apple's own guides; corrections, collisions, the Commands Keyboard Focus problem, and what the schema cannot express.
 
 ## Postmortems
 - [2026-10-11 comment in a line continuation](postmortems/2026-10-11-comment-in-line-continuation.md) — dropped half a QEMU command line; bash -n cannot catch it. Also: an edit that reported success without landing.

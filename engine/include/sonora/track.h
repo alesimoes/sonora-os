@@ -39,6 +39,23 @@ public:
     uint32_t overruns() const { return overruns_.load(std::memory_order_relaxed); }
     void note_overrun() { overruns_.fetch_add(1, std::memory_order_relaxed); }
 
+    // Whether the disk thread may drain this track into its writer.
+    //
+    // The writer's FILE* and the ring's indices are plain or relaxed state
+    // set up by the interface thread in Session::start_recording(), and read
+    // by the disk thread. This flag is how they cross: the interface thread
+    // resets the ring and opens the file, then stores true with release; the
+    // disk thread loads it with acquire and touches neither ring nor writer
+    // unless it saw true. Everything written before the store is therefore
+    // visible to the disk thread -- the open file, and read and write indices
+    // of zero rather than the last take's, which on a weakly ordered CPU
+    // could otherwise put the previous take's tail at the head of this file.
+    // It is cleared only after the disk thread has been joined, so a writer
+    // is never closed while the disk thread is using it. The audio thread
+    // never reads it and never waits on it.
+    bool draining() const { return draining_.load(std::memory_order_acquire); }
+    void set_draining(bool v) { draining_.store(v, std::memory_order_release); }
+
     RingBuffer<float>& capture_ring() { return *capture_ring_; }
     WavWriter& writer() { return writer_; }
 
@@ -51,6 +68,7 @@ private:
     WavWriter writer_;
 
     std::atomic<bool> rec_armed_{false};
+    std::atomic<bool> draining_{false};
     std::atomic<bool> muted_{false};
     std::atomic<float> gain_{1.0f};
     std::atomic<float> peak_{0.0f};

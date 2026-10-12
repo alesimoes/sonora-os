@@ -3,11 +3,26 @@
 The single place to learn where the work stands. Any agent updates this at the
 end of its run. Keep it short: what is true now, not a diary.
 
-- **Updated:** 2026-10-11
+- **Updated:** 2026-10-12
 - **Current phase:** 1 — Bootable appliance
 - **Build state:** the engine compiles clean under GCC 14 with `-Wall
-  -Wextra` and all three unit tests pass, in the Debian trixie container built by
-  `tools/build-engine.sh`. Verified 2026-10-11.
+  -Wextra` and all six unit tests pass (ringbuffer, wav_writer, takes,
+  quit_signals, port_order, keymap), in the Debian trixie container built by
+  `tools/build-engine.sh`. Verified 2026-10-12 from a clean build directory,
+  and under the CI sanitizer flags (TSan; ASan+UBSan) in the same container
+  -- TSan needs `--security-opt seccomp=unconfined` and `setarch -R` there,
+  because Docker Desktop's kernel randomises more address bits than TSan
+  maps. The writer/disk-thread race TSan found is fixed in `a141e9d`.
+- **Key map review fixes (2026-10-12, `feature/ui-foundation`):** a take on
+  disk is never overwritten -- the take number comes from the session folder
+  and the writer creates with O_EXCL; arming is refused during a take; SS3
+  modifier sequences decode as one key; Ctrl+C stays live when a profile has
+  no quit key; SIGHUP stops cleanly; a dead play/stop key is repaired to
+  `transport.stop`, so Space never starts a take in the Pro Tools or Logic
+  profiles; our own chords are `"origin": "sonora"`, apart from unverified
+  vendor bindings. Each has a regression test. Not yet exercised on tty1 or
+  in QEMU; the interactive paths (Ctrl+C fallback, SIGHUP) are unit-tested
+  only.
 - **ISO builds.** `iso/sonora.iso`, 867 MB, built 2026-10-11. Inspected
   rather than assumed: the engine is present at mode 0755, the service is
   enabled, the `sonora` user is in `audio`, all three tuning files are
@@ -18,7 +33,7 @@ end of its run. Keep it short: what is true now, not a diary.
   count -- at 48 kHz, quantum 128, zero xruns, zero overruns, -9.0 dBFS which
   is precisely the RMS of the sine fed in, and each track carrying the tone it
   is supposed to carry rather than a neighbour's. Runs in seconds, so it is
-  the loop for engine work.
+  the loop for engine work. Passed again 2026-10-12 after the fixes below.
 - **The image boots.** `tools/test-boot-qemu.sh`, 2026-10-11: up in about 13
   seconds on `6.12.111+deb13-rt-amd64`, `sonora-engine` running, no failed
   units, 19 of 19 checks passing. Among them: `libjack.so.0` resolves to
@@ -40,7 +55,7 @@ end of its run. Keep it short: what is true now, not a diary.
 
 | Item | Owner | State |
 |---|---|---|
-| First compile and `ctest` run | distro-engineer | done, both tests pass |
+| First compile and `ctest` run | distro-engineer | done, all three tests pass |
 | `live-build` configuration | distro-engineer | builds; contents verified |
 | Autostart into the engine | distro-engineer | boots and starts the engine in QEMU |
 | Container recording test | rt-engineer | passing, wired into CI |
