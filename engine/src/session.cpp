@@ -135,11 +135,19 @@ bool Session::start_recording(int take_number, std::string* error) {
         if (!t->rec_armed()) continue;
         const std::string file =
             audio_dir(cfg_.dir) + "/" + take_file_name(t->name(), take_number);
-        // Neither other thread touches this ring now: the audio thread
-        // writes it only once the transport says Recording, the disk thread
-        // reads it only once the track is published below. Both of those are
-        // release stores that come after this, which is what makes these
-        // relaxed index stores safe.
+        // The disk thread reads this ring only once the track is published
+        // below, a release store that comes after this reset. The audio
+        // thread is not fenced off the same way. process() loads the
+        // transport state once per block and writes the ring later, so a
+        // callback that loaded Recording for the previous take and was then
+        // descheduled can still write while this runs: a data race on the
+        // indices, and old samples at the head of the new take. Reaching
+        // that needs the RT thread stalled across all of stop() (setting
+        // Stopped, joining the disk thread, closing every file) and the
+        // operator's next record command, ~100 ms at the least, dozens of
+        // missed periods. It is not ruled out, only made implausible; a
+        // handshake with the callback (it acknowledges a take epoch) is
+        // what would rule it out.
         t->capture_ring().reset();
         if (!t->writer().open(file, cfg_.sample_rate, t->channels(),
                               cfg_.format, origin)) {
