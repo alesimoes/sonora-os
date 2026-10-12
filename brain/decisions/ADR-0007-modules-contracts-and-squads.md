@@ -646,6 +646,9 @@ still records 18 channels clean, and `sonora-engine` behaves identically.
   One edge is temporarily illegal: `drivers/jack` → `engine/core`, because
   `process_cb` still calls `Session::process`. It is named here so nobody
   copies it, and M2 removes it.
+
+  *This paragraph undercounts: there are three illegal edges until M4. See
+  "Update, 2026-10-12: lessons from M1" below.*
 - **M2 — Backend contract.** Add `contracts/backend`. `Session` implements
   `ProcessCallback`, and `JackBackend` implements `AudioBackend`.
   `<jack/jack.h>` leaves every public header (it goes to a private
@@ -970,6 +973,111 @@ tightenings. None of them changes an owner decision.
 attribution of any xrun to a reader, the wake syscall's cost on the audio
 thread, RTSan on arm64, and the engine actually recording from the virtual
 cards. These are in `planning/BACKLOG.md`.
+
+## Update, 2026-10-12: lessons from M1
+
+Source: the rt-engineer's report on executing M1 (branch
+`feature/module-migration`, not yet merged when this was written). Where §9
+is wrong or says nothing, this section corrects it. The decided text above
+stands as written. Nothing here touches the owner decisions in §3 and §10.
+
+1. **Three edges are temporarily illegal, not one.** §9's M1 step names only
+   `drivers/jack` → `engine/core`. It missed that `main.cpp` is still the
+   terminal interface until M4, and that `test_keymap` exercises the real
+   thing. The full list after M1:
+
+   | Edge | Why it exists | Removed by |
+   |---|---|---|
+   | `drivers/jack` → `engine/core` | `process_cb` calls `Session::process` | M2 |
+   | `engine/app` → `ui/keymap`, `ui/tui` | `main.cpp` is still the terminal UI: it decodes keys and sets the tty mode | M4 |
+   | `test_keymap` (test only) → `engine/control`, `ui/tui` | It drives the handlers `sonora-engine` really installs on a real `Session`, and checks bytes against the terminal mode `main.cpp` sets | M4 |
+
+   The second and third break "nothing depends on `ui/`" and "`ui/*` never
+   depends on `engine/*`". Each one is commented at its
+   `target_link_libraries` line in the M1 tree, so nobody copies it.
+
+   **Ordering this forces:** M5's check enforces the §1 graph, so it would
+   flag the second and third edges. **M4 must merge before M5.** §9 says M5
+   "comes after M2 so it lands green". That reason is now incomplete: M5
+   comes after M2 *and* M4. If M4 slips, M5 waits. It does not land with an
+   allow-list, because an allow-list entry outlives the reason for it.
+
+   Cost of having missed this: none in code, since M1 landed the edges with
+   comments. The cost would have come at M5, as a red CI run on a check
+   everyone assumed was ready to land.
+
+2. **Where a test lives.** §7 says what each module tests against. It does
+   not say where the test file goes. The rule M1 applied, adopted here:
+   - A test lives with its subject module, in `<module>/tests/`, and is
+     registered in that module's `CMakeLists.txt`.
+   - A test that needs a neighbour's *real* implementation, not a fake,
+     lives in the **higher** module of the pair, the one allowed to depend
+     on the other. Example: `test_takes` (a take on disk is never
+     overwritten) drives a real `Session` through the installed command
+     handlers, so it lives in
+     `engine/control`, not `engine/core`. A test never creates an edge its
+     directory's module could not have.
+   - Placements M1 made: `tty_mode` is in `ui/tui`, and `quit_signals` with
+     its test is in `engine/app`.
+   - `test_keymap` is the one exception (item 1). It moves to its proper
+     shape in M4, when it can drive handlers through `FakeEngine` or
+     `InProcessEngine`.
+
+3. **Moving the CMake source directory breaks existing build trees.** A
+   build directory configured with `-S engine` records `engine/` as its
+   source, and cmake refuses to reuse it for `-S .`. Every checkout and
+   every agent worktree that built before M1 fails once. On the M1 branch,
+   `tools/build-engine.sh` deletes a build tree whose `CMakeCache.txt` names
+   `engine/` as the source directory, natively and inside the container.
+   That is safe because a build tree holds only build output.
+
+   **Migration hazard for any future root move:** whoever moves the CMake
+   root again (or renames the build directory CI caches) ships the same
+   kind of cleanup in the same commit, and keys it on the old source path,
+   never on "the cache exists". CI caches no build tree today; if it ever
+   does, that cache's key changes in the same commit. A future ADR that
+   moves the root names this step.
+
+4. **The §7 ctest labels were not added in M1.** M1 was "no source change",
+   and labels were not in its list. **They are assigned to M5.** It is the
+   step that already touches every module's test registration for
+   enforcement, and the item 2 placement rule makes the labels mechanical
+   (one label per top-level directory: `base`, `audiofile`, `api`, `core`,
+   `control`, `app`, `jack`, `keymap`, `tui`, then each new module's label
+   as it is created). The gate stays the full `ctest`, as §7 says.
+
+5. **M2 is its own branch and PR, and it is a contract PR.**
+   - M2 starts from `main` *after* M1 merges. It is not stacked on the M1
+     branch. §9's quiet-window reasoning applies to M1, and stacking M2 on
+     an unmerged M1 would extend that window.
+   - M2 adds `contracts/backend`, so under §8 it is a
+     `contract/backend` PR. It needs reviews from both owning parties,
+     rt-engineer and driver-engineer, recorded in the thread, plus
+     `code-reviewer`. **`rt-safety-auditor` gates it**, because it rewires
+     the callback.
+   - It applies the first update's declaration rule to the new signature
+     from the first commit. §4.2's sketch shows
+     `void process(const AudioBlock&) noexcept = 0;  // SONORA_RT`, with the
+     marker as a comment. That predates the update. The landed declaration
+     is
+     `virtual void process(const AudioBlock& block) noexcept SONORA_RT = 0;`,
+     and implementations are `... noexcept SONORA_RT override;`. Because
+     `[[clang::nonblocking]]` is part of the function type, an override that
+     omits it does not match under the RTSan build. Getting this wrong
+     shows up only in the Clang job, not in GCC.
+   - `contracts/CONTRACTS.lock` does not exist until M5. So for M2 the §6
+     review requirement is enforced by `integrator` reading the thread, not
+     by CI.
+
+**Doc paths.** The M1 branch updates `keymaps/README.md`, the rt-audit
+skill and CI. The docs in `brain/` that name `engine/src`,
+`engine/include` or `engine/tests` are correct on `main` until M1 merges,
+so they were not edited here. Each is listed in
+`planning/BACKLOG.md` to be updated in the M1 PR or immediately after it. ADRs
+and postmortems keep their old paths, because they record what was true when
+they were written. `keymaps/default.json`'s `"comment"` field is data, and a
+copy of the same profile is embedded in `ui/keymap/src/keymap.cpp`. Both are
+fixed together in M4, when `main.cpp` stops being where commands are handled.
 
 ## Alternatives rejected
 
