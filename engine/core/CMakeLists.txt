@@ -7,3 +7,7 @@ add_library(sonora_core STATIC
 )
 target_include_directories(sonora_core PUBLIC include)
 target_link_libraries(sonora_core PUBLIC sonora_base sonora_audiofile Threads::Threads)
+
+add_executable(test_session_process tests/test_session_process.cpp)
+target_link_libraries(test_session_process PRIVATE sonora_core)
+add_test(NAME session_process COMMAND test_session_process)
