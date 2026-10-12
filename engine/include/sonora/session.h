@@ -26,13 +26,21 @@ struct SessionConfig {
 // process() from its own real-time thread.
 class Session {
 public:
+    // The highest take number a session writes. Four digits is far more
+    // takes than a session holds, and a bound is what lets the folder scan
+    // ignore a stray "Audio 1_20261012.wav" instead of numbering after it.
+    static constexpr int kMaxTake = 9999;
+
     explicit Session(SessionConfig cfg);
     ~Session();
 
     bool create_dirs();
 
-    // One more than the highest take number of any file in the session's
-    // audio folder, so a take is never numbered like one already on disk.
+    // One more than the highest take number among the files in the session's
+    // audio folder that are named exactly as start_recording() names them
+    // for one of this session's tracks, so a take is never numbered like one
+    // already on disk and no stray file can push the count. Can return
+    // kMaxTake + 1, which start_recording() refuses with a reason.
     // Reads the directory: never call it from the audio thread.
     int next_free_take() const;
 

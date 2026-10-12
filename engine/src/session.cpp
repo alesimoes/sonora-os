@@ -23,20 +23,41 @@ std::string audio_dir(const std::string& session_dir) {
     return session_dir + "/Audio Files";
 }
 
-// The take number in a name start_recording() writes, "<track>_<take>.wav",
-// or 0 if the name is not of that shape.
-int take_of(const char* name) {
-    const std::size_t len = std::strlen(name);
-    const std::size_t ext = 4;  // ".wav"
-    if (len <= ext || std::strcmp(name + len - ext, ".wav") != 0) return 0;
-    std::size_t start = len - ext;
-    while (start > 0 && name[start - 1] >= '0' && name[start - 1] <= '9') --start;
-    const std::size_t digits = len - ext - start;
-    // Nine digits fit an int; a longer run is not a take number we wrote.
-    if (digits == 0 || digits > 9 || start == 0 || name[start - 1] != '_') return 0;
+std::string take_file_name(const std::string& track, int take) {
+    char digits[16];
+    std::snprintf(digits, sizeof digits, "%02d", take);
+    return track + "_" + digits + ".wav";
+}
+
+// The take number in `name` if it is exactly what start_recording() would
+// write for one of `tracks`, or 0. Anything looser lets a stray file set the
+// counter: "Guitar_20261012.wav" would make the next take 20261013. Only up
+// to Session::kMaxTake digits are read, so no run of digits can overflow.
+int take_of(const std::string& name,
+            const std::vector<std::unique_ptr<Track>>& tracks) {
+    const std::string ext = ".wav";
+    if (name.size() <= ext.size() ||
+        name.compare(name.size() - ext.size(), ext.size(), ext) != 0) {
+        return 0;
+    }
+    const std::size_t end = name.size() - ext.size();
+    const std::size_t under = name.rfind('_', end);
+    if (under == std::string::npos) return 0;
+    const std::size_t digits = end - under - 1;
+    if (digits == 0 || digits > 4) return 0;  // 4 == digits in kMaxTake
     int n = 0;
-    for (std::size_t i = start; i < len - ext; ++i) n = n * 10 + (name[i] - '0');
-    return n;
+    for (std::size_t k = under + 1; k < end; ++k) {
+        if (name[k] < '0' || name[k] > '9') return 0;
+        n = n * 10 + (name[k] - '0');
+    }
+    if (n < 1 || n > Session::kMaxTake) return 0;
+    const std::string track = name.substr(0, under);
+    for (const auto& t : tracks) {
+        // Round-tripped rather than compared piecewise, so "Audio 1_1.wav"
+        // and "Audio 1_0005.wav" -- not spellings we produce -- do not count.
+        if (t->name() == track && take_file_name(track, n) == name) return n;
+    }
+    return 0;
 }
 
 }  // namespace
@@ -75,7 +96,7 @@ int Session::next_free_take() const {
     DIR* d = ::opendir(audio_dir(cfg_.dir).c_str());
     if (!d) return 1;
     while (const dirent* e = ::readdir(d)) {
-        const int n = take_of(e->d_name);
+        const int n = take_of(e->d_name, tracks_);
         if (n > highest) highest = n;
     }
     ::closedir(d);
@@ -86,12 +107,20 @@ bool Session::start_recording(int take_number, std::string* error) {
     const uint64_t origin = transport_->playhead();
     std::vector<Track*> opened;
 
+    if (take_number < 1 || take_number > kMaxTake) {
+        const std::string why =
+            "take " + std::to_string(take_number) + " is past the last take a"
+            " session holds (" + std::to_string(kMaxTake) +
+            "); start a new session";
+        std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
+        if (error) *error = why;
+        return false;
+    }
+
     for (auto& t : tracks_) {
         if (!t->rec_armed()) continue;
-        char file[512];
-        std::snprintf(file, sizeof(file), "%s/%s_%02d.wav",
-                      audio_dir(cfg_.dir).c_str(), t->name().c_str(),
-                      take_number);
+        const std::string file =
+            audio_dir(cfg_.dir) + "/" + take_file_name(t->name(), take_number);
         // Neither other thread touches this ring now: the audio thread
         // writes it only once the transport says Recording, the disk thread
         // reads it only once the track is published below. Both of those are
@@ -111,7 +140,7 @@ bool Session::start_recording(int take_number, std::string* error) {
                 std::remove(path.c_str());
             }
             const std::string why =
-                std::string(file) + ": " +
+                file + ": " +
                 (err == EEXIST ? "a take with this name is already on disk"
                                : std::strerror(err));
             std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
