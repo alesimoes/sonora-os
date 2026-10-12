@@ -47,6 +47,6 @@ that refuses.
 ## Reality check
 
 There is no graphical interface yet — the engine draws a terminal display in
-`engine/src/main.cpp`, and Phase 3 in `planning/ROADMAP.md` is where the real
+`engine/app/src/main.cpp`, and Phase 3 in `planning/ROADMAP.md` is where the real
 one starts. Do not design around a toolkit nobody has chosen; the choice is an
 ADR, which belongs to `architect`.

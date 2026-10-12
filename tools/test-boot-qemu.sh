@@ -37,7 +37,8 @@ host_path() {
 
 # A verdict about yesterday's ISO is worse than no verdict. This project has
 # already shipped one script that reported success for a failed build.
-for newer in "$ROOT/iso/config" "$ROOT/iso/auto/config" "$ROOT/engine"; do
+for newer in "$ROOT/iso/config" "$ROOT/iso/auto/config" "$ROOT/CMakeLists.txt" \
+             "$ROOT/common" "$ROOT/contracts" "$ROOT/engine" "$ROOT/drivers" "$ROOT/ui"; do
   if [[ "$newer" -nt "$ISO" ]]; then
     echo "error: $newer is newer than $ISO." >&2
     echo "       The test would report on a stale image. Rebuild first:" >&2

@@ -19,7 +19,7 @@ jobs:
             build-essential cmake pkg-config libjack-jackd2-dev
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build -j"$(nproc)"
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build with TSan
         run: |
-          cmake -S engine -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
           cmake --build build-tsan -j"$(nproc)"
 
@@ -60,7 +60,7 @@ jobs:
 
       - name: Build with ASan and UBSan
         run: |
-          cmake -S engine -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
           cmake --build build-asan -j"$(nproc)"
 

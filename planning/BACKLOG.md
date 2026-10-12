@@ -62,6 +62,10 @@ without asking a question.
       ports) through the real ALSA → PipeWire → JACK path, with the engine
       actually recording. The count is per node. driver-engineer with
       distro-engineer.
+- [ ] With M3, `drivers/fake` gains two injections from the measurements:
+      ports named without `AUX` (`capture_1..N`, what `snd-aloop` gives
+      without `audio.position`), and registry ids out of channel order. The
+      engine must still connect them in channel order. driver-engineer.
 - [ ] Plugin editors under the kiosk compositor: try Qt on `xcb` as the
       transient parent, a host anchor window, and an alternative compositor,
       with a real LV2/VST3 editor. Check whether upstream cage still
@@ -95,6 +99,14 @@ without asking a question.
 - [ ] Session file format spec, then the reader and writer.
 
 ## Known gaps, not yet scheduled
+
+- RT-path data race, documented in `engine/core/src/session.cpp` above the
+  ring reset in `start_recording()`: an audio callback that loaded Recording
+  for the previous take and was descheduled across `stop()` and the next
+  record command can write to the ring while it is being reset, putting the
+  old take's samples at the head of the new file. Needs an RT stall of about
+  100 ms to hit. Fix with a take-epoch handshake with the callback; write the
+  regression test first. rt-engineer, audited by rt-safety-auditor.
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.

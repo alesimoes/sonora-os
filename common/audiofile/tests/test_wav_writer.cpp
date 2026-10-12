@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/wav_writer.h"
 
+#include <sys/resource.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -25,8 +30,10 @@ std::vector<uint8_t> slurp(const std::string& path) {
     std::fseek(f, 0, SEEK_END);
     const long n = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    std::vector<uint8_t> out(static_cast<std::size_t>(n));
-    std::fread(out.data(), 1, out.size(), f);
+    std::vector<uint8_t> out(n > 0 ? static_cast<std::size_t>(n) : 0);
+    // A short read would hand the checks a zero-filled tail that looks like
+    // silence; an empty result fails them visibly instead.
+    if (std::fread(out.data(), 1, out.size(), f) != out.size()) out.clear();
     std::fclose(f);
     return out;
 }
@@ -160,6 +167,39 @@ int main() {
         CHECK(!w.is_open());
         const auto b = slurp(path);
         CHECK(std::string(b.begin(), b.end()) == "the previous take");
+    }
+
+    // --- a header that cannot reach the disk fails open(), with its reason ---
+    //
+    // The header sat in stdio's buffer, so open() reported success on a full
+    // disk and the take failed later, in the disk thread, with nobody told.
+    // And the reason start_recording() puts on screen is errno, read after
+    // open()'s cleanup, which C and POSIX allow to change it. A file-size
+    // limit below the header's size stands in for a full disk.
+    {
+        std::remove(path.c_str());
+        rlimit before{};
+        CHECK(::getrlimit(RLIMIT_FSIZE, &before) == 0);
+        // Past the limit the kernel sends SIGXFSZ, which would kill the test
+        // instead of failing the write.
+        const auto old_handler = std::signal(SIGXFSZ, SIG_IGN);
+        rlimit tiny = before;
+        tiny.rlim_cur = 100;
+        CHECK(::setrlimit(RLIMIT_FSIZE, &tiny) == 0);
+
+        sonora::WavWriter w;
+        errno = 0;
+        const bool opened =
+            w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0);
+        const int err = errno;
+
+        CHECK(::setrlimit(RLIMIT_FSIZE, &before) == 0);
+        std::signal(SIGXFSZ, old_handler);
+        CHECK(!opened);
+        CHECK(!w.is_open());
+        CHECK(err == EFBIG);
+        // A header with no audio behind it would only hold the take number.
+        CHECK(::access(path.c_str(), F_OK) != 0);
     }
 
     std::remove(path.c_str());

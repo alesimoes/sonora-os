@@ -2,9 +2,10 @@
 
 Status: research note, written 2026-10-12. It answers the six items in the
 "Unverified" section of
-[ADR-0007](../decisions/ADR-0007-modules-contracts-and-squads.md). The ADR is
-not edited here, because ADRs are append-only. What changes in it is listed
-under "Consequences for ADR-0007" at the end.
+[ADR-0007](../decisions/ADR-0007-modules-contracts-and-squads.md). The ADR's
+decided text is left as written; what changes in it is listed under
+"Consequences for ADR-0007" at the end, and was appended to the ADR as its
+dated section "Update, 2026-10-12".
 
 Every claim below carries one of three labels:
 

@@ -33,7 +33,8 @@ already had a build script report success after a failed build, and an edit
 reported as applied that was never written to disk. Treat every claim as
 unverified until you have seen the output.
 
-**3. Is the diff sound?** Read it. If it touches `engine/` or `iso/` and no
+**3. Is the diff sound?** Read it. If it touches a C++ module (`common/`, `contracts/`, `engine/`, `drivers/`,
+`ui/`) or `iso/` and no
 `code-reviewer` pass is evident in the PR thread, run that review yourself
 before merging — the charter is in `.claude/agents/code-reviewer.md`.
 

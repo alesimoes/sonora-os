@@ -38,7 +38,7 @@ A binding's value is either a command name, or an object with:
 
 | Member | Meaning |
 |---|---|
-| `command` | required; a name from `engine/include/sonora/command.h` |
+| `command` | required; a name from `contracts/api/include/sonora/command.h` |
 | `target` | track number as the operator sees it, counting from 1, up to 1024. Only for commands that take a track. Without one, a track command acts on the selection -- and this build has no selection yet, so such a key reports that it failed, is left out of the on-screen key list, and does not count as a way to arm. |
 | `argument` | free-form string for a command that needs a value. No command in this build takes one, so supplying it is a load error rather than a field that is quietly ignored. |
 | `origin` | `"vendor"` (the default): the application's own key for this command. `"sonora"`: a chord we chose because the application has no key for the command -- arming track 3 by number, say. |
@@ -67,7 +67,7 @@ fails to load with the file, the line, the key and the reason. Nothing is
 partially applied — a key that does nothing is worse than a key map that
 refuses to load.
 
-`engine/tests/test_keymap.cpp` loads all three shipped profiles and checks
+`ui/keymap/tests/test_keymap.cpp` loads all three shipped profiles and checks
 every binding, so a typo fails CI rather than a session.
 
 ## What a terminal can send
@@ -105,7 +105,7 @@ playback yet -- so `space` becomes `transport.stop` in both. Pressed while
 stopped it does nothing. `logic.json`'s quit is `cmd+q`, so `q` is bound to
 `app.quit` from the default.
 
-`engine/tests/test_keymap.cpp` sweeps all 256 bytes against every shipped
+`ui/keymap/tests/test_keymap.cpp` sweeps all 256 bytes against every shipped
 profile and fails if none of them arms a track, and pins the exact repairs
 each shipped profile gets.
 

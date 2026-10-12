@@ -34,7 +34,7 @@ This already cost a defect; expect more of the same shape.
 **Channel order is not guaranteed.** `jack_get_ports` documents no ordering,
 and a lexicographic sort puts `capture_AUX10` before `capture_AUX2`. That
 records channel 10 onto track 3 and nothing in the audio looks wrong. See
-`engine/include/sonora/port_order.h`.
+`drivers/jack/include/sonora/port_order.h`.
 
 ## Standard of evidence
 
