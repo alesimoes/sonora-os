@@ -15,7 +15,17 @@ without asking a question.
       group.
 - [ ] Udev rule naming the first class-compliant USB interface so port
       auto-connection is stable across reboots.
-- [ ] `tools/write-usb.sh`: write the ISO and create the persistence partition.
+- [x] `tools/write-usb.sh`: write the ISO and create the persistence partition.
+      Verified against a loop device and booted in QEMU, with persistence
+      surviving a reboot: `tools/test-write-usb.sh`. Not yet run on a
+      physical stick.
+- [ ] Write a physical USB stick with `tools/write-usb.sh`, boot it on a
+      physical machine, BIOS and UEFI, and confirm a session survives a
+      reboot. The first time the script's USB/removable check meets real
+      hardware.
+- [ ] Run `tools/test-write-usb.sh` in CI. The container half
+      (`WRITE_USB_BOOT=0`) needs only Docker and the ISO; the boots need QEMU
+      with KVM.
 - [ ] A verified way to write the stick from Windows, where the owner works.
       The first attempt (`write-usb-windows.ps1`, removed 2026-10-12) opened
       `\.\PhysicalDrive` with one leading backslash, which .NET resolves to

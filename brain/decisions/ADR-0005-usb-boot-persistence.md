@@ -41,3 +41,12 @@ Projects live in `/home/sonora/Sessions`, which lands on partition 2.
   initial state; the documentation says so plainly.
 - `dd` of the ISO alone still boots, just without persistence. That is the
   documented fallback for someone testing on borrowed hardware.
+
+## Correction, 2026-10-12 (appended; the decision is unchanged)
+
+The layout table above is wrong about the partition number. The isohybrid
+ISO's own MBR already holds two entries: 1 is the whole ISO and 2 is the EFI
+system partition, which lies inside it. The persistence partition is
+therefore **partition 3**. Its filesystem, label and `persistence.conf` are as
+stated. On the partition, live-boot keeps the `/home` overlay's upper layer in
+`home/rw/`. See `brain/research/usb-stick-layout.md`.

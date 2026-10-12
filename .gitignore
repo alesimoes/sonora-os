@@ -6,6 +6,8 @@ build-tsan/
 build-asan/
 # Kernel, initrd and serial logs extracted by the QEMU boot test.
 build-qemu/
+# Disk images, kernel and serial logs from the USB writer test.
+build-usb/
 *.o
 *.a
 compile_commands.json
@@ -25,7 +27,10 @@ iso/config/common
 iso/config/source
 iso/config/apt
 iso/config/archives
-iso/config/bootloaders/
+# Our bootloader overrides are tracked; anything else lb puts there is not.
+iso/config/bootloaders/*
+!iso/config/bootloaders/isolinux/
+!iso/config/bootloaders/grub-pc/
 iso/config/debian-installer/
 iso/config/includes/
 iso/config/includes.binary/
