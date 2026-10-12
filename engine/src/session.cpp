@@ -29,12 +29,32 @@ std::string take_file_name(const std::string& track, int take) {
     return track + "_" + digits + ".wav";
 }
 
+std::string track_name(int number) {
+    char name[32];
+    std::snprintf(name, sizeof name, "Audio %d", number);
+    return name;
+}
+
+// The number in a run of decimal digits, or 0 if the run is empty, holds
+// anything else, or is longer than `max_digits`. The bound is what keeps a
+// run of any length from overflowing.
+int parse_number(const std::string& s, std::size_t begin, std::size_t end,
+                 std::size_t max_digits) {
+    if (end <= begin || end - begin > max_digits) return 0;
+    int n = 0;
+    for (std::size_t k = begin; k < end; ++k) {
+        if (s[k] < '0' || s[k] > '9') return 0;
+        n = n * 10 + (s[k] - '0');
+    }
+    return n;
+}
+
 // The take number in `name` if it is exactly what start_recording() would
-// write for one of `tracks`, or 0. Anything looser lets a stray file set the
-// counter: "Guitar_20261012.wav" would make the next take 20261013. Only up
-// to Session::kMaxTake digits are read, so no run of digits can overflow.
-int take_of(const std::string& name,
-            const std::vector<std::unique_ptr<Track>>& tracks) {
+// write for some track of a session, or 0. Any "Audio <n>" counts, not only
+// the tracks open now: the same folder may have been recorded with more.
+// Anything looser lets a stray file set the counter: "Guitar_20261012.wav"
+// would make the next take 20261013.
+int take_of(const std::string& name) {
     const std::string ext = ".wav";
     if (name.size() <= ext.size() ||
         name.compare(name.size() - ext.size(), ext.size(), ext) != 0) {
@@ -43,21 +63,17 @@ int take_of(const std::string& name,
     const std::size_t end = name.size() - ext.size();
     const std::size_t under = name.rfind('_', end);
     if (under == std::string::npos) return 0;
-    const std::size_t digits = end - under - 1;
-    if (digits == 0 || digits > 4) return 0;  // 4 == digits in kMaxTake
-    int n = 0;
-    for (std::size_t k = under + 1; k < end; ++k) {
-        if (name[k] < '0' || name[k] > '9') return 0;
-        n = n * 10 + (name[k] - '0');
-    }
-    if (n < 1 || n > Session::kMaxTake) return 0;
-    const std::string track = name.substr(0, under);
-    for (const auto& t : tracks) {
-        // Round-tripped rather than compared piecewise, so "Audio 1_1.wav"
-        // and "Audio 1_0005.wav" -- not spellings we produce -- do not count.
-        if (t->name() == track && take_file_name(track, n) == name) return n;
-    }
-    return 0;
+    const int take = parse_number(name, under + 1, end, 4);  // 4 == digits in kMaxTake
+    if (take < 1 || take > Session::kMaxTake) return 0;
+
+    const std::string prefix = "Audio ";
+    if (name.compare(0, prefix.size(), prefix) != 0) return 0;
+    const int track = parse_number(name, prefix.size(), under, 9);
+    if (track < 1) return 0;
+    // Round-tripped rather than compared piecewise, so "Audio 1_1.wav",
+    // "Audio 01_05.wav" and "Audio 1_0005.wav" -- not spellings we produce --
+    // do not count.
+    return take_file_name(track_name(track), take) == name ? take : 0;
 }
 
 }  // namespace
@@ -70,9 +86,7 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
 
     std::vector<Track*> raw;
     for (int i = 0; i < cfg_.track_count; ++i) {
-        char name[32];
-        std::snprintf(name, sizeof(name), "Audio %d", i + 1);
-        tracks_.push_back(std::make_unique<Track>(i, name,
+        tracks_.push_back(std::make_unique<Track>(i, track_name(i + 1),
                                                   cfg_.channels_per_track,
                                                   ring_frames));
         raw.push_back(tracks_.back().get());
@@ -91,12 +105,12 @@ bool Session::create_dirs() {
 
 int Session::next_free_take() const {
     // Every track shares the take number, so any file of ours counts, on any
-    // track, armed now or not.
+    // track, armed now, open now, or neither.
     int highest = 0;
     DIR* d = ::opendir(audio_dir(cfg_.dir).c_str());
     if (!d) return 1;
     while (const dirent* e = ::readdir(d)) {
-        const int n = take_of(e->d_name, tracks_);
+        const int n = take_of(e->d_name);
         if (n > highest) highest = n;
     }
     ::closedir(d);

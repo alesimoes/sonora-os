@@ -38,9 +38,11 @@ public:
 
     // One more than the highest take number among the files in the session's
     // audio folder that are named exactly as start_recording() names them
-    // for one of this session's tracks, so a take is never numbered like one
-    // already on disk and no stray file can push the count. Can return
-    // kMaxTake + 1, which start_recording() refuses with a reason.
+    // for any track the session could have -- "Audio 12_05.wav" counts even
+    // when the session is reopened with 8 tracks -- so a take is never
+    // numbered like one already on disk and no stray file can push the
+    // count. Can return kMaxTake + 1, which start_recording() refuses with
+    // a reason.
     // Reads the directory: never call it from the audio thread.
     int next_free_take() const;
 

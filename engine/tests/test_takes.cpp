@@ -114,15 +114,18 @@ int test_stray_files_do_not_set_the_take() {
         sonora::Session s(cfg);
         CHECK(s.create_dirs());
         for (const char* name :
-             {"Guitar_20261012.wav", "x_999999999.wav", "Audio 3_04.wav",
-              "Audio 1_1.wav", "Audio 1_0000000000000000000000007.wav",
+             {"Guitar_20261012.wav", "x_999999999.wav", "Audio 1_1.wav",
+              "Audio 1_0000000000000000000000007.wav",
               "Audio 1_99999999999999999999999999.wav", "Audio 1_20261012.wav",
-              "Audio 1_00.wav"}) {
+              "Audio 1_00.wav", "Audio 0_04.wav", "Audio 03_04.wav",
+              "Audio _04.wav", "Audio x_04.wav", "audio 3_04.wav",
+              "Guitar 3_04.wav", "Audio 3 _04.wav", "Audio -3_04.wav",
+              "Audio 99999999999999999999_04.wav"}) {
             CHECK(write_text(audio + name, "not ours"));
         }
-        // Audio 3 is not a track here, "1" and the long runs are not how
-        // this session spells a take, and 20261012 is past the last take
-        // number it would ever write.
+        // "1" and the long runs are not how this session spells a take,
+        // 20261012 is past the last take number it would ever write, and
+        // none of the others is a track name the session gives out.
         CHECK(s.next_free_take() == 1);
         CHECK(write_text(audio + "Audio 2_05.wav", "ours"));
         CHECK(s.next_free_take() == 6);
@@ -140,6 +143,38 @@ int test_stray_files_do_not_set_the_take() {
         }
     }
     wipe(cfg.dir);
+    return 0;
+}
+
+// A take number belongs to the session, not to the tracks open right now.
+// Recorded with 18 tracks and only Audio 12 armed, then reopened with
+// --tracks 8, the scan looked only for Audio 1..8 and offered take 01 again.
+// O_EXCL kept the old files safe, but two different takes shared a number.
+int test_takes_of_tracks_not_open_still_count() {
+    const sonora::SessionConfig wide = config("test_takes_narrow", 18);
+    const std::string audio = wide.dir + "/Audio Files/";
+    wipe(wide.dir);
+    {
+        sonora::Session s(wide);
+        CHECK(s.create_dirs());
+        s.tracks()[11]->set_rec_armed(true);
+        for (int take = 1; take <= 5; ++take) {
+            CHECK(s.next_free_take() == take);
+            CHECK(s.start_recording(take));
+            s.stop();
+        }
+        CHECK(exists(audio + "Audio 12_05.wav"));
+    }
+    {
+        sonora::Session s(config("test_takes_narrow", 8));
+        CHECK(s.next_free_take() == 6);
+        s.tracks()[0]->set_rec_armed(true);
+        CHECK(s.start_recording(s.next_free_take()));
+        s.stop();
+        CHECK(exists(audio + "Audio 1_06.wav"));
+        CHECK(!exists(audio + "Audio 1_01.wav"));
+    }
+    wipe(wide.dir);
     return 0;
 }
 
@@ -303,6 +338,7 @@ int main() {
     int failures = 0;
     failures += test_next_free_take();
     failures += test_stray_files_do_not_set_the_take();
+    failures += test_takes_of_tracks_not_open_still_count();
     failures += test_last_take_number();
     failures += test_restart_never_overwrites();
     failures += test_partial_take_is_refused();
