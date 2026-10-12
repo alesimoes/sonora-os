@@ -40,6 +40,33 @@ without asking a question.
       `brain/research/multichannel-usb-interfaces.md`.
 - [ ] First real latency figure: lowest quantum that holds with zero xruns on
       that interface, on the RT kernel.
+- [ ] ADR-0007 IPC figures on the RT kernel, bare metal, with the engine
+      recording 18 channels at quantum 128: socket round trip, `StateView`
+      read, futex versus eventfd wake. Include the cost of the wake syscall
+      on the audio thread, and whether any xrun is attributable to a reader.
+      Feeds the Phase 4 plugin ADR. See `brain/research/adr-0007-measurements.md`.
+
+## ADR-0007 follow-ups
+
+- [ ] RTSan CI job: `clang-22` from trixie main, its own build
+      (`-fsanitize=realtime`, which cannot be combined with ASan or TSan),
+      `-Wfunction-effects` advisory. `SONORA_RT` expands to
+      `[[clang::nonblocking]]`. Most useful after M3 (fake backend). Also
+      check whether libjack calls trip RTSan inside the callback.
+      distro-engineer with rt-engineer.
+- [ ] With M4, the state publisher is paced on a fixed timer. `StateView`
+      makes a bounded number of retries and reports a stale flag. Add a
+      starvation regression test, and a `static_assert` for every
+      shared-memory atomic type. rt-engineer.
+- [ ] Virtual-card QEMU test: `snd-dummy model=rme9652` (26 ordered AUX
+      ports) through the real ALSA → PipeWire → JACK path, with the engine
+      actually recording. The count is per node. driver-engineer with
+      distro-engineer.
+- [ ] Plugin editors under the kiosk compositor: try Qt on `xcb` as the
+      transient parent, a host anchor window, and an alternative compositor,
+      with a real LV2/VST3 editor. Check whether upstream cage still
+      misplaces override-redirect popups. Needed before the Phase 4 plugin
+      ADR and the compositor ADR. researcher, then architect.
 
 ## Phase 2
 
