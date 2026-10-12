@@ -107,17 +107,41 @@ container unless marked.
   `unshare -m` is invisible to lsblk in the parent namespace (`MOUNTPOINT`
   empty). But an `O_EXCL` open of the whole disk fails with EBUSY, because any
   claimed partition marks the whole disk as claimed. `wipefs` without
-  `--force` opens with `O_RDWR|O_EXCL` (seen with strace, util-linux 2.41.5),
-  and `wipefs --no-act --all` does so too while writing nothing, so it serves
-  as the probe. **Limitation:** a process holding the device open *without*
-  `O_EXCL` is invisible to this check, and only a scan of every `/proc/*/fd`
-  would find it. Mounts, swap, md and dm all claim exclusively, so they are
-  covered.
+  `--force` opens with `O_RDWR|O_EXCL` (seen with strace, util-linux 2.41.5).
+- **`wipefs --no-act` is not a read-only probe.** strace shows it opening
+  `O_RDWR|O_EXCL` and then calling `ioctl(BLKRRPART)`, which re-adds the
+  disk's partitions. On a desktop that invites an automount during the very
+  prompt the probe is guarding (suspected for GNOME and KDE, not observed
+  here). Closing an `O_RDWR` descriptor also makes udev's watch re-probe the
+  disk. The probe is now
+  `perl -MFcntl -e 'sysopen(F, $dev, O_RDONLY|O_EXCL)'`. strace shows one
+  `openat(..., O_RDONLY|O_EXCL|O_CLOEXEC)` and no ioctl. It returned EBUSY
+  for a mount in another namespace and passed for a partition held open
+  without `O_EXCL`. perl and `Fcntl.pm` come from `perl-base`, which is
+  Essential in Debian. Of the util-linux tools, `wipefs` (listing mode) and
+  `blockdev` open `O_RDONLY` without `O_EXCL`, so neither can be the probe.
+  **Limitation:** a process holding the device open *without* `O_EXCL` is
+  invisible to this check, and only a scan of every `/proc/*/fd` would find
+  it. Mounts, swap, md and dm all claim exclusively, so they are covered.
 - **diskseq tells you whether the name still means the same medium.**
   `/sys/block/<dev>/diskseq` (kernel 5.15 and later) went from 124 to 126
   when the same file was detached from a loop node and reattached to the same
-  node: same name, same backing file, same size, different value. The writer
-  records it before the prompt and compares it after.
+  node: same name, same backing file, same size, different value. The
+  fallback for older kernels (major:minor, size, serial) came out identical
+  before and after the same reattach. A same-size card swapped in a USB
+  reader would look the same to it, which is why the writer refuses without
+  diskseq unless given `--weak-identity`.
+- **Proving the write lands on the confirmed device.** diskseq is never
+  reused. The writer opens its descriptors, checks that they are the device
+  the name refers to, and checks that the name still has the confirmed
+  diskseq. `wipefs`, which can only take a path, runs between two such
+  checks; equal values on both sides mean the name pointed at that medium
+  the whole time. `dd` and the read-back write and read through the
+  descriptors. `wipefs --all` still re-reads the table successfully while
+  those descriptors are open (measured).
+- **Never re-resolve the argument.** `/dev/disk/by-label/<label>` is made
+  from content and disappears when `wipefs` erases that content. The writer
+  resolves its argument once, at the start.
 
 ## Re-reading the table while the fresh image is mounted
 

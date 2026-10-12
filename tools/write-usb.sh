@@ -61,19 +61,54 @@ size_verdict() {
   return 1
 }
 
+# Where block devices are described. A variable only so the test can point
+# device_identity at a tree without diskseq; nothing reads it from outside.
+SYS_BLOCK=/sys/class/block
+
 # device_identity NAME
 # What the name refers to right now. diskseq (kernel 5.15+) is unique per
 # attached medium and never reused, so a stick replaced by another device
 # under the same name -- after a reset, a replug, a loop reattach -- changes
-# it. Older kernels: major:minor, size and serial, which catches most swaps.
+# it, and cannot change back. Older kernels get major:minor, size and serial,
+# which a reattached loop or a same-size card swapped in a reader would
+# reproduce exactly; identity_verdict decides what to do about that.
 device_identity() {
-  local sys="/sys/class/block/$1"
+  local sys="$SYS_BLOCK/$1"
   [[ -e "$sys" ]] || { echo "absent"; return 0; }
   if [[ -r "$sys/diskseq" ]]; then
     echo "diskseq=$(cat "$sys/diskseq")"
   else
     echo "dev=$(cat "$sys/dev") size=$(cat "$sys/size") serial=$(lsblk -dno SERIAL "/dev/$1" 2>/dev/null | tr -d '[:space:]')"
   fi
+}
+
+# identity_verdict IDENTITY ALLOW_WEAK
+# Only diskseq proves that the device written is the device confirmed. Without
+# it the user must say they accept that, rather than be protected by a check
+# that cannot see the swap it is there for.
+identity_verdict() {
+  local identity="$1" allow="$2"
+  if [[ "$identity" == diskseq=* || "$allow" == 1 ]]; then return 0; fi
+  echo "this kernel has no diskseq (it arrived in Linux 5.15), so this script cannot prove that the device it writes is the one you confirm: a same-size card swapped in a reader, or a reattached loop device, looks identical. If nothing will touch the device until this finishes, pass --weak-identity."
+  return 1
+}
+
+# exclusive_probe DEV
+# Succeeds if nothing holds DEV exclusively: no mount, swap, md or dm on it or
+# any of its partitions, in any mount namespace. lsblk only sees this
+# namespace; the kernel refuses an O_EXCL open while anything claims the disk.
+#
+# Opened O_RDONLY|O_EXCL by perl (perl-base, Essential in Debian) and closed
+# again, with no ioctl. Not wipefs --no-act: strace shows it opening O_RDWR
+# and then issuing BLKRRPART anyway, which re-adds the old partitions -- and
+# on a desktop that is what triggers an automount, during the prompt. Even
+# without the ioctl, closing an O_RDWR descriptor makes udev re-probe the
+# disk. A read-only open does neither.
+#
+# Cannot see a process that has the device open without O_EXCL. Only a scan
+# of every /proc/*/fd could, and that is not attempted.
+exclusive_probe() {
+  perl -MFcntl -e 'sysopen(my $f, $ARGV[0], O_RDONLY | O_EXCL) or die "$!\n"; close $f' "$1"
 }
 
 # add_partition_to_kernel DEV
@@ -124,26 +159,32 @@ ISO="$ROOT/iso/sonora.iso"
 TEST_IMAGE="${SONORA_WRITE_USB_TEST_IMAGE:-}"
 
 ALLOW_LARGE=0
+WEAK_IDENTITY=0
 ARG=""
 for a in "$@"; do
   case "$a" in
-    --allow-large) ALLOW_LARGE=1 ;;
+    --allow-large)   ALLOW_LARGE=1 ;;
+    --weak-identity) WEAK_IDENTITY=1 ;;
     -*) die "unknown option $a" ;;
     *)  [[ -z "$ARG" ]] || die "pass exactly one device."; ARG="$a" ;;
   esac
 done
 
-[[ -n "$ARG" ]] || { echo "usage: $0 [--allow-large] /dev/sdX" >&2; exit 1; }
+[[ -n "$ARG" ]] || { echo "usage: $0 [--allow-large] [--weak-identity] /dev/sdX" >&2; exit 1; }
 [[ "$(id -u)" == 0 ]] || die "run as root."
 [[ -f "$ISO" ]] || die "$ISO not found; run tools/build-iso.sh."
 [[ -b "$ARG" ]] || die "$ARG is not a block device."
 
-for tool in lsblk wipefs sfdisk partx blockdev mkfs.ext4 blkid cmp dd; do
+for tool in lsblk wipefs sfdisk partx blockdev mkfs.ext4 blkid cmp dd perl; do
   command -v "$tool" >/dev/null || die "$tool is required and not installed."
 done
+perl -MFcntl -e 1 2>/dev/null || die "perl's Fcntl module is required (Debian: perl-base)."
 
 # /dev/disk/by-id/usb-... is the safest way to name a stick, and it is a
-# symlink. Every check below must look at the real node.
+# symlink. Resolved once, here, and never again: from now on the device is
+# known by its identity, not by a path. A content-based link such as
+# /dev/disk/by-label/SONORA stops resolving the moment wipefs erases the
+# label it was made from.
 DEV="$(readlink -f "$ARG")"
 NAME="$(basename "$DEV")"
 
@@ -205,16 +246,9 @@ check_not_in_use() {
   done
   shopt -u nullglob
 
-  # The kernel's own answer. lsblk only sees mounts in this mount namespace;
-  # a mount in a container, a sandbox or a desktop session's private namespace
-  # is invisible to it. But every mount, swap, md and dm claims the device
-  # exclusively in the kernel, and an O_EXCL open of the whole disk fails with
-  # EBUSY while any partition is claimed. wipefs without --force opens with
-  # O_RDWR|O_EXCL (checked with strace, util-linux 2.41), and -n makes it
-  # write nothing. It cannot see a process that merely has the device open
-  # without O_EXCL; nothing short of scanning every /proc/*/fd can.
-  if ! out="$(wipefs --no-act --all "$DEV" 2>&1 >/dev/null)"; then
-    die "$DEV is in use by something this namespace cannot see (the kernel refused an exclusive open: ${out##*: }). Unmount it everywhere first."
+  # The kernel's own answer, for what lsblk cannot see. See exclusive_probe.
+  if ! out="$(exclusive_probe "$DEV" 2>&1)"; then
+    die "$DEV is in use by something this namespace cannot see (the kernel refused an exclusive open: $out). Unmount it everywhere first."
   fi
 }
 
@@ -234,6 +268,10 @@ NEED_MIB=$(( START_MIB + MIN_PERSISTENCE_MIB ))
   || die "$DEV is $(( DEV_BYTES / 1048576 )) MiB; the image and the smallest useful persistence partition need ${NEED_MIB} MiB."
 
 IDENTITY="$(device_identity "$NAME")"
+why="$(identity_verdict "$IDENTITY" "$WEAK_IDENTITY")" || die "$DEV: $why"
+if [[ "$IDENTITY" != diskseq=* ]]; then
+  echo "warning: --weak-identity: a device swapped for one of the same size during this run will not be noticed." >&2
+fi
 [[ -n "$TEST_IMAGE" ]] && echo "TEST MODE: writing to $DEV, a loop device over $TEST_IMAGE."
 echo "Target device ($(( DEV_BYTES / 1000000000 )) GB):"
 lsblk -o NAME,SIZE,TYPE,RM,TRAN,VENDOR,MODEL,SERIAL "$DEV"
@@ -245,17 +283,50 @@ read -r -p "Erase this device completely? Type ERASE to continue: " reply
 # The answer above is about the device that was shown. A stick that reset or
 # was swapped during the prompt can hand its name to another disk, unmounted
 # and USB -- a backup drive passes every check. Only identity catches that.
+# What a failure at each point has already done to the device, so that the
+# message says so instead of claiming nothing happened.
+AT_START="Nothing was written; run again."
+AFTER_WIPE="Its old partition-table and filesystem signatures were erased, so its previous contents will no longer mount, but the image was not written. Run again."
+AFTER_DD="The image was only partly written, or not verified; the stick will not boot reliably. Run again."
+AFTER_IMAGE="The image is written and verified and the stick boots, but it has no persistence partition. Run again to add one."
+
+# recheck WHAT_HAS_HAPPENED
+# By identity only. The path is never resolved again (see DEV above).
 recheck() {
-  [[ "$(readlink -f "$ARG")" == "$DEV" ]] \
-    || die "$ARG no longer points at $DEV. Nothing was written; run again."
-  [[ "$(device_identity "$NAME")" == "$IDENTITY" ]] \
-    || die "$DEV changed while waiting ($IDENTITY, now $(device_identity "$NAME")): it is not the device you confirmed. Nothing was written; run again."
+  local now
+  now="$(device_identity "$NAME")"
+  [[ "$now" == "$IDENTITY" ]] \
+    || die "$DEV changed ($IDENTITY, now $now): it is not the device you confirmed. As for the one you confirmed: $1"
 }
-recheck
+
+# fd_is_device FD -- the descriptor is the block device NAME has now.
+fd_is_device() {
+  local maj min
+  read -r maj min < <(stat -L -c '%t %T' "/proc/self/fd/$1")
+  [[ "$((16#$maj)):$((16#$min))" == "$(cat "$SYS_BLOCK/$NAME/dev")" ]]
+}
+
+recheck "$AT_START"
 check_kind
 check_not_in_use
 
 # --- write ---
+# Why the order below proves that every write lands on the confirmed device:
+# the descriptors are opened first, then shown to be the device the name has
+# now, then the name is shown to still carry the confirmed diskseq. wipefs
+# opens by name, so it is bracketed by two identity checks. diskseq is never
+# reused, so equal values on both sides mean the name meant the same medium
+# throughout, and wipefs opened that medium. dd and the read-back use the
+# descriptors, which keep meaning the device they were opened on whatever
+# happens to the name. With --weak-identity none of this is proof, which is
+# why that needs saying out loud.
+exec 3<>"$DEV"
+exec 4<"$DEV"
+if ! fd_is_device 3 || ! fd_is_device 4; then
+  die "the descriptors opened on $DEV are not the device it names. $AT_START"
+fi
+recheck "$AT_START"
+
 # Without --force wipefs opens O_EXCL, so the first write is itself refused
 # if anything has claimed the device since the check above.
 #
@@ -263,23 +334,20 @@ check_not_in_use
 # which writing over the start never touches. Some UEFI firmware then trusts
 # that stale GPT over the image's MBR and finds no bootable partition.
 echo "Clearing old partition-table signatures..."
-wipefs --all "$DEV" >/dev/null || die "could not claim $DEV exclusively; nothing was written."
-
-# dd and the read-back go through descriptors opened once, here, and checked
-# against the identity: a path is looked up again on every open, a
-# descriptor keeps meaning the device it was opened on.
-exec 3<>"$DEV"
-exec 4<"$DEV"
-recheck
+wipefs --all "$DEV" >/dev/null \
+  || die "wipefs failed on $DEV. If it got as far as erasing, some old signatures are gone and its previous contents may not mount; the image was not written. Run again."
+recheck "$AFTER_WIPE"
 
 echo "Writing the image..."
-dd if="$ISO" bs=4M status=progress conv=fsync >&3
+dd if="$ISO" bs=4M status=progress conv=fsync >&3 \
+  || die "writing to $DEV failed. $AFTER_DD"
 
 # Read it back. Counterfeit and worn-out sticks accept writes they do not
 # keep, and the first symptom would otherwise be a boot failure on stage.
 echo "Verifying the write..."
 blockdev --flushbufs "$DEV"
-cmp -n "$ISO_BYTES" "$ISO" - <&4 || die "$DEV does not read back what was written. The stick is faulty."
+cmp -n "$ISO_BYTES" "$ISO" - <&4 \
+  || die "$DEV does not read back what was written; the stick is faulty. $AFTER_DD"
 exec 3>&- 4<&-
 
 # --- persistence partition ---
@@ -288,7 +356,7 @@ exec 3>&- 4<&-
 # formatting "${DEV}2" -- as this script once would have -- destroys UEFI boot.
 # parted cannot be used either: it sees xorriso's Apple partition map, reports
 # the label as unknown and refuses. sfdisk edits the MBR in place.
-recheck
+recheck "$AFTER_IMAGE"
 START_SECTOR=$(( START_MIB * 1048576 / 512 ))
 echo "Creating the persistence partition at ${START_MIB} MiB..."
 # sfdisk's output is shown only on failure. On success it warns that the
@@ -297,7 +365,7 @@ echo "Creating the persistence partition at ${START_MIB} MiB..."
 if ! sfdisk_out="$(echo "start=${START_SECTOR}, type=83" \
       | sfdisk --append --no-reread --no-tell-kernel --wipe never --wipe-partitions never "$DEV" 2>&1)"; then
   printf '%s\n' "$sfdisk_out" >&2
-  die "sfdisk could not add the persistence partition to $DEV."
+  die "sfdisk could not add the persistence partition to $DEV. $AFTER_IMAGE"
 fi
 
 NO_PERSISTENCE="The stick boots, but without persistence."

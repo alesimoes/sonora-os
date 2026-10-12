@@ -95,6 +95,10 @@ accepts() {
   shift
   if in_writer "$@" >/dev/null 2>&1; then ok "accepts $label"; else bad "wrongly refuses $label"; fi
 }
+# device_identity against a different sysfs tree.
+# SYS_BLOCK is write-usb.sh's, read by device_identity.
+# shellcheck disable=SC2034
+sh_identity() { SYS_BLOCK="$1"; device_identity "$2"; }
 # write-usb.sh's partition step, as its main body runs it.
 add_and_find() { add_partition_to_kernel "$1" && find_partition "$2" "$3"; }
 rejects() {
@@ -303,6 +307,31 @@ write)
   accepts "a 256 GB stick (256,060,514,304 bytes)" size_verdict 256060514304 0
   rejects "a 500 GB drive without --allow-large" size_verdict 500107862016 0
   accepts "a 500 GB drive with --allow-large" size_verdict 500107862016 1
+  # Second review: without diskseq the identity cannot see a swap.
+  accepts "a diskseq identity" identity_verdict "diskseq=42" 0
+  rejects "an identity without diskseq (kernel < 5.15)" identity_verdict "dev=7:2 size=16777216 serial=" 0
+  accepts "an identity without diskseq, with --weak-identity" identity_verdict "dev=7:2 size=16777216 serial=" 1
+  # And why that is refused: on a kernel without diskseq the fallback is
+  # major:minor, size and serial. A loop reattached to the same node gives
+  # the same three values. Shown on a copy of this loop's sysfs entry with
+  # diskseq left out, taken before and after a real reattach.
+  weak_identity_now() {
+    local fake=/tmp/fakesys
+    rm -rf "$fake"
+    mkdir -p "$fake/$(basename "$LOOP")"
+    cp "/sys/class/block/$(basename "$LOOP")/dev" "/sys/class/block/$(basename "$LOOP")/size" "$fake/$(basename "$LOOP")/"
+    in_writer sh_identity "$fake" "$(basename "$LOOP")"
+  }
+  weak_before="$(weak_identity_now)"
+  strong_before="$(cat "/sys/class/block/$(basename "$LOOP")/diskseq")"
+  swap_device
+  weak_after="$(weak_identity_now)"
+  strong_after="$(cat "/sys/class/block/$(basename "$LOOP")/diskseq")"
+  info "fallback identity before and after a reattach: '$weak_before' / '$weak_after'"
+  info "diskseq before and after the same reattach: $strong_before / $strong_after"
+  expect "the fallback identity cannot see a reattach, which is why it needs --weak-identity" \
+    "the fallback identity changed on reattach; the refusal may be stricter than needed" \
+    test "$weak_before" == "$weak_after" -a "$strong_before" != "$strong_after"
   refuse "a loop device without the test variable" "is a loop device, not a USB stick" "$LOOP"
   refuse "a loop device over a different file" "is backed by" "$LOOP" "$DECOY"
   refuse "a partition" "is a partition" "${LOOP}p1" "$STICK"
@@ -329,7 +358,24 @@ write)
 
   # Review finding: nothing pinned the device across the prompt. Each of these
   # answers ERASE, so they would erase the image if the recheck failed.
-  during_prompt "the device was replaced while the prompt waited" "changed while waiting" swap_device
+  during_prompt "the device was replaced while the prompt waited" "it is not the device you confirmed. As for the one you confirmed: Nothing was written" swap_device
+  # Second review: the old probe, wipefs --no-act, issued BLKRRPART. On a
+  # desktop that re-adds the stick's partitions and gets them automounted
+  # while the prompt waits, so the recheck refuses and every retry repeats.
+  # Everything before the prompt must leave the device alone.
+  echo no | SONORA_WRITE_USB_TEST_IMAGE="$STICK" \
+    strace -f -qq -e trace=openat,ioctl -o /work/probe.strace bash "$WRITER" "$LOOP" > /dev/null 2>&1 || true
+  info "opens of $LOOP before the prompt: $(grep -c "\"$LOOP\"" /work/probe.strace)"
+  expect "before the prompt the device is opened O_RDONLY|O_EXCL (the in-use probe)" \
+    "no O_RDONLY|O_EXCL open of the device before the prompt" \
+    grep -q "\"$LOOP\", O_RDONLY|O_EXCL" /work/probe.strace
+  expect "before the prompt nothing issues BLKRRPART" \
+    "something re-read the partition table before the prompt: $(grep -m1 BLKRRPART /work/probe.strace)" \
+    sh -c "! grep -q BLKRRPART /work/probe.strace"
+  expect "before the prompt nothing opens the device or its partitions for writing" \
+    "a write-mode open before the prompt: $(grep -m1 -E "\"$LOOP(p[0-9]+)?\", O_(RDWR|WRONLY)" /work/probe.strace)" \
+    sh -c "! grep -q -E '\"$LOOP(p[0-9]+)?\", O_(RDWR|WRONLY)' /work/probe.strace"
+
   during_prompt "the device was mounted elsewhere while the prompt waited" \
     "in use by something this namespace cannot see" mount_elsewhere
   unmount_elsewhere
@@ -342,15 +388,22 @@ write)
   iso_bytes="$(stat -Lc%s "$ISO")"
   p3_mib=$(( (iso_bytes + 1048575) / 1048576 ))
   p3_start=$(( p3_mib * 2048 ))
-  for held in "partition 1" "the whole disk" "a stale partition 3 from the previous write, and partition 1"; do
+  # The stale partition 3 is 1 MiB later than the new one, as after a
+  # previous image of a different size, so partx must move it rather than
+  # find it already right.
+  for held in "partition 1" "the whole disk" "a stale partition 3 at a different start, and partition 1"; do
     rm -f "$PARTTEST"
     truncate -s 2G "$PARTTEST"
     dd if="$ISO" of="$PARTTEST" bs=4M conv=notrunc status=none
     if [[ "$held" == *stale* ]]; then
       # The kernel keeps the old partition 3 when dd rewrites the MBR.
-      echo "start=${p3_start}, type=83" | sfdisk -q --append --no-reread --no-tell-kernel --wipe never "$PARTTEST" >/dev/null 2>&1
+      echo "start=$(( p3_start + 2048 )), type=83" | sfdisk -q --append --no-reread --no-tell-kernel --wipe never "$PARTTEST" >/dev/null 2>&1
       attach PT_LOOP "$PARTTEST"
       dd if="$ISO" of="$PT_LOOP" bs=4M conv=fsync status=none
+      stale_start="$(cat "/sys/class/block/$(basename "$PT_LOOP")/$(basename "$PT_LOOP")p3/start" 2>/dev/null || echo none)"
+      expect "precondition: the kernel holds a stale partition 3 at sector $stale_start" \
+        "precondition failed: the kernel's partition 3 is at '$stale_start', not $(( p3_start + 2048 ))" \
+        test "$stale_start" == "$(( p3_start + 2048 ))"
     else
       attach PT_LOOP "$PARTTEST"
     fi
@@ -380,13 +433,44 @@ write)
     printf '%s\n' "$out" | sed 's/^/WRITE-USB info    /'
   fi
 
-  echo "--- write over a used stick ---"
-  if echo ERASE | SONORA_WRITE_USB_TEST_IMAGE="$STICK" bash "$WRITER" "$LOOP" > /work/write1.log 2>&1; then
-    ok "write-usb.sh exits 0"
-  else
-    bad "write-usb.sh failed"
-  fi
+  # Second review: a device named by a content-based link, such as
+  # /dev/disk/by-label/<label>, loses that link the moment wipefs erases the
+  # label, and the script used to re-resolve its argument after the prompt.
+  # Here the link is removed while the prompt waits; the write must go ahead,
+  # because the device itself has not changed. Traced, to check the order of
+  # opens that makes the write provably land on the confirmed device.
+  echo "--- write over a used stick, named by a link that vanishes during the prompt ---"
+  mkdir -p /tmp/by-label
+  ln -sfn "$LOOP" /tmp/by-label/OLDSTICK
+  rm -f /work/answer
+  mkfifo /work/answer
+  ( SONORA_WRITE_USB_TEST_IMAGE="$STICK" strace -f -qq -e trace=openat,ioctl -o /work/write1.strace \
+      bash "$WRITER" /tmp/by-label/OLDSTICK < /work/answer > /work/write1.log 2>&1
+    echo "exit=$?" >> /work/write1.log ) &
+  w_pid=$!
+  exec 7>/work/answer
+  for _ in $(seq 1 200); do
+    grep -q "Target device" /work/write1.log 2>/dev/null && break
+    sleep 0.1
+  done
+  rm -f /tmp/by-label/OLDSTICK
+  echo ERASE >&7
+  exec 7>&-
+  wait "$w_pid" || true
+  expect "write-usb.sh exits 0 although the link it was given is gone" \
+    "write-usb.sh failed after its link vanished" \
+    grep -q "^exit=0$" /work/write1.log
   tr '\r' '\n' < /work/write1.log | grep -v -e "bytes .* copied" -e '^$' | sed 's/^/WRITE-USB info    /'
+
+  # The script's own descriptor (O_RDWR without O_EXCL, from exec 3<>) must
+  # be opened before wipefs's O_RDWR|O_EXCL open, so that the identity check
+  # between them covers both.
+  first_fd="$(grep -n "\"$LOOP\", O_RDWR" /work/write1.strace | grep -v O_EXCL | head -1 | cut -d: -f1)"
+  wipefs_open="$(grep -n "\"$LOOP\", O_RDWR|O_EXCL" /work/write1.strace | head -1 | cut -d: -f1)"
+  info "strace line of the script's write descriptor: ${first_fd:-none}; of wipefs's exclusive open: ${wipefs_open:-none}"
+  expect "the write descriptors are opened before wipefs, inside the identity bracket" \
+    "wipefs opened the device before the script's descriptors" \
+    test -n "$first_fd" -a -n "$wipefs_open" -a "${first_fd:-0}" -lt "${wipefs_open:-0}"
   verify_stick "$LOOP" "first write"
 
   # Rewriting a stick that already carries SonoraOS is the common case for

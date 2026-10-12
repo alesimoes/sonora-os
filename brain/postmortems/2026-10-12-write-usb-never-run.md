@@ -109,3 +109,22 @@ these are fixed and tested in `tools/test-write-usb.sh`:
 What generalises: a check run before an interactive pause protects only the
 moment it ran. Anything that matters must be checked again after the pause,
 against an identity rather than a name.
+
+## Second review
+
+- The in-use probe added in the first review, `wipefs --no-act --all`,
+  issued BLKRRPART. "No-act" applies to erasing, not to re-reading the
+  table. The probe meant to stop an automounted stick being written could
+  itself cause the automount. It is now a read-only `O_EXCL` open by perl,
+  and the test straces everything before the prompt: no BLKRRPART, no
+  write-mode open of the device or its partitions.
+- The first write was not bracketed by identity checks, and failures after
+  the first write still said "Nothing was written". Every message now says
+  what has already been done to the device.
+- Re-resolving the argument after the prompt broke content-based links
+  (`by-label`), which `wipefs` itself removes.
+- Without diskseq, the identity check cannot see the swaps it exists for, so
+  the writer now refuses unless the user passes `--weak-identity`.
+
+Lesson: read the man page for "no-act" as narrowly as it is written, and
+strace any tool used as a probe.
