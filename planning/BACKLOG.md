@@ -100,6 +100,14 @@ without asking a question.
 
 ## Known gaps, not yet scheduled
 
+- RT-path data race, documented in `engine/core/src/session.cpp` above the
+  ring reset in `start_recording()`: an audio callback that loaded Recording
+  for the previous take and was descheduled across `stop()` and the next
+  record command can write to the ring while it is being reset, putting the
+  old take's samples at the head of the new file. Needs an RT stall of about
+  100 ms to hit. Fix with a take-epoch handshake with the callback; write the
+  regression test first. rt-engineer, audited by rt-safety-auditor.
+
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.
 - `DiskThread` polls every 10 ms. Correct, but a condition variable signalled

@@ -1,6 +1,6 @@
 ---
 name: rt-engineer
-description: Use for all work inside engine/ — the real-time audio core, disk thread, transport, session model, file writers. The default implementer for engine C++ work.
+description: Use for all work inside engine/ and common/, and the real-time parts of drivers/ (ADR-0007) — the real-time audio core, disk thread, transport, session model, file writers. The default implementer for engine C++ work.
 tools: Read, Grep, Glob, Write, Edit, Bash
 model: opus
 ---
@@ -28,7 +28,8 @@ Write the regression test before the fix. A bug in the data path that arrives
 without a test will arrive again.
 
 Tests are plain executables using the `CHECK` macro pattern already in
-`engine/tests/`. No framework. Register new tests in `engine/CMakeLists.txt`.
+the `tests/` directories. No framework. A test lives in `<module>/tests/` and is
+registered in that module's `CMakeLists.txt` (ADR-0007, test placement).
 
 Build and run before reporting:
 
