@@ -8,7 +8,11 @@ end of its run. Keep it short: what is true now, not a diary.
 - **Build state:** the engine compiles clean under GCC 14 with `-Wall
   -Wextra` and all six unit tests pass (ringbuffer, wav_writer, takes,
   quit_signals, port_order, keymap), in the Debian trixie container built by
-  `tools/build-engine.sh`. Verified 2026-10-12 from a clean build directory.
+  `tools/build-engine.sh`. Verified 2026-10-12 from a clean build directory,
+  and under the CI sanitizer flags (TSan; ASan+UBSan) in the same container
+  -- TSan needs `--security-opt seccomp=unconfined` and `setarch -R` there,
+  because Docker Desktop's kernel randomises more address bits than TSan
+  maps. The writer/disk-thread race TSan found is fixed in `a141e9d`.
 - **Key map review fixes (2026-10-12, `feature/ui-foundation`):** a take on
   disk is never overwritten -- the take number comes from the session folder
   and the writer creates with O_EXCL; arming is refused during a take; SS3
