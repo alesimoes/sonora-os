@@ -23,7 +23,8 @@ public:
 
     // time_reference is the sample position of the first frame relative to
     // midnight, as BWF defines it. Fails, leaving it untouched, if `path`
-    // already exists; errno is then EEXIST.
+    // already exists; errno is then EEXIST. Fails too, leaving no file, if
+    // the header cannot be written to disk. On any failure errno says why.
     bool open(const std::string& path, uint32_t sample_rate, uint16_t channels,
               Format format, uint64_t time_reference);
 

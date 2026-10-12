@@ -2,6 +2,7 @@
 #include "sonora/wav_writer.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -51,11 +52,15 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     channels_ = channels;
     frames_written_ = 0;
     if (!write_header(sample_rate, channels, time_reference)) {
+        // The caller reports errno as the reason, and the cleanup below is
+        // allowed to change it.
+        const int err = errno;
         std::fclose(file_);
         file_ = nullptr;
         // Created by the call above, so it is ours to remove, and a header
         // with no audio behind it would only hold the take number.
         std::remove(path.c_str());
+        errno = err;
         return false;
     }
     return true;
@@ -100,7 +105,10 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
     put_tag(file_, "data");
     data_size_offset_ = std::ftell(file_);
     put_u32(file_, 0);  // patched in close()
-    return std::ferror(file_) == 0;
+    // Flushed so a disk that cannot take even the header fails here, where
+    // start_recording() can refuse the take and say why, and not in the disk
+    // thread once the operator believes it is recording.
+    return std::fflush(file_) == 0 && std::ferror(file_) == 0;
 }
 
 bool WavWriter::write(const float* interleaved, std::size_t frames) {
