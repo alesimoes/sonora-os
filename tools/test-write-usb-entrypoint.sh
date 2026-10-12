@@ -16,6 +16,8 @@ PHASE="${1:-}"
 STICK=/work/stick.img
 SMALL=/work/small.img
 DECOY=/work/decoy.img
+BIG=/work/big.img
+PARTTEST=/work/part.img
 ISO=/src/iso/sonora.iso
 WRITER=/src/tools/write-usb.sh
 SIZE="${STICK_SIZE:-8G}"
@@ -28,6 +30,8 @@ info() { echo "WRITE-USB info  $1"; }
 LOOPS=()
 LOOP=""
 SMALL_LOOP=""
+BIG_LOOP=""
+PT_LOOP=""
 DUMP=""
 MOUNTS=()
 cleanup() {
@@ -68,13 +72,102 @@ fi
 # $2. "aborted." in the output means it reached the prompt: a failed check.
 refuse() {
   local label="$1" pattern="$2" dev="$3" image="${4:-}"
+  shift 4 2>/dev/null || shift $#
   local out rc=0
-  out="$(echo no | SONORA_WRITE_USB_TEST_IMAGE="$image" bash "$WRITER" "$dev" 2>&1)" || rc=$?
+  out="$(echo no | SONORA_WRITE_USB_TEST_IMAGE="$image" bash "$WRITER" "$@" "$dev" 2>&1)" || rc=$?
   if [[ "$rc" -ne 0 && "$out" == *"$pattern"* && "$out" != *aborted* ]]; then
     ok "refuses $label"
     info "  $(printf '%s\n' "$out" | grep -m1 error)"
   else
     bad "refuses $label (exit $rc)"
+    printf '%s\n' "$out" | sed 's/^/WRITE-USB info    /'
+  fi
+}
+
+# Decisions a container cannot produce real inputs for -- there is no eMMC
+# here -- are tested by calling write-usb.sh's own functions, which it
+# exposes when sourced. In a subshell, because they are free to exit.
+# The writer is checked in its own right; CI runs shellcheck without -x.
+# shellcheck source=/dev/null
+in_writer() { ( source "$WRITER"; "$@" ); }
+accepts() {
+  local label="$1"
+  shift
+  if in_writer "$@" >/dev/null 2>&1; then ok "accepts $label"; else bad "wrongly refuses $label"; fi
+}
+# write-usb.sh's partition step, as its main body runs it.
+add_and_find() { add_partition_to_kernel "$1" && find_partition "$2" "$3"; }
+rejects() {
+  local label="$1" why
+  shift
+  if why="$(in_writer "$@" 2>&1)"; then
+    bad "wrongly accepts $label"
+  else
+    ok "refuses $label"
+    info "  $why"
+  fi
+}
+
+# The GPT and ext4 the stick was seeded with. Still there means nothing was
+# written.
+seed_intact() {
+  [[ "$(blkid -p -o value -s PTTYPE "$LOOP")" == gpt \
+     && "$(blkid -p -o value -s TYPE "${LOOP}p1")" == ext4 ]]
+}
+
+# Mounts partition 1 of the stick in a private mount namespace, where this
+# shell's lsblk cannot see it: what a container, a sandbox or another
+# session's namespace looks like from here.
+NS_PID=""
+mount_elsewhere() {
+  mkdir -p /mnt/ns
+  unshare -m --propagation private sh -c "mount ${LOOP}p1 /mnt/ns && exec sleep 600" &
+  NS_PID=$!
+  sleep 1
+}
+unmount_elsewhere() {
+  [[ -n "$NS_PID" ]] && { kill "$NS_PID" 2>/dev/null || true; wait "$NS_PID" 2>/dev/null || true; }
+  NS_PID=""
+  sleep 0.5
+}
+
+# Reattach the same file to the same loop node: same name, same backing file,
+# same size, but a new medium as far as the kernel is concerned -- what a
+# stick reset or swap looks like.
+swap_device() {
+  losetup -d "$LOOP"
+  sleep 0.5
+  losetup -P "$LOOP" "$STICK"
+  sleep 0.5
+}
+
+# during_prompt LABEL PATTERN ACTION
+# Start write-usb.sh on the stick, wait until it is at the prompt, run ACTION,
+# then answer ERASE. The writer must refuse with PATTERN and write nothing.
+# The answer really is ERASE here, so a recheck that failed would erase the
+# test image -- and the seed check would say so.
+during_prompt() {
+  local label="$1" pattern="$2" action="$3" out pid
+  rm -f /work/answer /work/prompt.log
+  mkfifo /work/answer
+  ( SONORA_WRITE_USB_TEST_IMAGE="$STICK" bash "$WRITER" "$LOOP" < /work/answer > /work/prompt.log 2>&1
+    echo "exit=$?" >> /work/prompt.log ) &
+  pid=$!
+  exec 7>/work/answer
+  for _ in $(seq 1 200); do
+    grep -q "Target device" /work/prompt.log 2>/dev/null && break
+    sleep 0.1
+  done
+  "$action"
+  echo ERASE >&7
+  exec 7>&-
+  wait "$pid" || true
+  out="$(cat /work/prompt.log)"
+  if [[ "$out" == *"$pattern"* && "$out" != *"exit=0"* ]] && seed_intact; then
+    ok "refuses after the prompt: $label"
+    info "  $(printf '%s\n' "$out" | grep -m1 error)"
+  else
+    bad "after the prompt: $label"
     printf '%s\n' "$out" | sed 's/^/WRITE-USB info    /'
   fi
 }
@@ -141,16 +234,18 @@ verify_stick() {
 case "$PHASE" in
 write)
   [[ -f "$ISO" ]] || { echo "FAIL: $ISO missing" >&2; exit 1; }
-  rm -f "$STICK" "$SMALL" "$DECOY"
+  rm -f "$STICK" "$SMALL" "$DECOY" "$BIG" "$PARTTEST"
   truncate -s "$SIZE" "$STICK"
   truncate -s 600M "$SMALL"
   truncate -s 64M "$DECOY"
+  truncate -s 300G "$BIG"
 
   # A stick with a history: GPT, one ext4 partition. The write must leave no
   # trace of it, including the backup GPT header at the far end.
   printf 'label: gpt\n,512MiB,L\n' | sfdisk -q "$STICK"
   attach LOOP "$STICK"
   attach SMALL_LOOP "$SMALL"
+  attach BIG_LOOP "$BIG"
   info "stick image $STICK ($SIZE, sparse) on $LOOP"
   mkfs.ext4 -q -F "${LOOP}p1"
 
@@ -166,13 +261,48 @@ write)
   info "container root disk: $ROOT_DISK"
   refuse "the container's root disk ($ROOT_DISK)" "error:" "$ROOT_DISK"
   refuse "the root disk even in test mode" "only a loop device" "$ROOT_DISK" "$STICK"
+  # Only disks that are not sticks. On a native Linux host this container sees
+  # the real disks, and a genuine stick plugged in there is a device the
+  # script is supposed to accept -- offering it would either report a false
+  # failure or, with a broken check, put a real stick one answer away from
+  # erasure. Such devices are listed and skipped, never offered.
   disks=0
+  skipped=0
   for d in $(lsblk -dnpo NAME,TYPE | awk '$2 == "disk" {print $1}'); do
     [[ "$d" == "$ROOT_DISK" ]] && continue
+    n="$(basename "$d")"
+    d_tran="$(lsblk -dno TRAN "$d" | tr -d '[:space:]')"
+    d_rm="$(lsblk -dno RM "$d" | tr -d '[:space:]')"
+    d_mmc=""
+    if [[ "$n" == mmcblk* && -r "/sys/class/block/$n/device/type" ]]; then
+      d_mmc="$(tr -d '[:space:]' < "/sys/class/block/$n/device/type")"
+    fi
+    if in_writer transport_verdict "$d_tran" "$d_rm" "$d_mmc" >/dev/null 2>&1; then
+      info "not offered: $d is removable or USB on this host (TRAN='$d_tran', RM=$d_rm)"
+      skipped=$((skipped + 1))
+      continue
+    fi
     refuse "host disk $d ($(lsblk -dno SIZE "$d" | tr -d ' '))" "error:" "$d"
     disks=$((disks + 1))
   done
-  info "$disks other host disks tried"
+  info "$disks other host disks tried, $skipped removable ones skipped"
+
+  echo "--- decisions, with inputs a container cannot produce ---"
+  # Review finding: lsblk reports TRAN=mmc for every mmcblk device, soldered
+  # eMMC included, so TRAN=mmc must not be enough.
+  accepts "a USB stick (TRAN=usb, RM=1)" transport_verdict usb 1 ""
+  accepts "a USB SSD that reports RM=0 (TRAN=usb)" transport_verdict usb 0 ""
+  accepts "an SD card in a built-in slot (TRAN=mmc, type SD)" transport_verdict mmc 0 SD
+  rejects "an internal eMMC (TRAN=mmc, type MMC)" transport_verdict mmc 0 MMC
+  rejects "an eMMC even if flagged removable (TRAN=mmc, RM=1, type MMC)" transport_verdict mmc 1 MMC
+  rejects "an SDIO device (type SDIO)" transport_verdict mmc 0 SDIO
+  rejects "an MMC device whose type cannot be read" transport_verdict mmc 0 ""
+  rejects "an internal SATA disk (TRAN=sata, RM=0)" transport_verdict sata 0 ""
+  rejects "an NVMe disk (TRAN=nvme, RM=0)" transport_verdict nvme 0 ""
+  rejects "a virtual disk (no TRAN, RM=0)" transport_verdict "" 0 ""
+  accepts "a 256 GB stick (256,060,514,304 bytes)" size_verdict 256060514304 0
+  rejects "a 500 GB drive without --allow-large" size_verdict 500107862016 0
+  accepts "a 500 GB drive with --allow-large" size_verdict 500107862016 1
   refuse "a loop device without the test variable" "is a loop device, not a USB stick" "$LOOP"
   refuse "a loop device over a different file" "is backed by" "$LOOP" "$DECOY"
   refuse "a partition" "is a partition" "${LOOP}p1" "$STICK"
@@ -182,6 +312,64 @@ write)
   refuse "a disk with a mounted partition" "is mounted" "$LOOP" "$STICK"
   umount /mnt/seed
   refuse "a device too small for image plus persistence" "need" "$SMALL_LOOP" "$SMALL"
+
+  # Review finding: an external backup drive passes every other check.
+  refuse "a 300 GiB device without --allow-large" "pass --allow-large" "$BIG_LOOP" "$BIG"
+  out="$(echo no | SONORA_WRITE_USB_TEST_IMAGE="$BIG" bash "$WRITER" --allow-large "$BIG_LOOP" 2>&1)" || true
+  expect "--allow-large admits a 300 GiB device as far as the prompt, showing its size" \
+    "--allow-large did not reach the prompt for a 300 GiB device" \
+    test "$(printf '%s\n' "$out" | grep -c -e "Target device (322 GB)" -e "aborted.")" == 2
+
+  # Review finding: lsblk is blind to other mount namespaces. The kernel's
+  # exclusive-open check is not.
+  mount_elsewhere
+  info "lsblk here sees mounts on $LOOP: [$(lsblk -nlo MOUNTPOINT "$LOOP" | tr -d '[:space:]')]"
+  refuse "a disk mounted in another mount namespace" "in use by something this namespace cannot see" "$LOOP" "$STICK"
+  unmount_elsewhere
+
+  # Review finding: nothing pinned the device across the prompt. Each of these
+  # answers ERASE, so they would erase the image if the recheck failed.
+  during_prompt "the device was replaced while the prompt waited" "changed while waiting" swap_device
+  during_prompt "the device was mounted elsewhere while the prompt waited" \
+    "in use by something this namespace cannot see" mount_elsewhere
+  unmount_elsewhere
+
+  # Review finding: on a desktop, udev re-reads the table when dd closes the
+  # device and udisks mounts the fresh image, so BLKRRPART fails with EBUSY
+  # and the stick was left without persistence. This drives write-usb.sh's
+  # own partition step in exactly that state.
+  echo "--- adding partition 3 while the fresh image is in use ---"
+  iso_bytes="$(stat -Lc%s "$ISO")"
+  p3_mib=$(( (iso_bytes + 1048575) / 1048576 ))
+  p3_start=$(( p3_mib * 2048 ))
+  for held in "partition 1" "the whole disk" "a stale partition 3 from the previous write, and partition 1"; do
+    rm -f "$PARTTEST"
+    truncate -s 2G "$PARTTEST"
+    dd if="$ISO" of="$PARTTEST" bs=4M conv=notrunc status=none
+    if [[ "$held" == *stale* ]]; then
+      # The kernel keeps the old partition 3 when dd rewrites the MBR.
+      echo "start=${p3_start}, type=83" | sfdisk -q --append --no-reread --no-tell-kernel --wipe never "$PARTTEST" >/dev/null 2>&1
+      attach PT_LOOP "$PARTTEST"
+      dd if="$ISO" of="$PT_LOOP" bs=4M conv=fsync status=none
+    else
+      attach PT_LOOP "$PARTTEST"
+    fi
+    mkdir -p /mnt/held
+    if [[ "$held" == "the whole disk" ]]; then mount -o ro "$PT_LOOP" /mnt/held; else mount -o ro "${PT_LOOP}p1" /mnt/held; fi
+    echo "start=${p3_start}, type=83" | sfdisk -q --append --no-reread --no-tell-kernel --wipe never --wipe-partitions never "$PT_LOOP" >/dev/null 2>&1
+    if blockdev --rereadpt "$PT_LOOP" 2>/dev/null; then
+      bad "with $held mounted, BLKRRPART unexpectedly succeeded; the fallback is not being exercised"
+    else
+      info "with $held mounted, BLKRRPART fails as it does on a desktop"
+    fi
+    pt_name="$(basename "$PT_LOOP")"
+    found="$(in_writer add_and_find "$PT_LOOP" "$pt_name" "$p3_start" 2>&1 || true)"
+    expect "partition 3 reaches the kernel with $held mounted ($found)" \
+      "partition 3 did not reach the kernel with $held mounted: $found" \
+      test "$found" == "${PT_LOOP}p3"
+    umount /mnt/held
+    losetup -d "$PT_LOOP"
+  done
 
   before="$(sha256sum < "$STICK")"
   out="$(echo no | SONORA_WRITE_USB_TEST_IMAGE="$STICK" bash "$WRITER" "$LOOP" 2>&1)" || true
@@ -225,7 +413,8 @@ write)
   install -m 0644 "$INITRD" /out/initrd.img
   umount /mnt/iso
   sync
-  for l in "${LOOPS[@]}"; do losetup -d "$l"; done
+  # Some were detached already by the tests above; the host checks for leaks.
+  for l in "${LOOPS[@]}"; do losetup -d "$l" 2>/dev/null || true; done
   LOOPS=()
   # qcow2 so the host gets ~1 GB rather than 8 GB of mostly zeros through a
   # Windows bind mount. The content is the same disk, sector for sector.

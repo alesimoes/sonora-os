@@ -73,3 +73,39 @@ write; reaching the prompt is itself the failure. It then writes a used stick
 (GPT, ext4) and a SonoraOS stick, and checks the layout byte for byte. Finally
 it boots the result five ways, including a reboot that must find a marker the
 previous boot wrote.
+
+## Review of the fix, same day
+
+The code review of the first fix found the guard still too trusting. All of
+these are fixed and tested in `tools/test-write-usb.sh`:
+
+- **eMMC passed as a card.** `TRAN=mmc` was accepted, and lsblk sets it for
+  soldered eMMC too. A mini-PC booted from the stick would have offered its
+  Windows disk, protected only by the prompt. Now only an MMC device of
+  type `SD` is accepted.
+- **Nothing pinned the device across the prompt.** The checks ran, a human
+  read the prompt, and then `wipefs` and `dd` reopened whatever the name
+  meant by then. Now diskseq is recorded before the prompt; after it, the
+  identity, the kind checks and the in-use checks all run again, and `dd`
+  and the read-back go through descriptors that are opened once and checked.
+  The test reattaches the loop device while the script waits at the prompt,
+  answers ERASE, and asserts that nothing was written.
+- **Mounts in other namespaces were invisible.** Now an `O_EXCL` probe
+  (`wipefs --no-act`) runs before the prompt and again after it, and the
+  first write, `wipefs` without `--force`, is exclusive itself. The test
+  mounts the stick inside `unshare -m`.
+- **BLKRRPART fails on desktops,** where udisks has already mounted the fresh
+  image, leaving a stick without persistence and an unexplained error. The
+  fallback is `partx --update --nr 3`. The test drives the script's own
+  function with partition 1, the whole disk, and a stale partition 3 each
+  held.
+- **External drives were accepted,** with only the prompt as protection.
+  Anything over 256 GiB now needs `--allow-large`, and the prompt shows the
+  size.
+- **The test could offer a real stick.** On a native Linux host its refusal
+  loop would have pointed the script at genuine USB devices. Those are now
+  listed and skipped.
+
+What generalises: a check run before an interactive pause protects only the
+moment it ran. Anything that matters must be checked again after the pause,
+against an identity rather than a name.

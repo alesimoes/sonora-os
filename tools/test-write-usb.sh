@@ -91,7 +91,7 @@ expect() {
 check_loop_leaks() {
   local leaked
   leaked="$(docker run --rm --privileged "$IMAGE" losetup -a \
-    | grep -E '/(stick|small|booted|decoy)\.img' || true)"
+    | grep -E '/(stick|small|booted|decoy|big|part)\.img' || true)"
   expect "no loop devices left bound to the test's images" \
     "loop devices leaked: $leaked" \
     test -z "$leaked"

@@ -85,11 +85,59 @@ Their mounts live in the VM's other mount namespaces, so only two look
 mounted from inside the container (`/etc/hosts` on `sde`, swap on `sdc`).
 The original writer's only guard was "is it mounted?", so it would have offered
 to erase `sda`, `sdb` and `sdd`, the last of them a 256 GB VM disk. The guard
-now requires `TRAN=usb`/`mmc` or `RM=1`; every one of those disks reports
-`TRAN=''` and `RM=0`.
+now requires `TRAN=usb`, or `RM=1`, or an MMC device whose type is `SD` (see
+below). Every one of those disks reports `TRAN=''` and `RM=0`.
 
 New partition nodes also never appear in the container's static `/dev`. The
 test mounts `devtmpfs` over it, which is what a real system has.
+
+## Telling a stick from a disk you must not touch
+
+Added after review, 2026-10-12. Each point below was measured in the same
+container unless marked.
+
+- **`TRAN=mmc` is not "removable".** lsblk reports it for every `mmcblk`
+  device, including the soldered eMMC that mini-PCs and cheap laptops boot
+  Windows from. The card type in `/sys/block/mmcblkN/device/type` separates
+  them: `SD` is a card in a slot, `MMC` is eMMC, and `SDIO` is not storage.
+  (Kernel MMC core sysfs; not observed here, because there is no MMC
+  hardware in a container. The writer's decision function is tested with
+  synthetic inputs instead.)
+- **The kernel sees mounts that lsblk does not.** A partition mounted inside
+  `unshare -m` is invisible to lsblk in the parent namespace (`MOUNTPOINT`
+  empty). But an `O_EXCL` open of the whole disk fails with EBUSY, because any
+  claimed partition marks the whole disk as claimed. `wipefs` without
+  `--force` opens with `O_RDWR|O_EXCL` (seen with strace, util-linux 2.41.5),
+  and `wipefs --no-act --all` does so too while writing nothing, so it serves
+  as the probe. **Limitation:** a process holding the device open *without*
+  `O_EXCL` is invisible to this check, and only a scan of every `/proc/*/fd`
+  would find it. Mounts, swap, md and dm all claim exclusively, so they are
+  covered.
+- **diskseq tells you whether the name still means the same medium.**
+  `/sys/block/<dev>/diskseq` (kernel 5.15 and later) went from 124 to 126
+  when the same file was detached from a loop node and reattached to the same
+  node: same name, same backing file, same size, different value. The writer
+  records it before the prompt and compares it after.
+
+## Re-reading the table while the fresh image is mounted
+
+On a desktop, udev re-reads the partition table as soon as `dd` closes the
+device, and udisks then mounts the image. After that:
+
+| State | `blockdev --rereadpt` | `sfdisk` without `--no-tell-kernel` | `partx --update --nr 3` |
+|---|---|---|---|
+| partition 1 mounted | EBUSY | — | p3 added, start correct |
+| whole disk mounted | EBUSY | exits 0, **p3 not added** | p3 added, start correct |
+| stale p3 from the previous write, p1 mounted | EBUSY | — | p3 correct |
+| nothing mounted | works | — | — |
+
+`partx -u` without `--nr` also added p3, but it dropped p1 from the
+kernel's view while the whole disk was mounted. The writer therefore tries
+BLKRRPART first and falls back to `partx --update --nr 3`.
+
+Not verified: with the *whole disk* mounted, formatting p3 should fail,
+because the whole-disk claim blocks exclusive opens of its partitions. The
+writer reports that case by name, but it was not run.
 
 ## Not verified
 
