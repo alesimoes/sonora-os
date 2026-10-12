@@ -71,3 +71,6 @@ __pycache__/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Agent worktrees, one per parallel squad (ADR-0007).
+/.claude/worktrees/
