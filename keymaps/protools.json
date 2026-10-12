@@ -1,0 +1,166 @@
+{
+  "name": "Pro Tools",
+  "comment": "Pro Tools key bindings, reproduced as an interface convention under ADR-0004, checked against Avid's Pro Tools Shortcuts Guide (12.5, 2021.6, 2025.6); see brain/research/protools-logic-key-bindings.md. Modifiers are written in the Windows/Linux spelling: ctrl here is Command on a Mac keyboard, alt is Option. Numeric-keypad bindings assume Pro Tools' Transport keypad mode. Bindings marked \"verified\": false are ours or unconfirmed - see keymaps/README.md. Nine letters (a s d f g b p ; e) are Commands Keyboard Focus bindings; this engine has no focus modes yet, so they are bound unconditionally, as if focus were always on.",
+  "bindings": {
+    "space": "transport.toggle_play",
+    "shift+space": "transport.play_half_speed",
+    "ctrl+space": "transport.record",
+    "f12": "transport.record",
+    "return": "transport.return_to_zero",
+    "alt+return": {
+      "command": "transport.go_to_end",
+      "comment": "Option+Return on a Mac. On Windows Pro Tools uses Control+Enter instead; this profile follows the Mac set throughout."
+    },
+    "numpad_0": "transport.toggle_play",
+    "numpad_1": "transport.rewind",
+    "numpad_2": "transport.fast_forward",
+    "numpad_3": {
+      "command": "transport.record",
+      "comment": "Avid's own guide disagrees with itself: the Transport keypad table calls keypad 3 Record Enable, the Recording table lists it under Start record. This follows the second."
+    },
+    "numpad_4": "transport.toggle_loop",
+    "ctrl+shift+l": "transport.toggle_loop",
+
+    "f1": "edit.mode.shuffle",
+    "f2": "edit.mode.slip",
+    "f3": "edit.mode.spot",
+    "f4": "edit.mode.grid",
+    "grave": "edit.mode.next",
+
+    "f5": "tool.zoom",
+    "f6": "tool.trim",
+    "f7": "tool.select",
+    "f8": "tool.grab",
+    "f9": "tool.scrub",
+    "f10": "tool.pencil",
+    "escape": "tool.next",
+    "ctrl+7": {
+      "command": "tool.smart",
+      "comment": "Command+7 / Control+7. Pro Tools also engages the Smart Tool by holding F6+F7 or F7+F8 together; this schema binds one chord to one command and cannot express two keys held at once."
+    },
+
+    "ctrl+bracketright": "zoom.in",
+    "ctrl+bracketleft": "zoom.out",
+    "ctrl+alt+bracketright": {
+      "command": "zoom.vertical_in",
+      "comment": "Avid prints Command+Option+[ or ] for vertical zoom without saying which is in; ] for in follows the horizontal pair."
+    },
+    "ctrl+alt+bracketleft": {
+      "command": "zoom.vertical_out",
+      "comment": "See ctrl+alt+bracketright."
+    },
+    "e": {
+      "command": "zoom.toggle",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes. The focus-free form, Mac Control+E / Windows Start+E, needs a modifier this schema cannot spell."
+    },
+    "alt+f": "zoom.fit_selection",
+    "alt+a": "zoom.fit_session",
+
+    "numpad_plus": "nudge.forward",
+    "numpad_minus": "nudge.back",
+
+    "ctrl+z": "edit.undo",
+    "ctrl+shift+z": "edit.redo",
+    "ctrl+x": "edit.cut",
+    "ctrl+c": "edit.copy",
+    "ctrl+v": "edit.paste",
+    "ctrl+a": "edit.select_all",
+    "ctrl+d": "edit.duplicate",
+    "ctrl+e": "edit.separate_at_selection",
+    "ctrl+h": "edit.heal_separation",
+    "ctrl+s": "app.save",
+    "ctrl+q": {
+      "command": "app.quit",
+      "verified": false,
+      "comment": "Not listed in Avid's Shortcuts Guide; macOS convention."
+    },
+    "ctrl+b": "edit.clear",
+    "alt+r": "edit.repeat",
+    "alt+shift+3": "edit.consolidate",
+
+    "a": {
+      "command": "edit.trim_start_to_insertion",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+    },
+    "s": {
+      "command": "edit.trim_end_to_insertion",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+    },
+    "d": {
+      "command": "edit.fade_to_start",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+    },
+    "f": {
+      "command": "edit.fade_selection",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+    },
+    "g": {
+      "command": "edit.fade_to_end",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+    },
+    "b": {
+      "command": "edit.separate_at_selection",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+    },
+    "p": {
+      "command": "track.select_previous",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes. Avid's command moves the edit insertion to the previous track, which is the nearest thing the catalog has."
+    },
+    "semicolon": {
+      "command": "track.select_next",
+      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes. Avid's command moves the edit insertion to the next track."
+    },
+
+    "shift+r": {
+      "command": "track.toggle_arm",
+      "comment": "Record enable the tracks holding the edit cursor or selection. This build has no selection yet, so until it does this key reports that it failed; the numbered arms below work today."
+    },
+    "shift+s": "track.toggle_solo",
+    "shift+m": "track.toggle_mute",
+    "shift+i": "track.toggle_input_monitor",
+
+    "shift+1": {
+      "command": "track.toggle_arm",
+      "target": 1,
+      "verified": false,
+      "comment": "Ours, so an engineer at a tty can arm a numbered track without a selection. No bare Shift+1 appears in Avid's guides."
+    },
+    "shift+2": {
+      "command": "track.toggle_arm",
+      "target": 2,
+      "verified": false,
+      "comment": "Ours, and it collides: in Pro Tools Shift+2 bypasses inserts A-E on the selected tracks."
+    },
+    "shift+3": {
+      "command": "track.toggle_arm",
+      "target": 3,
+      "verified": false,
+      "comment": "Ours, and it collides: in Pro Tools Shift+3 bypasses inserts F-J on the selected tracks."
+    },
+    "shift+4": {
+      "command": "track.toggle_arm",
+      "target": 4,
+      "verified": false,
+      "comment": "Ours, and it collides: in Pro Tools Shift+4 mutes sends A-E on the selected tracks."
+    },
+    "shift+5": {
+      "command": "track.toggle_arm",
+      "target": 5,
+      "verified": false,
+      "comment": "Ours, and it collides: in Pro Tools Shift+5 mutes sends F-J on the selected tracks."
+    },
+    "shift+6": { "command": "track.toggle_arm", "target": 6, "verified": false },
+    "shift+7": { "command": "track.toggle_arm", "target": 7, "verified": false },
+    "shift+8": { "command": "track.toggle_arm", "target": 8, "verified": false },
+    "alt+shift+r": {
+      "command": "track.arm_all",
+      "verified": false,
+      "comment": "Ours. Pro Tools arms every track by Option-clicking a record-enable button. Option+Shift+R appears in none of Avid's three guides."
+    },
+    "alt+shift+w": {
+      "command": "track.disarm_all",
+      "verified": false,
+      "comment": "Ours. Moved off alt+shift+d, which is Pro Tools' Duplicate Tracks. Option+Shift+W appears in none of Avid's 12.5, 2021.6 or 2025.6 guides."
+    }
+  }
+}

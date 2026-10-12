@@ -3,14 +3,14 @@
   "comment": "Matches what engine/src/main.cpp handles today. Phase 1 only.",
   "bindings": {
     "space": "transport.toggle_record",
-    "1": "track.toggle_arm.1",
-    "2": "track.toggle_arm.2",
-    "3": "track.toggle_arm.3",
-    "4": "track.toggle_arm.4",
-    "5": "track.toggle_arm.5",
-    "6": "track.toggle_arm.6",
-    "7": "track.toggle_arm.7",
-    "8": "track.toggle_arm.8",
+    "1": { "command": "track.toggle_arm", "target": 1 },
+    "2": { "command": "track.toggle_arm", "target": 2 },
+    "3": { "command": "track.toggle_arm", "target": 3 },
+    "4": { "command": "track.toggle_arm", "target": 4 },
+    "5": { "command": "track.toggle_arm", "target": 5 },
+    "6": { "command": "track.toggle_arm", "target": 6 },
+    "7": { "command": "track.toggle_arm", "target": 7 },
+    "8": { "command": "track.toggle_arm", "target": 8 },
     "a": "track.arm_all",
     "q": "app.quit"
   }

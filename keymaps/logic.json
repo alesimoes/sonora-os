@@ -1,0 +1,144 @@
+{
+  "name": "Logic Pro",
+  "comment": "Logic Pro key bindings, reproduced as an interface convention under ADR-0004, checked against Apple's Logic Pro for Mac 12.3 user guide (U.S. default preset); see brain/research/protools-logic-key-bindings.md. Logic is a Mac application, so Command is written \"cmd\" here, \"ctrl\" is the Mac Control key and \"alt\" is Option. Logic has no Pro Tools edit modes and no Smart Tool, and it picks tools from a floating Tool menu - press T, then a letter - which this schema cannot express; where this engine needs a command Logic does not bind, the binding is ours and marked \"verified\": false with the reason. zoom.toggle is deliberately unbound: Logic's own toggle is Z, bound here to zoom.fit_selection, and the chords around it are all taken. See keymaps/README.md.",
+  "bindings": {
+    "space": "transport.toggle_play",
+    "r": "transport.record",
+    "return": "transport.return_to_zero",
+    "c": "transport.toggle_loop",
+    "comma": "transport.rewind",
+    "period": {
+      "command": "transport.fast_forward",
+      "comment": "Logic calls Period Forward and Shift-Period Fast Forward; the catalog has one command for both."
+    },
+    "numpad_0": "transport.stop",
+    "numpad_multiply": "transport.toggle_record",
+    "alt+return": {
+      "command": "transport.go_to_end",
+      "comment": "Go to End of Last Region: Logic's end is where the last region ends, not a fixed project end."
+    },
+
+    "cmd+z": "edit.undo",
+    "cmd+shift+z": "edit.redo",
+    "cmd+x": "edit.cut",
+    "cmd+c": "edit.copy",
+    "cmd+v": "edit.paste",
+    "cmd+a": "edit.select_all",
+    "cmd+s": "app.save",
+    "cmd+q": "app.quit",
+    "cmd+t": "edit.separate_at_selection",
+    "cmd+j": "edit.heal_separation",
+    "cmd+r": "edit.repeat",
+    "delete": {
+      "command": "edit.clear",
+      "comment": "Not in any key-command table; Apple's guide says it in prose: \"Choose Edit > Delete (or press Delete)\". Edit > Delete removes the selection without the clipboard, which is Clear."
+    },
+    "ctrl+b": {
+      "command": "edit.consolidate",
+      "comment": "Bounce Regions/Cells in Place, Logic's equivalent of Consolidate."
+    },
+    "cmd+bracketleft": {
+      "command": "edit.trim_start_to_insertion",
+      "comment": "Set Region/Event/Marquee Start to Playhead Position."
+    },
+    "cmd+bracketright": {
+      "command": "edit.trim_end_to_insertion",
+      "comment": "Set Region/Event/Marquee End to Playhead Position."
+    },
+    "ctrl+alt+x": {
+      "command": "edit.fade_selection",
+      "comment": "Apply Default Crossfade."
+    },
+
+    "z": {
+      "command": "zoom.fit_selection",
+      "comment": "Logic's Z toggles between fitting the selection and all contents; this is its first press."
+    },
+    "cmd+right": "zoom.in",
+    "cmd+left": "zoom.out",
+    "cmd+down": "zoom.vertical_in",
+    "cmd+up": "zoom.vertical_out",
+
+    "alt+right": "nudge.forward",
+    "alt+left": "nudge.back",
+
+    "alt+pagedown": {
+      "command": "tool.next",
+      "comment": "Set Next Tool or Edit Mode. Logic's T is Show Tool Menu, which then takes a letter; that two-step form is not expressible in this schema."
+    },
+    "escape": {
+      "command": "tool.select",
+      "verified": false,
+      "comment": "Apple's 12.3 guide documents no Escape tool binding; it says to press T twice to return to the Pointer tool. Ours until someone confirms otherwise."
+    },
+    "ctrl+alt+4": {
+      "command": "tool.pencil",
+      "verified": false,
+      "comment": "Ours; Logic's Pencil is T then P. Moved off ctrl+alt+1, which is Set Nudge Value to 1 ms. Control-Option-4 does not appear in the 12.3 guide. Logic has no Trim, Grabber or Smart Tool, so those commands are deliberately unbound here."
+    },
+    "ctrl+alt+2": {
+      "command": "tool.zoom",
+      "verified": false,
+      "comment": "Ours; Logic's Zoom tool is T then Y."
+    },
+    "ctrl+alt+3": {
+      "command": "tool.scrub",
+      "verified": false,
+      "comment": "Ours; Logic has no Scrubber tool at all."
+    },
+
+    "ctrl+f1": {
+      "command": "edit.mode.shuffle",
+      "verified": false,
+      "comment": "Logic has no Pro Tools edit modes; the nearest are its Drag modes, which have no key commands. These keep the engine's modes reachable from a Logic profile and are ours, mirroring Pro Tools' function keys with a modifier."
+    },
+    "ctrl+f2": { "command": "edit.mode.slip", "verified": false },
+    "ctrl+f3": { "command": "edit.mode.spot", "verified": false },
+    "ctrl+f4": { "command": "edit.mode.grid", "verified": false },
+    "ctrl+f5": {
+      "command": "edit.mode.next",
+      "verified": false,
+      "comment": "Ours. Moved off ctrl+grave, which is Logic's Scroll in Play. Control-F5 does not appear in the 12.3 guide."
+    },
+
+    "m": {
+      "command": "track.toggle_mute",
+      "comment": "Toggle Channel Strip Mute: Logic's M already acts on the track. Region mute is Control-M."
+    },
+    "s": {
+      "command": "track.toggle_solo",
+      "comment": "Toggle Channel Strip Solo: Logic's S already acts on the track."
+    },
+    "ctrl+r": {
+      "command": "track.toggle_arm",
+      "comment": "Toggle Track Record Enable, on the selected track. This build has no selection yet, so until it does this key reports that it failed; the numbered arms below work today."
+    },
+    "ctrl+i": "track.toggle_input_monitor",
+    "up": "track.select_previous",
+    "down": "track.select_next",
+
+    "shift+1": {
+      "command": "track.toggle_arm",
+      "target": 1,
+      "verified": false,
+      "comment": "Ours, so an engineer at a tty can arm a numbered track without a selection. No bare Shift-digit appears in Logic's global tables."
+    },
+    "shift+2": { "command": "track.toggle_arm", "target": 2, "verified": false },
+    "shift+3": { "command": "track.toggle_arm", "target": 3, "verified": false },
+    "shift+4": { "command": "track.toggle_arm", "target": 4, "verified": false },
+    "shift+5": { "command": "track.toggle_arm", "target": 5, "verified": false },
+    "shift+6": { "command": "track.toggle_arm", "target": 6, "verified": false },
+    "shift+7": { "command": "track.toggle_arm", "target": 7, "verified": false },
+    "shift+8": { "command": "track.toggle_arm", "target": 8, "verified": false },
+    "alt+shift+y": {
+      "command": "track.arm_all",
+      "verified": false,
+      "comment": "Ours. Moved off alt+shift+r, which is Logic's Region Inspector Float. Option-Shift-Y does not appear in the 12.3 guide."
+    },
+    "alt+shift+d": {
+      "command": "track.disarm_all",
+      "verified": false,
+      "comment": "Ours. Not in Logic's key-command tables, but the guide's event-editor prose gives Option-Shift-D for Deselect All there, so it is close quarters."
+    }
+  }
+}
