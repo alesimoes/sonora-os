@@ -30,8 +30,10 @@ std::vector<uint8_t> slurp(const std::string& path) {
     std::fseek(f, 0, SEEK_END);
     const long n = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    std::vector<uint8_t> out(static_cast<std::size_t>(n));
-    std::fread(out.data(), 1, out.size(), f);
+    std::vector<uint8_t> out(n > 0 ? static_cast<std::size_t>(n) : 0);
+    // A short read would hand the checks a zero-filled tail that looks like
+    // silence; an empty result fails them visibly instead.
+    if (std::fread(out.data(), 1, out.size(), f) != out.size()) out.clear();
     std::fclose(f);
     return out;
 }
