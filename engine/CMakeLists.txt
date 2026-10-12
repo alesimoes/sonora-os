@@ -24,6 +24,7 @@ add_library(sonora_core STATIC
   src/keymap.cpp
   src/session_commands.cpp
   src/tty_mode.cpp
+  src/quit_signals.cpp
 )
 target_include_directories(sonora_core PUBLIC include ${JACK_INCLUDE_DIRS})
 target_link_libraries(sonora_core PUBLIC ${JACK_LIBRARIES} Threads::Threads)
@@ -46,6 +47,10 @@ add_test(NAME wav_writer COMMAND test_wav_writer)
 add_executable(test_takes tests/test_takes.cpp)
 target_link_libraries(test_takes PRIVATE sonora_core)
 add_test(NAME takes COMMAND test_takes)
+
+add_executable(test_quit_signals tests/test_quit_signals.cpp)
+target_link_libraries(test_quit_signals PRIVATE sonora_core)
+add_test(NAME quit_signals COMMAND test_quit_signals)
 
 add_executable(test_port_order tests/test_port_order.cpp)
 target_link_libraries(test_port_order PRIVATE sonora_core)

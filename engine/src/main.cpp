@@ -4,7 +4,6 @@
 // the audio path can be proven before any graphical shell exists.
 
 #include <cmath>
-#include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -19,14 +18,12 @@
 #include "sonora/command.h"
 #include "sonora/jack_backend.h"
 #include "sonora/keymap.h"
+#include "sonora/quit_signals.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
 #include "sonora/tty_mode.h"
 
 namespace {
-
-volatile std::sig_atomic_t g_quit = 0;
-void on_signal(int) { g_quit = 1; }
 
 struct TermiosGuard {
     termios saved{};
@@ -171,7 +168,7 @@ int wait_for_inputs(sonora::JackBackend& jack, double seconds) {
     std::fflush(stdout);
 
     double waited = 0.0;
-    while (waited < seconds && !g_quit) {
+    while (waited < seconds && !sonora::quit_requested()) {
         ::usleep(100000);
         waited += 0.1;
         const int n = jack.connected_input_count();
@@ -215,7 +212,8 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
     const double deadline = seconds * 2.0 + 5.0;
     double waited = 0.0;
 
-    while (!g_quit && session.transport().playhead() < target) {
+    while (!sonora::quit_requested() &&
+           session.transport().playhead() < target) {
         if (jack.server_gone()) {
             std::fprintf(stderr, "sonora: the audio server went away.\n");
             session.stop();
@@ -354,6 +352,13 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Before anything that waits: wait_for_inputs() can sit for a minute at
+    // boot, and a SIGTERM or hangup in that time must still end in a clean
+    // stop. The keyboard raises none of these -- the key reading mode turns
+    // ISIG off, because Ctrl+C is edit.copy in a profile -- unless the
+    // profile cannot quit; see keep_interrupt_key().
+    sonora::install_quit_signals();
+
     // Loaded before anything touches hardware: a bad key map is a startup
     // error, not something to discover halfway into a session.
     sonora::KeyMap keymap = sonora::KeyMap::built_in_default();
@@ -423,11 +428,6 @@ int main(int argc, char** argv) {
     }
     session.disk().start();
 
-    // From systemd and kill. The keyboard raises neither -- the key reading
-    // mode turns ISIG off, because Ctrl+C is edit.copy in a profile -- unless
-    // the profile cannot quit; see keep_interrupt_key().
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
 
     if (arm_all) {
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
@@ -510,7 +510,7 @@ int main(int argc, char** argv) {
         status_frames = 40;
     };
 
-    while (!g_quit && !quit) {
+    while (!sonora::quit_requested() && !quit) {
         // The server dying stops the callback without stopping us. Close
         // the take so what was captured is a valid file, then let the
         // service unit restart us against a fresh server.
