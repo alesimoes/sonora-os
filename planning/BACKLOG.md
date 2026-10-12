@@ -62,6 +62,10 @@ without asking a question.
       ports) through the real ALSA → PipeWire → JACK path, with the engine
       actually recording. The count is per node. driver-engineer with
       distro-engineer.
+- [ ] With M3, `drivers/fake` gains two injections from the measurements:
+      ports named without `AUX` (`capture_1..N`, what `snd-aloop` gives
+      without `audio.position`), and registry ids out of channel order. The
+      engine must still connect them in channel order. driver-engineer.
 - [ ] Plugin editors under the kiosk compositor: try Qt on `xcb` as the
       transient parent, a host anchor window, and an alternative compositor,
       with a real LV2/VST3 editor. Check whether upstream cage still
