@@ -125,8 +125,9 @@ What the terminal path does handle:
   arming keys in `protools.json` and `logic.json` work at a tty.
 - `Alt+`*key*, as ESC followed by that key's byte or sequence.
 - Arrows, Home/End, Insert/Delete, Page Up/Down and F1..F12, as CSI and SS3
-  sequences, with xterm's Shift/Alt/Ctrl parameter, and the Linux console's
-  own F1..F5 (ESC `[` `[` A..E).
+  sequences, with xterm's Shift/Alt/Ctrl parameter -- including old xterm's
+  SS3 form, where Ctrl+Up is ESC `O` `5` `A` -- and the Linux console's own
+  F1..F5 (ESC `[` `[` A..E).
 
 What it cannot, and no decoding will change:
 

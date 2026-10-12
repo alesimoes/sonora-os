@@ -578,8 +578,18 @@ Scan scan_sequence(const std::string& buf, std::size_t at, std::size_t& end) {
         return Scan::Broken;
     };
     if (buf[at + 1] == 'O') {
-        if (i >= buf.size()) return Scan::Incomplete;
-        return finish(i);
+        // Old xterm puts a modifier between ESC O and the final byte: Ctrl+Up
+        // is ESC O 5 A. Taking the 5 as the final byte left "5" and "A" to be
+        // dispatched as key presses, and the default map arms track 5 on "5".
+        while (i < buf.size()) {
+            const unsigned char c = static_cast<unsigned char>(buf[i]);
+            if (c >= 0x30 && c <= 0x3f) {
+                ++i;
+                continue;
+            }
+            return finish(i);
+        }
+        return Scan::Incomplete;
     }
     // '[' is itself a final byte, so without this the console's F1 ended at
     // ESC [ [ and its letter was dispatched as a key of its own.
@@ -611,7 +621,7 @@ bool decode_sequence(const std::string& seq, KeyChord& out) {
         }
         return false;
     }
-    // Between the introducer and the final byte. SS3 has nothing there.
+    // Between the introducer and the final byte.
     const std::string params = seq.substr(2, seq.size() - 3);
 
     std::vector<int> fields;
@@ -632,6 +642,28 @@ bool decode_sequence(const std::string& seq, KeyChord& out) {
             }
         }
         fields.push_back(any ? n : 0);
+    }
+    if (seq[1] == 'O') {
+        // SS3 carries at most the modifier, alone (ESC O 5 A) or after a 1
+        // (ESC O 1 ; 5 A), and only on the keys that have an SS3 form.
+        if (fields.size() > 2 || final_byte == '~') return false;
+        if (!fields.empty() && (fields.back() < 1 || fields.back() > 8)) {
+            return false;
+        }
+        if (final_byte == 'Z') {
+            if (!fields.empty()) return false;
+            out.key = "tab";
+            out.mods = kModShift;
+            return true;
+        }
+        for (const auto& f : kFinalKeys) {
+            if (f.final == final_byte) {
+                out.key = f.key;
+                out.mods = fields.empty() ? kModNone : mods_from_param(fields.back());
+                return true;
+            }
+        }
+        return false;
     }
     const unsigned mods =
         fields.size() > 1 ? mods_from_param(fields[1]) : kModNone;

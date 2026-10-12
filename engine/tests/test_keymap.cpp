@@ -407,6 +407,65 @@ int test_escape_starts_a_new_sequence() {
     return 0;
 }
 
+// --- SS3 with a modifier parameter is one key ---
+//
+// Old xterm sends Ctrl+Up as ESC O 5 A. The SS3 scan took the byte after ESC O
+// as the final byte, so this decoded as an unrecognised ESC O 5, a stray "5"
+// and shift+a -- and under the default map the "5" toggled arm on track 5.
+int test_ss3_modifier_parameter() {
+    using R = TerminalInput::Result;
+    struct Case {
+        const char* bytes;
+        const char* key;
+        unsigned mods;
+    };
+    const Case cases[] = {
+        {"\033O5A", "up", sonora::kModCtrl},
+        {"\033O2P", "f1", sonora::kModShift},
+        {"\033O3D", "left", sonora::kModAlt},
+        {"\033O1;5C", "right", sonora::kModCtrl},
+    };
+    for (const Case& c : cases) {
+        std::vector<KeyChord> chords;
+        const auto rs = results_of(c.bytes, std::strlen(c.bytes), chords);
+        CHECK(rs.size() == 1);
+        CHECK(rs[0] == R::Chord);
+        CHECK(chords.size() == 1);
+        CHECK(chords[0].key == c.key);
+        CHECK(chords[0].mods == c.mods);
+    }
+    {
+        // Split across reads, it is still one key, and nothing in between.
+        TerminalInput in;
+        CHECK(in.frame("\033O5", 3).empty());
+        const auto e = in.frame("A", 1);
+        CHECK(e.size() == 1);
+        CHECK(e[0].chord.key == "up" && e[0].chord.mods == sonora::kModCtrl);
+    }
+    {
+        // Parameters with no final byte, or a final we have no name for, are
+        // one unrecognised sequence -- never a digit press.
+        for (const char* bytes : {"\033O5", "\033O5~", "\033O5;5;5A"}) {
+            std::vector<KeyChord> chords;
+            const auto rs = results_of(bytes, std::strlen(bytes), chords);
+            CHECK(rs.size() == 1);
+            CHECK(rs[0] == R::Unrecognised);
+            CHECK(chords.empty());
+        }
+    }
+    {
+        // What the default map does with it: nothing gets armed.
+        const KeyMap map = KeyMap::built_in_default();
+        TerminalInput in;
+        for (const auto& e : in.frame("\033O5A", 4)) {
+            if (e.result != R::Chord) continue;
+            const Binding* b = map.resolve(e.chord);
+            CHECK(b == nullptr || b->command != "track.toggle_arm");
+        }
+    }
+    return 0;
+}
+
 // --- the decoder and terminal_chords() describe the same set ---
 //
 // terminal_chords() is what ensure_essentials() trusts. It listed
@@ -799,6 +858,7 @@ int main() {
         failures += test_linux_console_function_keys();
         failures += test_escape_starts_a_new_sequence();
         failures += test_escape_timeout();
+        failures += test_ss3_modifier_parameter();
         failures += test_decoder_matches_terminal_chords();
         failures += test_json_strictness();
         failures += test_json_control_characters();
