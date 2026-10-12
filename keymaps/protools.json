@@ -1,6 +1,6 @@
 {
   "name": "Pro Tools",
-  "comment": "Pro Tools key bindings, reproduced as an interface convention under ADR-0004, checked against Avid's Pro Tools Shortcuts Guide (12.5, 2021.6, 2025.6); see brain/research/protools-logic-key-bindings.md. Modifiers are written in the Windows/Linux spelling: ctrl here is Command on a Mac keyboard, alt is Option. Numeric-keypad bindings assume Pro Tools' Transport keypad mode. Bindings marked \"verified\": false are ours or unconfirmed - see keymaps/README.md. Nine letters (a s d f g b p ; e) are Commands Keyboard Focus bindings; this engine has no focus modes yet, so they are bound unconditionally, as if focus were always on.",
+  "comment": "Pro Tools key bindings, reproduced as an interface convention under ADR-0004, checked against Avid's Pro Tools Shortcuts Guide (12.5, 2021.6, 2025.6); see brain/research/protools-logic-key-bindings.md. Modifiers are written in the Windows/Linux spelling: ctrl here is Command on a Mac keyboard, alt is Option. Numeric-keypad bindings assume Pro Tools' Transport keypad mode. Bindings marked \"origin\": \"sonora\" are ours, for commands Pro Tools has no key for; \"verified\": false marks a Pro Tools binding nobody has confirmed - see keymaps/README.md. Nine letters (a s d f g b p ; e) are Commands Keyboard Focus bindings; this engine has no focus modes yet, so they are bound unconditionally, as if focus were always on.",
   "bindings": {
     "space": "transport.toggle_play",
     "shift+space": "transport.play_half_speed",
@@ -122,44 +122,44 @@
     "shift+1": {
       "command": "track.toggle_arm",
       "target": 1,
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours, so an engineer at a tty can arm a numbered track without a selection. No bare Shift+1 appears in Avid's guides."
     },
     "shift+2": {
       "command": "track.toggle_arm",
       "target": 2,
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours, and it collides: in Pro Tools Shift+2 bypasses inserts A-E on the selected tracks."
     },
     "shift+3": {
       "command": "track.toggle_arm",
       "target": 3,
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours, and it collides: in Pro Tools Shift+3 bypasses inserts F-J on the selected tracks."
     },
     "shift+4": {
       "command": "track.toggle_arm",
       "target": 4,
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours, and it collides: in Pro Tools Shift+4 mutes sends A-E on the selected tracks."
     },
     "shift+5": {
       "command": "track.toggle_arm",
       "target": 5,
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours, and it collides: in Pro Tools Shift+5 mutes sends F-J on the selected tracks."
     },
-    "shift+6": { "command": "track.toggle_arm", "target": 6, "verified": false },
-    "shift+7": { "command": "track.toggle_arm", "target": 7, "verified": false },
-    "shift+8": { "command": "track.toggle_arm", "target": 8, "verified": false },
+    "shift+6": { "command": "track.toggle_arm", "target": 6, "origin": "sonora" },
+    "shift+7": { "command": "track.toggle_arm", "target": 7, "origin": "sonora" },
+    "shift+8": { "command": "track.toggle_arm", "target": 8, "origin": "sonora" },
     "alt+shift+r": {
       "command": "track.arm_all",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours. Pro Tools arms every track by Option-clicking a record-enable button. Option+Shift+R appears in none of Avid's three guides."
     },
     "alt+shift+w": {
       "command": "track.disarm_all",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours. Moved off alt+shift+d, which is Pro Tools' Duplicate Tracks. Option+Shift+W appears in none of Avid's 12.5, 2021.6 or 2025.6 guides."
     }
   }

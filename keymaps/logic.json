@@ -1,6 +1,6 @@
 {
   "name": "Logic Pro",
-  "comment": "Logic Pro key bindings, reproduced as an interface convention under ADR-0004, checked against Apple's Logic Pro for Mac 12.3 user guide (U.S. default preset); see brain/research/protools-logic-key-bindings.md. Logic is a Mac application, so Command is written \"cmd\" here, \"ctrl\" is the Mac Control key and \"alt\" is Option. Logic has no Pro Tools edit modes and no Smart Tool, and it picks tools from a floating Tool menu - press T, then a letter - which this schema cannot express; where this engine needs a command Logic does not bind, the binding is ours and marked \"verified\": false with the reason. zoom.toggle is deliberately unbound: Logic's own toggle is Z, bound here to zoom.fit_selection, and the chords around it are all taken. See keymaps/README.md.",
+  "comment": "Logic Pro key bindings, reproduced as an interface convention under ADR-0004, checked against Apple's Logic Pro for Mac 12.3 user guide (U.S. default preset); see brain/research/protools-logic-key-bindings.md. Logic is a Mac application, so Command is written \"cmd\" here, \"ctrl\" is the Mac Control key and \"alt\" is Option. Logic has no Pro Tools edit modes and no Smart Tool, and it picks tools from a floating Tool menu - press T, then a letter - which this schema cannot express; where this engine needs a command Logic does not bind, the binding is ours and marked \"origin\": \"sonora\" with the reason. zoom.toggle is deliberately unbound: Logic's own toggle is Z, bound here to zoom.fit_selection, and the chords around it are all taken. See keymaps/README.md.",
   "bindings": {
     "space": "transport.toggle_play",
     "r": "transport.record",
@@ -68,36 +68,36 @@
     },
     "escape": {
       "command": "tool.select",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Apple's 12.3 guide documents no Escape tool binding; it says to press T twice to return to the Pointer tool. Ours until someone confirms otherwise."
     },
     "ctrl+alt+4": {
       "command": "tool.pencil",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours; Logic's Pencil is T then P. Moved off ctrl+alt+1, which is Set Nudge Value to 1 ms. Control-Option-4 does not appear in the 12.3 guide. Logic has no Trim, Grabber or Smart Tool, so those commands are deliberately unbound here."
     },
     "ctrl+alt+2": {
       "command": "tool.zoom",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours; Logic's Zoom tool is T then Y."
     },
     "ctrl+alt+3": {
       "command": "tool.scrub",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours; Logic has no Scrubber tool at all."
     },
 
     "ctrl+f1": {
       "command": "edit.mode.shuffle",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Logic has no Pro Tools edit modes; the nearest are its Drag modes, which have no key commands. These keep the engine's modes reachable from a Logic profile and are ours, mirroring Pro Tools' function keys with a modifier."
     },
-    "ctrl+f2": { "command": "edit.mode.slip", "verified": false },
-    "ctrl+f3": { "command": "edit.mode.spot", "verified": false },
-    "ctrl+f4": { "command": "edit.mode.grid", "verified": false },
+    "ctrl+f2": { "command": "edit.mode.slip", "origin": "sonora" },
+    "ctrl+f3": { "command": "edit.mode.spot", "origin": "sonora" },
+    "ctrl+f4": { "command": "edit.mode.grid", "origin": "sonora" },
     "ctrl+f5": {
       "command": "edit.mode.next",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours. Moved off ctrl+grave, which is Logic's Scroll in Play. Control-F5 does not appear in the 12.3 guide."
     },
 
@@ -120,24 +120,24 @@
     "shift+1": {
       "command": "track.toggle_arm",
       "target": 1,
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours, so an engineer at a tty can arm a numbered track without a selection. No bare Shift-digit appears in Logic's global tables."
     },
-    "shift+2": { "command": "track.toggle_arm", "target": 2, "verified": false },
-    "shift+3": { "command": "track.toggle_arm", "target": 3, "verified": false },
-    "shift+4": { "command": "track.toggle_arm", "target": 4, "verified": false },
-    "shift+5": { "command": "track.toggle_arm", "target": 5, "verified": false },
-    "shift+6": { "command": "track.toggle_arm", "target": 6, "verified": false },
-    "shift+7": { "command": "track.toggle_arm", "target": 7, "verified": false },
-    "shift+8": { "command": "track.toggle_arm", "target": 8, "verified": false },
+    "shift+2": { "command": "track.toggle_arm", "target": 2, "origin": "sonora" },
+    "shift+3": { "command": "track.toggle_arm", "target": 3, "origin": "sonora" },
+    "shift+4": { "command": "track.toggle_arm", "target": 4, "origin": "sonora" },
+    "shift+5": { "command": "track.toggle_arm", "target": 5, "origin": "sonora" },
+    "shift+6": { "command": "track.toggle_arm", "target": 6, "origin": "sonora" },
+    "shift+7": { "command": "track.toggle_arm", "target": 7, "origin": "sonora" },
+    "shift+8": { "command": "track.toggle_arm", "target": 8, "origin": "sonora" },
     "alt+shift+y": {
       "command": "track.arm_all",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours. Moved off alt+shift+r, which is Logic's Region Inspector Float. Option-Shift-Y does not appear in the 12.3 guide."
     },
     "alt+shift+d": {
       "command": "track.disarm_all",
-      "verified": false,
+      "origin": "sonora",
       "comment": "Ours. Not in Logic's key-command tables, but the guide's event-editor prose gives Option-Shift-D for Deselect All there, so it is close quarters."
     }
   }

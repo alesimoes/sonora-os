@@ -1073,6 +1073,7 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
 
         bool has_target = false;
         bool has_argument = false;
+        bool has_verified = false;
         long target = 0;
 
         if (v.type == Json::Type::String) {
@@ -1126,6 +1127,17 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
                         return false;
                     }
                     b.verified = f.second.boolean;
+                    has_verified = true;
+                } else if (f.first == "origin") {
+                    if (f.second.type != Json::Type::String ||
+                        (f.second.str != "vendor" && f.second.str != "sonora")) {
+                        error = at(origin, f.second.line) + "key \"" + spec +
+                                "\": \"origin\" must be \"vendor\" or"
+                                " \"sonora\"";
+                        return false;
+                    }
+                    b.origin = f.second.str == "sonora" ? BindingOrigin::Sonora
+                                                        : BindingOrigin::Vendor;
                 } else if (f.first == "comment") {
                     if (f.second.type != Json::Type::String) {
                         error = at(origin, f.second.line) + "key \"" + spec +
@@ -1142,6 +1154,15 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
             if (b.command.empty()) {
                 error = at(origin, line) + "key \"" + spec +
                         "\": no \"command\"";
+                return false;
+            }
+            // "verified" is about the vendor's documentation, which a chord
+            // of ours is not in. Accepting both would bring back the
+            // ambiguity "origin" exists to remove.
+            if (has_verified && b.origin == BindingOrigin::Sonora) {
+                error = at(origin, line) + "key \"" + spec +
+                        "\": \"origin\": \"sonora\" has no vendor binding"
+                        " to be \"verified\" against";
                 return false;
             }
         } else {

@@ -40,13 +40,19 @@ struct KeyChord {
     bool operator!=(const KeyChord& o) const { return !(*this == o); }
 };
 
+// Whose binding this is. A vendor binding reproduces the application's own
+// key; a Sonora one is a chord we chose because the application has none for
+// the command, and so has nothing to be verified against.
+enum class BindingOrigin { Vendor, Sonora };
+
 struct Binding {
     KeyChord chord;
     std::string spec;     // the chord as written in the file, for messages
     std::string command;
     CommandContext ctx;
-    // False where we are reproducing a binding we could not confirm against
-    // the real application. See keymaps/README.md.
+    BindingOrigin origin = BindingOrigin::Vendor;
+    // False where we are reproducing a vendor binding we could not confirm
+    // against the real application. See keymaps/README.md.
     bool verified = true;
     std::string comment;
     int line = 0;

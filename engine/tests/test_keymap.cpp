@@ -639,6 +639,42 @@ int test_json_duplicate_line() {
     return 0;
 }
 
+// --- "ours" and "unconfirmed" are different things ---
+//
+// "verified": false was used both for a vendor binding nobody has confirmed
+// and for a chord we chose because the vendor has none. The first is a debt
+// against the vendor's documentation; the second has nothing to be checked
+// against. "origin": "sonora" says which.
+int test_binding_origin() {
+    KeyMap map;
+    std::string err;
+    CHECK(loads(R"({ "name": "x", "bindings": {
+        "shift+1": { "command": "track.toggle_arm", "target": 1,
+                     "origin": "sonora" },
+        "ctrl+q": { "command": "app.quit", "verified": false },
+        "space": { "command": "transport.toggle_record", "origin": "vendor" } } })",
+                map, err));
+    CHECK(map.resolve("shift+1")->origin == sonora::BindingOrigin::Sonora);
+    CHECK(map.resolve("shift+1")->verified);
+    CHECK(map.resolve("ctrl+q")->origin == sonora::BindingOrigin::Vendor);
+    CHECK(!map.resolve("ctrl+q")->verified);
+    CHECK(map.resolve("space")->origin == sonora::BindingOrigin::Vendor);
+
+    // A binding of ours has no vendor to be verified against.
+    err.clear();
+    CHECK(!loads(R"({ "name": "x", "bindings": {
+        "q": { "command": "app.quit", "origin": "sonora", "verified": false } } })",
+                 map, err));
+    CHECK(mentions(err, "origin"));
+    CHECK(mentions(err, "verified"));
+
+    err.clear();
+    CHECK(!loads(R"({ "name": "x", "bindings": {
+        "q": { "command": "app.quit", "origin": "avid" } } })", map, err));
+    CHECK(mentions(err, "\"origin\" must be"));
+    return 0;
+}
+
 // --- a repair never breaks an essential that was already satisfied ---
 //
 // "q": track.arm_all, no app.quit: the quit repair rebound q, the profile lost
@@ -957,6 +993,7 @@ int main() {
         failures += test_json_strictness();
         failures += test_json_control_characters();
         failures += test_json_duplicate_line();
+        failures += test_binding_origin();
         failures += test_repair_keeps_what_works(device, implemented);
         failures += test_targetless_arm_does_not_count(device,
                                                        implemented);
@@ -1507,6 +1544,7 @@ int main() {
     {
         const char* profiles[] = {"default.json", "protools.json", "logic.json"};
         int unverified = 0;
+        int ours = 0;
         for (const char* file : profiles) {
             const std::string path = std::string(SONORA_KEYMAP_DIR) + "/" + file;
             KeyMap map;
@@ -1545,12 +1583,26 @@ int main() {
                     return 1;
                 }
                 if (!b.verified) ++unverified;
+                if (b.origin == sonora::BindingOrigin::Sonora) ++ours;
+                // The conflation this replaced: a chord we chose, marked as
+                // a vendor binding nobody has confirmed.
+                if (!b.verified && mentions(b.comment, "Ours")) {
+                    std::fprintf(stderr, "FAIL %s: %s is ours, so it is"
+                                 " \"origin\": \"sonora\", not unverified\n",
+                                 file, b.spec.c_str());
+                    return 1;
+                }
             }
         }
         // Not a failure, but it must be visible: unverified bindings are a
         // debt that someone has to check against the real applications.
-        std::printf("test_keymap: %d unverified bindings across the profiles\n",
-                    unverified);
+        // Ours are counted apart, because there is nothing to check them
+        // against.
+        std::printf("test_keymap: %d unverified vendor bindings across the"
+                    " profiles\n", unverified);
+        std::printf("test_keymap: %d bindings of our own where the vendor has"
+                    " none\n", ours);
+        CHECK(ours > 0);
     }
 
     // --- the built-in default is the shipped default ---

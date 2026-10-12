@@ -55,3 +55,18 @@ without asking a question.
   changing.
 - No RT priority is requested for the audio thread yet; PipeWire sets it for
   its own client thread, which is enough until we own threads.
+- `KeyMap::terminal_chords()` assumes xterm's modifier encoding. On the Linux
+  console (tty1, where the appliance runs) Alt+Fn and Alt+Left/Right switch
+  virtual terminals, Shift+PgUp/PgDn scroll the console, and Ctrl/Shift+arrow
+  send no modifier parameter at all, so those chords never reach the engine
+  but are counted as sendable by `ensure_essentials()` and listed in the
+  footer. No shipped essential depends on one today; a profile that put its
+  only arm, record, stop or quit key there would pass the check and not work.
+  Fix by deriving the device set from the console's keymap (`dumpkeys`), or
+  by a tty1-specific table.
+- `WavWriter::open()`/`close()` run on the interface thread while the disk
+  thread reads `is_open()` in `drain_once()`, and `capture_ring().reset()`
+  runs alongside its `read_space()`. Harmless in practice -- no audio is
+  queued at those moments -- but it is a data race on a plain pointer.
+  Hand the open writer to the disk thread through an atomic, or open and
+  close on the disk thread itself.

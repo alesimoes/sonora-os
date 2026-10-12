@@ -27,7 +27,8 @@ actual reason it is worth doing this way.
       "bindings": {
         "space":        "transport.toggle_play",
         "ctrl+shift+z": "edit.redo",
-        "shift+3":      { "command": "track.toggle_arm", "target": 3 },
+        "shift+3":      { "command": "track.toggle_arm", "target": 3,
+                          "origin": "sonora" },
         "ctrl+q":       { "command": "app.quit", "verified": false,
                           "comment": "why we are unsure" }
       }
@@ -40,8 +41,9 @@ A binding's value is either a command name, or an object with:
 | `command` | required; a name from `engine/include/sonora/command.h` |
 | `target` | track number as the operator sees it, counting from 1, up to 1024. Only for commands that take a track. Without one, a track command acts on the selection -- and this build has no selection yet, so such a key reports that it failed, is left out of the on-screen key list, and does not count as a way to arm. |
 | `argument` | free-form string for a command that needs a value. No command in this build takes one, so supplying it is a load error rather than a field that is quietly ignored. |
-| `verified` | `false` marks a binding we have not confirmed against the real application. Defaults to `true`. |
-| `comment` | free text, usually the reason `verified` is `false` |
+| `origin` | `"vendor"` (the default): the application's own key for this command. `"sonora"`: a chord we chose because the application has no key for the command -- arming track 3 by number, say. |
+| `verified` | `false` marks a vendor binding we have not confirmed against the application's documentation. Defaults to `true`. Not allowed with `"origin": "sonora"`, which has nothing to be confirmed against. |
+| `comment` | free text, usually why a binding is ours or unverified |
 
 The key is a chord: zero or more modifiers and one key, joined by `+`.
 Modifiers are `ctrl`, `shift`, `alt`, `cmd` and are order-independent;
@@ -162,6 +164,12 @@ What it cannot, and no decoding will change:
   keymap, which is Phase 3 work.
 - **Two keys held at once**, which is how Pro Tools engages the Smart Tool.
 
+Known gap: the check assumes xterm's modifier encoding. On the Linux console
+Alt+Fn and Alt+Left/Right switch virtual terminals, Shift+PgUp/PgDn scroll,
+and Ctrl/Shift+arrow arrive without their modifier, yet those chords are still
+counted as sendable. No essential in a shipped profile depends on one; see
+`planning/BACKLOG.md`.
+
 ## Known but unimplemented
 
 A command in the catalog with no handler in this build is a different thing
@@ -171,10 +179,20 @@ whole file. That split is what lets these profiles carry the real bindings for
 edit modes and tools before the editor they drive exists, without any key ever
 silently doing nothing.
 
-## Unverified bindings
+## Unverified and Sonora bindings
 
-`"verified": false` means exactly that: nobody has confirmed the binding
-against the application. The value of a profile is that it matches what the
-engineer's hands already know, so a wrong binding is worse than a missing one.
-`test_keymap` prints how many there are on every run. Confirming one and
-removing the flag is a useful, small contribution.
+These are two different things, and the files say which.
+
+`"verified": false` is on a binding that claims to be the application's own
+and that nobody has confirmed against its documentation. The value of a
+profile is that it matches what the engineer's hands already know, so a wrong
+binding is worse than a missing one. Confirming one and removing the flag is a
+useful, small contribution.
+
+`"origin": "sonora"` is on a chord we chose because the application has no
+key for the command at all -- `protools.json`'s `shift+1`..`shift+8` arming
+keys, for instance. There is nothing to confirm; the comment says why that
+chord, and what it collides with if anything.
+
+`test_keymap` prints both counts on every run, and fails if a binding whose
+comment says it is ours is marked unverified instead.
