@@ -41,7 +41,10 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
                      uint16_t channels, Format format,
                      uint64_t time_reference) {
     if (file_) return false;
-    file_ = std::fopen(path.c_str(), "wb");
+    // "x" is O_EXCL: if the name is taken, fail with EEXIST rather than
+    // truncate. Choosing a free take number is the session's job; this is
+    // what stops a mistake there from destroying a recording.
+    file_ = std::fopen(path.c_str(), "wbx");
     if (!file_) return false;
     path_ = path;
     format_ = format;
@@ -50,6 +53,9 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     if (!write_header(sample_rate, channels, time_reference)) {
         std::fclose(file_);
         file_ = nullptr;
+        // Created by the call above, so it is ours to remove, and a header
+        // with no audio behind it would only hold the take number.
+        std::remove(path.c_str());
         return false;
     }
     return true;

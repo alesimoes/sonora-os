@@ -57,6 +57,7 @@ int main() {
 
     // --- a 24-bit mono file has the sizes and payload we expect ---
     {
+        std::remove(path.c_str());
         sonora::WavWriter w;
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         std::vector<float> frames{0.0f, 0.5f, -0.5f, 1.0f, -1.0f};
@@ -85,6 +86,7 @@ int main() {
 
     // --- the bext chunk carries the timecode origin, including the high word
     {
+        std::remove(path.c_str());
         sonora::WavWriter w;
         const uint64_t origin = (1ull << 32) | 2ull;
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, origin));
@@ -99,6 +101,7 @@ int main() {
 
     // --- a NaN sample becomes silence instead of garbage ---
     {
+        std::remove(path.c_str());
         sonora::WavWriter w;
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         const float nan_sample = std::numeric_limits<float>::quiet_NaN();
@@ -113,6 +116,7 @@ int main() {
 
     // --- float32 writes 4 bytes per sample and reports IEEE float ---
     {
+        std::remove(path.c_str());
         sonora::WavWriter w;
         CHECK(w.open(path, 96000, 2, sonora::WavWriter::Format::Float32, 0));
         std::vector<float> stereo{0.25f, -0.25f, 0.5f, -0.5f};  // 2 frames
@@ -131,11 +135,31 @@ int main() {
 
     // --- double close is a no-op, not a crash or a corrupt header ---
     {
+        std::remove(path.c_str());
         sonora::WavWriter w;
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         CHECK(w.close());
         CHECK(w.close());
         CHECK(!w.is_open());
+    }
+
+    // --- an existing file is never truncated ---
+    //
+    // open() used fopen("wb"), so a take numbered like one already on disk
+    // replaced it without a word: record take 1, restart the engine, record
+    // again, and the first performance was gone.
+    {
+        std::remove(path.c_str());
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        CHECK(f != nullptr);
+        std::fputs("the previous take", f);
+        std::fclose(f);
+
+        sonora::WavWriter w;
+        CHECK(!w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(!w.is_open());
+        const auto b = slurp(path);
+        CHECK(std::string(b.begin(), b.end()) == "the previous take");
     }
 
     std::remove(path.c_str());

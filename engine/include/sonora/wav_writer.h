@@ -22,7 +22,8 @@ public:
     WavWriter& operator=(const WavWriter&) = delete;
 
     // time_reference is the sample position of the first frame relative to
-    // midnight, as BWF defines it.
+    // midnight, as BWF defines it. Fails, leaving it untouched, if `path`
+    // already exists; errno is then EEXIST.
     bool open(const std::string& path, uint32_t sample_rate, uint16_t channels,
               Format format, uint64_t time_reference);
 

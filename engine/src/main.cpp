@@ -190,8 +190,11 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
         return 1;
     }
 
-    if (!session.start_recording(1)) {
-        std::fprintf(stderr, "sonora: no track could be opened for writing.\n");
+    // Never take 1 unconditionally: a test run against a session folder that
+    // already holds takes must add one, not replace one.
+    std::string why;
+    if (!session.start_recording(session.next_free_take(), &why)) {
+        std::fprintf(stderr, "sonora: cannot record: %s\n", why.c_str());
         return 1;
     }
 
@@ -428,7 +431,10 @@ int main(int argc, char** argv) {
         return rc;
     }
 
-    int take = 1;
+    // From the folder, not from 1: systemd restarts the engine every time it
+    // exits, and a counter that started over numbered the next take like the
+    // last session's first one.
+    int take = session.next_free_take();
     bool server_lost = false;
     bool quit = false;
     std::string status;
@@ -490,13 +496,15 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (const sonora::Binding* b = keymap.resolve(e.chord)) {
+                std::string why;
                 const sonora::DispatchResult d =
-                    commands.dispatch(b->command, b->ctx);
+                    commands.dispatch(b->command, b->ctx, why);
                 if (d == sonora::DispatchResult::Ok) {
                     status.clear();
                     status_frames = 0;
                 } else {
-                    say(b->command + ": " + sonora::dispatch_result_text(d));
+                    say(b->command + ": " +
+                        (why.empty() ? sonora::dispatch_result_text(d) : why));
                 }
             } else {
                 say(sonora::KeyMap::chord_to_string(e.chord) + " is not bound");

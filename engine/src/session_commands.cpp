@@ -2,6 +2,7 @@
 #include "sonora/session_commands.h"
 
 #include <cstddef>
+#include <string>
 
 #include "sonora/session.h"
 
@@ -9,25 +10,36 @@ namespace sonora {
 
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit) {
-    reg.install("transport.toggle_record", [&](const CommandContext&) {
+    // The counter is a hint, never trusted on its own: the folder may hold
+    // takes from before a restart, and start_recording() refuses a name that
+    // is taken, so the number is re-read from disk before every take.
+    const auto start = [&session, &take](std::string& why) {
+        const int free = session.next_free_take();
+        if (take < free) take = free;
+        return session.start_recording(take, &why);
+    };
+
+    reg.install("transport.toggle_record",
+                [&session, &take, start](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Recording) {
             session.stop();
             session.disk().start();  // ready for the next take
             ++take;
             return true;
         }
-        return session.start_recording(take);
+        return start(why);
     });
 
     // Start, never stop: Pro Tools' Command+Space and F12, Logic's R. Pressed
     // during a take it leaves the take alone rather than closing it and
     // opening the next, which is what a second press of a record key means
     // in both applications.
-    reg.install("transport.record", [&](const CommandContext&) {
+    reg.install("transport.record",
+                [&session, start](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Recording) {
             return true;
         }
-        return session.start_recording(take);
+        return start(why);
     });
 
     reg.install("transport.stop", [&](const CommandContext&) {

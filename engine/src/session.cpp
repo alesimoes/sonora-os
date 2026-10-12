@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/session.h"
 
+#include <dirent.h>
 #include <sys/stat.h>
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -18,6 +21,22 @@ bool make_dir(const std::string& path) {
 
 std::string audio_dir(const std::string& session_dir) {
     return session_dir + "/Audio Files";
+}
+
+// The take number in a name start_recording() writes, "<track>_<take>.wav",
+// or 0 if the name is not of that shape.
+int take_of(const char* name) {
+    const std::size_t len = std::strlen(name);
+    const std::size_t ext = 4;  // ".wav"
+    if (len <= ext || std::strcmp(name + len - ext, ".wav") != 0) return 0;
+    std::size_t start = len - ext;
+    while (start > 0 && name[start - 1] >= '0' && name[start - 1] <= '9') --start;
+    const std::size_t digits = len - ext - start;
+    // Nine digits fit an int; a longer run is not a take number we wrote.
+    if (digits == 0 || digits > 9 || start == 0 || name[start - 1] != '_') return 0;
+    int n = 0;
+    for (std::size_t i = start; i < len - ext; ++i) n = n * 10 + (name[i] - '0');
+    return n;
 }
 
 }  // namespace
@@ -49,9 +68,23 @@ bool Session::create_dirs() {
     return make_dir(audio_dir(cfg_.dir));
 }
 
-bool Session::start_recording(int take_number) {
+int Session::next_free_take() const {
+    // Every track shares the take number, so any file of ours counts, on any
+    // track, armed now or not.
+    int highest = 0;
+    DIR* d = ::opendir(audio_dir(cfg_.dir).c_str());
+    if (!d) return 1;
+    while (const dirent* e = ::readdir(d)) {
+        const int n = take_of(e->d_name);
+        if (n > highest) highest = n;
+    }
+    ::closedir(d);
+    return highest + 1;
+}
+
+bool Session::start_recording(int take_number, std::string* error) {
     const uint64_t origin = transport_->playhead();
-    bool any = false;
+    std::vector<Track*> opened;
 
     for (auto& t : tracks_) {
         if (!t->rec_armed()) continue;
@@ -62,13 +95,31 @@ bool Session::start_recording(int take_number) {
         t->capture_ring().reset();
         if (!t->writer().open(file, cfg_.sample_rate, t->channels(),
                               cfg_.format, origin)) {
-            std::fprintf(stderr, "sonora: cannot open %s\n", file);
-            continue;
+            const int err = errno;
+            // A take missing a track is not the take that was armed, and the
+            // operator would find out at playback. Undo and say so instead.
+            // Removing is safe: the writer creates exclusively, so every file
+            // in `opened` was made by this call and holds nothing yet.
+            for (Track* o : opened) {
+                const std::string path = o->writer().path();
+                o->writer().close();
+                std::remove(path.c_str());
+            }
+            const std::string why =
+                std::string(file) + ": " +
+                (err == EEXIST ? "a take with this name is already on disk"
+                               : std::strerror(err));
+            std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
+            if (error) *error = why;
+            return false;
         }
-        any = true;
+        opened.push_back(t.get());
     }
 
-    if (!any) return false;
+    if (opened.empty()) {
+        if (error) *error = "no track is armed";
+        return false;
+    }
     transport_->set_state(TransportState::Recording);
     return true;
 }

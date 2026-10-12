@@ -165,6 +165,11 @@ struct CommandContext {
 // Returns false when the command could not do its job, which the interface
 // reports. It must never block: this runs on the GUI thread.
 using CommandHandler = std::function<bool(const CommandContext&)>;
+// The same, for a handler that can say why it refused. "The command failed"
+// tells an operator nothing; "arming cannot change during a take" tells them
+// what to do. `why` is left empty on success.
+using ExplainingHandler =
+    std::function<bool(const CommandContext&, std::string& why)>;
 
 enum class DispatchResult {
     Ok,
@@ -189,6 +194,13 @@ public:
     // Fails if id is not in the catalog, so a handler for a misspelled
     // command is caught at startup instead of never firing.
     bool install(const std::string& id, CommandHandler handler) {
+        return install(id, ExplainingHandler(
+                               [h = std::move(handler)](const CommandContext& ctx,
+                                                        std::string&) {
+                                   return h(ctx);
+                               }));
+    }
+    bool install(const std::string& id, ExplainingHandler handler) {
         if (find_command(id) == nullptr) return false;
         handlers_[id] = std::move(handler);
         return true;
@@ -200,11 +212,24 @@ public:
 
     std::size_t implemented_count() const { return handlers_.size(); }
 
-    DispatchResult dispatch(const std::string& id, const CommandContext& ctx) const {
+    // `why` is the handler's reason when the result is Failed, and may be
+    // empty if it gave none; dispatch_result_text() is the fallback.
+    DispatchResult dispatch(const std::string& id, const CommandContext& ctx,
+                            std::string& why) const {
+        why.clear();
         if (find_command(id) == nullptr) return DispatchResult::UnknownCommand;
         const auto it = handlers_.find(id);
         if (it == handlers_.end()) return DispatchResult::NotImplemented;
-        return it->second(ctx) ? DispatchResult::Ok : DispatchResult::Failed;
+        if (it->second(ctx, why)) {
+            why.clear();
+            return DispatchResult::Ok;
+        }
+        return DispatchResult::Failed;
+    }
+
+    DispatchResult dispatch(const std::string& id, const CommandContext& ctx) const {
+        std::string why;
+        return dispatch(id, ctx, why);
     }
 
     DispatchResult dispatch(const std::string& id) const {
@@ -212,7 +237,7 @@ public:
     }
 
 private:
-    std::unordered_map<std::string, CommandHandler> handlers_;
+    std::unordered_map<std::string, ExplainingHandler> handlers_;
 };
 
 }  // namespace sonora
