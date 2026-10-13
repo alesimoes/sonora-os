@@ -21,11 +21,17 @@ handoff.
    and nothing more: what changed, the evidence, what is open. No restating
    files the caller can open.
 
+In the main (coordinating) session, also overwrite
+`planning/handoffs/main-session.md`: what is in flight, what landed, what
+waits on the owner, and what is next.
+
 ## When starting
 
-1. Read `planning/handoffs/<branch>.md`, `CLAUDE.md` and `STATUS.md`. Do not
-   read the previous transcript, and do not re-read files the handoff says
-   are settled.
+1. The SessionStart hook has already printed the handoffs (see
+   `planning/handoffs/README.md`). A spawned agent that did not get that
+   output reads `planning/handoffs/<branch>.md` itself. Do not read the
+   previous transcript, and do not re-read files the handoff says are
+   settled.
 2. Run its **Verify** command before changing anything, so you know the
    starting state rather than trusting it.
 3. Skip everything under **Do not redo**.

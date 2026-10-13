@@ -49,8 +49,11 @@ Both builds need Linux. From Windows, use the container wrappers:
 
 Context is the main cost. Keep sessions short and join them with handoffs.
 
-- Starting on a branch: read `planning/handoffs/<branch>.md` if it exists,
-  not old transcripts. Stopping: write it (`handoff` skill).
+- A new session is told where things stand by the SessionStart hook
+  (`tools/session-start.sh`). Trust it; do not re-read the planning files or
+  old transcripts to rebuild that picture. Stopping: update the branch's
+  handoff and, in the main session, `planning/handoffs/main-session.md`
+  (`handoff` skill).
 - Test with the fast loop, prove once with the full one (`test-loop` skill).
   Long output goes to a file under `build-*/`; read back the verdict line.
 - Read large files by line range; never paste logs or diffs into a report.
