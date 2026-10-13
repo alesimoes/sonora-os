@@ -171,9 +171,23 @@ end of its run. Keep it short: what is true now, not a diary.
   no autosave until the engine's saver exists. At M7 the document becomes a
   replica of the engine's (`model::Replica`, PR #33).
   Every colour and size is a token from `brain/specs/ui-design.md`. Open:
-  the audio is synthetic (no peak files), mix changes nothing audible (no
-  playback path), Shuffle and Spot refuse edits, Open has no key yet (no
-  `app.open` in the catalogue), Inter is not yet in the ISO.
+  the waveforms are synthetic (no peak files), Shuffle and Spot refuse
+  edits, Open has no key yet (no `app.open` in the catalogue), Inter is not yet in
+  the ISO.
+- **Playback landed (#41, ADR-0009 update).** The engine records and plays
+  back through the fixed stereo monitor bus, driven over the M7 socket by
+  `sonora-ui`, `sonora-tui` or `sonora-ctl`; `tools/run-sonora.sh` starts
+  engine and UI as two processes.
+- **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, this
+  branch).** Debian trixie under WSL2: packages, build, PipeWire with
+  pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
+  Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays
+  back and prints levels. Run end to end 2026-10-13 in a trixie container
+  with a real PulseAudio server standing in for WSLg's: mic tone recorded
+  at its level, played back, and arriving at the stand-in's speaker sink,
+  0 xruns; UI screenshot `docs/images/dev-wsl-ui.png`. **Not yet run under
+  WSL itself**: the agent could not run `wsl.exe`, and no Debian distro is
+  installed. The owner runs `tools\dev-wsl.ps1`.
 - **Still unverified:** no real audio interface has ever been attached, so
   there is still no latency or xrun figure from hardware. Nothing has run on a
   physical machine or a physical USB stick: every claim above is a loop

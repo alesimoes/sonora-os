@@ -70,6 +70,11 @@ if [[ "$backend" == jack ]] && command -v pw-jack >/dev/null; then
   # PipeWire's libjack, whichever libjack the binary was linked against.
   engine_cmd=(pw-jack "${engine_cmd[@]}")
 fi
+# Extra engine flags from a wrapper (tools/dev-wsl.sh: --no-input-monitoring).
+if [[ -n "${SONORA_ENGINE_ARGS:-}" ]]; then
+  read -r -a extra <<<"$SONORA_ENGINE_ARGS"
+  engine_cmd+=("${extra[@]}")
+fi
 if [[ "$(ulimit -l)" != unlimited ]]; then
   echo "run-sonora: locked memory is limited to $(ulimit -l) KiB here; running the" \
        "engine with --no-memlock (xruns are possible; never so on the appliance)"
