@@ -1,9 +1,9 @@
 # ADR-0010 — The display stack: labwc as a configured kiosk, Qt on Wayland
 
-- Status: **Proposed**. It shapes the image, so the owner confirms it before
-  the image work in "Migration" starts.
+- Status: **Accepted** by the owner, 2026-10-13 (labwc; sway is the fallback
+  if labwc fails on real hardware). Image work follows "Migration".
 - Date: 2026-10-13
-- Decided by: architect, pending the owner.
+- Decided by: the owner, on the architect's recommendation.
 - Numbering: ADR-0008 (portability) is on `docs/adr-0008-portability`, and
   ADR-0009 may be taken on another branch. This one is 0010 so that neither
   collides.
