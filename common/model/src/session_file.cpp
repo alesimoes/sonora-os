@@ -727,22 +727,26 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
     }
     const Value& version = root.members().front().second;
     std::int64_t file_version = 0;
-    if (!version.is_integer_lexeme() || !version.to_int64(file_version)) {
+    if (!version.is_integer_lexeme()) {
         return rd.fail(version, "sonora_session", "must be an integer format version");
     }
+    // An integer past int64 is a version from far in the future (or below
+    // zero, one that never existed), not a malformed file.
+    const bool fits = version.to_int64(file_version);
+    const bool negative = !version.text().empty() && version.text().front() == '-';
     // Checked before anything else is read: a newer file's keys are not
     // ours to judge, and a lenient read would show a session that is not
     // the one on disk.
-    if (file_version > kFormatVersion) {
+    if (fits ? file_version > kFormatVersion : !negative) {
         return rd.fail(version, "sonora_session",
-                       "this session is format version " + std::to_string(file_version) +
+                       "this session is format version " + version.text() +
                            ", newer than this program, which reads up to version " +
                            std::to_string(kFormatVersion) +
                            "; open it with a newer Sonora");
     }
-    if (file_version < 1) {
+    if (!fits || file_version < 1) {
         return rd.fail(version, "sonora_session",
-                       "format version " + std::to_string(file_version) +
+                       "format version " + version.text() +
                            " does not exist; versions start at 1");
     }
     std::string why;

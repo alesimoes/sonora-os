@@ -192,6 +192,11 @@ int test_versions() {
     CHECK(refused(edit(edit(text, "\"sonora_session\": 1,", "\"sonora_session\": 3,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
+    // Too large for int64 is still a newer version, not a malformed one.
+    CHECK(refused(edit(text, "\"sonora_session\": 1,",
+                       "\"sonora_session\": 99999999999999999999,"),
+                  "format version 99999999999999999999, newer than this program",
+                  "sonora_session"));
     CHECK(refused(edit(text, "\"sonora_session\": 1,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
     CHECK(refused(edit(text, "\"sonora_session\": 1,", "\"sonora_session\": 1.0,"),
