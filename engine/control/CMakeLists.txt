@@ -25,3 +25,10 @@ add_test(NAME playback_control COMMAND test_playback_control)
 add_executable(test_playback_fake tests/test_playback_fake.cpp)
 target_link_libraries(test_playback_fake PRIVATE sonora_control sonora_backend_fake)
 add_test(NAME playback_fake COMMAND test_playback_fake)
+
+# The docker PLAYBACK check's loopback in process, under jittered periods
+# and the reader and control threads running free.
+add_executable(test_playback_loopback tests/test_playback_loopback.cpp)
+target_link_libraries(test_playback_loopback PRIVATE
+  sonora_control sonora_backend_fake Threads::Threads)
+add_test(NAME playback_loopback COMMAND test_playback_loopback)
