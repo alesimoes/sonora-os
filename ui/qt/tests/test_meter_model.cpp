@@ -7,8 +7,10 @@
 #include <limits>
 
 #include "meter_model.h"
-#include "synthetic_engine.h"
+#include "control_adapter.h"
+#include "sonora/api/fake_engine.h"
 
+using namespace sonora;
 using namespace sonora::ui;
 
 #define CHECK(cond)                                                      \
@@ -209,20 +211,44 @@ int main() {
         }
     }
 
-    // --- the synthetic source's peak is a maximum over the interval ---
+    // --- through the adapter, a peak is a maximum over the interval ---
     {
         uint64_t now = 1'000'000'000;
-        SyntheticEngine e(18, [&now]() { return now; });
+        api::testing::FakeEngine::Config cfg;
+        cfg.clock = [&now]() { return now; };
+        api::testing::FakeEngine fake(cfg);
+        ControlAdapter e(fake);
         std::string err;
         CHECK(e.connect(err));
+        CHECK(e.info().track_count == 18);
         // Channel 10 (index 9) goes over full scale in the first 50 ms of
         // every 7 s. A reader that only sampled its tick's end would miss it.
         now += 30'000'000;   // 30 ms in: inside the burst
+        fake.publish();
         now += 40'000'000;   // read at 70 ms, after it ended
-        CHECK(SyntheticEngine::level_at(9, 0.07) < 1.0f);
+        std::vector<CommandOutcome> replies;
+        e.poll(replies);
+        CHECK(api::testing::FakeEngine::level_at(9, 0.07) < 1.0f);
         CHECK(e.take_peak(9) >= 1.0f);
         now += 16'000'000;
+        e.poll(replies);
         CHECK(e.take_peak(9) < 1.0f);  // the cursor moved on
+        CHECK(e.engine_alive(now));
+        // A command's reply carries the command's name back.
+        CommandContext first;
+        first.target = 0;
+        const uint64_t seq = e.send("track.toggle_arm", first);
+        e.poll(replies);
+        CHECK(replies.size() == 1 && replies[0].seq == seq &&
+              replies[0].command == "track.toggle_arm" &&
+              replies[0].result == DispatchResult::Ok);
+        CHECK(e.track(0).armed);
+        // The heartbeat is judged by when this reader saw it move: the last
+        // beat is seen once, then the silence after it.
+        fake.die();
+        CHECK(e.engine_alive(now));
+        now += 1'000'000'000;
+        CHECK(!e.engine_alive(now));
     }
 
     std::printf("ui meter model: all checks passed\n");

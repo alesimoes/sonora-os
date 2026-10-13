@@ -27,9 +27,11 @@ playback can follow edits; it is in flight.
        through the fixed 2-channel monitor bus (DAW 1 detail, below).
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
        locate, pre-roll; input monitoring.
-5. [ ] M4: control API, wire codec, state block and `StateView` per
+5. [x] M4: control API, wire codec, state block and `StateView` per
        ADR-0007 §3, `InProcessEngine`, `FakeEngine`; removes the illegal
-       edges; then M5, M6.
+       edges (`contract/api`; `engine/app` → `ui/tui` stays as the
+       composition root until M7, ADR-0007 M4 update item 7).
+5b. [ ] M5, M6.
 6. [ ] Take safety in DAW 1: 4 GB limit refused, periodic `fdatasync`, a
        take that survives `kill -9`, bext date.
 7. [ ] M7 process split, during DAW 2.
@@ -222,7 +224,7 @@ not start or extend those items before the Complete DAW closes (owner,
       `[[clang::nonblocking]]`. Most useful after M3 (fake backend). Also
       check whether libjack calls trip RTSan inside the callback.
       distro-engineer with rt-engineer.
-- [ ] With M4, the state publisher is paced on a fixed timer. `StateView`
+- [x] With M4, the state publisher is paced on a fixed timer. `StateView`
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
       shared-memory atomic type. rt-engineer.
@@ -263,11 +265,11 @@ not deferred.
 - [ ] Bare metal: GPU reset/hang under the compositor vs the audio callback;
       nouveau on NVIDIA; llvmpipe vs GPU xruns (ADR-0006 items 2 and 3).
       researcher.
-- [ ] M4: fix the key map comment "Matches what engine/src/main.cpp handles
+- [x] M4: fix the key map comment "Matches what engine/src/main.cpp handles
       today" in `keymaps/default.json` **and** in the copy of that profile
       embedded in `ui/keymap/src/keymap.cpp`, in the same commit, once
       commands are handled in `engine/control`. ui-engineer.
-- [ ] M4 before M5: remove the illegal edges `engine/app` → `ui/keymap`,
+- [x] M4 before M5: remove the illegal edges `engine/app` → `ui/keymap`,
       `ui/tui` and `test_keymap` → `engine/control`, `ui/tui`. M5's check
       would flag them (ADR-0007, "lessons from M1", item 1). rt-engineer
       with ui-engineer.
@@ -297,7 +299,7 @@ Order and owners are in ADR-0008 §5.
       covering `lock_memory()`, `install_quit_handlers()` and
       `default_session_root()`, with the implementations under
       `engine/app/src/posix/`. rt-engineer.
-- [ ] P4, inside M4: `test_keymap` loses termios (those checks move to a
+- [x] P4, inside M4: `test_keymap` loses termios (those checks move to a
       `ui/tui` test). It removes directories with `std::filesystem`.
       ui-engineer.
 - [ ] P5, before or right after `feature/qt-shell` merges:

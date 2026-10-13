@@ -1057,7 +1057,7 @@ KeyMap KeyMap::built_in_default() {
     // Kept identical to keymaps/default.json, which test_keymap enforces.
     static const char* const kDefault = R"JSON({
   "name": "Default",
-  "comment": "Matches what engine/src/main.cpp handles today. Phase 1 only.",
+  "comment": "Matches what the engine and the terminal interface implement today. Phase 1 only.",
   "bindings": {
     "space": "transport.toggle_record",
     "1": { "command": "track.toggle_arm", "target": 1 },

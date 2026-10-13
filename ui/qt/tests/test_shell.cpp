@@ -21,7 +21,7 @@
 #include "scene_item.h"
 #include "session_model.h"
 #include "shell_model.h"
-#include "synthetic_engine.h"
+#include "sonora/api/fake_engine.h"
 #include "timeline_document.h"
 
 using namespace sonora;
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     std::string err;
     CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
 
-    test::RecordingAdapter engine(18, SyntheticEngine::engine_commands());
+    test::RecordingAdapter engine(18, api::testing::FakeEngine::engine_commands());
     LocalDocument document(make_demo_session(18, 48000));
     SyntheticPeakSource peaks(48000, 120.0);
     SessionModel session(document, peaks, true);

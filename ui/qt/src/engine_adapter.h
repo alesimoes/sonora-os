@@ -1,33 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // THE SEAM. Everything the Qt interface knows about the engine passes through
-// this one interface, and M4 deletes it.
+// this one interface. Since M4 its one implementation is ControlAdapter
+// (control_adapter.h), which forwards every call to ADR-0007 §4.1's
+// api::EngineControl and api::StateView:
 //
-// ADR-0007 §4.1 defines the real thing: `sonora::api::EngineControl` (send,
-// poll, hello) and `sonora::api::StateView` (transport, track, take_peak,
-// engine_alive), with `FakeEngine` owned by the rt-engineer. None of it exists
-// on main yet. Rather than wait, or invent an engine API of our own, this is
-// the subset of §4.1 the early Phase 3 scope (§10) needs, with §4.1's names
-// and §4.1's semantics, and nothing else:
-//
-//   here                        replaced at M4 by
+//   here                        is
 //   ------------------------    -------------------------------------------
 //   EngineInfo                  api::Hello
-//   EngineAdapter::connect      EngineControl::connect
+//   EngineAdapter::connect      EngineControl::connect (version check)
 //   EngineAdapter::send         EngineControl::send(CommandRequest)
-//   EngineAdapter::poll         EngineControl::poll (replies only; no
-//                               EngineEvent is needed before takes are shown)
+//   EngineAdapter::poll         EngineControl::poll (replies)
 //   EngineAdapter::transport    StateView::transport  (TransportSnapshot)
 //   EngineAdapter::track        StateView::track      (TrackSnapshot)
 //   EngineAdapter::take_peak    StateView::take_peak  (per-reader cursor)
 //   EngineAdapter::engine_alive StateView::engine_alive (heartbeat)
 //
-// Rules that keep the swap mechanical:
+// It stays as a narrow seam rather than handing api::EngineControl to the
+// shell, so the shell's tests can record routing (tests/recording_adapter.h)
+// without an engine of any kind.
+//
+// Rules:
 //
 //   - Nothing in ui/qt outside ShellModel and main.cpp holds an
 //     EngineAdapter. The meters, the key router and QML never see it.
-//   - No type here carries a Qt type, so the M4 replacement is a header swap
-//     plus one adapter class, not a UI rewrite.
+//   - No type here carries a Qt type.
 //   - Nothing may be added here that §4.1 does not have. A field the UI
 //     wants and §4.1 lacks is a contract request to the rt-engineer (§6),
 //     not a line in this file.

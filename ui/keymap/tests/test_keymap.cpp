@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/keymap.h"
 
-#include <termios.h>
-#include <unistd.h>
-
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -11,10 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "sonora/api/fake_engine.h"
 #include "sonora/command.h"
-#include "sonora/session.h"
-#include "sonora/session_commands.h"
-#include "sonora/tty_mode.h"
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -71,30 +67,27 @@ TerminalInput::Result decode(const char* literal, KeyChord& out) {
     return decode(literal, std::strlen(literal), out);
 }
 
-// The handlers sonora-engine really installs, on a Session that never opens
-// an audio device. A list of them kept here instead went stale the first
-// time a handler was added, and the essentials test then passed about a build
+// What this build implements, from both sides of the seam (ADR-0007 §5):
+// the engine's commands as its Hello announces them, and the interface's own
+// app.quit. The engine side comes from FakeEngine, the provider's fake,
+// which engine/control's test_control holds to exactly the handlers
+// sonora-engine installs; a list kept here went stale the first time a
+// handler was added, and the essentials test then passed about a build
 // nobody ships.
 class BuildCommands {
 public:
-    BuildCommands() : session_(config()) {
-        sonora::install_session_commands(reg_, session_, take_, quit_);
+    BuildCommands() {
+        std::string error;
+        engine_.connect(error);
     }
-    bool operator()(const std::string& id) const { return reg_.implemented(id); }
+    bool operator()(const std::string& id) const {
+        if (id == "app.quit") return true;
+        const auto& ids = engine_.hello().implemented_commands;
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+    }
 
 private:
-    static sonora::SessionConfig config() {
-        sonora::SessionConfig cfg;
-        cfg.dir = "test_keymap_unused";
-        cfg.track_count = 1;
-        cfg.ring_seconds = 0.01;
-        return cfg;
-    }
-
-    sonora::Session session_;
-    CommandRegistry reg_;
-    int take_ = 1;
-    bool quit_ = false;
+    sonora::api::testing::FakeEngine engine_;
 };
 
 bool anything_is_implemented(const std::string&) { return true; }
@@ -194,158 +187,6 @@ std::vector<TerminalInput::Result> results_of(const char* bytes, std::size_t n,
         }
     }
     return rs;
-}
-
-// --- the terminal mode delivers every byte the decoder names ---
-//
-// Only ICANON and ECHO used to be cleared. On tty1 that left IXON on, so
-// Ctrl+S froze the console (draw() then blocked in printf mid-take) and
-// Ctrl+Q -- Pro Tools' quit -- was eaten; and ISIG on, so Ctrl+C killed the
-// engine and Ctrl+Z stopped it with a take open. Every one of those chords
-// was in terminal_chords(), so ensure_essentials() believed them.
-termios cooked_console() {
-    termios cooked{};
-    cooked.c_iflag = ICRNL | IXON | IXOFF | BRKINT;
-    cooked.c_oflag = OPOST | ONLCR;
-    cooked.c_lflag = ICANON | ECHO | ECHOE | ISIG | IEXTEN;
-    cooked.c_cc[VINTR] = 0x03;
-    cooked.c_cc[VQUIT] = 0x1c;
-    cooked.c_cc[VERASE] = 0x7f;
-    cooked.c_cc[VKILL] = 0x15;
-    cooked.c_cc[VEOF] = 0x04;
-    cooked.c_cc[VSTART] = 0x11;
-    cooked.c_cc[VSTOP] = 0x13;
-    cooked.c_cc[VSUSP] = 0x1a;
-    cooked.c_cc[VREPRINT] = 0x12;
-    cooked.c_cc[VWERASE] = 0x17;
-    cooked.c_cc[VLNEXT] = 0x16;
-    cooked.c_cc[VDISCARD] = 0x0f;
-    cooked.c_cc[VMIN] = 1;
-    cooked.c_cc[VTIME] = 0;
-    return cooked;
-}
-
-int test_key_reading_mode() {
-    const termios cooked = cooked_console();
-
-    // The model has to be able to see the defect, or passing proves nothing:
-    // the old mode, ICANON and ECHO cleared and nothing else.
-    termios old_mode = cooked;
-    old_mode.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
-    CHECK(!sonora::tty_delivers_byte(old_mode, 0x13));  // Ctrl+S
-    CHECK(!sonora::tty_delivers_byte(old_mode, 0x11));  // Ctrl+Q
-    CHECK(!sonora::tty_delivers_byte(old_mode, 0x03));  // Ctrl+C
-    CHECK(!sonora::tty_delivers_byte(old_mode, 0x1a));  // Ctrl+Z
-    CHECK(sonora::tty_delivers_byte(old_mode, 'q'));
-    CHECK(!sonora::tty_delivers_byte(cooked, 'q'));     // canonical: no keys
-
-    const termios mode = sonora::key_reading_mode(cooked);
-    CHECK((mode.c_lflag & (ICANON | ECHO | ISIG | IEXTEN)) == 0);
-    CHECK((mode.c_iflag & (IXON | IXOFF)) == 0);
-    // Output processing stays on: draw() writes "\n" and relies on the
-    // terminal turning it into a new line at column zero.
-    CHECK((mode.c_oflag & OPOST) != 0);
-    CHECK(mode.c_cc[VMIN] == 0);
-    CHECK(mode.c_cc[VTIME] == 0);
-
-    int failures = 0;
-    for (int b = 0; b < 256; ++b) {
-        KeyChord c;
-        if (!KeyMap::chord_from_terminal_byte(static_cast<unsigned char>(b), c)) {
-            continue;
-        }
-        if (!sonora::tty_delivers_byte(mode, static_cast<unsigned char>(b))) {
-            std::fprintf(stderr,
-                         "FAIL byte 0x%02x (%s) never reaches the engine in"
-                         " key-reading mode\n",
-                         b, KeyMap::chord_to_string(c).c_str());
-            ++failures;
-        }
-    }
-    CHECK(sonora::tty_delivers_byte(mode, 0x1b));
-
-    // The device ensure_essentials() measures against follows the mode. Under
-    // the old one these were claimed sendable, which is how a Pro Tools
-    // profile passed the quit check with a quit key flow control ate.
-    const auto device_in = [](const termios& t) {
-        return KeyMap::terminal_chords(
-            [&t](unsigned char b) { return sonora::tty_delivers_byte(t, b); });
-    };
-    const std::vector<KeyChord> old_device = device_in(old_mode);
-    for (const char* spec : {"ctrl+q", "ctrl+s", "ctrl+c", "ctrl+z", "alt+ctrl+q"}) {
-        KeyChord c;
-        std::string why;
-        CHECK(KeyMap::parse_chord(spec, c, why));
-        CHECK(!sendable(old_device, c));
-    }
-    const std::vector<KeyChord> new_device = device_in(mode);
-    const std::vector<KeyChord> everything = KeyMap::terminal_chords();
-    CHECK(new_device.size() == everything.size());
-    for (const KeyChord& c : everything) CHECK(sendable(new_device, c));
-    return failures == 0 ? 0 : 1;
-}
-
-// --- a profile that cannot quit keeps Ctrl+C ---
-//
-// The key-reading mode turns ISIG off so Ctrl+C can be edit.copy. When no key
-// the profile has can run app.quit -- and ensure_essentials() could not repair
-// that -- the operator had no keyboard way out at all. main.cpp then switches
-// to this mode, in which Ctrl+C raises SIGINT and the engine stops cleanly,
-// and measures the profile against what is left.
-int test_interrupt_key_when_nothing_quits(const Implemented& implemented) {
-    termios cooked = cooked_console();
-    // Whatever the console had, the notice promises Ctrl+C.
-    cooked.c_cc[VINTR] = static_cast<cc_t>(_POSIX_VDISABLE);
-    const termios mode = sonora::interrupt_key_mode(cooked);
-    CHECK((mode.c_lflag & ISIG) != 0);
-    CHECK((mode.c_lflag & (ICANON | ECHO | IEXTEN)) == 0);
-    CHECK((mode.c_iflag & (IXON | IXOFF)) == 0);
-    CHECK(mode.c_cc[VINTR] == 0x03);
-    CHECK(!sonora::tty_delivers_byte(mode, 0x03));
-    // Only the interrupt: Ctrl+Z stopping the engine with a take open, or
-    // Ctrl+\ dumping core, is no way out.
-    CHECK(sonora::tty_delivers_byte(mode, 0x1a));
-    CHECK(sonora::tty_delivers_byte(mode, 0x1c));
-    CHECK(sonora::tty_delivers_byte(mode, 'q'));
-
-    const std::vector<KeyChord> device = KeyMap::terminal_chords(
-        [&mode](unsigned char b) { return sonora::tty_delivers_byte(mode, b); });
-    const std::vector<KeyChord> everything = KeyMap::terminal_chords();
-    CHECK(device.size() + 2 == everything.size());
-    for (const char* gone : {"ctrl+c", "alt+ctrl+c"}) {
-        KeyChord c;
-        std::string why;
-        CHECK(KeyMap::parse_chord(gone, c, why));
-        CHECK(!sendable(device, c));
-    }
-
-    const std::vector<std::string>& quit = group_containing("app.quit");
-    CHECK(!quit.empty());
-    {
-        KeyMap m;
-        std::string err;
-        // q is the only arm key, so the default's quit cannot have it.
-        CHECK(loads(R"({ "name": "x", "bindings": {
-            "q": "track.arm_all",
-            "space": "transport.toggle_record" } })", m, err));
-        m.ensure_essentials(everything, implemented);
-        CHECK(!m.reaches(quit, everything, implemented));
-
-        // Measured again under the new mode, what worked still works.
-        KeyMap again;
-        CHECK(loads(R"({ "name": "x", "bindings": {
-            "ctrl+z": { "command": "track.toggle_arm", "target": 1 },
-            "space": "transport.toggle_record" } })", again, err));
-        again.ensure_essentials(device, implemented);
-        CHECK(again.resolve("ctrl+z")->command == "track.toggle_arm");
-        CHECK(again.reaches(group_containing("track.toggle_arm"), device,
-                            implemented));
-    }
-    {
-        KeyMap d = KeyMap::built_in_default();
-        CHECK(d.reaches(quit, everything, implemented));
-    }
-    return 0;
 }
 
 // --- the escape timeout ---
@@ -786,121 +627,6 @@ int test_targetless_arm_does_not_count(const std::vector<KeyChord>& device,
     return 0;
 }
 
-// --- the handlers the engine installs ---
-int test_session_commands() {
-    sonora::SessionConfig cfg;
-    cfg.dir = "test_keymap_session";
-    cfg.track_count = 4;
-    cfg.ring_seconds = 0.25;
-    const std::string wav = cfg.dir + "/Audio Files/Audio 1_01.wav";
-    int result = 0;
-    {
-        sonora::Session s(cfg);
-        CHECK(s.create_dirs());
-        CommandRegistry reg;
-        int take = 1;
-        bool quit = false;
-        sonora::install_session_commands(reg, s, take, quit);
-
-        // No selection exists, so there is nothing for it to act on, and
-        // guessing track 1 would be the port-ordering defect again.
-        CHECK(reg.dispatch("track.toggle_arm") == DispatchResult::Failed);
-
-        CommandContext first;
-        first.target = 0;
-        CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
-        CHECK(s.tracks()[0]->rec_armed());
-
-        // Pro Tools' Command+Space and F12, Logic's R: start, never stop.
-        s.disk().start();
-        CHECK(reg.implemented("transport.record"));
-        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
-        CHECK(s.transport().state() == sonora::TransportState::Recording);
-        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
-        CHECK(s.transport().state() == sonora::TransportState::Recording);
-        CHECK(take == 1);
-        CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
-        CHECK(s.transport().state() == sonora::TransportState::Stopped);
-        CHECK(take == 2);
-
-        // Nothing armed means nothing to record, and it says so.
-        CHECK(reg.dispatch("track.disarm_all") == DispatchResult::Ok);
-        CHECK(reg.dispatch("transport.record") == DispatchResult::Failed);
-        CHECK(s.transport().state() == sonora::TransportState::Stopped);
-
-        CHECK(reg.dispatch("app.quit") == DispatchResult::Ok);
-        CHECK(quit);
-    }
-    if (std::remove(wav.c_str()) != 0) result = 1;
-    std::remove((cfg.dir + "/Audio Files").c_str());
-    std::remove(cfg.dir.c_str());
-    if (result != 0) std::fprintf(stderr, "FAIL %s was not written\n", wav.c_str());
-    return result;
-}
-
-// --- arming is fixed for the length of a take ---
-//
-// Session::process() writes a track only while it is armed, but its file stays
-// open: disarming mid-take and re-arming resumed the file with no gap, so
-// that track came out shorter than the rest and out of sync from that point.
-// Arming a track with no file open filled a ring nobody drained and counted
-// overruns. So every arming command refuses during a take, and says why.
-int test_arming_locked_during_take() {
-    sonora::SessionConfig cfg;
-    cfg.dir = "test_keymap_arming";
-    cfg.track_count = 3;
-    cfg.ring_seconds = 0.25;
-    std::string recorded;
-    {
-        sonora::Session s(cfg);
-        CHECK(s.create_dirs());
-        CommandRegistry reg;
-        int take = 1;
-        bool quit = false;
-        sonora::install_session_commands(reg, s, take, quit);
-
-        CommandContext first;
-        first.target = 0;
-        CommandContext second;
-        second.target = 1;
-        CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
-        s.disk().start();
-        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
-        CHECK(s.transport().state() == sonora::TransportState::Recording);
-        recorded = s.tracks()[0]->writer().path();
-
-        struct Attempt {
-            const char* command;
-            CommandContext ctx;
-        };
-        const Attempt attempts[] = {
-            {"track.toggle_arm", first},   // would leave a gap in track 1
-            {"track.toggle_arm", second},  // would fill a ring with no file
-            {"track.arm_all", {}},
-            {"track.disarm_all", {}},
-        };
-        for (const Attempt& a : attempts) {
-            std::string why;
-            CHECK(reg.dispatch(a.command, a.ctx, why) == DispatchResult::Failed);
-            CHECK(mentions(why, "during a take"));
-            CHECK(s.tracks()[0]->rec_armed());
-            CHECK(!s.tracks()[1]->rec_armed());
-            CHECK(!s.tracks()[2]->rec_armed());
-        }
-
-        // Once the take is closed, arming works again.
-        CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
-        CHECK(reg.dispatch("track.toggle_arm", second) == DispatchResult::Ok);
-        CHECK(s.tracks()[1]->rec_armed());
-        CHECK(reg.dispatch("track.disarm_all") == DispatchResult::Ok);
-        CHECK(!s.tracks()[0]->rec_armed());
-    }
-    std::remove(recorded.c_str());
-    std::remove((cfg.dir + "/Audio Files").c_str());
-    std::remove(cfg.dir.c_str());
-    return 0;
-}
-
 // --- the corrections in brain/research/protools-logic-key-bindings.md §8 ---
 int test_profile_corrections() {
     struct Expect {
@@ -983,8 +709,6 @@ int main() {
     {
         const std::vector<KeyChord> device = KeyMap::terminal_chords();
         int failures = 0;
-        failures += test_key_reading_mode();
-        failures += test_interrupt_key_when_nothing_quits(implemented);
         failures += test_linux_console_function_keys();
         failures += test_escape_starts_a_new_sequence();
         failures += test_escape_timeout();
@@ -997,8 +721,6 @@ int main() {
         failures += test_repair_keeps_what_works(device, implemented);
         failures += test_targetless_arm_does_not_count(device,
                                                        implemented);
-        failures += test_session_commands();
-        failures += test_arming_locked_during_take();
         failures += test_profile_corrections();
         if (failures != 0) {
             std::fprintf(stderr, "FAIL %d regression tests\n", failures);

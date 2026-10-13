@@ -16,7 +16,7 @@
 #include "peak_source.h"
 #include "qt_keys.h"
 #include "session_model.h"
-#include "synthetic_engine.h"
+#include "sonora/api/fake_engine.h"
 #include "theme.h"
 #include "time_format.h"
 #include "timeline_document.h"
@@ -513,7 +513,7 @@ int route(const char* profile, const std::vector<std::pair<std::string, std::str
     FlatPeaks peaks;
     SessionModel session(doc, peaks, false);
     std::vector<std::string> sent;
-    KeyRouter router(map, SyntheticEngine::engine_commands(), [&sent](const std::string& c, const CommandContext& ctx) {
+    KeyRouter router(map, api::testing::FakeEngine::engine_commands(), [&sent](const std::string& c, const CommandContext& ctx) {
         sent.push_back(c + "@" + std::to_string(ctx.target));
         return static_cast<uint64_t>(sent.size());
     });
@@ -590,7 +590,7 @@ int test_routing() {
     FlatPeaks peaks;
     SessionModel session(doc, peaks, false);
     std::vector<std::string> sent;
-    KeyRouter router(map, SyntheticEngine::engine_commands(), [&sent](const std::string& c, const CommandContext& ctx) {
+    KeyRouter router(map, api::testing::FakeEngine::engine_commands(), [&sent](const std::string& c, const CommandContext& ctx) {
         sent.push_back(c + "@" + std::to_string(ctx.target));
         return static_cast<uint64_t>(sent.size());
     });

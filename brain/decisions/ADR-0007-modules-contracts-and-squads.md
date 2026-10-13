@@ -1391,3 +1391,162 @@ MIDI event model, Standard MIDI File codec and pure edit primitives, owned by
 rt-engineer. Like `common/audiofile` it never runs on the audio thread. The
 real-time `MidiBuffer` lives in `common/base` instead, because §2 lets only
 `common/base` among the `common/` modules put code on the audio thread.
+
+## Update, 2026-10-13: the control API as landed (M4)
+
+Source: branch `contract/api`. Where §4.1's sketch and the landed headers
+differ, the headers in `contracts/api/` are the contract. §3 and §10 are
+untouched. This is a contract PR under §6 and §8: it needs the reviews of
+both owning parties (ui-engineer and rt-engineer) in the thread, and the
+rt-safety-auditor's, before it merges.
+
+1. **What `contracts/api` holds.** `sonora_api` is now a static library
+   linking only `common/base`:
+   - `command.h`: the catalog with unchanged ids, plus a `CommandDomain`
+     (`Engine` or `Interface`) on every `CommandSpec`. `Interface` is
+     `tool.*`, `zoom.*`, `edit.mode.*` and `app.quit`. Everything else is
+     `Engine`, `track.select*` included, as §5 reads.
+     `is_engine_command()` says which.
+   - `api/messages.h`: `CommandRequest`, `ParameterChange` (`ParamId::Gain`,
+     linear 0..4), `ModelRequest` (`Apply`, `Undo`, `Redo`, `Resync`),
+     `Hello` (adds `track_names`), `CommandReply`, `EngineEvent`
+     (`Notice`, `InputsMissing`, `TakeFailed`, `Fatal`), `ModelUpdate`
+     (`Op`, `Undo`, `Redo`, `Snapshot`, each with its revision and the undo
+     floor), and `Inbox`, what one `poll()` hands over. Every enum is
+     append-only.
+   - `api/wire.h`: the codec. A message is a type byte, then its fields:
+     little-endian integers, length-prefixed strings with caps (64 KiB of
+     text, 64 MiB of model bytes, 4096 list entries). Decoding refuses
+     truncation, trailing bytes, a length past its cap, an unknown enum
+     value and the wrong type, each with a reason. Nothing is partially
+     decoded. `decode_hello_versions()` reads the two versions first, so a
+     newer engine's Hello still names the mismatch.
+   - `api/state_block.h` and `api/state_view.h`: item 3.
+   - `api/engine_control.h`: `connect`, `hello`, `send(CommandRequest)`,
+     `send(ParameterChange)`, `submit(ModelRequest)`, `poll(Inbox&)` and
+     `state()`. The implementation assigns the seqs, and they rise across
+     all three kinds of request.
+2. **The model path (ADR-0009 §2).** An operation crosses as opaque bytes,
+   because `contracts/api` may not depend on `common/model`. `common/model`
+   gains two public headers:
+   - `op_codec.h`: one strict JSON object per operation, with the session
+     file's spellings.
+   - `replication.h`: `Document` is the engine's half. It applies bytes,
+     undoes, redoes and snapshots, and each returns the update to send.
+     `Replica` is a client's half. It applies only what it is sent, checks
+     that the revision follows on, and evicts down to the engine's floor.
+     When it loses track it says so, and the client asks for `Resync`.
+
+   The engine sends a `Snapshot` right after `Hello`. Both headers are
+   additive public headers of `common/model`, which is a contract file
+   under §6.
+3. **The state block, layout version 1.**
+   - The header holds magic, layout version, capacity, publish period,
+     track count, heartbeat and seq. Under the seq it holds transport
+     state, take, playhead, xruns, overruns, clock steps, health flags,
+     inputs connected and buffer frames.
+   - Each track gets one 64-byte-aligned `TrackState`: flags, gain,
+     overruns, clip count, latency, and a 64-slot peak ring.
+   - Health flags: `ServerGone`, `NoInputs`, `TakeFailed`.
+   - Every atomic type in the block has its own
+     `static_assert(is_always_lock_free)`, and none is wider than 8 bytes
+     (2026-10-12 update, item 2).
+   - **The seqlock uses no standalone fence.** The writer stores every
+     field with release after an odd sequence. The reader loads them with
+     acquire and checks the sequence again. GCC 14 warns that
+     `atomic_thread_fence` is invisible to ThreadSanitizer (`-Wtsan`), and
+     a fence-free seqlock is one TSan can check. On x86-64 a release store
+     and an acquire load are plain moves.
+   - **Peaks are a tagged ring, not a seqlocked value.** Each slot packs
+     the publish tick's low 32 bits and the float into one 8-byte atomic. A
+     reader keeps a cursor per track and takes the maximum of the slots it
+     has not seen. So readers never steal each other's peaks, and the
+     publisher stays the only caller of `Track::take_peak()`. A reader more
+     than 64 publishes behind loses the oldest peaks, never the newest. A
+     copied `StateView` is a second reader.
+   - `StateView` retries the seqlock at most 64 times, yielding between
+     attempts, then returns the snapshot with `stale` set.
+   - `engine_alive()` is judged on the caller's clock. A heartbeat that
+     stands still for max(250 ms, ten publish periods) means the engine is
+     not answering.
+   - `StateBlockMemory` is the block's anonymous, 64-byte-aligned home until
+     M7 puts it in a memfd.
+4. **`engine/control`** gains three pieces beside `install_session_commands`:
+   - `StatePublisher` is a thread on a fixed timer, 100 Hz by default. A
+     late publish is followed by the next one a period later, never by a
+     burst. It reads only the atomics the audio thread already writes
+     (`Transport`, `Track`) and the backend's any-thread counters. The
+     control thread hands it the take number, input connections and health
+     through atomics. **Nothing was added to `Session::process()` or to
+     anything it calls.**
+   - `EngineControlServer` owns the block, the publisher, the handlers and
+     the `Document`. Its control thread takes encoded requests through
+     `deliver()` and answers through an `Outbound` callback, so it knows no
+     transport. It refuses an `Interface` command with `NotImplemented` and
+     says whose command it is. Every 50 ms it checks `fatal()` and the
+     take's failure (the `Fatal` and `TakeFailed` events). Once a second it
+     runs the wiring layer's housekeeping.
+   - `InProcessEngine` is the client half: an `EngineControl` whose
+     requests and answers are encoded bytes through the server, and whose
+     `StateView` reads the server's block. M7 replaces it with
+     `SocketEngineClient` and gives the server a socket.
+5. **`FakeEngine` lives in `contracts/api/testing`** (`sonora_api_fake`), as
+   §4.1 said. It links `common/model`, so its model path is the real
+   `apply()`. That makes it a test-support library, not the contract:
+   `sonora_api` itself still links only `common/base`.
+   - It is deterministic: the clock is injectable, and requests are handled
+     at `poll()`.
+   - It shares the `StateWriter` and the codec with the real engine.
+   - It can script death, an event, a peak, xruns and a version mismatch.
+6. **One conformance suite for both.** `contracts/api/conformance`
+   (`sonora_api_conformance`) drives an engine through `EngineControl` and
+   `StateView` only. It has nine checks:
+   - Hello;
+   - a version mismatch refused by name;
+   - dispatch results and seq order;
+   - arming and its refusals;
+   - a take;
+   - parameter changes;
+   - the model path, with a real `Replica`;
+   - per-reader peak cursors;
+   - the heartbeat after the engine dies.
+
+   `api_conformance_fake` runs it on `FakeEngine`. `engine/control`'s
+   `control` test runs it on `InProcessEngine`, over a real `Session` that
+   `drivers/fake` feeds at real-time pace. That test also fails if
+   `FakeEngine::engine_commands()` differs from the handlers this build
+   installs.
+7. **The edges.**
+   - `test_keymap` → `engine/control`, `ui/tui`: **gone.** The handler
+     tests moved to `engine/control/tests/test_session_commands.cpp` and
+     the termios tests to `ui/tui/tests/test_tty_mode.cpp`. `test_keymap`
+     now takes the engine's commands from `FakeEngine`'s Hello, and it is
+     platform-neutral (ADR-0008, V4).
+   - `engine/app` → `ui/keymap`: **gone**, as a direct link and as code.
+     The interactive path in `main.cpp` has no key decoding, no termios, no
+     drawing and no track access.
+   - `engine/app` → `ui/tui`: **one link remains, as a composition root.**
+     The terminal interface (`TerminalView`, `run_terminal()`) lives in
+     `ui/tui` and links only `contracts/api` and `ui/keymap`. `main.cpp`
+     builds an `InProcessEngine` and calls `run_terminal()`. Until M7 puts
+     them in two processes, one executable must contain both, and only a
+     module above `engine/control` may link it. M7 removes this link when
+     `sonora-tui` becomes its own executable.
+   - **So M5's check names this one edge until M7, or M5 waits for M7.**
+     That choice is the integrator's. Either way the entry is not an
+     allow-list entry without an end date.
+8. **The Qt interface** keeps its narrow `EngineAdapter`, so its routing
+   tests need no engine, and gains `ControlAdapter`, which forwards every
+   call to `EngineControl` and `StateView`.
+   - `SyntheticEngine` is deleted. `FakeEngine` drives `sonora-ui` and its
+     tests.
+   - The Qt UI is **not** given `InProcessEngine`. §3 keeps Qt, Mesa and
+     LLVM out of the process that holds the take, so the Qt UI meets the
+     real engine through M7's socket.
+9. **Measured** in the container on Docker Desktop on the owner's laptop.
+   These are not appliance figures.
+   - A writer paced at 1 kHz against a 60 Hz reader of 64 tracks, 60 ticks:
+     0 stale reads, 0 torn, worst tick 0.015 ms.
+   - An unpaced writer: about 600,000 reads in 400 ms, a few dozen stale,
+     0 torn.
+   - The publisher at a 1 ms period: 200 publishes in 200 ms.

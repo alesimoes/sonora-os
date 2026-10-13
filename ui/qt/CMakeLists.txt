@@ -25,14 +25,14 @@ endif()
 message(STATUS "ui/qt: building sonora-ui against Qt ${Qt6_VERSION}")
 
 # Everything but main(), so the tests drive the same code the binary runs.
-# The Qt-free parts (meter_model, key_router, synthetic_engine, and the
+# The Qt-free parts (meter_model, key_router, control_adapter, and the
 # Edit/Mix logic: timeline_model, timeline_document, edit_controller,
 # timeline_scene, time_format, fader_taper, peak_source, theme) are kept free
-# of Qt on purpose: they are what M4 and common/model touch, and what a test
+# of Qt on purpose: they are what common/model and M7 touch, and what a test
 # can check without a display.
 add_library(sonora_ui_qt STATIC
   src/engine_adapter.h
-  src/synthetic_engine.h src/synthetic_engine.cpp
+  src/control_adapter.h src/control_adapter.cpp
   src/meter_model.h src/meter_model.cpp
   src/key_router.h src/key_router.cpp
   src/qt_keys.h src/qt_keys.cpp
@@ -54,7 +54,9 @@ add_library(sonora_ui_qt STATIC
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
-target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+# FakeEngine is the engine behind the adapter until M7 (control_adapter.h).
+target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap sonora_api sonora_api_fake
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 # Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
 target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
 qt_add_resources(sonora_ui_qt sonora_qml

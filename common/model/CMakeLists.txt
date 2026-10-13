@@ -6,6 +6,8 @@ add_library(sonora_model STATIC
   src/apply.cpp
   src/history.cpp
   src/model.cpp
+  src/op_codec.cpp
+  src/replication.cpp
   src/session_file.cpp
 )
 target_include_directories(sonora_model PUBLIC include)
@@ -30,3 +32,8 @@ add_test(NAME model_session_file COMMAND test_model_session_file)
 add_executable(test_model_random_edits tests/test_random_edits.cpp)
 target_link_libraries(test_model_random_edits PRIVATE sonora_model)
 add_test(NAME model_random_edits COMMAND test_model_random_edits)
+
+# The replication format: the op codec and Document/Replica (ADR-0009 §2).
+add_executable(test_model_replication tests/test_replication.cpp)
+target_link_libraries(test_model_replication PRIVATE sonora_model)
+add_test(NAME model_replication COMMAND test_model_replication)

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // sonora-engine: the recording core. Phase 1 drives it from a terminal UI so
-// the audio path can be proven before any graphical shell exists.
+// the audio path can be proven before any graphical shell exists. Since M4
+// that interface is a client of the control API (ADR-0007 §4.1): it reaches
+// the session only through InProcessEngine, as it will through a socket
+// once M7 makes it a process of its own. This file is the wiring between
+// the two and nothing else of the interface.
 
 #include <algorithm>
 #include <cmath>
@@ -14,21 +18,19 @@
 #include <utility>
 #include <vector>
 
-#include <termios.h>
 #include <unistd.h>
 
 #include "sonora/audio_backend.h"
-#include "sonora/command.h"
 #include "sonora/device_policy.h"
+#include "sonora/engine_control_in_process.h"
 #include "sonora/exit_watchdog.h"
 #include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
-#include "sonora/keymap.h"
 #include "sonora/memory_lock.h"
 #include "sonora/quit_signals.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
-#include "sonora/tty_mode.h"
+#include "sonora/terminal_ui.h"
 
 namespace {
 
@@ -61,148 +63,6 @@ constexpr unsigned kTeardownSeconds = 5;
 constexpr const char* kTeardownHung =
     "sonora: the audio server did not let go within 5 seconds; exiting"
     " without it. The take was already closed.\n";
-
-struct TermiosGuard {
-    termios saved{};
-    termios current{};
-    bool is_tty = false;
-    bool active = false;
-
-    void raw() {
-        // Not a terminal: bytes arrive exactly as written, with no line
-        // discipline to eat any of them.
-        if (tcgetattr(STDIN_FILENO, &saved) != 0) return;
-        is_tty = true;
-        current = saved;
-        apply(sonora::key_reading_mode(saved));
-    }
-    // True if Ctrl+C now raises SIGINT, as read back from the terminal.
-    bool keep_interrupt_key() {
-        if (!is_tty) return false;
-        apply(sonora::interrupt_key_mode(saved));
-        return (current.c_lflag & ISIG) && current.c_cc[VINTR] == 0x03;
-    }
-    void apply(const termios& t) {
-        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == 0) active = true;
-        // tcsetattr reports success if it applied any part of the change, so
-        // what the keyboard can reach is read back rather than assumed.
-        tcgetattr(STDIN_FILENO, &current);
-    }
-    bool delivers(unsigned char byte) const {
-        return !is_tty || sonora::tty_delivers_byte(current, byte);
-    }
-    // Before anything is printed on the way out: in the key reading mode a
-    // newline does not return the carriage, and the last words staircase.
-    void restore() {
-        if (active) tcsetattr(STDIN_FILENO, TCSANOW, &saved);
-        active = false;
-    }
-    ~TermiosGuard() { restore(); }
-};
-
-// Everything after the last '.' in a command id. Short enough for a footer,
-// and unambiguous in practice: "toggle_record", "arm_all", "quit".
-std::string short_name(const std::string& command) {
-    const std::size_t dot = command.rfind('.');
-    return dot == std::string::npos ? command : command.substr(dot + 1);
-}
-
-// Builds the footer out of the loaded key map, so what it says is what the
-// keyboard does. The literal it replaces read "space=rec/stop 1-8=arm
-// a=arm all q=quit" under every profile; under protools.json all four of
-// those were wrong. Only chords this terminal can send and commands this
-// build implements are listed -- a footer advertising a key that reports
-// "not implemented" is the same lie in a politer font.
-std::vector<std::string> build_help(const sonora::KeyMap& map,
-                                    const sonora::CommandRegistry& reg,
-                                    const std::vector<sonora::KeyChord>& device) {
-    std::vector<std::string> entries;
-    for (const auto& b : map.bindings()) {
-        if (!reg.implemented(b.command) || sonora::needs_selection(b)) continue;
-        bool sendable = false;
-        for (const auto& c : device) {
-            if (c == b.chord) {
-                sendable = true;
-                break;
-            }
-        }
-        if (!sendable) continue;
-        std::string e = sonora::KeyMap::chord_to_string(b.chord) + "=" +
-                        short_name(b.command);
-        if (b.ctx.has_target()) e += std::to_string(b.ctx.target + 1);
-        entries.push_back(std::move(e));
-    }
-
-    std::vector<std::string> lines;
-    if (entries.empty()) {
-        // Reachable only if ensure_essentials() could not repair the profile,
-        // in which case its notice is already on screen saying so.
-        lines.push_back("no key in this profile does anything this build"
-                        " implements");
-        return lines;
-    }
-    std::string line;
-    for (const std::string& e : entries) {
-        if (!line.empty() && line.size() + e.size() + 2 > 74) {
-            lines.push_back(line);
-            line.clear();
-        }
-        if (!line.empty()) line += "  ";
-        line += e;
-    }
-    if (!line.empty()) lines.push_back(line);
-    return lines;
-}
-
-void draw(sonora::Session& s, const AudioBackend& audio, int take,
-          const std::string& status, const std::vector<std::string>& help,
-          const std::vector<std::string>& notices, const std::string& inputs,
-          const std::string& take_failed) {
-    using sonora::TransportState;
-    const auto st = s.transport().state();
-    const char* label = st == TransportState::Recording ? "REC "
-                      : st == TransportState::Rolling   ? "PLAY"
-                                                        : "STOP";
-    const double t = s.transport().seconds();
-
-    std::printf("\033[H\033[J");
-    std::printf("  SONORA  %s  %02d:%02d:%06.3f   take %d\n",
-                label, static_cast<int>(t) / 3600, (static_cast<int>(t) / 60) % 60,
-                t - 60.0 * (static_cast<int>(t) / 60), take);
-    std::printf("  %u Hz / %u frames   xruns %u   clock steps %u   overruns %u\n\n",
-                audio.sample_rate(), audio.buffer_frames(), audio.xruns(),
-                audio.clock_discontinuities(), s.disk().total_overruns());
-
-    for (const auto& tr : s.tracks()) {
-        const float peak = tr->take_peak();
-        const int bars = static_cast<int>(peak * 40.0f);
-        std::printf("  %-10s %s %s  ", tr->name().c_str(),
-                    tr->rec_armed() ? "\033[31m[R]\033[0m" : "[ ]",
-                    tr->muted() ? "[M]" : "[ ]");
-        for (int i = 0; i < 40; ++i) std::putchar(i < bars ? '=' : '.');
-        std::printf(" %5.1f dB\n",
-                    peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak))
-                                : -99.9);
-    }
-    std::putchar('\n');
-    for (const std::string& l : help) std::printf("  %s\n", l.c_str());
-    // Redrawn every frame on purpose: these say the profile cannot do
-    // something it claims to, and the screen clear at the top of this function
-    // would otherwise erase the start-up message after one frame.
-    for (const std::string& n : notices) {
-        std::printf("  \033[33m!\033[0m %s\n", n.c_str());
-    }
-    if (!inputs.empty()) {
-        std::printf("  \033[31m!\033[0m no inputs: %s\n", inputs.c_str());
-    }
-    if (!take_failed.empty()) {
-        std::printf("  \033[31m! %s\033[0m\n", take_failed.c_str());
-    }
-    // A key that did nothing is the failure keymaps/README.md warns about, so
-    // say what happened rather than leaving the operator guessing.
-    if (!status.empty()) std::printf("  %s\n", status.c_str());
-    std::fflush(stdout);
-}
 
 // Waits for the inputs to be connected. This is not a test accommodation:
 // on the appliance the engine starts at boot, and a USB interface may not be
@@ -658,193 +518,106 @@ int main(int argc, char** argv) {
         return rc;
     }
 
-    // From the folder, not from 1: systemd restarts the engine every time it
-    // exits, and a counter that started over numbered the next take like the
-    // last session's first one.
-    int take = session.next_free_take();
-    bool backend_failed = false;
-    bool quit = false;
-    std::string status;
-
-    sonora::CommandRegistry commands;
-    sonora::install_session_commands(commands, session, take, quit, may_record);
-
-    // The terminal mode is set before anything is measured against it: which
-    // control bytes reach us depends on it, and a check made against the
-    // cooked mode would believe Ctrl+Q quits when flow control eats it.
-    TermiosGuard term;
-    term.raw();
-
-    // Checked against the terminal, not against a keyboard in the abstract:
-    // "cmd+q" and "ctrl+shift+z" are real bindings that this input device
-    // cannot send, and a profile whose only way to arm a track is one of those
-    // cannot record however correct the file is.
-    const auto implemented = [&commands](const std::string& id) {
-        return commands.implemented(id);
-    };
-    const auto terminal_device = [&term]() {
-        return sonora::KeyMap::terminal_chords(
-            [&term](unsigned char byte) { return term.delivers(byte); });
-    };
-    std::vector<sonora::KeyChord> device = terminal_device();
-    const sonora::KeyMap as_loaded = keymap;
-    std::vector<std::string> notices = keymap.ensure_essentials(device, implemented);
-
-    // With signals off and no key that runs app.quit, nothing on the keyboard
-    // could leave the engine. Ctrl+C is then given back to the terminal, and
-    // the profile is measured again against what the keyboard can still send
-    // -- Ctrl+C is no longer one of those keys, and the footer must not say
-    // it is.
-    const std::vector<std::string>* quit_group = nullptr;
-    for (const auto& g : sonora::KeyMap::essential_commands()) {
-        for (const auto& id : g) {
-            if (id == "app.quit") quit_group = &g;
+    // What the old terminal loop checked once a second, now on the engine's
+    // control thread: while nothing is connected the interface is looked
+    // for, so one plugged in after the start-up wait is still picked up,
+    // and the interface is told what is missing for as long as it is.
+    std::string inputs_missing_said = "(unset)";
+    bool late_usb_said = false;
+    sonora::EngineControlServer::Options control;
+    control.may_record = may_record;
+    control.housekeeping = [&](sonora::EngineControlServer& server) {
+        const auto notice = [&server](sonora::api::EventKind kind, const std::string& text) {
+            sonora::api::EngineEvent e;
+            e.kind = kind;
+            e.text = text;
+            server.post_event(e);
+        };
+        std::string fallback_error;
+        if (audio->connected_input_count() == 0) {
+            audio->connect_inputs_in_order();
+            // A device that appeared only after the wait gets the same
+            // fallback; several are named on screen instead of exiting, so
+            // the unit does not restart into the same choice.
+            if (audio->connected_input_count() == 0 && capture_device.empty()) {
+                const sonora::Fallback f = sonora::fall_back_after_wait(*audio);
+                fallback_error = f.error;
+                if (!f.notice.empty()) {
+                    capture_device = f.device;
+                    onboard_notice = f.notice;
+                    notice(sonora::api::EventKind::Notice, onboard_notice);
+                    std::fprintf(stderr, "sonora: %s\n", onboard_notice.c_str());
+                }
+                if (!f.device.empty()) audio->connect_inputs_in_order();
+            }
         }
-    }
-    if (quit_group != nullptr &&
-        !keymap.reaches(*quit_group, device, implemented) && term.is_tty) {
-        const bool interrupt = term.keep_interrupt_key();
-        device = terminal_device();
-        keymap = as_loaded;
-        notices = keymap.ensure_essentials(device, implemented);
-        if (interrupt) {
-            notices.push_back("Ctrl+C leaves the engine: no key in this profile"
-                              " can, so it is not passed to the profile");
+        const int connected_now = audio->connected_input_count();
+        const std::string missing =
+            connected_now != 0 ? std::string()
+            : !fallback_error.empty()
+                ? fallback_error
+                : sonora::why_no_inputs(*audio, capture_device, session.tracks().size());
+        if (missing != inputs_missing_said) {
+            notice(sonora::api::EventKind::InputsMissing, missing);
+            inputs_missing_said = missing;
         }
-    }
-    for (const std::string& n : notices) {
-        std::fprintf(stderr, "sonora: key map \"%s\": %s\n",
-                     keymap.name().c_str(), n.c_str());
-    }
-    const std::vector<std::string> help = build_help(keymap, commands, device);
+        server.set_inputs_connected(static_cast<uint32_t>(connected_now), true);
+        for (std::size_t i = 0; i < session.tracks().size(); ++i) {
+            server.set_input_connected(static_cast<uint32_t>(i),
+                                       audio->input_connected(static_cast<uint32_t>(i)));
+        }
+        // On onboard, an interface plugged in later is not switched to.
+        if (!onboard_notice.empty() && !late_usb_said) {
+            const std::string late =
+                sonora::late_usb_notice(audio->physical_capture_ports());
+            if (!late.empty()) {
+                notice(sonora::api::EventKind::Notice, late);
+                std::fprintf(stderr, "sonora: %s\n", late.c_str());
+                late_usb_said = true;
+            }
+        }
+    };
+
+    sonora::InProcessEngine engine(session, audio.get(), std::move(control));
     // Kept on screen for the whole session: the operator must not take the
     // laptop's microphone for the interface.
-    if (!onboard_notice.empty()) notices.push_back(onboard_notice);
-    bool late_usb_said = false;
-
-    sonora::TerminalInput input;
-    // A message stays up for about two seconds. Clearing it only on the next
-    // successful dispatch left "not implemented in this build" on screen
-    // indefinitely, which stops being information and becomes furniture.
-    int status_frames = 0;
-    const auto say = [&status, &status_frames](std::string message) {
-        status = std::move(message);
-        status_frames = 40;
-    };
-    // While nothing is connected the interface is looked for once a second,
-    // so one plugged in after the start-up wait is still picked up, and the
-    // screen says what is missing for as long as it is.
-    std::string inputs_missing;
-    int frames_to_input_check = 0;
-    std::string take_failed;
-    int failed_take = 0;
-
-    while (!sonora::quit_requested() && !quit) {
-        // The server dying, or changing rate or buffer size, stops the
-        // callback without stopping us. Close the take so what was captured
-        // is a valid file, then let the service unit restart us against a
-        // fresh server.
-        if (audio->fatal()) {
-            backend_failed = true;
-            break;
+    if (!onboard_notice.empty()) {
+        sonora::api::EngineEvent e;
+        e.kind = sonora::api::EventKind::Notice;
+        e.text = onboard_notice;
+        engine.server().post_event(e);
+    }
+    {
+        std::string error;
+        if (!engine.connect(error)) {
+            std::fprintf(stderr, "sonora: the terminal interface cannot reach the engine: %s\n",
+                         error.c_str());
+            session.stop();
+            sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
+            audio->deactivate();
+            return 1;
         }
-
-        // Read whatever is waiting, not one byte: an arrow key is three
-        // bytes, F5 is five, and a reader that takes one at a time dispatched
-        // the tail of every sequence as individual key presses. A frame in
-        // which nothing arrives is what lets a lone Escape be the Escape key;
-        // see TerminalInput::frame.
-        char buf[64];
-        const ssize_t n = ::read(STDIN_FILENO, buf, sizeof buf);
-        for (const auto& e : input.frame(buf, static_cast<long>(n))) {
-            if (e.result == sonora::TerminalInput::Result::Unrecognised) {
-                say("that key means nothing here");
-                continue;
-            }
-            if (const sonora::Binding* b = keymap.resolve(e.chord)) {
-                std::string why;
-                const sonora::DispatchResult d =
-                    commands.dispatch(b->command, b->ctx, why);
-                if (d == sonora::DispatchResult::Ok) {
-                    status.clear();
-                    status_frames = 0;
-                } else {
-                    say(b->command + ": " +
-                        (why.empty() ? sonora::dispatch_result_text(d) : why));
-                }
-            } else {
-                say(sonora::KeyMap::chord_to_string(e.chord) + " is not bound");
-            }
-        }
-
-        if (--frames_to_input_check <= 0) {
-            frames_to_input_check = 20;
-            std::string fallback_error;
-            if (audio->connected_input_count() == 0) {
-                audio->connect_inputs_in_order();
-                // A device that appeared only after the wait gets the same
-                // fallback; several are named on screen instead of exiting,
-                // so the unit does not restart into the same choice.
-                if (audio->connected_input_count() == 0 && capture_device.empty()) {
-                    const sonora::Fallback f = sonora::fall_back_after_wait(*audio);
-                    fallback_error = f.error;
-                    if (!f.notice.empty()) {
-                        capture_device = f.device;
-                        onboard_notice = f.notice;
-                        notices.push_back(onboard_notice);
-                        std::fprintf(stderr, "sonora: %s\n", onboard_notice.c_str());
-                    }
-                    if (!f.device.empty()) audio->connect_inputs_in_order();
-                }
-            }
-            inputs_missing =
-                audio->connected_input_count() != 0 ? std::string()
-                : !fallback_error.empty()
-                    ? fallback_error
-                    : sonora::why_no_inputs(*audio, capture_device,
-                                            session.tracks().size());
-            // On onboard, an interface plugged in later is not switched to.
-            if (!onboard_notice.empty() && !late_usb_said) {
-                const std::string late =
-                    sonora::late_usb_notice(audio->physical_capture_ports());
-                if (!late.empty()) {
-                    notices.push_back(late);
-                    std::fprintf(stderr, "sonora: %s\n", late.c_str());
-                    late_usb_said = true;
-                }
-            }
-        }
-
-        // Writing stops at a full disk or the 4 GB limit while the
-        // transport still says REC, so the failure is shown the moment the
-        // disk thread records it, and until the next take records cleanly.
-        if (session.transport().state() == sonora::TransportState::Recording) {
-            const std::string failure = session.take_failure();
-            if (!failure.empty()) {
-                take_failed = "take " + std::to_string(take) + " failed: " + failure +
-                              ". Nothing more is being written; stop the take";
-                failed_take = take;
-            } else if (take != failed_take) {
-                take_failed.clear();
-            }
-        }
-
-        draw(session, *audio, take, status, help, notices, inputs_missing, take_failed);
-        if (status_frames > 0 && --status_frames == 0) status.clear();
-        ::usleep(50000);  // 20 fps is plenty for meters
     }
 
-    // stop() says on stderr why a take failed, so the terminal is the
-    // operator's again before it can.
-    term.restore();
-    std::printf("\n");
-    std::fflush(stdout);
+    sonora::tui::TerminalView view(engine, keymap);
+    sonora::tui::TerminalOptions terminal;
+    // A SIGTERM or hangup ends the session as cleanly as a quit key.
+    terminal.stop_requested = []() { return sonora::quit_requested(); };
+    const sonora::tui::TerminalExit exit = sonora::tui::run_terminal(view, terminal);
+
+    // No command runs while the take closes.
+    engine.shutdown();
+    // stop() says on stderr why a take failed, and the terminal is already
+    // the operator's again.
     const bool take_ok = session.stop();
     sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
     audio->deactivate();
     std::printf("sonora: session written to %s\n", cfg.dir.c_str());
 
-    if (backend_failed) {
+    // The server dying, or changing rate or buffer size, stops the callback
+    // without stopping us. The take is closed, so what was captured is a
+    // valid file; the service unit restarts us against a fresh server.
+    if (exit == sonora::tui::TerminalExit::EngineFailed || audio->fatal()) {
         std::fprintf(stderr, "sonora: %s.\n", audio->fatal_reason().c_str());
         return 1;
     }
