@@ -1,4 +1,4 @@
-add_library(sonora_audiofile STATIC src/wav_writer.cpp)
+add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create
 # (ADR-0008 §3): the one OS-specific thing a writer needs.
@@ -7,6 +7,10 @@ target_link_libraries(sonora_audiofile PUBLIC sonora_base PRIVATE sonora_platfor
 add_executable(test_wav_writer tests/test_wav_writer.cpp)
 target_link_libraries(test_wav_writer PRIVATE sonora_audiofile)
 add_test(NAME wav_writer COMMAND test_wav_writer)
+
+add_executable(test_wav_reader tests/test_wav_reader.cpp)
+target_link_libraries(test_wav_reader PRIVATE sonora_audiofile)
+add_test(NAME wav_reader COMMAND test_wav_reader)
 
 # A child process started while a take is open does not inherit it
 # (ADR-0008 V3: OS-specific tests live in tests/posix, built if(UNIX)).

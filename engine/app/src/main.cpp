@@ -7,6 +7,7 @@
 // the take do not depend on that child, which is restarted if it dies.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -21,8 +23,10 @@
 
 #include "sonora/api/state_block.h"
 #include "sonora/audio_backend.h"
+#include "sonora/closed_take.h"
 #include "sonora/control_socket_server.h"
 #include "sonora/device_policy.h"
+#include "sonora/engine_control_in_process.h"
 #include "sonora/engine_control_server.h"
 #include "sonora/exit_watchdog.h"
 #include "sonora/fake_backend.h"
@@ -106,12 +110,51 @@ int connect_and_settle(AudioBackend& audio) {
     return audio.connected_input_count();
 }
 
+// The reply to `seq`, polling the engine as an interface would, for up to
+// `seconds`. False if none came.
+bool await_reply(sonora::InProcessEngine& engine, uint64_t seq, double seconds,
+                 sonora::api::CommandReply& out) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    sonora::api::Inbox in;
+    while (std::chrono::steady_clock::now() < end && !sonora::quit_requested()) {
+        engine.poll(in);
+        for (const auto& r : in.replies) {
+            if (r.seq == seq) {
+                out = r;
+                return true;
+            }
+        }
+        in.clear();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
+sonora::api::CommandReply run_command(sonora::InProcessEngine& engine, const std::string& id,
+                                      int32_t target, double seconds) {
+    sonora::api::CommandRequest r;
+    r.command = id;
+    r.target = target;
+    sonora::api::CommandReply reply;
+    reply.result = sonora::DispatchResult::Failed;
+    if (!await_reply(engine, engine.send(r), seconds, reply)) {
+        reply.result = sonora::DispatchResult::Failed;
+        reply.message = "no reply within " + std::to_string(static_cast<int>(seconds)) + " s";
+    }
+    return reply;
+}
+
 // Records for a fixed duration and reports the result in one machine-readable
 // line. Return code is the test verdict: anything non-zero means the recording
 // is not trustworthy, even if files were produced.
-int run_headless(sonora::Session& session, AudioBackend& audio,
-                 double seconds, int connected, const std::string& device,
-                 const sonora::MayRecord& may_record) {
+//
+// Driven through the control server with no socket, as an interface would
+// drive it (ADR-0009, update "playback on the M4/M7 control server", item
+// 5): arming, the take behind the residency gate, and the stop, so what is
+// heard during the take is what --place put in the server's document.
+int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProcessEngine& engine,
+                 double seconds, int connected, const std::string& device, bool arm_all,
+                 const std::vector<int>& arm_tracks) {
     // Before the take opens: a server lost while waiting would otherwise
     // leave a set of 0-frame files behind it.
     if (audio.fatal()) {
@@ -128,13 +171,43 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
         return 1;
     }
 
-    // Never take 1 unconditionally: a test run against a session folder that
-    // already holds takes must add one, not replace one.
     std::string why;
-    if (!may_record(why) || !session.start_recording(session.next_free_take(), &why)) {
-        std::fprintf(stderr, "sonora: cannot record: %s\n", why.c_str());
+    if (!engine.connect(why)) {
+        std::fprintf(stderr, "sonora: the control server did not start: %s\n", why.c_str());
         return 1;
     }
+    // Commands are answered in milliseconds; a take waits for its window
+    // to be resident, a few seconds at worst on a slow disk.
+    constexpr double kReplySeconds = 5.0;
+    constexpr double kTakeSeconds = 15.0;
+    if (arm_all) {
+        const auto r = run_command(engine, "track.arm_all", -1, kReplySeconds);
+        if (r.result != sonora::DispatchResult::Ok) {
+            std::fprintf(stderr, "sonora: cannot arm: %s\n", r.message.c_str());
+            return 1;
+        }
+    } else {
+        for (const int t : arm_tracks) {
+            if (session.tracks()[static_cast<std::size_t>(t)]->rec_armed()) continue;
+            const auto r = run_command(engine, "track.toggle_arm", t, kReplySeconds);
+            if (r.result != sonora::DispatchResult::Ok) {
+                std::fprintf(stderr, "sonora: cannot arm track %d: %s\n", t + 1,
+                             r.message.c_str());
+                return 1;
+            }
+        }
+    }
+
+    // Never take 1 unconditionally: the server numbers the take from the
+    // folder, so a run against a session that already holds takes adds one.
+    // The reply comes once the take has started, or with why it did not.
+    const auto rec = run_command(engine, "transport.record", -1, kTakeSeconds);
+    if (rec.result != sonora::DispatchResult::Ok) {
+        std::fprintf(stderr, "sonora: cannot record: %s\n", rec.message.c_str());
+        return 1;
+    }
+    // The take starts at the playhead, which stands still until it does.
+    const uint64_t origin = session.transport().playhead();
 
     const uint64_t target =
         static_cast<uint64_t>(seconds * session.transport().sample_rate());
@@ -145,13 +218,17 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
     const double deadline = seconds * 2.0 + 5.0;
     double waited = 0.0;
 
+    const auto abandon = [&session, &engine]() {
+        engine.shutdown();
+        session.stop();
+    };
     while (!sonora::quit_requested() &&
-           session.transport().playhead() < target) {
+           session.transport().playhead() - origin < target) {
         // Server loss, or a rate or buffer size change: the backend has
         // stopped feeding the session, so close the take and say why.
         if (audio.fatal()) {
             std::fprintf(stderr, "sonora: %s.\n", audio.fatal_reason().c_str());
-            session.stop();
+            abandon();
             return 1;
         }
         ::usleep(20000);
@@ -162,18 +239,23 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
                          " frames captured.\n",
                          waited,
                          static_cast<unsigned long long>(
-                             session.transport().playhead()),
+                             session.transport().playhead() - origin),
                          static_cast<unsigned long long>(target));
-            session.stop();
+            abandon();
             return 1;
         }
     }
 
-    // stop() has already said why on stderr.
-    if (!session.stop()) return 1;
+    const auto stop = run_command(engine, "transport.stop", -1, kTakeSeconds);
+    engine.shutdown();
+    if (stop.result != sonora::DispatchResult::Ok) {
+        std::fprintf(stderr, "sonora: %s\n", stop.message.c_str());
+        session.stop();
+        return 1;
+    }
 
-    // Read the counters after stop(), so the disk thread has flushed and the
-    // overrun total is final rather than a snapshot mid-drain.
+    // Read the counters after the stop, so the disk thread has flushed and
+    // the overrun total is final rather than a snapshot mid-drain.
     const uint32_t xruns = audio.xruns();
     const uint32_t steps = audio.clock_discontinuities();
     const uint32_t overruns = session.disk().total_overruns();
@@ -199,15 +281,24 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
 
     // A clock step puts no hole in the audio, so it is reported rather than
     // failed: the take's timestamps after it do not follow on from before.
+    // A playback miss is a hole in what was heard during the take.
+    const uint64_t misses = session.playback_misses();
     std::printf("RESULT files=%d connected=%d frames=%llu requested=%llu"
-                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u\n",
+                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u misses=%llu\n",
                 files, connected,
                 static_cast<unsigned long long>(frames_on_disk),
                 static_cast<unsigned long long>(target),
-                audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns);
+                audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns,
+                static_cast<unsigned long long>(misses));
 
     if (files == 0) {
         std::fprintf(stderr, "sonora: no audio was written.\n");
+        return 1;
+    }
+    if (misses > 0) {
+        std::fprintf(stderr,
+                     "sonora: %llu playback chunks were not resident when played.\n",
+                     static_cast<unsigned long long>(misses));
         return 1;
     }
     if (xruns > 0 || overruns > 0) {
@@ -238,6 +329,10 @@ int main(int argc, char** argv) {
     double record_seconds = 0.0;  // 0 means interactive
     double wait_for_inputs_seconds = 0.0;
     bool arm_all = false;
+    // Tracks armed one by one, 0-based; and what --place puts on track 1, 2...
+    std::vector<int> arm_tracks;
+    std::vector<std::string> place_files;
+    bool no_input_monitoring = false;
     std::string keymap_path;
     std::string capture_device;
     std::string backend_name = "jack";
@@ -268,6 +363,19 @@ int main(int argc, char** argv) {
             wait_for_inputs_seconds = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--arm-all") == 0) {
             arm_all = true;
+        } else if (std::strcmp(argv[i], "--arm") == 0 && i + 1 < argc) {
+            const int n = std::atoi(argv[++i]);
+            if (n < 1) {
+                std::fprintf(stderr, "sonora: --arm takes a track number from 1\n");
+                return 2;
+            }
+            if (std::find(arm_tracks.begin(), arm_tracks.end(), n - 1) == arm_tracks.end()) {
+                arm_tracks.push_back(n - 1);
+            }
+        } else if (std::strcmp(argv[i], "--place") == 0 && i + 1 < argc) {
+            place_files.emplace_back(argv[++i]);
+        } else if (std::strcmp(argv[i], "--no-input-monitoring") == 0) {
+            no_input_monitoring = true;
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
@@ -301,6 +409,11 @@ int main(int argc, char** argv) {
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
+                "  --arm N           arm track N at startup (repeatable)\n"
+                "  --place FILE      play FILE (relative to --dir) on track 1, at\n"
+                "                    its BWF time reference (repeatable: tracks 2, 3...)\n"
+                "  --no-input-monitoring\n"
+                "                    armed tracks send nothing to the monitor bus\n"
                 "  --keymap PATH     key map for the terminal interface\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
@@ -331,12 +444,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    if (record_seconds > 0.0 && !arm_all) {
+    if (record_seconds > 0.0 && !arm_all && arm_tracks.empty()) {
         // Recording nothing for ten seconds and exiting 0 is a test that
         // passes while proving nothing. Refuse it.
         std::fprintf(stderr,
                      "sonora: --record needs at least one armed track;"
-                     " pass --arm-all.\n");
+                     " pass --arm-all or --arm N.\n");
         return 2;
     }
 
@@ -472,7 +585,8 @@ int main(int argc, char** argv) {
     // open() refuses a server at any rate but the session's, since a
     // mismatch would write wrong-pitch files, and refuses to guess between
     // two USB interfaces.
-    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 0,
+    // Two outputs: the fixed stereo monitor bus (ADR-0009 §4.6).
+    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 2,
                       cfg.sample_rate, capture_device},
                      session, backend_error) ||
         !audio->activate(backend_error)) {
@@ -522,6 +636,32 @@ int main(int argc, char** argv) {
         }
     }
     session.disk().start();
+    // Separate from the capture writer: a slow read never delays a drain.
+    session.reader().start();
+
+    for (const int t : arm_tracks) {
+        if (static_cast<std::size_t>(t) >= session.tracks().size()) {
+            std::fprintf(stderr, "sonora: --arm %d: there are %zu tracks\n", t + 1,
+                         session.tracks().size());
+            return 2;
+        }
+    }
+    // What --place puts on the timeline is where the server's one document
+    // starts, so it is what plays, what every interface shows and what an
+    // edit changes.
+    if (!place_files.empty()) {
+        sonora::model::Document document(sonora::engine_document(session));
+        std::vector<sonora::model::ReplicationUpdate> placed;
+        std::string why;
+        for (std::size_t i = 0; i < place_files.size(); ++i) {
+            if (!sonora::place_file(document, cfg.dir, place_files[i], i, placed, why)) {
+                std::fprintf(stderr, "sonora: --place: %s\n", why.c_str());
+                return 2;
+            }
+        }
+        control.initial_document = std::make_shared<sonora::model::Snapshot>(document.current());
+    }
+    control.input_monitoring = !no_input_monitoring;
 
     // Before every take, headless or from a key: when no armed track has
     // anything connected, every file would be silence.
@@ -541,16 +681,25 @@ int main(int argc, char** argv) {
         return false;
     };
 
+    if (record_seconds > 0.0) {
+        control.may_record = may_record;
+        sonora::InProcessEngine engine(session, audio.get(), std::move(control));
+        const int rc = run_headless(session, *audio, engine, record_seconds, connected,
+                                    capture_device, arm_all, arm_tracks);
+        engine.shutdown();
+        sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
+        audio->deactivate();
+        engine.server().after_deactivate();
+        return rc;
+    }
+
+    // Before the server exists, so the mix it applies at start already
+    // sees them armed (--no-input-monitoring).
     if (arm_all) {
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
     }
-
-    if (record_seconds > 0.0) {
-        const int rc = run_headless(session, *audio, record_seconds, connected,
-                                    capture_device, may_record);
-        sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
-        audio->deactivate();
-        return rc;
+    for (const int t : arm_tracks) {
+        session.tracks()[static_cast<std::size_t>(t)]->set_rec_armed(true);
     }
 
     // What the old terminal loop checked once a second, now on the engine's
@@ -718,6 +867,7 @@ int main(int argc, char** argv) {
     const bool take_ok = session.stop();
     sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
     audio->deactivate();
+    server.after_deactivate();
     std::printf("sonora: session written to %s\n", cfg.dir.c_str());
 
     // The server dying, or changing rate or buffer size, stops the callback

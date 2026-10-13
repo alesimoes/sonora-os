@@ -181,7 +181,8 @@ struct JackBackend::Impl {
             self->in_bufs[i] = in ? in : self->silence.data();
         }
         self->block.nframes = nframes;
-        self->block.frame_time = self->clock.widen(jack_last_frame_time(self->client));
+        self->block.frame_time = self->clock.widen(jack_last_frame_time(self->client), nframes,
+                                                   self->xruns.load(std::memory_order_relaxed));
         self->callback->process(self->block);
         return 0;
     }
@@ -361,6 +362,7 @@ bool JackBackend::activate(std::string& error) {
         return false;
     }
     if (d.active) return true;
+    d.clock.resume();
     if (jack_activate(d.client) != 0) {
         error = "jack_activate failed";
         return false;
@@ -443,6 +445,7 @@ void JackBackend::deactivate() noexcept {
     // Before the client is closed and before the caller frees the session,
     // so the callback cannot run against freed state.
     jack_deactivate(d.client);
+    d.clock.finish(d.xruns.load(std::memory_order_relaxed));
     d.active = false;
 }
 

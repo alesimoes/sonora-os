@@ -43,8 +43,9 @@ python3 /usr/local/bin/verify-recording.py --check "$FAKE_DIR/Audio Files" \
 
 echo "--- the engine as a process, an interface on its socket (ADR-0007 M7) ---"
 # sonora-engine serves its control socket and the memfd state block;
-# sonora-ctl, a separate process, arms, records, stops and asks for
-# playback through the socket alone, checking the state block at each step.
+# sonora-ctl, a separate process, arms, records, stops and plays the take
+# back from 0 through the socket alone, checking the state block at each
+# step: playback must roll, and a refusal of any kind fails the step.
 # Then the files are judged by the same verifier, so the take an interface
 # drove from outside is proven channel for channel.
 if [[ -f /engine-build/sonora-ctl ]]; then
@@ -63,6 +64,10 @@ if [[ -f /engine-build/sonora-ctl ]]; then
     exit 1
   }
   cat /tmp/e2e-ctl.out
+  grep -q "^RESULT checks_failed=0 .* play=ok" /tmp/e2e-ctl.out || {
+    echo "FAIL: the engine did not roll the take back over the socket" >&2
+    exit 1
+  }
   /tmp/sonora-ctl --control-socket "$E2E_SOCK" state
   kill -TERM "$E2E_PID"
   set +e
@@ -250,6 +255,70 @@ fi
 echo "--- verifying the files ---"
 python3 /usr/local/bin/verify-recording.py --check "$SESSION_DIR/Audio Files" \
   --tracks "$TRACKS" --rate "$RATE" --seconds "$SECONDS_TO_RECORD"
+
+echo "--- playback: a take played through the monitor bus, looped back, recorded ---"
+# The engine plays track 1's take from above on its stereo monitor bus while
+# track 2 records sonora:out_1, patched back into sonora:in_2. The second
+# take must be the first at the pan law's centre gain, from timeline frame 0,
+# late only by whole periods of loop latency: the playback path end to end,
+# through the disk reader's residency gate, against the real server. Armed
+# tracks monitor nothing here, or the loop would feed back.
+#
+# The loop is inside one client, and PipeWire's JACK layer gives the
+# self-linked input the output's own buffer, one of two in turn: that is the
+# two periods of loop latency. A period the dummy driver skips, woken late
+# on a loaded host, breaks the turn, and in_2 reads two blocks swapped,
+# though the engine's out_1 is continuous (measured 2026-10-13: every one of
+# the swaps came with a skipped period; out_1 as it left the callback had
+# none). The engine counts the skip as a clock step; the verifier then lets
+# a few blocks null a period early or late, two per step and nothing else.
+# A take that still does not null is recorded again, up to three times, only
+# if steps were counted; with none it fails at once.
+PB_DIR=/home/sonora/Sessions/playback
+for attempt in 1 2 3; do
+  rm -rf "$PB_DIR"
+  mkdir -p "$PB_DIR/Audio Files"
+  cp "$SESSION_DIR/Audio Files/Audio 1_01.wav" "$PB_DIR/Audio Files/"
+  "$ENGINE_BIN" --dir "$PB_DIR" --tracks 2 --rate "$RATE" \
+    --place "Audio Files/Audio 1_01.wav" --arm 2 --no-input-monitoring \
+    --wait-for-inputs 20 --record "$SECONDS_TO_RECORD" >/tmp/playback.out 2>/tmp/playback.err &
+  ENGINE_PID=$!
+  for _ in $(seq 1 50); do
+    pw-link -i 2>/dev/null | grep -q "sonora:in_2" &&
+      pw-link -o 2>/dev/null | grep -q "sonora:out_1" && break
+    sleep 0.2
+  done
+  pw-link "sonora:out_1" "sonora:in_2" >/dev/null 2>&1 || {
+    echo "FAIL: could not loop sonora:out_1 back into sonora:in_2." >&2
+    exit 1
+  }
+  set +e
+  wait "$ENGINE_PID"
+  ENGINE_RC=$?
+  set -e
+  ENGINE_PID=""
+  if [[ "$ENGINE_RC" != "0" ]]; then
+    echo "FAIL: the playback run exited $ENGINE_RC." >&2
+    cat /tmp/playback.out /tmp/playback.err >&2
+    exit 1
+  fi
+  grep "^RESULT" /tmp/playback.out
+  BUFFER=$(sed -n 's/^RESULT .* buffer=\([0-9]*\) .*/\1/p' /tmp/playback.out)
+  STEPS=$(sed -n 's/^RESULT .* clock_steps=\([0-9]*\) .*/\1/p' /tmp/playback.out)
+  set +e
+  python3 /usr/local/bin/verify-recording.py --check-playback \
+    "$PB_DIR/Audio Files/Audio 1_01.wav" "$PB_DIR/Audio Files/Audio 2_02.wav" \
+    --buffer "$BUFFER" --clock-steps "${STEPS:-0}"
+  NULL_RC=$?
+  set -e
+  [[ "$NULL_RC" == "0" ]] && break
+  if [[ "${STEPS:-0}" == "0" || "$attempt" == "3" ]]; then
+    echo "FAIL: the loopback take does not null (clock steps: ${STEPS:-?}, attempt $attempt)." >&2
+    exit 1
+  fi
+  echo "note: the server skipped a period during the take (clock_steps=$STEPS);" \
+    "recording it again"
+done
 
 # The device policy, with the fake onboard device as the laptop's own audio
 # (revised by the owner 2026-10-13; ADR-0007 M2 note, item 8). Each engine

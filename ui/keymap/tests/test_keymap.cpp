@@ -522,6 +522,11 @@ int test_binding_origin() {
 // its only arm key, and ensure_essentials() reported success.
 int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
                                  const Implemented& implemented) {
+    // This build less playback: what the repairs do where toggle_play
+    // cannot run.
+    const Implemented cannot_play = [&implemented](const std::string& id) {
+        return id != "transport.toggle_play" && implemented(id);
+    };
     {
         KeyMap m;
         std::string err;
@@ -559,7 +564,8 @@ int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
         }
     }
     {
-        // A profile that starts a take on its own key and stops on its
+        // In a build that cannot play (no transport.toggle_play), a
+        // profile that starts a take on its own key and stops on its
         // play/stop key -- Pro Tools' ctrl+space and space -- gets
         // transport.stop on that key, not the default's toggle_record. Space
         // pressed while stopped means "play" there; with toggle_record it
@@ -573,19 +579,33 @@ int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
             "1": { "command": "track.toggle_arm", "target": 1 },
             "q": "app.quit" } })", m, err));
         const std::vector<std::string> notices =
-            m.ensure_essentials(device, implemented);
+            m.ensure_essentials(device, cannot_play);
         CHECK(notices.size() == 1);
         CHECK(mentions(notices[0], "\"space\" -> transport.stop"
                                    " (was transport.toggle_play)"));
         CHECK(!mentions(notices[0], "built-in default"));
         CHECK(m.resolve("space")->command == "transport.stop");
         for (const auto& g : KeyMap::essential_commands()) {
-            CHECK(satisfied(m, g, device, implemented));
+            CHECK(satisfied(m, g, device, cannot_play));
         }
     }
     {
-        // With no start key of its own, the default's toggle_record is what
-        // starts a take at all, and it goes on the play/stop key as before.
+        // With playback, the same profile needs nothing: its play/stop key
+        // closes a take.
+        KeyMap m;
+        std::string err;
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "space": "transport.toggle_play",
+            "ctrl+space": "transport.record",
+            "1": { "command": "track.toggle_arm", "target": 1 },
+            "q": "app.quit" } })", m, err));
+        CHECK(m.ensure_essentials(device, implemented).empty());
+        CHECK(m.resolve("space")->command == "transport.toggle_play");
+    }
+    {
+        // With no start key of its own, in a build that cannot play, the
+        // default's toggle_record is what starts a take at all, and it goes
+        // on the play/stop key as before.
         KeyMap m;
         std::string err;
         CHECK(loads(R"({ "name": "x", "bindings": {
@@ -593,12 +613,12 @@ int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
             "1": { "command": "track.toggle_arm", "target": 1 },
             "q": "app.quit" } })", m, err));
         const std::vector<std::string> notices =
-            m.ensure_essentials(device, implemented);
+            m.ensure_essentials(device, cannot_play);
         CHECK(notices.size() == 1);
         CHECK(mentions(notices[0], "built-in default"));
         CHECK(m.resolve("space")->command == "transport.toggle_record");
         for (const auto& g : KeyMap::essential_commands()) {
-            CHECK(satisfied(m, g, device, implemented));
+            CHECK(satisfied(m, g, device, cannot_play));
         }
     }
     return 0;
@@ -1455,16 +1475,12 @@ int main() {
         // makes rather than a notice nobody reads.
         //
         // Pro Tools starts a take on ctrl+space and f12 (transport.record)
-        // and stops it on space, which is transport.toggle_play -- and there
-        // is no playback to toggle. So space becomes transport.stop: it stops
-        // a take as Pro Tools' space does, and does nothing where Pro Tools
-        // would play, rather than starting a take nobody asked for. ctrl+q
-        // needs no repair now that flow control is off. Logic is the same for
-        // space, with r as its record key, and its quit is cmd+q, which no
-        // terminal can send, so q is bound to app.quit.
+        // and stops it on space, which is transport.toggle_play: it plays,
+        // and stops a roll or a take, as Pro Tools' space does, so it needs
+        // no repair. ctrl+q needs none now that flow control is off. Logic is
+        // the same for space, with r as its record key, and its quit is
+        // cmd+q, which no terminal can send, so q is bound to app.quit.
         {
-            const char* const space_stops =
-                "\"space\" -> transport.stop (was transport.toggle_play)";
             struct Expected {
                 const char* file;
                 std::size_t notices;
@@ -1473,9 +1489,8 @@ int main() {
             };
             const Expected expected[] = {
                 {"default.json", 0, {}, "transport.toggle_record"},
-                {"protools.json", 1, {space_stops}, "transport.stop"},
-                {"logic.json", 2, {space_stops, "\"q\" -> app.quit"},
-                 "transport.stop"},
+                {"protools.json", 0, {}, "transport.toggle_play"},
+                {"logic.json", 1, {"\"q\" -> app.quit"}, "transport.toggle_play"},
             };
             for (const Expected& e : expected) {
                 KeyMap map;

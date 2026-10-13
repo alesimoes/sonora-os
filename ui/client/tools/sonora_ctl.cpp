@@ -8,8 +8,8 @@
 //   sonora-ctl [--control-socket PATH] send COMMAND [TRACK]
 //   sonora-ctl [--control-socket PATH] take SECONDS
 //
-// `take` arms every track, records for SECONDS, stops, asks for playback,
-// and checks the state block at each step; it prints one RESULT line and
+// `take` arms every track, records for SECONDS, stops, plays the take back
+// from 0, and checks the state block at each step; it prints one RESULT line and
 // exits 0 only if every check held.
 #include <algorithm>
 #include <chrono>
@@ -154,18 +154,26 @@ int take(sonora::client::SocketEngine& e, double seconds) {
     const auto after = v.transport();
     check(after.xruns == 0 && after.overruns == 0, "no xruns and no overruns");
 
-    // Playback: asked for honestly. The engine has no playback path yet
-    // (BACKLOG, DAW 1 track 1 item 3), so it must refuse by name rather
-    // than claim to roll.
+    // Playback of the take just recorded: from its start, through the
+    // engine's residency gate, and nothing less than a roll passes
+    // (ADR-0009, update "playback on the M4/M7 control server").
+    check(run(e, "transport.return_to_zero").result == sonora::DispatchResult::Ok,
+          "return to zero");
+    check(within(e, 1000, [&]() { return v.transport().playhead == 0; }),
+          "the block shows the playhead at 0");
     const auto play = run(e, "transport.play");
-    if (play.result == sonora::DispatchResult::Ok) {
-        check(within(e, 1000, [&]() { return v.transport().state == TransportState::Rolling; }),
-              "playback rolls");
-        run(e, "transport.stop");
-    } else {
-        check(play.result == sonora::DispatchResult::NotImplemented,
-              "playback is refused as not implemented, not failed");
+    if (play.result != sonora::DispatchResult::Ok) {
+        std::printf("  play: %s\n", play.message.c_str());
     }
+    check(play.result == sonora::DispatchResult::Ok, "play");
+    check(within(e, 2000, [&]() { return v.transport().state == TransportState::Rolling; }),
+          "playback rolls");
+    check(within(e, 1000, [&]() { return v.transport().playhead > rate / 10; }),
+          "the playhead advances while rolling");
+    check(run(e, "transport.stop").result == sonora::DispatchResult::Ok, "stop the roll");
+    check(within(e, 1000, [&]() { return v.transport().state == TransportState::Stopped; }),
+          "the block shows the roll stopped");
+    check(v.transport().take == first_take + 1, "the roll used no take number");
 
     std::printf("RESULT checks_failed=%d tracks=%u take=%d recorded_frames=%llu peak=%.3f"
                 " play=%s\n",

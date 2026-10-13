@@ -866,12 +866,13 @@ const std::vector<std::vector<std::string>>& KeyMap::essential_commands() {
     // Starting and stopping a take are separate groups because a profile can
     // put them on different keys -- Pro Tools starts on Command+Space and
     // stops on Space -- and one that can only start has no way to close the
-    // file short of quitting. transport.toggle_play joins the stop group the
-    // day playback exists and its handler can stop a take.
+    // file short of quitting. transport.toggle_play is in the stop group:
+    // its handler closes a running take (session_commands.cpp), and where a
+    // build cannot run it, it does not count.
     static const std::vector<std::vector<std::string>> groups = {
         {"track.toggle_arm", "track.arm", "track.arm_all"},
         {"transport.toggle_record", "transport.record"},
-        {"transport.toggle_record", "transport.stop"},
+        {"transport.toggle_record", "transport.stop", "transport.toggle_play"},
         {"app.quit"},
     };
     return groups;
@@ -956,7 +957,7 @@ std::vector<std::string> KeyMap::ensure_essentials(
 
         // A profile that starts a take on a key of its own and stops it on
         // its play/stop key -- Pro Tools' Ctrl+Space and Space, Logic's R and
-        // Space -- has a dead play/stop key, because there is no playback.
+        // Space -- has a dead play/stop key in a build without playback.
         // The default's substitute, toggle_record, would make that key start
         // a take where the operator expects playback; transport.stop on it
         // stops a take as the application's Space does and never starts one.

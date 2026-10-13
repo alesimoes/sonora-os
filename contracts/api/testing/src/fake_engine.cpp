@@ -43,8 +43,9 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
     // the interface's own (ADR-0007 §5). engine/control's test_control
     // fails if the two lists differ.
     static const std::vector<std::string> ids = {
-        "track.arm_all",    "track.disarm_all", "track.toggle_arm",
-        "transport.record", "transport.stop",   "transport.toggle_record",
+        "track.arm_all",        "track.disarm_all",         "track.toggle_arm",
+        "transport.play",       "transport.record",         "transport.return_to_zero",
+        "transport.stop",       "transport.toggle_play",    "transport.toggle_record",
     };
     return ids;
 }
@@ -91,6 +92,13 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
 FakeEngine::~FakeEngine() = default;
 
 uint64_t FakeEngine::now() const { return cfg_.clock(); }
+
+uint64_t FakeEngine::playhead() const {
+    if (mode_ == TransportState::Stopped) return position_;
+    const uint64_t t = now();
+    return t <= moved_ns_ ? position_
+                          : position_ + (t - moved_ns_) * cfg_.sample_rate / 1'000'000'000ull;
+}
 
 bool FakeEngine::alive() const { return !dead_ && now() < death_ns_; }
 
@@ -325,27 +333,53 @@ void FakeEngine::handle(const std::string& bytes) {
 // install_session_commands(); the conformance suite holds both to them.
 bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     const bool recording = mode_ == TransportState::Recording;
+    // The transport moves from where the playhead stands now.
+    const auto move = [&](TransportState to) {
+        position_ = playhead();
+        moved_ns_ = now();
+        mode_ = to;
+    };
     const auto start = [&]() {
         if (std::find(armed_.begin(), armed_.end(), true) == armed_.end()) {
             why = "no track is armed";
             return false;
         }
-        mode_ = TransportState::Recording;
-        record_start_ns_ = now();
+        move(TransportState::Recording);
         return true;
     };
     // Failed reports the take, not the stop, as the real one does.
     const auto finish = [&]() {
-        mode_ = TransportState::Stopped;
+        move(TransportState::Stopped);
         const bool failed = failed_take_ == take_ && take_failed_shown_;
         if (failed) why = take_file(take_) + ": no space left on device";
         ++take_;
         return !failed;
     };
+    // A roll is not a take: stopping it closes no file and uses no number.
+    const auto stop = [&]() {
+        if (recording) return finish();
+        if (mode_ == TransportState::Rolling) move(TransportState::Stopped);
+        return true;
+    };
+    const auto play = [&]() {
+        if (mode_ == TransportState::Stopped) move(TransportState::Rolling);
+        return true;
+    };
     const std::string& id = r.command;
     if (id == "transport.toggle_record") return recording ? finish() : start();
     if (id == "transport.record") return recording ? true : start();
-    if (id == "transport.stop") return mode_ == TransportState::Stopped ? true : finish();
+    if (id == "transport.stop") return stop();
+    if (id == "transport.play") return play();
+    if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? play() : stop();
+    if (id == "transport.return_to_zero") {
+        if (recording) {
+            why = "locate during a take is not supported yet; stop first";
+            return false;
+        }
+        position_ = 0;
+        moved_ns_ = now();
+        return true;
+    }
 
     const auto take_running = [&]() {
         if (recording) why = "arming cannot change during a take; stop first";
@@ -383,9 +417,7 @@ void FakeEngine::publish() {
     TransportFields tf;
     tf.state = mode_;
     tf.take = take_;
-    if (mode_ == TransportState::Recording && t1 >= record_start_ns_) {
-        tf.playhead = (t1 - record_start_ns_) * cfg_.sample_rate / 1'000'000'000ull;
-    }
+    tf.playhead = playhead();
     tf.xruns = xruns_;
     tf.clock_steps = clock_steps_;
     tf.health_flags = health_;

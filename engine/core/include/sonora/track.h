@@ -31,6 +31,20 @@ public:
     float gain() const { return gain_.load(std::memory_order_relaxed); }
     void set_gain(float g) { gain_.store(g, std::memory_order_relaxed); }
 
+    // -1 is hard left, +1 hard right. Mix state, read once per block and
+    // ramped like gain (ADR-0009 §4.5).
+    float pan() const { return pan_.load(std::memory_order_relaxed); }
+    void set_pan(float p) { pan_.store(p, std::memory_order_relaxed); }
+
+    bool soloed() const { return soloed_.load(std::memory_order_relaxed); }
+    void set_soloed(bool v) { soloed_.store(v, std::memory_order_relaxed); }
+
+    // What the track sends to the monitor bus. Auto: the input while armed
+    // and stopped or recording, playback otherwise (session-format.md).
+    enum class Monitor : uint8_t { Auto = 0, Input = 1, Off = 2 };
+    Monitor monitor() const { return monitor_.load(std::memory_order_relaxed); }
+    void set_monitor(Monitor m) { monitor_.store(m, std::memory_order_relaxed); }
+
     // Peak since the last read, for the meters. Reading clears it.
     float take_peak() { return peak_.exchange(0.0f, std::memory_order_relaxed); }
     void report_peak(float p) noexcept SONORA_RT;
@@ -72,9 +86,14 @@ private:
     std::atomic<bool> draining_{false};
     std::atomic<bool> muted_{false};
     std::atomic<float> gain_{1.0f};
+    std::atomic<float> pan_{0.0f};
+    std::atomic<bool> soloed_{false};
+    std::atomic<Monitor> monitor_{Monitor::Auto};
     std::atomic<float> peak_{0.0f};
     std::atomic<uint32_t> overruns_{0};
 };
+
+static_assert(std::atomic<Track::Monitor>::is_always_lock_free, "monitor_");
 
 // The callback touches each of these every period; a lock behind any of
 // them would be a lock on the audio thread.

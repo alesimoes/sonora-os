@@ -102,10 +102,11 @@ stops a take as the application's Space does and never starts one.
 
 With the shipped profiles that means: `protools.json` starts a take with
 `ctrl+space` or `f12` and `logic.json` with `r` (both `transport.record`), and
-both stop with `space`, which is `transport.toggle_play` -- and there is no
-playback yet -- so `space` becomes `transport.stop` in both. Pressed while
-stopped it does nothing. `logic.json`'s quit is `cmd+q`, so `q` is bound to
-`app.quit` from the default.
+both stop with `space`, which is `transport.toggle_play`. The engine plays
+back since ADR-0009's port onto the control server, and `toggle_play` closes
+a running take, so `space` needs no repair in either: it plays, and stops a
+roll or a take, as the applications' Space does. `logic.json`'s quit is
+`cmd+q`, so `q` is bound to `app.quit` from the default.
 
 `ui/keymap/tests/test_keymap.cpp` sweeps all 256 bytes against every shipped
 profile and fails if none of them arms a track, and pins the exact repairs
