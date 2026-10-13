@@ -8,6 +8,9 @@
 //   urn:sonora:test#sleep  mono pass-through; sleeps `sleep_ms` per block
 //   urn:sonora:test#liar   declares stereo, writes 8 channels into output 0
 //   urn:sonora:test#nan    mono pass-through; writes NaN and Inf when `nan` > 0.5
+//   urn:sonora:test#key    mono, with a key input: outputs its key, then
+//                          scribbles over the key's `n` samples
+//   urn:sonora:test#keyliar  the same, and writes 64 samples past its key
 
 #include <lv2/core/lv2.h>
 
@@ -19,13 +22,16 @@
 
 namespace {
 
-enum Kind { kCrash, kSleep, kLiar, kNan };
+enum Kind { kCrash, kSleep, kLiar, kNan, kKey, kKeyLiar };
 
 struct Plugin {
     Kind kind;
     const float* control = nullptr;
     const float* in[2] = {nullptr, nullptr};
     float* out[2] = {nullptr, nullptr};
+    // Written through on purpose: what a plugin that uses its inputs as
+    // scratch space does.
+    float* key = nullptr;
 };
 
 // Read through a volatile so the compiler cannot prove the address is null
@@ -45,6 +51,13 @@ void connect(LV2_Handle h, uint32_t port, void* data) {
         // 0, 1: in L/R. 2, 3: out L/R.
         if (port < 2) p->in[port] = static_cast<const float*>(data);
         else if (port < 4) p->out[port - 2] = static_cast<float*>(data);
+        return;
+    }
+    if (p->kind == kKey || p->kind == kKeyLiar) {
+        // 0: in. 1: key (lv2:isSideChain). 2: out.
+        if (port == 0) p->in[0] = static_cast<const float*>(data);
+        else if (port == 1) p->key = static_cast<float*>(data);
+        else if (port == 2) p->out[0] = static_cast<float*>(data);
         return;
     }
     // 0: control. 1: in. 2: out.
@@ -78,6 +91,13 @@ void run(LV2_Handle h, uint32_t n) {
                 p->out[0][i] = (i & 4) ? std::numeric_limits<float>::infinity()
                                        : std::numeric_limits<float>::quiet_NaN();
         break;
+    case kKey:
+    case kKeyLiar:
+        std::memcpy(p->out[0], p->key, n * sizeof(float));
+        for (uint32_t i = 0; i < n; ++i) p->key[i] = 7.0f;
+        if (p->kind == kKeyLiar)
+            for (uint32_t i = n; i < n + 64; ++i) p->key[i] = 7.0f;
+        break;
     case kLiar:
         // Treats output 0 as eight interleaved-by-block channels. Real
         // plugins do this when their channel count is a compile-time
@@ -95,6 +115,8 @@ const LV2_Descriptor kDescriptors[] = {
     {"urn:sonora:test#sleep", instantiate<kSleep>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#liar", instantiate<kLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#nan", instantiate<kNan>, connect, nullptr, run, nullptr, cleanup, nullptr},
+    {"urn:sonora:test#key", instantiate<kKey>, connect, nullptr, run, nullptr, cleanup, nullptr},
+    {"urn:sonora:test#keyliar", instantiate<kKeyLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
 };
 
 }  // namespace

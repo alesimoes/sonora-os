@@ -4,6 +4,8 @@
 // A linear chain of plugins, of any format, processing `channels` channels.
 // A mono plugin in a multichannel chain is replicated once per channel; any
 // other mismatch between what a plugin declares and the chain is refused.
+// Beside the signal the chain may carry key channels (sidechain_channels),
+// which every plugin with a key input reads and none writes.
 //
 // Every audio buffer the plugins see is private to this process and followed
 // by a guard region of canary words. A plugin that writes more than it
@@ -32,7 +34,9 @@ public:
     // declared. Must pass before the chain is offered to the engine.
     bool validate(ChainError& error);
 
-    // The processing thread. No allocation, no lock, no I/O. Every NaN or
+    // The processing thread. No allocation, no lock, no I/O. `in` is
+    // channels + sidechain_channels buffers, the key channels last; `out`
+    // is channels buffers. Every NaN or
     // Inf a plugin writes is replaced by 0 before the next plugin sees it and
     // counted against that plugin in report->instances[k].nonfinite_samples.
     // Returns false, with `error` set, when a plugin wrote outside its
@@ -43,6 +47,10 @@ public:
     // The main thread, concurrently with process(): Processor::control for
     // every plugin.
     void control();
+    // The main thread, while process() is not running: re-activates every
+    // plugin (Processor::reactivate). False, with `error` set, when one
+    // refused; the chain must then not run.
+    bool reactivate(ChainError& error);
 
     bool set_control(uint32_t instance, uint32_t id, float value) noexcept;
     bool set_control(uint32_t instance, const std::string& symbol, float value);
@@ -55,6 +63,7 @@ public:
 
 private:
     float* buffer(std::size_t stage, uint32_t channel);
+    void copy_key(const float* const* in, uint32_t frames) noexcept;
     void fill_canaries(uint32_t frames);
     bool canaries_intact(uint32_t from_frame, uint32_t words) const noexcept;
     uint64_t sanitise_stage(std::size_t stage, uint32_t frames) noexcept;
@@ -66,6 +75,11 @@ private:
     // max_frames samples followed by guard_frames_ canary words. The inner
     // vectors never resize, so the pointers processors hold stay valid.
     std::vector<std::vector<float>> stages_;
+    // The key: key_channels_ buffers of stride_, laid out like a stage, the
+    // canaries included. Copied in again before every plugin, so what one
+    // plugin writes into its key input is never another's key.
+    std::vector<float> key_;
+    uint32_t key_channels_;
     uint32_t guard_frames_;
     uint32_t stride_;
 };

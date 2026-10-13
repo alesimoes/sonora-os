@@ -13,9 +13,13 @@
 //   plugin_driver --host EXE --bundle DIR... --scenario NAME [options]
 //
 // Scenarios: gain, latency, latency_change, crash, deadline, nonfinite,
-// refusals (--format lv2|vst3), rtt, params and list_json (VST3), and render
-// (an offline run checked against a reference render, for Sonora's own
-// bundles; --args-file).
+// refusals (--format lv2|vst3), rtt, params and list_json (VST3), key (the
+// key channels reach every plugin unchanged, and a key input with no key
+// routed reads the plugin's own input), and render (an offline run checked
+// against a reference render, for Sonora's own bundles; --args-file). A render may route a key to the plugin's
+// side-chain (--key, host --sidechain), move a parameter on the ring before
+// a given block (--change), and have the host re-activate the plugin after
+// loading (--reactivate, for values that change its latency).
 // --mode pipelined (pipeline_depth 1, the default) or poll (depth 0,
 // poll-only). Neither waits on the host; rtt is a measurement and does.
 // Exit: 0 pass, 1 fail, 77 a required plugin is not installed (a failure in
@@ -69,6 +73,9 @@ const char* const kVst3YesMan = "vst3:534F4E4F524156535433544553540003";
 const char* const kVst3Liar = "vst3:534F4E4F524156535433544553540004";
 const char* const kVst3Turncoat = "vst3:534F4E4F524156535433544553540005";
 const char* const kVst3Params = "vst3:534F4E4F524156535433544553540006";
+const char* const kVst3Once = "vst3:534F4E4F524156535433544553540008";
+const char* const kKeyPlugin = "urn:sonora:test#key";
+const char* const kKeyLiar = "urn:sonora:test#keyliar";
 
 struct Args {
     std::string host, scenario, mode = "pipelined", format = "lv2";
@@ -90,6 +97,11 @@ struct Args {
     double tolerance = 1e-6;
     int64_t expect_latency = -1;
     std::vector<std::string> sets;  // host --set INDEX:SYMBOL=VALUE
+    // render: a key for the plugin's side-chain, planar, key_channels wide.
+    std::string key;
+    uint32_t key_channels = 0;
+    std::vector<std::string> changes;  // BLOCK:SYMBOL=VALUE, chain instance 0
+    bool reactivate = false;           // host --reactivate
 };
 
 int failures = 0;
@@ -166,6 +178,13 @@ public:
                 argv.push_back("--set");
                 argv.push_back(s.c_str());
             }
+            // The last key_channels of the region are the key.
+            const std::string sidechain = std::to_string(a.key_channels);
+            if (a.key_channels > 0) {
+                argv.push_back("--sidechain");
+                argv.push_back(sidechain.c_str());
+            }
+            if (a.reactivate) argv.push_back("--reactivate");
             argv.push_back(nullptr);
             execv(a.host.c_str(), const_cast<char* const*>(argv.data()));
             _exit(127);
@@ -868,6 +887,8 @@ int scenario_refusals(const Args& a) {
         uint32_t channels;
         plugin::Refusal want;
         int instance;
+        uint32_t key_channels = 0;  // of `channels`, the last ones (host --sidechain)
+        bool reactivate = false;    // host --reactivate
     };
     const std::vector<Case> lv2_cases = {
         {"declares 2 channels, writes 8: refused", {"urn:sonora:test#liar"}, 2,
@@ -876,6 +897,12 @@ int scenario_refusals(const Args& a) {
          plugin::Refusal::ChannelMismatch, 0},
         {"unknown URI: refused, and named", {"urn:sonora:test#crash", "urn:sonora:test#absent"}, 1,
          plugin::Refusal::NotFound, 1},
+        // The key channels have canaries behind them like every other buffer.
+        {"writes past its key input: refused", {kKeyLiar}, 2, plugin::Refusal::WroteOutsideBuffers, 0, 1},
+        // With no key routed the key input reads the plugin's own input,
+        // whose canaries catch the same write.
+        {"writes past its key input, no key routed: refused", {kKeyLiar}, 1,
+         plugin::Refusal::WroteOutsideBuffers, 0},
     };
     // tests/vst3/sonora_test_vst3.cpp
     const std::vector<Case> vst3_cases = {
@@ -890,12 +917,19 @@ int scenario_refusals(const Args& a) {
          plugin::Refusal::ChannelMismatch, 0},
         {"unknown VST3 class: refused, and named", {kVst3Crash, "vst3:00000000000000000000000000000000"},
          1, plugin::Refusal::NotFound, 1},
+        // Re-activation (host --reactivate) is checked like the first one:
+        // a plugin that will not come back is refused, not run inactive.
+        {"VST3 plugin that refuses to re-activate: refused", {kVst3Once}, 1,
+         plugin::Refusal::InstantiateFailed, 0, 0, true},
     };
     const std::vector<Case>& cases = a.format == "vst3" ? vst3_cases : lv2_cases;
     std::printf("refusals (%s)\n", a.format.c_str());
     for (const Case& c : cases) {
         Host host;
-        if (!host.start(a, c.chain, c.channels, plugin::kDefaultPipelineDepth)) return 1;
+        Args ca = a;
+        ca.key_channels = c.key_channels;
+        ca.reactivate = c.reactivate;
+        if (!host.start(ca, c.chain, c.channels, plugin::kDefaultPipelineDepth)) return 1;
         const plugin::HostState s = host.wait_ready(30'000'000'000ull);
         const auto reason = static_cast<plugin::Refusal>(host.h->refusal.load());
         const int inst = plugin::checked_instance(host.h->refusal_instance.load(), uint32_t(c.chain.size()));
@@ -1113,6 +1147,129 @@ bool read_planar(const std::string& path, uint32_t channels, std::vector<std::ve
     return true;
 }
 
+// A parameter move for the ring: in block `block` of the render, `id` (the
+// LV2 port index or the VST3 ParamID) to `value`.
+struct Move {
+    uint64_t block;
+    uint32_t id;
+    float value;
+};
+
+// The id behind each --change's symbol, from the host's own --probe: the
+// engine will do the same, by name from the descriptor to id from the host.
+bool resolve_changes(const Args& a, std::vector<Move>& moves) {
+    if (a.changes.empty()) return true;
+    std::string cmd = "'" + a.host + "' --probe '" + a.chain[0] + "' --channels " + std::to_string(a.channels);
+    for (const std::string& b : a.bundles) cmd += " --bundle '" + b + "'";
+    std::FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return false;
+    std::string probe;
+    char buf[4096];
+    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;) probe.append(buf, n);
+    pclose(p);
+    for (const std::string& c : a.changes) {
+        const std::size_t colon = c.find(':'), eq = c.rfind('=');
+        if (colon == std::string::npos || eq == std::string::npos || eq < colon) return false;
+        const std::string symbol = c.substr(colon + 1, eq - colon - 1);
+        // {"id":N,"symbol":"SYMBOL"}: our symbols and titles need no escaping.
+        const std::string tail = ",\"symbol\":\"" + symbol + "\"}";
+        const std::size_t at = probe.find(tail);
+        const std::size_t open = at == std::string::npos ? at : probe.rfind("{\"id\":", at);
+        if (open == std::string::npos) {
+            std::printf("  --change %s: the host's --probe lists no control '%s'\n", c.c_str(), symbol.c_str());
+            return false;
+        }
+        moves.push_back({std::strtoull(c.c_str(), nullptr, 10),
+                         uint32_t(std::strtoul(probe.c_str() + open + 6, nullptr, 10)),
+                         std::strtof(c.c_str() + eq + 1, nullptr)});
+    }
+    return true;
+}
+
+// Every plane of `planes` (the region's channels: signal, then key) through
+// a started host, block by block, each submitted and waited for; `got` gets
+// the region's output planes. `moves` go on the ring before their block.
+// False when a block did not come back. Not periodic, and it waits: only a
+// harness does this, never the engine (Host::round_trip says why).
+bool render_blocks(Host& host, const std::vector<std::vector<float>>& planes, const std::vector<Move>& moves,
+                   std::vector<std::vector<float>>& got, bool& pushed) {
+    const std::size_t frames = planes[0].size();
+    const std::size_t region_channels = planes.size();
+    got.assign(region_channels, std::vector<float>(frames, 0.f));
+    std::vector<const float*> ip(region_channels);
+    std::vector<float*> op(region_channels);
+    uint64_t block = 0;
+    for (std::size_t pos = 0; pos < frames; pos += kBlock, ++block) {
+        const uint32_t n = uint32_t(std::min<std::size_t>(kBlock, frames - pos));
+        for (std::size_t c = 0; c < region_channels; ++c) {
+            ip[c] = planes[c].data() + pos;
+            op[c] = got[c].data() + pos;
+        }
+        // On the ring before the block is submitted: the host applies it
+        // at the start of this block.
+        for (const Move& m : moves)
+            if (m.block == block) pushed &= plugin::push_param(*host.h, plugin::ParamChange{0, m.id, m.value, 0});
+        host.submit(ip.data(), n, block);
+        const uint64_t give_up = monotonic_ns() + 5'000'000'000ull;
+        for (;;) {
+            const uint32_t seen = host.h->done_word.load(std::memory_order_acquire);
+            if (host.idle()) break;
+            if (!host.alive() || monotonic_ns() > give_up) return false;
+            wait_for_change(host.h->done_word, seen, 100'000'000);
+        }
+        host.read_output(op.data(), n);
+    }
+    return true;
+}
+
+// The key channels, through the test plugin that outputs its key and then
+// writes over it (tests/lv2/sonora_test.cpp):
+// - two of them in a chain with a key routed: the second still reads the
+//   key, not what the first left in it, so the chain's output is the key;
+// - one with no key routed: its key input reads its own input, so the
+//   output is the input (a key input left on silence would output zeros).
+int scenario_key(const Args& a) {
+    std::printf("key\n");
+    const std::size_t frames = 64 * kBlock;
+    std::vector<float> signal(frames), key(frames);
+    for (std::size_t i = 0; i < frames; ++i) {
+        signal[i] = 0.5f * std::sin(0.013f * float(i));
+        key[i] = (i % 97) / 97.f - 0.5f;
+    }
+    struct Case {
+        const char* what;
+        std::vector<std::string> chain;
+        bool keyed;
+    };
+    const Case cases[] = {
+        {"two plugins that write into their key input: each reads the key", {kKeyPlugin, kKeyPlugin}, true},
+        {"no key routed: the key input reads the plugin's own input", {kKeyPlugin}, false},
+    };
+    for (const Case& c : cases) {
+        Args ca = a;
+        ca.key_channels = c.keyed ? 1 : 0;
+        Host host;
+        std::vector<std::vector<float>> planes = {signal};
+        if (c.keyed) planes.push_back(key);
+        if (int r = start_ready(host, ca, c.chain, uint32_t(planes.size()), 0)) return r;
+        std::vector<std::vector<float>> got;
+        bool pushed = true;
+        const bool complete = render_blocks(host, planes, {}, got, pushed);
+        check(complete, "every block came back from the host");
+        if (!complete) {
+            std::printf("  host: %s\n", host.death().c_str());
+            continue;
+        }
+        const std::vector<float>& want = c.keyed ? key : signal;
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < frames; ++i) differ += got[0][i] != want[i];
+        std::printf("  [%s] %zu of %zu samples differ from the %s\n", join(c.chain, ',').c_str(), differ, frames,
+                    c.keyed ? "key" : "input");
+        check(differ == 0, c.what);
+    }
+    return 0;
+}
+
 // A plugin whose exact output is known, rendered through a real host
 // process: Sonora's own bundles against the N0 reference renders
 // (sonora-dsp-measure --host-fixture, ADR-0011 §1.2's checkpoint). Not
@@ -1120,16 +1277,24 @@ bool read_planar(const std::string& path, uint32_t channels, std::vector<std::ve
 // and the output is the plugin's, sample for sample. Only a harness waits
 // like this; the engine never does (Host::round_trip says why).
 int scenario_render(const Args& a) {
-    std::printf("render: %s at %u Hz, %u channel(s)\n", join(a.chain, ',').c_str(), a.rate, a.channels);
-    std::vector<std::vector<float>> in, want;
+    std::printf("render: %s at %u Hz, %u channel(s), %u key channel(s)%s\n", join(a.chain, ',').c_str(),
+                a.rate, a.channels, a.key_channels, a.reactivate ? ", re-activated after loading" : "");
+    std::vector<std::vector<float>> in, want, key;
     if (a.chain.size() != 1 || !read_planar(a.input, a.channels, in) ||
-        !read_planar(a.expected, a.channels, want) || in[0].size() != want[0].size()) {
-        check(false, "one plugin, and --input and --expected of the same length and channel count");
+        !read_planar(a.expected, a.channels, want) || in[0].size() != want[0].size() ||
+        (a.key_channels > 0 && (!read_planar(a.key, a.key_channels, key) || key[0].size() != in[0].size()))) {
+        check(false, "one plugin, and --input, --expected and --key of the same length and channel count");
+        return 0;
+    }
+    std::vector<Move> moves;
+    if (!resolve_changes(a, moves)) {
+        check(false, "every --change names a control of the plugin");
         return 0;
     }
     Host host;
     // Depth 0: a block's output is that block's, with no IPC delay to undo.
-    if (int r = start_ready(host, a, a.chain, a.channels, 0)) return r;
+    // The key rides in the region after the signal channels.
+    if (int r = start_ready(host, a, a.chain, a.channels + a.key_channels, 0)) return r;
     const uint32_t latency = plugin::checked_latency(host.h->instances[0].latency_frames.load());
     if (a.expect_latency >= 0) {
         char what[128];
@@ -1139,31 +1304,13 @@ int scenario_render(const Args& a) {
     }
 
     const std::size_t frames = in[0].size();
-    std::vector<std::vector<float>> got(a.channels, std::vector<float>(frames, 0.f));
-    std::vector<const float*> ip(a.channels);
-    std::vector<float*> op(a.channels);
-    bool complete = true;
-    uint64_t block = 0;
-    for (std::size_t pos = 0; pos < frames && complete; pos += kBlock, ++block) {
-        const uint32_t n = uint32_t(std::min<std::size_t>(kBlock, frames - pos));
-        for (uint32_t c = 0; c < a.channels; ++c) {
-            ip[c] = in[c].data() + pos;
-            op[c] = got[c].data() + pos;
-        }
-        host.submit(ip.data(), n, block);
-        const uint64_t give_up = monotonic_ns() + 5'000'000'000ull;
-        for (;;) {
-            const uint32_t seen = host.h->done_word.load(std::memory_order_acquire);
-            if (host.idle()) break;
-            if (!host.alive() || monotonic_ns() > give_up) {
-                complete = false;
-                break;
-            }
-            wait_for_change(host.h->done_word, seen, 100'000'000);
-        }
-        if (complete) host.read_output(op.data(), n);
-    }
+    std::vector<std::vector<float>> planes = in;
+    planes.insert(planes.end(), key.begin(), key.end());
+    std::vector<std::vector<float>> got;
+    bool pushed = true;
+    const bool complete = render_blocks(host, planes, moves, got, pushed);
     check(complete, "every block came back from the host");
+    if (!moves.empty()) check(pushed, "every --change went on the parameter ring");
     if (!complete) {
         std::printf("  host: %s\n", host.death().c_str());
         return 0;
@@ -1244,6 +1391,10 @@ Args parse(int argc, char** argv) {
         else if (k == "--tolerance") a.tolerance = std::atof(v.c_str());
         else if (k == "--expect-latency") a.expect_latency = std::atoll(v.c_str());
         else if (k == "--set") a.sets.push_back(v);
+        else if (k == "--key") a.key = v;
+        else if (k == "--key-channels") a.key_channels = uint32_t(std::atoi(v.c_str()));
+        else if (k == "--change") a.changes.push_back(v);
+        else if (k == "--reactivate") a.reactivate = v == "1";
         else {
             std::fprintf(stderr, "plugin_driver: unknown argument %s\n", k.c_str());
             std::exit(2);
@@ -1255,7 +1406,9 @@ Args parse(int argc, char** argv) {
                              "       [--format lv2|vst3] [--gain-param ID] [--gain-linear 1] "
                              "[--expect-replicas N]\n"
                              "       render: [--args-file F] --input F --expected F [--rate HZ] "
-                             "[--tolerance X] [--expect-latency N] [--set INDEX:SYMBOL=VALUE]...\n");
+                             "[--tolerance X] [--expect-latency N] [--set INDEX:SYMBOL=VALUE]...\n"
+                             "               [--key F --key-channels N] [--change BLOCK:SYMBOL=VALUE]... "
+                             "[--reactivate 1]\n");
         std::exit(2);
     }
     return a;
@@ -1284,6 +1437,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "params") r = scenario_params(a);
     else if (a.scenario == "list_json") r = scenario_list_json(a);
     else if (a.scenario == "render") r = scenario_render(a);
+    else if (a.scenario == "key") r = scenario_key(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
 
     if (r != 0) return r;
