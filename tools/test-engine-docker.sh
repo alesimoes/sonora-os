@@ -59,4 +59,6 @@ echo "=== running the engine against PipeWire ==="
 # The binary is mounted rather than baked in, so a rebuild does not rebuild the
 # image. --mode 0755 cannot be expressed on a bind mount, hence the copy in the
 # container before running it.
-docker run --rm   -e RECORD_SECONDS="${RECORD_SECONDS:-3}"   -e TRACKS="${TRACKS:-18}"   -e RATE="${RATE:-48000}"   -e QUANTUM="${QUANTUM:-128}"   -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro"   "$IMAGE"
+# Unlimited memlock as sonora-session.service grants it: the engine refuses
+# to start without it.
+docker run --rm --ulimit memlock=-1:-1   -e RECORD_SECONDS="${RECORD_SECONDS:-3}"   -e TRACKS="${TRACKS:-18}"   -e RATE="${RATE:-48000}"   -e QUANTUM="${QUANTUM:-128}"   -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro"   "$IMAGE"

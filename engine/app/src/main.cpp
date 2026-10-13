@@ -20,6 +20,7 @@
 #include "sonora/command.h"
 #include "sonora/jack_backend.h"
 #include "sonora/keymap.h"
+#include "sonora/memory_lock.h"
 #include "sonora/quit_signals.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
@@ -397,6 +398,22 @@ int main(int argc, char** argv) {
         }
         std::printf("sonora: key map \"%s\", %zu bindings\n",
                     keymap.name().c_str(), keymap.bindings().size());
+    }
+
+    // Before the session's rings and before any JACK client and its threads
+    // exist, so all of them are locked as they are mapped. Refused rather
+    // than warned about: on the appliance the unit grants unlimited memlock,
+    // so a failure means the image is wrong, and a page fault on the audio
+    // thread shows up only as xruns nobody can explain.
+    {
+        std::string why;
+        if (!sonora::lock_memory(why)) {
+            std::fprintf(stderr,
+                         "sonora: cannot lock memory: %s. Refusing to start:"
+                         " the audio thread could page-fault mid-take.\n",
+                         why.c_str());
+            return 1;
+        }
     }
 
     if (cfg.track_count == 0) {
