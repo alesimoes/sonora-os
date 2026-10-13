@@ -4,6 +4,7 @@
 // scene graph. No display; meter_model has no Qt in it.
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 #include "meter_model.h"
 #include "synthetic_engine.h"
@@ -102,6 +103,14 @@ int main() {
         MeterBallistics m;
         m.feed(db(-0.01f), 1.0f / 60);
         CHECK(!m.over);  // just below full scale is not an over
+        // The second-highest 24-bit code is not an over either.
+        m.feed(8388606.0f / 8388608.0f, 1.0f / 60);
+        CHECK(!m.over);
+        // Positive full scale in 24 bits is 0x7fffff, which arrives as
+        // 1 - 2^-23 and never as 1.0: it must latch.
+        m.feed(8388607.0f / 8388608.0f, 1.0f / 60);
+        CHECK(m.over);
+        m.clear_over();
         m.feed(1.0f, 1.0f / 60);
         CHECK(m.over);
         for (int i = 0; i < 6000; ++i) m.feed(0.0f, 1.0f / 60);  // 100 s of silence
@@ -110,6 +119,35 @@ int main() {
         CHECK(m.over);  // the engine going away does not unhappen a clip
         m.clear_over();
         CHECK(!m.over);
+    }
+
+    // --- a peak that is not a number does not pin the meter ---
+    {
+        const float inf = std::numeric_limits<float>::infinity();
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        CHECK(std::isfinite(peak_to_dbfs(inf)));
+        CHECK(peak_to_dbfs(nan) == kSilenceDb);
+
+        // +inf is past full scale: an over, and a bar at the top that then
+        // falls like any other.
+        MeterBallistics m;
+        m.feed(inf, 1.0f / 60);
+        CHECK(m.over);
+        CHECK(std::isfinite(m.bar_db) && std::isfinite(m.hold_db));
+        CHECK(near(m.bar_db, 0.0f));
+        for (int i = 0; i < 600; ++i) m.feed(0.0f, 1.0f / 60);  // 10 s
+        CHECK(m.bar_db < -60.0f);
+        CHECK(m.hold_db < -60.0f);
+        CHECK(m.over);  // still latched
+
+        // NaN carries no level: ignored, as before.
+        MeterBallistics q;
+        q.feed(db(-20.0f), 1.0f / 60);
+        q.feed(nan, 1.0f / 60);
+        CHECK(!q.over);
+        CHECK(std::isfinite(q.bar_db) && q.bar_db <= -20.0f);
+        q.feed(-inf, 1.0f / 60);  // a negative peak is no signal
+        CHECK(!q.over && std::isfinite(q.bar_db));
     }
 
     // --- no data: nothing frozen, and nothing to fall from afterwards ---

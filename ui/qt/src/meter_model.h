@@ -17,8 +17,16 @@ constexpr float kMeterFloorDb = -60.0f;
 // arithmetic of release and hold never meets an infinity.
 constexpr float kSilenceDb = -200.0f;
 
-// Linear peak to dBFS. Zero and anything negative are kSilenceDb.
+// Linear peak to dBFS. Zero, anything negative and NaN are kSilenceDb;
+// +infinity is 0 dBFS, so no infinity reaches the ballistics.
 float peak_to_dbfs(float peak);
+
+// The peak that counts as an over. A 24-bit converter's top code is
+// 0x7fffff, which arrives as 1 - 2^-23 and never as 1.0, so a test for
+// >= 1.0 would miss a clipped 24-bit input. Anything at or above the top
+// code is at full scale; 1 - 2^-22, one code down, is not. Until M4's
+// clip_count, which the engine counts at the sample, this is the over.
+constexpr float kOverPeak = 1.0f - 1.0f / 8388608.0f;
 
 // Where `db` sits on the scale, 0 at the floor and 1 at 0 dBFS. Piecewise
 // linear with more room near the top, where a recording engineer reads it:
@@ -53,6 +61,8 @@ struct MeterBallistics {
 
     // One tick: `peak` is the linear maximum since the previous tick, `dt_s`
     // the time since it. Attack is instant, so no peak is ever shown low.
+    // A NaN peak carries no level and is ignored; +infinity is past full
+    // scale, so it is an over and a bar at 0 dBFS that falls as usual.
     void feed(float peak, float dt_s);
     void set_no_data();
     void clear_over() { over = false; }

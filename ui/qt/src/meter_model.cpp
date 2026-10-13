@@ -38,6 +38,8 @@ const float kScaleMarksDb[kScaleMarkCount] = {0.0f,   -6.0f,  -12.0f, -18.0f,
 
 float peak_to_dbfs(float peak) {
     if (!(peak > 0.0f)) return kSilenceDb;  // also catches NaN
+    // An infinite bar would never fall: release subtracts from infinity.
+    if (std::isinf(peak)) return 0.0f;
     return std::max(kSilenceDb, 20.0f * std::log10(peak));
 }
 
@@ -66,7 +68,7 @@ void MeterBallistics::feed(float peak, float dt_s) {
         hold_age_s = 0.0f;
         has_data = true;
     }
-    if (peak >= 1.0f) over = true;
+    if (peak >= kOverPeak) over = true;
 
     bar_db = std::max(db, bar_db - release_db_per_s * dt_s);
     if (bar_db < kSilenceDb) bar_db = kSilenceDb;
