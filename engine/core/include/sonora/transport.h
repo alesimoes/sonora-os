@@ -41,4 +41,11 @@ private:
     std::atomic<uint64_t> playhead_{0};
 };
 
+// The callback loads the state and advances the playhead every period; a
+// lock behind either would be a lock on the audio thread.
+static_assert(std::atomic<TransportState>::is_always_lock_free,
+              "read by the audio thread every period");
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "written by the audio thread every period");
+
 }  // namespace sonora

@@ -76,4 +76,10 @@ private:
     std::atomic<uint32_t> overruns_{0};
 };
 
+// The callback touches each of these every period; a lock behind any of
+// them would be a lock on the audio thread.
+static_assert(std::atomic<float>::is_always_lock_free, "peak_, gain_");
+static_assert(std::atomic<bool>::is_always_lock_free, "rec_armed_");
+static_assert(std::atomic<uint32_t>::is_always_lock_free, "overruns_");
+
 }  // namespace sonora
