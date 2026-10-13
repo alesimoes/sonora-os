@@ -67,6 +67,11 @@ std::string pan_text(float pan) {
 float fader_drag(float db, float dy, float travel, bool fine) {
     if (travel <= 0) return db;
     const float dp = -dy / travel * (fine ? 0.1f : 1.0f);
+    // A gain past an end of the travel stays put until the drag heads back
+    // onto it; the position of +18 dB is the top, and +18 is not +12.
+    if (dp == 0.0f || (dp > 0.0f && db >= kFaderMaxDb) || (dp < 0.0f && db <= kFaderSilenceDb)) {
+        return db;
+    }
     return fader_db_from_position(std::clamp(fader_position_from_db(db) + dp, 0.0f, 1.0f));
 }
 

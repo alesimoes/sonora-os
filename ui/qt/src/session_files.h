@@ -50,8 +50,13 @@ struct SessionEntry {
 // session file is not listed.
 std::vector<SessionEntry> list_sessions(const QString& dir);
 
-// Atomically replaces `file` with `bytes`, creating its folder.
-bool write_session_file(const QString& file, const std::string& bytes, std::string& why);
+// Atomically replaces `file` with `bytes`, creating its folder. On failure
+// `why` says what failed, and a folder this call created is removed again,
+// so a retry finds the name free. Once the new file has replaced the old one
+// the save has happened and this returns true; `caution` is then empty, or
+// says what could not be made durable (a folder that would not sync).
+bool write_session_file(const QString& file, const std::string& bytes, std::string& why,
+                        std::string& caution);
 
 // Reads and parses `file`. On failure `why` says where in the file.
 bool read_session_file(const QString& file, std::string& bytes, model::Loaded& out,

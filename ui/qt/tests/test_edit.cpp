@@ -489,6 +489,27 @@ int test_controller() {
     OK(c.toggle_mute(0, why) && !doc.snapshot().mix.find(t1)->mute);
     OK(c.set_bus_gain(-3.0f, why) && doc.snapshot().mix.bus.gain_db == -3.0f);
     OK(!c.set_gain(5, 0.0f, why) && why == "there is no track 6");
+
+    // A gain beyond the fader's travel (a loaded file at +18 dB) is not
+    // pulled to +12 by a touch: it stays until the operator drags it down.
+    {
+        TrackMix hot = *doc.snapshot().mix.find(t1);
+        hot.gain_db = 18.0f;
+        OK(doc.submit(SetMix{hot}, why));
+        const auto gain = [&] { return doc.snapshot().mix.find(t1)->gain_db; };
+        OK(fader_drag(18.0f, 0.0f, 200.0f, false) == 18.0f);
+        OK(fader_drag(18.0f, -30.0f, 200.0f, false) == 18.0f);   // up: already past the top
+        OK(fader_drag(-200.0f, 30.0f, 200.0f, false) == -200.0f);  // down: already past the bottom
+        OK(c.set_gain(0, fader_drag(gain(), -30.0f, 200.0f, false), why) && gain() == 18.0f);
+        OK(c.set_gain(0, 18.0f, why) && gain() == 18.0f);
+        OK(c.set_gain(0, 40.0f, why) && gain() == 18.0f);  // never further out than it was
+        OK(c.set_gain(0, fader_drag(gain(), 20.0f, 200.0f, false), why));
+        OK(gain() < kFaderMaxDb && gain() > 0.0f);  // dragged down: back on the travel
+        OK(c.set_gain(0, 40.0f, why) && gain() == kFaderMaxDb);
+        hot.gain_db = 18.0f;
+        OK(doc.submit(SetMix{hot}, why));
+        OK(c.set_gain(0, 3.0f, why) && gain() == 3.0f);  // a deliberate value is taken
+    }
     OK(doc.can_undo() == could_undo);
     return 0;
 }
@@ -925,12 +946,136 @@ int test_files() {
     return 0;
 }
 
+// A session named `name`, at the test rate.
+Snapshot named_session(const char* name) {
+    Snapshot s = make_empty_session(1, kRate);
+    s.settings.name = name;
+    return s;
+}
+
+// What a disk that fills up after the folder is made looks like: the real
+// writer, with the folder created and the file refused by the file system
+// (a name past NAME_MAX).
+bool failing_writer(const QString& file, const std::string& bytes, std::string& why,
+                    std::string& caution) {
+    const QString doomed = QFileInfo(file).absolutePath() + QLatin1Char('/') + QString(300, QLatin1Char('x'));
+    return write_session_file(doomed, bytes, why, caution);
+}
+
+int test_save_failures() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why, caution;
+    const QDir d(dir.path());
+
+    // The writer itself: a folder it made for a write that failed is removed,
+    // one that was there before is left alone.
+    OK(!failing_writer(session_file_path(dir.path(), QStringLiteral("Lost")), "{}", why, caution));
+    OK(!why.empty() && !d.exists(QStringLiteral("Lost")));
+    CHECK(d.mkpath(QStringLiteral("Kept")));
+    OK(!failing_writer(session_file_path(dir.path(), QStringLiteral("Kept")), "{}", why, caution));
+    OK(d.exists(QStringLiteral("Kept")));
+    caution = "stale";
+    OK(write_session_file(session_file_path(dir.path(), QStringLiteral("Kept")), "{}", why, caution));
+    OK(caution.empty());
+
+    // A first save that fails leaves no folder and does not rename the
+    // session, so the retry is "Foo", not "Foo 2" (nor "Foo 2 2").
+    ModelDocument doc(named_session("Foo"));
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    session.setSessionWriter(failing_writer);
+    QStringList notices;
+    QObject::connect(&session, &SessionModel::notice, [&notices](const QString& t) { notices << t; });
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        OK(!session.saveSession(why) && !why.empty());
+        OK(doc.snapshot().settings.name == "Foo");
+        OK(!d.exists(QStringLiteral("Foo")));
+        OK(session.sessionFile().isEmpty());
+    }
+    session.setSessionWriter(write_session_file);
+    OK(session.saveSession(why));
+    OK(doc.snapshot().settings.name == "Foo");
+    OK(session.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo")));
+
+    // Taken by another session: a failed save still renames nothing.
+    ModelDocument doc2(named_session("Foo"));
+    SessionModel session2(doc2, peaks, true);
+    session2.setSessionsDir(dir.path());
+    session2.setSessionWriter(failing_writer);
+    OK(!session2.saveSession(why));
+    OK(doc2.snapshot().settings.name == "Foo");
+    OK(!d.exists(QStringLiteral("Foo 2")));
+
+    // A save whose rename landed but whose folder sync did not is a save,
+    // said with its caveat; the next save goes to the same file.
+    session2.setSessionWriter([](const QString& file, const std::string& bytes, std::string& w,
+                                 std::string& c) {
+        const bool ok = write_session_file(file, bytes, w, c);
+        c = "the folder could not be synced";
+        return ok;
+    });
+    OK(session2.saveSession(why));
+    OK(doc2.snapshot().settings.name == "Foo 2");
+    OK(session2.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo 2")));
+    OK(!session2.dirty());
+    session2.selectTrack(0);
+    OK(session2.controller().set_gain(0, -1.0f, why));
+    OK(session2.saveSession(why));
+    OK(session2.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo 2")));
+    OK(!d.exists(QStringLiteral("Foo 3")));
+
+    // The name limit is bytes of the UTF-8 file name, not characters: 120
+    // CJK characters are 360 bytes, past what a file name can hold.
+    const QString cjk120(120, QChar(0x97F3));  // 音
+    const std::string long_name = session_name_problem(cjk120);
+    OK(contains(long_name, "bytes"));
+    OK(session_name_problem(QString(80, QChar(0x97F3))).empty());
+    OK(!session_name_problem(QString(81, QChar(0x97F3))).empty());
+    OK(session_name_problem(QString(241, QLatin1Char('a'))).empty());
+    OK(!session_name_problem(QString(242, QLatin1Char('a'))).empty());
+    ModelDocument wide(named_session(""));
+    {
+        SessionSettings s = wide.snapshot().settings;
+        s.name = cjk120.toStdString();
+        OK(wide.submit(SetSettings{s}, why));
+    }
+    SessionModel wide_session(wide, peaks, true);
+    wide_session.setSessionsDir(dir.path());
+    OK(!wide_session.saveSession(why) && contains(why, "bytes"));
+    // The longest name the rule allows saves, temporary file and all.
+    for (const QString& longest : {QString(80, QChar(0x97F3)), QString(241, QLatin1Char('a'))}) {
+        ModelDocument ok_doc(named_session(""));
+        SessionSettings s = ok_doc.snapshot().settings;
+        s.name = longest.toStdString();
+        OK(ok_doc.submit(SetSettings{s}, why));
+        SessionModel ok_session(ok_doc, peaks, true);
+        ok_session.setSessionsDir(dir.path());
+        OK(ok_session.saveSession(why));
+        OK(QFileInfo(session_file_path(dir.path(), longest)).isFile());
+    }
+    // A name the rule allows that "<name> 2" would push past it is refused,
+    // not written under a name the folder cannot hold.
+    {
+        ModelDocument dup(named_session(""));
+        SessionSettings s = dup.snapshot().settings;
+        s.name = std::string(241, 'a');
+        OK(dup.submit(SetSettings{s}, why));
+        SessionModel dup_session(dup, peaks, true);
+        dup_session.setSessionsDir(dir.path());
+        OK(!dup_session.saveSession(why) && contains(why, "bytes"));
+        OK(dup.snapshot().settings.name == std::string(241, 'a'));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_taper() || test_time() ||
-        test_scene() || test_routing() || test_files()) {
+        test_scene() || test_routing() || test_files() || test_save_failures()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

@@ -612,6 +612,9 @@ bool EditController::redo(std::string& why) {
 // so each of these is a small resolver: the current mix with one field
 // changed. A gain is clamped to the fader's travel here, because the model
 // accepts any finite number and the fader cannot show one beyond its ends.
+// A gain already beyond an end (a file saved at +18 dB) widens the range to
+// include it, so touching the fader does not quietly take 6 dB off: it stays
+// until the operator moves it back onto the travel.
 
 namespace {
 bool mix_target(const Snapshot& s, int index, TrackMix& mix, std::string& why) {
@@ -629,12 +632,13 @@ bool mix_target(const Snapshot& s, int index, TrackMix& mix, std::string& why) {
     return true;
 }
 
-bool fader_gain(float db, float& out, std::string& why) {
+// `gain` is the current value on entry and the new one on success.
+bool fader_gain(float db, float& gain, std::string& why) {
     if (!std::isfinite(db)) {
         why = "a gain must be a number of dB";
         return false;
     }
-    out = std::clamp(db, kFaderSilenceDb, kFaderMaxDb);
+    gain = std::clamp(db, std::min(kFaderSilenceDb, gain), std::max(kFaderMaxDb, gain));
     return true;
 }
 }  // namespace

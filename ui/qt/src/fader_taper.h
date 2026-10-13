@@ -31,7 +31,8 @@ std::string pan_text(float pan);
 
 // One step of a fader drag: `dy` pixels (positive is down) on a fader whose
 // travel is `travel` pixels. `fine` divides the motion by ten, for the
-// last half-dB of a vocal ride.
+// last half-dB of a vocal ride. A gain past an end of the travel is kept
+// until the drag moves back onto it.
 float fader_drag(float db, float dy, float travel, bool fine);
 
 }  // namespace sonora::ui

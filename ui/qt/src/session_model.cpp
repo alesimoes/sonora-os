@@ -49,6 +49,7 @@ SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool 
       peaks_(peaks),
       synthetic_peaks_(synthetic_peaks),
       sessions_dir_(default_sessions_dir()),
+      writer_(write_session_file),
       saved_revision_(doc.revision()),
       ctl_(doc) {
     updateCounters(true);
@@ -410,21 +411,31 @@ void SessionModel::setWindow(const QString& w) {
 
 bool SessionModel::saveSession(std::string& why) {
     QString file = file_;
+    // What is written: the session as it is, or, the first time, renamed to
+    // its folder's name. The rename reaches the document only once the file
+    // is written, so a failed save leaves the name and the disk as they were
+    // and a retry is not pushed to "<Name> 2".
+    Snapshot to_write = ctl_.snapshot();
+    bool rename = false;
     if (file.isEmpty()) {
-        const std::string& n = ctl_.snapshot().settings.name;
+        const std::string& n = to_write.settings.name;
         const QString wanted = n.empty() ? QStringLiteral("Untitled") : q(n);
-        const std::string bad = session_name_problem(wanted);
+        std::string bad = session_name_problem(wanted);
         if (!bad.empty()) {
             why = "cannot save as \"" + n + "\": " + bad;
             return false;
         }
         const QString name = unused_session_name(sessions_dir_, wanted);
+        bad = session_name_problem(name);
+        if (!bad.empty()) {
+            why = "cannot save as \"" + name.toStdString() + "\", the first free name: " + bad;
+            return false;
+        }
         // The session is called what its folder is called, so the name the
         // window shows is the one the Open list shows.
         if (name.toStdString() != n) {
-            model::SessionSettings settings = ctl_.snapshot().settings;
-            settings.name = name.toStdString();
-            if (!doc_.submit(model::SetSettings{settings}, why)) return false;
+            to_write.settings.name = name.toStdString();
+            rename = true;
         }
         file = session_file_path(sessions_dir_, name);
     }
@@ -435,8 +446,8 @@ bool SessionModel::saveSession(std::string& why) {
     model::WriteInfo info;
     info.written_by = "sonora-ui";
     info.save_generation = save_generation_;
-    std::string bytes, error;
-    if (!model::serialize(ctl_.snapshot(), info, bytes, error)) {
+    std::string bytes, error, caution;
+    if (!model::serialize(to_write, info, bytes, error)) {
         why = "the session could not be saved: " + error;
         sync();
         return false;
@@ -444,12 +455,12 @@ bool SessionModel::saveSession(std::string& why) {
     const bool nothing_new = file == file_ && bytes == saved_bytes_;
     if (!nothing_new) {
         info.save_generation = save_generation_ + 1;
-        if (!model::serialize(ctl_.snapshot(), info, bytes, error)) {
+        if (!model::serialize(to_write, info, bytes, error)) {
             why = "the session could not be saved: " + error;
             sync();
             return false;
         }
-        if (!write_session_file(file, bytes, why)) {
+        if (!writer_(file, bytes, why, caution)) {
             sync();
             return false;
         }
@@ -457,13 +468,22 @@ bool SessionModel::saveSession(std::string& why) {
         saved_bytes_ = std::move(bytes);
     }
     file_ = file;
+    // The file is on disk under the new name; the document follows it. A
+    // refusal here would be a model bug, and the file already says the name.
+    std::string rename_why;
+    if (rename && !doc_.submit(model::SetSettings{to_write.settings}, rename_why)) {
+        caution = caution.empty() ? "the window keeps the old name: " + rename_why
+                                  : caution + "; the window keeps the old name: " + rename_why;
+    }
     saved_revision_ = doc_.revision();
     seen_dirty_ = false;
     sync();
     emit sessionChanged();
-    emit notice(nothing_new ? QStringLiteral("Nothing to save: ") + file_ +
-                                  QStringLiteral(" is current")
-                            : QStringLiteral("Saved ") + file_);
+    QString said = nothing_new ? QStringLiteral("Nothing to save: ") + file_ +
+                                     QStringLiteral(" is current")
+                               : QStringLiteral("Saved ") + file_;
+    if (!caution.empty()) said += QStringLiteral(", but ") + q(caution);
+    emit notice(said);
     return true;
 }
 

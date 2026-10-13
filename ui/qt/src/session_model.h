@@ -16,6 +16,9 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
+#include <functional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "edit_controller.h"
@@ -78,6 +81,12 @@ public:
     // (session_files.h). Set before the first save.
     void setSessionsDir(const QString& dir) { sessions_dir_ = dir; }
     const QString& sessionsDir() const { return sessions_dir_; }
+
+    // What File > Save writes with: write_session_file, or a stand-in that
+    // fails the way a full or read-only disk does, for the tests.
+    using SessionWriter = std::function<bool(const QString& file, const std::string& bytes,
+                                             std::string& why, std::string& caution)>;
+    void setSessionWriter(SessionWriter writer) { writer_ = std::move(writer); }
 
     // File > Save: to the file the session came from, or, the first time, to
     // a new folder named after the session ("Untitled" when it has no
@@ -197,6 +206,7 @@ private:
     const PeakSource& peaks_;
     bool synthetic_peaks_;
     QString sessions_dir_;
+    SessionWriter writer_;
     QString file_;                 // empty until the session is saved or opened
     uint64_t saved_revision_ = 0;  // the revision the file holds
     uint64_t save_generation_ = 0;

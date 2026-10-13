@@ -7,6 +7,7 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <algorithm>
+#include <string>
 
 #if defined(Q_OS_UNIX)
 #include <fcntl.h>
@@ -18,6 +19,14 @@ namespace sonora::ui {
 namespace {
 
 constexpr qint64 kMaxSessionBytes = qint64{256} << 20;  // 60x the spec's large session
+
+// A session file name is "<Name>.sonora", and QSaveFile writes it first as
+// "<Name>.sonora.XXXXXX" beside it; both must fit ext4's NAME_MAX, which is
+// 255 bytes, not characters, so the name is limited in UTF-8 bytes.
+constexpr int kNameMaxBytes = 255;
+constexpr int kSuffixBytes = 7;     // ".sonora"
+constexpr int kTempSuffixBytes = 7; // QSaveFile's ".XXXXXX"
+constexpr int kMaxSessionNameBytes = kNameMaxBytes - kSuffixBytes - kTempSuffixBytes;
 
 std::string text(const QString& s) { return s.toStdString(); }
 
@@ -45,6 +54,27 @@ bool sync_folder(const QString& dir) {
 #endif
 }
 
+// A temporary file, written, flushed and synced, renamed over `file`. The
+// QSaveFile is gone when this returns, and with it any temporary file.
+bool replace_file(const QString& file, const std::string& bytes, std::string& why) {
+    QSaveFile out(file);
+    if (!out.open(QIODevice::WriteOnly)) {
+        why = "cannot write " + text(file) + ": " + text(out.errorString());
+        return false;
+    }
+    const auto size = static_cast<qint64>(bytes.size());
+    if (out.write(bytes.data(), size) != size || !out.flush() || !sync_fd(out.handle())) {
+        why = "writing " + text(file) + " failed: " + text(out.errorString());
+        out.cancelWriting();
+        return false;
+    }
+    if (!out.commit()) {
+        why = "saving " + text(file) + " failed: " + text(out.errorString());
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 QString default_sessions_dir() {
@@ -58,7 +88,11 @@ std::string session_name_problem(const QString& name) {
     if (name.trimmed().isEmpty()) return "a session needs a name";
     if (name != name.trimmed()) return "a session name cannot start or end with a space";
     if (name.startsWith(QLatin1Char('.'))) return "a session name cannot start with '.'";
-    if (name.size() > 120) return "a session name is at most 120 characters";
+    if (name.toUtf8().size() > kMaxSessionNameBytes) {
+        return "a session name is at most " + std::to_string(kMaxSessionNameBytes) +
+               " bytes as UTF-8 (" + std::to_string(kMaxSessionNameBytes / 3) +
+               " characters of Chinese or Japanese)";
+    }
     for (const QChar c : name) {
         if (c.unicode() < 0x20 || c == QLatin1Char('/') || c == QLatin1Char('\\') ||
             c == QLatin1Char(':')) {
@@ -91,32 +125,32 @@ std::vector<SessionEntry> list_sessions(const QString& dir) {
     return out;
 }
 
-bool write_session_file(const QString& file, const std::string& bytes, std::string& why) {
-    const QFileInfo info(file);
-    const QString folder = info.absolutePath();
+bool write_session_file(const QString& file, const std::string& bytes, std::string& why,
+                        std::string& caution) {
+    caution.clear();
+    const QString folder = QFileInfo(file).absolutePath();
+    const bool created = !QFileInfo::exists(folder);
     if (!QDir().mkpath(folder)) {
         why = "cannot create the session folder " + text(folder);
         return false;
     }
-    QSaveFile out(file);
-    if (!out.open(QIODevice::WriteOnly)) {
-        why = "cannot write " + text(file) + ": " + text(out.errorString());
+    bool ok = true;
+    // A new folder's own entry is only durable once its parent is synced.
+    if (created && !sync_folder(QFileInfo(folder).absolutePath())) {
+        why = "cannot sync the sessions folder after creating " + text(folder);
+        ok = false;
+    }
+    if (ok) ok = replace_file(file, bytes, why);
+    if (!ok) {
+        // Empty by now: replace_file's QSaveFile took its temporary file with it.
+        if (created) QDir().rmdir(folder);
         return false;
     }
-    const auto size = static_cast<qint64>(bytes.size());
-    if (out.write(bytes.data(), size) != size || !out.flush() || !sync_fd(out.handle())) {
-        why = "writing " + text(file) + " failed: " + text(out.errorString());
-        out.cancelWriting();
-        return false;
-    }
-    if (!out.commit()) {
-        why = "saving " + text(file) + " failed: " + text(out.errorString());
-        return false;
-    }
+    // The rename has landed: the file holds the new session, so this is a
+    // save. Reporting it as a failure would make a first save retry into
+    // "<Name> 2" next to the file it just wrote.
     if (!sync_folder(folder)) {
-        why = "saved " + text(file) + ", but the folder could not be synced; a power cut now "
-              "could lose the save";
-        return false;
+        caution = "the folder could not be synced; a power cut now could lose this save";
     }
     return true;
 }
