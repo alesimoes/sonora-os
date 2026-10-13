@@ -62,14 +62,26 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
-1. [ ] Out-of-process LV2 host: scanning, validation, crash/hang/liar test
+1. [x] Out-of-process LV2 host: scanning, validation, crash/hang/liar test
        plugins, the host loop, and the shared-memory round-trip measurement
-       on the laptop (open now; nothing in `engine/` before M4).
-2. [ ] Plugin ADR (M9) from that measurement; `contracts/plugin`.
-3. [ ] `engine/plugin_client` and PDC, once M4 exists; a 2048-sample track
-       lands aligned (ctest).
-4. [ ] VST3, then yabridge; plugin manager, presets, editors under WSLg.
-5. [ ] Freeze, bounce in place, offline processing; the curated stock set.
+       (PR #26; `brain/research/plugin-host-lv2-container.md`). The runtime
+       canary check covers only 64 words past `max_frames`.
+2. [ ] rt-engineer review of the draft `contracts/plugin/include/sonora/plugin/protocol.h`
+       (single slot, submit-only-when-idle, `pipeline_depth`, parameter ring,
+       `current_instance`). It stays `kLayoutVersion` 0 until accepted.
+3. [ ] Plugin ADR (M9) from that measurement: pipeline depth on the audio
+       thread (the container saw a 2 ms timed wait return 5.9 ms late), host
+       per chain/track/plugin, the wake syscall's auditor ruling, `HostControl`
+       over the control socket (scan via one `--probe` per process,
+       instantiate, remove, editor with the parent-window token).
+4. [ ] `engine/plugin_client` and PDC, once M4 exists: `HostChannel::submit/collect`
+       on the contract, host death via pidfd on the control thread, removal
+       after N consecutive misses with the plugin named to the operator; a
+       2048-sample track lands aligned (ctest).
+5. [ ] LV2 state save/restore, `worker:schedule`, presets; VST3, then
+       yabridge; plugin manager; editors under WSLg (the host opens
+       parentless X11 toplevels).
+6. [ ] Freeze, bounce in place, offline processing; the curated stock set.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
@@ -353,27 +365,6 @@ Order and owners are in ADR-0008 §5.
 - [ ] Measure: `rename` plus directory `fsync` durability through the
       persistence overlay, 200 killed QEMU saves. researcher; ADR-0009
       Unverified 2.
-
-## Phase 4: plugin hosting (opened early, owner 2026-10-13)
-
-The goal is a working DAW with plugins before any OS packaging; no ISO or
-QEMU work for this. State: `brain/research/plugin-host-lv2-container.md`.
-
-- [ ] rt-engineer review of the draft `contracts/plugin/include/sonora/plugin/protocol.h`
-      (single slot, submit-only-when-idle, `pipeline_depth`, parameter ring,
-      `current_instance`). It stays `kLayoutVersion` 0 until accepted.
-- [ ] Phase 4 plugin ADR (ADR-0007 M9): pipeline depth on the audio thread
-      (the container saw a 2 ms timed wait return 5.9 ms late), host per
-      chain/track/plugin, the wake syscall's auditor ruling, `HostControl`
-      over the control socket (scan via one `--probe` per process, instantiate,
-      remove, editor with the parent-window token).
-- [ ] `engine/plugin_client` (M4+): `HostChannel::submit/collect` on the
-      contract, host death via pidfd on the control thread, removal after N
-      consecutive misses with the plugin named to the operator.
-- [ ] Plugin host: LV2 state save/restore, `worker:schedule`, presets; VST3
-      (native Linux) after LV2 is in the engine.
-- [ ] Plugin editors under labwc (ADR-0010): see the ADR-0007 follow-up
-      above; the host opens parentless X11 toplevels.
 
 ## Known gaps, not yet scheduled
 
