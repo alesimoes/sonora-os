@@ -385,6 +385,23 @@ int test_clock_step_back_holds_frame_time() {
     return 0;
 }
 
+// A period the server skips and does not report, as PipeWire's dummy driver
+// does when woken late: counted as a clock step, not an xrun, and the gap
+// stays in frame_time.
+int test_unreported_skip_is_a_clock_step() {
+    FakeBackend f;
+    Capture cap(1);
+    CHECK(start(f, cap, 1, 0));
+    f.run_blocks(2);
+    f.inject_unreported_skip(128);
+    f.run_blocks(2);
+    CHECK(f.xruns() == 0);
+    CHECK(f.clock_discontinuities() == 1);
+    CHECK(cap.times[2] == 3 * 128);
+    CHECK(cap.times[3] == 4 * 128);
+    return 0;
+}
+
 // The server's notification of a new rate, as JACK's callback gives it,
 // is fatal before any period at that rate runs.
 int test_rate_change_notified() {
@@ -478,6 +495,7 @@ int main() {
     failed += test_frame_time_past_the_wrap();
     failed += test_xrun_moves_frame_time();
     failed += test_clock_step_back_holds_frame_time();
+    failed += test_unreported_skip_is_a_clock_step();
     failed += test_rate_change_notified();
     failed += test_server_loss_takes_the_ports();
     failed += test_stall_is_seen_after_a_second();

@@ -89,6 +89,7 @@ struct FakeBackend::Impl {
     std::atomic<uint32_t> server_quantum;
     std::atomic<uint32_t> pending_xrun_frames{0};
     std::atomic<uint32_t> pending_step_back{0};
+    std::atomic<uint32_t> pending_skip_frames{0};
     uint32_t counter;  // the server's 32-bit frame counter; audio thread only
 
     drivers::PeriodGuard guard;
@@ -224,7 +225,9 @@ struct FakeBackend::Impl {
             xruns.fetch_add(1, std::memory_order_relaxed);
         }
         counter -= pending_step_back.exchange(0, std::memory_order_acq_rel);
-        const uint64_t frame_time = clock.widen(counter);
+        counter += pending_skip_frames.exchange(0, std::memory_order_acq_rel);
+        const uint64_t frame_time =
+            clock.widen(counter, nframes, xruns.load(std::memory_order_relaxed));
 
         for (uint32_t i = 0; i < inputs; ++i) {
             const int32_t src = input_source[i].load(std::memory_order_acquire);
@@ -551,6 +554,10 @@ void FakeBackend::inject_quantum_change(uint32_t frames) {
 
 void FakeBackend::inject_clock_step_back(uint32_t frames) {
     impl_->pending_step_back.fetch_add(frames, std::memory_order_acq_rel);
+}
+
+void FakeBackend::inject_unreported_skip(uint32_t frames) {
+    impl_->pending_skip_frames.fetch_add(frames, std::memory_order_acq_rel);
 }
 
 void FakeBackend::set_stalled(bool stalled) {

@@ -1342,6 +1342,27 @@ the code differs, this is what landed. No contract header changed.
    `drivers/fake` as a test-only edge, as §7 asks; `sonora_core` links no
    driver.
 
+## Update, 2026-10-13: a period the server skips without an xrun
+
+Source: PR #31, postmortem `2026-10-13-loopback-swap-skipped-period`. One
+contract comment changed (`AudioBackend::clock_discontinuities()`); no
+signature did.
+
+PipeWire's dummy driver, woken late, skips a cycle: `jack_last_frame_time`
+steps by two or three periods and no xrun callback comes. Measured in the
+docker test's container: every skip, 0 xruns. M2 item 11 counted only
+backward steps, so such a gap had no excuse, against the conformance check
+`frame_time_never_decreases`, and `RESULT` said `clock_steps=0`.
+
+`FrameClock::widen(now, nframes, xruns)` now counts a forward step longer
+than the previous period, with the xrun count unchanged, as a clock step.
+`frame_time` keeps the gap, as it does for an xrun. Like a step back it is
+reported, not failed: every period the server ran reached `process()`, so
+the take has no hole; the server's frames after it just do not follow on.
+`FrameClock::resume()`, called by `JackBackend::activate()`, keeps the
+clock's run while the client was inactive from counting. `FakeBackend`
+causes it with `inject_unreported_skip()`.
+
 ## Alternatives rejected
 
 **Keep one library and rely on discipline.** It costs nothing today. It costs
