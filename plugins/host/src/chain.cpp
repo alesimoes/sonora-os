@@ -229,8 +229,12 @@ void Chain::prepare_bypass() {
     bypass_.assign(slots_.size(), BypassLine{});
     for (std::size_t k = 0; k < slots_.size(); ++k) {
         if (designated_bypass(k)) continue;
-        const std::size_t need = std::size_t(slots_[k]->latency()) * 2 + kBypassHeadroomFrames +
-                                 config_.max_frames;
+        // Bounded before it sizes anything (auditor L6 on PR #45): a
+        // plugin reporting ~UINT32_MAX would otherwise end the host in
+        // bad_alloc and truncate the mask. Past kMaxLatencyFrames the
+        // engine treats the figure as a fault anyway.
+        const uint32_t latency = std::min(slots_[k]->latency(), plugin::kMaxLatencyFrames);
+        const std::size_t need = std::size_t(latency) * 2 + kBypassHeadroomFrames + config_.max_frames;
         std::size_t size = 1;
         while (size < need) size <<= 1;
         BypassLine& b = bypass_[k];

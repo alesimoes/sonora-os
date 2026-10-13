@@ -224,14 +224,15 @@ public:
     int ro_handle = -1;
     plugin::WakeMode mode = plugin::WakeMode::Timer;
 
-    bool create(plugin::WakeMode m, const std::function<void(plugin::ClockHeader&)>& mutate = {}) {
+    bool create(plugin::WakeMode m, const std::function<void(plugin::ClockHeader&)>& mutate = {},
+                uint32_t rate = kRate) {
         mode = m;
         std::string err;
         if (!create_region(4096, region_, err)) {
             std::printf("  cannot create the clock: %s\n", err.c_str());
             return false;
         }
-        c = plugin::init_clock(region_.base, kRate, kBlock, m);
+        c = plugin::init_clock(region_.base, rate, kBlock, m);
         if (mutate) mutate(*c);
         if (!share_read_only(region_, ro_handle, err)) {
             std::printf("  cannot share the clock read-only: %s\n", err.c_str());
@@ -262,6 +263,9 @@ private:
     SharedRegion region_;
     bool pending_ = false;
 };
+
+// Channel regions the OS would not lock (lock_region); printed, never silent.
+uint64_t region_lock_failures = 0;
 
 // The engine's private, authoritative values of one chain (ADR-0012 §5.1):
 // keyed by the chain, not by a host, so it outlives a host replacement.
@@ -326,6 +330,13 @@ public:
             return false;
         }
         plugin::prefault(region_.base, region_.size);
+        // Faulted in is not kept in (auditor L3): lock it too, and say so
+        // when the OS refuses, as the engine reports it in its health flags.
+        if (!lock_region(region_, err)) {
+            ++region_lock_failures;
+            std::printf("  the channel region is pre-touched but NOT locked (%s): it can be reclaimed\n",
+                        err.c_str());
+        }
         h = plugin::init_header(region_.base, layout_, a.rate, kBlock, uint32_t(uris.size()), counts.data(), 70);
         table_ = plugin::value_table(region_.base, layout_);
         // Seeded from the store before the host starts, so it instantiates
@@ -424,56 +435,74 @@ public:
     // ---- the RT half: what engine/plugin_client's submit/collect would do.
     // Nothing here waits on the host (contracts/plugin, block protocol).
 
-    bool idle() const { return h->completed_block.load(std::memory_order_acquire) == block_; }
+    bool idle() const { return plugin::channel_idle(*h, eng_); }
 
-    // A parameter change, the audio thread's way: the store, then the table
-    // entry, then the ring entry tagged with the block about to be
-    // submitted (block_ + 1 whether or not this callback manages to submit).
-    // Returns false when the full ring refused it (the table still carries it).
-    bool send(uint32_t instance, uint32_t param, uint32_t offset, float value) {
-        if (param == plugin::kBypassParam) store_->bypass[instance] = value;
-        else if (const int64_t s = plugin::param_slot(map_, instance, param); s >= 0)
-            store_->values[std::size_t(s)] = value;
-        const bool ok = plugin::send_param(*h, table_, map_, {block_ + 1, instance, param, offset, value}, seq_);
-        if (!ok) ++refused_;
-        return ok;
+    // A parameter change, the audio thread's way: into the private store at
+    // once, and queued for this callback. If the callback submits, the
+    // queue goes out as table entry then ring entry, tagged with the block
+    // being submitted; if it does not, the queue is held (hold_param) and
+    // the next submit copies the store in. Nothing reaches the region in a
+    // callback that does not submit, so nothing can apply a block early
+    // (contracts/plugin, block protocol step 2; rt-engineer M2).
+    void send(uint32_t instance, uint32_t param, uint32_t offset, float value) {
+        keep(instance, param, value);
+        pending_.push_back({Pending::Ring, {0, instance, param, offset, value}});
     }
     // What a refused push leaves: the table and values_seq only.
     void send_table_only(uint32_t instance, uint32_t param, float value) {
-        if (param == plugin::kBypassParam) {
-            store_->bypass[instance] = value;
-            h->bypass[instance].store(value, std::memory_order_relaxed);
-        } else if (const int64_t s = plugin::param_slot(map_, instance, param); s >= 0) {
-            store_->values[std::size_t(s)] = value;
-            table_[s].store(value, std::memory_order_relaxed);
-        }
-        plugin::bump_values_seq(*h, seq_);
+        keep(instance, param, value);
+        pending_.push_back({Pending::TableOnly, {0, instance, param, 0, value}});
     }
-    // A raw ring entry for an explicit block (the late-entry test).
-    bool push_raw(const plugin::ParamChange& p) { return plugin::push_param(*h, p); }
-    uint64_t next_block() const { return block_ + 1; }
+    // A raw ring entry for an explicit block (the late-entry test), pushed
+    // only in a callback that submits, like everything else.
+    void push_raw(const plugin::ParamChange& p) { pending_.push_back({Pending::Raw, p}); }
+    uint64_t next_block() const { return plugin::next_block(eng_); }
 
-    // A new channel's first submit copies the store in (A2).
-    void mark_new_channel() { first_submit_ = true; }
+    // A new channel's first submit copies the store in (A2). EngineChannel
+    // starts that way; this says so where the swap happens.
+    void mark_new_channel() { eng_.resync = true; }
 
-    void submit(const float* const* in, uint32_t frames, uint64_t callback) {
+    // Step 2, in the contract's order. False, with nothing written, for a
+    // frame count other than block_frames (M3).
+    bool submit(const float* const* in, uint32_t frames, uint64_t callback) {
+        if (frames != eng_.block_frames) return false;
+        if (eng_.resync) {
+            ++resyncs_;
+            plugin::store_values(*h, eng_, table_, layout_, store_->values.data(), store_->bypass,
+                                 map_.instance_count);
+        }
         for (uint32_t c = 0; c < layout_.channels; ++c)
             std::memcpy(plugin::input_plane(region_.base, layout_, c), in[c], frames * sizeof(float));
-        if (first_submit_) {
-            first_submit_ = false;
-            plugin::store_values(*h, table_, layout_, store_->values.data(), store_->bypass,
-                                 map_.instance_count, seq_);
+        const uint64_t tag = plugin::next_block(eng_);
+        for (Pending& q : pending_) {
+            if (q.kind == Pending::Raw) {
+                if (!plugin::push_param(*h, eng_, q.change)) ++refused_;
+            } else if (q.kind == Pending::TableOnly) {
+                if (q.change.param == plugin::kBypassParam)
+                    h->bypass[q.change.instance].store(q.change.value, std::memory_order_relaxed);
+                else if (const int64_t s = plugin::param_slot(map_, q.change.instance, q.change.param); s >= 0)
+                    table_[s].store(q.change.value, std::memory_order_relaxed);
+                plugin::bump_values_seq(*h, eng_);
+            } else {
+                q.change.block = tag;
+                if (!plugin::send_param(*h, eng_, table_, map_, q.change)) ++refused_;
+            }
         }
-        ++block_;
+        pending_.clear();
         submitted_at_ = callback;
-        h->submitted_frames.store(frames, std::memory_order_relaxed);
-        h->submitted_block.store(block_, std::memory_order_release);
+        plugin::submit_block(*h, eng_, frames);
         clock_->submitted();
+        return true;
     }
 
-    void read_output(float* const* out, uint32_t frames) {
+    // Step 1: each plane copied out, and only the copy checked (M4).
+    // Returns the NaN/Inf count, which the caller treats as a miss.
+    uint32_t read_output(float* const* out, uint32_t frames) {
+        uint32_t bad = 0;
         for (uint32_t c = 0; c < layout_.channels; ++c)
-            std::memcpy(out[c], plugin::output_plane(region_.base, layout_, c), frames * sizeof(float));
+            bad += plugin::collect_output(out[c], plugin::output_plane(region_.base, layout_, c), frames);
+        nonfinite_collected_ += bad;
+        return bad;
     }
 
     // One callback, depth 1: collect the block submitted in the previous
@@ -482,13 +511,15 @@ public:
     // (a miss). A block that completed later than that is discarded rather
     // than played a block late, which would break the declared latency.
     int64_t run(const float* const* in, float* const* out, uint32_t frames, uint64_t callback) {
-        // Still on an older block: never touch its slots.
-        if (!idle()) return -1;
-        int64_t got = -1;
-        if (block_ > 0 && submitted_at_ + 1 == callback) {
-            read_output(out, frames);
-            got = int64_t(submitted_at_);
+        // Still on an older block (never touch its slots), or a callback of
+        // another size (M3): a miss, and this callback's changes are held.
+        if (frames != eng_.block_frames || !idle()) {
+            hold();
+            return -1;
         }
+        int64_t got = -1;
+        if (eng_.block > 0 && submitted_at_ + 1 == callback && read_output(out, frames) == 0)
+            got = int64_t(submitted_at_);
         submit(in, frames, callback);
         return got;
     }
@@ -503,10 +534,16 @@ public:
     // scheduler tail (5.9 ms late seen, container).
     bool round_trip(const float* const* in, float* const* out, uint32_t frames, uint64_t callback,
                     uint64_t deadline, uint64_t& rtt_ns) {
-        if (!idle()) return false;
+        if (!idle()) {
+            hold();
+            return false;
+        }
         const uint64_t t0 = monotonic_ns();
         clock_->begin(t0);
-        submit(in, frames, callback);
+        if (!submit(in, frames, callback)) {
+            hold();
+            return false;
+        }
         clock_->end();
         for (;;) {
             const uint32_t seen = h->done_word.load(std::memory_order_acquire);
@@ -529,9 +566,31 @@ public:
     }
 
     uint64_t late() const { return late_; }
+    // Callbacks whose changes were held, then copied in by a later submit.
+    uint64_t resyncs() const { return resyncs_; }
+    uint64_t nonfinite_collected() const { return nonfinite_collected_; }
 
 private:
-    uint64_t late_ = 0, refused_ = 0;
+    struct Pending {
+        enum Kind { Ring, TableOnly, Raw } kind;
+        plugin::ParamChange change;
+    };
+
+    // The engine's private store is authoritative and is written at once.
+    void keep(uint32_t instance, uint32_t param, float value) {
+        if (param == plugin::kBypassParam) store_->bypass[instance] = value;
+        else if (const int64_t s = plugin::param_slot(map_, instance, param); s >= 0)
+            store_->values[std::size_t(s)] = value;
+    }
+    void hold() {
+        if (pending_.empty()) return;
+        plugin::hold_param(eng_);
+        pending_.clear();
+    }
+
+    uint64_t late_ = 0, refused_ = 0, resyncs_ = 0, nonfinite_collected_ = 0;
+    plugin::EngineChannel eng_ = plugin::make_engine_channel(kBlock);
+    std::vector<Pending> pending_;
     SharedRegion region_;
     plugin::Layout layout_;
     plugin::ParamMap map_;
@@ -539,12 +598,9 @@ private:
     Store* store_ = nullptr;
     std::unique_ptr<Store> own_store_;
     Clock* clock_ = nullptr;
-    uint32_t seq_ = 0;
-    bool first_submit_ = false;
     pid_t pid_ = -1;
     int status_ = 0;
     bool reaped_ = false;
-    uint64_t block_ = 0;
     uint64_t submitted_at_ = 0;
 };
 
@@ -1099,6 +1155,7 @@ int scenario_nonfinite(const Args& a) {
     std::printf("  %llu blocks carried replaced samples; host counted %llu against [0], %llu against [1]\n",
                 (unsigned long long)bad_blocks, (unsigned long long)counted0, (unsigned long long)counted1);
     check(nonfinite_out == 0, "no NaN or Inf reached the engine");
+    check(host.nonfinite_collected() == 0, "the engine's own check of what it collected found none (M4)");
     check(bad_blocks >= 50 && counted0 >= zeroed && counted0 % (kBlock / 4) == 0,
           "every NaN/Inf was replaced by 0 and counted against the plugin that wrote it");
     check(counted1 == 0, "the plugin after it saw only finite input and is not blamed");
@@ -1195,6 +1252,10 @@ int scenario_incompatible(const Args& a) {
          [](plugin::ClockHeader& c) { c.layout_version = 2; }, plugin::kHostExitIncompatible},
         {"not a channel (magic): exit 2, nothing written",
          [](plugin::ChannelHeader& h) { h.magic ^= 1; }, {}, plugin::kHostExitUsage},
+        {"channel block_frames other than the clock's: exit 2, nothing written",
+         [](plugin::ChannelHeader& h) { h.block_frames = 2 * kBlock; }, {}, plugin::kHostExitUsage},
+        {"channel sample_rate other than the clock's: exit 2, nothing written",
+         [](plugin::ChannelHeader& h) { h.sample_rate = 44100; }, {}, plugin::kHostExitUsage},
     };
     std::printf("incompatible\n");
     for (const Case& c : cases) {
@@ -1225,6 +1286,47 @@ int scenario_incompatible(const Args& a) {
     void* r = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, clock.ro_handle, 0);
     check(r != MAP_FAILED, "...and maps read-only");
     if (r != MAP_FAILED) munmap(r, 4096);
+    // A memfd inode is mode 0777, so a host can reopen it read-write
+    // through /proc; F_SEAL_FUTURE_WRITE is what stops the mapping (L2).
+    const std::string proc = "/proc/self/fd/" + std::to_string(clock.ro_handle);
+    const int rw = open(proc.c_str(), O_RDWR | O_CLOEXEC);
+    void* w2 = rw >= 0 ? mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0) : MAP_FAILED;
+    check(w2 == MAP_FAILED, "...nor through a read-write reopen of /proc/self/fd (the seal)");
+    if (w2 != MAP_FAILED) munmap(w2, 4096);
+    if (rw >= 0) close(rw);
+
+    // The --version line parses with the engine's parser (§5.5 grammar).
+    {
+        const std::string cmd = "'" + a.host + "' --version";
+        FILE* f = popen(cmd.c_str(), "r");
+        char line[128] = {};
+        const bool read = f && std::fgets(line, sizeof line, f) != nullptr;
+        const int status = f ? pclose(f) : -1;
+        uint32_t layout = 0, clock_version = 0;
+        std::printf("  --version: %s", read ? line : "(nothing)\n");
+        check(read && status == 0 && plugin::parse_version_line(line, layout, clock_version) &&
+                  layout == plugin::kLayoutVersion && clock_version == plugin::kClockLayoutVersion,
+              "--version prints the contract's line, with this layout and clock version");
+    }
+
+    // A frame count other than block_frames can only be a scribble (M3):
+    // the host processes nothing and faults.
+    {
+        Host host;
+        if (int r2 = start_ready(host, a, clock, {kEgAmp}, 1)) return r2;
+        host.h->submitted_frames.store(kBlock / 2, std::memory_order_relaxed);
+        host.h->submitted_block.store(1, std::memory_order_release);
+        clock.begin(monotonic_ns());
+        clock.submitted();
+        clock.end();
+        clock.wake();
+        const bool exited = wait_exit(host, 10'000'000'000ull);
+        std::printf("  forged frame count: host %s, state %s, completed %llu\n", host.death().c_str(),
+                    state_name(host.h->state.load()), (unsigned long long)host.h->completed_block.load());
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitFaulted &&
+                  host.h->completed_block.load() == 0,
+              "a submitted_frames other than block_frames faults the host, nothing processed");
+    }
     return 0;
 }
 
@@ -1453,17 +1555,25 @@ int scenario_params(const Args& a) {
     const uint32_t distinct = plugin::kParamRingCapacity - 1;
     const float value = 0.25f;
     const uint64_t total = 400, at = 100, at_offset = 150, at_late = 200, at_table = 250;
-    uint32_t pushed = 0;
+    // Each change goes out in the first callback from its time on that will
+    // submit: one that does not is held and arrives through the table at
+    // offset 0 (block protocol step 2), which is not what these check.
+    uint64_t sent_at[4] = {0, 0, 0, 0};
+    const uint64_t when[4] = {at, at_offset, at_late, at_table};
     std::vector<std::array<float, 3>> seen(total, {-1.f, -1.f, -1.f});
     Signal sig(1);
     const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
-        if (i == at) {
-            for (uint32_t d = 0; d < distinct; ++d) pushed += host.send(0, d, 0, value) ? 1 : 0;
-            pushed += host.send(0, 9999, 0, value) ? 1 : 0;  // no such parameter
+        for (int k = 0; k < 4; ++k) {
+            if (sent_at[k] || i < when[k] || !host.idle()) continue;
+            sent_at[k] = i;
+            if (k == 0) {
+                for (uint32_t d = 0; d < distinct; ++d) host.send(0, d, 0, value);
+                host.send(0, 9999, 0, value);  // no such parameter
+            }
+            if (k == 1) host.send(0, 0, 37, 0.5f);
+            if (k == 2) host.push_raw({host.next_block() - 5, 0, 0, 90, 0.75f});
+            if (k == 3) host.send_table_only(0, 0, 0.125f);
         }
-        if (i == at_offset) host.send(0, 0, 37, 0.5f);
-        if (i == at_late) host.push_raw({host.next_block() - 5, 0, 0, 90, 0.75f});
-        if (i == at_table) host.send_table_only(0, 0, 0.125f);
         sig.sine(i, 440.0, 0.1f);
         const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
         if (from >= 0) seen[size_t(from)] = {sig.obuf[0][0], sig.obuf[0][1], sig.obuf[0][2]};
@@ -1476,22 +1586,22 @@ int scenario_params(const Args& a) {
             if (seen[b][0] > 0.f) return &seen[b];
         return nullptr;
     };
-    const auto* bulk = first_change(at);
+    const auto* bulk = first_change(sent_at[0]);
     std::printf("  pushed %u changes in callback %llu; the plugin saw %.0f (sum %.2f); host rejected %llu, "
                 "late %llu\n",
-                pushed, (unsigned long long)at, bulk ? double((*bulk)[0]) : -1.0, bulk ? double((*bulk)[1]) : -1.0,
+                distinct + 1, (unsigned long long)sent_at[0], bulk ? double((*bulk)[0]) : -1.0, bulk ? double((*bulk)[1]) : -1.0,
                 (unsigned long long)host.h->params_rejected.load(), (unsigned long long)host.h->params_late.load());
-    check(pushed == distinct + 1, "the ring took every change");
+    check(sent_at[0] && host.refused() == 0, "the ring took every change");
     check(bulk && (*bulk)[0] == float(distinct), "every distinct change reached the plugin in one block");
     check(bulk && std::fabs((*bulk)[1] - float(distinct) * value) < 1e-3f, "with the value pushed");
     check(host.h->params_rejected.load() == 1, "the change for a parameter that does not exist was counted as rejected");
-    const auto* offset = first_change(at_offset);
+    const auto* offset = first_change(sent_at[1]);
     check(offset && (*offset)[0] == 1.f && (*offset)[1] == 0.5f && (*offset)[2] == 37.f,
           "a change tagged with frame 37 reached the plugin at frame 37");
-    const auto* late = first_change(at_late);
+    const auto* late = first_change(sent_at[2]);
     check(late && (*late)[1] == 0.75f && (*late)[2] == 0.f && host.h->params_late.load() == 1,
           "an entry for an older block was applied at frame 0 and counted late");
-    const auto* table = first_change(at_table);
+    const auto* table = first_change(sent_at[3]);
     check(table && (*table)[0] == 1.f && (*table)[1] == 0.125f && (*table)[2] == 0.f,
           "a value carried by the table alone reached the plugin at frame 0");
     return 0;
@@ -1651,7 +1761,8 @@ int scenario_rtt(const Args& a) {
     const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
     const uint64_t total = a.blocks ? a.blocks : 3000;
     Clock clock;
-    if (!clock.create(wake_of(a, plugin::WakeMode::Futex))) return 1;
+    // The session rate in both headers: the host checks they agree.
+    if (!clock.create(wake_of(a, plugin::WakeMode::Futex), {}, a.rate)) return 1;
     std::printf("rtt: %s, %u channel(s), %llu blocks of %u at %u Hz, %s wake, measurement wait, deadline %.0f us\n",
                 join(chain, ',').c_str(), a.channels, (unsigned long long)total, kBlock, kRate,
                 clock.mode == plugin::WakeMode::Futex ? "futex" : "timer", kDeadlineNs / 1e3);
@@ -1699,7 +1810,8 @@ int scenario_render(const Args& a) {
         return 0;
     }
     Clock clock;
-    if (!clock.create(wake_of(a, plugin::WakeMode::Futex))) return 1;
+    // The session rate in both headers: the host checks they agree.
+    if (!clock.create(wake_of(a, plugin::WakeMode::Futex), {}, a.rate)) return 1;
     Host host;
     if (int r = start_ready(host, a, clock, a.chain, a.channels)) return r;
     const uint32_t latency = plugin::checked_latency(host.h->instances[0].latency_frames.load());
@@ -1716,14 +1828,28 @@ int scenario_render(const Args& a) {
     std::vector<float*> op(a.channels);
     bool complete = true;
     uint64_t block = 0;
+    // Every block is block_frames (contracts/plugin, Frame count): the
+    // last, short one is padded with silence and only its head kept.
+    std::vector<std::vector<float>> pad_in(a.channels, std::vector<float>(kBlock)),
+        pad_out(a.channels, std::vector<float>(kBlock));
     for (std::size_t pos = 0; pos < frames && complete; pos += kBlock, ++block) {
         const uint32_t n = uint32_t(std::min<std::size_t>(kBlock, frames - pos));
         for (uint32_t c = 0; c < a.channels; ++c) {
-            ip[c] = in[c].data() + pos;
-            op[c] = got[c].data() + pos;
+            if (n == kBlock) {
+                ip[c] = in[c].data() + pos;
+                op[c] = got[c].data() + pos;
+            } else {
+                std::fill(pad_in[c].begin(), pad_in[c].end(), 0.f);
+                std::copy(in[c].begin() + std::ptrdiff_t(pos), in[c].end(), pad_in[c].begin());
+                ip[c] = pad_in[c].data();
+                op[c] = pad_out[c].data();
+            }
         }
         uint64_t rtt = 0;
-        complete = host.round_trip(ip.data(), op.data(), n, block, monotonic_ns() + 5'000'000'000ull, rtt);
+        complete = host.round_trip(ip.data(), op.data(), kBlock, block, monotonic_ns() + 5'000'000'000ull, rtt);
+        if (complete && n != kBlock)
+            for (uint32_t c = 0; c < a.channels; ++c)
+                std::copy(pad_out[c].begin(), pad_out[c].begin() + n, got[c].begin() + std::ptrdiff_t(pos));
     }
     check(complete, "every block came back from the host");
     if (!complete) {

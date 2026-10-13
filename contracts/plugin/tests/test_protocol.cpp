@@ -76,17 +76,18 @@ static_assert(offsetof(ChannelHeader, params) == 448, "params");
 static_assert(offsetof(ChannelHeader, completed_block) == 6592, "completed_block");
 static_assert(offsetof(ChannelHeader, done_word) == 6600, "done_word");
 static_assert(offsetof(ChannelHeader, state) == 6604, "state");
-static_assert(offsetof(ChannelHeader, heartbeat) == 6608, "heartbeat");
-static_assert(offsetof(ChannelHeader, latency_frames) == 6616, "latency_frames");
-static_assert(offsetof(ChannelHeader, latency_generation) == 6620, "latency_generation");
-static_assert(offsetof(ChannelHeader, current_instance) == 6624, "current_instance");
-static_assert(offsetof(ChannelHeader, refusal) == 6628, "refusal");
-static_assert(offsetof(ChannelHeader, refusal_instance) == 6632, "refusal_instance");
-static_assert(offsetof(ChannelHeader, host_flags) == 6636, "host_flags");
-static_assert(offsetof(ChannelHeader, worst_block_ns) == 6640, "worst_block_ns");
-static_assert(offsetof(ChannelHeader, params_rejected) == 6648, "params_rejected");
-static_assert(offsetof(ChannelHeader, params_late) == 6656, "params_late");
-static_assert(offsetof(ChannelHeader, instances) == 6664, "instances");
+// Its own line, off completed_block's (auditor L4 on PR #45).
+static_assert(offsetof(ChannelHeader, heartbeat) == 6656, "heartbeat");
+static_assert(offsetof(ChannelHeader, latency_frames) == 6664, "latency_frames");
+static_assert(offsetof(ChannelHeader, latency_generation) == 6668, "latency_generation");
+static_assert(offsetof(ChannelHeader, current_instance) == 6672, "current_instance");
+static_assert(offsetof(ChannelHeader, refusal) == 6676, "refusal");
+static_assert(offsetof(ChannelHeader, refusal_instance) == 6680, "refusal_instance");
+static_assert(offsetof(ChannelHeader, host_flags) == 6684, "host_flags");
+static_assert(offsetof(ChannelHeader, worst_block_ns) == 6688, "worst_block_ns");
+static_assert(offsetof(ChannelHeader, params_rejected) == 6696, "params_rejected");
+static_assert(offsetof(ChannelHeader, params_late) == 6704, "params_late");
+static_assert(offsetof(ChannelHeader, instances) == 6712, "instances");
 
 static_assert(sizeof(ClockHeader) == 128, "ClockHeader");
 static_assert(offsetof(ClockHeader, magic) == 0, "clock magic never moves");
@@ -231,6 +232,17 @@ void layout_and_header() {
     CHECK(line(&h->submitted_block) != line(&h->completed_block));
     CHECK(line(&h->values_seq) != line(&h->completed_block));
     CHECK(line(&h->param_write) != line(&h->param_read));
+    // The audio thread reads completed_block every callback: nothing the
+    // host writes more than once per block shares its line (L4).
+    CHECK(line(&h->heartbeat) != line(&h->completed_block));
+    CHECK(line(&h->current_instance) != line(&h->completed_block));
+    CHECK(line(&h->worst_block_ns) != line(&h->completed_block));
+
+    // A sample rate of 0 is not a channel.
+    h->sample_rate = 0;
+    CHECK(!header_valid(*h, size));
+    h->sample_rate = 48000;
+    CHECK(header_valid(*h, size));
 }
 
 void param_map_cap() {
@@ -259,7 +271,7 @@ struct Fixture {
     Region r{layout.region_size};
     ChannelHeader* h = init_header(r.base, layout, 48000, 128, 2, counts, 0);
     std::atomic<float>* table = value_table(r.base, layout);
-    uint32_t engine_seq = 0;
+    EngineChannel e = make_engine_channel(128);
     std::vector<float> applied = std::vector<float>(map.param_slots, 0.f);
     HostValues v;
     std::vector<Applied> log;
@@ -282,8 +294,8 @@ struct Fixture {
 void ring_order() {
     Fixture f;
     // Ring: fills to capacity exactly, refuses the next, drains in order.
-    for (uint32_t i = 0; i < kParamRingCapacity; ++i) CHECK(push_param(*f.h, {7, 0, 0, i, float(i)}));
-    CHECK(!push_param(*f.h, {7, 0, 0, 0, 0.f}));
+    for (uint32_t i = 0; i < kParamRingCapacity; ++i) CHECK(push_param(*f.h, f.e, {7, 0, 0, i, float(i)}));
+    CHECK(!push_param(*f.h, f.e, {7, 0, 0, 0, 0.f}));
     ParamChange p{};
     for (uint32_t i = 0; i < kParamRingCapacity; ++i) {
         CHECK(pop_param(*f.h, p));
@@ -295,8 +307,16 @@ void ring_order() {
     // the ring: the index is masked, and a read index ahead of the write
     // index reads as a full ring, so pushes are refused and counted.
     f.h->param_read.store(f.h->param_write.load() + 5);
-    CHECK(!push_param(*f.h, {0, 0, 1, 0, 1.f}));
+    CHECK(!push_param(*f.h, f.e, {0, 0, 1, 0, 1.f}));
     f.h->param_read.store(f.h->param_write.load());
+
+    // Nor by scribbling param_write: the engine never reads it back (L1).
+    // Its own index decides where the entry goes and what is published.
+    const uint32_t w = f.e.param_write;
+    f.h->param_write.store(w + 100);
+    CHECK(push_param(*f.h, f.e, {0, 0, 1, 0, 2.f}));
+    CHECK(f.e.param_write == w + 1 && f.h->param_write.load() == w + 1);
+    CHECK(f.h->params[w & (kParamRingCapacity - 1)].value == 2.f);
 }
 
 void block_tags() {
@@ -304,18 +324,18 @@ void block_tags() {
     // Block 10 is being processed: older entries land at offset 0 and are
     // late, entries for 10 at their offset, and the first entry for 11
     // stops the drain and stays.
-    CHECK(send_param(*f.h, f.table, f.map, {9, 0, 1, 77, 0.5f}, f.engine_seq));
-    CHECK(send_param(*f.h, f.table, f.map, {10, 1, 0, 64, 0.25f}, f.engine_seq));
-    CHECK(send_param(*f.h, f.table, f.map, {10, 0, 2, 500, 0.75f}, f.engine_seq));  // offset past frames
-    CHECK(send_param(*f.h, f.table, f.map, {11, 0, 0, 3, 1.f}, f.engine_seq));
-    CHECK(send_param(*f.h, f.table, f.map, {10, 0, 0, 3, 2.f}, f.engine_seq));  // behind the 11
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {9, 0, 1, 77, 0.5f}));
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {10, 1, 0, 64, 0.25f}));
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {10, 0, 2, 500, 0.75f}));  // offset past frames
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {11, 0, 0, 3, 1.f}));
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {10, 0, 0, 3, 2.f}));  // behind the 11
     CHECK(f.consume(10) == 3);
     CHECK(f.log.size() == 3);
     CHECK(f.log[0].instance == 0 && f.log[0].param == 1 && f.log[0].offset == 0 && !f.log[0].replace);
     CHECK(f.log[1].instance == 1 && f.log[1].param == 0 && f.log[1].offset == 64);
     CHECK(f.log[2].param == 2 && f.log[2].offset == 127);
     CHECK(f.h->params_late.load() == 1);
-    CHECK(f.engine_seq == 0);  // nothing was refused, so the table was not re-read
+    CHECK(f.e.values_seq == 0);  // nothing was refused, so the table was not re-read
     f.log.clear();
     CHECK(f.consume(11) == 2);
     CHECK(f.log.size() == 2 && f.log[0].value == 1.f && f.log[1].value == 2.f && f.log[1].offset == 0);
@@ -324,10 +344,10 @@ void block_tags() {
     // Unknown instance or parameter, and non-finite values: consumed and
     // counted, never applied.
     f.log.clear();
-    push_param(*f.h, {12, 2, 0, 0, 1.f});
-    push_param(*f.h, {12, 1, 2, 0, 1.f});
-    push_param(*f.h, {12, 0, 0, 0, std::numeric_limits<float>::quiet_NaN()});
-    push_param(*f.h, {12, 1, kBypassParam, 0, 1.f});
+    push_param(*f.h, f.e, {12, 2, 0, 0, 1.f});
+    push_param(*f.h, f.e, {12, 1, 2, 0, 1.f});
+    push_param(*f.h, f.e, {12, 0, 0, 0, std::numeric_limits<float>::quiet_NaN()});
+    push_param(*f.h, f.e, {12, 1, kBypassParam, 0, 1.f});
     CHECK(f.consume(12) == 4);
     CHECK(f.h->params_rejected.load() == 3);
     CHECK(f.log.size() == 1 && f.log[0].param == kBypassParam && f.log[0].instance == 1);
@@ -338,9 +358,9 @@ void table_precedence() {
     Fixture f;
     // Fill the ring so the next send is refused: the table carries it, and
     // values_seq tells the host to look (M3).
-    for (uint32_t i = 0; i < kParamRingCapacity; ++i) CHECK(push_param(*f.h, {20, 0, 1, 0, 0.1f}));
-    CHECK(!send_param(*f.h, f.table, f.map, {20, 0, 1, 0, 0.9f}, f.engine_seq));
-    CHECK(f.engine_seq == 1 && f.h->values_seq.load() == 1);
+    for (uint32_t i = 0; i < kParamRingCapacity; ++i) CHECK(push_param(*f.h, f.e, {20, 0, 1, 0, 0.1f}));
+    CHECK(!send_param(*f.h, f.e, f.table, f.map, {20, 0, 1, 0, 0.9f}));
+    CHECK(f.e.values_seq == 1 && f.h->values_seq.load() == 1);
     // L1: the 256 ring entries for slot 1 (0.1) apply first, then the
     // table's newer 0.9 replaces them; the newest wins.
     CHECK(f.consume(20) == kParamRingCapacity);
@@ -351,14 +371,14 @@ void table_precedence() {
     f.log.clear();
     CHECK(f.consume(21) == 0 && f.log.empty());
     // A bump with no value changed applies nothing.
-    bump_values_seq(*f.h, f.engine_seq);
+    bump_values_seq(*f.h, f.e);
     CHECK(f.consume(22) == 0 && f.log.empty());
 
     // A ring entry that already carried the table's value is not applied
     // twice at offset 0: the table re-read compares with what was applied.
     f.log.clear();
-    CHECK(send_param(*f.h, f.table, f.map, {23, 1, 0, 40, 0.3f}, f.engine_seq));
-    bump_values_seq(*f.h, f.engine_seq);
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {23, 1, 0, 40, 0.3f}));
+    bump_values_seq(*f.h, f.e);
     f.consume(23);
     CHECK(f.log.size() == 1 && !f.log[0].replace && f.log[0].offset == 40);
 
@@ -368,7 +388,7 @@ void table_precedence() {
     const float store[5] = {1.f, 0.9f, 3.f, 0.3f, 5.f};
     const float bypass[2] = {0.f, 1.f};
     CHECK(value_copy_bytes(f.layout) == 5 * sizeof(float) + kMaxInstances * sizeof(float));
-    store_values(*f.h, f.table, f.layout, store, bypass, 2, f.engine_seq);
+    store_values(*f.h, f.e, f.table, f.layout, store, bypass, 2);
     f.consume(24);
     CHECK(f.log.size() == 4);  // slots 0, 2, 4 and instance 1's bypass
     for (const Applied& a : f.log) CHECK(a.replace);
@@ -394,7 +414,7 @@ void table_concurrent() {
     for (int n = 1; n <= kRounds; ++n) {
         const uint32_t slot = uint32_t(n) % f.map.param_slots;
         seed_value(f.table, slot, float(n));
-        bump_values_seq(*f.h, f.engine_seq);
+        bump_values_seq(*f.h, f.e);
     }
     done.store(true, std::memory_order_release);
     host.join();
@@ -404,6 +424,109 @@ void table_concurrent() {
             if (uint32_t(n) % f.map.param_slots == s) last = n;
         CHECK(f.applied[s] == float(last));
     }
+}
+
+// rt-engineer M1 and M3: per-channel numbering from 1, no gaps, and a
+// block of any size other than block_frames is never submitted.
+void block_numbering() {
+    Fixture f;
+    CHECK(f.e.block == 0 && next_block(f.e) == 1);
+    CHECK(channel_idle(*f.h, f.e));  // a fresh region: nothing outstanding
+    CHECK(!submit_block(*f.h, f.e, 64));
+    CHECK(!submit_block(*f.h, f.e, 256));
+    CHECK(f.h->submitted_block.load() == 0 && f.h->submitted_frames.load() == 0 && f.e.block == 0);
+    CHECK(submit_block(*f.h, f.e, 128));
+    CHECK(f.h->submitted_block.load() == 1 && f.h->submitted_frames.load() == 128);
+    CHECK(!channel_idle(*f.h, f.e));
+    f.h->completed_block.store(1);
+    CHECK(channel_idle(*f.h, f.e) && next_block(f.e) == 2);
+    CHECK(submit_block(*f.h, f.e, 128) && f.h->submitted_block.load() == 2);
+    // A host that forges completed_block cannot move the engine's count.
+    f.h->completed_block.store(77);
+    CHECK(!channel_idle(*f.h, f.e) && next_block(f.e) == 3);
+    // A new channel starts again at 1.
+    const EngineChannel fresh = make_engine_channel(128);
+    CHECK(next_block(fresh) == 1 && fresh.resync && fresh.block_frames == 128);
+}
+
+// rt-engineer M2, auditor L5: a change in a callback that does not submit
+// is held, never written to the region, so it cannot reach the block the
+// host is busy with; it arrives with the next submit, at offset 0.
+void held_changes_never_early() {
+    Fixture f;
+    float store[5] = {0.f, 0.f, 0.f, 0.f, 0.f};
+    const float bypass[2] = {0.f, 0.f};
+    // Callback 1: the first submit (resync), block 1.
+    CHECK(f.e.resync);
+    store_values(*f.h, f.e, f.table, f.layout, store, bypass, 2);
+    CHECK(!f.e.resync && submit_block(*f.h, f.e, 128));
+    // The host starts block 1 and is still busy with it ...
+    f.consume(1);
+    f.log.clear();
+    // ... when callback 2 brings a change: the host is not idle, so it goes
+    // to the private store and is held.
+    CHECK(!channel_idle(*f.h, f.e));
+    const uint32_t seq = f.h->values_seq.load(), w = f.h->param_write.load();
+    store[2] = 0.6f;
+    hold_param(f.e);
+    CHECK(f.e.resync);
+    CHECK(f.h->values_seq.load() == seq && f.h->param_write.load() == w && f.table[2].load() == 0.f);
+    // Whatever the host does with block 1 now, it cannot see the change.
+    f.consume(1);
+    CHECK(f.log.empty() && f.applied[2] == 0.f);
+    // The host completes block 1; callback 3 submits block 2 with the
+    // resync first, and the host applies the value at offset 0 of block 2.
+    f.h->completed_block.store(1);
+    CHECK(channel_idle(*f.h, f.e));
+    store[4] = 0.25f;  // the caller keeps its store current before sending
+    store_values(*f.h, f.e, f.table, f.layout, store, bypass, 2);
+    CHECK(send_param(*f.h, f.e, f.table, f.map, {next_block(f.e), 1, 1, 9, 0.25f}));
+    CHECK(submit_block(*f.h, f.e, 128) && f.h->submitted_block.load() == 2);
+    f.consume(2);
+    CHECK(f.log.size() == 2);
+    CHECK(f.log.size() == 2 && !f.log[0].replace && f.log[0].instance == 1 && f.log[0].param == 1 &&
+          f.log[0].offset == 9);
+    CHECK(f.log.size() == 2 && f.log[1].replace && f.log[1].instance == 0 && f.log[1].param == 2 &&
+          f.log[1].value == 0.6f);
+    CHECK(f.h->params_late.load() == 0);
+}
+
+// rt-engineer M4: the engine checks its own copy of an output plane.
+void collect_guard() {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    float plane[8] = {0.5f, -inf, 1e-30f, nan, inf, -0.f, -nan, 0.25f};
+    float out[8];
+    CHECK(collect_output(out, plane, 8) == 4);
+    const float want[8] = {0.5f, 0.f, 1e-30f, 0.f, 0.f, -0.f, 0.f, 0.25f};
+    for (int i = 0; i < 8; ++i) CHECK(same_bits(out[i], want[i]));
+    // The plane itself is not the engine's to repair.
+    CHECK(!finite_bits(plane[3]));
+    float clean[3] = {1.f, 2.f, 3.f};
+    CHECK(collect_output(out, clean, 3) == 0 && out[2] == 3.f);
+    CHECK(collect_output(out, clean, 0) == 0);
+}
+
+// The --version line's grammar is fixed (ADR-0012 §5.5).
+void version_line() {
+    char buf[96];
+    CHECK(format_version_line(buf, sizeof buf) > 0);
+    uint32_t layout = 99, clock = 99;
+    CHECK(parse_version_line(buf, layout, clock) && layout == kLayoutVersion && clock == kClockLayoutVersion);
+    CHECK(parse_version_line("sonora-plugin-host layout 1 clock 1\n", layout, clock));
+    CHECK(parse_version_line("sonora-plugin-host layout 7 clock 3 wire 2", layout, clock) && layout == 7 &&
+          clock == 3);
+    CHECK(parse_version_line("sonora-plugin-host clock 4 layout 5", layout, clock) && layout == 5 && clock == 4);
+    CHECK(!parse_version_line("sonora-plugin-host layout 1", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-host layout 1 clock", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-host layout 1 clock x", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-host layout 1 layout 2 clock 1", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-host layout 1  clock 1", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-host layout 1 clock 99999999999", layout, clock));
+    CHECK(!parse_version_line("other-host layout 1 clock 1", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-hostess layout 1 clock 1", layout, clock));
+    CHECK(!parse_version_line("sonora-plugin-host layout 1 clock 1 trailing", layout, clock));
+    CHECK(!parse_version_line(nullptr, layout, clock));
 }
 
 void slots() {
@@ -439,6 +562,21 @@ void clock_region() {
     c->layout_version = 1;
     CHECK(clock_valid(*c, sizeof(ClockHeader)));
 
+    // The channel and the clock describe the same quantum.
+    const uint32_t counts[1] = {1};
+    const Layout l = make_layout(1, 256, 1);
+    Region cr(l.region_size);
+    ChannelHeader* h = init_header(cr.base, l, 48000, 128, 1, counts, 0);
+    CHECK(channel_matches_clock(*h, *c));
+    h->block_frames = 256;
+    CHECK(!channel_matches_clock(*h, *c));
+    h->block_frames = 128;
+    h->sample_rate = 44100;
+    CHECK(!channel_matches_clock(*h, *c));
+    c->sample_rate = 0;
+    CHECK(!clock_valid(*c, sizeof(ClockHeader)));
+    c->sample_rate = 48000;
+
     publish_callback_start(*c, 1000);
     publish_tick(*c);
     CHECK(c->tick.load() == 1 && c->callback_ns.load() == 1000);
@@ -462,6 +600,10 @@ int main() {
     block_tags();
     table_precedence();
     table_concurrent();
+    block_numbering();
+    held_changes_never_early();
+    collect_guard();
+    version_line();
     slots();
     clock_region();
     if (failures) return EXIT_FAILURE;

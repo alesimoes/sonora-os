@@ -85,8 +85,14 @@ bool create_region(std::size_t size, SharedRegion& out, std::string& error) {
 bool share_read_only(SharedRegion& region, int& read_only_handle, std::string& error) {
     if (fcntl(region.handle, F_ADD_SEALS,
               F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_FUTURE_WRITE | F_SEAL_SEAL) != 0) {
-        // Kernels before 5.1: the read-only descriptor still stops the plain path.
-        fcntl(region.handle, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL);
+        // Refused, not degraded (auditor L2 on PR #45). Without the seal a
+        // host can reopen /proc/<pid>/fd/N read-write (a memfd inode is
+        // mode 0777) and map the clock writable, which is the forgery M1
+        // exists to stop. A read-only descriptor alone does not stop it.
+        error = std::string("cannot seal the region against writable mappings (F_SEAL_FUTURE_WRITE, "
+                            "Linux 5.1 or later): ") +
+                std::strerror(errno) + "; a host could map the clock writable, so it is not shared";
+        return false;
     }
     const std::string self = "/proc/self/fd/" + std::to_string(region.handle);
     read_only_handle = open(self.c_str(), O_RDONLY | O_CLOEXEC);
@@ -136,6 +142,13 @@ void release_region(SharedRegion& region) {
     if (region.base) munmap(region.base, region.size);
     if (region.handle >= 0) close(region.handle);
     region = SharedRegion{};
+}
+
+bool lock_region(const SharedRegion& region, std::string& error) {
+    if (!region.base || region.size == 0) return true;
+    if (mlock(region.base, region.size) == 0) return true;
+    error = std::string("mlock of ") + std::to_string(region.size) + " bytes: " + std::strerror(errno);
+    return false;
 }
 
 void close_handle(int handle) noexcept {

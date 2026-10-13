@@ -54,12 +54,20 @@ bool create_region(std::size_t size, SharedRegion& out, std::string& error);
 // against every new writable mapping (F_SEAL_FUTURE_WRITE where the kernel
 // has it) and open a read-only descriptor of it into `read_only_handle`. A
 // receiver can then map it PROT_READ only: PROT_WRITE fails with EACCES.
+// Fails, with the reason in `error`, on a kernel without
+// F_SEAL_FUTURE_WRITE: a read-only descriptor alone can be reopened
+// writable through /proc, so there is no degraded mode (auditor L2).
 bool share_read_only(SharedRegion& region, int& read_only_handle, std::string& error);
 // The receiver's halves. map_region maps read-write (the channel region);
 // map_region_read_only maps PROT_READ (the clock region).
 bool map_region(int handle, SharedRegion& out, std::string& error);
 bool map_region_read_only(int handle, SharedRegion& out, std::string& error);
 void release_region(SharedRegion& region);
+// Keep a region's pages resident (mlock). prefault faults them in, but
+// without a lock (mlockall refused, a low RLIMIT_MEMLOCK) they can be
+// reclaimed under pressure and fault again on the audio thread. False when
+// the OS refused; the caller reports it, never silently (auditor L3).
+bool lock_region(const SharedRegion& region, std::string& error);
 void close_handle(int handle) noexcept;
 
 // Process setup for the host. Each returns false if the OS refused, which

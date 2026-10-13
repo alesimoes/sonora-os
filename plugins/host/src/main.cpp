@@ -476,6 +476,7 @@ struct Session {
     std::vector<float*> out;
     uint32_t ipc_frames;
     int64_t engine_pid;
+    uint32_t block_frames;  // every block's size in v1 (contracts/plugin, Frame count)
 };
 
 // The processing thread's loop, at SCHED_FIFO when allowed. Returns the exit
@@ -502,9 +503,20 @@ int process_blocks(Session& s) {
         const uint64_t block = h.submitted_block.load(std::memory_order_acquire);
         if (block != last) {
             pacer.found();
-            // Clamped, so a forged frame count cannot run past the planes.
-            const uint32_t frames =
-                std::min(h.submitted_frames.load(std::memory_order_relaxed), s.layout.max_frames);
+            // v1 pins every block to block_frames (rt-engineer M3 on PR
+            // #45): the latency this host declared assumes it. The engine
+            // never submits another size, so a different word means a
+            // plugin in this process wrote it; process nothing, fault.
+            const uint32_t submitted = h.submitted_frames.load(std::memory_order_relaxed);
+            if (submitted != s.block_frames) {
+                cerr.reason = plugin::Refusal::None;
+                cerr.instance = -1;
+                cerr.message = "the channel's submitted_frames is " + std::to_string(submitted) +
+                               ", not the pinned block_frames " + std::to_string(s.block_frames) +
+                               ": the region was overwritten";
+                return refuse(h, cerr, plugin::HostState::Faulted);
+            }
+            const uint32_t frames = s.block_frames;
             // The ring for this block and older ones, then the table if
             // values_seq moved (L1); contracts/plugin, block protocol c.
             plugin::consume_block_params(h, s.table, s.map, s.values, block, frames, deliver, replace);
@@ -585,7 +597,7 @@ int serve(const Options& o) {
     auto& h = *static_cast<plugin::ChannelHeader*>(region.base);
     const auto& clock = *static_cast<const plugin::ClockHeader*>(clock_region.base);
     if (!plugin::header_valid(h, region.size) || h.instance_count != o.chain.size() ||
-        !plugin::clock_valid(clock, clock_region.size)) {
+        !plugin::clock_valid(clock, clock_region.size) || !plugin::channel_matches_clock(h, clock)) {
         std::fprintf(stderr, "sonora-plugin-host: the channel or clock header is not valid for a chain of %zu\n",
                      o.chain.size());
         return plugin::kHostExitUsage;
@@ -628,7 +640,7 @@ int serve(const Options& o) {
     // The values the control thread seeded (contracts/plugin, §5.1), before
     // validation, so the latency reported is the one of these values.
     Session s{h, clock, chain, layout, map, mode, period_ns, plugin::value_table(region.base, layout),
-              {}, {}, {}, ipc_frames, o.engine_pid};
+              {}, {}, {}, ipc_frames, o.engine_pid, h.block_frames};
     std::vector<float> applied(map.param_slots, 0.f);
     s.values.applied = applied.data();
     s.values.seen_seq = h.values_seq.load(std::memory_order_acquire);
@@ -712,8 +724,10 @@ int main(int argc, char** argv) {
     if (o.version) {
         // Read by the engine at start-up (ADR-0012 §5.5); a mismatch
         // disables plugin hosting for the run, loudly.
-        std::printf("sonora-plugin-host layout %u clock %u\n", plugin::kLayoutVersion,
-                    plugin::kClockLayoutVersion);
+        // The grammar is the contract's (format_version_line).
+        char line[96];
+        plugin::format_version_line(line, sizeof line);
+        std::printf("%s\n", line);
         return plugin::kHostExitClean;
     }
     // Before any plugin code loads, and inherited by the --list scan children.

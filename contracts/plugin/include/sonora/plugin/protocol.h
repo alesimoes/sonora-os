@@ -17,7 +17,8 @@
 //    plan swaps      channel slots outside the plan, generation-checked (§5.4)
 //    versioning      header_bytes, asserts, exit code 3 (§5.5)
 //  and the rt-safety-auditor's rulings on PR #42 (A1, A2, H1, M1, M2, M3, L1)
-//  are written into the rules below where they bind.
+//  are written into the rules below where they bind, as are the PR #45
+//  acceptance reviews (rt-engineer M1-M4, auditor L1-L6).
 //
 //  Not in this file yet: host_control.h (the fd-3 socket messages of
 //  ADR-0012 §4, kHostWireVersion). Until it lands the host is told its chain
@@ -62,10 +63,14 @@
 //    header's offsets, which exist for the host.
 //  - The engine never reads back what it wrote: not the fixed part, not the
 //    last-value table (its authoritative copy is private, §5.1), not
-//    values_seq (it keeps its own count).
+//    values_seq, param_write or submitted_block (EngineChannel below keeps
+//    its own copy of each; auditor L1 on PR #45).
 //  - The parameter ring index is masked, so a forged param_read can only
 //    make the ring look full (pushes refused and counted), never move a
 //    store outside the ring.
+//  - The output planes are read once, into engine-private memory, and
+//    checked there for NaN and Inf (collect_output, step 1 below). The
+//    host's own scrub is not trusted: a plugin thread can write after it.
 //  - The audio thread never reads latency_frames from a region: a plan
 //    carries the figure the builder read, through checked_latency, on the
 //    control thread (§5.4).
@@ -80,26 +85,70 @@
 // never waits on a host: no timed wait, no futex wait, no spin. It submits,
 // and it collects only what is already there.
 //
+//  Block numbering (rt-engineer M1 on PR #45). Per channel: the first block
+//  submitted to a channel is 1, and every submit is the previous one + 1,
+//  with no gaps. A plan swap that keeps the node on the same channel keeps
+//  the count; a new channel (a new region) starts again at 1. Block 0 is
+//  never submitted: it is what submitted_block and completed_block hold in
+//  a fresh region, so the host's "submitted_block != last" never sees work
+//  that was not sent. The count lives in the engine's EngineChannel, never
+//  in the region; submit_block assigns it, next_block is the tag for
+//  changes sent before it.
+//
+//  Frame count (rt-engineer M3). In v1 every block is exactly block_frames
+//  frames: the quantum is pinned (ADR-0007 M2), latency_frames declares
+//  pipeline_depth * block_frames, and depth 1 plays the previous callback's
+//  block, so a block of any other size would break PDC. A callback whose
+//  frame count is not block_frames is a miss for every InsertChain node:
+//  nothing collected, nothing submitted, every change held (step 2),
+//  counted. submit_block refuses such a count. A host that reads
+//  submitted_frames != block_frames processes nothing and faults
+//  (kHostExitFaulted): only a scribbling plugin can have written it.
+//
 //  Engine, callback N (RT), per InsertChain node, in plan order:
 //    0. The node's channel slot generation must equal the generation the
 //       plan was built against (slot_current); otherwise this is a miss,
 //       counted as a fault, and nothing below is read or written (H1).
-//    1. If completed_block is the block submitted in callback N - 1, read the
-//       output planes: that is this callback's output. A block that
-//       completed later than that is discarded, never played late, which
-//       would break the declared latency. Not collected: a miss (ADR-0012
-//       §3: fade the last sample out over 64 frames, then silence, counted;
-//       ramp the next collected block in).
+//    1. If completed_block is the block submitted in callback N - 1, copy
+//       the output planes out with collect_output: each plane is copied
+//       once into engine-private memory and only that copy is checked and
+//       used; NaN and Inf in it are replaced by 0 and counted. The engine
+//       owns this guard (rt-engineer M4); the host's scrub is not trusted.
+//       A non-zero count makes the block a miss, and a fault against the
+//       node; the zeroed copy is never played. Otherwise that copy is this
+//       callback's output. A block that completed later than callback N is
+//       discarded, never played late, which would break the declared
+//       latency. Not collected: a miss (ADR-0012 §3: fade the last sample
+//       out over 64 frames, then silence, counted; ramp the next collected
+//       block in).
 //    2. If completed_block != submitted_block the host is still busy with an
 //       older block: do NOT write the input planes, skip the submit, count
 //       it. This rule is what makes one input and one output slot
 //       sufficient: the engine never writes a slot the host may be reading,
 //       and never reads one the host may be writing.
-//       Otherwise: write the input planes; send this block's parameter
-//       changes (send_param, tagged with the block about to be submitted;
-//       on a channel's FIRST submit, store_values first, under the
-//       per-callback copy budget, A2); then submitted_frames, then
-//       submitted_block.store(block, release).
+//       Otherwise, in this order: if the channel's resync flag is set
+//       (its first submit, or a change held in an earlier callback),
+//       store_values, under the per-callback copy budget (A2); write the
+//       input planes; send this callback's changes for the node
+//       (send_param, tagged next_block); then submit_block:
+//       submitted_frames, then submitted_block.store(block, release).
+//       Parameters in a callback that does NOT submit to the channel (a
+//       busy host, a slot mismatch, a frame count that is not
+//       block_frames; rt-engineer M2, auditor L5): NOTHING is written to
+//       the region, not the table, not the ring, not values_seq. The
+//       change goes into the engine's private store (authoritative anyway,
+//       §5.1) and sets the channel's resync flag (hold_param). The host may
+//       be reading the table for an OLDER block at that moment, which is
+//       why the submit was skipped; a table write then could apply the
+//       value a block early, at offset 0 of audio that came before the
+//       change. Held, it reaches the host with the next submit, at offset
+//       0: late by the skipped callbacks, never early, never lost. A
+//       resync that does not fit this callback's copy budget stays set and
+//       the submit goes ahead without it (late again, never early); only a
+//       channel's FIRST submit waits for its copy (it plays silence either
+//       way). With this rule the engine never writes the table while the
+//       host is between a submit and its completion, so the table step
+//       (c.2) can never pick up a later block's value.
 //    3. After the plan's last InsertChain node: if anything was submitted,
 //       publish_tick on the clock region; and only when kHostWakeEnabled,
 //       one wake_all(tick) from common/platform. Skipped when nothing was
@@ -111,8 +160,9 @@
 //       futex wait on the value read in (a) returns at once instead of
 //       sleeping through a block. Reversed, a lost wake costs the 100 ms
 //       timeout, about 37 missed blocks, and the chain is removed at 8.
-//    b. If submitted_block is ahead of the last block processed, process it
-//       (c to e). Otherwise sleep (clock.wake_mode): Timer, the default,
+//    b. If submitted_block differs from the last block processed, process
+//       it (c to e), with block_frames frames: a submitted_frames other
+//       than block_frames is a fault (see Frame count). Otherwise sleep (clock.wake_mode): Timer, the default,
 //       sleeps to the next expected callback (next_wake_ns) and polls in
 //       50 us steps while that callback is late, for at most half a period;
 //       Futex sleeps in FUTEX_WAIT(tick, value read in a) with a 100 ms
@@ -134,6 +184,11 @@
 //    e. completed_block.store(N, release); done_word.fetch_add(1, release);
 //       wake done_word. Only the control thread (waiting for Ready) and
 //       measurement harnesses sleep on done_word, never the audio thread.
+//       That wake is a FUTEX_WAKE syscall per block per host, off the audio
+//       thread but on PREEMPT_RT a hash-bucket lock all the same, so it is
+//       inside ADR-0012's Unverified 1 measurement (auditor L4).
+//       heartbeat sits on its own cache line, away from completed_block,
+//       which the audio thread reads every callback (auditor L4).
 //
 // Parameters (ADR-0012 §5.1, §5.2):
 //  - ParamChange::param is a DENSE index into the instance's parameter list
@@ -176,6 +231,15 @@
 //    node carries the generation it was built against and the audio thread
 //    checks it in collect and submit (slot_current); a mismatch is a miss
 //    and a fault, never data.
+//  - Two guards, in this order. The FIRST is the epoch rule: a slot is
+//    reassigned only after every plan naming it has been retired, so no
+//    running plan can name it. The generation is the SECOND, for the
+//    window between a plan's check and its use (TOCTOU) and for a retire
+//    bug. Ordering: the control thread writes the slot's whole payload
+//    (region base, Layout, ParamMap, store index, a fresh EngineChannel
+//    with resync set, the node's RT counters reset) BEFORE assign_slot's
+//    release store; the audio thread's slot_current is an acquire load, so
+//    a node that sees the new generation sees that payload.
 //  - Restart and chain edits are make-before-break: a NEW region and a new
 //    host are started and brought to Ready while the old host keeps
 //    playing; a plan swap moves the node to the new slot; the old host is
@@ -191,6 +255,9 @@
 // 0 before the next plugin, or the engine, sees it, and adds the count to
 // that plugin's InstanceReport::nonfinite_samples. A plugin that produces
 // NaN or Inf from silence is refused at validation (NonFiniteOutput).
+// That scrub is the host's courtesy, not the engine's guarantee: the output
+// planes are untrusted, so the engine checks its own copy (collect_output,
+// block protocol step 1) and never lets a non-finite sample into the mix.
 //
 // Denormals. The host sets flush-to-zero and denormals-are-zero on its
 // processing thread before the first block; kHostFlushDenormals says it did.
@@ -199,7 +266,18 @@
 // pipeline_depth * block_frames (§4.3: IPC delay is declared like any
 // look-ahead, one mechanism for PDC). It may change while running;
 // latency_generation is bumped after every change, and the control thread
-// re-plans. A value above kMaxLatencyFrames is a fault, not a plan.
+// re-plans. A value above kMaxLatencyFrames is a fault, not a plan; the
+// host clamps a plugin's own figure to it before sizing anything by it.
+// Publish order: the host writes latency_frames (relaxed), then bumps
+// latency_generation (release), and only after that stores state = Ready
+// (release). So the control thread loads state with acquire, and on Ready
+// loads latency_generation (acquire) and then latency_frames, through
+// checked_latency; it never reads a latency before it has seen Ready.
+//
+// The channel's sample_rate and block_frames must equal the clock's
+// (channel_matches_clock): the host paces on the clock's period and
+// declares latency from the channel's block_frames. A sample_rate of 0 is
+// not valid in either header.
 //
 // Versioning (ADR-0012 §5.5). The first three words of both headers (magic,
 // layout_version, header_bytes) never move in any version. A host that does
@@ -207,11 +285,20 @@
 // naming both and exits with kHostExitIncompatible (3) BEFORE writing
 // anything to either region. The engine runs `sonora-plugin-host --version`
 // at start-up, and a mismatch disables plugin hosting for the run, loudly.
+// The line's grammar is fixed (format_version_line, parse_version_line):
+//
+//     sonora-plugin-host layout <N> clock <M>
+//
+// the program name, then `key value` pairs, one space apart, values in
+// decimal, on one stdout line. More pairs may follow in later versions
+// (`wire <W>` is appended when host_control.h lands); a parser skips keys
+// it does not know and refuses a line without both layout and clock.
 // ---------------------------------------------------------------------------
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <new>
 
@@ -344,11 +431,16 @@ struct ChannelHeader {
     alignas(kCacheLine) std::atomic<uint32_t> param_read;
     alignas(kCacheLine) ParamChange params[kParamRingCapacity];
 
-    // --- host -> engine. Untrusted, every word (see Trust).
+    // --- host -> engine. Untrusted, every word (see Trust). The audio
+    // thread reads completed_block every callback, so its line holds only
+    // words the host writes once per block or less (auditor L4).
     alignas(kCacheLine) std::atomic<uint64_t> completed_block;
     std::atomic<uint32_t> done_word;     // control thread only, never the audio thread
     std::atomic<uint32_t> state;         // HostState
-    std::atomic<uint64_t> heartbeat;     // bumped on every pass, at least every 100 ms
+    // --- host -> engine, read by the control thread only. heartbeat moves
+    // every 50 us while the host polls a late callback; current_instance
+    // moves per plugin per block.
+    alignas(kCacheLine) std::atomic<uint64_t> heartbeat;  // bumped on every pass, at least every 100 ms
     std::atomic<uint32_t> latency_frames;      // chain + pipeline_depth * block_frames
     std::atomic<uint32_t> latency_generation;  // bumped after latency_frames changes
     std::atomic<int32_t> current_instance;     // chain index being run, -1 between
@@ -512,6 +604,11 @@ inline std::atomic<float>* value_table(void* region, const Layout& l) noexcept {
 // mlockall state (A2 condition 4): MCL_FUTURE covers a mapping only if the
 // lock succeeded, and the audio thread's first-submit copy must not fault.
 // Control thread, before init_header, on a zeroed region (writes zeros).
+// Faulting in is not keeping in: if mlockall failed, shared pages can be
+// reclaimed under memory pressure. So the control thread also locks each
+// region it creates (mlock, or MAP_LOCKED at the mapping), and a failure is
+// counted and reported with the plugin health flags, never silent (auditor
+// L3; the driver's lock_region does it today, engine/plugin_client next).
 inline void prefault(void* region, std::size_t bytes) noexcept {
     auto* p = static_cast<volatile unsigned char*>(region);
     for (std::size_t i = 0; i < bytes; i += 4096) p[i] = 0;
@@ -577,7 +674,7 @@ inline bool header_valid(const ChannelHeader& h, std::size_t mapped_size) {
     if (h.magic != kChannelMagic || h.layout_version != kLayoutVersion ||
         h.header_bytes != sizeof(ChannelHeader))
         return false;
-    if (h.channels == 0 || h.max_frames == 0 || h.block_frames == 0 ||
+    if (h.sample_rate == 0 || h.channels == 0 || h.max_frames == 0 || h.block_frames == 0 ||
         h.block_frames > h.max_frames || h.pipeline_depth != kPipelineDepth ||
         h.instance_count == 0 || h.instance_count > kMaxInstances)
         return false;
@@ -631,6 +728,61 @@ inline bool clock_valid(const ClockHeader& c, std::size_t mapped_size) {
            c.wake_mode <= static_cast<uint32_t>(WakeMode::Futex) && c.sample_rate > 0 &&
            c.block_frames > 0 && c.period_ns == period_ns_of(c.block_frames, c.sample_rate) &&
            c.period_ns >= 1000 && c.period_ns <= 1000000000ull;
+}
+
+// The host's cross-check of its two headers, after header_valid and
+// clock_valid: the clock paces it, the channel sizes its latency, so they
+// must describe the same quantum.
+inline bool channel_matches_clock(const ChannelHeader& h, const ClockHeader& c) {
+    return h.sample_rate == c.sample_rate && h.block_frames == c.block_frames;
+}
+
+// ---- `sonora-plugin-host --version` (Versioning above). Not RT.
+
+inline constexpr char kVersionProgram[] = "sonora-plugin-host";
+
+// The host's line, without the newline, into `out`. Returns what
+// snprintf returns.
+inline int format_version_line(char* out, std::size_t size) {
+    return std::snprintf(out, size, "%s layout %u clock %u", kVersionProgram, kLayoutVersion,
+                         kClockLayoutVersion);
+}
+
+// The engine's parser. A trailing newline is allowed; keys it does not know
+// are skipped with their value. False unless the program name comes first
+// and both layout and clock are present, each once, in decimal that fits
+// 32 bits.
+inline bool parse_version_line(const char* line, uint32_t& layout, uint32_t& clock) {
+    const std::size_t n = std::strlen(kVersionProgram);
+    if (!line || std::strncmp(line, kVersionProgram, n) != 0) return false;
+    const char* p = line + n;
+    bool have_layout = false, have_clock = false;
+    while (*p == ' ') {
+        ++p;
+        const char* key = p;
+        while (*p >= 'a' && *p <= 'z') ++p;
+        const std::size_t key_len = std::size_t(p - key);
+        if (key_len == 0 || *p != ' ') return false;
+        ++p;
+        if (*p < '0' || *p > '9') return false;
+        uint64_t v = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + uint64_t(*p - '0');
+            if (v > 0xFFFFFFFFu) return false;
+            ++p;
+        }
+        if (key_len == 6 && std::strncmp(key, "layout", 6) == 0) {
+            if (have_layout) return false;
+            have_layout = true;
+            layout = uint32_t(v);
+        } else if (key_len == 5 && std::strncmp(key, "clock", 5) == 0) {
+            if (have_clock) return false;
+            have_clock = true;
+            clock = uint32_t(v);
+        }
+    }
+    if (*p == '\n') ++p;
+    return *p == '\0' && have_layout && have_clock;
 }
 
 // Audio thread, at the start of each callback. RT-safe.
@@ -698,25 +850,96 @@ inline bool slot_current(const SlotGeneration& g, uint32_t built_against) noexce
     return built_against != 0 && g.value.load(std::memory_order_acquire) == built_against;
 }
 
-// ---- Parameter ring and last-value table, engine side. RT-safe: no
-// allocation, no wait. The audio thread is the only producer.
+// ---- One channel, engine side (engine-private, never in a region).
+//
+// What the engine keeps for each channel it writes, so that it never reads
+// back a word it wrote (Trust, auditor L1): the block count (M1), the ring's
+// write index, its count of values_seq, and whether the private store must
+// be copied in before the next submit (first submit, or a held change, M2).
+// Created by the control thread with the channel, as part of the slot's
+// payload (SlotGeneration), and used by the audio thread only after that.
+struct EngineChannel {
+    uint64_t block = 0;         // the last block submitted; the first is 1
+    uint32_t block_frames = 0;  // every block's frame count (M3)
+    uint32_t param_write = 0;   // the ring's write index
+    uint32_t values_seq = 0;    // the last values_seq stored
+    bool resync = true;         // store_values before the next submit
+};
 
-// A raw push. A full ring returns false. param_read is host-written: the
-// mask keeps the store inside the ring whatever it says, and a value ahead
-// of param_write reads as a full ring.
-inline bool push_param(ChannelHeader& h, const ParamChange& p) noexcept {
-    const uint32_t w = h.param_write.load(std::memory_order_relaxed);
+inline EngineChannel make_engine_channel(uint32_t block_frames) noexcept {
+    EngineChannel e;
+    e.block_frames = block_frames;
+    return e;
+}
+
+// ---- The block, engine side. RT-safe: no allocation, no wait.
+
+// The tag for a change sent in this callback, before submit_block.
+inline uint64_t next_block(const EngineChannel& e) noexcept { return e.block + 1; }
+
+// Step 2's test: the host has completed every block submitted to it, so the
+// engine may write the input planes, the table and the ring. completed_block
+// is host-written and only ever compared with the engine's own count.
+inline bool channel_idle(const ChannelHeader& h, const EngineChannel& e) noexcept {
+    return h.completed_block.load(std::memory_order_acquire) == e.block;
+}
+
+// Step 2's last act. Refuses (writes nothing, returns false) a frame count
+// other than the channel's block_frames (M3); the caller counts the miss.
+inline bool submit_block(ChannelHeader& h, EngineChannel& e, uint32_t frames) noexcept {
+    if (frames != e.block_frames) return false;
+    h.submitted_frames.store(frames, std::memory_order_relaxed);
+    h.submitted_block.store(++e.block, std::memory_order_release);
+    return true;
+}
+
+// A change in a callback that does not submit to this channel (M2): the
+// caller has written it to its private store; nothing goes to the region,
+// and the next submit copies the store in.
+inline void hold_param(EngineChannel& e) noexcept { e.resync = true; }
+
+// Step 1's copy (rt-engineer M4). Copies `frames` samples of one output
+// plane into `dst`, engine-private memory, then checks and repairs only
+// that copy: every NaN or Inf in it becomes 0. Returns how many there were;
+// non-zero makes the block a miss and a fault. Checking the copy, not the
+// plane, is the point: a plugin thread can write the plane after any check
+// of it. Bit tests, so -ffast-math cannot fold the check away.
+inline uint32_t collect_output(float* dst, const float* plane, uint32_t frames) noexcept {
+    std::memcpy(dst, plane, std::size_t(frames) * sizeof(float));
+    uint32_t bad = 0;
+    for (uint32_t i = 0; i < frames; ++i) {
+        uint32_t x;
+        std::memcpy(&x, dst + i, sizeof x);
+        if ((x & 0x7F800000u) == 0x7F800000u) {
+            dst[i] = 0.f;
+            ++bad;
+        }
+    }
+    return bad;
+}
+
+// ---- Parameter ring and last-value table, engine side. RT-safe: no
+// allocation, no wait. The audio thread is the only producer, and only in a
+// callback that submits to the channel (block protocol step 2).
+
+// A raw push. A full ring returns false. The write index is the engine's
+// own (e.param_write); param_read is host-written, and the mask keeps the
+// store inside the ring whatever it says: a value ahead of the write index
+// reads as a full ring.
+inline bool push_param(ChannelHeader& h, EngineChannel& e, const ParamChange& p) noexcept {
+    const uint32_t w = e.param_write;
     const uint32_t r = h.param_read.load(std::memory_order_acquire);
     if (w - r >= kParamRingCapacity) return false;
     h.params[w & (kParamRingCapacity - 1)] = p;
-    h.param_write.store(w + 1, std::memory_order_release);
+    e.param_write = w + 1;
+    h.param_write.store(e.param_write, std::memory_order_release);
     return true;
 }
 
 // The engine keeps its own count of values_seq; it never reads the shared
 // word back.
-inline void bump_values_seq(ChannelHeader& h, uint32_t& engine_seq) noexcept {
-    h.values_seq.store(++engine_seq, std::memory_order_release);
+inline void bump_values_seq(ChannelHeader& h, EngineChannel& e) noexcept {
+    h.values_seq.store(++e.values_seq, std::memory_order_release);
 }
 
 // One change, the way the audio thread sends it (§5.1): the table entry
@@ -724,31 +947,35 @@ inline void bump_values_seq(ChannelHeader& h, uint32_t& engine_seq) noexcept {
 // values_seq so the host re-reads the table next block. Returns false when
 // the ring refused it, for the caller to count; the value is not lost.
 // A change for a parameter with no table slot is pushed anyway, so the host
-// counts it as rejected.
-inline bool send_param(ChannelHeader& h, std::atomic<float>* table, const ParamMap& m,
-                       const ParamChange& p, uint32_t& engine_seq) noexcept {
+// counts it as rejected. Only in a callback that submits to the channel,
+// before submit_block, with p.block == next_block(e); otherwise hold_param.
+inline bool send_param(ChannelHeader& h, EngineChannel& e, std::atomic<float>* table,
+                       const ParamMap& m, const ParamChange& p) noexcept {
     if (p.param == kBypassParam) {
         if (p.instance < kMaxInstances) h.bypass[p.instance].store(p.value, std::memory_order_relaxed);
     } else if (const int64_t slot = param_slot(m, p.instance, p.param); slot >= 0) {
         table[slot].store(p.value, std::memory_order_relaxed);
     }
-    if (push_param(h, p)) return true;
-    bump_values_seq(h, engine_seq);
+    if (push_param(h, e, p)) return true;
+    bump_values_seq(h, e);
     return false;
 }
 
-// The first submit to a new channel: the engine's private store (param_slots
-// values, and one bypass per instance) into the table, element by element
-// with relaxed atomic stores, never memcpy (A2 conditions 1 and 3), then
-// values_seq with release. The caller charges value_copy_bytes against
+// A resync (e.resync: a channel's first submit, or changes held while it
+// did not submit): the engine's private store (param_slots values, and one
+// bypass per instance) into the table, element by element with relaxed
+// atomic stores, never memcpy (A2 conditions 1 and 3), then values_seq with
+// release; clears e.resync. Only in a callback that submits, before
+// submit_block. The caller charges value_copy_bytes against
 // kValueCopyBudgetBytes for the callback first (A2 condition 2).
-inline void store_values(ChannelHeader& h, std::atomic<float>* table, const Layout& l,
-                         const float* store, const float* bypass, uint32_t instance_count,
-                         uint32_t& engine_seq) noexcept {
+inline void store_values(ChannelHeader& h, EngineChannel& e, std::atomic<float>* table,
+                         const Layout& l, const float* store, const float* bypass,
+                         uint32_t instance_count) noexcept {
     for (uint32_t i = 0; i < l.param_slots; ++i) table[i].store(store[i], std::memory_order_relaxed);
     for (uint32_t i = 0; i < instance_count && i < kMaxInstances; ++i)
         h.bypass[i].store(bypass[i], std::memory_order_relaxed);
-    bump_values_seq(h, engine_seq);
+    bump_values_seq(h, e);
+    e.resync = false;
 }
 
 constexpr std::size_t value_copy_bytes(const Layout& l) {

@@ -101,6 +101,30 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        the streak named to the operator, the per-plugin NaN/Inf counters
        shown; a
        2048-sample track lands aligned (ctest).
+       Carried from the PR #45 reviews (ADR-0012 checklist 4):
+       - [ ] rt-eng M5: fade/ramp state per node, keyed by the chain's
+             stable id like the delay lines, not per slot, so make-before-
+             break does not cut hard; the silent block a channel switch
+             causes does not count toward the 8-miss streak; below quantum
+             64 the 64-frame fade spans blocks. One line in ADR-0012 §3/§5.4.
+       - [ ] A2.2: the caller charges `value_copy_bytes` against
+             `kValueCopyBudgetBytes` per callback (first submits wait,
+             held-change resyncs submit without the copy and stay set).
+       - [ ] A2.5: the plan node carries the store's index, not a pointer.
+       - [ ] A3: the reachability test (no `common/platform` symbol but
+             `wake_all` reachable from `Session::process`) and the RTSan
+             test for `wake_all` (Unverified 10) land BEFORE the first
+             `SONORA_RT` caller of `wake_all`.
+       - [ ] `contracts/plugin/host_control.h` (fd-3 socket messages,
+             `kHostWireVersion`, `wire N` appended to `--version`) as its own
+             contract PR with both reviews, before plugin_client's host
+             supervisor (Hello/Ready, `GetState` for make-before-break).
+       - [ ] Use the contract's helpers: `EngineChannel` per slot,
+             `collect_output` (count is a miss and a fault), `hold_param`,
+             `submit_block`; `parse_version_line` at start-up; `mlock` each
+             region and report a failure (auditor L3); refuse plugin
+             hosting when `common/platform`'s SharedRegion could not add
+             `F_SEAL_FUTURE_WRITE` (needs an accessor there; auditor L2).
 5. [ ] LV2 state save/restore, `worker:schedule`, presets; plugin manager;
        editors under WSLg (the host opens parentless X11 toplevels). VST3
        hosting is done (this PR, `brain/research/plugin-host-vst3.md`);
