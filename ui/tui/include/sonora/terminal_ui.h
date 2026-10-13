@@ -82,6 +82,7 @@ private:
     bool quit_ = false;
     std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line
     api::Inbox inbox_;
+    api::StateFrame frame_;   // kept, so a frame allocates only once
 };
 
 struct TerminalOptions {

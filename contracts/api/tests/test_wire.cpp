@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include "sonora/api/state_block.h"
 
@@ -216,6 +217,115 @@ void domains() {
     CHECK(!is_engine_command("no.such.command"));
 }
 
+// The bytes a frame header holds, for building bad frames by hand.
+std::string header(uint32_t total, uint32_t offset) {
+    std::string h;
+    for (int i = 0; i < 4; ++i) h.push_back(static_cast<char>((total >> (8 * i)) & 0xFF));
+    for (int i = 0; i < 4; ++i) h.push_back(static_cast<char>((offset >> (8 * i)) & 0xFF));
+    return h;
+}
+
+// A Snapshot of a large session is far over what one AF_UNIX datagram can
+// carry (EMSGSIZE above the socket's send buffer, about 208 KiB by
+// default), so every message crosses as frames of at most kMaxFrameBytes
+// and is reassembled whole on the other side.
+void frames_carry_large_messages() {
+    std::string error;
+    ModelUpdate u;
+    u.kind = ModelUpdateKind::Snapshot;
+    u.revision = 7;
+    u.undo_floor = 3;
+    u.next_id = 1000;
+    u.bytes.resize(3 * 1024 * 1024 + 17);
+    for (std::size_t i = 0; i < u.bytes.size(); ++i) {
+        u.bytes[i] = static_cast<char>((i * 131) & 0xFF);
+    }
+    std::string message;
+    wire::encode(u, message);
+    std::vector<std::string> frames;
+    CHECK(wire::split_frames(message, frames, error));
+    CHECK(frames.size() > 1);
+    std::size_t carried = 0;
+    for (const std::string& f : frames) {
+        CHECK(f.size() <= wire::kMaxFrameBytes);
+        carried += f.size() - wire::kFrameHeaderBytes;
+    }
+    CHECK(carried == message.size());
+
+    wire::Reassembler r;
+    std::string whole;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const auto got = r.add(frames[i], whole, error);
+        CHECK(got == (i + 1 < frames.size() ? wire::Reassembler::Result::Partial
+                                            : wire::Reassembler::Result::Complete));
+        CHECK(i + 1 == frames.size() || !r.idle());
+    }
+    CHECK(r.idle());
+    CHECK(whole == message);
+    ModelUpdate back;
+    CHECK(wire::decode(whole, back, error));
+    CHECK(back.bytes == u.bytes && back.revision == 7 && back.undo_floor == 3);
+
+    // A small message is one frame.
+    CommandRequest c;
+    c.command = "transport.record";
+    wire::encode(c, message);
+    frames.clear();
+    CHECK(wire::split_frames(message, frames, error));
+    CHECK(frames.size() == 1);
+    CHECK(r.add(frames[0], whole, error) == wire::Reassembler::Result::Complete);
+    CHECK(whole == message);
+
+    // Exactly one frame's worth, and one byte more.
+    const std::size_t room = wire::kMaxFrameBytes - wire::kFrameHeaderBytes;
+    frames.clear();
+    CHECK(wire::split_frames(std::string(room, 'a'), frames, error) && frames.size() == 1);
+    frames.clear();
+    CHECK(wire::split_frames(std::string(room + 1, 'a'), frames, error) && frames.size() == 2);
+
+    // Nothing to send, or more than any receiver holds, is refused.
+    frames.clear();
+    CHECK(!wire::split_frames("", frames, error) && frames.empty());
+    CHECK(!wire::split_frames(std::string(wire::kMaxMessageBytes + 1, 'a'), frames, error));
+    CHECK(frames.empty());
+    CHECK(mentions(error, "cap"));
+}
+
+// Reassembly trusts nothing: a frame out of place, a length past the cap,
+// a message that changes size, a frame too big for a datagram. Each is an
+// error with a reason, leaves nothing half-held, and the next message
+// reassembles cleanly. After M7 the socket is closed on an error.
+void frames_refuse_what_is_out_of_place() {
+    std::string error, whole;
+    const auto refused = [&](std::vector<std::string> frames, const char* why) {
+        wire::Reassembler r;
+        wire::Reassembler::Result got = wire::Reassembler::Result::Partial;
+        for (const std::string& f : frames) {
+            got = r.add(f, whole, error);
+            if (got != wire::Reassembler::Result::Partial) break;
+        }
+        bool ok = got == wire::Reassembler::Result::Error && r.idle() && mentions(error, why);
+        // Recovers: a good message right after.
+        std::vector<std::string> good;
+        std::string e2;
+        ok = wire::split_frames("x", good, e2) && ok;
+        ok = r.add(good[0], whole, e2) == wire::Reassembler::Result::Complete && whole == "x" && ok;
+        return ok;
+    };
+    CHECK(refused({"abc"}, "shorter than"));
+    CHECK(refused({header(0, 0)}, "empty"));
+    CHECK(refused({header(10, 0)}, "carries nothing"));
+    CHECK(refused({header(static_cast<uint32_t>(wire::kMaxMessageBytes + 1), 0) + "a"}, "cap"));
+    CHECK(refused({header(10, 4) + "abcd"}, "offset 4"));
+    CHECK(refused({header(10, 0) + "abcd", header(10, 6) + "ef"}, "offset 6"));
+    CHECK(refused({header(10, 0) + "abcd", header(12, 4) + "ef"}, "12 bytes"));
+    CHECK(refused({header(4, 0) + "abcdef"}, "past"));
+    CHECK(refused({header(10, 0) + "abcd", header(10, 4) + "efghijk"}, "past"));
+    CHECK(refused({header(10, 0) + std::string(wire::kMaxFrameBytes, 'a')}, "frame of"));
+    // A second message starting before the first ended.
+    CHECK(refused({header(10, 0) + "abcd", header(3, 0) + "xyz"}, "offset 0"));
+}
+
 }  // namespace
 
 int main() {
@@ -223,6 +333,8 @@ int main() {
     refusals();
     version_check();
     domains();
+    frames_carry_large_messages();
+    frames_refuse_what_is_out_of_place();
     if (failures) return EXIT_FAILURE;
     std::printf("api wire: ok\n");
     return EXIT_SUCCESS;

@@ -40,6 +40,14 @@ public:
     void wait_ns(uint64_t ns) override { now_ += ns; }
     void kill(EngineControl& e) override { static_cast<FakeEngine&>(e).die(); }
     bool has_signal() const override { return true; }
+    bool set_takes_fail(EngineControl& e, bool fail) override {
+        static_cast<FakeEngine&>(e).script_take_failure(fail);
+        return true;
+    }
+    bool set_inputs_present(EngineControl& e, bool present) override {
+        static_cast<FakeEngine&>(e).script_inputs(present, "the USB interface was unplugged");
+        return true;
+    }
 
 private:
     uint64_t now_ = 5'000'000'000;

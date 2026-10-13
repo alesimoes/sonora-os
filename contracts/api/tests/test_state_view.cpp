@@ -249,6 +249,99 @@ void paced_writer_does_not_starve_a_60hz_reader() {
                 std::chrono::duration<double, std::milli>(worst).count());
 }
 
+// A frame is one publish: the transport and every track read under one
+// seqlock section. Reading them one call each, a tick could draw track 1's
+// arm state from one publish beside a transport from the next. Unpaced, the
+// writer may make every frame stale (it does under TSan); it must never make
+// one mixed. Paced at 1 kHz, the fastest rate measured clean, frames come
+// through.
+void frames_against(bool paced, uint64_t& reads, uint64_t& stale, uint64_t& mixed,
+                    bool& kept) {
+    StateBlockMemory mem(kTracks);
+    StateWriter w;
+    CHECK(w.init(mem.data(), mem.bytes(), kTracks, kTracks, paced ? 1'000'000 : 0));
+    Publish first(kTracks);
+    first.fill(1);
+    w.publish(first.t, first.tracks.data(), first.peaks.data());
+    std::atomic<bool> stop{false};
+    std::thread writer([&]() {
+        Publish p(kTracks);
+        auto next = Clock::now();
+        for (uint32_t k = 2; !stop.load(std::memory_order_relaxed); ++k) {
+            p.fill(k);
+            w.publish(p.t, p.tracks.data(), p.peaks.data());
+            if (paced) {
+                next += std::chrono::microseconds(1000);
+                std::this_thread::sleep_until(next);
+            }
+        }
+    });
+    StateView v;
+    std::string error;
+    CHECK(v.attach(mem.data(), mem.bytes(), error));
+    StateFrame f;
+    v.frame(f);
+    CHECK(f.tracks.size() == kTracks);
+    const TrackSnapshot* storage = f.tracks.data();
+    reads = stale = mixed = 0;
+    kept = true;
+    const auto end = Clock::now() + std::chrono::milliseconds(200);
+    while (Clock::now() < end) {
+        v.frame(f);
+        ++reads;
+        kept = kept && f.tracks.data() == storage;
+        if (f.transport.stale) {
+            ++stale;
+            for (const TrackSnapshot& t : f.tracks) kept = kept && t.stale;
+            continue;
+        }
+        bool one = consistent(f.transport);
+        for (const TrackSnapshot& t : f.tracks) {
+            one = one && !t.stale && consistent(t) &&
+                  t.flags == static_cast<uint32_t>(f.transport.take);
+        }
+        if (!one) ++mixed;
+    }
+    stop = true;
+    writer.join();
+
+    if (!paced) {
+        // A writer stopped mid-section: the frame is stale, every part of it.
+        w.begin_write_for_test();
+        v.frame(f);
+        CHECK(f.transport.stale);
+        for (const TrackSnapshot& t : f.tracks) CHECK(t.stale);
+        w.finish_write_for_test();
+        v.frame(f);
+        CHECK(!f.transport.stale);
+    }
+}
+
+void frame_is_one_publish() {
+    uint64_t reads = 0, stale = 0, mixed = 0;
+    bool kept = false;
+    frames_against(false, reads, stale, mixed, kept);
+    CHECK(mixed == 0);
+    // Sized once: a tick that keeps its frame does not allocate.
+    CHECK(kept);
+    std::printf("  frames, unpaced writer: %llu read, %llu stale, %llu mixed\n",
+                static_cast<unsigned long long>(reads), static_cast<unsigned long long>(stale),
+                static_cast<unsigned long long>(mixed));
+    frames_against(true, reads, stale, mixed, kept);
+    CHECK(mixed == 0);
+    CHECK(kept);
+    CHECK(reads > stale);
+    std::printf("  frames, 1 kHz writer: %llu read, %llu stale, %llu mixed\n",
+                static_cast<unsigned long long>(reads), static_cast<unsigned long long>(stale),
+                static_cast<unsigned long long>(mixed));
+
+    // A detached view: stale, and no tracks.
+    StateFrame f;
+    StateView none;
+    none.frame(f);
+    CHECK(f.transport.stale && f.tracks.empty());
+}
+
 void publish_peaks(StateWriter& w, uint32_t n, float peak) {
     Publish p(n);
     p.fill(1);
@@ -339,6 +432,7 @@ int main() {
     blocked_writer_reads_stale();
     never_torn_unpaced();
     paced_writer_does_not_starve_a_60hz_reader();
+    frame_is_one_publish();
     peak_cursors_are_per_reader();
     heartbeat();
     if (failures) return EXIT_FAILURE;

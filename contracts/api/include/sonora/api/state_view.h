@@ -53,6 +53,12 @@ struct TrackSnapshot {
     bool input_connected() const { return (flags & kTrackInputConnected) != 0; }
 };
 
+// The transport and every track from one publish.
+struct StateFrame {
+    TransportSnapshot transport;
+    std::vector<TrackSnapshot> tracks;   // track_count() entries
+};
+
 class StateView {
 public:
     // Retries before a read is called stale: a few yields, then short
@@ -76,6 +82,13 @@ public:
 
     TransportSnapshot transport() const;
     TrackSnapshot track(uint32_t index) const;
+    // The transport and every track in one seqlock read, so what a tick
+    // draws is one publish and never a transport from one beside track
+    // flags from the next. An interface's tick uses this. `out.tracks` is
+    // resized to track_count(), so a frame kept from tick to tick
+    // allocates only when the count changes. A stale read marks the
+    // transport and every track stale.
+    void frame(StateFrame& out) const;
 
     // Linear peak: the maximum published since this reader's previous call
     // for this track, or since attach. 0 for a track past track_count. A

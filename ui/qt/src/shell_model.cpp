@@ -49,6 +49,7 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     peaks_.assign(engine_.info().track_count, 0.0f);
     peak_read_.assign(engine_.info().track_count, false);
     replies_.reserve(16);
+    events_.reserve(16);
     xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
 }
 
@@ -190,6 +191,7 @@ void ShellModel::tick() {
         const std::string why = r.message.empty() ? dispatch_result_text(r.result) : r.message;
         say(QString::fromStdString(r.command + ": " + why));
     }
+    takeEvents();
 
     const bool alive = engine_.engine_alive(now_ns_());
     if (alive != alive_) {
@@ -211,11 +213,12 @@ void ShellModel::tick() {
         }
         m->feed(peaks_[ch], dt);
     }
-    if (transport_sink_) {
-        transport_sink_(alive ? engine_.transport() : TransportSnapshot{}, alive);
-    }
-
-    if (++tick_count_ % kStateEvery == 0) refreshState();
+    // One frame of the state block per tick at most, shared by the sink
+    // and the refresh, so both draw the same publish.
+    const bool refresh = ++tick_count_ % kStateEvery == 0;
+    if (alive && (transport_sink_ || refresh)) engine_.frame(frame_);
+    if (transport_sink_) transport_sink_(alive ? frame_.transport : TransportSnapshot{}, alive);
+    if (refresh) refreshState(false);
     if (!status_.isEmpty() && t0 > status_until_ns_) {
         status_.clear();
         emit statusChanged();
@@ -226,7 +229,41 @@ void ShellModel::tick() {
     }
 }
 
-void ShellModel::refreshState() {
+void ShellModel::takeEvents() {
+    events_.clear();
+    engine_.take_events(events_);
+    if (events_.empty()) return;
+    for (const EngineEvent& e : events_) {
+        const QString text = QString::fromStdString(e.text);
+        switch (e.kind) {
+            case EngineEventKind::Notice:
+                addNotice(text);
+                break;
+            case EngineEventKind::InputsMissing:
+                inputs_missing_ = text;
+                break;
+            case EngineEventKind::TakeFailed:
+                take_failed_ = text;
+                break;
+            case EngineEventKind::Fatal:
+                fatal_ = text.isEmpty() ? QStringLiteral("the audio backend failed") : text;
+                break;
+        }
+    }
+    // Most urgent first: a backend that stopped ends the session, a failed
+    // take is losing audio now, missing inputs record silence.
+    QStringList parts;
+    if (!fatal_.isEmpty()) parts << fatal_;
+    if (!take_failed_.isEmpty()) parts << take_failed_;
+    if (!inputs_missing_.isEmpty()) parts << QStringLiteral("no inputs: ") + inputs_missing_;
+    const QString alert = parts.join(QStringLiteral(" · "));
+    if (alert != alert_text_) {
+        alert_text_ = alert;
+        emit alertChanged();
+    }
+}
+
+void ShellModel::refreshState(bool read_frame) {
     bool changed = false;
     const auto set = [&changed](auto& field, const auto& value) {
         if (field != value) {
@@ -247,7 +284,8 @@ void ShellModel::refreshState() {
         return;
     }
 
-    const TransportSnapshot t = engine_.transport();
+    if (read_frame) engine_.frame(frame_);
+    const TransportSnapshot& t = frame_.transport;
     set(stale_, t.stale);
     if (!t.stale) {
         const QString mode = t.state == TransportMode::Recording ? QStringLiteral("REC")
@@ -261,13 +299,14 @@ void ShellModel::refreshState() {
         QStringList health;
         if (t.health_flags & kHealthServerGone) health << QStringLiteral("audio server gone");
         if (t.health_flags & kHealthNoInputs) health << QStringLiteral("no inputs connected");
+        if (t.health_flags & kHealthTakeFailed) health << QStringLiteral("take failed");
         set(health_text_, health.join(QStringLiteral(" · ")));
     }
 
     QList<bool> armed;
     int overruns = 0;
     for (uint32_t i = 0; i < engine_.info().track_count; ++i) {
-        const TrackSnapshot s = engine_.track(i);
+        const TrackSnapshot s = i < frame_.tracks.size() ? frame_.tracks[i] : TrackSnapshot{};
         armed << s.armed;
         overruns += static_cast<int>(s.overruns);
     }

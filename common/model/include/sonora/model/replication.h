@@ -13,6 +13,7 @@
 // Never on the audio thread.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -37,7 +38,7 @@ struct ReplicationUpdate {
     std::uint64_t revision = 0;     // the document's revision after this update
     std::uint64_t undo_floor = 0;   // History::floor() after it
     std::uint64_t next_id = 0;      // Snapshot only
-    std::string bytes;              // Op: op_codec bytes; Snapshot: a session file
+    std::string bytes;              // Op: encode_operation; Snapshot: encode_window
 };
 
 class Document {
@@ -50,8 +51,15 @@ public:
     bool apply(const Operation& op, ReplicationUpdate& out, std::string& error);
     bool undo(ReplicationUpdate& out, std::string& why);
     bool redo(ReplicationUpdate& out, std::string& why);
-    // The whole document, for a replica that is new or has lost track.
-    bool snapshot(ReplicationUpdate& out, std::string& error) const;
+    // The whole document with its undo window, for a replica that is new
+    // or has lost track, so that it offers the same undo and redo as this
+    // document from the first update on. While the encoding is larger than
+    // `max_bytes` the oldest undo step is evicted here, as the byte budget
+    // would; the other replicas follow the raised floor with the next
+    // update, and an undo one of them asks for below it is refused, not
+    // desynced. Fails only when the current state alone is too large.
+    bool snapshot(ReplicationUpdate& out, std::string& error,
+                  std::size_t max_bytes = SIZE_MAX);
 
     const Snapshot& current() const { return history_.current(); }
     const History& history() const { return history_; }

@@ -38,14 +38,32 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         o.message = r.message;
         replies.push_back(std::move(o));
     }
+    for (const api::EngineEvent& e : inbox_.events) {
+        EngineEvent o;
+        switch (e.kind) {
+            case api::EventKind::Notice: o.kind = EngineEventKind::Notice; break;
+            case api::EventKind::InputsMissing: o.kind = EngineEventKind::InputsMissing; break;
+            case api::EventKind::TakeFailed: o.kind = EngineEventKind::TakeFailed; break;
+            case api::EventKind::Fatal: o.kind = EngineEventKind::Fatal; break;
+        }
+        o.take = e.frame;
+        o.text = e.text;
+        events_.push_back(std::move(o));
+    }
     // Model updates are for the Edit window's replica, which still runs on
     // its local document (timeline_document.h); it subscribes here when it
     // moves onto the engine's.
 }
 
-TransportSnapshot ControlAdapter::transport() const {
-    const api::TransportSnapshot s = engine_.state().transport();
-    TransportSnapshot t;
+void ControlAdapter::take_events(std::vector<EngineEvent>& out) {
+    for (EngineEvent& e : events_) out.push_back(std::move(e));
+    events_.clear();
+}
+
+void ControlAdapter::frame(EngineFrame& out) const {
+    engine_.state().frame(state_);
+    const api::TransportSnapshot& s = state_.transport;
+    TransportSnapshot& t = out.transport;
     t.state = s.state == api::TransportState::Recording ? TransportMode::Recording
               : s.state == api::TransportState::Rolling ? TransportMode::Rolling
                                                         : TransportMode::Stopped;
@@ -53,18 +71,16 @@ TransportSnapshot ControlAdapter::transport() const {
     t.take = s.take;
     t.xruns = s.xruns;
     t.health_flags = ((s.health_flags & api::kHealthServerGone) ? kHealthServerGone : 0u) |
-                     ((s.health_flags & api::kHealthNoInputs) ? kHealthNoInputs : 0u);
+                     ((s.health_flags & api::kHealthNoInputs) ? kHealthNoInputs : 0u) |
+                     ((s.health_flags & api::kHealthTakeFailed) ? kHealthTakeFailed : 0u);
     t.stale = s.stale;
-    return t;
-}
-
-TrackSnapshot ControlAdapter::track(uint32_t index) const {
-    const api::TrackSnapshot s = engine_.state().track(index);
-    TrackSnapshot t;
-    t.armed = s.armed();
-    t.muted = s.muted();
-    t.overruns = s.overruns;
-    return t;
+    out.tracks.resize(state_.tracks.size());
+    for (std::size_t i = 0; i < state_.tracks.size(); ++i) {
+        const api::TrackSnapshot& a = state_.tracks[i];
+        out.tracks[i].armed = a.armed();
+        out.tracks[i].muted = a.muted();
+        out.tracks[i].overruns = a.overruns;
+    }
 }
 
 float ControlAdapter::take_peak(uint32_t index) { return engine_.state().take_peak(index); }

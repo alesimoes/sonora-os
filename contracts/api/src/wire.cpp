@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/api/wire.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "sonora/api/state_block.h"
@@ -322,6 +323,95 @@ std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_ve
               "; install an interface and an engine from the same build";
     }
     return why;
+}
+
+namespace {
+
+void put_u32(std::string& out, uint32_t v) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+}
+
+uint32_t get_u32(std::string_view in, std::size_t at) {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) {
+        v |= static_cast<uint32_t>(static_cast<uint8_t>(in[at + i])) << (8 * i);
+    }
+    return v;
+}
+
+}  // namespace
+
+bool split_frames(std::string_view message, std::vector<std::string>& frames,
+                  std::string& error) {
+    if (message.empty()) {
+        error = "an empty message has nothing to send";
+        return false;
+    }
+    if (message.size() > kMaxMessageBytes) {
+        error = "a message of " + std::to_string(message.size()) + " bytes, over the cap of " +
+                std::to_string(kMaxMessageBytes);
+        return false;
+    }
+    constexpr std::size_t kRoom = kMaxFrameBytes - kFrameHeaderBytes;
+    for (std::size_t at = 0; at < message.size(); at += kRoom) {
+        const std::size_t n = std::min(kRoom, message.size() - at);
+        std::string f;
+        f.reserve(kFrameHeaderBytes + n);
+        put_u32(f, static_cast<uint32_t>(message.size()));
+        put_u32(f, static_cast<uint32_t>(at));
+        f.append(message.data() + at, n);
+        frames.push_back(std::move(f));
+    }
+    return true;
+}
+
+Reassembler::Result Reassembler::fail(std::string& error, std::string why) {
+    error = std::move(why);
+    partial_.clear();
+    partial_.shrink_to_fit();
+    expected_ = 0;
+    return Result::Error;
+}
+
+Reassembler::Result Reassembler::add(std::string_view frame, std::string& message,
+                                     std::string& error) {
+    if (frame.size() > kMaxFrameBytes) {
+        return fail(error, "a frame of " + std::to_string(frame.size()) + " bytes, over the " +
+                               std::to_string(kMaxFrameBytes) + " a frame may be");
+    }
+    if (frame.size() < kFrameHeaderBytes) {
+        return fail(error, "a frame shorter than its " + std::to_string(kFrameHeaderBytes) +
+                               "-byte header");
+    }
+    const std::size_t total = get_u32(frame, 0);
+    const std::size_t offset = get_u32(frame, 4);
+    const std::size_t n = frame.size() - kFrameHeaderBytes;
+    if (total == 0) return fail(error, "a frame of an empty message");
+    if (total > kMaxMessageBytes) {
+        return fail(error, "a message of " + std::to_string(total) + " bytes, over the cap of " +
+                               std::to_string(kMaxMessageBytes));
+    }
+    if (n == 0) return fail(error, "a frame that carries nothing");
+    if (offset != partial_.size()) {
+        return fail(error, "a frame at offset " + std::to_string(offset) + " where offset " +
+                               std::to_string(partial_.size()) + " was expected");
+    }
+    if (expected_ != 0 && total != expected_) {
+        return fail(error, "a frame of a " + std::to_string(total) +
+                               " bytes message in the middle of a " +
+                               std::to_string(expected_) + " bytes one");
+    }
+    if (offset + n > total) {
+        return fail(error, "a frame that runs past the end of its " + std::to_string(total) +
+                               "-byte message");
+    }
+    expected_ = total;
+    partial_.append(frame.data() + kFrameHeaderBytes, n);
+    if (partial_.size() < expected_) return Result::Partial;
+    message.swap(partial_);
+    partial_.clear();
+    expected_ = 0;
+    return Result::Complete;
 }
 
 }  // namespace sonora::api::wire

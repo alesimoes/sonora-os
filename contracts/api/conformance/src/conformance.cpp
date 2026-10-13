@@ -96,6 +96,27 @@ struct Session {
         return true;
     }
 
+    // Waits until a publish has begun and ended since this call, so what
+    // the state block says reflects every reply already received. A read
+    // straight after a reply can still show the publish before it, and a
+    // check that something did not change would pass on stale state.
+    bool next_publish(Rig& rig) {
+        const uint64_t hb = engine->state().transport().heartbeat;
+        return until(rig, [&]() { return engine->state().transport().heartbeat >= hb + 2; });
+    }
+
+    const EngineEvent* last_event(EventKind kind) const {
+        for (auto it = inbox.events.rbegin(); it != inbox.events.rend(); ++it) {
+            if (it->kind == kind) return &*it;
+        }
+        return nullptr;
+    }
+    std::size_t count_events(EventKind kind) const {
+        std::size_t n = 0;
+        for (const auto& e : inbox.events) n += e.kind == kind ? 1 : 0;
+        return n;
+    }
+
     uint64_t command(const std::string& id, int32_t target = -1) {
         CommandRequest r;
         r.command = id;
@@ -297,14 +318,18 @@ int check_take(Rig& rig) {
             EXPECT(s.await(rig_, s.command("transport.record"), r) &&
                        r.result == DispatchResult::Ok,
                    "a second record press failed");
-            EXPECT(v.transport().state == TransportState::Recording, "the take stopped");
+            EXPECT(s.next_publish(rig_), "nothing published after the second press");
+            EXPECT(v.transport().state == TransportState::Recording &&
+                       v.transport().take == take,
+                   "the second press stopped the take or opened another");
 
             for (const char* id : {"track.toggle_arm", "track.arm_all", "track.disarm_all"}) {
                 EXPECT(s.await(rig_, s.command(id, 0), r), "no reply");
                 EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "during a take"),
                        std::string(id) + " was not refused during a take");
             }
-            EXPECT(s.until(rig_, [&]() { return v.track(0).armed(); }), "track 1 was disarmed");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusals");
+            EXPECT(v.track(0).armed(), "a refused disarm disarmed track 1");
 
             EXPECT(s.await(rig_, s.command("transport.stop"), r), "no reply");
             EXPECT(r.result == DispatchResult::Ok, "stop failed: " + r.message);
@@ -345,6 +370,7 @@ int check_parameters(Rig& rig) {
             p.value = std::numeric_limits<float>::quiet_NaN();
             EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Failed,
                    "a NaN gain was accepted");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusals");
             EXPECT(v.track(0).gain == 0.5f, "a refused gain changed the track");
             return ok();
         }
@@ -426,10 +452,146 @@ int check_model(Rig& rig) {
             EXPECT(s.inbox.model.back().kind == ModelUpdateKind::Snapshot, "not a Snapshot");
             EXPECT(s.replica.synced() && s.replica.current().revision == rev0 + 3,
                    "the resync moved the revision");
+
+            // The snapshot carries the undo window: undo and redo after it
+            // go on applying with no further snapshot.
+            EXPECT(s.replica.can_undo(), "the resynced replica has no undo");
+            const ModelAction moves[] = {ModelAction::Undo, ModelAction::Redo, ModelAction::Undo};
+            uint64_t rev = rev0 + 3;
+            for (const ModelAction a : moves) {
+                m.action = a;
+                EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                       "undo or redo after the resync failed: " + r.message);
+                ++rev;
+                EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == rev; }),
+                       "the replica lost track after the resync: " + s.replica_error);
+            }
+            EXPECT(s.replica_error.empty(), "the replica refused an update: " + s.replica_error);
+            EXPECT(s.replica.synced() && s.replica.current().edit->markers->markers.empty(),
+                   "undo after the resync did not remove the marker");
+            EXPECT(s.inbox.model.size() == updates + 4, "a further snapshot was needed");
             return ok();
         }
     };
     return C(rig, "model operations, undo, redo, resync").go();
+}
+
+// A take that stops writing is said at once, with the take and the reason,
+// and on the state block; stopping it reports the take as failed; the next
+// take that records cleanly clears both.
+int check_take_failed(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            if (!rig_.set_takes_fail(*s.engine, true)) {
+                return skip("this rig cannot make a take fail");
+            }
+            StateView& v = s.engine->state();
+            CommandReply r;
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed");
+            EXPECT(s.next_publish(rig_), "nothing published");
+            const int32_t take = v.transport().take;
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.last_event(EventKind::TakeFailed) != nullptr; }),
+                   "no TakeFailed event");
+            const EngineEvent e = *s.last_event(EventKind::TakeFailed);
+            EXPECT(e.frame == static_cast<uint64_t>(take), "TakeFailed names another take");
+            EXPECT(mentions(e.text, ("take " + std::to_string(take)).c_str()) &&
+                       mentions(e.text, "stop the take"),
+                   "TakeFailed does not say which take and what to do");
+            EXPECT(s.until(rig_, [&]() {
+                       return (v.transport().health_flags & kHealthTakeFailed) != 0;
+                   }),
+                   "the state block never showed the take failed");
+            // Said once per take, not on every check.
+            EXPECT(s.next_publish(rig_) && s.next_publish(rig_), "nothing published");
+            EXPECT(s.count_events(EventKind::TakeFailed) == 1, "TakeFailed said more than once");
+
+            EXPECT(s.await(rig_, s.command("transport.stop"), r), "no reply to stop");
+            EXPECT(r.result == DispatchResult::Failed && !r.message.empty(),
+                   "stopping a failed take did not report it");
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Stopped;
+                   }),
+                   "a failed take did not stop");
+            // The flag stays until a take records cleanly.
+            EXPECT(s.next_publish(rig_), "nothing published");
+            EXPECT((v.transport().health_flags & kHealthTakeFailed) != 0,
+                   "the failure was forgotten before a clean take");
+
+            EXPECT(rig_.set_takes_fail(*s.engine, false), "the rig cannot undo the failure");
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "the next take did not start: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return s.count_events(EventKind::TakeFailed) == 2 &&
+                              (v.transport().health_flags & kHealthTakeFailed) == 0;
+                   }),
+                   "a clean take did not clear the failure");
+            const EngineEvent cleared = *s.last_event(EventKind::TakeFailed);
+            EXPECT(cleared.text.empty(), "the clearing event carries text");
+            EXPECT(cleared.frame == static_cast<uint64_t>(take + 1), "it names another take");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "the clean take did not stop cleanly: " + r.message);
+            return ok();
+        }
+    };
+    return C(rig, "a failed take").go();
+}
+
+// Inputs that go away are said with a reason and shown on the state block,
+// per track and as a health flag; when they come back, both clear.
+int check_inputs_missing(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const uint32_t n = s.engine->hello().track_count;
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.inputs_connected == n && (t.health_flags & kHealthNoInputs) == 0;
+                   }),
+                   "the inputs are not connected at the start");
+            if (!rig_.set_inputs_present(*s.engine, false)) {
+                return skip("this rig cannot take the inputs away");
+            }
+            EXPECT(s.until(rig_, [&]() {
+                       const EngineEvent* e = s.last_event(EventKind::InputsMissing);
+                       return e != nullptr && !e->text.empty();
+                   }),
+                   "no InputsMissing event with a reason");
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.inputs_connected == 0 && (t.health_flags & kHealthNoInputs) != 0;
+                   }),
+                   "the state block never showed the inputs gone");
+            for (uint32_t i = 0; i < n; ++i) {
+                EXPECT(!v.track(i).input_connected(), "a track still shows its input");
+            }
+            EXPECT(rig_.set_inputs_present(*s.engine, true), "the rig cannot bring them back");
+            EXPECT(s.until(rig_, [&]() {
+                       const EngineEvent* e = s.last_event(EventKind::InputsMissing);
+                       const TransportSnapshot t = v.transport();
+                       return e != nullptr && e->text.empty() && t.inputs_connected == n &&
+                              (t.health_flags & kHealthNoInputs) == 0;
+                   }),
+                   "the inputs came back and the interface was not told");
+            for (uint32_t i = 0; i < n; ++i) {
+                EXPECT(v.track(i).input_connected(), "a track does not show its input back");
+            }
+            return ok();
+        }
+    };
+    return C(rig, "inputs missing").go();
 }
 
 int check_peaks(Rig& rig) {
@@ -505,6 +667,8 @@ int run(Rig& rig) {
     failures += check_take(rig);
     failures += check_parameters(rig);
     failures += check_model(rig);
+    failures += check_take_failed(rig);
+    failures += check_inputs_missing(rig);
     failures += check_peaks(rig);
     failures += check_alive(rig);
     return failures;

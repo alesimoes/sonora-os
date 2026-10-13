@@ -32,6 +32,7 @@
 #include "sonora/api/engine_control.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
+#include "sonora/api/wire.h"
 
 namespace sonora::model {
 class Document;
@@ -82,6 +83,15 @@ public:
     void script_peak(uint32_t track, float peak);
     // One publish now, without waiting for poll().
     void publish();
+    // While set, a take fails to write as a full disk would: the engine
+    // says TakeFailed and raises the health flag at its next poll, and
+    // stop reports the take as Failed. A later take that records cleanly
+    // clears both, as the real engine's control thread does.
+    void script_take_failure(bool fail) { fail_takes_ = fail; }
+    // The capture inputs go away (`why` says how) or come back: an
+    // InputsMissing event, the health flag and the per-track flags, as the
+    // engine's housekeeping reports them.
+    void script_inputs(bool connected, const std::string& why = "");
 
     // The linear level channel `ch` shows at `t_s` seconds: a level of its
     // own per channel, so a meter showing a neighbour's signal is visible.
@@ -97,6 +107,10 @@ private:
     bool command(const CommandRequest& r, std::string& why);
     void reply(uint64_t seq, DispatchResult result, std::string message);
     void broadcast(const ModelUpdate& u);
+    // Frames, both ways, as the socket will carry them (api/wire.h).
+    static void queue(std::deque<std::string>& q, const std::string& message);
+    static std::string take_file(int32_t take);
+    void check_take();
 
     Config cfg_;
     Hello hello_;
@@ -105,8 +119,10 @@ private:
     StateView view_;
     std::unique_ptr<model::Document> document_;
 
-    std::deque<std::string> inbound_;
-    std::deque<std::string> outbound_;
+    std::deque<std::string> inbound_;    // frames
+    std::deque<std::string> outbound_;   // frames
+    wire::Reassembler engine_side_;
+    wire::Reassembler client_side_;
     uint64_t seq_ = 0;
     bool connected_ = false;
     bool dead_ = false;
@@ -120,6 +136,10 @@ private:
     std::vector<float> scripted_;
     std::vector<uint32_t> clips_;
     uint32_t health_ = 0;
+    bool fail_takes_ = false;
+    int32_t failed_take_ = 0;     // the take TakeFailed was said for
+    bool take_failed_shown_ = false;
+    bool inputs_connected_ = true;
     uint32_t xruns_ = 0;
     uint32_t clock_steps_ = 0;
     uint64_t start_ns_ = 0;

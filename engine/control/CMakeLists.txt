@@ -25,5 +25,5 @@ add_test(NAME session_commands COMMAND test_session_commands)
 # list checked against the handlers this build installs.
 add_executable(test_control tests/test_control.cpp)
 target_link_libraries(test_control PRIVATE
-  sonora_control sonora_backend_fake sonora_api_conformance sonora_api_fake)
+  sonora_control sonora_backend_fake sonora_api_conformance sonora_api_fake sonora_model)
 add_test(NAME control COMMAND test_control)

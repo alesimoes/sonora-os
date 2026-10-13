@@ -29,6 +29,7 @@
 
 #include "sonora/api/messages.h"
 #include "sonora/api/state_block.h"
+#include "sonora/api/wire.h"
 #include "sonora/command.h"
 #include "sonora/session_commands.h"
 #include "sonora/state_publisher.h"
@@ -81,9 +82,9 @@ public:
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
 
-    // A request from a client, as encoded bytes. Any thread; never waits
-    // for the request to be handled.
-    void deliver(std::string bytes);
+    // One frame of a client's request (api/wire.h). Any thread; never
+    // waits for the request to be handled. Outbound gets frames too.
+    void deliver(std::string frame);
 
     const void* state_block() const { return block_.data(); }
     std::size_t state_block_bytes() const { return block_.bytes(); }
@@ -126,7 +127,8 @@ private:
 
     std::mutex mutex_;
     std::condition_variable wake_;
-    std::deque<std::string> inbound_;
+    std::deque<std::string> inbound_;   // frames
+    api::wire::Reassembler reassembler_;   // the control thread's
     bool stopping_ = false;
     std::atomic<bool> running_{false};
     std::thread thread_;

@@ -272,6 +272,44 @@ int main(int argc, char** argv) {
     CHECK(session.transportOverlay().rolling && session.transportOverlay().recording);
     CHECK(session.transportOverlay().playhead == 48000 * 61 + 24000);
 
+    CHECK(engine.frames > 0);   // one frame per refresh, not a read per track
+
+    // --- what the engine says is wrong is on screen, in red ---
+    {
+        EngineEvent failed;
+        failed.kind = EngineEventKind::TakeFailed;
+        failed.take = 4;
+        failed.text = "take 4 failed: Audio 3_04.wav: no space left on device";
+        engine.events.push_back(failed);
+        EngineEvent fatal;
+        fatal.kind = EngineEventKind::Fatal;
+        fatal.text = "the audio server went away";
+        engine.events.push_back(fatal);
+        engine.snapshot.health_flags = kHealthTakeFailed;
+    }
+    for (int i = 0; i < 4; ++i) model.tick();
+    CHECK(engine.events.empty());
+    CHECK(model.alertText().startsWith(QStringLiteral("the audio server went away")));
+    CHECK(model.alertText().contains(QStringLiteral("no space left on device")));
+    CHECK(model.healthText().contains(QStringLiteral("take failed")));
+    QQuickItem* banner = view.rootObject()->findChild<QQuickItem*>(QStringLiteral("banner"));
+    QQuickItem* banner_text =
+        view.rootObject()->findChild<QQuickItem*>(QStringLiteral("bannerText"));
+    CHECK(banner != nullptr && banner->isVisible());
+    CHECK(banner_text != nullptr &&
+          banner_text->property("text").toString() == model.alertText());
+    // A take that records cleanly clears its part; the fatal reason stays.
+    {
+        EngineEvent cleared;
+        cleared.kind = EngineEventKind::TakeFailed;
+        cleared.take = 5;
+        engine.events.push_back(cleared);
+        engine.snapshot.health_flags = 0;
+    }
+    for (int i = 0; i < 4; ++i) model.tick();
+    CHECK(model.alertText() == QStringLiteral("the audio server went away"));
+    CHECK(!model.healthText().contains(QStringLiteral("take failed")));
+
     // --- a dead engine: no data, not frozen values ---
     engine.alive = false;
     const int reads = engine.peak_reads;

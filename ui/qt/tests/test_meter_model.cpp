@@ -242,7 +242,35 @@ int main() {
         CHECK(replies.size() == 1 && replies[0].seq == seq &&
               replies[0].command == "track.toggle_arm" &&
               replies[0].result == DispatchResult::Ok);
-        CHECK(e.track(0).armed);
+        EngineFrame f;
+        e.frame(f);
+        CHECK(f.tracks.size() == 18 && f.tracks[0].armed && !f.tracks[1].armed);
+
+        // A failed take reaches the shell with its reason and its flag, and
+        // events wait until they are taken, however many polls pass.
+        fake.script_take_failure(true);
+        e.send("transport.record", CommandContext{});
+        e.poll(replies);
+        e.poll(replies);
+        api::EngineEvent fatal;
+        fatal.kind = api::EventKind::Fatal;
+        fatal.text = "the audio server went away";
+        fake.post_event(fatal);
+        e.poll(replies);
+        std::vector<EngineEvent> events;
+        e.take_events(events);
+        CHECK(events.size() == 2);
+        CHECK(events.size() == 2 && events[0].kind == EngineEventKind::TakeFailed &&
+              events[0].text.find("no space left") != std::string::npos &&
+              events[0].take == 1);
+        CHECK(events.size() == 2 && events[1].kind == EngineEventKind::Fatal &&
+              events[1].text == "the audio server went away");
+        events.clear();
+        e.take_events(events);
+        CHECK(events.empty());
+        e.frame(f);
+        CHECK((f.transport.health_flags & kHealthTakeFailed) != 0);
+        CHECK(f.transport.state == TransportMode::Recording);
         // The heartbeat is judged by when this reader saw it move: the last
         // beat is seen once, then the silence after it.
         fake.die();

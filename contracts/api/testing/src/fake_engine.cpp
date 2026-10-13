@@ -123,8 +123,52 @@ bool FakeEngine::connect(std::string& error) {
     // A replica starts from the whole document, as after M7.
     model::ReplicationUpdate snap;
     std::string why;
-    if (document_->snapshot(snap, why)) broadcast(to_wire(snap));
+    if (document_->snapshot(snap, why, wire::kMaxModelBytes)) broadcast(to_wire(snap));
     return true;
+}
+
+void FakeEngine::queue(std::deque<std::string>& q, const std::string& message) {
+    std::vector<std::string> frames;
+    std::string error;
+    if (!wire::split_frames(message, frames, error)) return;
+    for (std::string& f : frames) q.push_back(std::move(f));
+}
+
+void FakeEngine::script_inputs(bool connected, const std::string& why) {
+    if (connected == inputs_connected_) return;
+    inputs_connected_ = connected;
+    health_ = connected ? (health_ & ~kHealthNoInputs) : (health_ | kHealthNoInputs);
+    EngineEvent e;
+    e.kind = EventKind::InputsMissing;
+    e.text = connected ? std::string() : (why.empty() ? "no capture input is connected" : why);
+    post_event(e);
+}
+
+std::string FakeEngine::take_file(int32_t take) {
+    return "Audio 1_" + std::string(take < 10 ? "0" : "") + std::to_string(take) + ".wav";
+}
+
+// The engine control thread's check, in the same words.
+void FakeEngine::check_take() {
+    if (mode_ != TransportState::Recording) return;
+    if (fail_takes_ && failed_take_ != take_) {
+        failed_take_ = take_;
+        take_failed_shown_ = true;
+        health_ |= kHealthTakeFailed;
+        EngineEvent e;
+        e.kind = EventKind::TakeFailed;
+        e.frame = static_cast<uint64_t>(take_);
+        e.text = "take " + std::to_string(take_) + " failed: " + take_file(take_) +
+                 ": no space left on device. Nothing more is being written; stop the take";
+        post_event(e);
+    } else if (!fail_takes_ && take_ != failed_take_ && take_failed_shown_) {
+        take_failed_shown_ = false;
+        health_ &= ~kHealthTakeFailed;
+        EngineEvent e;
+        e.kind = EventKind::TakeFailed;
+        e.frame = static_cast<uint64_t>(take_);
+        post_event(e);
+    }
 }
 
 uint64_t FakeEngine::send(const CommandRequest& request) {
@@ -132,7 +176,7 @@ uint64_t FakeEngine::send(const CommandRequest& request) {
     r.seq = ++seq_;
     std::string bytes;
     wire::encode(r, bytes);
-    inbound_.push_back(std::move(bytes));
+    queue(inbound_, bytes);
     return r.seq;
 }
 
@@ -141,7 +185,7 @@ uint64_t FakeEngine::send(const ParameterChange& change) {
     c.seq = ++seq_;
     std::string bytes;
     wire::encode(c, bytes);
-    inbound_.push_back(std::move(bytes));
+    queue(inbound_, bytes);
     return c.seq;
 }
 
@@ -150,14 +194,14 @@ uint64_t FakeEngine::submit(const ModelRequest& request) {
     m.seq = ++seq_;
     std::string bytes;
     wire::encode(m, bytes);
-    inbound_.push_back(std::move(bytes));
+    queue(inbound_, bytes);
     return m.seq;
 }
 
 void FakeEngine::post_event(const EngineEvent& event) {
     std::string bytes;
     wire::encode(event, bytes);
-    outbound_.push_back(std::move(bytes));
+    queue(outbound_, bytes);
 }
 
 void FakeEngine::script_peak(uint32_t track, float peak) {
@@ -171,13 +215,13 @@ void FakeEngine::reply(uint64_t seq, DispatchResult result, std::string message)
     r.message = std::move(message);
     std::string bytes;
     wire::encode(r, bytes);
-    outbound_.push_back(std::move(bytes));
+    queue(outbound_, bytes);
 }
 
 void FakeEngine::broadcast(const ModelUpdate& u) {
     std::string bytes;
     wire::encode(u, bytes);
-    outbound_.push_back(std::move(bytes));
+    queue(outbound_, bytes);
 }
 
 void FakeEngine::poll(Inbox& inbox) {
@@ -186,19 +230,25 @@ void FakeEngine::poll(Inbox& inbox) {
         inbound_.clear();
         return;
     }
+    std::string bytes, error;
     while (!inbound_.empty()) {
-        const std::string bytes = std::move(inbound_.front());
+        const std::string frame = std::move(inbound_.front());
         inbound_.pop_front();
-        handle(bytes);
+        if (engine_side_.add(frame, bytes, error) == wire::Reassembler::Result::Complete) {
+            handle(bytes);
+        }
     }
+    check_take();
     publish();
 
     // The client's half: everything back through the codec.
     while (!outbound_.empty()) {
-        const std::string bytes = std::move(outbound_.front());
+        const std::string frame = std::move(outbound_.front());
         outbound_.pop_front();
+        if (client_side_.add(frame, bytes, error) != wire::Reassembler::Result::Complete) {
+            continue;
+        }
         wire::Type type{};
-        std::string error;
         if (!wire::peek_type(bytes, type)) continue;
         if (type == wire::Type::CommandReply) {
             CommandReply r;
@@ -259,7 +309,9 @@ void FakeEngine::handle(const std::string& bytes) {
             case ModelAction::Apply: ok = document_->apply(m.op, u, why); break;
             case ModelAction::Undo: ok = document_->undo(u, why); break;
             case ModelAction::Redo: ok = document_->redo(u, why); break;
-            case ModelAction::Resync: ok = document_->snapshot(u, why); break;
+            case ModelAction::Resync:
+                ok = document_->snapshot(u, why, wire::kMaxModelBytes);
+                break;
         }
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (ok) broadcast(to_wire(u));
@@ -279,10 +331,13 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         record_start_ns_ = now();
         return true;
     };
+    // Failed reports the take, not the stop, as the real one does.
     const auto finish = [&]() {
         mode_ = TransportState::Stopped;
+        const bool failed = failed_take_ == take_ && take_failed_shown_;
+        if (failed) why = take_file(take_) + ": no space left on device";
         ++take_;
-        return true;
+        return !failed;
     };
     const std::string& id = r.command;
     if (id == "transport.toggle_record") return recording ? finish() : start();
@@ -331,7 +386,7 @@ void FakeEngine::publish() {
     tf.xruns = xruns_;
     tf.clock_steps = clock_steps_;
     tf.health_flags = health_;
-    tf.inputs_connected = cfg_.tracks;
+    tf.inputs_connected = inputs_connected_ ? cfg_.tracks : 0;
     tf.buffer_frames = cfg_.buffer_frames;
 
     std::vector<TrackFields> tracks(cfg_.tracks);
@@ -351,7 +406,8 @@ void FakeEngine::publish() {
         }
         if (peak >= 1.0f) ++clips_[i];
         peaks[i] = peak;
-        tracks[i].flags = (armed_[i] ? kTrackArmed : 0u) | kTrackInputConnected;
+        tracks[i].flags =
+            (armed_[i] ? kTrackArmed : 0u) | (inputs_connected_ ? kTrackInputConnected : 0u);
         tracks[i].gain = gain_[i];
         tracks[i].clip_count = clips_[i];
     }

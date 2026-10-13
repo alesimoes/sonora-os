@@ -11,8 +11,8 @@
 //   EngineAdapter::connect      EngineControl::connect (version check)
 //   EngineAdapter::send         EngineControl::send(CommandRequest)
 //   EngineAdapter::poll         EngineControl::poll (replies)
-//   EngineAdapter::transport    StateView::transport  (TransportSnapshot)
-//   EngineAdapter::track        StateView::track      (TrackSnapshot)
+//   EngineAdapter::take_events  EngineControl::poll (events, kept until taken)
+//   EngineAdapter::frame        StateView::frame      (one publish)
 //   EngineAdapter::take_peak    StateView::take_peak  (per-reader cursor)
 //   EngineAdapter::engine_alive StateView::engine_alive (heartbeat)
 //
@@ -59,6 +59,7 @@ enum class TransportMode { Stopped, Rolling, Recording };
 enum HealthFlag : uint32_t {
     kHealthServerGone = 1u << 0,
     kHealthNoInputs = 1u << 1,
+    kHealthTakeFailed = 1u << 2,
 };
 
 struct TransportSnapshot {
@@ -76,6 +77,22 @@ struct TrackSnapshot {
     bool armed = false;
     bool muted = false;
     uint32_t overruns = 0;
+};
+
+// StateView::frame: the transport and every track from one publish.
+struct EngineFrame {
+    TransportSnapshot transport;
+    std::vector<TrackSnapshot> tracks;   // info().track_count entries
+};
+
+// api::EventKind, spelled again for the same reason as TransportMode.
+enum class EngineEventKind { Notice, InputsMissing, TakeFailed, Fatal };
+
+// api::EngineEvent: a discrete fact, in the order the engine said it.
+struct EngineEvent {
+    EngineEventKind kind = EngineEventKind::Notice;
+    uint64_t take = 0;    // TakeFailed: the take it is about
+    std::string text;     // InputsMissing, TakeFailed: empty clears it
 };
 
 // api::CommandReply.
@@ -98,9 +115,14 @@ public:
     // result arrives through poll().
     virtual uint64_t send(const std::string& command, const CommandContext& ctx) = 0;
     virtual void poll(std::vector<CommandOutcome>& replies) = 0;
+    // Appends the events poll() has received since the last call, oldest
+    // first. They are held until taken, however many polls that is, so a
+    // failed take or a fatal backend is never dropped between two reads.
+    virtual void take_events(std::vector<EngineEvent>& out) = 0;
 
-    virtual TransportSnapshot transport() const = 0;
-    virtual TrackSnapshot track(uint32_t index) const = 0;
+    // One consistent read of the state block. `out.tracks` is resized to
+    // the track count; a caller that keeps its frame allocates once.
+    virtual void frame(EngineFrame& out) const = 0;
     // Linear peak, the maximum since *this reader's* previous call, so no
     // peak between two ticks is lost and no other reader's is stolen.
     virtual float take_peak(uint32_t index) = 0;

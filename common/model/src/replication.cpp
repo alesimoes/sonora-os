@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/model/replication.h"
 
+#include <cstdint>
 #include <utility>
 
 #include "sonora/model/op_codec.h"
-#include "sonora/model/session_file.h"
 
 namespace sonora::model {
 
@@ -18,7 +18,7 @@ Snapshot new_session_with_tracks(const SessionSettings& settings,
         t.name = track_names[i];
         t.playlist_name = track_names[i] + ".01";
         t.channels = 1;
-        t.mix.input = {static_cast<std::uint16_t>(i)};
+        t.mix.input.assign(1, static_cast<std::uint16_t>(i));
         Snapshot next;
         std::string error;
         // Cannot fail for fresh ids and a valid name; if it ever does, the
@@ -78,11 +78,22 @@ bool Document::redo(ReplicationUpdate& out, std::string& why) {
     return true;
 }
 
-bool Document::snapshot(ReplicationUpdate& out, std::string& error) const {
+bool Document::snapshot(ReplicationUpdate& out, std::string& error, std::size_t max_bytes) {
+    // Trimmed on a copy, which shares every state with the history, so a
+    // snapshot that cannot fit leaves undo as it was.
+    History trimmed = history_;
     std::string bytes;
-    if (!serialize(history_.current(), WriteInfo{"sonora-engine", 0}, bytes, error)) {
-        return false;
+    for (;;) {
+        if (!encode_window(trimmed, bytes, error)) return false;
+        if (bytes.size() <= max_bytes) break;
+        if (!trimmed.drop_oldest()) {
+            error = "the document is " + std::to_string(bytes.size()) +
+                    " bytes with no undo step left to drop, over the " +
+                    std::to_string(max_bytes) + " a snapshot may carry";
+            return false;
+        }
     }
+    history_ = std::move(trimmed);
     out = ReplicationUpdate{};
     out.kind = ReplicationUpdate::Kind::Snapshot;
     out.revision = history_.current().revision;
@@ -94,16 +105,20 @@ bool Document::snapshot(ReplicationUpdate& out, std::string& error) const {
 
 bool Replica::receive(const ReplicationUpdate& u, std::string& error) {
     if (u.kind == ReplicationUpdate::Kind::Snapshot) {
-        Loaded loaded;
-        LoadError lerr;
-        if (!deserialize(u.bytes, loaded, lerr)) {
+        std::optional<History> h;
+        std::string why;
+        if (!decode_window(u.bytes, h, why)) {
             synced_ = false;
-            error = "the engine's snapshot does not load: " + lerr.text();
+            error = "the engine's snapshot does not load: " + why;
             return false;
         }
-        loaded.snapshot.revision = u.revision;
-        loaded.snapshot.next_id = u.next_id;
-        history_.emplace(History::replica(std::move(loaded.snapshot)));
+        if (h->current().revision != u.revision || h->current().next_id != u.next_id ||
+            h->floor() != u.undo_floor) {
+            synced_ = false;
+            error = "the engine's snapshot disagrees with its own revision, id counter or floor";
+            return false;
+        }
+        history_ = std::move(h);
         synced_ = true;
         return true;
     }

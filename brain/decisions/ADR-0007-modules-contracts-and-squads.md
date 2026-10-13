@@ -1421,6 +1421,22 @@ rt-safety-auditor's, before it merges.
      value and the wrong type, each with a reason. Nothing is partially
      decoded. `decode_hello_versions()` reads the two versions first, so a
      newer engine's Hello still names the mismatch.
+   - **A message crosses as frames, never as one datagram.** M7's
+     `AF_UNIX` `SOCK_SEQPACKET` socket refuses a datagram larger than its
+     send buffer with `EMSGSIZE` (`net.core.wmem_max`, 212992 bytes by
+     default), and a Snapshot of a session past about 200 KB is larger. So
+     `wire.h` splits every message into frames of at most 64 KiB: a u32
+     length of the whole message, a u32 offset, then the bytes. A sender
+     writes one message's frames in order before the next message's, and
+     `SOCK_SEQPACKET` keeps order and boundaries, so the `Reassembler`
+     holds one message at a time, at most `kMaxMessageBytes` (the 64 MiB
+     model cap plus 1 MiB), checked against the first frame's header
+     before anything is held. A frame out of place, a length over the cap
+     or a frame over 64 KiB is an error with a reason, and M7 closes the
+     connection on it. Frames were chosen over a memfd passed with
+     `SCM_RIGHTS` for large payloads: the same code runs in process, so
+     `InProcessEngine`, `FakeEngine` and every test exercise it, and no
+     message carries a descriptor a receiver must remember to close.
    - `api/state_block.h` and `api/state_view.h`: item 3.
    - `api/engine_control.h`: `connect`, `hello`, `send(CommandRequest)`,
      `send(ParameterChange)`, `submit(ModelRequest)`, `poll(Inbox&)` and
@@ -1440,6 +1456,23 @@ rt-safety-auditor's, before it merges.
    The engine sends a `Snapshot` right after `Hello`. Both headers are
    additive public headers of `common/model`, which is a contract file
    under §6.
+
+   **A Snapshot carries the undo window, not a session file.** A session
+   file holds one state, so a replica rebuilt from it had one step while
+   the engine kept its undo steps: after a reconnect or a `Resync` the
+   replica could not undo, and every `Undo` and `Redo` after that
+   desynced it. `encode_window()` (`op_codec.h`) writes the current
+   state's settings, mix (an entry an undone `AddTrack` left behind
+   included), sources, revision and id counter, every undo step from the
+   floor up with its revision, and the pointer. Playlists, tracks, marker
+   lists and edit states are tables referred to by index, so what the
+   steps share crosses once and is shared again on the replica.
+   `History::restore()` rebuilds the replica's history from it. Over the
+   wire's 64 MiB model cap, `Document::snapshot()` drops the oldest steps
+   until it fits, which is an eviction like the byte budget's: the other
+   replicas follow the raised floor with the next update, and an undo one
+   of them asks for below it is refused with a reply, not desynced. ADR-0009
+   §2's "the session file's canonical JSON" is amended by this.
 3. **The state block, layout version 1.**
    - The header holds magic, layout version, capacity, publish period,
      track count, heartbeat and seq. Under the seq it holds transport
@@ -1466,6 +1499,9 @@ rt-safety-auditor's, before it merges.
      copied `StateView` is a second reader.
    - `StateView` retries the seqlock at most 64 times, yielding between
      attempts, then returns the snapshot with `stale` set.
+   - `StateView::frame()` reads the transport and every track in one
+     seqlock section, so a tick draws one publish, never a transport from
+     one beside track flags from the next. Both interfaces' ticks use it.
    - `engine_alive()` is judged on the caller's clock. A heartbeat that
      stands still for max(250 ms, ten publish periods) means the engine is
      not answering.
@@ -1479,6 +1515,17 @@ rt-safety-auditor's, before it merges.
      control thread hands it the take number, input connections and health
      through atomics. **Nothing was added to `Session::process()` or to
      anything it calls.**
+   - **How commands reach the audio thread, as landed: atomic stores
+     only.** Of §2's three forms, M4 uses the first and nothing else. Arming
+     is `Track::set_rec_armed()`, a gain change is `Track::set_gain()`, and
+     a take's start and stop are the transport state that
+     `Session::start_recording()` and `stop()` store on the control thread.
+     Each is an atomic store the callback loads at block start. **There is
+     no `RingBuffer<RtCommand>`** and no `RingBuffer<RtEvent>`: the
+     publisher reads the `Track` and `Transport` atomics directly. §2's
+     command ring arrives with the first sample-accurate command (locate,
+     punch points), and its event ring when the audio thread first has a
+     discrete event to report.
    - `EngineControlServer` owns the block, the publisher, the handlers and
      the `Document`. Its control thread takes encoded requests through
      `deliver()` and answers through an `Outbound` callback, so it knows no
@@ -1500,16 +1547,30 @@ rt-safety-auditor's, before it merges.
    - It can script death, an event, a peak, xruns and a version mismatch.
 6. **One conformance suite for both.** `contracts/api/conformance`
    (`sonora_api_conformance`) drives an engine through `EngineControl` and
-   `StateView` only. It has nine checks:
+   `StateView` only. It has eleven checks:
    - Hello;
    - a version mismatch refused by name;
    - dispatch results and seq order;
    - arming and its refusals;
    - a take;
    - parameter changes;
-   - the model path, with a real `Replica`;
+   - the model path, with a real `Replica`, including undo and redo after
+     a `Resync` with no further snapshot;
+   - a failed take: `TakeFailed` once, with the take and what to do, the
+     health flag, stop reporting the take as failed, and the next clean
+     take clearing both;
+   - inputs missing: `InputsMissing` with a reason, the health flag and
+     the per-track flags, and all three clearing when the inputs return;
    - per-reader peak cursors;
    - the heartbeat after the engine dies.
+
+   A check that something did *not* change waits for a publish that began
+   after the last reply (`next_publish()`), so it cannot pass on the block
+   as it was before the request. The failed-take and inputs checks need a
+   rig that can cause them (`Rig::set_takes_fail`,
+   `Rig::set_inputs_present`); one that cannot says SKIP. `FakeEngine`
+   scripts both. On `InProcessEngine` the WAV size limit, lowered, stands
+   in for a full disk, and `drivers/fake` unpatches the inputs.
 
    `api_conformance_fake` runs it on `FakeEngine`. `engine/control`'s
    `control` test runs it on `InProcessEngine`, over a real `Session` that
@@ -1532,14 +1593,21 @@ rt-safety-auditor's, before it merges.
      them in two processes, one executable must contain both, and only a
      module above `engine/control` may link it. M7 removes this link when
      `sonora-tui` becomes its own executable.
-   - **So M5's check names this one edge until M7, or M5 waits for M7.**
-     That choice is the integrator's. Either way the entry is not an
-     allow-list entry without an end date.
+   - **`engine/app` → `ui/tui` remains an allowed edge until M7.** M5's
+     dependency check names it as the one exception, with M7 as its end:
+     M7 makes `sonora-tui` its own executable and removes the link, and
+     the exception with it. It is not an allow-list entry without an end
+     date.
 8. **The Qt interface** keeps its narrow `EngineAdapter`, so its routing
    tests need no engine, and gains `ControlAdapter`, which forwards every
    call to `EngineControl` and `StateView`.
    - `SyntheticEngine` is deleted. `FakeEngine` drives `sonora-ui` and its
      tests.
+   - `EngineAdapter` carries the engine's events (`take_events()`), held
+     until the shell takes them, and one `frame()` per refresh. The shell
+     shows the `Fatal` reason, a failed take's reason and missing inputs in
+     red in the banner, most urgent first, and `kHealthTakeFailed` in the
+     health text.
    - The Qt UI is **not** given `InProcessEngine`. §3 keeps Qt, Mesa and
      LLVM out of the process that holds the take, so the Qt UI meets the
      real engine through M7's socket.

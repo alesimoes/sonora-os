@@ -6,6 +6,7 @@
 // eviction, and says so when it falls out of step.
 #include <cmath>
 #include <limits>
+#include <optional>
 
 #include "model_test.h"
 #include "sonora/model/op_codec.h"
@@ -269,6 +270,181 @@ int test_replica_says_when_it_lost_track() {
     return 0;
 }
 
+bool same_history(const Replica& r, const Document& d) {
+    return r.synced() && r.current() == d.current() &&
+           r.history()->floor() == d.history().floor() &&
+           r.history()->undo_depth() == d.history().undo_depth() &&
+           r.history()->step_count() == d.history().step_count() &&
+           r.can_undo() == d.history().can_undo() && r.can_redo() == d.history().can_redo();
+}
+
+// A replica that joins, or resyncs, after edits offers the engine's undo
+// steps, not one. The snapshot used to carry only the current state, so
+// the first Undo after a resync found nothing to undo on the replica and
+// every Undo and Redo after that desynced it.
+int test_resync_keeps_the_undo_window() {
+    Document doc(new_session(settings()), 64 * 1024);
+    std::string error;
+    ReplicationUpdate u;
+    Ids ids(doc.current());
+    const AddTrack t = add_track(ids, "Vox");
+    CHECK(doc.apply(t, u, error));
+    const AddSource src = add_source(ids, 100'000'000);
+    CHECK(doc.apply(src, u, error));
+    for (int i = 0; i < 60; ++i) {
+        CHECK(doc.apply(PlaceRegion{t.playlist, region(doc.current().next_id, src.source.id,
+                                                       i * 2000, 1000)},
+                        u, error));
+    }
+    CHECK(doc.history().floor() > 0);
+    // A track added, its fader moved, then undone: its mix entry outlives
+    // it, and a redo on the replica must bring it back with that fader.
+    Ids later(doc.current());
+    AddTrack gtr = add_track(later, "Gtr");
+    CHECK(doc.apply(gtr, u, error));
+    TrackMix m = gtr.mix;
+    m.track = gtr.track;
+    m.gain_db = -6.0f;
+    CHECK(doc.apply(SetMix{m}, u, error));
+    CHECK(doc.undo(u, error));
+    CHECK(doc.undo(u, error));
+    CHECK(doc.history().can_redo());
+
+    Replica replica;
+    CHECK(doc.snapshot(u, error));
+    CHECK(replica.receive(u, error));
+    CHECK(same_history(replica, doc));
+
+    // Undo and redo several times with no further snapshot.
+    const auto step = [&](bool undo) {
+        if (!(undo ? doc.undo(u, error) : doc.redo(u, error))) return false;
+        if (!replica.receive(u, error)) {
+            std::fprintf(stderr, "  replica: %s\n", error.c_str());
+            return false;
+        }
+        return same_history(replica, doc);
+    };
+    for (int i = 0; i < 5; ++i) CHECK(step(true));
+    for (int i = 0; i < 7; ++i) CHECK(step(false));
+    CHECK(replica.current().edit->tracks.size() == 2);
+    const TrackMix* back = replica.current().mix.find(gtr.track);
+    CHECK(back != nullptr && back->gain_db == -6.0f);
+    for (int i = 0; i < 3; ++i) CHECK(step(true));
+    // An edit after undo drops the redo branch on both sides.
+    CHECK(doc.apply(SetTrackName{t.track, "Lead"}, u, error));
+    CHECK(replica.receive(u, error));
+    CHECK(same_history(replica, doc));
+    while (doc.history().can_undo()) CHECK(step(true));
+    CHECK(!replica.can_undo());
+    CHECK(step(false));
+    return 0;
+}
+
+// Over the cap a snapshot carries, the engine drops its oldest undo steps
+// until it fits. A replica that followed all along learns the raised floor
+// with the next update and stays equal to the engine.
+int test_snapshot_over_the_cap_raises_the_floor() {
+    Document doc(new_session(settings()));
+    Replica old_hand;
+    std::string error;
+    ReplicationUpdate u;
+    CHECK(doc.snapshot(u, error));
+    CHECK(old_hand.receive(u, error));
+    Ids ids(doc.current());
+    const AddTrack t = add_track(ids, "Vox");
+    CHECK(doc.apply(t, u, error));
+    CHECK(old_hand.receive(u, error));
+    for (int i = 0; i < 40; ++i) {
+        CHECK(doc.apply(AddMarker{Marker{ids(), i * 1000, "m" + std::to_string(i), 0}}, u, error));
+        CHECK(old_hand.receive(u, error));
+    }
+    // The current state alone is too large for a tiny cap: refused, and
+    // the engine's undo is left as it was.
+    const std::size_t steps = doc.history().step_count();
+    CHECK(!doc.snapshot(u, error, 100));
+    CHECK(mentions(error, "over the 100"));
+    CHECK(doc.history().step_count() == steps);
+
+    Document doc2(new_session(settings()));
+    Replica a;
+    CHECK(doc2.snapshot(u, error));
+    CHECK(a.receive(u, error));
+    Ids ids2(doc2.current());
+    for (int i = 0; i < 40; ++i) {
+        CHECK(doc2.apply(AddMarker{Marker{ids2(), i * 1000, "m" + std::to_string(i), 0}}, u,
+                         error));
+        CHECK(a.receive(u, error));
+    }
+    CHECK(doc2.snapshot(u, error));
+    const std::size_t full = u.bytes.size();
+    CHECK(doc2.snapshot(u, error, full * 3 / 4));
+    CHECK(u.bytes.size() <= full * 3 / 4);
+    CHECK(doc2.history().floor() > 0);
+    Replica b;
+    CHECK(b.receive(u, error));
+    CHECK(same_history(b, doc2));
+    // `a` still has the old floor until the next update tells it.
+    CHECK(a.history()->floor() < doc2.history().floor());
+    while (doc2.history().can_undo()) {
+        CHECK(doc2.undo(u, error));
+        CHECK(a.receive(u, error));
+        CHECK(b.receive(u, error));
+        CHECK(same_history(a, doc2));
+        CHECK(same_history(b, doc2));
+    }
+    CHECK(!doc2.undo(u, error));
+    return 0;
+}
+
+// The window decoder refuses what would not make a consistent history,
+// naming why, and leaves the replica waiting for a good snapshot.
+int test_window_refuses_what_does_not_fit() {
+    Document doc(new_session(settings()));
+    std::string error;
+    ReplicationUpdate u;
+    Ids ids(doc.current());
+    CHECK(doc.apply(add_track(ids, "A"), u, error));
+    CHECK(doc.apply(add_track(ids, "B"), u, error));
+    CHECK(doc.snapshot(u, error));
+    std::optional<History> h;
+    CHECK(decode_window(u.bytes, h, error));
+    CHECK(h.has_value() && h->step_count() == 3 && h->undo_depth() == 2);
+    // Steps share what they did not change, on the replica as on the engine.
+    CHECK(h->step_edit(1)->tracks[0] == h->step_edit(2)->tracks[0]);
+
+    const auto refused = [&](const std::string& from, const std::string& to,
+                             const char* why) {
+        std::string bytes = u.bytes;
+        const std::size_t at = bytes.find(from);
+        if (at == std::string::npos) {
+            std::fprintf(stderr, "  no \"%s\" in the window\n", from.c_str());
+            return false;
+        }
+        bytes.replace(at, from.size(), to);
+        std::optional<History> out;
+        std::string err;
+        return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
+    };
+    CHECK(refused("\"window_format\": 1", "\"window_format\": 2", "window_format"));
+    CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
+    CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
+    CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));
+    CHECK(refused("{", "", "undo window"));
+
+    Replica r;
+    ReplicationUpdate bad = u;
+    bad.bytes = "{}";
+    CHECK(!r.receive(bad, error));
+    CHECK(!r.synced());
+    bad = u;
+    bad.undo_floor = 7;
+    CHECK(!r.receive(bad, error));
+    CHECK(mentions(error, "floor"));
+    CHECK(r.receive(u, error));
+    CHECK(same_history(r, doc));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -277,6 +453,9 @@ int main() {
     failures += test_codec_refuses_what_is_not_an_operation();
     failures += test_replica_follows_the_document();
     failures += test_replica_says_when_it_lost_track();
+    failures += test_resync_keeps_the_undo_window();
+    failures += test_snapshot_over_the_cap_raises_the_floor();
+    failures += test_window_refuses_what_does_not_fit();
     if (failures != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failures);
         return 1;

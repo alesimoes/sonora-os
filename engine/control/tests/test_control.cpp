@@ -4,8 +4,9 @@
 // suite FakeEngine passes, run on InProcessEngine over a real Session fed
 // by drivers/fake at real-time pace; FakeEngine's command list held to the
 // handlers this build installs; the publisher's pace; a backend failure
-// reaching the interface as an event and a health flag; events posted
-// before the interface connects arriving after its Hello.
+// reaching the interface as an event and a health flag; a take that stops
+// writing reaching it the same way, from the control thread's check; events
+// posted before the interface connects arriving after its Hello.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -21,8 +22,11 @@
 #include "sonora/api/fake_engine.h"
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
+#include "sonora/model/op_codec.h"
+#include "sonora/model/replication.h"
 #include "sonora/session.h"
 #include "sonora/state_publisher.h"
+#include "sonora/wav_writer.h"
 
 static int failures = 0;
 #define CHECK(c)                                                              \
@@ -51,8 +55,16 @@ uint64_t steady_ns() {
 // on top, owned together so the suite's engine is the whole thing.
 class RealEngine final : public api::EngineControl {
 public:
-    RealEngine(const fs::path& dir, EngineControlServer::Options opts)
+    // With `watch_inputs`, the engine's housekeeping reports the inputs as
+    // engine/app's does: InputsMissing when they go and when they come
+    // back, the health flag and the per-track flags. It does not reconnect
+    // them; the test decides when they come back.
+    RealEngine(const fs::path& dir, EngineControlServer::Options opts, bool watch_inputs = false)
         : dir_(dir), session_(config(dir)), audio_(backend_config()) {
+        if (watch_inputs) {
+            opts.housekeeping_period_ns = 20'000'000;
+            opts.housekeeping = [this](EngineControlServer& server) { watch(server); };
+        }
         std::string error;
         ok_ = session_.create_dirs() &&
               audio_.open({"sonora", kTracks, 0, 48000, ""}, session_, error) &&
@@ -88,7 +100,41 @@ public:
     FakeBackend& audio() { return audio_; }
     Session& session() { return session_; }
 
+    // Track 1's next take stops writing after a few frames: the WAV size
+    // limit, lowered, stands in for a full disk. Called while stopped.
+    void set_takes_fail(bool fail) {
+        session_.tracks()[0]->writer().set_riff_size_limit(fail ? kFailingRiffSize
+                                                                : WavWriter::kRiffSizeLimit);
+    }
+    void set_inputs_present(bool present) {
+        if (present) {
+            audio_.connect_inputs_in_order();
+        } else {
+            for (uint32_t i = 0; i < kTracks; ++i) audio_.unpatch(i);
+        }
+    }
+
 private:
+    // The header and a few frames.
+    static constexpr uint64_t kFailingRiffSize = 700;
+
+    void watch(EngineControlServer& server) {
+        const int n = audio_.connected_input_count();
+        const std::string missing = n == 0 ? "no capture input is connected" : "";
+        if (missing != inputs_said_) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::InputsMissing;
+            e.text = missing;
+            server.post_event(e);
+            inputs_said_ = missing;
+        }
+        server.set_inputs_connected(static_cast<uint32_t>(n), true);
+        for (uint32_t i = 0; i < kTracks; ++i) {
+            server.set_input_connected(i, audio_.input_connected(i));
+        }
+    }
+
+    std::string inputs_said_ = "(unset)";   // the control thread's
     static SessionConfig config(const fs::path& dir) {
         SessionConfig cfg;
         cfg.dir = dir.string();
@@ -128,7 +174,7 @@ public:
         EngineControlServer::Options opts;
         opts.protocol_version = protocol;
         opts.state_layout_version = layout;
-        return std::make_unique<RealEngine>(fresh_dir("conformance"), opts);
+        return std::make_unique<RealEngine>(fresh_dir("conformance"), opts, true);
     }
     uint64_t now_ns() override { return steady_ns(); }
     void wait_ns(uint64_t ns) override {
@@ -138,6 +184,14 @@ public:
         static_cast<RealEngine&>(e).engine().shutdown();
     }
     bool has_signal() const override { return true; }
+    bool set_takes_fail(api::EngineControl& e, bool fail) override {
+        static_cast<RealEngine&>(e).set_takes_fail(fail);
+        return true;
+    }
+    bool set_inputs_present(api::EngineControl& e, bool present) override {
+        static_cast<RealEngine&>(e).set_inputs_present(present);
+        return true;
+    }
 };
 
 // Polls until `pred` holds or two seconds pass.
@@ -273,6 +327,138 @@ void fatal_backend_reaches_the_interface() {
     }));
 }
 
+// The take-failure check moved from the terminal loop into the server's
+// control thread (EngineControlServer::tick). A writer that fails mid-take
+// reaches the interface with the file and the writer's reason, once, and
+// the health flag holds until a take records cleanly.
+void take_failure_reaches_the_interface() {
+    RealEngine real(fresh_dir("take_failed"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    real.set_takes_fail(true);
+    api::Inbox in;
+    const auto replied = [&](uint64_t seq, DispatchResult want) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == want;
+            }
+            return false;
+        });
+    };
+    const auto failures_said = [&]() {
+        std::vector<api::EngineEvent> out;
+        for (const auto& e : in.events) {
+            if (e.kind == api::EventKind::TakeFailed) out.push_back(e);
+        }
+        return out;
+    };
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    CHECK(replied(real.send(arm), DispatchResult::Ok));
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    CHECK(replied(real.send(rec), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return !failures_said().empty(); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));   // four checks more
+    real.poll(in);
+    const auto said = failures_said();
+    CHECK(said.size() == 1);
+    if (!said.empty()) {
+        CHECK(said[0].text.find("Audio 1_01.wav") != std::string::npos);
+        CHECK(said[0].text.find("4 GB WAV limit") != std::string::npos);
+        CHECK(said[0].frame == 1);
+    }
+    CHECK(until(real, in, [&]() {
+        return (real.state().transport().health_flags & api::kHealthTakeFailed) != 0;
+    }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(replied(real.send(stop), DispatchResult::Failed));
+
+    real.set_takes_fail(false);
+    CHECK(replied(real.send(rec), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() {
+        return failures_said().size() == 2 &&
+               (real.state().transport().health_flags & api::kHealthTakeFailed) == 0;
+    }));
+    const auto all = failures_said();
+    CHECK(all.size() == 2 && all[1].text.empty() && all[1].frame == 2);
+    CHECK(replied(real.send(stop), DispatchResult::Ok));
+}
+
+model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
+    model::ReplicationUpdate u;
+    u.kind = m.kind == api::ModelUpdateKind::Op     ? model::ReplicationUpdate::Kind::Op
+             : m.kind == api::ModelUpdateKind::Undo ? model::ReplicationUpdate::Kind::Undo
+             : m.kind == api::ModelUpdateKind::Redo ? model::ReplicationUpdate::Kind::Redo
+                                                    : model::ReplicationUpdate::Kind::Snapshot;
+    u.revision = m.revision;
+    u.undo_floor = m.undo_floor;
+    u.next_id = m.next_id;
+    u.bytes = m.bytes;
+    return u;
+}
+
+// A Snapshot far over one datagram (an AF_UNIX send buffer is about
+// 208 KiB by default) crosses whole, in frames, and a replica that resyncs
+// from it undoes and redoes with the engine.
+void large_snapshot_crosses_in_frames() {
+    RealEngine real(fresh_dir("large_snapshot"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    std::string replica_error;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            if (!replica.receive(from_wire(in.model[fed]), why)) replica_error = why;
+        }
+    };
+    const auto settle = [&](std::size_t updates) {
+        const bool ok = until(real, in, [&]() { return in.model.size() >= updates; });
+        feed();
+        return ok;
+    };
+    CHECK(settle(1));
+    CHECK(replica.synced());
+    uint64_t next_id = replica.current().next_id;
+    // Each step's marker list holds every marker so far, so the window
+    // grows with the square of the count.
+    constexpr int kMarkers = 80;
+    for (int i = 0; i < kMarkers; ++i) {
+        model::AddMarker add;
+        add.marker.id = next_id++;
+        add.marker.position = 48000 * i;
+        add.marker.name = "marker " + std::to_string(i) + " " + std::string(400, 'x');
+        api::ModelRequest m;
+        CHECK(model::encode_operation(add, m.op, error));
+        real.submit(m);
+    }
+    CHECK(settle(1 + kMarkers));
+    api::ModelRequest resync;
+    resync.action = api::ModelAction::Resync;
+    real.submit(resync);
+    CHECK(settle(2 + kMarkers));
+    CHECK(in.model.size() == 2 + kMarkers);
+    const api::ModelUpdate& snap = in.model.back();
+    CHECK(snap.kind == api::ModelUpdateKind::Snapshot);
+    constexpr std::size_t kRoom = api::wire::kMaxFrameBytes - api::wire::kFrameHeaderBytes;
+    std::printf("  a Snapshot of %zu bytes crossed in %zu frames\n", snap.bytes.size(),
+                (snap.bytes.size() + kRoom - 1) / kRoom);
+    CHECK(snap.bytes.size() > 4 * api::wire::kMaxFrameBytes);
+    CHECK(replica.synced() && replica_error.empty());
+    CHECK(replica.can_undo());
+    api::ModelRequest undo;
+    undo.action = api::ModelAction::Undo;
+    for (int i = 0; i < 5; ++i) real.submit(undo);
+    CHECK(settle(7 + kMarkers));
+    CHECK(replica.synced() && replica_error.empty());
+    CHECK(replica.current().edit->markers->markers.size() == kMarkers - 5);
+}
+
 void housekeeping_and_early_events() {
     std::atomic<int> runs{0};
     EngineControlServer::Options opts;
@@ -317,6 +503,8 @@ int main() {
     publisher_is_paced();
     publisher_reads_the_session();
     fatal_backend_reaches_the_interface();
+    take_failure_reaches_the_interface();
+    large_snapshot_crosses_in_frames();
     housekeeping_and_early_events();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");

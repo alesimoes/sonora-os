@@ -22,7 +22,9 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "sonora/model/model.h"
 #include "sonora/model/operations.h"
@@ -36,6 +38,17 @@ public:
 
     explicit History(Snapshot initial, std::size_t budget_bytes = kDefaultBudget);
     static History replica(Snapshot initial);
+
+    struct WindowStep {
+        std::shared_ptr<const EditState> edit;
+        std::uint64_t revision = 0;
+    };
+    // A replica's history rebuilt from the engine's window: these steps,
+    // oldest first, the pointer at `position`, and `current`, whose edit
+    // must be that step's. False, with `error`, when they do not fit
+    // together. Charges are recomputed, though a replica never acts on them.
+    static bool restore(Snapshot current, std::vector<WindowStep> steps, std::size_t position,
+                        std::optional<History>& out, std::string& error);
 
     const Snapshot& current() const { return current_; }
 
@@ -61,6 +74,15 @@ public:
     std::size_t budget() const { return budget_; }
     std::size_t step_count() const { return steps_.size(); }
     std::size_t undo_depth() const { return pos_; }
+    // Step `i`, oldest first, for whoever sends the window to a replica.
+    const std::shared_ptr<const EditState>& step_edit(std::size_t i) const {
+        return steps_[i].edit;
+    }
+    std::uint64_t step_revision(std::size_t i) const { return steps_[i].revision; }
+
+    // The engine's half of shrinking the window: evicts the oldest step if
+    // undo can still reach a later one. False when nothing can go.
+    bool drop_oldest();
 
 private:
     struct Step {

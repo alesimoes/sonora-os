@@ -95,7 +95,13 @@ void EngineControlServer::set_inputs_connected(uint32_t count, bool none_is_a_pr
 }
 
 void EngineControlServer::send(const std::string& bytes) {
-    if (out_) out_(bytes);
+    if (!out_) return;
+    // Cannot fail for what the server sends: a Snapshot is trimmed to
+    // kMaxModelBytes, under kMaxMessageBytes.
+    std::vector<std::string> frames;
+    std::string error;
+    if (!api::wire::split_frames(bytes, frames, error)) return;
+    for (std::string& f : frames) out_(std::move(f));
 }
 
 void EngineControlServer::start(Outbound out) {
@@ -117,7 +123,7 @@ void EngineControlServer::start(Outbound out) {
     // A replica starts from the whole document.
     model::ReplicationUpdate snap;
     std::string why;
-    if (document_->snapshot(snap, why)) {
+    if (document_->snapshot(snap, why, api::wire::kMaxModelBytes)) {
         api::wire::encode(to_wire(snap), bytes);
         send(bytes);
     }
@@ -149,17 +155,18 @@ void EngineControlServer::stop() {
     running_.store(false, std::memory_order_release);
 }
 
-void EngineControlServer::deliver(std::string bytes) {
+void EngineControlServer::deliver(std::string frame) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopping_ || !running()) return;
-        inbound_.push_back(std::move(bytes));
+        inbound_.push_back(std::move(frame));
     }
     wake_.notify_one();
 }
 
 void EngineControlServer::run() {
     std::deque<std::string> batch;
+    std::string message, error;
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -168,7 +175,12 @@ void EngineControlServer::run() {
             batch.swap(inbound_);
         }
         while (!batch.empty()) {
-            handle(batch.front());
+            // A frame out of place drops what was held for that message;
+            // after M7 the connection is closed instead.
+            if (reassembler_.add(batch.front(), message, error) ==
+                api::wire::Reassembler::Result::Complete) {
+                handle(message);
+            }
             batch.pop_front();
         }
         tick();
@@ -245,7 +257,9 @@ void EngineControlServer::handle(const std::string& bytes) {
             case api::ModelAction::Apply: ok = document_->apply(m.op, u, why); break;
             case api::ModelAction::Undo: ok = document_->undo(u, why); break;
             case api::ModelAction::Redo: ok = document_->redo(u, why); break;
-            case api::ModelAction::Resync: ok = document_->snapshot(u, why); break;
+            case api::ModelAction::Resync:
+                ok = document_->snapshot(u, why, api::wire::kMaxModelBytes);
+                break;
         }
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (ok) {

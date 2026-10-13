@@ -34,6 +34,22 @@ public:
     virtual void kill(EngineControl& engine) = 0;
     // Whether the inputs carry a signal, so a published peak is above zero.
     virtual bool has_signal() const = 0;
+    // From the next take on, writing fails as at a full disk (true), or
+    // records cleanly (false). Track 1 is the one the suite arms. False if
+    // this rig cannot do it; the check is then skipped, and says so.
+    virtual bool set_takes_fail(EngineControl& engine, bool fail) {
+        (void)engine;
+        (void)fail;
+        return false;
+    }
+    // Every capture input goes away (false) or comes back (true), as when
+    // an interface is unplugged and plugged in again. False if this rig
+    // cannot do it.
+    virtual bool set_inputs_present(EngineControl& engine, bool present) {
+        (void)engine;
+        (void)present;
+        return false;
+    }
 };
 
 // Runs every check, prints "ok <check>" or "FAIL <check>: <why>" for each,

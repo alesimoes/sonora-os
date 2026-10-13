@@ -46,6 +46,34 @@ bool seqlock_read(const StateHeader& h, uint64_t& stuck, Read read) {
     return false;
 }
 
+void read_transport(const StateHeader& h, TransportSnapshot& s) {
+    constexpr auto acq = std::memory_order_acquire;
+    s.state = static_cast<TransportState>(h.transport_state.load(acq));
+    s.take = h.take.load(acq);
+    s.playhead = h.playhead.load(acq);
+    s.xruns = h.xruns.load(acq);
+    s.overruns = h.overruns.load(acq);
+    s.clock_steps = h.clock_steps.load(acq);
+    s.health_flags = h.health_flags.load(acq);
+    s.inputs_connected = h.inputs_connected.load(acq);
+    s.buffer_frames = h.buffer_frames.load(acq);
+}
+
+void read_track(const TrackState& t, TrackSnapshot& s) {
+    constexpr auto acq = std::memory_order_acquire;
+    s.flags = t.flags.load(acq);
+    s.gain = t.gain.load(acq);
+    s.overruns = t.overruns.load(acq);
+    s.clip_count = t.clip_count.load(acq);
+    s.latency_frames = t.latency_frames.load(acq);
+}
+
+// A value the writer never writes is a torn or foreign block.
+bool known_state(TransportState s) {
+    return s == TransportState::Stopped || s == TransportState::Rolling ||
+           s == TransportState::Recording;
+}
+
 }  // namespace
 
 bool StateView::attach(const void* block, std::size_t bytes, std::string& error) {
@@ -104,28 +132,15 @@ TransportSnapshot StateView::transport() const {
     }
     const StateHeader& h = *header_;
     TransportSnapshot s;
-    const bool ok = seqlock_read(h, stuck_seq_, [&]() {
-        constexpr auto acq = std::memory_order_acquire;
-        s.state = static_cast<TransportState>(h.transport_state.load(acq));
-        s.take = h.take.load(acq);
-        s.playhead = h.playhead.load(acq);
-        s.xruns = h.xruns.load(acq);
-        s.overruns = h.overruns.load(acq);
-        s.clock_steps = h.clock_steps.load(acq);
-        s.health_flags = h.health_flags.load(acq);
-        s.inputs_connected = h.inputs_connected.load(acq);
-        s.buffer_frames = h.buffer_frames.load(acq);
-    });
+    const bool ok = seqlock_read(h, stuck_seq_, [&]() { read_transport(h, s); });
     if (!ok) {
         ++stale_reads_;
         out.stale = true;
         out.heartbeat = h.heartbeat.load(std::memory_order_acquire);
         return out;
     }
-    // A value the writer never writes is a torn or foreign block; say stale
-    // rather than draw a fourth transport state.
-    if (s.state != TransportState::Stopped && s.state != TransportState::Rolling &&
-        s.state != TransportState::Recording) {
+    // Stale rather than draw a fourth transport state.
+    if (!known_state(s.state)) {
         out.stale = true;
         return out;
     }
@@ -141,20 +156,44 @@ TrackSnapshot StateView::track(uint32_t index) const {
     }
     const TrackState& t = tracks_[index];
     TrackSnapshot s;
-    const bool ok = seqlock_read(*header_, stuck_seq_, [&]() {
-        constexpr auto acq = std::memory_order_acquire;
-        s.flags = t.flags.load(acq);
-        s.gain = t.gain.load(acq);
-        s.overruns = t.overruns.load(acq);
-        s.clip_count = t.clip_count.load(acq);
-        s.latency_frames = t.latency_frames.load(acq);
-    });
+    const bool ok = seqlock_read(*header_, stuck_seq_, [&]() { read_track(t, s); });
     if (!ok) {
         ++stale_reads_;
         out.stale = true;
         return out;
     }
     return s;
+}
+
+void StateView::frame(StateFrame& out) const {
+    const uint32_t n = track_count();
+    out.tracks.resize(n);
+    const auto all_stale = [&out]() {
+        out.transport = TransportSnapshot{};
+        out.transport.stale = true;
+        for (TrackSnapshot& t : out.tracks) {
+            t = TrackSnapshot{};
+            t.stale = true;
+        }
+    };
+    if (header_ == nullptr) {
+        all_stale();
+        return;
+    }
+    const StateHeader& h = *header_;
+    const bool ok = seqlock_read(h, stuck_seq_, [&]() {
+        read_transport(h, out.transport);
+        for (uint32_t i = 0; i < n; ++i) read_track(tracks_[i], out.tracks[i]);
+    });
+    if (!ok || !known_state(out.transport.state)) {
+        if (!ok) ++stale_reads_;
+        all_stale();
+        out.transport.heartbeat = h.heartbeat.load(std::memory_order_acquire);
+        return;
+    }
+    out.transport.stale = false;
+    for (TrackSnapshot& t : out.tracks) t.stale = false;
+    out.transport.heartbeat = h.heartbeat.load(std::memory_order_acquire);
 }
 
 float StateView::take_peak(uint32_t index) {

@@ -17,6 +17,7 @@
 #include <string>
 
 #include "sonora/api/engine_control.h"
+#include "sonora/api/wire.h"
 #include "sonora/engine_control_server.h"
 
 namespace sonora {
@@ -44,7 +45,10 @@ public:
     EngineControlServer& server() { return server_; }
 
 private:
-    void receive(std::string bytes);
+    void receive(std::string frame);
+    uint64_t deliver(const std::string& message, uint64_t seq);
+    // The next whole message from the server, if its frames are here.
+    bool next_message(std::string& message);
 
     EngineControlServer server_;
     api::Hello hello_;
@@ -53,7 +57,8 @@ private:
     bool connected_ = false;
 
     std::mutex mutex_;
-    std::deque<std::string> inbound_;   // engine -> client, encoded
+    std::deque<std::string> inbound_;   // engine -> client, frames
+    api::wire::Reassembler reassembler_;   // the client thread's
 };
 
 }  // namespace sonora

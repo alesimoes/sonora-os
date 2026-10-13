@@ -124,7 +124,10 @@ enum class ModelUpdateKind : uint32_t {
     Op = 0,        // apply `bytes` (one encoded operation)
     Undo = 1,      // move the replica's own pointer back one step
     Redo = 2,      // and forward
-    Snapshot = 3,  // replace the replica with `bytes`, a session file
+    // Replace the replica with `bytes`: the document and its whole undo
+    // window (common/model's encode_window), so undo and redo after it
+    // apply on the replica as on the engine. Sent after Hello and on Resync.
+    Snapshot = 3,
 };
 
 struct ModelUpdate {
@@ -135,7 +138,8 @@ struct ModelUpdate {
     // The oldest revision undo can still reach (ADR-0009 §1). The replica
     // evicts down to it and no further, so both sides offer the same undo.
     uint64_t undo_floor = 0;
-    // Snapshot only: the id counter, which a session file does not hold.
+    // Snapshot only: the id counter. The window holds it too; a replica
+    // refuses a Snapshot whose fields and bytes disagree.
     uint64_t next_id = 0;
     std::string bytes;
 };

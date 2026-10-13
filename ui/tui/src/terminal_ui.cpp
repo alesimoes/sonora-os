@@ -193,7 +193,8 @@ std::string TerminalView::render(uint64_t now_ns) {
     api::StateView& v = engine_.state();
     const api::Hello& h = engine_.hello();
     const bool alive = v.engine_alive(now_ns);
-    const api::TransportSnapshot t = v.transport();
+    v.frame(frame_);
+    const api::TransportSnapshot& t = frame_.transport;
     std::string out;
 
     const char* label = t.state == api::TransportState::Recording ? "REC "
@@ -207,7 +208,8 @@ std::string TerminalView::render(uint64_t now_ns) {
            h.sample_rate, t.buffer_frames, t.xruns, t.clock_steps, t.overruns);
 
     for (uint32_t i = 0; i < h.track_count; ++i) {
-        const api::TrackSnapshot s = v.track(i);
+        api::TrackSnapshot s;
+        if (i < frame_.tracks.size()) s = frame_.tracks[i];
         const float peak = v.take_peak(i);
         append(out, "  %-10s %s %s  ", h.track_names[i].c_str(),
                s.armed() ? "\033[31m[R]\033[0m" : "[ ]", s.muted() ? "[M]" : "[ ]");

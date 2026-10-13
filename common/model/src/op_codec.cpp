@@ -5,7 +5,10 @@
 #include <array>
 #include <initializer_list>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 
@@ -447,10 +450,7 @@ bool read_fade(Reader& rd, const Value& obj, const std::string& path, const char
            rd.choice(v, p, "shape", kShapes, f.shape);
 }
 
-bool read_region(Reader& rd, const Value& obj, const std::string& path, const char* key,
-                 Region& r) {
-    const Value& v = *obj.find(key);
-    const std::string p = Reader::at(path, key);
+bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p, {"id", "name", "position", "length", "source", "source_offset",
                         "gain_db", "mute", "fade_in", "fade_out"})) {
         return false;
@@ -476,6 +476,11 @@ bool read_region(Reader& rd, const Value& obj, const std::string& path, const ch
            read_fade(rd, v, p, "fade_out", r.fade_out);
 }
 
+bool read_region(Reader& rd, const Value& obj, const std::string& path, const char* key,
+                 Region& r) {
+    return read_region_value(rd, *obj.find(key), Reader::at(path, key), r);
+}
+
 bool read_crossfade(Reader& rd, const Value& v, const std::string& p, Crossfade& x) {
     return rd.keys(v, p, {"left", "right", "length", "align", "shape"}) &&
            rd.id(v, p, "left", x.left) && rd.id(v, p, "right", x.right) &&
@@ -483,9 +488,7 @@ bool read_crossfade(Reader& rd, const Value& v, const std::string& p, Crossfade&
            rd.choice(v, p, "shape", kShapes, x.shape);
 }
 
-bool read_source(Reader& rd, const Value& obj, const std::string& path, Source& s) {
-    const Value& v = *obj.find("source");
-    const std::string p = Reader::at(path, "source");
+bool read_source_value(Reader& rd, const Value& v, const std::string& p, Source& s) {
     return rd.keys(v, p, {"id", "path", "channels", "length", "format", "time_reference",
                           "umid", "kind", "take", "recorded_on_track",
                           "latency_compensation"}) &&
@@ -499,9 +502,11 @@ bool read_source(Reader& rd, const Value& obj, const std::string& path, Source& 
            rd.frames(v, p, "latency_compensation", s.latency_compensation);
 }
 
-bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m) {
-    const Value& v = *obj.find("mix");
-    const std::string p = Reader::at(path, "mix");
+bool read_source(Reader& rd, const Value& obj, const std::string& path, Source& s) {
+    return read_source_value(rd, *obj.find("source"), Reader::at(path, "source"), s);
+}
+
+bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& m) {
     if (!rd.keys(v, p, {"track", "input", "monitor", "gain_db", "pan", "mute", "solo"}) ||
         !rd.id(v, p, "track", m.track)) {
         return false;
@@ -518,6 +523,10 @@ bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m
     return rd.choice(v, p, "monitor", kMonitors, m.monitor) &&
            rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
            rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo);
+}
+
+bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m) {
+    return read_mix_value(rd, *obj.find("mix"), Reader::at(path, "mix"), m);
 }
 
 bool read_bus(Reader& rd, const Value& obj, MonitorBus& b) {
@@ -581,11 +590,14 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
     return true;
 }
 
+bool read_marker_value(Reader& rd, const Value& v, const std::string& p, Marker& m) {
+    return rd.keys(v, p, {"id", "position", "name", "length"}) && rd.id(v, p, "id", m.id) &&
+           rd.frames(v, p, "position", m.position) && rd.text(v, p, "name", m.name) &&
+           rd.frames(v, p, "length", m.length);
+}
+
 bool read_marker(Reader& rd, const Value& obj, Marker& m) {
-    const Value& v = *obj.find("marker");
-    return rd.keys(v, "marker", {"id", "position", "name", "length"}) &&
-           rd.id(v, "marker", "id", m.id) && rd.frames(v, "marker", "position", m.position) &&
-           rd.text(v, "marker", "name", m.name) && rd.frames(v, "marker", "length", m.length);
+    return read_marker_value(rd, *obj.find("marker"), "marker", m);
 }
 
 bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation& out) {
@@ -753,7 +765,362 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
     return true;
 }
 
+// --- the undo window ---------------------------------------------------------
+
+constexpr std::int64_t kWindowFormat = 1;
+
+// Each table entry is written once and referred to by index, so a track or
+// playlist that several steps share crosses once and is shared again on
+// the replica, as it is on the engine.
+template <typename T>
+class Table {
+public:
+    // The index of `p`, and whether it is new to the table.
+    std::size_t index(const T* p, bool& added) {
+        const auto it = seen_.find(p);
+        if (it != seen_.end()) {
+            added = false;
+            return it->second;
+        }
+        const std::size_t ix = seen_.size();
+        seen_.emplace(p, ix);
+        added = true;
+        return ix;
+    }
+
+private:
+    std::unordered_map<const T*, std::size_t> seen_;
+};
+
+Value index_value(std::size_t ix) { return Value::integer(static_cast<std::int64_t>(ix)); }
+
+Value playlist_value(const Playlist& p) {
+    Value v = Value::object();
+    v.set("id", id_value(p.id));
+    v.set("name", Value::string(p.name));
+    Value& rs = v.set("regions", Value::array());
+    for (const Region& r : p.regions) rs.push(region_value(r));
+    Value& xs = v.set("crossfades", Value::array());
+    for (const Crossfade& x : p.crossfades) xs.push(crossfade_value(x));
+    return v;
+}
+
+class WindowWriter {
+public:
+    std::size_t edit(const EditState& e) {
+        bool added = false;
+        const std::size_t ix = edit_ix_.index(&e, added);
+        if (!added) return ix;
+        Value ev = Value::object();
+        Value& ts = ev.set("tracks", Value::array());
+        for (const auto& t : e.tracks) ts.push(index_value(track(*t)));
+        if (e.markers) {
+            ev.set("markers", index_value(markers(*e.markers)));
+        } else {
+            ev.set("markers", Value::null());
+        }
+        edits_.push(std::move(ev));
+        return ix;
+    }
+
+    Value playlists_ = Value::array();
+    Value tracks_ = Value::array();
+    Value markers_ = Value::array();
+    Value edits_ = Value::array();
+
+private:
+    std::size_t track(const TrackEdit& t) {
+        bool added = false;
+        const std::size_t ix = track_ix_.index(&t, added);
+        if (!added) return ix;
+        Value tv = Value::object();
+        tv.set("id", id_value(t.id));
+        tv.set("name", Value::string(t.name));
+        tv.set("channels", integer(t.channels));
+        tv.set("active_playlist", id_value(t.active_playlist));
+        Value& ps = tv.set("playlists", Value::array());
+        for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
+        tracks_.push(std::move(tv));
+        return ix;
+    }
+    std::size_t playlist(const Playlist& p) {
+        bool added = false;
+        const std::size_t ix = playlist_ix_.index(&p, added);
+        if (added) playlists_.push(playlist_value(p));
+        return ix;
+    }
+    std::size_t markers(const MarkerList& m) {
+        bool added = false;
+        const std::size_t ix = marker_ix_.index(&m, added);
+        if (added) {
+            Value& ml = markers_.push(Value::array());
+            for (const Marker& k : m.markers) ml.push(marker_value(k));
+        }
+        return ix;
+    }
+
+    Table<Playlist> playlist_ix_;
+    Table<TrackEdit> track_ix_;
+    Table<MarkerList> marker_ix_;
+    Table<EditState> edit_ix_;
+};
+
+bool window_value(const History& h, Value& root, std::string& error) {
+    const Snapshot& cur = h.current();
+    if (cur.edit != h.step_edit(h.undo_depth())) {
+        error = "the current state is not the one at the undo pointer";
+        return false;
+    }
+    WindowWriter w;
+    Value steps = Value::array();
+    for (std::size_t i = 0; i < h.step_count(); ++i) {
+        Value sv = Value::object();
+        sv.set("revision", integer(static_cast<std::int64_t>(h.step_revision(i))));
+        sv.set("edit", index_value(w.edit(*h.step_edit(i))));
+        steps.push(std::move(sv));
+    }
+
+    root = Value::object();
+    root.set("window_format", integer(kWindowFormat));
+    root.set("revision", integer(static_cast<std::int64_t>(cur.revision)));
+    root.set("next_id", id_value(cur.next_id));
+    root.set("position", index_value(h.undo_depth()));
+    root.set("settings", settings_value(cur.settings));
+    root.set("bus", bus_value(cur.mix.bus));
+    Value& mix = root.set("mix", Value::array());
+    for (const TrackMix& m : cur.mix.tracks) mix.push(mix_value(m));
+    Value& sources = root.set("sources", Value::array());
+    if (cur.sources) {
+        for (const Source& src : cur.sources->sources) sources.push(source_value(src));
+    }
+    root.set("playlists", std::move(w.playlists_));
+    root.set("tracks", std::move(w.tracks_));
+    root.set("markers", std::move(w.markers_));
+    root.set("edits", std::move(w.edits_));
+    root.set("steps", std::move(steps));
+    return true;
+}
+
+// An index into a table already read: only backwards, so nothing refers
+// to itself or to what is not there yet.
+bool table_index(Reader& rd, const Value& e, const std::string& p, std::size_t size,
+                 std::size_t& out) {
+    std::int64_t n = 0;
+    if (!e.is_number() || !e.is_integer_lexeme() || !e.to_int64(n) || n < 0 ||
+        static_cast<std::uint64_t>(n) >= size) {
+        return rd.fail(p, "must be an index below " + std::to_string(size));
+    }
+    out = static_cast<std::size_t>(n);
+    return true;
+}
+
+bool read_playlists(Reader& rd, const Value& root,
+                    std::vector<std::shared_ptr<const Playlist>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "playlists", list)) return false;
+    for (const Value& e : list->items()) {
+        auto p = std::make_shared<Playlist>();
+        const Value* rs = nullptr;
+        const Value* xs = nullptr;
+        if (!rd.keys(e, "playlists", {"id", "name", "regions", "crossfades"}) ||
+            !rd.id(e, "playlists", "id", p->id) || !rd.text(e, "playlists", "name", p->name) ||
+            !rd.array(e, "playlists", "regions", rs) ||
+            !rd.array(e, "playlists", "crossfades", xs)) {
+            return false;
+        }
+        for (const Value& r : rs->items()) {
+            Region region;
+            if (!read_region_value(rd, r, "playlists.regions", region)) return false;
+            p->regions.push_back(std::move(region));
+        }
+        for (const Value& x : xs->items()) {
+            Crossfade c;
+            if (!read_crossfade(rd, x, "playlists.crossfades", c)) return false;
+            p->crossfades.push_back(c);
+        }
+        out.push_back(std::move(p));
+    }
+    return true;
+}
+
+bool read_tracks(Reader& rd, const Value& root,
+                 const std::vector<std::shared_ptr<const Playlist>>& playlists,
+                 std::vector<std::shared_ptr<const TrackEdit>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "tracks", list)) return false;
+    for (const Value& e : list->items()) {
+        auto t = std::make_shared<TrackEdit>();
+        const Value* ps = nullptr;
+        if (!rd.keys(e, "tracks", {"id", "name", "channels", "active_playlist", "playlists"}) ||
+            !rd.id(e, "tracks", "id", t->id) || !rd.text(e, "tracks", "name", t->name) ||
+            !rd.small(e, "tracks", "channels", t->channels) ||
+            !rd.id(e, "tracks", "active_playlist", t->active_playlist) ||
+            !rd.array(e, "tracks", "playlists", ps)) {
+            return false;
+        }
+        for (const Value& i : ps->items()) {
+            std::size_t ix = 0;
+            if (!table_index(rd, i, "tracks.playlists", playlists.size(), ix)) return false;
+            t->playlists.push_back(playlists[ix]);
+        }
+        out.push_back(std::move(t));
+    }
+    return true;
+}
+
+bool read_marker_lists(Reader& rd, const Value& root,
+                       std::vector<std::shared_ptr<const MarkerList>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "markers", list)) return false;
+    for (const Value& e : list->items()) {
+        if (!e.is_array()) return rd.fail("markers", "must hold arrays of markers");
+        auto ml = std::make_shared<MarkerList>();
+        for (const Value& m : e.items()) {
+            Marker marker;
+            if (!read_marker_value(rd, m, "markers", marker)) return false;
+            ml->markers.push_back(std::move(marker));
+        }
+        out.push_back(std::move(ml));
+    }
+    return true;
+}
+
+bool read_edits(Reader& rd, const Value& root,
+                const std::vector<std::shared_ptr<const TrackEdit>>& tracks,
+                const std::vector<std::shared_ptr<const MarkerList>>& markers,
+                std::vector<std::shared_ptr<const EditState>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "edits", list)) return false;
+    for (const Value& e : list->items()) {
+        auto es = std::make_shared<EditState>();
+        const Value* ts = nullptr;
+        if (!rd.keys(e, "edits", {"tracks", "markers"}) || !rd.array(e, "edits", "tracks", ts)) {
+            return false;
+        }
+        for (const Value& i : ts->items()) {
+            std::size_t ix = 0;
+            if (!table_index(rd, i, "edits.tracks", tracks.size(), ix)) return false;
+            es->tracks.push_back(tracks[ix]);
+        }
+        const Value& mv = *e.find("markers");
+        if (!mv.is_null()) {
+            std::size_t ix = 0;
+            if (!table_index(rd, mv, "edits.markers", markers.size(), ix)) return false;
+            es->markers = markers[ix];
+        }
+        out.push_back(std::move(es));
+    }
+    return true;
+}
+
+bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
+    if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
+                            "bus", "mix", "sources", "playlists", "tracks", "markers", "edits",
+                            "steps"})) {
+        return false;
+    }
+    std::int64_t format = 0;
+    if (!rd.integer(root, "", "window_format", kMaxInteger, format)) return false;
+    if (format != kWindowFormat) {
+        return rd.fail("window_format", "is " + std::to_string(format) +
+                                            " where this version reads " +
+                                            std::to_string(kWindowFormat));
+    }
+    Snapshot cur;
+    std::int64_t revision = 0, position = 0;
+    if (!rd.integer(root, "", "revision", kMaxInteger, revision) ||
+        !rd.id(root, "", "next_id", cur.next_id) ||
+        !rd.integer(root, "", "position", kMaxInteger, position) ||
+        !read_settings(rd, root, cur.settings) || !read_bus(rd, root, cur.mix.bus)) {
+        return false;
+    }
+    cur.revision = static_cast<std::uint64_t>(revision);
+
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "mix", list)) return false;
+    for (const Value& e : list->items()) {
+        TrackMix m;
+        if (!read_mix_value(rd, e, "mix", m)) return false;
+        cur.mix.tracks.push_back(std::move(m));
+    }
+    auto pool = std::make_shared<SourcePool>();
+    if (!rd.array(root, "", "sources", list)) return false;
+    for (const Value& e : list->items()) {
+        Source src;
+        if (!read_source_value(rd, e, "sources", src)) return false;
+        pool->sources.push_back(std::move(src));
+    }
+    cur.sources = std::move(pool);
+
+    std::vector<std::shared_ptr<const Playlist>> playlists;
+    std::vector<std::shared_ptr<const TrackEdit>> tracks;
+    std::vector<std::shared_ptr<const MarkerList>> markers;
+    std::vector<std::shared_ptr<const EditState>> edits;
+    if (!read_playlists(rd, root, playlists) || !read_tracks(rd, root, playlists, tracks) ||
+        !read_marker_lists(rd, root, markers) || !read_edits(rd, root, tracks, markers, edits)) {
+        return false;
+    }
+
+    std::vector<History::WindowStep> steps;
+    if (!rd.array(root, "", "steps", list)) return false;
+    for (const Value& e : list->items()) {
+        History::WindowStep st;
+        std::int64_t rev = 0;
+        std::size_t ix = 0;
+        if (!rd.keys(e, "steps", {"revision", "edit"}) ||
+            !rd.integer(e, "steps", "revision", kMaxInteger, rev) ||
+            !table_index(rd, *e.find("edit"), "steps.edit", edits.size(), ix)) {
+            return false;
+        }
+        st.revision = static_cast<std::uint64_t>(rev);
+        st.edit = edits[ix];
+        steps.push_back(std::move(st));
+    }
+    if (static_cast<std::uint64_t>(position) >= steps.size()) {
+        return rd.fail("position", "is past the last undo step");
+    }
+    cur.edit = steps[static_cast<std::size_t>(position)].edit;
+
+    std::string why;
+    if (!check_invariants(cur, why)) return rd.fail("", "the current state: " + why);
+    if (!History::restore(std::move(cur), std::move(steps), static_cast<std::size_t>(position),
+                          out, why)) {
+        return rd.fail("steps", why);
+    }
+    return true;
+}
+
 }  // namespace
+
+bool encode_window(const History& history, std::string& out, std::string& error) {
+    Value root;
+    if (!window_value(history, root, error)) return false;
+    return json::write(root, out, error);
+}
+
+bool decode_window(std::string_view bytes, std::optional<History>& out, std::string& error) {
+    // The engine's bytes, already held to the wire's 64 MiB cap. A window
+    // has more, smaller values per byte than a session file, so the value
+    // and DOM caps are raised to what 64 MiB of it can hold.
+    json::Limits limits;
+    limits.max_values = std::size_t{16} << 20;
+    limits.max_dom_bytes = std::size_t{1} << 30;
+    Value root;
+    json::Error perr;
+    if (!json::parse(bytes, root, perr, limits)) {
+        error = "undo window: line " + std::to_string(perr.line) + ", column " +
+                std::to_string(perr.column) + ": " + perr.message;
+        return false;
+    }
+    Reader rd(error);
+    std::optional<History> decoded;
+    if (!read_window(rd, root, decoded)) {
+        error = "undo window: " + error;
+        return false;
+    }
+    out = std::move(decoded);
+    return true;
+}
 
 bool encode_operation(const Operation& op, std::string& out, std::string& error) {
     const Value v = std::visit(Encoder{}, op);

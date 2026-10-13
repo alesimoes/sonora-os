@@ -67,6 +67,46 @@ History History::replica(Snapshot initial) {
     return History(std::move(initial), std::numeric_limits<std::size_t>::max());
 }
 
+bool History::restore(Snapshot current, std::vector<WindowStep> steps, std::size_t position,
+                      std::optional<History>& out, std::string& error) {
+    if (steps.empty() || position >= steps.size()) {
+        error = "the undo window has no step at its position";
+        return false;
+    }
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (!steps[i].edit) {
+            error = "undo step " + std::to_string(i) + " has no state";
+            return false;
+        }
+        if (i > 0 && steps[i].revision <= steps[i - 1].revision) {
+            error = "the undo window's revisions do not rise";
+            return false;
+        }
+    }
+    if (current.edit != steps[position].edit) {
+        error = "the current state is not the undo window's at its position";
+        return false;
+    }
+    History h = replica(std::move(current));
+    h.steps_.clear();
+    h.charged_ = 0;
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        const std::size_t charge =
+            i == 0 ? 0 : exclusive_bytes(*steps[i].edit, *h.steps_.back().edit);
+        h.steps_.push_back(Step{std::move(steps[i].edit), steps[i].revision, charge});
+        h.charged_ += charge;
+    }
+    h.pos_ = position;
+    out.emplace(std::move(h));
+    return true;
+}
+
+bool History::drop_oldest() {
+    if (steps_.size() < 2 || pos_ == 0) return false;
+    pop_front();
+    return true;
+}
+
 bool History::apply(const Operation& op, std::string& error) {
     Snapshot next;
     if (!model::apply(current_, op, next, error)) return false;

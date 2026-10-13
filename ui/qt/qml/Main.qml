@@ -30,16 +30,27 @@ Rectangle {
     // --- loud conditions ------------------------------------------------------
     Rectangle {
         id: banner
+        objectName: "banner"
         anchors { left: parent.left; right: parent.right; top: transport.bottom }
         height: visible ? 26 : 0
-        visible: root.shell.softwareRendering || !root.shell.engineAlive
+        visible: root.shell.alertText.length > 0 || root.shell.softwareRendering
+                 || !root.shell.engineAlive
         color: Theme.alarmSurface
         z: 1
         Text {
-            anchors { left: parent.left; leftMargin: Theme.space4; verticalCenter: parent.verticalCenter }
+            objectName: "bannerText"
+            anchors {
+                left: parent.left; leftMargin: Theme.space4
+                right: parent.right; rightMargin: Theme.space4
+                verticalCenter: parent.verticalCenter
+            }
+            elide: Text.ElideRight
             color: Theme.alarm
             font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.Bold }
-            text: !root.shell.engineAlive
+            // The engine's own reason comes first: it says what to do.
+            text: root.shell.alertText.length > 0
+                  ? root.shell.alertText
+                  : !root.shell.engineAlive
                   ? "The engine is not responding. Meters show no data; nothing on this screen is current."
                   : !root.shell.metersAvailable
                   ? "No GPU scene graph: meters and the timeline cannot be drawn on this rendering path. This machine is not fit for the job (ADR-0006)."

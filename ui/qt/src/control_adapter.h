@@ -31,21 +31,18 @@ public:
     const EngineInfo& info() const override { return info_; }
     uint64_t send(const std::string& command, const CommandContext& ctx) override;
     void poll(std::vector<CommandOutcome>& replies) override;
-    TransportSnapshot transport() const override;
-    TrackSnapshot track(uint32_t index) const override;
+    void take_events(std::vector<EngineEvent>& out) override;
+    void frame(EngineFrame& out) const override;
     float take_peak(uint32_t index) override;
     bool engine_alive(uint64_t now_ns) const override;
-
-    // Events since the last poll(): notices, missing inputs, a failed take,
-    // a fatal backend. The shell does not draw them yet; they are kept for
-    // one poll so a caller that wants them can read them.
-    const std::vector<api::EngineEvent>& events() const { return inbox_.events; }
 
 private:
     api::EngineControl& engine_;
     EngineInfo info_;
     std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line
     api::Inbox inbox_;
+    std::vector<EngineEvent> events_;   // received, not yet taken
+    mutable api::StateFrame state_;     // kept, so a tick does not allocate
 };
 
 }  // namespace sonora::ui

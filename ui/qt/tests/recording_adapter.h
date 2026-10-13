@@ -46,11 +46,17 @@ public:
         for (auto& o : pending_) replies.push_back(std::move(o));
         pending_.clear();
     }
-    TransportSnapshot transport() const override { return snapshot; }
-    TrackSnapshot track(uint32_t i) const override {
-        TrackSnapshot t;
-        t.armed = i < armed.size() && armed[i];
-        return t;
+    void take_events(std::vector<EngineEvent>& out) override {
+        for (auto& e : events) out.push_back(std::move(e));
+        events.clear();
+    }
+    void frame(EngineFrame& out) const override {
+        ++frames;
+        out.transport = snapshot;
+        out.tracks.assign(info_.track_count, TrackSnapshot{});
+        for (uint32_t i = 0; i < info_.track_count; ++i) {
+            out.tracks[i].armed = i < armed.size() && armed[i];
+        }
     }
     float take_peak(uint32_t i) override {
         ++peak_reads;
@@ -65,6 +71,8 @@ public:
     std::vector<float> peaks;
     std::vector<bool> armed;
     TransportSnapshot snapshot;
+    std::vector<EngineEvent> events;   // handed over at the next take_events()
+    mutable int frames = 0;
     bool alive = true;
     int peak_reads = 0;
     DispatchResult next_result = DispatchResult::Ok;
