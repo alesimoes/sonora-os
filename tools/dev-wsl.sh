@@ -49,14 +49,16 @@ die() { echo "dev-wsl: $*" >&2; exit 1; }
 check_host() {
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qi microsoft /proc/version ||
     die "this is not WSL. On a Linux desktop use tools/run-sonora.sh."
+  # shellcheck source=/dev/null
   . /etc/os-release
   # The container images and the ISO are trixie. Another release builds
   # against another Qt and another PipeWire, and a result there is not one
   # about what we ship.
   [[ "${VERSION_CODENAME:-}" == trixie ]] ||
-    die "Debian ${VERSION_CODENAME:-?} here; trixie is required. Upgrade the distro" \
-        "(sed -i 's/bookworm/trixie/g' /etc/apt/sources.list && apt full-upgrade)" \
-        "or reinstall it with tools/dev-wsl.ps1."
+    die "Debian ${VERSION_CODENAME:-?} here; trixie is required. Upgrade the distro:" \
+        "sudo sed -i 's/bookworm/trixie/g' /etc/apt/sources.list" \
+        "/etc/apt/sources.list.d/*.sources 2>/dev/null;" \
+        "sudo apt update && sudo apt full-upgrade"
 }
 
 check_wslg() {
@@ -131,7 +133,8 @@ do_build() {
 
 runtime_dir() {
   if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -w "${XDG_RUNTIME_DIR:-/nonexistent}" ]]; then
-    export XDG_RUNTIME_DIR="/tmp/sonora-runtime-$(id -u)"
+    XDG_RUNTIME_DIR="/tmp/sonora-runtime-$(id -u)"
+    export XDG_RUNTIME_DIR
     mkdir -p "$XDG_RUNTIME_DIR" && chmod 0700 "$XDG_RUNTIME_DIR"
   fi
   STATE="$XDG_RUNTIME_DIR/sonora-dev"
@@ -230,9 +233,11 @@ do_audio() {
     die "the $SPEAKERS node never appeared; see $STATE/pipewire.log"
   fi
   say "PipeWire up; speakers: $(node_ports "$SPEAKERS" -i | tr '\n' ' ')"
-  wait_for 5 bash -c "pw-link -o 2>/dev/null | grep -q '^$MIC:'" &&
-    say "microphone: $(node_ports "$MIC" -o | tr '\n' ' ')" ||
+  if wait_for 5 bash -c "pw-link -o 2>/dev/null | grep -q '^$MIC:'"; then
+    say "microphone: $(node_ports "$MIC" -o | tr '\n' ' ')"
+  else
     say "no microphone node; Windows may deny WSLg the mic (Settings > Privacy > Microphone)"
+  fi
   local clock
   clock="$(pw-metadata -n settings 0 2>/dev/null |
     sed -n "s/.*key:'clock\.\(rate\|quantum\)' value:'\([0-9]*\)'.*/\1=\2/p" | tr '\n' ' ' || true)"
