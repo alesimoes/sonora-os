@@ -11,11 +11,10 @@
 // engine's control thread, needs: inherited descriptors, the sealed
 // read-only clock region, scheduling, denormals, death of the parent.
 //
-// engine/plugin_client will create the channel and clock regions with
-// common/platform's SharedRegion and pass them over the host's socketpair
-// with SCM_RIGHTS (ADR-0012 §4). Until host_control.h lands, the driver
-// passes them as inherited descriptors (--shm-fd, --clock-fd), sealed and
-// reopened read-only exactly the way SharedRegion does it.
+// The regions cross as inherited descriptors (--shm-fd, --clock-fd), the
+// clock sealed and reopened read-only exactly the way SharedRegion does it;
+// the HostControl socket (contracts/plugin host_control.h) carries messages
+// only, never a descriptor.
 
 #include <atomic>
 #include <cstddef>

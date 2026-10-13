@@ -20,6 +20,18 @@
 //   vst3:534F4E4F524156535433544553540008  once         mono pass-through; activates
 //                                                       once, and refuses setActive(true)
 //                                                       after a setActive(false)
+//   vst3:534F4E4F524156535433544553540009  state        mono pass-through; counts its blocks
+//                                                       and keeps the count in its state
+//                                                       ("SNTS" + int64); refuses another
+//                                                       magic in setState
+//   vst3:534F4E4F52415653543354455354000A  touch        gain on ParamID 7 "level" (and a
+//                                                       read-only ParamID 9); 300 ms after
+//                                                       it is given a component handler,
+//                                                       its "editor" thread touches: a
+//                                                       gesture 0.25 -> 0.75, a lone edit
+//                                                       to 0.5, an edit of the read-only
+//                                                       one, and a gesture left open at
+//                                                       0.125
 //
 // SONORA_TEST_VST3_CRASH_ON_SCAN=1 makes GetPluginFactory segfault, for the
 // test that a crashing scan costs one --list entry and not the list.
@@ -37,6 +49,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -46,8 +59,13 @@ using namespace Steinberg::Vst;
 
 namespace {
 
-enum class Kind { Crash = 1, StereoOnly = 2, YesMan = 3, Liar = 4, Turncoat = 5, Params = 6, Latency = 7, Once = 8 };
-constexpr int kKinds = 8;
+enum class Kind {
+    Crash = 1, StereoOnly = 2, YesMan = 3, Liar = 4, Turncoat = 5, Params = 6, Latency = 7, Once = 8,
+    State = 9, Touch = 10
+};
+constexpr int kKinds = 10;
+constexpr ParamID kTouchLevel = 7, kTouchMeter = 9;
+constexpr char kStateMagic[4] = {'S', 'N', 'T', 'S'};
 // More than the 128 one block once carried; the host's ring holds 256.
 constexpr int32 kParamsCount = 256;
 constexpr uint32 kLatencyAfter = 64;
@@ -70,8 +88,8 @@ void copy16(String128 dst, const char* src) {
 class TestEffect final : public IComponent, public IAudioProcessor, public IEditController {
 public:
     explicit TestEffect(Kind kind) : kind_(kind) {
-        const bool stereo =
-            kind != Kind::Crash && kind != Kind::Params && kind != Kind::Latency && kind != Kind::Once;
+        const bool stereo = kind != Kind::Crash && kind != Kind::Params && kind != Kind::Latency &&
+                            kind != Kind::Once && kind != Kind::State && kind != Kind::Touch;
         arrangement_ = stereo ? SpeakerArr::kStereo : SpeakerArr::kMono;
     }
 
@@ -126,8 +144,24 @@ public:
         if (kind_ != Kind::Once || !state) return kResultOk;
         return activations_++ == 0 ? kResultOk : kResultFalse;
     }
-    tresult PLUGIN_API setState(IBStream*) override { return kResultOk; }
-    tresult PLUGIN_API getState(IBStream*) override { return kResultOk; }
+    tresult PLUGIN_API setState(IBStream* s) override {
+        if (kind_ != Kind::State) return kResultOk;
+        char magic[4];
+        int64 n = 0;
+        int32 got = 0;
+        if (!s || s->read(magic, 4, &got) != kResultOk || got != 4 || std::memcmp(magic, kStateMagic, 4) != 0)
+            return kResultFalse;
+        if (s->read(&n, sizeof n, &got) != kResultOk || got != int32(sizeof n)) return kResultFalse;
+        blocks_.store(n, std::memory_order_relaxed);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getState(IBStream* s) override {
+        if (kind_ != Kind::State) return kResultOk;
+        int64 n = blocks_.load(std::memory_order_relaxed);
+        int32 put = 0;
+        if (!s || s->write(const_cast<char*>(kStateMagic), 4, &put) != kResultOk || put != 4) return kResultFalse;
+        return s->write(&n, sizeof n, &put) == kResultOk && put == int32(sizeof n) ? kResultOk : kResultFalse;
+    }
 
     // IAudioProcessor
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* ins, int32 n_in, SpeakerArrangement* outs,
@@ -138,6 +172,8 @@ public:
         case Kind::Params:
         case Kind::Latency:
         case Kind::Once:
+        case Kind::State:
+        case Kind::Touch:
             if (ins[0] != outs[0] || SpeakerArr::getChannelCount(ins[0]) > 2) return kResultFalse;
             arrangement_ = ins[0];
             return kResultTrue;
@@ -185,6 +221,7 @@ public:
                     trigger_ = v;
                     offset0 = offset;
                 }
+                if (kind_ == Kind::Touch && q->getParameterId() == kTouchLevel) level_ = float(v);
             }
         }
         if (kind_ == Kind::Crash && trigger_ > 0.5) {
@@ -229,12 +266,14 @@ public:
             write_ = (write_ + n) & (kDelayRing - 1);
             return kResultOk;
         }
+        if (kind_ == Kind::State) blocks_.fetch_add(1, std::memory_order_relaxed);
+        const float gain = kind_ == Kind::Touch ? level_ : 1.f;
         // The liar writes eight channels into a bus it declared as two.
         const int32 channels = kind_ == Kind::Liar ? 8 : out.numChannels;
         for (int32 c = 0; c < channels; ++c) {
             float* o = out.channelBuffers32[c];
             const float* i = c < in.numChannels ? in.channelBuffers32[c] : nullptr;
-            for (int32 s = 0; s < n; ++s) o[s] = i ? i[s] : 0.f;
+            for (int32 s = 0; s < n; ++s) o[s] = i ? gain * i[s] : 0.f;
         }
         return kResultOk;
     }
@@ -243,10 +282,21 @@ public:
     // IEditController: one parameter, id 0, "crash", "latency" or "unused";
     // the params class has kParamsCount of them, ids 0 up, titled "#id".
     tresult PLUGIN_API setComponentState(IBStream*) override { return kResultOk; }
-    int32 PLUGIN_API getParameterCount() override { return kind_ == Kind::Params ? kParamsCount : 1; }
+    int32 PLUGIN_API getParameterCount() override {
+        return kind_ == Kind::Params ? kParamsCount : kind_ == Kind::Touch ? 2 : 1;
+    }
     tresult PLUGIN_API getParameterInfo(int32 index, ParameterInfo& info) override {
         if (index < 0 || index >= getParameterCount()) return kInvalidArgument;
         std::memset(&info, 0, sizeof info);
+        if (kind_ == Kind::Touch) {
+            info.id = index == 0 ? kTouchLevel : kTouchMeter;
+            copy16(info.title, index == 0 ? "level" : "meter");
+            copy16(info.shortTitle, index == 0 ? "level" : "meter");
+            copy16(info.units, "%");
+            info.defaultNormalizedValue = index == 0 ? 1.0 : 0.0;
+            info.flags = index == 0 ? ParameterInfo::kCanAutomate : ParameterInfo::kIsReadOnly;
+            return kResultOk;
+        }
         info.id = static_cast<ParamID>(index);
         const char* title = kind_ == Kind::Crash     ? "crash"
                             : kind_ == Kind::Latency ? "latency"
@@ -259,20 +309,29 @@ public:
         info.flags = ParameterInfo::kCanAutomate;
         return kResultOk;
     }
-    tresult PLUGIN_API getParamStringByValue(ParamID, ParamValue, String128 s) override {
+    tresult PLUGIN_API getParamStringByValue(ParamID, ParamValue v, String128 s) override {
+        if (kind_ == Kind::Touch) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.1f", v * 100.0);
+            copy16(s, buf);
+            return kResultOk;
+        }
         copy16(s, "");
         return kResultOk;
     }
     tresult PLUGIN_API getParamValueByString(ParamID, TChar*, ParamValue&) override { return kResultFalse; }
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID, ParamValue v) override { return v; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID, ParamValue v) override { return v; }
-    ParamValue PLUGIN_API getParamNormalized(ParamID) override { return trigger_; }
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        if (kind_ == Kind::Touch) return id == kTouchLevel ? edited_.load() : 0.0;
+        return trigger_;
+    }
     tresult PLUGIN_API setParamNormalized(ParamID, ParamValue) override { return kResultOk; }
     tresult PLUGIN_API setComponentHandler(IComponentHandler* handler) override {
-        if (kind_ != Kind::Latency) return kResultOk;
+        if (kind_ != Kind::Latency && kind_ != Kind::Touch) return kResultOk;
         stop_notifier();
         handler_ = handler;
-        if (handler_) notifier_ = std::thread([this] { notify_loop(); });
+        if (handler_) notifier_ = std::thread([this] { kind_ == Kind::Touch ? touch_script() : notify_loop(); });
         return kResultOk;
     }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
@@ -291,6 +350,32 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
+    // What an editor does when the operator drags the level knob, then
+    // clicks it once, then pokes a meter, then grabs the knob and lets the
+    // window close under the mouse. From a thread of the plugin's own, as an
+    // editor's toolkit would.
+    void touch_script() {
+        for (int i = 0; i < 300 && !quit_.load(std::memory_order_acquire); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (quit_.load(std::memory_order_acquire)) return;
+        const auto edit = [&](ParamValue v) {
+            edited_.store(v);
+            handler_->performEdit(kTouchLevel, v);
+        };
+        handler_->beginEdit(kTouchLevel);
+        edit(0.25);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        edit(0.5);
+        edit(0.75);  // inside the coalescing interval: only the gesture end carries it
+        handler_->endEdit(kTouchLevel);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        edit(0.5);  // no gesture: the host wraps it in one
+        handler_->performEdit(kTouchMeter, 1.0);  // read-only: no dense index
+        handler_->beginEdit(kTouchLevel);
+        edit(0.125);
+        // ... and never an endEdit.
+    }
+
     void stop_notifier() {
         if (!notifier_.joinable()) return;
         quit_.store(true, std::memory_order_release);
@@ -311,6 +396,9 @@ private:
     float delay_[2][kDelayRing]{};
     int32 write_ = 0;
     int activations_ = 0;  // the once class
+    std::atomic<int64> blocks_{0};  // the state class
+    float level_ = 1.f;             // the touch class: the processor's
+    std::atomic<double> edited_{1.0};  // the touch class: the controller's
 };
 
 class Factory final : public IPluginFactory {
@@ -337,7 +425,7 @@ public:
         static const char* const names[kKinds] = {
             "Sonora Test Crash",    "Sonora Test Stereo Only", "Sonora Test Yes-Man", "Sonora Test Liar",
             "Sonora Test Turncoat", "Sonora Test Params",      "Sonora Test Latency",
-            "Sonora Test Once"};
+            "Sonora Test Once",     "Sonora Test State",       "Sonora Test Touch"};
         if (index < 0 || index >= kKinds) return kInvalidArgument;
         *info = PClassInfo();
         make_cid(static_cast<Kind>(index + 1), info->cid);

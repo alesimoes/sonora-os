@@ -10,6 +10,16 @@
 //   sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...
 //                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
 //                      [--sidechain N] [--reactivate]
+//   sonora-plugin-host --control-fd FD --shm-fd FD --clock-fd FD [--bundle DIR]...
+//                      [--engine-pid PID]
+//
+// --control-fd: the engine's way (contracts/plugin host_control.h, ADR-0012
+// §4). The chain, its key channels, its states and whether to re-activate
+// come in the Load message on that socket, not on the command line; the
+// host answers Loaded or Refused, then serves GetState, DescribeValue,
+// OpenEditor/CloseEditor, Reconfigure and Shutdown, and reports gestures,
+// latency changes and faults. Without it (the command-line chain) the host
+// is the one the tests and measurements drive directly.
 //
 // --sidechain N: the last N of the region's channels are a key, not signal.
 // Every plugin with a key input (LV2 lv2:isSideChain ports, a VST3 aux input
@@ -46,15 +56,18 @@
 // is also written into the channel header (refusal, refusal_instance),
 // which is what the engine reads; stderr is for people.
 //
-// Plugin editors (UI windows) are not hosted yet. Under ADR-0010 they will be
-// parentless X11 toplevels placed by labwc through Xwayland, opened by this
-// process, with the opaque parent-window token of ADR-0007 update 1 item 6
-// carried but empty on the appliance.
+// Plugin editors (UI windows) are not hosted yet: OpenEditor is answered
+// with EditorFailed. Under ADR-0010 they will be parentless X11 toplevels
+// placed by labwc through Xwayland, opened by this process, with the opaque
+// parent-window token of ADR-0007 update 1 item 6 carried but empty on the
+// appliance.
 
 #include "chain.h"
+#include "control.h"
 #include "ipc.h"
 #include "loader.h"
 #include "lv2_host.h"
+#include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
 #ifdef SONORA_HAVE_VST3
 #include "vst3_host.h"
@@ -62,14 +75,18 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include <unistd.h>
+
 using namespace sonora;
 using namespace sonora::plugin_host;
+namespace pc = sonora::plugin::control;
 
 namespace {
 
@@ -110,7 +127,7 @@ public:
 struct Options {
     bool list = false, json = false, version = false;
     std::string probe, format;
-    int shm_fd = -1, clock_fd = -1;
+    int shm_fd = -1, clock_fd = -1, control_fd = -1;
     int64_t engine_pid = 0;
     std::vector<std::string> chain, bundles;
     struct Set {
@@ -136,7 +153,9 @@ struct Options {
                  "       sonora-plugin-host --version\n"
                  "       sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
                  "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n"
-                 "                          [--sidechain N] [--reactivate]\n",
+                 "                          [--sidechain N] [--reactivate]\n"
+                 "       sonora-plugin-host --control-fd FD --shm-fd FD --clock-fd FD [--bundle DIR]...\n"
+                 "                          [--engine-pid PID]\n",
                  why);
     std::exit(plugin::kHostExitUsage);
 }
@@ -172,6 +191,7 @@ Options parse(int argc, char** argv) {
         }
         else if (a == "--probe") o.probe = next();
         else if (a == "--shm-fd") o.shm_fd = std::atoi(next().c_str());
+        else if (a == "--control-fd") o.control_fd = std::atoi(next().c_str());
         else if (a == "--engine-pid") o.engine_pid = std::atoll(next().c_str());
         else if (a == "--chain") o.chain = split(next(), ',');
         else if (a == "--bundle") o.bundles.push_back(next());
@@ -195,7 +215,13 @@ Options parse(int argc, char** argv) {
     }
     const int modes = int(o.list) + int(!o.probe.empty()) + int(o.shm_fd >= 0) + int(o.version);
     if (modes != 1) usage("choose exactly one of --list, --probe, --shm-fd, --version");
-    if (o.shm_fd >= 0 && o.chain.empty()) usage("--shm-fd needs --chain");
+    if (o.control_fd >= 0) {
+        if (o.shm_fd < 0) usage("--control-fd needs --shm-fd and --clock-fd");
+        if (!o.chain.empty() || !o.sets.empty() || o.sidechain || o.reactivate)
+            usage("with --control-fd the chain, --set, --sidechain and --reactivate come in Load");
+    } else if (o.shm_fd >= 0 && o.chain.empty()) {
+        usage("--shm-fd needs --chain or --control-fd");
+    }
     if (o.shm_fd >= 0 && o.clock_fd < 0) usage("--shm-fd needs --clock-fd");
     return o;
 }
@@ -430,6 +456,9 @@ void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_
     if (total != h.latency_frames.load(std::memory_order_relaxed)) {
         h.latency_frames.store(total, std::memory_order_relaxed);
         h.latency_generation.fetch_add(1, std::memory_order_release);
+        // The main thread sends LatencyChanged (host_control.h). A wake only
+        // on a change, which is rare; never per block.
+        notify_control();
     }
 }
 
@@ -485,6 +514,14 @@ private:
     uint64_t poll_until_ = 0;  // polling a late callback until then
 };
 
+// Reconfigure's handshake with the processing thread (host_control.h): the
+// main thread asks, the processing thread parks at a block boundary and
+// says so, and keeps bumping heartbeat until it is let go.
+struct Pause {
+    std::atomic<bool> request{false};
+    std::atomic<uint32_t> parked{0};  // bumped (signal) each time it parks
+};
+
 // What the processing thread works with, every part of it taken once from
 // validated headers or built in private memory.
 struct Session {
@@ -502,13 +539,18 @@ struct Session {
     uint32_t ipc_frames;
     int64_t engine_pid;
     uint32_t block_frames;  // every block's size in v1 (contracts/plugin, Frame count)
+    std::atomic<bool> stop{false};  // the socket's Shutdown, or the engine's end closed
+    Pause pause;
+    ChainError fault;  // why process_blocks returned kHostExitFaulted
 };
+
+constexpr uint64_t kParkedPollNs = 20'000'000;
 
 // The processing thread's loop, at SCHED_FIFO when allowed. Returns the exit
 // code: 0 on shutdown or a gone engine, kHostExitFaulted when a plugin faulted.
 int process_blocks(Session& s) {
     plugin::ChannelHeader& h = s.h;
-    ChainError cerr;
+    ChainError& cerr = s.fault;
     TimerPacer pacer;
     uint64_t last = h.completed_block.load(std::memory_order_relaxed);
     uint64_t next_parent_check = monotonic_ns() + kParentCheckNs;
@@ -520,7 +562,20 @@ int process_blocks(Session& s) {
         return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, 0) : s.chain.replace_param(i, p, v);
     };
     for (;;) {
-        if (h.shutdown.load(std::memory_order_acquire)) break;
+        if (h.shutdown.load(std::memory_order_acquire) || s.stop.load(std::memory_order_acquire)) break;
+        if (s.pause.request.load(std::memory_order_acquire)) {
+            // Between blocks: the main thread re-activates the chain now.
+            // Blocks submitted meanwhile wait; the engine plays them as
+            // misses it does not count (host_control.h, Reconfigure).
+            signal(s.pause.parked);
+            while (s.pause.request.load(std::memory_order_acquire) &&
+                   !h.shutdown.load(std::memory_order_acquire) && !s.stop.load(std::memory_order_acquire)) {
+                sleep_until_ns(monotonic_ns() + kParkedPollNs);
+                h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+            }
+            pacer.found();
+            continue;
+        }
         // Auditor M2: tick FIRST, then submitted_block. A submit landing
         // between the two has already moved tick, so the futex wait below
         // returns at once instead of sleeping through the block.
@@ -589,6 +644,134 @@ int incompatible(const char* what, const plugin::VersionWords& got, uint32_t wan
     return plugin::kHostExitIncompatible;
 }
 
+// The chain to load, from the command line or from Load.
+struct ChainSpec {
+    std::vector<std::string> ids;
+    std::vector<std::vector<std::string>> states;  // per instance: sections, empty for none
+    std::vector<pc::StateResult> state_results;
+    uint32_t sidechain = 0;
+    bool reactivate = false;
+};
+
+// Host side of the socket's first exchange (host_control.h, Handshake 2):
+// EngineHello read before anything is sent or written. Returns -1 to go on,
+// or the exit code.
+int read_engine_hello(ControlLink& link) {
+    std::string m;
+    if (!link.next(m, uint64_t(pc::kHelloTimeoutMs) * 1000000ull)) {
+        std::fprintf(stderr, "sonora-plugin-host: no EngineHello from the engine%s%s\n",
+                     link.error().empty() ? "" : ": ", link.error().c_str());
+        return plugin::kHostExitUsage;
+    }
+    uint32_t wire = 0;
+    if (!pc::decode_wire_version(m, wire) || static_cast<uint8_t>(m[0]) != uint8_t(pc::Type::EngineHello)) {
+        std::fprintf(stderr, "sonora-plugin-host: the engine's first message is not an EngineHello\n");
+        return plugin::kHostExitUsage;
+    }
+    if (wire != pc::kHostWireVersion) {
+        std::fprintf(stderr,
+                     "sonora-plugin-host: incompatible engine: it speaks HostControl wire %u; this host "
+                     "speaks wire %u\n",
+                     wire, pc::kHostWireVersion);
+        return plugin::kHostExitIncompatible;
+    }
+    pc::EngineHello hello;
+    std::string why;
+    if (!pc::decode(m, hello, why)) {
+        std::fprintf(stderr, "sonora-plugin-host: the engine's EngineHello is malformed: %s\n", why.c_str());
+        return plugin::kHostExitUsage;
+    }
+    if (hello.layout_version != plugin::kLayoutVersion || hello.clock_version != plugin::kClockLayoutVersion) {
+        std::fprintf(stderr,
+                     "sonora-plugin-host: incompatible engine: it speaks layout %u clock %u; this host "
+                     "speaks layout %u clock %u\n",
+                     hello.layout_version, hello.clock_version, plugin::kLayoutVersion, plugin::kClockLayoutVersion);
+        return plugin::kHostExitIncompatible;
+    }
+    return -1;
+}
+
+// A broken contract from the engine: say so on the socket, then exit 2.
+int protocol_error(ControlLink* link, const std::string& why) {
+    std::fprintf(stderr, "sonora-plugin-host: HostControl: %s\n", why.c_str());
+    if (link) link->send_message(pc::Fault{pc::FaultKind::Protocol, -1, 0, why.substr(0, pc::kMaxTextBytes)});
+    return plugin::kHostExitUsage;
+}
+
+// Load, checked against the header the engine initialised (host_control.h:
+// instances and their dense counts must be the header's).
+int read_load(ControlLink& link, const plugin::ChannelHeader& h, uint32_t channels, ChainSpec& spec) {
+    std::string m, why;
+    if (!link.next(m, uint64_t(pc::kLoadTimeoutMs) * 1000000ull)) {
+        std::fprintf(stderr, "sonora-plugin-host: no Load from the engine\n");
+        return plugin::kHostExitUsage;
+    }
+    pc::Load load;
+    if (!pc::decode(m, load, why)) return protocol_error(&link, "a malformed Load: " + why);
+    if (load.instances.size() != h.instance_count)
+        return protocol_error(&link, "Load has " + std::to_string(load.instances.size()) +
+                                         " instances; the channel header says " + std::to_string(h.instance_count));
+    if (load.key_channels >= channels)
+        return protocol_error(&link, "Load asks for " + std::to_string(load.key_channels) +
+                                         " key channels of " + std::to_string(channels));
+    spec.sidechain = load.key_channels;
+    spec.reactivate = (load.flags & pc::kLoadReactivate) != 0;
+    for (std::size_t i = 0; i < load.instances.size(); ++i) {
+        const pc::LoadInstance& in = load.instances[i];
+        if (in.params != h.instance_params[i])
+            return protocol_error(&link, "Load gives instance " + std::to_string(i) + " " +
+                                             std::to_string(in.params) + " parameters; the header " +
+                                             std::to_string(h.instance_params[i]));
+        spec.ids.push_back(in.format == pc::Format::Vst3 ? "vst3:" + in.id : in.id);
+        std::vector<std::string> sections;
+        pc::StateResult result = pc::StateResult::None;
+        if (!in.state.empty()) {
+            pc::StateBlob blob;
+            if (!pc::decode_state_blob(in.state, blob, why)) {
+                std::fprintf(stderr, "sonora-plugin-host: instance %zu: a state this host cannot read: %s\n", i,
+                             why.c_str());
+                result = pc::StateResult::Refused;
+            } else if (blob.format != in.format || blob.id != in.id) {
+                std::fprintf(stderr, "sonora-plugin-host: instance %zu: the state is %s's, not this plugin's\n",
+                             i, blob.id.c_str());
+                result = pc::StateResult::Refused;
+            } else {
+                sections = std::move(blob.sections);
+                result = pc::StateResult::Restored;  // unless the plugin refuses it
+            }
+        }
+        spec.states.push_back(std::move(sections));
+        spec.state_results.push_back(result);
+    }
+    return -1;
+}
+
+pc::Loaded loaded_message(const plugin::ChannelHeader& h, const Chain& chain, const ChainSpec& spec) {
+    pc::Loaded m;
+    // Region first, as host_control.h's ordering says: generation, then frames.
+    m.latency_generation = h.latency_generation.load(std::memory_order_acquire);
+    m.latency_frames = h.latency_frames.load(std::memory_order_relaxed);
+    m.host_flags = h.host_flags.load(std::memory_order_relaxed);
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        pc::LoadedInstance li;
+        li.latency_frames = chain.instance_latency(i);
+        li.replicas = chain.replicas(i);
+        li.state = spec.state_results[i];
+        li.bypass = chain.designated_bypass(i) ? pc::BypassBy::Plugin : pc::BypassBy::Host;
+        for (uint32_t d = 0; d < chain.param_count(i); ++d) {
+            pc::ParamDesc p;
+            p.key = chain.param_key(i, d);
+            chain.param_range(i, d, p.min, p.max);
+            p.default_value = chain.param_default(i, d);
+            if (!std::isfinite(p.min) || !std::isfinite(p.max)) p.min = p.max = 0.f;
+            if (!std::isfinite(p.default_value)) p.default_value = p.min;
+            li.params.push_back(std::move(p));
+        }
+        m.instances.push_back(std::move(li));
+    }
+    return m;
+}
+
 int serve(const Options& o) {
     if (!die_with_parent(o.engine_pid)) {
         std::fprintf(stderr, "sonora-plugin-host: the engine (pid %lld) is not this host's parent; "
@@ -596,8 +779,19 @@ int serve(const Options& o) {
                      static_cast<long long>(o.engine_pid));
         return plugin::kHostExitUsage;
     }
-    SharedRegion region, clock_region;
+    std::unique_ptr<ControlLink> link;
     std::string err;
+    if (o.control_fd >= 0) {
+        link = std::make_unique<ControlLink>();
+        if (!link->open(o.control_fd, err)) {
+            std::fprintf(stderr, "sonora-plugin-host: --control-fd: %s\n", err.c_str());
+            return plugin::kHostExitUsage;
+        }
+        // The wire version before anything else: a mismatch exits 3 having
+        // sent nothing and written nothing.
+        if (const int rc = read_engine_hello(*link); rc >= 0) return rc;
+    }
+    SharedRegion region, clock_region;
     if (!map_region(o.shm_fd, region, err) || !map_region_read_only(o.clock_fd, clock_region, err)) {
         std::fprintf(stderr, "sonora-plugin-host: %s\n", err.c_str());
         return plugin::kHostExitUsage;
@@ -621,10 +815,11 @@ int serve(const Options& o) {
 
     auto& h = *static_cast<plugin::ChannelHeader*>(region.base);
     const auto& clock = *static_cast<const plugin::ClockHeader*>(clock_region.base);
-    if (!plugin::header_valid(h, region.size) || h.instance_count != o.chain.size() ||
+    const std::size_t want_instances = link ? h.instance_count : o.chain.size();
+    if (!plugin::header_valid(h, region.size) || h.instance_count != want_instances ||
         !plugin::clock_valid(clock, clock_region.size) || !plugin::channel_matches_clock(h, clock)) {
         std::fprintf(stderr, "sonora-plugin-host: the channel or clock header is not valid for a chain of %zu\n",
-                     o.chain.size());
+                     want_instances);
         return plugin::kHostExitUsage;
     }
     // Taken once from the validated headers. Nothing below re-reads the
@@ -635,6 +830,31 @@ int serve(const Options& o) {
     const uint64_t period_ns = clock.period_ns;
     const uint32_t ipc_frames = plugin::kPipelineDepth * h.block_frames;
 
+    ChainSpec spec;
+    if (link) {
+        // The host's first datagram (Handshake 3).
+        pc::Hello hello;
+        hello.pid = static_cast<uint64_t>(getpid());
+        if (!link->send_message(hello)) {
+            std::fprintf(stderr, "sonora-plugin-host: cannot send Hello: %s\n", link->error().c_str());
+            return plugin::kHostExitUsage;
+        }
+        if (const int rc = read_load(*link, h, layout.channels, spec); rc >= 0) return rc;
+    } else {
+        spec.ids = o.chain;
+        spec.states.resize(o.chain.size());
+        spec.state_results.assign(o.chain.size(), pc::StateResult::None);
+        spec.sidechain = o.sidechain;
+        spec.reactivate = o.reactivate;
+    }
+
+    // A refusal goes to the region first, then (with a socket) the message.
+    auto refused = [&](const ChainError& e) {
+        const int rc = refuse(h, e, plugin::HostState::Refused);
+        if (link) link->send_message(pc::Refused{e.reason, e.instance, e.message.substr(0, pc::kMaxTextBytes)});
+        return rc;
+    };
+
     // Loading runs at normal priority: plugins read files and allocate when
     // they are instantiated, and that must not happen at SCHED_FIFO.
     Catalog catalog;
@@ -643,18 +863,18 @@ int serve(const Options& o) {
     cfg.sample_rate = h.sample_rate;
     cfg.max_frames = layout.max_frames;
     cfg.block_frames = h.block_frames;
-    if (o.sidechain >= layout.channels) {
+    if (spec.sidechain >= layout.channels) {
         std::fprintf(stderr, "sonora-plugin-host: --sidechain %u leaves no signal channel of %u\n",
-                     o.sidechain, layout.channels);
+                     spec.sidechain, layout.channels);
         return plugin::kHostExitUsage;
     }
-    cfg.channels = layout.channels - o.sidechain;
-    cfg.sidechain_channels = o.sidechain;
+    cfg.channels = layout.channels - spec.sidechain;
+    cfg.sidechain_channels = spec.sidechain;
     const int rt_priority = h.host_rt_priority;
     Chain chain(catalog, cfg);
     ChainError cerr;
-    for (const std::string& id : o.chain)
-        if (!chain.add(id, cerr)) return refuse(h, cerr, plugin::HostState::Refused);
+    for (const std::string& id : spec.ids)
+        if (!chain.add(id, cerr)) return refused(cerr);
     // The engine addresses parameters by the dense list its scan saw. A
     // plugin that now has a different list (another version installed
     // since the scan) would get every change on the wrong parameter.
@@ -665,8 +885,19 @@ int serve(const Options& o) {
             cerr.message = chain.info(i).name + " <" + chain.info(i).uri + "> has " +
                            std::to_string(chain.param_count(i)) + " parameters; the engine expects " +
                            std::to_string(map.count[i]);
-            return refuse(h, cerr, plugin::HostState::Refused);
+            return refused(cerr);
         }
+    // State before the table: the table's values win over the same
+    // parameters in a state (host_control.h, ordering). A state the plugin
+    // refuses is reported, not a refusal of the chain.
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        if (spec.states[i].empty()) continue;
+        std::string why;
+        if (!chain.restore_state(i, spec.states[i], why)) {
+            std::fprintf(stderr, "sonora-plugin-host: instance %zu: state refused: %s\n", i, why.c_str());
+            spec.state_results[i] = pc::StateResult::Refused;
+        }
+    }
 
     // The values the control thread seeded (contracts/plugin, §5.1), before
     // validation, so the latency reported is the one of these values.
@@ -687,10 +918,9 @@ int serve(const Options& o) {
         if (!chain.set_control(set.instance, set.symbol, set.value))
             std::fprintf(stderr, "sonora-plugin-host: --set %u:%s: no such input control\n", set.instance,
                          set.symbol.c_str());
-    if (!chain.validate(cerr)) return refuse(h, cerr, plugin::HostState::Refused);
-    if (o.reactivate) {
-        if (!chain.reactivate(cerr) || !chain.validate(cerr))
-            return refuse(h, cerr, plugin::HostState::Refused);
+    if (!chain.validate(cerr)) return refused(cerr);
+    if (spec.reactivate) {
+        if (!chain.reactivate(cerr) || !chain.validate(cerr)) return refused(cerr);
     }
     // After any re-activation: the delay lines are sized from the latency
     // the plugins report now.
@@ -703,6 +933,10 @@ int serve(const Options& o) {
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].replicas.store(chain.replicas(i), std::memory_order_relaxed);
     publish_latency(h, chain, ipc_frames);
+
+    // Touches from here on; held until Loaded is sent.
+    TouchQueue touches;
+    if (link) chain.set_touch_sink(&touches);
 
     uint32_t flags = 0;
     // Process-wide, so it covers the processing thread's stack too.
@@ -742,16 +976,221 @@ int serve(const Options& o) {
         std::fprintf(stderr, "sonora-plugin-host: cannot start the processing thread\n");
         return plugin::kHostExitUsage;
     }
-    // The control loop. Read the word before the work, so a notice that
-    // lands during the work changes it and the wait returns at once.
+
+    if (!link) {
+        // The control loop. Read the word before the work, so a notice that
+        // lands during the work changes it and the wait returns at once.
+        for (;;) {
+            const uint32_t seen = control_word().load(std::memory_order_acquire);
+            if (finished.load(std::memory_order_acquire)) break;
+            chain.control();
+            wait_for_change(control_word(), seen, kIdleWaitNs);
+        }
+        join_thread(processing);
+        return exit_code;
+    }
+
+    // --- HostControl (contracts/plugin host_control.h).
+    // Loaded only once the region says Ready (ordering rule 1).
+    for (;;) {
+        const uint32_t seen = h.done_word.load(std::memory_order_acquire);
+        if (plugin::checked_state(h.state.load(std::memory_order_acquire)) != plugin::HostState::Starting ||
+            finished.load(std::memory_order_acquire))
+            break;
+        wait_for_change(h.done_word, seen, kIdleWaitNs);
+    }
+    bool engine_gone = !link->send_message(loaded_message(h, chain, spec));
+    uint32_t latency_sent = h.latency_generation.load(std::memory_order_acquire);
+    uint64_t dropped_sent = 0;
+    GestureTracker gestures;
+    std::vector<TouchQueue::Event> events;
+    int protocol_exit = -1;
+    auto send = [&](const std::string& bytes) {
+        if (!engine_gone && !link->send(bytes)) engine_gone = true;
+    };
+    auto send_fault = [&](pc::FaultKind kind, int32_t instance, uint64_t count, const std::string& text) {
+        std::string b;
+        pc::encode(pc::Fault{kind, instance, count, text.substr(0, pc::kMaxTextBytes)}, b);
+        send(b);
+    };
+    auto stop_processing = [&] {
+        s.stop.store(true, std::memory_order_release);
+        while (!finished.load(std::memory_order_acquire)) {
+            const uint32_t seen = control_word().load(std::memory_order_acquire);
+            if (finished.load(std::memory_order_acquire)) break;
+            wait_for_change(control_word(), seen, kIdleWaitNs);
+        }
+    };
+    // Reconfigure: park the processing thread, re-activate and validate on
+    // this thread, re-apply bypass (prepare_bypass resets it), publish.
+    auto reconfigure = [&](const pc::Reconfigure& r) {
+        const uint32_t parked = s.pause.parked.load(std::memory_order_acquire);
+        s.pause.request.store(true, std::memory_order_release);
+        const uint64_t end = monotonic_ns() + uint64_t(pc::kReconfigureTimeoutMs) * 1000000ull;
+        while (s.pause.parked.load(std::memory_order_acquire) == parked &&
+               !finished.load(std::memory_order_acquire) && monotonic_ns() < end)
+            wait_for_change(s.pause.parked, parked, 50'000'000);
+        if (s.pause.parked.load(std::memory_order_acquire) == parked) {
+            // Finished, or stuck inside a plugin: the engine's timeout and
+            // the pidfd decide what happens next.
+            s.pause.request.store(false, std::memory_order_release);
+            return;
+        }
+        ChainError e;
+        if (!chain.reactivate(e) || !chain.validate(e)) {
+            // A plugin that will not come back must not run inactive.
+            refuse(h, e, plugin::HostState::Faulted);
+            send_fault(pc::FaultKind::Plugin, e.instance, 0, e.message);
+            s.stop.store(true, std::memory_order_release);
+            s.pause.request.store(false, std::memory_order_release);
+            protocol_exit = plugin::kHostExitFaulted;
+            return;
+        }
+        chain.prepare_bypass();
+        for (uint32_t i = 0; i < map.instance_count; ++i)
+            if (s.values.applied_bypass[i] > 0.5f) chain.set_bypass(i, true, 0);
+        publish_latency(h, chain, ipc_frames);
+        const uint32_t gen = h.latency_generation.load(std::memory_order_acquire);
+        const uint32_t frames = h.latency_frames.load(std::memory_order_relaxed);
+        s.pause.request.store(false, std::memory_order_release);
+        latency_sent = gen;
+        std::string b;
+        pc::encode(pc::Reconfigured{r.request, gen, frames}, b);
+        send(b);
+    };
+    auto handle = [&](const std::string& m) {
+        pc::Type t;
+        std::string why;
+        if (!pc::peek_type(m, t) || !pc::engine_to_host(t)) {
+            protocol_exit = protocol_error(link.get(), "a message type the engine does not send");
+            return;
+        }
+        std::string out;
+        switch (t) {
+        case pc::Type::GetState: {
+            pc::GetState g;
+            if (!pc::decode(m, g, why)) break;
+            pc::State reply{g.request, g.instance, pc::StateStatus::Failed, {}, {}};
+            std::vector<std::string> sections;
+            if (g.instance >= chain.size()) {
+                reply.text = "no instance " + std::to_string(g.instance);
+            } else {
+                switch (chain.save_state(g.instance, sections, reply.text)) {
+                case SaveResult::Empty: reply.status = pc::StateStatus::Empty; break;
+                case SaveResult::Failed: break;
+                case SaveResult::Saved: {
+                    const bool vst3 = spec.ids[g.instance].rfind("vst3:", 0) == 0;
+                    const pc::StateBlob blob{vst3 ? pc::Format::Vst3 : pc::Format::Lv2,
+                                             vst3 ? spec.ids[g.instance].substr(5) : spec.ids[g.instance],
+                                             std::move(sections)};
+                    if (pc::encode_state_blob(blob, reply.bytes, reply.text)) reply.status = pc::StateStatus::Ok;
+                    break;
+                }
+                }
+            }
+            reply.text = reply.text.substr(0, pc::kMaxTextBytes);
+            pc::encode(reply, out);
+            send(out);
+            return;
+        }
+        case pc::Type::DescribeValue: {
+            pc::DescribeValue d;
+            if (!pc::decode(m, d, why)) break;
+            pc::ValueText reply{d.request, false, {}};
+            if (d.instance < chain.size() && d.param < chain.param_count(d.instance))
+                reply.ok = chain.describe_value(d.instance, d.param, d.value, reply.text);
+            if (!reply.ok) reply.text = "no such parameter";
+            reply.text = reply.text.substr(0, pc::kMaxValueTextBytes);
+            pc::encode(reply, out);
+            send(out);
+            return;
+        }
+        case pc::Type::OpenEditor: {
+            pc::OpenEditor e;
+            if (!pc::decode(m, e, why)) break;
+            const std::string reason = e.instance < chain.size()
+                                           ? "plugin editors are not hosted by this build yet"
+                                           : "no instance " + std::to_string(e.instance);
+            pc::encode(pc::EditorFailed{e.request, e.instance, reason}, out);
+            send(out);
+            return;
+        }
+        case pc::Type::CloseEditor: {
+            pc::CloseEditor c;
+            if (!pc::decode(m, c, why)) break;
+            return;  // no editor is ever open in this build
+        }
+        case pc::Type::Reconfigure: {
+            pc::Reconfigure r;
+            if (!pc::decode(m, r, why)) break;
+            reconfigure(r);
+            return;
+        }
+        case pc::Type::Shutdown: {
+            pc::Shutdown x;
+            if (!pc::decode(m, x, why)) break;
+            s.stop.store(true, std::memory_order_release);
+            return;
+        }
+        default:
+            why = t == pc::Type::Load ? "a second Load" : "a second EngineHello";
+            break;
+        }
+        protocol_exit = protocol_error(link.get(), why.empty() ? "an out-of-place message" : why);
+    };
+
+    // The main loop: control() for the plugins, the engine's requests, the
+    // touches, and the latency notice; the processing thread and the
+    // reader wake it through control_word().
     for (;;) {
         const uint32_t seen = control_word().load(std::memory_order_acquire);
-        if (finished.load(std::memory_order_acquire)) break;
+        if (finished.load(std::memory_order_acquire) || protocol_exit >= 0) break;
         chain.control();
-        wait_for_change(control_word(), seen, kIdleWaitNs);
+        std::string m;
+        while (protocol_exit < 0 && link->next(m, 0)) handle(m);
+        if (protocol_exit >= 0) break;
+        if (link->closed()) {
+            // The engine closed its end: a Shutdown. Or it framed wrongly,
+            // and cannot be resynchronised: exit 2 (host_control.h).
+            if (!link->error().empty()) {
+                std::fprintf(stderr, "sonora-plugin-host: HostControl: %s\n", link->error().c_str());
+                protocol_exit = plugin::kHostExitUsage;
+            }
+            engine_gone = true;
+        }
+        const uint64_t now = monotonic_ns();
+        events.clear();
+        touches.drain(events);
+        for (const auto& e : events) gestures.apply(e, now, send);
+        const uint64_t touch_due = gestures.flush(now, send);
+        if (const uint64_t d = touches.dropped(); d != dropped_sent) {
+            send_fault(pc::FaultKind::EventsDropped, -1, d - dropped_sent,
+                       "parameter touches that could not be queued, or with no dense index");
+            dropped_sent = d;
+        }
+        // Region first: the generation was bumped before this reads it.
+        if (const uint32_t gen = h.latency_generation.load(std::memory_order_acquire); gen != latency_sent) {
+            std::string b;
+            pc::encode(pc::LatencyChanged{gen, h.latency_frames.load(std::memory_order_relaxed)}, b);
+            send(b);
+            latency_sent = gen;
+        }
+        if (engine_gone || protocol_exit >= 0 || s.stop.load(std::memory_order_acquire)) break;
+        uint64_t wait = kIdleWaitNs;
+        if (touch_due) wait = touch_due > now ? std::min(wait, touch_due - now) : 0;
+        if (wait) wait_for_change(control_word(), seen, wait);
     }
+    // Before stopping: every open gesture ends (host_control.h), then the
+    // processing thread, then a fault's text if a plugin faulted.
+    events.clear();
+    touches.drain(events);
+    for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
+    gestures.end_all(send);
+    stop_processing();
     join_thread(processing);
-    return exit_code;
+    if (exit_code == plugin::kHostExitFaulted) send_fault(pc::FaultKind::Plugin, s.fault.instance, 0, s.fault.message);
+    link->close();
+    return protocol_exit >= 0 ? protocol_exit : exit_code;
 }
 
 }  // namespace
@@ -760,10 +1199,10 @@ int main(int argc, char** argv) {
     const Options o = parse(argc, argv);
     if (o.version) {
         // Read by the engine at start-up (ADR-0012 §5.5); a mismatch
-        // disables plugin hosting for the run, loudly.
-        // The grammar is the contract's (format_version_line).
+        // disables plugin hosting for the run, loudly. The grammar is the
+        // contract's (format_host_version_line): layout, clock and wire.
         char line[96];
-        plugin::format_version_line(line, sizeof line);
+        pc::format_host_version_line(line, sizeof line);
         std::printf("%s\n", line);
         return plugin::kHostExitClean;
     }

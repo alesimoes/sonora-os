@@ -20,9 +20,10 @@
 //  are written into the rules below where they bind, as are the PR #45
 //  acceptance reviews (rt-engineer M1-M4, auditor L1-L6).
 //
-//  Not in this file yet: host_control.h (the fd-3 socket messages of
-//  ADR-0012 §4, kHostWireVersion). Until it lands the host is told its chain
-//  on the command line.
+//  The fd-3 socket messages of ADR-0012 §4 are host_control.h's, with their
+//  own kHostWireVersion; it states how they are ordered with the region
+//  rules below (the region is the truth, a message the wake-up). A host
+//  started without --control-fd is told its chain on the command line.
 // ============================================================================
 //
 // Two shared regions per host process, both created and sized by the engine:
@@ -290,9 +291,11 @@
 //     sonora-plugin-host layout <N> clock <M>
 //
 // the program name, then `key value` pairs, one space apart, values in
-// decimal, on one stdout line. More pairs may follow in later versions
-// (`wire <W>` is appended when host_control.h lands); a parser skips keys
-// it does not know and refuses a line without both layout and clock.
+// decimal, on one stdout line. More pairs may follow in later versions; a
+// parser skips keys it does not know and refuses a line without both layout
+// and clock. The host prints host_control.h's line, which appends
+// `wire <kHostWireVersion>`, and the engine parses it with
+// parse_host_version_line, which requires all three.
 // ---------------------------------------------------------------------------
 
 #include <atomic>

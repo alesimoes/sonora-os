@@ -76,6 +76,25 @@ public:
     // delay clamped there (kBypassHeadroomFrames).
     void prepare_bypass();
 
+    // HostControl (contracts/plugin host_control.h). The main thread; see
+    // Processor for which may run beside process().
+    void param_range(std::size_t i, uint32_t dense, float& min, float& max) const {
+        slots_[i]->param_range(dense, min, max);
+    }
+    void set_touch_sink(TouchSink* sink) {
+        for (std::size_t k = 0; k < slots_.size(); ++k) slots_[k]->set_touch_sink(sink, static_cast<uint32_t>(k));
+    }
+    SaveResult save_state(std::size_t i, std::vector<std::string>& sections, std::string& error) {
+        return slots_[i]->save_state(sections, error);
+    }
+    bool restore_state(std::size_t i, const std::vector<std::string>& sections, std::string& error) {
+        return slots_[i]->restore_state(sections, error);
+    }
+    bool describe_value(std::size_t i, uint32_t dense, float value, std::string& out) const {
+        return slots_[i]->describe_value(dense, value, out);
+    }
+    float bypass_value(std::size_t i, bool bypassed) const { return slots_[i]->bypass_value(bypassed); }
+
     std::size_t size() const { return slots_.size(); }
     uint32_t instance_latency(std::size_t i) const;
     uint32_t total_latency() const;

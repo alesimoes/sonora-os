@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,6 +70,24 @@ struct ChainError {
     std::string message;
 };
 
+// A plugin's controller or editor touching a parameter (VST3 beginEdit,
+// performEdit, endEdit), from whatever thread the plugin chose. `dense` is
+// already mapped (contracts/plugin host_control.h, "Parameter touches"):
+// a dense index, or kBypassParam with 1 = bypassed. Unmapped: a ParamID the
+// host has no dense index for, counted and dropped. Never blocks: a sink
+// that cannot take an event at once drops and counts it.
+enum class TouchKind : uint8_t { Begin, Perform, End, Unmapped };
+
+class TouchSink {
+public:
+    virtual ~TouchSink() = default;
+    virtual void touch(uint32_t instance, TouchKind kind, uint32_t dense, float value) noexcept = 0;
+};
+
+// The result of a state save, the format's sections (host_control.h
+// StateBlob). Empty: the plugin keeps no state of its own.
+enum class SaveResult { Saved, Empty, Failed };
+
 class Processor {
 public:
     virtual ~Processor() = default;
@@ -127,6 +146,35 @@ public:
     virtual int bypass_param() const noexcept { return -1; }
     // The value of bypass_param() for bypassed or not.
     virtual float bypass_value(bool bypassed) const noexcept { return bypassed ? 1.f : 0.f; }
+    // The format-native range of a dense parameter: the LV2 port's, VST3's
+    // normalised [0, 1].
+    virtual void param_range(uint32_t, float& min, float& max) const {
+        min = 0.f;
+        max = 1.f;
+    }
+
+    // The main thread, after instantiation. Touches from this plugin go to
+    // `sink` as chain instance `instance`. A format without a source of
+    // touches (LV2 until its UIs are hosted) ignores it.
+    virtual void set_touch_sink(TouchSink*, uint32_t) {}
+    // The main thread, while run() goes on (the formats allow it: VST3
+    // getState is a main-thread call, LV2 save() may run beside run()).
+    virtual SaveResult save_state(std::vector<std::string>&, std::string&) { return SaveResult::Empty; }
+    // The main thread, before the processing thread starts, never while
+    // run() may run. False, with the reason, when the plugin refused it.
+    virtual bool restore_state(const std::vector<std::string>& sections, std::string& error) {
+        if (sections.empty()) return true;
+        error = "this plugin keeps no state of its own";
+        return false;
+    }
+    // Display text for a value (host_control.h DescribeValue). The main thread.
+    virtual bool describe_value(uint32_t dense, float value, std::string& out) const {
+        if (dense >= param_count()) return false;
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.6g", double(value));
+        out = buf;
+        return true;
+    }
 
 protected:
     PluginInfo info_;

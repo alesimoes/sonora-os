@@ -5,6 +5,8 @@
 // kernel will not let it write, a peer's close, shutdown() waking a blocked
 // reader, a live endpoint refused and a dead one's socket file replaced,
 // and child processes.
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -411,9 +413,62 @@ void regions_are_passed_to_a_child_at_fixed_descriptors() {
     CHECK(current_process_id() == static_cast<int64_t>(::getpid()));
 }
 
+// The plugin host's channel (ADR-0012 §4): a pair whose child end crosses
+// exec at descriptor 3 and nowhere else, adopted there, and polled from the
+// parent's side without blocking.
+void a_pair_crosses_exec_to_a_child() {
+    std::unique_ptr<ControlChannel> parent;
+    int child = -1;
+    std::string error;
+    CHECK(ControlChannel::pair(parent, child, error));
+    CHECK(parent && parent->native_handle() >= 0 && child >= 0);
+    CHECK((::fcntl(parent->native_handle(), F_GETFD) & FD_CLOEXEC) != 0);
+    CHECK((::fcntl(child, F_GETFD) & FD_CLOEXEC) != 0);
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        // The child: into place at 3 (dup2 clears close-on-exec), then a
+        // shell echoes one datagram's worth back through it.
+        if (::dup2(child, 3) < 0) _exit(126);
+        execl("/bin/sh", "sh", "-c", "printf child >&3", static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    {
+        std::string from_child;
+        CHECK(parent->receive(from_child, 1000, nullptr, 1000, error) == IoStatus::Ok && from_child == "child");
+    }
+
+    // In-process stand-in for the child: adopt, talk both ways.
+    auto adopted = ControlChannel::adopt(child, error);
+    CHECK(adopted != nullptr);
+    if (!adopted) return;
+    CHECK((::fcntl(child, F_GETFD) & FD_CLOEXEC) != 0);
+    std::string got;
+    CHECK(parent->receive(got, 1000, nullptr, 0, error) == IoStatus::WouldBlock);
+    CHECK(parent->send("hello", 0, error) == IoStatus::Ok);
+    CHECK(adopted->receive(got, 1000, nullptr, 1000, error) == IoStatus::Ok && got == "hello");
+    CHECK(adopted->send("hi", 0, error) == IoStatus::Ok);
+    pollfd p{parent->native_handle(), POLLIN, 0};
+    CHECK(::poll(&p, 1, 1000) == 1 && (p.revents & POLLIN));
+    CHECK(parent->receive(got, 1000, nullptr, 0, error) == IoStatus::Ok && got == "hi");
+    adopted.reset();
+    CHECK(parent->receive(got, 1000, nullptr, 1000, error) == IoStatus::Closed);
+
+    // A descriptor that is not a message-mode socket is refused.
+    int fds[2];
+    CHECK(::pipe(fds) == 0);
+    CHECK(ControlChannel::adopt(fds[0], error) == nullptr && !error.empty());
+    ::close(fds[0]);
+    ::close(fds[1]);
+    CHECK(ControlChannel::adopt(-1, error) == nullptr);
+}
+
 }  // namespace
 
 int main() {
+    a_pair_crosses_exec_to_a_child();
     CHECK(ipc_supported());
     CHECK(!default_control_endpoint().empty());
     datagrams_keep_boundaries_and_order();
