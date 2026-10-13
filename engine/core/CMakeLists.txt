@@ -14,3 +14,10 @@ target_link_libraries(sonora_core PUBLIC
 add_executable(test_session_process tests/test_session_process.cpp)
 target_link_libraries(test_session_process PRIVATE sonora_core)
 add_test(NAME session_process COMMAND test_session_process)
+
+# ADR-0007 §7: the core tests against drivers/fake, the backend's own fake,
+# never a private mock of it. A test-only edge; sonora_core itself links no
+# driver.
+add_executable(test_record_fake tests/test_record_fake.cpp)
+target_link_libraries(test_record_fake PRIVATE sonora_core sonora_backend_fake)
+add_test(NAME record_fake COMMAND test_record_fake)

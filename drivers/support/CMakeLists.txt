@@ -1,8 +1,9 @@
 # Helpers every backend shares: channel order (natural_less) and the period
 # guard that makes a mid-session change fatal. Header only, owned by the
 # driver squad. Not in common/base, whose rule is that everything in it is
-# RT-safe: natural_less allocates. Linked by drivers/jack and, from M3,
-# drivers/fake; nothing else needs it.
+# RT-safe: natural_less allocates. Linked by drivers/jack and drivers/fake;
+# nothing else needs it. alsa_card.h is the one POSIX header here, and
+# drivers/fake, which ADR-0008 keeps platform-neutral, never includes it.
 add_library(sonora_driver_support INTERFACE)
 target_include_directories(sonora_driver_support INTERFACE include)
 target_link_libraries(sonora_driver_support INTERFACE sonora_backend_api sonora_base)
@@ -30,3 +31,7 @@ add_test(NAME source_watch COMMAND test_source_watch)
 add_executable(test_alsa_card tests/test_alsa_card.cpp)
 target_link_libraries(test_alsa_card PRIVATE sonora_driver_support)
 add_test(NAME alsa_card COMMAND test_alsa_card)
+
+add_executable(test_fatal_reason tests/test_fatal_reason.cpp)
+target_link_libraries(test_fatal_reason PRIVATE sonora_driver_support)
+add_test(NAME fatal_reason COMMAND test_fatal_reason)

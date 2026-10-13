@@ -10,7 +10,11 @@
 # the inputs are patched by hand within the wait; recorded from after the
 # wait when it is the only device, with the notice; refused, both listed,
 # beside a second non-USB device; and, killed mid-take, DeviceGone closes the
-# take and names it.
+# take and names it. Before PipeWire starts, `sonora-engine --backend fake`
+# records 18 tracks with no server, checked by the same verifier. Last, the
+# backend conformance suite (ADR-0007 §7) runs against JackBackend on this
+# PipeWire, the suite ctest runs against drivers/fake, with the quantum,
+# rate, stall, unplug and server-loss faults caused from outside.
 #
 # Defaults to 18 channels, matching the Behringer UMC1820 this is built for.
 # The count matters: verify-recording.py checks that track N carries tone N,

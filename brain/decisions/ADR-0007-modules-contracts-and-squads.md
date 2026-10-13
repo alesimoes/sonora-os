@@ -1279,6 +1279,69 @@ the RT thread, racing the notify thread that updates it. The value is only
 used to compare against the expected rate, and the first fatal reason
 sticks, so a torn or stale read can at worst delay detection by a period.
 
+## Update, 2026-10-13: drivers/fake and the conformance suite as landed (M3)
+
+Source: branch `feature/fake-backend`. Where §4.2 and §7 describe M3 and
+the code differs, this is what landed. No contract header changed.
+
+1. **The suite is a library, not a test.** `contracts/backend/conformance`
+   builds `sonora_backend_conformance`: `conformance::run(Rig&, ...)`. A
+   `Rig` makes backends, lets periods pass, says whether it is exact (runs
+   exactly the periods asked for, which only `run_blocks()` can), and
+   causes faults. A fault a rig cannot cause is reported `SKIP`, never
+   `ok`. It links only `contracts/backend`, so it stays neutral.
+2. **Where it runs.** `drivers/fake/tests/test_conformance_fake.cpp`
+   (ctest `backend_conformance_fake`) runs it on six fakes: UMC1820,
+   onboard, both, two interfaces, the injected naming and ordering, and
+   the threaded drive. `drivers/jack` builds `sonora-conformance-jack`,
+   not a ctest; `tools/test-engine-entrypoint.sh` runs it against PipeWire
+   and causes the faults from the shell (`pw-metadata` `clock.force-quantum`
+   and `clock.force-rate`, `SIGSTOP` on the server, killing the stand-in
+   card, killing the server). Measured in the container on 2026-10-13: 10
+   ok, 0 FAIL, 4 SKIP. Xrun and clock step cannot be caused on demand
+   there. The quantum and rate changes are refused by the shipped pin
+   (`audio-stack/pipewire-sonora.conf`): the settings metadata stores
+   `clock.force-quantum 256` while `pw-top` shows the running driver still
+   at 128. The rig asks the running driver whether the change took
+   (`Rig::Injected::Held`), and a held change is skipped with that reason
+   after checking that the backend carried on, not fatal. On an unpinned
+   PipeWire, before the pin landed, both checks passed. The refusal path
+   stays covered by the `PeriodGuard` tests and the fake rigs. The pin is
+   not loosened for the test. All of this is pw-jack in a container, not
+   hardware.
+   After a fatal fault the suite calls `Rig::restore()` before it checks
+   that no `process()` follows, so a server that resumes (SIGCONT) cannot
+   slip a period past the check. A deliberately leaky backend in
+   `test_conformance_fake` proves the check fails it.
+3. **Checks.** A refused rate at `open()` and a usable backend after it;
+   periods reach `process()` at the first period's size with the declared
+   shape and non-null outputs; `frame_time` never decreases, and its gaps
+   are no more than xruns plus clock steps (none on an exact rig);
+   an absent named device is not an error and is never replaced;
+   the default device policy on whichever devices are present;
+   `connect_inputs_in_order()` idempotent, `input_connected()` exact;
+   `deactivate()` a barrier and idempotent; and per fault: xrun and clock
+   step not fatal and counted, the rest fatal with the shared reason, no
+   `process()` starting after `fatal()`, and, on an exact rig, the first
+   period at a new rate or size refused.
+4. **One fatal text for every backend.** `drivers/support/fatal_reason.h`
+   (`describe_fatal()`) holds what `JackBackend::fatal_reason()` said, so a
+   test against the fake asserts the sentence the appliance prints.
+5. **The fake's shapes and signal.** `FakeBackend::umc1820()` is
+   "UMC1820 Pro", 18 in / 20 out, USB; `onboard()` is "Built-in Audio
+   Pro", 2 / 2. Tones are 0.5 × sin at 250 + 317 c Hz, the frequencies
+   `tools/verify-recording.py` checks, computed from the server frame in
+   integers so a test compares samples exactly. Unconnected inputs are
+   `nullptr` unless configured otherwise; outputs are pre-filled with NaN
+   so an output the callback leaves unwritten is counted.
+6. **`sonora-engine --backend fake`** (and `fake:onboard`) uses the
+   threaded drive. Measured in the container: 18 files, 96000 frames
+   for `--record 2`, `xruns=0`, verified by `verify-recording.py` before
+   PipeWire is started.
+7. **Test placement.** `engine/core/tests/test_record_fake.cpp` links
+   `drivers/fake` as a test-only edge, as §7 asks; `sonora_core` links no
+   driver.
+
 ## Alternatives rejected
 
 **Keep one library and rely on discipline.** It costs nothing today. It costs

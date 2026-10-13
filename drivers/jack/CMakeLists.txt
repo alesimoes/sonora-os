@@ -13,3 +13,10 @@ target_link_libraries(sonora_backend_jack
 # with the engine so the test can mount it alongside; never installed.
 add_executable(sonora-fake-capture testing/fake_capture.cpp)
 target_link_libraries(sonora-fake-capture PRIVATE PkgConfig::JACK)
+
+# The backend conformance suite against this backend and a live server.
+# Needs one, so it is not a ctest: tools/test-engine-entrypoint.sh runs it
+# against PipeWire in the runtime container, with the faults it can cause.
+add_executable(sonora-conformance-jack tests/conformance_jack.cpp)
+target_link_libraries(sonora-conformance-jack PRIVATE
+  sonora_backend_jack sonora_backend_conformance)

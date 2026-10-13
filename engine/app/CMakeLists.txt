@@ -6,7 +6,7 @@ target_include_directories(sonora-engine PRIVATE include)
 # InProcessEngine), so until then it links ui/keymap and ui/tui, which
 # ADR-0007 §1 forbids to anything outside ui/.
 target_link_libraries(sonora-engine PRIVATE
-  sonora_control sonora_core sonora_backend_jack sonora_keymap sonora_tui
+  sonora_control sonora_core sonora_backend_jack sonora_backend_fake sonora_keymap sonora_tui
   Threads::Threads)
 
 install(TARGETS sonora-engine RUNTIME DESTINATION bin)
@@ -30,3 +30,11 @@ add_executable(test_device_policy tests/test_device_policy.cpp src/device_policy
 target_include_directories(test_device_policy PRIVATE include)
 target_link_libraries(test_device_policy PRIVATE sonora_backend_api)
 add_test(NAME device_policy COMMAND test_device_policy)
+
+# The engine end to end on drivers/fake (ADR-0007 M3): no audio server.
+add_test(NAME engine_fake_record
+  COMMAND ${CMAKE_COMMAND} -DENGINE=$<TARGET_FILE:sonora-engine>
+          -DDIR=${CMAKE_CURRENT_BINARY_DIR}/fake_engine_session
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_engine_record.cmake)
+set_tests_properties(engine_fake_record PROPERTIES
+  SKIP_REGULAR_EXPRESSION "cannot lock memory")

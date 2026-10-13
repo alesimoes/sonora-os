@@ -20,6 +20,27 @@ else
 fi
 [[ -x "$ENGINE_BIN" ]] || { echo "FAIL: no engine binary at $ENGINE_BIN" >&2; exit 1; }
 
+echo "--- sonora-engine --backend fake, before any audio server exists ---"
+# drivers/fake (ADR-0007 M3): the whole engine with no server, shaped as the
+# UMC1820. Its tones are verify-recording.py's, so the same check proves 18
+# files, full length, each carrying its own channel.
+FAKE_DIR=/home/sonora/Sessions/fake-backend
+rm -rf "$FAKE_DIR"
+mkdir -p /home/sonora/Sessions
+"$ENGINE_BIN" --backend fake --dir "$FAKE_DIR" --tracks auto --arm-all --record 2 \
+  >/tmp/fake-backend.out 2>/tmp/fake-backend.err || {
+  echo "FAIL: sonora-engine --backend fake exited $?" >&2
+  cat /tmp/fake-backend.out /tmp/fake-backend.err >&2
+  exit 1
+}
+grep "^RESULT" /tmp/fake-backend.out
+grep -q "^RESULT files=18 connected=18 " /tmp/fake-backend.out || {
+  echo "FAIL: --backend fake did not record 18 connected channels" >&2
+  exit 1
+}
+python3 /usr/local/bin/verify-recording.py --check "$FAKE_DIR/Audio Files" \
+  --tracks 18 --rate 48000 --seconds 2
+
 export XDG_RUNTIME_DIR=/tmp/runtime
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"
@@ -307,3 +328,56 @@ kill "$HDMI_PID" 2>/dev/null || true
 HDMI_PID=""
 
 echo "DEVICE POLICY PASS"
+
+# The backend conformance suite (ADR-0007 §7) against JackBackend on this
+# PipeWire, the same suite ctest runs against drivers/fake. The one physical
+# capture device left is the stand-in onboard card. Faults are caused from
+# here: the quantum and rate through PipeWire's settings metadata, a stall
+# by stopping the server, the unplug by killing the card's client, and the
+# server loss, last, by killing PipeWire. Xruns and clock steps cannot be
+# caused on demand here and are reported as skipped.
+#
+# The shipped config pins the quantum and rate (audio-stack/
+# pipewire-sonora.conf, settings.check-quantum/-rate), and this container
+# runs it, so the forced change is refused: measured 2026-10-13, the
+# settings metadata stores clock.force-quantum 256 while the running driver
+# stays at quantum 128. Whether it took is asked of the running driver
+# (pw-top), not of the metadata; held, the check is skipped with the reason
+# and the backend must carry on unharmed. The pin is never loosened here.
+if [[ ! -f /engine-build/sonora-conformance-jack ]]; then
+  echo "note: no sonora-conformance-jack beside the engine; conformance skipped" >&2
+  exit 0
+fi
+cp /engine-build/sonora-conformance-jack /tmp/sonora-conformance-jack
+chmod 0755 /tmp/sonora-conformance-jack
+# The running driver's quantum and rate, as "QUANT RATE".
+cat >/tmp/sonora-graph-clock <<'SH'
+#!/bin/sh
+pw-top -b -n 2 | awk '$1 == "R" && $NF == "Dummy-Driver" { q = $3; r = $4 } END { print q, r }'
+SH
+chmod 0755 /tmp/sonora-graph-clock
+PINNED="the server pins its quantum and rate (audio-stack/pipewire-sonora.conf); the refusal path is covered by the drivers/support PeriodGuard tests and the fake rigs"
+echo "--- backend conformance suite against JackBackend ---"
+echo "graph clock before: $(/tmp/sonora-graph-clock)"
+set +e
+SONORA_CONFORMANCE_RATE="$RATE" \
+SONORA_INJECT_BUFFER_CHANGE="pw-metadata -n settings 0 clock.force-quantum 256 >/dev/null" \
+SONORA_TOOK_BUFFER_CHANGE="sleep 1; /tmp/sonora-graph-clock | grep -q '^256 '" \
+SONORA_HELD_WHY_BUFFER_CHANGE="$PINNED" \
+SONORA_RESTORE_BUFFER_CHANGE="pw-metadata -n settings 0 clock.force-quantum 0 >/dev/null; sleep 0.5" \
+SONORA_INJECT_RATE_CHANGE="pw-metadata -n settings 0 clock.force-rate 96000 >/dev/null" \
+SONORA_TOOK_RATE_CHANGE="sleep 1; /tmp/sonora-graph-clock | grep -q ' 96000$'" \
+SONORA_HELD_WHY_RATE_CHANGE="$PINNED" \
+SONORA_RESTORE_RATE_CHANGE="pw-metadata -n settings 0 clock.force-rate 0 >/dev/null; sleep 0.5" \
+SONORA_INJECT_STALL="kill -STOP $PIPEWIRE_PID" \
+SONORA_RESTORE_STALL="kill -CONT $PIPEWIRE_PID; sleep 0.5" \
+SONORA_UNPLUG_DEVICE="$ONBOARD_NAME" \
+SONORA_INJECT_UNPLUG="kill $ONBOARD_PID" \
+SONORA_INJECT_SERVER_LOSS="kill $PIPEWIRE_PID" \
+  /tmp/sonora-conformance-jack
+CONFORMANCE_RC=$?
+set -e
+ONBOARD_PID=""
+PIPEWIRE_PID=""
+[[ "$CONFORMANCE_RC" == "0" ]] || { echo "FAIL: backend conformance against JACK" >&2; exit 1; }
+echo "CONFORMANCE PASS"

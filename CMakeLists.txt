@@ -41,6 +41,8 @@ add_subdirectory(contracts/plugin)
 add_subdirectory(engine/core)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
+# Platform-neutral (ADR-0008): the backend engine tests run on, any OS.
+add_subdirectory(drivers/fake)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)

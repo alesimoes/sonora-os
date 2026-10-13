@@ -8,3 +8,5 @@ target_link_libraries(sonora_backend_api INTERFACE sonora_base)
 add_executable(test_select_device tests/test_select_device.cpp)
 target_link_libraries(test_select_device PRIVATE sonora_backend_api)
 add_test(NAME select_device COMMAND test_select_device)
+
+add_subdirectory(conformance)
