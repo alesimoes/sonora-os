@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <string>
 #include <vector>
@@ -57,6 +58,24 @@ uint32_t read_u32(const std::vector<uint8_t>& b, long off) {
     return v;
 }
 
+// 2026-03-07 09:05:02, picked so every field needs its leading zero.
+bool fixed_clock(std::tm& out) {
+    out = std::tm{};
+    out.tm_year = 2026 - 1900;
+    out.tm_mon = 3 - 1;
+    out.tm_mday = 7;
+    out.tm_hour = 9;
+    out.tm_min = 5;
+    out.tm_sec = 2;
+    return true;
+}
+
+bool broken_clock(std::tm&) { return false; }
+
+// RIFF ckSize of a file with no audio: "WAVE", then the bext, fmt and data
+// chunk headers and payloads up to the first sample.
+constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+
 }  // namespace
 
 int main() {
@@ -82,6 +101,12 @@ int main() {
         CHECK(read_u32(b, data - 4) == 5 * 3);  // 5 frames, 3 bytes each
         // The RIFF size field must match the real file length minus 8.
         CHECK(read_u32(b, 4) == b.size() - 8);
+
+        // 15 bytes of data is odd, so RIFF wants one zero pad byte after it
+        // that the data chunk's own size does not count. Without it a reader
+        // walking the chunks lands one byte short of the next one.
+        CHECK(b.size() == static_cast<std::size_t>(data) + 15 + 1);
+        CHECK(b.back() == 0x00);
 
         // Full-scale positive clamps to 0x7FFFFF, not a wrapped negative.
         const long fs = data + 3 * 3;
@@ -200,6 +225,135 @@ int main() {
         CHECK(err == EFBIG);
         // A header with no audio behind it would only hold the take number.
         CHECK(::access(path.c_str(), F_OK) != 0);
+    }
+
+    // --- bext carries the creation date and time, from the local clock ---
+    //
+    // The writer zero-filled OriginationDate and OriginationTime, which EBU
+    // Tech 3285 v2 says "shall" hold 10 and 8 ASCII characters, so every
+    // reader showed a blank creation date (brain/research/bwf-interop.md).
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        w.set_clock(&fixed_clock);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(w.close());
+
+        const auto b = slurp(path);
+        const long bext = find_chunk(b, "bext");
+        CHECK(bext > 0);
+        CHECK(std::memcmp(b.data() + bext + 320, "2026-03-07", 10) == 0);
+        CHECK(std::memcmp(b.data() + bext + 330, "09:05:02", 8) == 0);
+        // The fields are fixed-width and not terminated: TimeReference
+        // follows at once and must be untouched.
+        CHECK(read_u32(b, bext + 338) == 0);
+    }
+
+    // --- with no clock the fields stay zero, and the take still records ---
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        w.set_clock(&broken_clock);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(w.close());
+
+        const auto b = slurp(path);
+        const long bext = find_chunk(b, "bext");
+        CHECK(bext > 0);
+        for (long i = 320; i < 338; ++i) CHECK(b[bext + i] == 0);
+    }
+
+    // --- the default clock writes a well-formed date and time ---
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(w.close());
+
+        const auto b = slurp(path);
+        const long bext = find_chunk(b, "bext");
+        CHECK(bext > 0);
+        const char* shape = "dddd-dd-dddd:dd:dd";
+        for (int i = 0; i < 18; ++i) {
+            const uint8_t c = b[bext + 320 + i];
+            if (shape[i] == 'd') {
+                CHECK(c >= '0' && c <= '9');
+            } else {
+                CHECK(c == static_cast<uint8_t>(shape[i]));
+            }
+        }
+    }
+
+    // --- past the 32-bit size limit the writer stops, it never wraps ---
+    //
+    // close() cast the RIFF and data sizes to 32 bits unchecked, so a take
+    // past 4 GiB wrote a wrapped header and readers saw a short or garbled
+    // file. A small limit stands in for 2^32 - 1.
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        // Room for exactly 10 mono 24-bit frames.
+        w.set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const std::vector<float> block(8, 0.25f);
+        CHECK(w.write(block.data(), 8));
+        CHECK(!w.failed());
+        // Only 2 of these 8 fit. They are written; the rest are refused.
+        CHECK(!w.write(block.data(), 8));
+        CHECK(w.failed());
+        CHECK(w.failure() == "take reached the 4 GB WAV limit");
+        CHECK(w.frames_written() == 10);
+        // Later blocks change nothing.
+        CHECK(!w.write(block.data(), 8));
+        CHECK(w.frames_written() == 10);
+        CHECK(w.close());
+        CHECK(w.failure() == "take reached the 4 GB WAV limit");
+
+        const auto b = slurp(path);
+        const long data = find_chunk(b, "data");
+        CHECK(data > 0);
+        CHECK(read_u32(b, data - 4) == 10 * 3);
+        CHECK(read_u32(b, 4) == kEmptyRiffSize + 10 * 3);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+
+        // The next take on the same writer starts clean.
+        std::remove(path.c_str());
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(!w.failed());
+        CHECK(w.failure().empty());
+        CHECK(w.close());
+    }
+
+    // --- the limit counts the pad byte, and never splits a frame ---
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        // 5 mono 24-bit frames are 15 bytes and need a pad byte: 16 do not
+        // fit in 15, so only 4 frames may be written.
+        w.set_riff_size_limit(kEmptyRiffSize + 15);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const std::vector<float> block(5, 0.25f);
+        CHECK(!w.write(block.data(), 5));
+        CHECK(w.frames_written() == 4);
+        CHECK(w.close());
+        const auto b = slurp(path);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+        CHECK(read_u32(b, 4) <= kEmptyRiffSize + 15);
+
+        // Stereo float: 8 bytes a frame, 20 bytes of room, 2 whole frames.
+        std::remove(path.c_str());
+        sonora::WavWriter s;
+        s.set_riff_size_limit(kEmptyRiffSize + 20);
+        CHECK(s.open(path, 48000, 2, sonora::WavWriter::Format::Float32, 0));
+        const std::vector<float> stereo(2 * 3, 0.25f);
+        CHECK(!s.write(stereo.data(), 3));
+        CHECK(s.frames_written() == 2);
+        CHECK(s.close());
+        const auto c = slurp(path);
+        const long data = find_chunk(c, "data");
+        CHECK(data > 0);
+        CHECK(read_u32(c, data - 4) == 2 * 8);
+        CHECK(read_u32(c, 4) == c.size() - 8);
     }
 
     std::remove(path.c_str());

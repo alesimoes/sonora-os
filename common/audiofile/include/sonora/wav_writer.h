@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <string>
 
 namespace sonora {
@@ -14,6 +16,14 @@ namespace sonora {
 class WavWriter {
 public:
     enum class Format { Int24, Float32 };
+
+    // Fills `out` with the local wall-clock time, or returns false if there
+    // is none to give.
+    using LocalClock = bool (*)(std::tm& out);
+
+    // The largest RIFF ckSize a plain WAV can state. Until RF64 lands, a take
+    // stops growing here rather than writing a header that has wrapped.
+    static constexpr uint64_t kRiffSizeLimit = 0xFFFFFFFFu;
 
     WavWriter() = default;
     ~WavWriter();
@@ -29,10 +39,28 @@ public:
               Format format, uint64_t time_reference);
 
     // Writes interleaved float frames, converting to the on-disk format.
+    // Returns false and marks the take failed when the frames cannot all be
+    // written: the file then ends at the last whole frame that was, and
+    // every later call writes nothing until the next open().
     bool write(const float* interleaved, std::size_t frames);
 
-    // Patches the RIFF/data sizes and closes. Safe to call twice.
+    // Patches the RIFF/data sizes, pads an odd data chunk, and closes. Safe
+    // to call twice.
     bool close();
+
+    // Where OriginationDate and OriginationTime come from. The default reads
+    // the system's local time. Set before open().
+    void set_clock(LocalClock clock) { clock_ = clock; }
+
+    // Tests lower this to reach the limit without writing 4 GiB; it cannot
+    // be raised past kRiffSizeLimit. Set before open().
+    void set_riff_size_limit(uint64_t bytes);
+
+    // Whether this take has failed, and why. Safe to ask from another thread
+    // while the take runs; failure() is settled once failed() is true, and
+    // stays until the next open().
+    bool failed() const { return failed_.load(std::memory_order_acquire); }
+    const std::string& failure() const { return failure_; }
 
     bool is_open() const { return file_ != nullptr; }
     uint64_t frames_written() const { return frames_written_; }
@@ -41,6 +69,8 @@ public:
 private:
     bool write_header(uint32_t sample_rate, uint16_t channels,
                       uint64_t time_reference);
+    void fail(const char* why);
+    uint32_t bytes_per_frame() const;
 
     std::FILE* file_ = nullptr;
     std::string path_;
@@ -49,6 +79,10 @@ private:
     uint64_t frames_written_ = 0;
     long data_size_offset_ = 0;
     long riff_size_offset_ = 0;
+    LocalClock clock_ = nullptr;
+    uint64_t riff_size_limit_ = kRiffSizeLimit;
+    std::string failure_;
+    std::atomic<bool> failed_{false};
 };
 
 }  // namespace sonora

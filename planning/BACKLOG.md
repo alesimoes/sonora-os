@@ -251,13 +251,9 @@ Order and owners are in ADR-0008 §5.
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.
-  Until RF64 exists the writer should refuse or split a take at the limit:
-  `close()` casts both sizes with `static_cast<uint32_t>`
-  (`common/audiofile/src/wav_writer.cpp:144`, `:147`), so today a longer take
-  gets a wrapped header and reads back short or garbled, with no error. In
-  the same file, `close()` never writes the RIFF pad byte after an odd-sized
-  `data` chunk. That is unreachable while periods are even (mono 24-bit, odd
-  frame count), and it is free to fix alongside.
+  Until then `WavWriter` stops at the limit instead of wrapping: the file
+  ends at the last whole frame that fits, and the take is reported failed
+  ("take reached the 4 GB WAV limit") when it stops.
 - Session origin. Every session's first take has TimeReference 0, because
   the playhead starts at 0. Ardour 8 treats 0 as "no timestamp" and imports
   it at the edit point (`gtk2_ardour/editor_audio_import.cc:989`, tag 8.12).

@@ -19,13 +19,20 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return session.start_recording(take, &why);
     };
 
+    // The transport stops whatever the take's fate. Failed reports the take,
+    // not the stop: a file that hit the 4 GB limit or a full disk must reach
+    // the operator, and this is the moment the session learns of it.
+    const auto finish = [&session, &take](std::string& why) {
+        const bool ok = session.stop(&why);
+        session.disk().start();  // ready for the next take
+        ++take;
+        return ok;
+    };
+
     reg.install("transport.toggle_record",
-                [&session, &take, start](const CommandContext&, std::string& why) {
+                [&session, start, finish](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Recording) {
-            session.stop();
-            session.disk().start();  // ready for the next take
-            ++take;
-            return true;
+            return finish(why);
         }
         return start(why);
     });
@@ -42,14 +49,12 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return start(why);
     });
 
-    reg.install("transport.stop", [&](const CommandContext&) {
+    reg.install("transport.stop",
+                [&session, finish](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Stopped) {
             return true;
         }
-        session.stop();
-        session.disk().start();
-        ++take;
-        return true;
+        return finish(why);
     });
 
     // Arming is fixed for the length of a take. process() writes a track

@@ -5,6 +5,9 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <mutex>
+#include <system_error>
 #include <vector>
 
 namespace sonora {
@@ -33,10 +36,94 @@ int32_t float_to_int24(float s) {
 }
 
 constexpr uint32_t kBextSize = 602;  // fixed-size BWF v0 bext chunk
+constexpr uint32_t kFmtSize = 16;
+
+// RIFF ckSize before the first sample: "WAVE" and the bext, fmt and data
+// chunks' headers and fixed payloads.
+constexpr uint64_t kRiffOverhead = 4 + (8 + kBextSize) + (8 + kFmtSize) + 8;
+
+constexpr char kLimitReason[] = "take reached the 4 GB WAV limit";
+
+// std::localtime returns a pointer to storage shared by every caller in the
+// process, and standard C++17 has no reentrant form (localtime_r is POSIX,
+// localtime_s is Windows, so neither is allowed here, ADR-0008). The lock
+// covers every call this writer makes; nothing else in the engine calls it.
+bool system_local_time(std::tm& out) {
+    static std::mutex mutex;
+    const std::time_t now = std::time(nullptr);
+    if (now == static_cast<std::time_t>(-1)) return false;
+    const std::lock_guard<std::mutex> lock(mutex);
+    const std::tm* local = std::localtime(&now);
+    if (!local) return false;
+    out = *local;
+    return true;
+}
+
+// Zero-padded decimal, exactly `width` characters. Hand-rolled rather than
+// snprintf so nothing is written past the field and no terminator is needed.
+bool put_digits(char* dst, int value, int lo, int hi, int width) {
+    if (value < lo || value > hi) return false;
+    for (int i = width - 1; i >= 0; --i) {
+        dst[i] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    }
+    return true;
+}
+
+// OriginationDate "yyyy-mm-dd" and OriginationTime "hh:mm:ss" (EBU Tech 3285
+// v2 §2.3). The spec gives no time zone; it means local time, the wall clock
+// of the place the recording was made, which is also what Pro Tools and
+// other recorders write. A time the fields cannot hold leaves them zero, as
+// a missing clock does: an empty date is better than a wrong one.
+void put_origination(char* field, const std::tm& t) {
+    char text[18];
+    const bool ok =
+        put_digits(text + 0, t.tm_year + 1900, 0, 9999, 4) &&
+        put_digits(text + 5, t.tm_mon + 1, 1, 12, 2) &&
+        put_digits(text + 8, t.tm_mday, 1, 31, 2) &&
+        put_digits(text + 10, t.tm_hour, 0, 23, 2) &&
+        put_digits(text + 13, t.tm_min, 0, 59, 2) &&
+        // 60 is a leap second, which std::tm allows.
+        put_digits(text + 16, t.tm_sec, 0, 60, 2);
+    if (!ok) return;
+    text[4] = '-';
+    text[7] = '-';
+    text[12] = ':';
+    text[15] = ':';
+    std::memcpy(field, text, sizeof text);
+}
+
+bool put_frames(std::FILE* f, WavWriter::Format format, const float* in,
+                std::size_t samples) {
+    if (format == WavWriter::Format::Float32) {
+        return std::fwrite(in, sizeof(float), samples, f) == samples;
+    }
+    std::vector<uint8_t> packed(samples * 3);
+    for (std::size_t i = 0; i < samples; ++i) {
+        const int32_t v = float_to_int24(in[i]);
+        packed[i * 3 + 0] = static_cast<uint8_t>(v & 0xFF);
+        packed[i * 3 + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        packed[i * 3 + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+    }
+    return std::fwrite(packed.data(), 1, packed.size(), f) == packed.size();
+}
 
 }  // namespace
 
 WavWriter::~WavWriter() { close(); }
+
+void WavWriter::set_riff_size_limit(uint64_t bytes) {
+    riff_size_limit_ = std::min(bytes, kRiffSizeLimit);
+}
+
+uint32_t WavWriter::bytes_per_frame() const {
+    return channels_ * ((format_ == Format::Int24) ? 3u : 4u);
+}
+
+void WavWriter::fail(const char* why) {
+    failure_ = why;
+    failed_.store(true, std::memory_order_release);
+}
 
 bool WavWriter::open(const std::string& path, uint32_t sample_rate,
                      uint16_t channels, Format format,
@@ -51,6 +138,8 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     format_ = format;
     channels_ = channels;
     frames_written_ = 0;
+    failure_.clear();
+    failed_.store(false, std::memory_order_release);
     if (!write_header(sample_rate, channels, time_reference)) {
         // The caller reports errno as the reason, and the cleanup below is
         // allowed to change it.
@@ -83,6 +172,10 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
     std::vector<char> bext(kBextSize, 0);
     const char* originator = "Sonora Engine";
     std::memcpy(bext.data() + 256, originator, std::strlen(originator));
+    std::tm now{};
+    if ((clock_ ? clock_ : &system_local_time)(now)) {
+        put_origination(bext.data() + 320, now);
+    }
     const uint32_t tr_low = static_cast<uint32_t>(time_reference & 0xFFFFFFFFu);
     const uint32_t tr_high = static_cast<uint32_t>(time_reference >> 32);
     std::memcpy(bext.data() + 338, &tr_low, 4);
@@ -93,7 +186,7 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
 
     // --- fmt ---
     put_tag(file_, "fmt ");
-    put_u32(file_, 16);
+    put_u32(file_, kFmtSize);
     put_u16(file_, audio_format);
     put_u16(file_, channels);
     put_u32(file_, sample_rate);
@@ -112,43 +205,71 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
 }
 
 bool WavWriter::write(const float* interleaved, std::size_t frames) {
-    if (!file_ || frames == 0) return file_ != nullptr;
-    const std::size_t samples = frames * channels_;
+    if (!file_ || failed()) return false;
+    if (frames == 0) return true;
 
-    if (format_ == Format::Float32) {
-        if (std::fwrite(interleaved, sizeof(float), samples, file_) != samples) {
+    // The most frames the 32-bit sizes can describe, counting the pad byte
+    // close() adds after odd-sized data. Past that the header would wrap
+    // and readers would see a short or garbled file, so the take stops at
+    // the last whole frame that fits.
+    const uint64_t bpf = bytes_per_frame();
+    const uint64_t room =
+        riff_size_limit_ > kRiffOverhead ? riff_size_limit_ - kRiffOverhead : 0;
+    uint64_t max_frames = room / bpf;
+    if ((max_frames * bpf) % 2 == 1 && max_frames * bpf + 1 > room) --max_frames;
+    const uint64_t left =
+        max_frames > frames_written_ ? max_frames - frames_written_ : 0;
+    const std::size_t fit =
+        static_cast<std::size_t>(std::min<uint64_t>(frames, left));
+
+    if (fit > 0) {
+        if (!put_frames(file_, format_, interleaved, fit * channels_)) {
+            fail(std::strerror(errno));
             return false;
         }
-    } else {
-        std::vector<uint8_t> packed(samples * 3);
-        for (std::size_t i = 0; i < samples; ++i) {
-            const int32_t v = float_to_int24(interleaved[i]);
-            packed[i * 3 + 0] = static_cast<uint8_t>(v & 0xFF);
-            packed[i * 3 + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
-            packed[i * 3 + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
-        }
-        if (std::fwrite(packed.data(), 1, packed.size(), file_) != packed.size()) {
-            return false;
-        }
+        frames_written_ += fit;
     }
-    frames_written_ += frames;
+    if (fit < frames) {
+        fail(kLimitReason);
+        return false;
+    }
     return true;
 }
 
 bool WavWriter::close() {
     if (!file_) return true;
-    const uint16_t bits = (format_ == Format::Int24) ? 24 : 32;
-    const uint64_t data_bytes = frames_written_ * channels_ * (bits / 8);
+    const uint64_t data_bytes = frames_written_ * bytes_per_frame();
+    // RIFF chunks start on even offsets, so odd-sized data is followed by a
+    // zero byte that the data chunk's size does not count but the RIFF size
+    // does. Mono 24-bit with an odd frame count is the case that needs it.
+    const uint64_t pad = data_bytes % 2;
+    // write() keeps this within riff_size_limit_, which is at most 2^32 - 1,
+    // so neither cast below can wrap.
+    const uint64_t riff_bytes = kRiffOverhead + data_bytes + pad;
 
+    if (pad && !failed()) {
+        std::fseek(file_, 0, SEEK_END);
+        std::fputc(0, file_);
+    }
     std::fseek(file_, data_size_offset_, SEEK_SET);
     put_u32(file_, static_cast<uint32_t>(data_bytes));
     std::fseek(file_, riff_size_offset_, SEEK_SET);
-    // RIFF size counts everything after this field.
-    put_u32(file_, static_cast<uint32_t>(4 + (8 + kBextSize) + (8 + 16) + 8 + data_bytes));
+    put_u32(file_, static_cast<uint32_t>(riff_bytes));
 
-    const bool ok = std::ferror(file_) == 0;
-    std::fclose(file_);
+    bool ok = std::ferror(file_) == 0;
+    ok = std::fclose(file_) == 0 && ok;
     file_ = nullptr;
+    if (failed()) {
+        // A failed write can leave part of a frame past the last whole one,
+        // where the pad byte belongs. Cutting the file back to the audio
+        // and then growing it by the pad drops that tail and makes the pad
+        // zero, since a file grown by resize_file reads as zeros.
+        const uint64_t audio_end = 8 + riff_bytes - pad;
+        std::error_code ec;
+        std::filesystem::resize_file(path_, audio_end, ec);
+        if (!ec && pad) std::filesystem::resize_file(path_, audio_end + pad, ec);
+    }
+    if (!ok && !failed()) fail("the file could not be finished on disk");
     return ok;
 }
 

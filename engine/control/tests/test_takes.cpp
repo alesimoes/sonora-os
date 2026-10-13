@@ -10,7 +10,9 @@
 #include <dirent.h>
 #include <unistd.h>
 
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -332,6 +334,66 @@ int test_take_starts_with_its_own_samples() {
     return 0;
 }
 
+// A take that hits the WAV size limit is reported as failed when it stops,
+// with the file and the reason, and its file is still valid. The writer used
+// to wrap the 32-bit sizes past 4 GiB and the disk thread ignored write()
+// failures, so nobody heard of it. A small limit stands in for 2^32 - 1.
+int test_take_at_the_size_limit_fails_with_a_reason() {
+    const sonora::SessionConfig cfg = config("test_takes_limit", 2);
+    const std::string audio = cfg.dir + "/Audio Files/";
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    wipe(cfg.dir);
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        s.tracks()[0]->set_rec_armed(true);
+        s.tracks()[1]->set_rec_armed(true);
+        // Only track 2 runs out of room: 10 mono 24-bit frames.
+        s.tracks()[1]->writer().set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+
+        sonora::CommandRegistry reg;
+        int take = 1;
+        bool quit = false;
+        sonora::install_session_commands(reg, s, take, quit);
+        s.disk().start();
+        CHECK(reg.dispatch("transport.record") == sonora::DispatchResult::Ok);
+        float block[64];
+        for (float& f : block) f = 0.25f;
+        const float* inputs[2] = {block, block};
+        s.process(inputs, 64);
+
+        std::string why;
+        CHECK(reg.dispatch("transport.stop", {}, why) ==
+              sonora::DispatchResult::Failed);
+        CHECK(why.find("Audio 2_01.wav") != std::string::npos);
+        CHECK(why.find("take reached the 4 GB WAV limit") != std::string::npos);
+        CHECK(why.find("Audio 1_01.wav") == std::string::npos);
+        // Stopped all the same, and ready for the next take.
+        CHECK(s.transport().state() == sonora::TransportState::Stopped);
+        CHECK(take == 2);
+        CHECK(s.tracks()[0]->writer().frames_written() == 64);
+        CHECK(s.tracks()[1]->writer().frames_written() == 10);
+
+        // The next take starts clean, and stop() reports nothing for it.
+        s.tracks()[1]->writer().set_riff_size_limit(
+            sonora::WavWriter::kRiffSizeLimit);
+        CHECK(s.start_recording(2));
+        s.process(inputs, 64);
+        std::string none;
+        CHECK(s.stop(&none));
+        CHECK(none.empty());
+    }
+    const std::string b = slurp(audio + "Audio 2_01.wav");
+    const std::size_t data = b.find("data");
+    CHECK(data != std::string::npos);
+    CHECK(b.size() == data + 8 + 10 * 3);
+    uint32_t riff = 0;
+    std::memcpy(&riff, b.data() + 4, 4);
+    CHECK(riff == b.size() - 8);
+    wipe(cfg.dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -343,6 +405,7 @@ int main() {
     failures += test_restart_never_overwrites();
     failures += test_partial_take_is_refused();
     failures += test_take_starts_with_its_own_samples();
+    failures += test_take_at_the_size_limit_fails_with_a_reason();
     if (failures != 0) {
         std::fprintf(stderr, "FAIL %d take tests\n", failures);
         return 1;

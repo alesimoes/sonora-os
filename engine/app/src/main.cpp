@@ -234,7 +234,8 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
         }
     }
 
-    session.stop();
+    // stop() has already said why on stderr.
+    if (!session.stop()) return 1;
 
     // Read the counters after stop(), so the disk thread has flushed and the
     // overrun total is final rather than a snapshot mid-drain.
