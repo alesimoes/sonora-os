@@ -1297,9 +1297,22 @@ the code differs, this is what landed. No contract header changed.
    not a ctest; `tools/test-engine-entrypoint.sh` runs it against PipeWire
    and causes the faults from the shell (`pw-metadata` `clock.force-quantum`
    and `clock.force-rate`, `SIGSTOP` on the server, killing the stand-in
-   card, killing the server). Measured in the container on 2026-10-13: 12
-   ok, 0 FAIL, 2 SKIP (xrun and clock step cannot be caused on demand
-   there). That is pw-jack in a container, not hardware.
+   card, killing the server). Measured in the container on 2026-10-13: 10
+   ok, 0 FAIL, 4 SKIP. Xrun and clock step cannot be caused on demand
+   there. The quantum and rate changes are refused by the shipped pin
+   (`audio-stack/pipewire-sonora.conf`): the settings metadata stores
+   `clock.force-quantum 256` while `pw-top` shows the running driver still
+   at 128. The rig asks the running driver whether the change took
+   (`Rig::Injected::Held`), and a held change is skipped with that reason
+   after checking that the backend carried on, not fatal. On an unpinned
+   PipeWire, before the pin landed, both checks passed. The refusal path
+   stays covered by the `PeriodGuard` tests and the fake rigs. The pin is
+   not loosened for the test. All of this is pw-jack in a container, not
+   hardware.
+   After a fatal fault the suite calls `Rig::restore()` before it checks
+   that no `process()` follows, so a server that resumes (SIGCONT) cannot
+   slip a period past the check. A deliberately leaky backend in
+   `test_conformance_fake` proves the check fails it.
 3. **Checks.** A refused rate at `open()` and a usable backend after it;
    periods reach `process()` at the first period's size with the declared
    shape and non-null outputs; `frame_time` never decreases, and its gaps

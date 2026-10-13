@@ -10,6 +10,10 @@
 // if set, undoes it before the next check. <FAULT> is the suite's name in
 // capitals (XRUN, CLOCK_STEP, BUFFER_CHANGE, RATE_CHANGE, STALL, UNPLUG,
 // SERVER_LOSS). A fault with no command is skipped, and says so.
+// SONORA_TOOK_<FAULT>, if set, is asked after the injection whether the
+// server actually made the change (exit 0); if not, the server held it --
+// as the shipped quantum and rate pin does -- and the check is skipped with
+// SONORA_HELD_WHY_<FAULT> as the reason, once the backend is seen unharmed.
 // SONORA_UNPLUG_DEVICE names the device SONORA_INJECT_UNPLUG removes;
 // SONORA_CONFORMANCE_RATE is the server's rate (default 48000).
 #include <cctype>
@@ -56,14 +60,28 @@ public:
     }
     bool exact() const override { return false; }
 
-    bool inject(sonora::backend::AudioBackend&, Fault f) override {
+    Injected inject(sonora::backend::AudioBackend&, Fault f) override {
         const std::string command = env(variable("SONORA_INJECT_", f));
-        if (command.empty()) return false;
+        if (command.empty()) return Injected::Unsupported;
         std::printf("  inject %s: %s\n", sonora::conformance::fault_name(f), command.c_str());
         std::fflush(stdout);
-        return std::system(command.c_str()) == 0;
+        if (std::system(command.c_str()) != 0) {
+            std::printf("  inject %s: the command failed\n", sonora::conformance::fault_name(f));
+            return Injected::Unsupported;
+        }
+        const std::string took = env(variable("SONORA_TOOK_", f));
+        if (!took.empty() && std::system(took.c_str()) != 0) {
+            std::printf("  inject %s: the server held it (%s)\n",
+                        sonora::conformance::fault_name(f), took.c_str());
+            return Injected::Held;
+        }
+        return Injected::Caused;
     }
-    void restore(Fault f) override {
+    std::string held_reason(Fault f) override {
+        const std::string why = env(variable("SONORA_HELD_WHY_", f));
+        return why.empty() ? "the server held the change" : why;
+    }
+    void restore(sonora::backend::AudioBackend&, Fault f) override {
         const std::string command = env(variable("SONORA_RESTORE_", f));
         if (command.empty()) return;
         std::printf("  restore %s: %s\n", sonora::conformance::fault_name(f), command.c_str());

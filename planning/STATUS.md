@@ -58,8 +58,9 @@ end of its run. Keep it short: what is true now, not a diary.
   late enumeration, xrun, clock step, rate, quantum, unplug, stall, server
   loss. `contracts/backend/conformance` checks the contract's guarantees;
   it passes on six fake rigs in ctest and against JackBackend on PipeWire
-  in `tools/test-engine-docker.sh` (xrun and clock step skipped there: not
-  causable on demand). `sonora-engine --backend fake` records 18 verified
+  in `tools/test-engine-docker.sh`: 10 ok, 4 skipped. Xrun and clock step
+  cannot be caused there, and the quantum and rate changes are held by the
+  shipped pin, which the rig confirms on the running driver. `sonora-engine --backend fake` records 18 verified
   tracks with no audio server. Container only; no hardware involved.
 - **PR #16 follow-ups (on `contract/backend`).** A take that fails while
   recording (full disk, 4 GB limit) is shown at once in red on the terminal

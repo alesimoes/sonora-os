@@ -330,6 +330,8 @@ std::string deactivate_is_a_barrier(Rig& rig) {
     return "";
 }
 
+}  // namespace
+
 std::string check_fault(Rig& rig, Fault fault) {
     std::string device = usable_device(rig);
     uint32_t inputs = 2;
@@ -352,12 +354,33 @@ std::string check_fault(Rig& rig, Fault fault) {
 
     const uint64_t before = f.rec.calls();
     const uint32_t xruns = f.b->xruns();
-    if (!rig.inject(*f.b, fault)) return "SKIP: this rig cannot cause it";
+    const Rig::Injected injected = rig.inject(*f.b, fault);
+    if (injected == Rig::Injected::Unsupported) return "SKIP: this rig cannot cause it";
+    // Whatever happens below, the server is put back for the next check.
     struct Restore {
         Rig& rig;
+        AudioBackend& b;
         Fault fault;
-        ~Restore() { rig.restore(fault); }
-    } const restore{rig, fault};
+        bool done = false;
+        void now() {
+            if (!done) rig.restore(b, fault);
+            done = true;
+        }
+        ~Restore() { now(); }
+    } restore{rig, *f.b, fault};
+
+    if (injected == Rig::Injected::Held) {
+        // The server refused, so the backend must carry on as if nothing
+        // was asked: still running, not fatal.
+        rig.pass(*f.b, kPassPeriods);
+        if (f.b->fatal()) {
+            return "the server held the change, yet the backend is fatal: " +
+                   f.b->fatal_reason();
+        }
+        if (!wait_calls(rig, f, before + 8)) return "periods stopped after a refused change";
+        if (f.rec.size_changes() != 0) return "a block of another size reached process()";
+        return "SKIP: " + rig.held_reason(fault);
+    }
 
     if (fault == Fault::Xrun || fault == Fault::ClockStep) {
         if (!wait_calls(rig, f, before + 8)) return "periods stopped";
@@ -387,6 +410,9 @@ std::string check_fault(Rig& rig, Fault fault) {
         return "fatal_reason() is \"" + reason + "\", expected it to say \"" + expected + "\"";
     }
     const uint64_t at_fatal = f.rec.calls();
+    // The server is given back its clock before looking: a stalled server
+    // that resumes, or a quantum put back, must still deliver nothing.
+    restore.now();
     rig.pass(*f.b, kPassPeriods);
     // A call already running when fatal() turned true may finish, and is
     // counted when it does; only an exact rig can rule that out.
@@ -402,8 +428,6 @@ std::string check_fault(Rig& rig, Fault fault) {
     }
     return "";
 }
-
-}  // namespace
 
 const char* fault_name(Fault f) {
     switch (f) {

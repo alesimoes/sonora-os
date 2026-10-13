@@ -336,18 +336,38 @@ echo "DEVICE POLICY PASS"
 # by stopping the server, the unplug by killing the card's client, and the
 # server loss, last, by killing PipeWire. Xruns and clock steps cannot be
 # caused on demand here and are reported as skipped.
+#
+# The shipped config pins the quantum and rate (audio-stack/
+# pipewire-sonora.conf, settings.check-quantum/-rate), and this container
+# runs it, so the forced change is refused: measured 2026-10-13, the
+# settings metadata stores clock.force-quantum 256 while the running driver
+# stays at quantum 128. Whether it took is asked of the running driver
+# (pw-top), not of the metadata; held, the check is skipped with the reason
+# and the backend must carry on unharmed. The pin is never loosened here.
 if [[ ! -f /engine-build/sonora-conformance-jack ]]; then
   echo "note: no sonora-conformance-jack beside the engine; conformance skipped" >&2
   exit 0
 fi
 cp /engine-build/sonora-conformance-jack /tmp/sonora-conformance-jack
 chmod 0755 /tmp/sonora-conformance-jack
+# The running driver's quantum and rate, as "QUANT RATE".
+cat >/tmp/sonora-graph-clock <<'SH'
+#!/bin/sh
+pw-top -b -n 2 | awk '$1 == "R" && $NF == "Dummy-Driver" { q = $3; r = $4 } END { print q, r }'
+SH
+chmod 0755 /tmp/sonora-graph-clock
+PINNED="the server pins its quantum and rate (audio-stack/pipewire-sonora.conf); the refusal path is covered by the drivers/support PeriodGuard tests and the fake rigs"
 echo "--- backend conformance suite against JackBackend ---"
+echo "graph clock before: $(/tmp/sonora-graph-clock)"
 set +e
 SONORA_CONFORMANCE_RATE="$RATE" \
 SONORA_INJECT_BUFFER_CHANGE="pw-metadata -n settings 0 clock.force-quantum 256 >/dev/null" \
+SONORA_TOOK_BUFFER_CHANGE="sleep 1; /tmp/sonora-graph-clock | grep -q '^256 '" \
+SONORA_HELD_WHY_BUFFER_CHANGE="$PINNED" \
 SONORA_RESTORE_BUFFER_CHANGE="pw-metadata -n settings 0 clock.force-quantum 0 >/dev/null; sleep 0.5" \
 SONORA_INJECT_RATE_CHANGE="pw-metadata -n settings 0 clock.force-rate 96000 >/dev/null" \
+SONORA_TOOK_RATE_CHANGE="sleep 1; /tmp/sonora-graph-clock | grep -q ' 96000$'" \
+SONORA_HELD_WHY_RATE_CHANGE="$PINNED" \
 SONORA_RESTORE_RATE_CHANGE="pw-metadata -n settings 0 clock.force-rate 0 >/dev/null; sleep 0.5" \
 SONORA_INJECT_STALL="kill -STOP $PIPEWIRE_PID" \
 SONORA_RESTORE_STALL="kill -CONT $PIPEWIRE_PID; sleep 0.5" \
