@@ -6,6 +6,10 @@
 #   tools/clean.sh --deep       also the live-build cache volume (an ISO
 #                               build then takes about 20 min instead of 10)
 #   tools/clean.sh --days N     age for build-*/ output dirs (default 3)
+#   tools/clean.sh --host-build-cache
+#                               also Docker's build cache older than 24 h. It
+#                               cannot be filtered by label, so this clears
+#                               every project's cache on this host, not ours.
 #
 # Ours means: a Docker object labelled org.sonora=1 or named sonora-*, a git
 # worktree under .claude/worktrees, a build-*/ directory in the main checkout.
@@ -17,7 +21,7 @@
 #   - dangling images of ours (labelled, or built from a Dockerfile of ours)
 #   - images of ours no script in tools/ uses (KEEP_IMAGES below)
 #   - volumes of ours, except sonora-livebuild-work without --deep
-#   - Docker build cache unused for 24 h
+#   - Docker build cache unused for 24 h, only with --host-build-cache
 #   - worktrees whose work is on origin/main, with nothing uncommitted
 #   - build-*/ dirs in the main checkout untouched for --days days
 #
@@ -39,16 +43,18 @@ ACTIVE_MINUTES="${SONORA_CLEAN_ACTIVE_MINUTES:-120}"
 
 DRY=0
 DEEP=0
+HOST_CACHE=0
 DAYS=3
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run|-n) DRY=1 ;;
     --deep)       DEEP=1 ;;
+    --host-build-cache) HOST_CACHE=1 ;;
     --days)
       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "error: --days needs a number" >&2; exit 2; }
       DAYS="$2"
       shift ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "error: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -202,7 +208,9 @@ if [[ "$DOCKER" == 1 ]]; then
   [[ "$found" == 1 ]] || echo "  none to remove"
 
   echo "Build cache unused for 24 h:"
-  if [[ "$DRY" == 1 ]]; then
+  if [[ "$HOST_CACHE" != 1 ]]; then
+    echo "  kept         (shared by every project on this host; --host-build-cache clears it)"
+  elif [[ "$DRY" == 1 ]]; then
     total="$(docker system df --format '{{.Type}} {{.Reclaimable}}' | awk '/^Build Cache/ { print $3 }')"
     echo "  would prune   the part of ${total:-0B} reclaimable not used in 24 h (docker cannot size it in advance)"
   else
@@ -215,6 +223,7 @@ fi
 
 # --- worktrees ---
 MAIN="$(git -C "$ROOT" worktree list --porcelain | sed -n '1s/^worktree //p')"
+[[ -n "$MAIN" && -d "$MAIN/.git" ]] || { echo "error: cannot find the main checkout" >&2; exit 1; }
 SELF="$(git -C "$ROOT" rev-parse --show-toplevel)"
 if ! git -C "$MAIN" fetch -q --prune origin 2>/dev/null; then
   echo "warning: git fetch failed; judging worktrees against the last fetched origin/main."
@@ -294,7 +303,8 @@ done
 
 echo
 if [[ "$DRY" == 1 ]]; then
-  echo "SUMMARY would reclaim $(human "$RECLAIMED") (plus build cache older than 24 h)"
+  extra=""; [[ "$HOST_CACHE" == 1 ]] && extra=" (plus host build cache older than 24 h)"
+  echo "SUMMARY would reclaim $(human "$RECLAIMED")$extra"
 else
   if [[ "$DOCKER" == 1 ]]; then
     echo "docker system df after:"
