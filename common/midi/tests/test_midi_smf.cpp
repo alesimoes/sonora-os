@@ -369,6 +369,19 @@ int event_errors() {
                        SmfError::MissingEndOfTrack, 26) == 0);
     CHECK(expect_error(track_with({0x00, 0xFF, 0x2F, 0x00, 0x00, 0x90, 0x3C, 0x64}),
                        SmfError::DataAfterEndOfTrack, 26) == 0);
+    {
+        // 1025 maximal deltas reach 1025 * (2^28 - 1) ticks, just past 2^38:
+        // a ~6 KB file that used to overflow TempoMap's int64 products.
+        std::vector<std::uint8_t> body;
+        for (int i = 0; i < 1025; ++i) {
+            body.insert(body.end(), {0xFF, 0xFF, 0xFF, 0x7F});
+            if (i == 0) body.push_back(0x90);
+            body.insert(body.end(), {0x3C, 0x64});
+        }
+        body.insert(body.end(), {0x00, 0xFF, 0x2F, 0x00});
+        CHECK(expect_error(track_with(body), SmfError::TickOutOfRange,
+                           22 + 7 + 6 * 1023 + 4) == 0);
+    }
     CHECK(expect_error(track_with({0x00, 0x90, 0x3C}), SmfError::Truncated, 24) == 0);
     CHECK(expect_error(track_with({0x00, 0xF0, 0x7F, 0x01}), SmfError::Truncated, 24) == 0);
     CHECK(expect_error(track_with({0x00, 0xFF}), SmfError::Truncated, 24) == 0);

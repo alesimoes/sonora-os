@@ -46,6 +46,8 @@ enum class SmfError : std::uint8_t {
     BadMetaLength,        // a meta event of a fixed-length type, wrong length
     MissingEndOfTrack,
     DataAfterEndOfTrack,
+    TickOutOfRange,       // an absolute time past 2^38 ticks, where TempoMap
+                          // arithmetic would overflow
     // Writer only.
     UnsupportedFormat,
     InvalidEvent,

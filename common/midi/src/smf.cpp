@@ -140,6 +140,12 @@ bool Reader::read_track(std::size_t begin, std::size_t end, SmfTrack& track) {
         std::uint32_t delta = 0;
         if (!read_length(end, pos, delta)) return false;
         tick += delta;
+        // TempoMap's tick-to-sample products are exact only below 2^38 ticks;
+        // past that a hostile file would overflow them (signed, so UB).
+        if (tick > (std::int64_t{1} << 38)) {
+            return fail(SmfError::TickOutOfRange, pos,
+                        "event time past 2^38 ticks");
+        }
         if (pos >= end) {
             return fail(SmfError::Truncated, pos, "track ends after a delta time");
         }
