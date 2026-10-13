@@ -91,6 +91,13 @@ below). Every one of those disks reports `TRAN=''` and `RM=0`.
 New partition nodes also never appear in the container's static `/dev`. The
 test mounts `devtmpfs` over it, which is what a real system has.
 
+Two harness traps, measured 2026-10-13. Image tags are shared by every
+worktree on the Docker host, and another checkout rebuilt
+`sonora-runtime:trixie` mid-run, so the tests run containers by image ID.
+And under `pipefail`, `yes | head` and `dd | grep -q` report failure when
+the left side dies of SIGPIPE; the harness uses process substitution or
+`grep -c` instead.
+
 ## Telling a stick from a disk you must not touch
 
 Added after review, 2026-10-12. Each point below was measured in the same
