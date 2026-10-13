@@ -25,6 +25,8 @@ enable_testing()
 # own include/ directory, so an include across an edge it does not link fails
 # to compile. Listed by layer; a module may only link the ones above it.
 add_subdirectory(common/base)
+# Strict JSON for the session file and the key maps (ADR-0009 §5), layer 0.
+add_subdirectory(common/json)
 add_subdirectory(common/audiofile)
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)

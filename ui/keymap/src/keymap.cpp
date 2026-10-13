@@ -1,23 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Why there is a JSON parser in here instead of a vendored library.
-//
-// The project has no JSON dependency and the ISO's package set is frozen
-// (ADR-0002), so the choice was between vendoring a single-header library and
-// writing a parser. Vendoring nlohmann/json means carrying ~25k lines of
-// third-party code, licence included, to read one 3 KB file whose format we
-// define ourselves; and a general library reports errors in its own terms
-// ("parse error at byte 412") when keymaps/README.md requires us to say which
-// key, which line and what was wrong. The parser below is a complete, strict
-// JSON reader in about two hundred lines that tracks the line of every value,
-// which is what makes the required error messages possible. If a second,
-// larger format ever needs parsing (AAF, session files), that is the point to
-// revisit this; it is not a reason to take the dependency now.
+// The JSON underneath is common/json (ADR-0009 §5), shared with the session
+// file so the two formats cannot drift into two dialects. Its numbers go
+// through std::from_chars, so the C locale no longer decides what "2.5"
+// means (BACKLOG: keymap strtod under de_DE).
 
 #include "sonora/keymap.h"
 
+#include "sonora/json/json.h"
+
 #include <cctype>
-#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -28,356 +20,6 @@
 
 namespace sonora {
 namespace {
-
-// --- minimal strict JSON ---------------------------------------------------
-
-struct Json {
-    enum class Type { Null, Bool, Number, String, Array, Object };
-
-    Type type = Type::Null;
-    bool boolean = false;
-    double number = 0.0;
-    std::string str;
-    std::vector<Json> arr;
-    std::vector<std::pair<std::string, Json>> obj;
-    int line = 0;
-
-    const Json* find(const std::string& key) const {
-        for (const auto& kv : obj) {
-            if (kv.first == key) return &kv.second;
-        }
-        return nullptr;
-    }
-};
-
-// Deep enough for any key map anyone will write by hand, shallow enough that
-// the recursive descent below cannot run out of stack. A malformed file has to
-// come back as a parse error with a line on it; exiting on a signal, which is
-// what unbounded recursion does, tells the operator nothing.
-const int kMaxDepth = 64;
-
-class JsonParser {
-public:
-    explicit JsonParser(const std::string& text) : text_(text) {}
-
-    bool parse(Json& out) {
-        skip_space();
-        if (!value(out)) return false;
-        skip_space();
-        if (pos_ != text_.size()) return fail("trailing content after the value");
-        return true;
-    }
-
-    const std::string& error() const { return error_; }
-    int error_line() const { return error_line_; }
-
-private:
-    bool fail(const std::string& msg) {
-        if (error_.empty()) {
-            error_ = msg;
-            error_line_ = line_;
-        }
-        return false;
-    }
-
-    void skip_space() {
-        while (pos_ < text_.size()) {
-            const char c = text_[pos_];
-            if (c == '\n') {
-                ++line_;
-                ++pos_;
-            } else if (c == ' ' || c == '\t' || c == '\r') {
-                ++pos_;
-            } else {
-                break;
-            }
-        }
-    }
-
-    bool eof() const { return pos_ >= text_.size(); }
-    char peek() const { return text_[pos_]; }
-
-    bool literal(const char* word) {
-        const std::size_t n = std::strlen(word);
-        if (text_.compare(pos_, n, word) != 0) return false;
-        pos_ += n;
-        return true;
-    }
-
-    // RAII rather than a decrement before each of value()'s many returns,
-    // which is where a depth counter usually goes wrong.
-    class Nest {
-    public:
-        explicit Nest(int& depth) : depth_(depth) { ++depth_; }
-        ~Nest() { --depth_; }
-        Nest(const Nest&) = delete;
-        Nest& operator=(const Nest&) = delete;
-
-    private:
-        int& depth_;
-    };
-
-    bool value(Json& out) {
-        if (eof()) return fail("unexpected end of input where a value was expected");
-        const Nest nest(depth_);
-        if (depth_ > kMaxDepth) {
-            return fail("nesting deeper than " + std::to_string(kMaxDepth) +
-                        " levels");
-        }
-        out.line = line_;
-        const char c = peek();
-        if (c == '{') return object(out);
-        if (c == '[') return array(out);
-        if (c == '"') {
-            out.type = Json::Type::String;
-            return string(out.str);
-        }
-        if (c == 't') {
-            if (!literal("true")) return fail("expected true");
-            out.type = Json::Type::Bool;
-            out.boolean = true;
-            return true;
-        }
-        if (c == 'f') {
-            if (!literal("false")) return fail("expected false");
-            out.type = Json::Type::Bool;
-            out.boolean = false;
-            return true;
-        }
-        if (c == 'n') {
-            if (!literal("null")) return fail("expected null");
-            out.type = Json::Type::Null;
-            return true;
-        }
-        if (c == '-' || (c >= '0' && c <= '9')) return number(out);
-        return fail(std::string("unexpected character '") + c +
-                    "' where a value was expected");
-    }
-
-    bool object(Json& out) {
-        out.type = Json::Type::Object;
-        ++pos_;  // '{'
-        skip_space();
-        if (!eof() && peek() == '}') {
-            ++pos_;
-            return true;
-        }
-        for (;;) {
-            skip_space();
-            if (eof() || peek() != '"') return fail("expected a quoted member name");
-            std::string key;
-            if (!string(key)) return false;
-            // Checked before the value is read, while line_ is still the
-            // key's line. Afterwards it is wherever a multi-line value ended,
-            // and the message points at a closing brace.
-            for (const auto& kv : out.obj) {
-                if (kv.first == key) {
-                    return fail("duplicate member \"" + key + "\"");
-                }
-            }
-            skip_space();
-            if (eof() || peek() != ':') {
-                return fail("expected ':' after member \"" + key + "\"");
-            }
-            ++pos_;
-            skip_space();
-            Json v;
-            if (!value(v)) return false;
-            out.obj.emplace_back(key, std::move(v));
-            skip_space();
-            if (eof()) return fail("unterminated object");
-            if (peek() == ',') {
-                ++pos_;
-                continue;
-            }
-            if (peek() == '}') {
-                ++pos_;
-                return true;
-            }
-            return fail(std::string("expected ',' or '}' in an object, got '") +
-                        peek() + "'");
-        }
-    }
-
-    bool array(Json& out) {
-        out.type = Json::Type::Array;
-        ++pos_;  // '['
-        skip_space();
-        if (!eof() && peek() == ']') {
-            ++pos_;
-            return true;
-        }
-        for (;;) {
-            skip_space();
-            Json v;
-            if (!value(v)) return false;
-            out.arr.push_back(std::move(v));
-            skip_space();
-            if (eof()) return fail("unterminated array");
-            if (peek() == ',') {
-                ++pos_;
-                continue;
-            }
-            if (peek() == ']') {
-                ++pos_;
-                return true;
-            }
-            return fail(std::string("expected ',' or ']' in an array, got '") +
-                        peek() + "'");
-        }
-    }
-
-    bool string(std::string& out) {
-        ++pos_;  // '"'
-        out.clear();
-        for (;;) {
-            if (eof()) return fail("unterminated string");
-            const char c = text_[pos_++];
-            if (c == '"') return true;
-            if (c == '\n') return fail("a newline inside a string");
-            // RFC 8259 requires these escaped. In a hand-edited profile a raw
-            // one is nearly always a tab the editor inserted and nobody can
-            // see, which is a bad thing to have inside a key name.
-            if (static_cast<unsigned char>(c) < 0x20) {
-                char hex[8];
-                std::snprintf(hex, sizeof hex, "0x%02x",
-                              static_cast<unsigned>(static_cast<unsigned char>(c)));
-                return fail(std::string("a raw control character (") + hex +
-                            ") inside a string; write it as an escape");
-            }
-            if (c != '\\') {
-                out.push_back(c);
-                continue;
-            }
-            if (eof()) return fail("unterminated escape sequence");
-            const char e = text_[pos_++];
-            switch (e) {
-                case '"': out.push_back('"'); break;
-                case '\\': out.push_back('\\'); break;
-                case '/': out.push_back('/'); break;
-                case 'b': out.push_back('\b'); break;
-                case 'f': out.push_back('\f'); break;
-                case 'n': out.push_back('\n'); break;
-                case 'r': out.push_back('\r'); break;
-                case 't': out.push_back('\t'); break;
-                case 'u': {
-                    unsigned cp = 0;
-                    if (!hex4(cp)) return false;
-                    // A character outside the BMP is written as a surrogate
-                    // pair, so decoding the pair is the only way to accept a
-                    // comment with an emoji in it. A surrogate on its own is
-                    // not a character at all, and is refused rather than
-                    // encoded into the ill-formed UTF-8 that CESU-8 would be.
-                    if (cp >= 0xD800 && cp <= 0xDBFF) {
-                        if (text_.compare(pos_, 2, "\\u") != 0) {
-                            return fail("a leading UTF-16 surrogate escape with"
-                                        " no trailing surrogate after it");
-                        }
-                        pos_ += 2;
-                        unsigned low = 0;
-                        if (!hex4(low)) return false;
-                        if (low < 0xDC00 || low > 0xDFFF) {
-                            return fail("a leading UTF-16 surrogate escape"
-                                        " followed by an escape that is not a"
-                                        " trailing surrogate");
-                        }
-                        cp = 0x10000u + ((cp - 0xD800u) << 10) + (low - 0xDC00u);
-                    } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-                        return fail("a trailing UTF-16 surrogate escape with no"
-                                    " leading surrogate before it");
-                    }
-                    append_utf8(cp, out);
-                    break;
-                }
-                default:
-                    return fail(std::string("unknown escape \\") + e);
-            }
-        }
-    }
-
-    bool hex4(unsigned& cp) {
-        cp = 0;
-        for (int i = 0; i < 4; ++i) {
-            if (eof()) return fail("truncated \\u escape");
-            const char h = text_[pos_++];
-            unsigned d;
-            if (h >= '0' && h <= '9') d = static_cast<unsigned>(h - '0');
-            else if (h >= 'a' && h <= 'f') d = static_cast<unsigned>(h - 'a' + 10);
-            else if (h >= 'A' && h <= 'F') d = static_cast<unsigned>(h - 'A' + 10);
-            else return fail("a non-hex digit in a \\u escape");
-            cp = cp * 16 + d;
-        }
-        return true;
-    }
-
-    static void append_utf8(unsigned cp, std::string& out) {
-        if (cp < 0x80) {
-            out.push_back(static_cast<char>(cp));
-        } else if (cp < 0x800) {
-            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        } else if (cp < 0x10000) {
-            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        } else {
-            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        }
-    }
-
-    bool number(Json& out) {
-        const std::size_t start = pos_;
-        if (!eof() && peek() == '-') ++pos_;
-        if (eof() || !std::isdigit(static_cast<unsigned char>(peek()))) {
-            return fail("a malformed number");
-        }
-        // JSON has no octal and no padding. strtod reads "01" as 1, so the
-        // file would load here while every other JSON tool refuses it.
-        if (peek() == '0' && pos_ + 1 < text_.size() &&
-            std::isdigit(static_cast<unsigned char>(text_[pos_ + 1]))) {
-            return fail("a number with a leading zero");
-        }
-        while (!eof() && std::isdigit(static_cast<unsigned char>(peek()))) ++pos_;
-        if (!eof() && peek() == '.') {
-            ++pos_;
-            if (eof() || !std::isdigit(static_cast<unsigned char>(peek()))) {
-                return fail("a number with no digits after the decimal point");
-            }
-            while (!eof() && std::isdigit(static_cast<unsigned char>(peek()))) ++pos_;
-        }
-        if (!eof() && (peek() == 'e' || peek() == 'E')) {
-            ++pos_;
-            if (!eof() && (peek() == '+' || peek() == '-')) ++pos_;
-            if (eof() || !std::isdigit(static_cast<unsigned char>(peek()))) {
-                return fail("a number with no digits in its exponent");
-            }
-            while (!eof() && std::isdigit(static_cast<unsigned char>(peek()))) ++pos_;
-        }
-        const std::string digits = text_.substr(start, pos_ - start);
-        errno = 0;
-        const double d = std::strtod(digits.c_str(), nullptr);
-        // Underflow also sets ERANGE and gives a denormal or zero, which is a
-        // fine answer; overflow gives infinity, and an infinity that later
-        // gets narrowed to an integer is how a plausible file ends up naming
-        // the wrong thing.
-        if (errno == ERANGE && !std::isfinite(d)) {
-            return fail("the number " + digits + " is too large to represent");
-        }
-        out.type = Json::Type::Number;
-        out.number = d;
-        return true;
-    }
-
-    const std::string& text_;
-    std::size_t pos_ = 0;
-    int depth_ = 0;
-    int line_ = 1;
-    std::string error_;
-    int error_line_ = 1;
-};
 
 // --- key names -------------------------------------------------------------
 
@@ -1006,60 +648,60 @@ bool KeyMap::load_file(const std::string& path, KeyMap& out, std::string& error)
 
 bool KeyMap::load_string(const std::string& text, const std::string& origin,
                          KeyMap& out, std::string& error) {
-    Json root;
-    JsonParser parser(text);
-    if (!parser.parse(root)) {
-        error = at(origin, parser.error_line()) + parser.error();
+    json::Value root;
+    json::Error parse_error;
+    if (!json::parse(text, root, parse_error)) {
+        error = at(origin, parse_error.line) + parse_error.message;
         return false;
     }
-    if (root.type != Json::Type::Object) {
-        error = at(origin, root.line) + "the top level must be an object";
+    if (!root.is_object()) {
+        error = at(origin, root.line()) + "the top level must be an object";
         return false;
     }
 
     KeyMap map;
-    const Json* bindings = nullptr;
+    const json::Value* bindings = nullptr;
 
-    for (const auto& kv : root.obj) {
+    for (const auto& kv : root.members()) {
         if (kv.first == "name") {
-            if (kv.second.type != Json::Type::String) {
-                error = at(origin, kv.second.line) + "\"name\" must be a string";
+            if (!kv.second.is_string()) {
+                error = at(origin, kv.second.line()) + "\"name\" must be a string";
                 return false;
             }
-            map.name_ = kv.second.str;
+            map.name_ = kv.second.text();
         } else if (kv.first == "comment") {
-            if (kv.second.type != Json::Type::String) {
-                error = at(origin, kv.second.line) + "\"comment\" must be a string";
+            if (!kv.second.is_string()) {
+                error = at(origin, kv.second.line()) + "\"comment\" must be a string";
                 return false;
             }
-            map.comment_ = kv.second.str;
+            map.comment_ = kv.second.text();
         } else if (kv.first == "bindings") {
-            if (kv.second.type != Json::Type::Object) {
-                error = at(origin, kv.second.line) +
+            if (!kv.second.is_object()) {
+                error = at(origin, kv.second.line()) +
                         "\"bindings\" must be an object of key to command";
                 return false;
             }
             bindings = &kv.second;
         } else {
-            error = at(origin, kv.second.line) + "unknown top-level member \"" +
+            error = at(origin, kv.second.line()) + "unknown top-level member \"" +
                     kv.first + "\" (expected name, comment or bindings)";
             return false;
         }
     }
 
     if (map.name_.empty()) {
-        error = at(origin, root.line) + "no \"name\"";
+        error = at(origin, root.line()) + "no \"name\"";
         return false;
     }
     if (bindings == nullptr) {
-        error = at(origin, root.line) + "no \"bindings\" object";
+        error = at(origin, root.line()) + "no \"bindings\" object";
         return false;
     }
 
-    for (const auto& kv : bindings->obj) {
+    for (const auto& kv : bindings->members()) {
         const std::string& spec = kv.first;
-        const Json& v = kv.second;
-        const int line = v.line;
+        const json::Value& v = kv.second;
+        const int line = v.line();
 
         Binding b;
         b.spec = spec;
@@ -1076,20 +718,20 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
         bool has_verified = false;
         long target = 0;
 
-        if (v.type == Json::Type::String) {
-            b.command = v.str;
-        } else if (v.type == Json::Type::Object) {
-            for (const auto& f : v.obj) {
+        if (v.is_string()) {
+            b.command = v.text();
+        } else if (v.is_object()) {
+            for (const auto& f : v.members()) {
                 if (f.first == "command") {
-                    if (f.second.type != Json::Type::String) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                    if (!f.second.is_string()) {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"command\" must be a string";
                         return false;
                     }
-                    b.command = f.second.str;
+                    b.command = f.second.text();
                 } else if (f.first == "target") {
-                    if (f.second.type != Json::Type::Number) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                    if (!f.second.is_number()) {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"target\" must be a track number";
                         return false;
                     }
@@ -1097,11 +739,14 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
                     // first is undefined for a value a long cannot hold, and
                     // in practice 4294967297 landed on track 1 -- a plausible
                     // file, no error, the wrong track.
-                    const double n = f.second.number;
+                    // The parser already refused a number past a double's
+                    // range, so this conversion cannot fail.
+                    double n = 0.0;
+                    f.second.to_double(n);
                     if (!(n >= 1.0 &&
                           n <= static_cast<double>(kMaxTrackTarget)) ||
                         n != std::floor(n)) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"target\" must be a whole track number"
                                 " from 1 to " +
                                 std::to_string(kMaxTrackTarget);
@@ -1110,8 +755,8 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
                     target = static_cast<long>(n);
                     has_target = true;
                 } else if (f.first == "argument") {
-                    if (f.second.type != Json::Type::String) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                    if (!f.second.is_string()) {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"argument\" must be a string";
                         return false;
                     }
@@ -1119,34 +764,34 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
                     // "target" is: a value the command will never read is a
                     // mistake in the file, not a harmless extra.
                     has_argument = true;
-                    b.ctx.argument = f.second.str;
+                    b.ctx.argument = f.second.text();
                 } else if (f.first == "verified") {
-                    if (f.second.type != Json::Type::Bool) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                    if (!f.second.is_bool()) {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"verified\" must be true or false";
                         return false;
                     }
-                    b.verified = f.second.boolean;
+                    b.verified = f.second.as_bool();
                     has_verified = true;
                 } else if (f.first == "origin") {
-                    if (f.second.type != Json::Type::String ||
-                        (f.second.str != "vendor" && f.second.str != "sonora")) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                    if (!f.second.is_string() ||
+                        (f.second.text() != "vendor" && f.second.text() != "sonora")) {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"origin\" must be \"vendor\" or"
                                 " \"sonora\"";
                         return false;
                     }
-                    b.origin = f.second.str == "sonora" ? BindingOrigin::Sonora
+                    b.origin = f.second.text() == "sonora" ? BindingOrigin::Sonora
                                                         : BindingOrigin::Vendor;
                 } else if (f.first == "comment") {
-                    if (f.second.type != Json::Type::String) {
-                        error = at(origin, f.second.line) + "key \"" + spec +
+                    if (!f.second.is_string()) {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
                                 "\": \"comment\" must be a string";
                         return false;
                     }
-                    b.comment = f.second.str;
+                    b.comment = f.second.text();
                 } else {
-                    error = at(origin, f.second.line) + "key \"" + spec +
+                    error = at(origin, f.second.line()) + "key \"" + spec +
                             "\": unknown member \"" + f.first + "\"";
                     return false;
                 }
