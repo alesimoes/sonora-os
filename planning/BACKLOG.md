@@ -174,6 +174,10 @@ not start or extend those items before the Complete DAW closes (owner,
 
 ## ADR-0007 follow-ups
 
+- [ ] A pty-driven check (as in `tools/bwf-interop.py drive`) that a quit
+      during a failed take exits 1 with the terminal restored. Only the
+      `Session::take_failure()` half is unit-tested today.
+
 - [ ] RTSan CI job: `clang-22` from trixie main, its own build
       (`-fsanitize=realtime`, which cannot be combined with ASan or TSan),
       `-Wfunction-effects` advisory. `SONORA_RT` expands to

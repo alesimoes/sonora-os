@@ -49,6 +49,11 @@ end of its run. Keep it short: what is true now, not a diary.
   attached, so the USB rule (aliases -> `/proc/asound/<card>/usbid`) is
   unproven on hardware, and the onboard fallback is unproven on the
   owner's laptop.
+- **PR #16 follow-ups (on `contract/backend`).** A take that fails while
+  recording (full disk, 4 GB limit) is shown at once in red on the terminal
+  UI, from `Session::take_failure()`, until the next take records cleanly;
+  quitting or SIGTERM during a failed take restores the terminal, lets
+  `stop()` print the reason and exits 1.
 - **Key map review fixes (2026-10-12, `feature/ui-foundation`):** a take on
   disk is never overwritten -- the take number comes from the session folder
   and the writer creates with O_EXCL; arming is refused during a take; SS3
