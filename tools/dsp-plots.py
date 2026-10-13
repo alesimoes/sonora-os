@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Plots from sonora-dsp-measure's JSON reports (ADR-0011 §3.1).
+
+    tools/dsp-plots.py build-container/dsp-reports docs/images/dsp
+
+Reads <name>.json for the native processors and writes PNGs: the EQ's
+measured response against its analog target in both modes, the dynamics
+processors' static curves, and the CPU figures against the class bars.
+Needs matplotlib. A reporting aid, not a test: the bars live in each
+processor's quality.json and are checked by ctest.
+"""
+import json
+import os
+import sys
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+
+
+def load(report_dir, name):
+    path = os.path.join(report_dir, name + ".json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def eq_responses(eq, out_dir):
+    for key, title in (("response_2x", "analog matched (2x)"), ("response_1x", "zero latency (1x)")):
+        curves = eq["data"].get(key, [])
+        if not curves:
+            continue
+        fig, axes = plt.subplots(len(curves), 2, figsize=(12, 2.6 * len(curves)), squeeze=False)
+        for row, c in enumerate(curves):
+            pts = c["points_hz_db_target"]
+            f = [p[0] for p in pts]
+            meas = [p[1] for p in pts]
+            tgt = [p[2] for p in pts]
+            ax = axes[row][0]
+            ax.semilogx(f, tgt, color="0.6", lw=3, label="analog target")
+            ax.semilogx(f, meas, color="C0", lw=1, label="measured")
+            ax.set_ylabel("dB")
+            ax.set_title(c["curve"], fontsize=8)
+            ax.grid(True, which="both", alpha=0.3)
+            if row == 0:
+                ax.legend(fontsize=7)
+            err = axes[row][1]
+            err.semilogx(f, [m - t if t >= -20 else float("nan") for m, t in zip(meas, tgt)], color="C3")
+            err.axhline(0.1, color="k", lw=0.5, ls="--")
+            err.axhline(-0.1, color="k", lw=0.5, ls="--")
+            err.set_ylabel("error, dB")
+            err.grid(True, which="both", alpha=0.3)
+        axes[-1][0].set_xlabel("Hz")
+        axes[-1][1].set_xlabel("Hz (error where the target is above -20 dB; dashed: +-0.1 dB bar)")
+        fig.suptitle("Sonora EQ, " + title + ", 48 kHz: measured response against the analog prototype")
+        fig.tight_layout(rect=[0, 0, 1, 0.98])
+        name = "eq-response-2x.png" if key == "response_2x" else "eq-response-1x.png"
+        fig.savefig(os.path.join(out_dir, name), dpi=110)
+        plt.close(fig)
+
+
+def static_curves(comp, gate, out_dir):
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    if comp:
+        pts = comp["data"].get("static_curve_in_out_formula", [])
+        n = 31
+        for k in range(len(pts) // n):
+            seg = pts[k * n:(k + 1) * n]
+            axes[0].plot([p[0] for p in seg], [p[2] for p in seg], color="0.7", lw=3)
+            axes[0].plot([p[0] for p in seg], [p[1] for p in seg], lw=1)
+        axes[0].set_title("Compressor static curve (3 settings): measured over formula", fontsize=9)
+    if gate:
+        pts = gate["data"].get("expander_curve_in_out_formula", [])
+        axes[1].plot([p[0] for p in pts], [p[2] for p in pts], color="0.7", lw=3, label="formula")
+        axes[1].plot([p[0] for p in pts], [p[1] for p in pts], lw=1, label="measured")
+        axes[1].legend(fontsize=8)
+        axes[1].set_title("Expander (T -40, 1:2, knee 6, range -60): measured over formula", fontsize=9)
+    for ax in axes:
+        ax.set_xlabel("input, dBFS (DC)")
+        ax.set_ylabel("output, dBFS")
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "dynamics-static-curves.png"), dpi=110)
+    plt.close(fig)
+
+
+def cpu(reports, out_dir):
+    rows = []
+    for name, rep in reports.items():
+        if not rep:
+            continue
+        figs = {}
+        for c in rep["checks"]:
+            label = c.get("check", "")
+            if not label.startswith("CPU per block"):
+                continue
+            mode = label.split(":")[0].replace("CPU per block, q128 48 kHz stereo", "").strip(", ")
+            key = (name + (" " + mode if mode else ""))
+            stat = label.split(":")[-1].strip()
+            figs.setdefault(key, {})[stat] = (c.get("value"), c.get("bar"))
+        for key, v in figs.items():
+            rows.append((key, v))
+    if not rows:
+        return
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    labels = [r[0] for r in rows]
+    x = range(len(rows))
+    p50 = [r[1].get("p50", (0, None))[0] for r in rows]
+    p999 = [r[1].get("p99.9", (0, None))[0] for r in rows]
+    single = [r[1].get("p99.9, single run", (0, None))[0] for r in rows]
+    bars = [r[1].get("p99.9", (0, 0))[1] for r in rows]
+    w = 0.27
+    ax.bar([i - w for i in x], p50, w, label="p50 (min of 5 runs)")
+    ax.bar(list(x), p999, w, label="p99.9 (min of 5 runs)")
+    ax.bar([i + w for i in x], single, w, label="p99.9, single run (host jitter)", color="0.75")
+    ax.scatter(list(x), bars, marker="_", s=600, color="k", label="class bar, p99.9")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
+    ax.set_ylabel("microseconds per 128-frame block")
+    ax.set_title("CPU per instance, q128, 48 kHz, stereo (i7-11800H, Docker Desktop on Windows)")
+    ax.legend(fontsize=7)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "cpu-per-instance.png"), dpi=110)
+    plt.close(fig)
+
+
+def main():
+    if len(sys.argv) != 3:
+        print(__doc__)
+        return 2
+    report_dir, out_dir = sys.argv[1], sys.argv[2]
+    os.makedirs(out_dir, exist_ok=True)
+    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus"]
+    reports = {n: load(report_dir, n) for n in names}
+    if reports["eq"]:
+        eq_responses(reports["eq"], out_dir)
+    static_curves(reports["compressor"], reports["gate"], out_dir)
+    cpu(reports, out_dir)
+    print("plots written to", out_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

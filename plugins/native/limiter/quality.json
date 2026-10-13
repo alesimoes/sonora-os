@@ -1,0 +1,17 @@
+{
+  "processor": "org.sonora.limiter",
+  "class": "C",
+  "note": "ADR-0011 §3.2 first bars. Zero true-peak overs on band-limited stress signals judged by a 16x, +-256-tap reference meter; full-band content to Nyquist is measured in common/dsp/tests/test_limiter.cpp and reported. Release is the 63 % time of the linear gain's recovery.",
+  "limiter": {
+    "time_tolerance": 0.1,
+    "alias_dbc": -90.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["input", "ceiling", "release"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 150.0,
+    "max_us": 300.0
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "processor": "org.sonora.delay",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. Echo times exact to the sample; a time change is a 30 ms tap crossfade, so the zipper sweeps include the times.",
+  "delay": {
+    "thdn_db": -110.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["time_l", "time_r", "link", "sync", "feedback", "hpf", "lpf", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}

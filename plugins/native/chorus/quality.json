@@ -1,0 +1,13 @@
+{
+  "processor": "org.sonora.chorus",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. A linear, time-varying processor: no THD or aliasing bar applies; the modulation range and period are measured from an impulse train.",
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["rate", "depth", "delay", "spread", "feedback", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}

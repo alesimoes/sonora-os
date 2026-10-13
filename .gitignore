@@ -77,6 +77,9 @@ iso/chroot.files
 
 # Recorded audio must never be committed.
 *.wav
+# Except the native processors' golden renders (ADR-0011 §3.4): generated,
+# small, and regenerated only by a deliberate commit.
+!plugins/native/*/tests/golden/*.wav
 *.aiff
 *.flac
 Sessions/

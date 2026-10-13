@@ -33,6 +33,20 @@ add_subdirectory(common/model)
 add_subdirectory(common/midi)
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
+# Neutral DSP for the native plugin suite and the meters (ADR-0011 §2.1),
+# layer 1 on common/base.
+add_subdirectory(common/dsp)
+# The native plugin suite (ADR-0011): the Processor interface, then the
+# measurement harness, then each processor. No format adapters yet (N1).
+add_subdirectory(plugins/native/sdk)
+add_subdirectory(plugins/native/measure)
+add_subdirectory(plugins/native/eq)
+add_subdirectory(plugins/native/compressor)
+add_subdirectory(plugins/native/gate)
+add_subdirectory(plugins/native/limiter)
+add_subdirectory(plugins/native/delay)
+add_subdirectory(plugins/native/chorus)
+add_subdirectory(plugins/native/measure/app)
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
 # DRAFT, Phase 4: the engine <-> plugin host shared-memory layout, awaiting
