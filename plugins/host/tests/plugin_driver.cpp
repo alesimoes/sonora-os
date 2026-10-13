@@ -1,45 +1,63 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Plays the engine's side of the draft plugin boundary (contracts/plugin)
-// against a real sonora-plugin-host process and real LV2 and VST3 plugins, until
-// engine/plugin_client exists (M4+). Linux-only, like the host.
+// Plays the engine's side of the plugin boundary (contracts/plugin, layout
+// version 1, ADR-0012 §5) against a real sonora-plugin-host process and
+// real LV2 and VST3 plugins, until engine/plugin_client exists. Linux-only,
+// like the host.
 //
 // The "callback" here is a periodic SCHED_FIFO loop (when the container
 // allows it) at 128 frames / 48 kHz, the same shape as the measurement
 // harness in brain/research/adr-0007-measurements.md. It follows the rules
-// the engine will: never write a slot the host may be reading, never wait
-// on the host at all, drop and count instead.
+// the engine will: pipeline depth 1, never write a slot the host may be
+// reading, never wait on the host at all, drop and count instead; the
+// callback's start goes into the session clock, and the tick moves after
+// the submits. Hosts are timer-paced by default (the futex wake ships gated
+// off, kHostWakeEnabled); --wake futex runs them on the wake instead.
+//
+// Like the engine's control thread it probes each plugin first
+// (`sonora-plugin-host --probe`) for its dense parameter list, seeds the
+// last-value table with the defaults, and keeps the authoritative values in
+// a private store that a new host's first submit copies in.
 //
 //   plugin_driver --host EXE --bundle DIR... --scenario NAME [options]
 //
 // Scenarios: gain, latency, latency_change, crash, deadline, nonfinite,
-// refusals (--format lv2|vst3), rtt, params and list_json (VST3), key (the
-// key channels reach every plugin unchanged, and a key input with no key
-// routed reads the plugin's own input), and render (an offline run checked
-// against a reference render, for Sonora's own bundles; --args-file). A render may route a key to the plugin's
-// side-chain (--key, host --sidechain), move a parameter on the ring before
-// a given block (--change), and have the host re-activate the plugin after
-// loading (--reactivate, for values that change its latency).
-// --mode pipelined (pipeline_depth 1, the default) or poll (depth 0,
-// poll-only). Neither waits on the host; rtt is a measurement and does.
+// refusals (--format lv2|vst3), incompatible, bypass, swap, rtt, params and
+// list_json (VST3), key (the key channels reach every plugin unchanged, and
+// a key input with no key routed reads the plugin's own input), and render
+// (an offline run checked against a reference render, for Sonora's own
+// bundles; --args-file). A render may route a key to the plugin's
+// side-chain (--key, host --sidechain), move a parameter through the ring
+// before a given block (--change), and have the host re-activate the plugin
+// after loading (--reactivate, for values that change its latency).
+// Nothing waits on the host except rtt, key and render, which are
+// measurements.
 // Exit: 0 pass, 1 fail, 77 a required plugin is not installed (a failure in
 // ctest unless SONORA_PLUGIN_TESTS_ALLOW_SKIP is ON).
 
 #include "ipc.h"
+#include "sonora/platform/wake.h"
 #include "sonora/plugin/protocol.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <functional>
+#include <map>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -52,10 +70,10 @@ constexpr uint32_t kRate = 48000;
 constexpr uint32_t kBlock = 128;
 constexpr uint32_t kMaxFrames = 1024;
 constexpr uint64_t kPeriodNs = uint64_t(kBlock) * 1000000000ull / kRate;  // 2 666 666
-// The engine's budget for the host: what is left of the period after the
-// engine's own work. 75 % is an assumption for this driver, not a decision.
+// The measurement harnesses' budget for the host (rtt): what is left of the
+// period after the engine's own work. 75 % is an assumption, not a decision.
 constexpr uint64_t kDeadlineNs = kPeriodNs * 3 / 4;
-// A host that misses this many blocks in a row leaves the plan.
+// A host that misses this many blocks in a row leaves the plan (ADR-0012 §3).
 constexpr int kMaxConsecutiveMisses = 8;
 constexpr int kSkip = 77;
 // Callbacks allowed over the period in a few hundred, for the OS alone. In
@@ -78,25 +96,35 @@ const char* const kKeyPlugin = "urn:sonora:test#key";
 const char* const kKeyLiar = "urn:sonora:test#keyliar";
 
 struct Args {
-    std::string host, scenario, mode = "pipelined", format = "lv2";
+    std::string host, scenario, format = "lv2", wake;
     std::vector<std::string> bundles, chain;
     uint32_t channels = 1;
     uint64_t blocks = 0;
-    // gain: the parameter to move, and whether it takes a linear factor
-    // (VST3 AGain, normalised 0..1) rather than dB (LV2 eg-amp).
-    uint32_t gain_param = 0;
+    // gain and bypass: the parameter to move, by key (LV2 symbol, VST3
+    // ParamID in decimal), and whether it takes a linear factor (VST3 AGain,
+    // normalised 0..1) rather than dB (LV2 eg-amp).
+    std::string gain_param;
     bool gain_linear = false;
     uint32_t expect_replicas = 0;
     // latency_change: the parameter of chain instance 0 to move, and to what.
-    bool has_change = false;
-    uint32_t change_param = 0;
+    std::string change_param;
     float change_value = 0.f;
+    // bypass: "plugin" or "host", what the probe must say it uses.
+    std::string expect_bypass;
     // render: the session rate, the files, and what the host is told.
     uint32_t rate = kRate;
     std::string input, expected;
     double tolerance = 1e-6;
     int64_t expect_latency = -1;
     std::vector<std::string> sets;  // host --set INDEX:SYMBOL=VALUE
+    // --param INDEX:KEY=VALUE: a value the "model" holds, seeded into the
+    // store and the table before the host starts, as the engine does.
+    struct Seed {
+        uint32_t instance;
+        std::string key;
+        float value;
+    };
+    std::vector<Seed> seeds;
     // render: a key for the plugin's side-chain, planar, key_channels wide.
     std::string key;
     uint32_t key_channels = 0;
@@ -139,6 +167,142 @@ const char* state_name(uint32_t s) {
 }
 
 // ---------------------------------------------------------------------------
+// What the engine's scan knows of a plugin: its dense parameter list.
+
+struct PluginParams {
+    bool described = false;
+    std::vector<std::string> keys;
+    std::vector<std::string> symbols;  // what host --set takes: LV2 symbol, VST3 title
+    std::vector<float> defaults;
+    std::string bypass;  // "plugin" or "host"
+
+    int index_of(const std::string& key) const {
+        for (std::size_t i = 0; i < keys.size(); ++i)
+            if (keys[i] == key) return int(i);
+        return -1;
+    }
+    int index_of_symbol(const std::string& symbol) const {
+        for (std::size_t i = 0; i < symbols.size(); ++i)
+            if (symbols[i] == symbol) return int(i);
+        return -1;
+    }
+};
+
+std::string shell_quote(const std::string& s) {
+    std::string q = "'";
+    for (char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+}
+
+// `--probe ID` prints ..."bypass":"host","params":[{"key":"gain","symbol":"gain","default":0},...]
+PluginParams probe_params(const Args& a, const std::string& id) {
+    static std::map<std::string, PluginParams> cache;
+    if (auto it = cache.find(id); it != cache.end()) return it->second;
+    std::string cmd = shell_quote(a.host) + " --probe " + shell_quote(id);
+    for (const std::string& b : a.bundles) cmd += " --bundle " + shell_quote(b);
+    cmd += " 2>/dev/null";
+    PluginParams out;
+    if (std::FILE* p = popen(cmd.c_str(), "r")) {
+        std::string all;
+        char buf[4096];
+        for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;) all.append(buf, n);
+        pclose(p);
+        if (const auto b = all.find("\"bypass\":\""); b != std::string::npos)
+            out.bypass = all.substr(b + 10, all.find('"', b + 10) - (b + 10));
+        const auto at = all.find("\"params\":[");
+        if (at != std::string::npos) {
+            out.described = true;
+            std::size_t i = at;
+            for (;;) {
+                const auto k = all.find("{\"key\":\"", i);
+                if (k == std::string::npos) break;
+                std::size_t e = k + 8;
+                std::string key;
+                for (; e < all.size() && all[e] != '"'; ++e) {
+                    if (all[e] == '\\' && e + 1 < all.size()) ++e;
+                    key += all[e];
+                }
+                const auto d = all.find("\"default\":", e);
+                if (d == std::string::npos) break;
+                std::string symbol;
+                if (const auto y = all.find("\"symbol\":\"", e); y != std::string::npos && y < d)
+                    for (std::size_t q = y + 10; q < all.size() && all[q] != '"'; ++q) {
+                        if (all[q] == '\\' && q + 1 < all.size()) ++q;
+                        symbol += all[q];
+                    }
+                out.symbols.push_back(symbol);
+                out.keys.push_back(key);
+                out.defaults.push_back(std::strtof(all.c_str() + d + 10, nullptr));
+                i = d;
+            }
+        }
+    }
+    cache[id] = out;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// The session clock (contracts/plugin ClockHeader): one per "session", read
+// by every host through a sealed, read-only descriptor (auditor M1).
+
+class Clock {
+public:
+    plugin::ClockHeader* c = nullptr;
+    int ro_handle = -1;
+    plugin::WakeMode mode = plugin::WakeMode::Timer;
+
+    bool create(plugin::WakeMode m, const std::function<void(plugin::ClockHeader&)>& mutate = {},
+                uint32_t rate = kRate) {
+        mode = m;
+        std::string err;
+        if (!create_region(4096, region_, err)) {
+            std::printf("  cannot create the clock: %s\n", err.c_str());
+            return false;
+        }
+        c = plugin::init_clock(region_.base, rate, kBlock, m);
+        if (mutate) mutate(*c);
+        if (!share_read_only(region_, ro_handle, err)) {
+            std::printf("  cannot share the clock read-only: %s\n", err.c_str());
+            return false;
+        }
+        return true;
+    }
+    ~Clock() {
+        close_handle(ro_handle);
+        release_region(region_);
+    }
+
+    // The audio thread's half (ADR-0012 §7.2): the callback's start before
+    // any submit, and after the last submit one tick, plus the wake only in
+    // futex mode (the gate, kHostWakeEnabled, is off in the engine).
+    void begin(uint64_t now_ns) { plugin::publish_callback_start(*c, now_ns); }
+    void submitted() { pending_ = true; }
+    void end() {
+        if (!pending_) return;
+        pending_ = false;
+        plugin::publish_tick(*c);
+        if (mode == plugin::WakeMode::Futex) platform::wake_all(c->tick);
+    }
+    // Shutdown: wake futex sleepers without a tick, so they look at once.
+    void wake() { platform::wake_all(c->tick); }
+
+private:
+    SharedRegion region_;
+    bool pending_ = false;
+};
+
+// Channel regions the OS would not lock (lock_region); printed, never silent.
+uint64_t region_lock_failures = 0;
+
+// The engine's private, authoritative values of one chain (ADR-0012 §5.1):
+// keyed by the chain, not by a host, so it outlives a host replacement.
+struct Store {
+    plugin::ParamMap map;
+    std::vector<float> values;  // map.param_slots
+    float bypass[plugin::kMaxInstances] = {};
+};
+
+// ---------------------------------------------------------------------------
 // The engine's half of one host process.
 
 class Host {
@@ -146,46 +310,97 @@ public:
     plugin::ChannelHeader* h = nullptr;
     std::vector<std::string> chain;
 
-    bool start(const Args& a, const std::vector<std::string>& uris, uint32_t channels,
-               uint32_t pipeline_depth) {
+    struct StartOptions {
+        uint32_t channels = 1;
+        // Override what the scan says, for the refusal of a mismatch.
+        int param_delta = 0;
+        // Applied to the header before the host starts (incompatible).
+        std::function<void(plugin::ChannelHeader&)> mutate;
+        Store* store = nullptr;  // null: a store of this host's own
+    };
+
+    bool start(const Args& a, Clock& clock, const std::vector<std::string>& uris, const StartOptions& o) {
         chain = uris;
-        depth_ = pipeline_depth;
-        // The engine's own copy: plane addresses never come from the region.
-        layout_ = plugin::make_layout(channels, kMaxFrames);
+        clock_ = &clock;
+        std::vector<uint32_t> counts;
+        std::vector<PluginParams> described;
+        for (const std::string& id : uris) {
+            described.push_back(probe_params(a, id));
+            counts.push_back(uint32_t(described.back().keys.size()));
+        }
+        if (!counts.empty()) counts[0] = uint32_t(int(counts[0]) + o.param_delta);
+        map_ = plugin::make_param_map(counts.data(), uint32_t(counts.size()));
+        if (o.store) {
+            store_ = o.store;
+        } else {
+            own_store_ = std::make_unique<Store>();
+            store_ = own_store_.get();
+            store_->map = map_;
+            store_->values.assign(map_.param_slots, 0.f);
+            for (uint32_t i = 0; i < map_.instance_count; ++i)
+                for (uint32_t k = 0; k < map_.count[i] && k < described[i].defaults.size(); ++k)
+                    if (const int64_t s = plugin::param_slot(map_, i, k); s >= 0)
+                        store_->values[std::size_t(s)] = described[i].defaults[k];
+            for (const Args::Seed& seed : a.seeds) {
+                const int k = seed.instance < described.size() ? described[seed.instance].index_of(seed.key) : -1;
+                const int64_t s = k < 0 ? -1 : plugin::param_slot(map_, seed.instance, uint32_t(k));
+                if (s >= 0) store_->values[std::size_t(s)] = seed.value;
+                else std::printf("  --param %u:%s: no such parameter\n", seed.instance, seed.key.c_str());
+            }
+        }
+        // The engine's own copy: plane and table addresses never come from
+        // the region.
+        layout_ = plugin::make_layout(o.channels, kMaxFrames, map_.param_slots);
         std::string err;
         if (!create_region(layout_.region_size, region_, err)) {
             std::printf("  cannot create the channel: %s\n", err.c_str());
             return false;
         }
-        std::memset(region_.base, 0, region_.size);
-        h = plugin::init_header(region_.base, layout_, a.rate, kBlock, pipeline_depth,
-                                static_cast<uint32_t>(uris.size()), 70);
+        plugin::prefault(region_.base, region_.size);
+        // Faulted in is not kept in (auditor L3): lock it too, and say so
+        // when the OS refuses, as the engine reports it in its health flags.
+        if (!lock_region(region_, err)) {
+            ++region_lock_failures;
+            std::printf("  the channel region is pre-touched but NOT locked (%s): it can be reclaimed\n",
+                        err.c_str());
+        }
+        h = plugin::init_header(region_.base, layout_, a.rate, kBlock, uint32_t(uris.size()), counts.data(), 70);
+        table_ = plugin::value_table(region_.base, layout_);
+        // Seeded from the store before the host starts, so it instantiates
+        // with these values and reports the latency they give.
+        for (uint32_t s = 0; s < map_.param_slots && s < store_->values.size(); ++s)
+            plugin::seed_value(table_, s, store_->values[s]);
+        for (uint32_t i = 0; i < plugin::kMaxInstances; ++i) h->bypass[i].store(store_->bypass[i]);
+        if (o.mutate) o.mutate(*h);
+
+        // Built before fork: the child only rearranges descriptors and execs.
         const std::string engine_pid = std::to_string(getpid());
+        const std::string chain_arg = join(uris, ',');
+        std::vector<const char*> argv = {a.host.c_str(), "--shm-fd", "3", "--clock-fd", "4", "--chain",
+                                         chain_arg.c_str(), "--engine-pid", engine_pid.c_str()};
+        for (const std::string& b : a.bundles) {
+            argv.push_back("--bundle");
+            argv.push_back(b.c_str());
+        }
+        for (const std::string& s : a.sets) {
+            argv.push_back("--set");
+            argv.push_back(s.c_str());
+        }
+        // The last key_channels of the region are the key.
+        const std::string sidechain = std::to_string(a.key_channels);
+        if (a.key_channels > 0) {
+            argv.push_back("--sidechain");
+            argv.push_back(sidechain.c_str());
+        }
+        if (a.reactivate) argv.push_back("--reactivate");
+        argv.push_back(nullptr);
+        const int shm = region_.handle, clk = clock.ro_handle;
         pid_ = fork();
         if (pid_ < 0) return false;
         if (pid_ == 0) {
-            // The descriptor becomes fd 3 in the host, without CLOEXEC.
-            if (region_.handle == 3) fcntl(3, F_SETFD, 0);
-            else dup2(region_.handle, 3);
-            const std::string chain_arg = join(uris, ',');
-            std::vector<const char*> argv = {a.host.c_str(), "--shm-fd", "3", "--chain",
-                                             chain_arg.c_str(), "--engine-pid", engine_pid.c_str()};
-            for (const std::string& b : a.bundles) {
-                argv.push_back("--bundle");
-                argv.push_back(b.c_str());
-            }
-            for (const std::string& s : a.sets) {
-                argv.push_back("--set");
-                argv.push_back(s.c_str());
-            }
-            // The last key_channels of the region are the key.
-            const std::string sidechain = std::to_string(a.key_channels);
-            if (a.key_channels > 0) {
-                argv.push_back("--sidechain");
-                argv.push_back(sidechain.c_str());
-            }
-            if (a.reactivate) argv.push_back("--reactivate");
-            argv.push_back(nullptr);
+            // Out of the way of 3 and 4 first, then into place, without CLOEXEC.
+            const int s = fcntl(shm, F_DUPFD, 10), k = fcntl(clk, F_DUPFD, 10);
+            if (s < 0 || k < 0 || dup2(s, 3) < 0 || dup2(k, 4) < 0) _exit(126);
             execv(a.host.c_str(), const_cast<char* const*>(argv.data()));
             _exit(127);
         }
@@ -231,10 +446,13 @@ public:
         }
     }
 
+    // Shutdown, then the region is released: never handed to another host
+    // (ADR-0012 §5.3). A make-before-break caller does this only after the
+    // plan that used this host is retired.
     void stop() {
         if (h && !reaped_) {
             h->shutdown.store(1, std::memory_order_release);
-            signal(h->request_word);
+            if (clock_) clock_->wake();
             const uint64_t end = monotonic_ns() + 2'000'000'000ull;
             while (alive() && monotonic_ns() < end) usleep(5000);
             kill_now();
@@ -245,74 +463,125 @@ public:
 
     ~Host() { stop(); }
 
+    const void* region_base() const { return region_.base; }
+    std::size_t region_size() const { return region_.size; }
+
     // ---- the RT half: what engine/plugin_client's submit/collect would do.
-    // Nothing here waits on the host (protocol.h, block protocol).
+    // Nothing here waits on the host (contracts/plugin, block protocol).
 
-    bool idle() const {
-        return h->completed_block.load(std::memory_order_acquire) == block_;
+    bool idle() const { return plugin::channel_idle(*h, eng_); }
+
+    // A parameter change, the audio thread's way: into the private store at
+    // once, and queued for this callback. If the callback submits, the
+    // queue goes out as table entry then ring entry, tagged with the block
+    // being submitted; if it does not, the queue is held (hold_param) and
+    // the next submit copies the store in. Nothing reaches the region in a
+    // callback that does not submit, so nothing can apply a block early
+    // (contracts/plugin, block protocol step 2; rt-engineer M2).
+    void send(uint32_t instance, uint32_t param, uint32_t offset, float value) {
+        keep(instance, param, value);
+        pending_.push_back({Pending::Ring, {0, instance, param, offset, value}});
     }
+    // What a refused push leaves: the table and values_seq only.
+    void send_table_only(uint32_t instance, uint32_t param, float value) {
+        keep(instance, param, value);
+        pending_.push_back({Pending::TableOnly, {0, instance, param, 0, value}});
+    }
+    // A raw ring entry for an explicit block (the late-entry test), pushed
+    // only in a callback that submits, like everything else.
+    void push_raw(const plugin::ParamChange& p) { pending_.push_back({Pending::Raw, p}); }
+    uint64_t next_block() const { return plugin::next_block(eng_); }
 
-    void submit(const float* const* in, uint32_t frames, uint64_t callback) {
+    // A new channel's first submit copies the store in (A2). EngineChannel
+    // starts that way; this says so where the swap happens.
+    void mark_new_channel() { eng_.resync = true; }
+
+    // Step 2, in the contract's order. False, with nothing written, for a
+    // frame count other than block_frames (M3).
+    bool submit(const float* const* in, uint32_t frames, uint64_t callback) {
+        if (frames != eng_.block_frames) return false;
+        if (eng_.resync) {
+            ++resyncs_;
+            plugin::store_values(*h, eng_, table_, layout_, store_->values.data(), store_->bypass,
+                                 map_.instance_count);
+        }
         for (uint32_t c = 0; c < layout_.channels; ++c)
             std::memcpy(plugin::input_plane(region_.base, layout_, c), in[c], frames * sizeof(float));
-        ++block_;
-        submitted_at_ = callback;
-        h->submitted_frames.store(frames, std::memory_order_relaxed);
-        h->submitted_block.store(block_, std::memory_order_release);
-        signal(h->request_word);
-    }
-
-    void read_output(float* const* out, uint32_t frames) {
-        for (uint32_t c = 0; c < layout_.channels; ++c)
-            std::memcpy(out[c], plugin::output_plane(region_.base, layout_, c), frames * sizeof(float));
-    }
-
-    // One callback. Returns the callback whose input produced `out`, or -1
-    // when nothing was collected (the block is dropped).
-    //
-    // Depth 1: collect the block submitted in the previous callback if it is
-    // already complete, then submit this one. A block that completed later
-    // than that is discarded rather than played a block late, which would
-    // break the declared latency.
-    //
-    // Depth 0, poll-only: submit, let the rest of the graph run (here: sleep
-    // to `collect_at`, standing for the engine's other tracks), then look
-    // once. Nothing waits on the host.
-    int64_t run(const float* const* in, float* const* out, uint32_t frames, uint64_t callback,
-                uint64_t collect_at) {
-        // Still on an older block: never touch its slots.
-        if (!idle()) return -1;
-        if (depth_ == 1) {
-            int64_t got = -1;
-            if (block_ > 0 && submitted_at_ + 1 == callback) {
-                read_output(out, frames);
-                got = int64_t(submitted_at_);
+        const uint64_t tag = plugin::next_block(eng_);
+        for (Pending& q : pending_) {
+            if (q.kind == Pending::Raw) {
+                if (!plugin::push_param(*h, eng_, q.change)) ++refused_;
+            } else if (q.kind == Pending::TableOnly) {
+                if (q.change.param == plugin::kBypassParam)
+                    h->bypass[q.change.instance].store(q.change.value, std::memory_order_relaxed);
+                else if (const int64_t s = plugin::param_slot(map_, q.change.instance, q.change.param); s >= 0)
+                    table_[s].store(q.change.value, std::memory_order_relaxed);
+                plugin::bump_values_seq(*h, eng_);
+            } else {
+                q.change.block = tag;
+                if (!plugin::send_param(*h, eng_, table_, map_, q.change)) ++refused_;
             }
-            submit(in, frames, callback);
-            return got;
         }
+        pending_.clear();
+        submitted_at_ = callback;
+        plugin::submit_block(*h, eng_, frames);
+        clock_->submitted();
+        return true;
+    }
+
+    // Step 1: each plane copied out, and only the copy checked (M4).
+    // Returns the NaN/Inf count, which the caller treats as a miss.
+    uint32_t read_output(float* const* out, uint32_t frames) {
+        uint32_t bad = 0;
+        for (uint32_t c = 0; c < layout_.channels; ++c)
+            bad += plugin::collect_output(out[c], plugin::output_plane(region_.base, layout_, c), frames);
+        nonfinite_collected_ += bad;
+        return bad;
+    }
+
+    // One callback, depth 1: collect the block submitted in the previous
+    // callback if it is already complete, then submit this one. Returns the
+    // callback whose input produced `out`, or -1 when nothing was collected
+    // (a miss). A block that completed later than that is discarded rather
+    // than played a block late, which would break the declared latency.
+    int64_t run(const float* const* in, float* const* out, uint32_t frames, uint64_t callback) {
+        // Still on an older block (never touch its slots), or a callback of
+        // another size (M3): a miss, and this callback's changes are held.
+        if (frames != eng_.block_frames || !idle()) {
+            hold();
+            return -1;
+        }
+        int64_t got = -1;
+        if (eng_.block > 0 && submitted_at_ + 1 == callback && read_output(out, frames) == 0)
+            got = int64_t(submitted_at_);
         submit(in, frames, callback);
-        sleep_until(collect_at);
-        if (!idle()) return -1;
-        read_output(out, frames);
-        return int64_t(callback);
+        return got;
     }
 
     // The callback of the most recent submit.
     uint64_t submitted_at() const { return submitted_at_; }
+    uint64_t refused() const { return refused_; }
 
-    // MEASUREMENT HARNESS ONLY (scenario rtt): submit, then sleep on
-    // done_word until the block is back or the deadline passes, to time the
-    // IPC round trip. The engine's audio thread never does this; a timed wait
-    // there is exposed to the scheduler tail (5.9 ms late seen, container).
+    // MEASUREMENT HARNESS ONLY (rtt, render): submit, tick, then sleep on
+    // done_word until the block is back or `deadline` passes. The engine's
+    // audio thread never does this; a timed wait there is exposed to the
+    // scheduler tail (5.9 ms late seen, container).
     bool round_trip(const float* const* in, float* const* out, uint32_t frames, uint64_t callback,
                     uint64_t deadline, uint64_t& rtt_ns) {
-        if (!idle()) return false;
+        if (!idle()) {
+            hold();
+            return false;
+        }
         const uint64_t t0 = monotonic_ns();
-        submit(in, frames, callback);
+        clock_->begin(t0);
+        if (!submit(in, frames, callback)) {
+            hold();
+            return false;
+        }
+        clock_->end();
         for (;;) {
             const uint32_t seen = h->done_word.load(std::memory_order_acquire);
-            const bool done = h->completed_block.load(std::memory_order_acquire) == block_;
+            const bool done = idle();
             const uint64_t now = monotonic_ns();
             if (done) rtt_ns = now - t0;
             // A block noticed after the deadline is a miss, even if the host
@@ -325,41 +594,60 @@ public:
                 read_output(out, frames);
                 return true;
             }
-            wait_for_change(h->done_word, seen, deadline - now);
+            if (!alive()) return false;
+            wait_for_change(h->done_word, seen, std::min<uint64_t>(deadline - now, 100'000'000));
         }
     }
 
-    // round_trip blocks given up because the deadline had passed when the
-    // driver looked, whether or not the host had finished.
     uint64_t late() const { return late_; }
+    // Callbacks whose changes were held, then copied in by a later submit.
+    uint64_t resyncs() const { return resyncs_; }
+    uint64_t nonfinite_collected() const { return nonfinite_collected_; }
 
 private:
-    static void sleep_until(uint64_t at_ns) {
-        timespec ts{time_t(at_ns / 1000000000ull), long(at_ns % 1000000000ull)};
-        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
-        }
+    struct Pending {
+        enum Kind { Ring, TableOnly, Raw } kind;
+        plugin::ParamChange change;
+    };
+
+    // The engine's private store is authoritative and is written at once.
+    void keep(uint32_t instance, uint32_t param, float value) {
+        if (param == plugin::kBypassParam) store_->bypass[instance] = value;
+        else if (const int64_t s = plugin::param_slot(map_, instance, param); s >= 0)
+            store_->values[std::size_t(s)] = value;
+    }
+    void hold() {
+        if (pending_.empty()) return;
+        plugin::hold_param(eng_);
+        pending_.clear();
     }
 
-    uint64_t late_ = 0;
+    uint64_t late_ = 0, refused_ = 0, resyncs_ = 0, nonfinite_collected_ = 0;
+    plugin::EngineChannel eng_ = plugin::make_engine_channel(kBlock);
+    std::vector<Pending> pending_;
     SharedRegion region_;
     plugin::Layout layout_;
+    plugin::ParamMap map_;
+    std::atomic<float>* table_ = nullptr;
+    Store* store_ = nullptr;
+    std::unique_ptr<Store> own_store_;
+    Clock* clock_ = nullptr;
     pid_t pid_ = -1;
     int status_ = 0;
     bool reaped_ = false;
-    uint32_t depth_ = plugin::kDefaultPipelineDepth;
-    uint64_t block_ = 0;
     uint64_t submitted_at_ = 0;
 };
 
 // The periodic "audio callback". Measures how long each callback ran from
 // its wake-up, which is the number that must stay under the period whatever
-// the host does.
+// the host does. The callback's start goes into the clock first, the tick
+// after the callback's submits.
 struct LoopStats {
     uint64_t callbacks = 0, worst_callback_ns = 0, over_period = 0;
 };
 
 template <class F>
-LoopStats run_periodic(uint64_t blocks, F&& callback) {
+LoopStats run_periodic(Clock& clock, uint64_t blocks, F&& callback) {
     LoopStats st;
     timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
@@ -372,8 +660,9 @@ LoopStats run_periodic(uint64_t blocks, F&& callback) {
         while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR) {
         }
         const uint64_t woke = monotonic_ns();
-        const uint64_t deadline = woke + kDeadlineNs;
-        const bool keep_going = callback(i, deadline);
+        clock.begin(woke);
+        const bool keep_going = callback(i);
+        clock.end();
         const uint64_t took = monotonic_ns() - woke;
         ++st.callbacks;
         st.worst_callback_ns = std::max(st.worst_callback_ns, took);
@@ -412,25 +701,32 @@ double percentile(std::vector<double> v, double p) {
     return v[i];
 }
 
+plugin::WakeMode wake_of(const Args& a, plugin::WakeMode fallback = plugin::default_wake_mode()) {
+    if (a.wake == "futex") return plugin::WakeMode::Futex;
+    if (a.wake == "timer") return plugin::WakeMode::Timer;
+    return fallback;
+}
+
 // Start a host and wait for it. Returns kSkip when a plugin is not
 // installed; ctest treats that as a failure unless skips were allowed
 // (SONORA_PLUGIN_TESTS_ALLOW_SKIP), because CI must not go green without
 // having run the test.
-int start_ready(Host& host, const Args& a, const std::vector<std::string>& chain,
-                uint32_t channels, uint32_t depth) {
-    if (!host.start(a, chain, channels, depth)) return 1;
+int start_ready(Host& host, const Args& a, Clock& clock, const std::vector<std::string>& chain,
+                const Host::StartOptions& o) {
+    if (!host.start(a, clock, chain, o)) return 1;
     const plugin::HostState s = host.wait_ready(30'000'000'000ull);
     if (s == plugin::HostState::Ready) {
         const uint32_t flags = host.h->host_flags.load();
-        std::printf("  host ready: depth %u, chain latency %u frames, host %s, memory %s, %s\n", depth,
+        std::printf("  host ready: %s wake, chain latency %u frames, host %s, memory %s, %s\n",
+                    clock.mode == plugin::WakeMode::Futex ? "futex" : "timer",
                     plugin::checked_latency(host.h->latency_frames.load()),
                     (flags & plugin::kHostRealtime) ? "SCHED_FIFO 70" : "SCHED_OTHER (no RT allowed)",
                     (flags & plugin::kHostMemoryLocked) ? "locked" : "not locked",
                     (flags & plugin::kHostFlushDenormals) ? "FTZ/DAZ" : "denormals not flushed");
         for (std::size_t i = 0; i < chain.size(); ++i)
-            std::printf("    [%zu] %s: latency %u, replicas %u\n", i, chain[i].c_str(),
+            std::printf("    [%zu] %s: latency %u, replicas %u, %u parameter(s)\n", i, chain[i].c_str(),
                         plugin::checked_latency(host.h->instances[i].latency_frames.load()),
-                        host.h->instances[i].replicas.load());
+                        host.h->instances[i].replicas.load(), host.h->instance_params[i]);
         return 0;
     }
     const auto reason = static_cast<plugin::Refusal>(host.h->refusal.load());
@@ -445,39 +741,58 @@ int start_ready(Host& host, const Args& a, const std::vector<std::string>& chain
     return 1;
 }
 
+int start_ready(Host& host, const Args& a, Clock& clock, const std::vector<std::string>& chain,
+                uint32_t channels) {
+    Host::StartOptions o;
+    o.channels = channels;
+    return start_ready(host, a, clock, chain, o);
+}
+
 void report_loop(const LoopStats& st) {
     std::printf("  driver: %llu callbacks, worst callback %.1f us, %llu over the %.0f us period\n",
                 (unsigned long long)st.callbacks, st.worst_callback_ns / 1e3,
                 (unsigned long long)st.over_period, kPeriodNs / 1e3);
 }
 
-uint32_t depth_of(const Args& a) { return a.mode == "poll" ? 0 : 1; }
-
 const char* chain_name(const std::vector<std::string>& chain, int32_t i) {
     return i >= 0 && i < int32_t(chain.size()) ? chain[size_t(i)].c_str() : "?";
+}
+
+// A parameter of chain instance `instance` by key, as the probe listed it.
+int dense_param(const Args& a, const std::string& id, const std::string& key) {
+    const int d = probe_params(a, id).index_of(key);
+    if (d < 0) std::printf("  %s has no parameter with key '%s'\n", id.c_str(), key.c_str());
+    return d;
 }
 
 // ---------------------------------------------------------------------------
 // Scenarios
 
 // A gain plugin changes the level by exactly what was asked, on every
-// channel, and a parameter pushed through the ring in callback p lands in
-// the first block submitted at or after p, not before and not later.
+// channel, and a change lands in the first block submitted at or after the
+// callback that made it, not before and not later: through the ring (the
+// -6 dB step) and through the last-value table alone, as when the ring was
+// full (the second step: values_seq, auditor M3).
 int scenario_gain(const Args& a) {
     const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
-    std::printf("gain: %s, %u channel(s), %s\n", join(chain, ',').c_str(), a.channels, a.mode.c_str());
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("gain: %s, %u channel(s), %s wake\n", join(chain, ',').c_str(), a.channels,
+                clock.mode == plugin::WakeMode::Futex ? "futex" : "timer");
     Host host;
-    if (int r = start_ready(host, a, chain, a.channels, depth_of(a))) return r;
+    if (int r = start_ready(host, a, clock, chain, a.channels)) return r;
     if (a.channels > 1) {
         const uint32_t want = a.expect_replicas ? a.expect_replicas : a.channels;
         check(host.h->instances[0].replicas.load() == want,
               want == 1 ? "the plugin took the chain's arrangement: one instance"
                         : "a mono plugin is replicated per channel");
     }
-
-    // eg-amp: port 0 is "gain" in dB (lv2info http://lv2plug.in/plugins/eg-amp).
+    // eg-amp: "gain" in dB (lv2info http://lv2plug.in/plugins/eg-amp).
     // AGain (VST3): ParamID 0 is a linear factor, normalised 0..1, so it can
     // only cut. Neither smooths, so every block shows its value.
+    const int gp = dense_param(a, chain[0], a.gain_param.empty() ? "gain" : a.gain_param);
+    if (gp < 0) return 1;
+
     struct Phase { uint64_t from; float db; };
     const Phase phases[] = {{0, 0.f}, {200, -6.f}, {400, a.gain_linear ? -12.f : 12.f}};
     auto value_of = [&](float db) {
@@ -488,16 +803,16 @@ int scenario_gain(const Args& a) {
     std::vector<char> submitted(total, 0);
     uint64_t dropped = 0;
     Signal sig(a.channels);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        int p = 0;
-        for (int k = 0; k < 3; ++k)
-            if (i >= phases[k].from) p = k;
-        if (i == phases[p].from && i > 0)
-            plugin::push_param(*host.h, {0, a.gain_param, value_of(phases[p].db), 0});
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        // The first phase is set, not assumed: a plugin's described default
+        // is what the host was seeded with (AGain's is -6 dB).
+        if (i == 0) host.send(0, uint32_t(gp), 0, value_of(phases[0].db));
+        if (i == phases[1].from) host.send(0, uint32_t(gp), 0, value_of(phases[1].db));
+        if (i == phases[2].from) host.send_table_only(0, uint32_t(gp), value_of(phases[2].db));
         sig.sine(i, 997.0, 0.1f);
         for (uint32_t c = 0; c < a.channels; ++c)
             for (uint32_t s = 0; s < kBlock; ++s) in_e[i] += double(sig.buf[c][s]) * sig.buf[c][s];
-        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
         submitted[i] = host.submitted_at() == i;
         if (from < 0) {
             ++dropped;
@@ -535,10 +850,11 @@ int scenario_gain(const Args& a) {
             if (std::fabs(block_db(b) - want) > 0.01) exact = false;
             ++seen;
         }
-        char what[160];
+        char what[192];
         std::snprintf(what, sizeof what,
-                      "%+.0f dB pushed in callback %llu lands in block %llu, the first submitted after it",
-                      phases[k].db, (unsigned long long)phases[k].from, (unsigned long long)land);
+                      "%+.0f dB sent in callback %llu %s lands in block %llu, the first submitted after it",
+                      phases[k].db, (unsigned long long)phases[k].from,
+                      k == 1 ? "through the ring" : "through the table alone", (unsigned long long)land);
         check(exact && seen > 20, what);
     }
     check(dropped * 20 < total, "fewer than 5 % of blocks dropped");
@@ -561,28 +877,29 @@ struct DelayFit {
     double at = 1e9, before = 1e9, after = 1e9;
 };
 
+double residual_at(const std::vector<float>& in, const std::vector<float>& out, const std::vector<char>& valid,
+                   uint32_t d) {
+    double worst = 0;
+    uint64_t n = 0;
+    for (uint64_t t = d; t < out.size(); ++t)
+        if (valid[t]) {
+            worst = std::max(worst, std::fabs(double(out[t]) - double(in[t - d])));
+            ++n;
+        }
+    return n > 4 * kBlock ? worst : 1e9;
+}
+
 DelayFit fit_delay(const std::vector<float>& in, const std::vector<float>& out,
                    const std::vector<char>& valid, uint32_t L) {
-    // residual(d): worst |wet - dry delayed by d| over comparable samples.
-    auto residual = [&](uint32_t d) {
-        double worst = 0;
-        uint64_t n = 0;
-        for (uint64_t t = d; t < out.size(); ++t)
-            if (valid[t]) {
-                worst = std::max(worst, std::fabs(double(out[t]) - double(in[t - d])));
-                ++n;
-            }
-        return n > 4 * kBlock ? worst : 1e9;
-    };
     DelayFit f;
     double best_r = 1e9;
     for (uint32_t d = 0; d <= L + 4 * kBlock; ++d) {
-        const double r = residual(d);
+        const double r = residual_at(in, out, valid, d);
         if (r < best_r) best_r = r, f.best = d;
     }
-    f.at = residual(L);
-    f.before = L ? residual(L - 1) : 1e9;
-    f.after = residual(L + 1);
+    f.at = residual_at(in, out, valid, L);
+    f.before = L ? residual_at(in, out, valid, L - 1) : 1e9;
+    f.after = residual_at(in, out, valid, L + 1);
     return f;
 }
 
@@ -595,31 +912,62 @@ void check_delay(const DelayFit& f, uint32_t L) {
           "one sample off is audible: the check is sample-accurate");
 }
 
-// A latency-reporting chain: what it reports is what it does, to the sample,
-// and PDC built on the report nulls the wet path against the dry one. In
-// pipelined mode the report includes the block of IPC delay.
-int scenario_latency(const Args& a) {
-    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kDpl} : a.chain;
-    const uint32_t depth = depth_of(a);
-    std::printf("latency: %s, mono, %s\n", join(chain, ',').c_str(), a.mode.c_str());
-    Host host;
-    if (int r = start_ready(host, a, chain, 1, depth)) return r;
-    const uint32_t gen0 = host.h->latency_generation.load();
-
-    const uint64_t total = a.blocks ? a.blocks : 900;
-    std::vector<float> in(total * kBlock), out(total * kBlock, 0.f);
-    std::vector<char> got(total, 0);
+std::vector<float> noise(uint64_t samples) {
+    std::vector<float> in(samples);
     uint32_t lcg = 12345;
     for (float& s : in) {
         lcg = lcg * 1664525u + 1013904223u;
         s = 0.1f * (float(lcg >> 8) / float(1u << 24) * 2.f - 1.f);  // -20 dBFS peak noise
     }
+    return in;
+}
+
+// Samples comparable over [from, to): their block arrived and no dropped
+// block lies within L + 2 blocks before (a drop is a gap in the plugin's own
+// input history). Callback 0 has nothing to collect at depth 1.
+std::vector<char> valid_window(const std::vector<char>& got, uint64_t from, uint64_t to, uint32_t L) {
+    std::vector<char> valid(got.size() * kBlock, 0);
+    const uint64_t reach = (L + kBlock - 1) / kBlock + 2;
+    uint64_t last_drop = 0;
+    bool any_drop = false;
+    for (uint64_t b = 0; b < to && b < got.size(); ++b) {
+        if (!got[b] && b != 0) any_drop = true, last_drop = b;
+        const bool ok = got[b] && b >= from && (!any_drop || b > last_drop + reach);
+        std::fill(valid.begin() + std::ptrdiff_t(b * kBlock), valid.begin() + std::ptrdiff_t((b + 1) * kBlock),
+                  ok ? 1 : 0);
+    }
+    return valid;
+}
+
+uint64_t count_drops(const std::vector<char>& got) {
+    uint64_t n = 0;
+    for (uint64_t b = 1; b < got.size(); ++b) n += got[b] ? 0 : 1;
+    return n;
+}
+
+// A latency-reporting chain: what it reports is what it does, to the sample,
+// and PDC built on the report nulls the wet path against the dry one. The
+// report includes the block of IPC delay (depth 1).
+int scenario_latency(const Args& a) {
+    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kDpl} : a.chain;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("latency: %s, mono, %s wake\n", join(chain, ',').c_str(),
+                clock.mode == plugin::WakeMode::Futex ? "futex" : "timer");
+    Host host;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
+    const uint32_t gen0 = host.h->latency_generation.load();
+
+    const uint64_t total = a.blocks ? a.blocks : 900;
+    const std::vector<float> in = noise(total * kBlock);
+    std::vector<float> out(total * kBlock, 0.f);
+    std::vector<char> got(total, 0);
     Signal sig(1);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
         std::memcpy(sig.buf[0].data(), &in[i * kBlock], kBlock * sizeof(float));
         // Stored by the callback that played it, so the IPC block shows up
         // as delay exactly like a plugin's look-ahead.
-        if (host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0) {
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0) {
             std::memcpy(&out[i * kBlock], sig.obuf[0].data(), kBlock * sizeof(float));
             got[i] = 1;
         }
@@ -635,26 +983,9 @@ int scenario_latency(const Args& a) {
     const std::vector<uint32_t> delays = pdc_delays({0, L});
     std::printf("  reported %u frames (%.3f ms); PDC delays dry by %u, wet by %u\n", L,
                 L * 1000.0 / kRate, delays[0], delays[1]);
-
-    // A sample is comparable when its output block arrived and no dropped
-    // block lies within L + 2 blocks before it (a drop is a gap in the
-    // plugin's own input history).
-    std::vector<char> valid(total * kBlock, 0);
-    const uint64_t first = (L + kBlock - 1) / kBlock + 16, reach = (L + kBlock - 1) / kBlock + 2;
-    uint64_t dropped = 0, last_drop = 0;
-    bool any_drop = false;
-    for (uint64_t b = 0; b < total; ++b) {
-        if (!got[b] && !(depth == 1 && b == 0)) {
-            ++dropped;
-            any_drop = true;
-            last_drop = b;
-        }
-        const bool ok = got[b] && b >= first && (!any_drop || b > last_drop + reach);
-        std::fill(valid.begin() + std::ptrdiff_t(b * kBlock), valid.begin() + std::ptrdiff_t((b + 1) * kBlock), ok ? 1 : 0);
-    }
+    const uint64_t dropped = count_drops(got);
     std::printf("  dropped %llu of %llu blocks\n", (unsigned long long)dropped, (unsigned long long)total);
-
-    check_delay(fit_delay(in, out, valid, L), L);
+    check_delay(fit_delay(in, out, valid_window(got, (L + kBlock - 1) / kBlock + 16, total, L), L), L);
     check(dropped * 20 < total, "fewer than 5 % of blocks dropped");
     return 0;
 }
@@ -665,32 +996,31 @@ int scenario_latency(const Args& a) {
 // the plugin then does, to the sample. The blocks between the change and the
 // report are counted, not compared: that lag is how long PDC is wrong.
 int scenario_latency_change(const Args& a) {
-    if (a.chain.empty() || !a.has_change) {
+    if (a.chain.empty() || a.change_param.empty()) {
         std::printf("latency_change: needs --chain and --change-param/--change-value\n");
         return 1;
     }
-    const uint32_t depth = depth_of(a);
-    std::printf("latency_change: %s, mono, %s, param %u := %g at block 300\n", join(a.chain, ',').c_str(),
-                a.mode.c_str(), a.change_param, double(a.change_value));
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("latency_change: %s, mono, param %s := %g at block 300\n", join(a.chain, ',').c_str(),
+                a.change_param.c_str(), double(a.change_value));
     Host host;
-    if (int r = start_ready(host, a, a.chain, 1, depth)) return r;
+    if (int r = start_ready(host, a, clock, a.chain, 1)) return r;
+    const int cp = dense_param(a, a.chain[0], a.change_param);
+    if (cp < 0) return 1;
     const uint32_t L0 = plugin::checked_latency(host.h->latency_frames.load());
     const uint32_t gen0 = host.h->latency_generation.load();
 
     const uint64_t total = a.blocks ? a.blocks : 1200, change_at = 300;
-    std::vector<float> in(total * kBlock), out(total * kBlock, 0.f);
+    const std::vector<float> in = noise(total * kBlock);
+    std::vector<float> out(total * kBlock, 0.f);
     std::vector<char> got(total, 0);
     std::vector<uint32_t> reported(total, plugin::kLatencyInvalid);
-    uint32_t lcg = 12345;
-    for (float& s : in) {
-        lcg = lcg * 1664525u + 1013904223u;
-        s = 0.1f * (float(lcg >> 8) / float(1u << 24) * 2.f - 1.f);
-    }
     Signal sig(1);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        if (i == change_at) plugin::push_param(*host.h, {0, a.change_param, a.change_value, 0});
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == change_at) host.send(0, uint32_t(cp), 0, a.change_value);
         std::memcpy(sig.buf[0].data(), &in[i * kBlock], kBlock * sizeof(float));
-        if (host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0) {
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0) {
             std::memcpy(&out[i * kBlock], sig.obuf[0].data(), kBlock * sizeof(float));
             got[i] = 1;
         }
@@ -711,25 +1041,11 @@ int scenario_latency_change(const Args& a) {
     std::printf("  reported %u frames before, %u after; the report changed %llu block(s) after the push\n",
                 L0, L1, (unsigned long long)(settled - change_at));
     check(settled < change_at + 40, "the change was reported within 40 blocks (107 ms)");
-
-    auto window = [&](uint64_t from, uint64_t to, uint32_t L) {
-        std::vector<char> valid(total * kBlock, 0);
-        const uint64_t reach = (L + kBlock - 1) / kBlock + 2;
-        uint64_t last_drop = 0;
-        bool any_drop = false;
-        for (uint64_t b = 0; b < to; ++b) {
-            if (!got[b] && !(depth == 1 && b == 0)) any_drop = true, last_drop = b;
-            const bool ok = got[b] && b >= from && (!any_drop || b > last_drop + reach);
-            std::fill(valid.begin() + std::ptrdiff_t(b * kBlock),
-                      valid.begin() + std::ptrdiff_t((b + 1) * kBlock), ok ? 1 : 0);
-        }
-        return valid;
-    };
     std::printf("  before the change:\n");
-    check_delay(fit_delay(in, out, window((L0 + kBlock - 1) / kBlock + 16, change_at, L0), L0), L0);
+    check_delay(fit_delay(in, out, valid_window(got, (L0 + kBlock - 1) / kBlock + 16, change_at, L0), L0), L0);
     std::printf("  after the report settled:\n");
     const uint64_t from1 = settled + (std::max(L0, L1) + kBlock - 1) / kBlock + 16;
-    check_delay(fit_delay(in, out, window(from1, total, L1), L1), L1);
+    check_delay(fit_delay(in, out, valid_window(got, from1, total, L1), L1), L1);
     return 0;
 }
 
@@ -741,17 +1057,19 @@ int scenario_crash(const Args& a) {
     // either format (tests/lv2, tests/vst3).
     const std::vector<std::string> chain =
         a.chain.empty() ? std::vector<std::string>{kEgAmp, "urn:sonora:test#crash"} : a.chain;
-    std::printf("crash: %s, %s\n", join(chain, ',').c_str(), a.mode.c_str());
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("crash: %s\n", join(chain, ',').c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
     const uint64_t total = 400, trigger = 100;
     uint64_t gone_at = 0, completed_after = 0;
     int32_t culprit = -2;
     Signal sig(1);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        if (i == trigger) plugin::push_param(*host.h, {1, 0, 1.f, 0});  // crash := 1
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == trigger) host.send(1, 0, 0, 1.f);  // crash := 1
         sig.sine(i, 440.0, 0.1f);
-        const bool ok = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0;
+        const bool ok = host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0;
         if (!ok) sig.silence_out();
         if (gone_at && ok) ++completed_after;
         // The control thread's job in the engine (a pidfd there). Polled
@@ -781,30 +1099,30 @@ int scenario_crash(const Args& a) {
 // on, and removed after kMaxConsecutiveMisses with its name.
 int scenario_deadline(const Args& a) {
     const std::vector<std::string> chain = {kEgAmp, "urn:sonora:test#sleep"};
-    std::printf("deadline: %s, %s, sleep 20 ms from block 100\n", join(chain, ',').c_str(),
-                a.mode.c_str());
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("deadline: %s, sleep 20 ms from block 100\n", join(chain, ',').c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
     const uint64_t total = 300, trigger = 100;
     int streak = 0;
     int32_t culprit = -2;
     uint64_t removed_at = 0, misses_before = 0;
     Signal sig(1);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        if (i == trigger) plugin::push_param(*host.h, {1, 0, 20.f, 0});  // sleep_ms := 20
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == trigger) host.send(1, 0, 0, 20.f);  // sleep_ms := 20
         sig.sine(i, 440.0, 0.1f);
-        if (removed_at) return true;  // out of the plan: the track plays dry
-        if (host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0) {
+        if (removed_at) return true;  // out of the plan: the path is silent (ADR-0012 §3)
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0) {
             streak = 0;
             return true;
         }
         // Depth 1 has nothing to collect in callback 0; that is not a miss.
-        if (depth_of(a) == 1 && i == 0) return true;
+        if (i == 0) return true;
         if (i < trigger) ++misses_before;
-        // Remember who was running during the streak. At depth 1 the last
-        // miss can fall just after the slow block finished (20 ms sleep, 8
-        // misses = 21.3 ms), when current_instance is already -1: reading it
-        // only at removal named nobody.
+        // Remember who was running during the streak (finding 6): the last
+        // miss can fall just after the slow block finished, when
+        // current_instance is already -1.
         const int32_t running = plugin::checked_instance(
             host.h->current_instance.load(std::memory_order_relaxed), uint32_t(chain.size()));
         if (streak == 0) culprit = -1;
@@ -831,10 +1149,11 @@ int scenario_deadline(const Args& a) {
 // plugin and nobody else, and the chain is clean again once it stops.
 int scenario_nonfinite(const Args& a) {
     const std::vector<std::string> chain = {"urn:sonora:test#nan", kEgAmp};
-    std::printf("nonfinite: %s, %s, NaN/Inf from block 100 to 200\n", join(chain, ',').c_str(),
-                a.mode.c_str());
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("nonfinite: %s, NaN/Inf from block 100 to 200\n", join(chain, ',').c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
 #if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
     check(host.h->host_flags.load() & plugin::kHostFlushDenormals,
           "the host set FTZ/DAZ on its processing thread");
@@ -843,12 +1162,12 @@ int scenario_nonfinite(const Args& a) {
     uint64_t nonfinite_out = 0, zeroed = 0, bad_blocks = 0, clean_after = 0, compared_after = 0;
     std::vector<std::vector<float>> inputs(total, std::vector<float>(kBlock));
     Signal sig(1);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        if (i == on) plugin::push_param(*host.h, {0, 0, 1.f, 0});
-        if (i == off) plugin::push_param(*host.h, {0, 0, 0.f, 0});
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == on) host.send(0, 0, 0, 1.f);
+        if (i == off) host.send(0, 0, 0, 0.f);
         sig.sine(i, 440.0, 0.1f);
         std::copy(sig.buf[0].begin(), sig.buf[0].begin() + kBlock, inputs[i].begin());
-        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
         if (from < 0) return true;
         const float* o = sig.obuf[0].data();
         bool had_zero = false, equal = true;
@@ -870,6 +1189,7 @@ int scenario_nonfinite(const Args& a) {
     std::printf("  %llu blocks carried replaced samples; host counted %llu against [0], %llu against [1]\n",
                 (unsigned long long)bad_blocks, (unsigned long long)counted0, (unsigned long long)counted1);
     check(nonfinite_out == 0, "no NaN or Inf reached the engine");
+    check(host.nonfinite_collected() == 0, "the engine's own check of what it collected found none (M4)");
     check(bad_blocks >= 50 && counted0 >= zeroed && counted0 % (kBlock / 4) == 0,
           "every NaN/Inf was replaced by 0 and counted against the plugin that wrote it");
     check(counted1 == 0, "the plugin after it saw only finite input and is not blamed");
@@ -878,8 +1198,14 @@ int scenario_nonfinite(const Args& a) {
     return 0;
 }
 
+bool wait_exit(Host& host, uint64_t timeout_ns) {
+    const uint64_t end = monotonic_ns() + timeout_ns;
+    while (host.alive() && monotonic_ns() < end) usleep(5000);
+    return host.reaped();
+}
+
 // What a plugin declares is checked against what it does before the engine
-// is offered the chain.
+// is offered the chain; a refused chain exits kHostExitRefused (5).
 int scenario_refusals(const Args& a) {
     struct Case {
         const char* what;
@@ -887,18 +1213,21 @@ int scenario_refusals(const Args& a) {
         uint32_t channels;
         plugin::Refusal want;
         int instance;
+        int param_delta = 0;
         uint32_t key_channels = 0;  // of `channels`, the last ones (host --sidechain)
         bool reactivate = false;    // host --reactivate
     };
     const std::vector<Case> lv2_cases = {
         {"declares 2 channels, writes 8: refused", {"urn:sonora:test#liar"}, 2,
-         plugin::Refusal::WroteOutsideBuffers, 0},
+         plugin::Refusal::WroteOutsideBuffers, 0, 0},
         {"stereo-only plugin on a mono chain: refused", {"urn:sonora:test#liar"}, 1,
-         plugin::Refusal::ChannelMismatch, 0},
+         plugin::Refusal::ChannelMismatch, 0, 0},
         {"unknown URI: refused, and named", {"urn:sonora:test#crash", "urn:sonora:test#absent"}, 1,
-         plugin::Refusal::NotFound, 1},
+         plugin::Refusal::NotFound, 1, 0},
+        {"parameter list other than the scan's: refused, and named", {kEgAmp}, 1,
+         plugin::Refusal::ParamMismatch, 0, 1},
         // The key channels have canaries behind them like every other buffer.
-        {"writes past its key input: refused", {kKeyLiar}, 2, plugin::Refusal::WroteOutsideBuffers, 0, 1},
+        {"writes past its key input: refused", {kKeyLiar}, 2, plugin::Refusal::WroteOutsideBuffers, 0, 0, 1},
         // With no key routed the key input reads the plugin's own input,
         // whose canaries catch the same write.
         {"writes past its key input, no key routed: refused", {kKeyLiar}, 1,
@@ -907,87 +1236,436 @@ int scenario_refusals(const Args& a) {
     // tests/vst3/sonora_test_vst3.cpp
     const std::vector<Case> vst3_cases = {
         {"VST3 stereo-only plugin on a mono chain: refused", {kVst3StereoOnly}, 1,
-         plugin::Refusal::ChannelMismatch, 0},
+         plugin::Refusal::ChannelMismatch, 0, 0},
         {"VST3 plugin that says yes to mono and stays stereo: refused", {kVst3YesMan}, 1,
-         plugin::Refusal::ChannelMismatch, 0},
+         plugin::Refusal::ChannelMismatch, 0, 0},
         {"VST3 plugin that declares 2 channels and writes 8: refused", {kVst3Liar}, 2,
-         plugin::Refusal::WroteOutsideBuffers, 0},
+         plugin::Refusal::WroteOutsideBuffers, 0, 0},
         // Once read 8 channels for a 2-channel chain and indexed past it.
         {"VST3 plugin that takes stereo, then answers 8 channels: refused", {kVst3Turncoat}, 2,
-         plugin::Refusal::ChannelMismatch, 0},
+         plugin::Refusal::ChannelMismatch, 0, 0},
         {"unknown VST3 class: refused, and named", {kVst3Crash, "vst3:00000000000000000000000000000000"},
-         1, plugin::Refusal::NotFound, 1},
+         1, plugin::Refusal::NotFound, 1, 0},
+        {"VST3 parameter list other than the scan's: refused, and named", {kVst3Crash}, 1,
+         plugin::Refusal::ParamMismatch, 0, -1},
         // Re-activation (host --reactivate) is checked like the first one:
         // a plugin that will not come back is refused, not run inactive.
         {"VST3 plugin that refuses to re-activate: refused", {kVst3Once}, 1,
-         plugin::Refusal::InstantiateFailed, 0, 0, true},
+         plugin::Refusal::InstantiateFailed, 0, 0, 0, true},
     };
     const std::vector<Case>& cases = a.format == "vst3" ? vst3_cases : lv2_cases;
     std::printf("refusals (%s)\n", a.format.c_str());
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
     for (const Case& c : cases) {
         Host host;
         Args ca = a;
         ca.key_channels = c.key_channels;
         ca.reactivate = c.reactivate;
-        if (!host.start(ca, c.chain, c.channels, plugin::kDefaultPipelineDepth)) return 1;
+        Host::StartOptions o;
+        o.channels = c.channels;
+        o.param_delta = c.param_delta;
+        if (!host.start(ca, clock, c.chain, o)) return 1;
         const plugin::HostState s = host.wait_ready(30'000'000'000ull);
         const auto reason = static_cast<plugin::Refusal>(host.h->refusal.load());
         const int inst = plugin::checked_instance(host.h->refusal_instance.load(), uint32_t(c.chain.size()));
-        usleep(100000);
-        host.alive();
+        wait_exit(host, 2'000'000'000ull);
         std::printf("  [%s] state %s, refusal %u, instance %d, host %s\n", join(c.chain, ',').c_str(),
                     state_name(uint32_t(s)), unsigned(reason), inst, host.death().c_str());
         check(s == plugin::HostState::Refused && reason == c.want && inst == c.instance, c.what);
-        check(host.reaped() && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 3,
-              "  ...and the host exited with code 3");
+        check(host.reaped() && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitRefused,
+              "  ...and the host exited with code 5");
     }
     return 0;
 }
 
-// As many distinct parameter changes in one block as the ring holds all reach
-// the plugin in that block, and one the host cannot apply is counted, not
-// lost silently. The params test plugin writes how many changes it saw into
-// sample 0 and their sum into sample 1.
-int scenario_params(const Args& a) {
-    const std::vector<std::string> chain = {kVst3Params};
-    std::printf("params: %s, %s\n", join(chain, ',').c_str(), a.mode.c_str());
+// A host that does not speak the engine's layout or clock version exits 3,
+// after one stderr line, BEFORE writing anything to the region (ADR-0012
+// §5.5); a region that is not a channel at all is a usage error (2). The
+// clock descriptor hosts get cannot be mapped writable (auditor M1).
+int scenario_incompatible(const Args& a) {
+    struct Case {
+        const char* what;
+        std::function<void(plugin::ChannelHeader&)> channel;
+        std::function<void(plugin::ClockHeader&)> clock;
+        int want_exit;
+    };
+    const std::vector<Case> cases = {
+        {"channel layout version 0 (the draft): exit 3, nothing written",
+         [](plugin::ChannelHeader& h) { h.layout_version = 0; }, {}, plugin::kHostExitIncompatible},
+        {"channel layout version 2: exit 3, nothing written",
+         [](plugin::ChannelHeader& h) { h.layout_version = 2; }, {}, plugin::kHostExitIncompatible},
+        {"channel header of another size: exit 3, nothing written",
+         [](plugin::ChannelHeader& h) { h.header_bytes -= 64; }, {}, plugin::kHostExitIncompatible},
+        {"clock layout version 2: exit 3, nothing written", {},
+         [](plugin::ClockHeader& c) { c.layout_version = 2; }, plugin::kHostExitIncompatible},
+        {"not a channel (magic): exit 2, nothing written",
+         [](plugin::ChannelHeader& h) { h.magic ^= 1; }, {}, plugin::kHostExitUsage},
+        {"channel block_frames other than the clock's: exit 2, nothing written",
+         [](plugin::ChannelHeader& h) { h.block_frames = 2 * kBlock; }, {}, plugin::kHostExitUsage},
+        {"channel sample_rate other than the clock's: exit 2, nothing written",
+         [](plugin::ChannelHeader& h) { h.sample_rate = 44100; }, {}, plugin::kHostExitUsage},
+    };
+    std::printf("incompatible\n");
+    for (const Case& c : cases) {
+        Clock clock;
+        if (!clock.create(wake_of(a), c.clock)) return 1;
+        Host host;
+        Host::StartOptions o;
+        std::vector<unsigned char> before;
+        o.mutate = [&](plugin::ChannelHeader& h) {
+            if (c.channel) c.channel(h);
+            const auto* p = reinterpret_cast<const unsigned char*>(&h);
+            before.assign(p, p + plugin::make_layout(1, kMaxFrames, h.param_slots).region_size);
+        };
+        if (!host.start(a, clock, {kEgAmp}, o)) return 1;
+        const bool exited = wait_exit(host, 10'000'000'000ull);
+        const bool untouched = before.size() <= host.region_size() &&
+                               std::memcmp(host.region_base(), before.data(), before.size()) == 0;
+        std::printf("  host %s; region %s\n", host.death().c_str(), untouched ? "untouched" : "WRITTEN");
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == c.want_exit && untouched,
+              c.what);
+    }
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    void* w = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, clock.ro_handle, 0);
+    const int err = errno;
+    check(w == MAP_FAILED && err == EACCES, "the clock descriptor a host gets cannot be mapped writable");
+    if (w != MAP_FAILED) munmap(w, 4096);
+    void* r = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, clock.ro_handle, 0);
+    check(r != MAP_FAILED, "...and maps read-only");
+    if (r != MAP_FAILED) munmap(r, 4096);
+    // A memfd inode is mode 0777, so a host can reopen it read-write
+    // through /proc; F_SEAL_FUTURE_WRITE is what stops the mapping (L2).
+    const std::string proc = "/proc/self/fd/" + std::to_string(clock.ro_handle);
+    const int rw = open(proc.c_str(), O_RDWR | O_CLOEXEC);
+    void* w2 = rw >= 0 ? mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0) : MAP_FAILED;
+    check(w2 == MAP_FAILED, "...nor through a read-write reopen of /proc/self/fd (the seal)");
+    if (w2 != MAP_FAILED) munmap(w2, 4096);
+    if (rw >= 0) close(rw);
+
+    // The --version line parses with the engine's parser (§5.5 grammar).
+    {
+        const std::string cmd = "'" + a.host + "' --version";
+        FILE* f = popen(cmd.c_str(), "r");
+        char line[128] = {};
+        const bool read = f && std::fgets(line, sizeof line, f) != nullptr;
+        const int status = f ? pclose(f) : -1;
+        uint32_t layout = 0, clock_version = 0;
+        std::printf("  --version: %s", read ? line : "(nothing)\n");
+        check(read && status == 0 && plugin::parse_version_line(line, layout, clock_version) &&
+                  layout == plugin::kLayoutVersion && clock_version == plugin::kClockLayoutVersion,
+              "--version prints the contract's line, with this layout and clock version");
+    }
+
+    // A frame count other than block_frames can only be a scribble (M3):
+    // the host processes nothing and faults.
+    {
+        Host host;
+        if (int r2 = start_ready(host, a, clock, {kEgAmp}, 1)) return r2;
+        host.h->submitted_frames.store(kBlock / 2, std::memory_order_relaxed);
+        host.h->submitted_block.store(1, std::memory_order_release);
+        clock.begin(monotonic_ns());
+        clock.submitted();
+        clock.end();
+        clock.wake();
+        const bool exited = wait_exit(host, 10'000'000'000ull);
+        std::printf("  forged frame count: host %s, state %s, completed %llu\n", host.death().c_str(),
+                    state_name(host.h->state.load()), (unsigned long long)host.h->completed_block.load());
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitFaulted &&
+                  host.h->completed_block.load() == 0,
+              "a submitted_frames other than block_frames faults the host, nothing processed");
+    }
+    return 0;
+}
+
+// kBypassParam (ADR-0012 §5.1): bypass through the ring, then back through
+// the last-value table. Bypassed, the chain plays its input delayed by
+// exactly the latency it reports, so a toggle never shifts timing; active,
+// it plays the plugin. Host-side (a delay line) for a plugin without a
+// bypass parameter, the plugin's own (VST3 kIsBypass) otherwise.
+int scenario_bypass(const Args& a) {
+    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    const PluginParams described = probe_params(a, chain[0]);
+    std::printf("bypass: %s, mono, bypass by the %s\n", join(chain, ',').c_str(),
+                described.bypass == "plugin" ? "plugin's own parameter" : "host's delay line");
+    if (!a.expect_bypass.empty()) check(described.bypass == a.expect_bypass, "the probe names the bypass expected");
     Host host;
-    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
-    // One slot of the ring is left for the change the host must reject.
-    const uint32_t distinct = plugin::kParamRingCapacity - 1;
-    const float value = 0.25f;
-    const uint64_t total = 300, at = 100;
-    uint32_t pushed = 0;
-    int64_t seen_from = -1;
-    float seen_count = -1, seen_sum = -1;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
+    int gp = -1;
+    if (!a.gain_param.empty() && (gp = dense_param(a, chain[0], a.gain_param)) < 0) return 1;
+    const float gain_db = -6.f;
+    const float gain_value = a.gain_linear ? float(std::pow(10.0, gain_db / 20.0)) : gain_db;
+    const uint32_t L = plugin::checked_latency(host.h->latency_frames.load());
+    const uint32_t gen0 = host.h->latency_generation.load();
+    if (L == plugin::kLatencyInvalid) {
+        check(false, "the reported latency is plausible");
+        return 0;
+    }
+
+    const uint64_t total = 900, on = 300, off = 600;
+    const std::vector<float> in = noise(total * kBlock);
+    std::vector<float> out(total * kBlock, 0.f);
+    std::vector<char> got(total, 0);
     Signal sig(1);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        if (i == at) {
-            for (uint32_t id = 0; id < distinct; ++id)
-                pushed += plugin::push_param(*host.h, {0, id, value, 0}) ? 1 : 0;
-            pushed += plugin::push_param(*host.h, {0, 9999, value, 0}) ? 1 : 0;  // no such ParamID
-        }
-        sig.sine(i, 440.0, 0.1f);
-        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
-        if (from >= int64_t(at) && seen_from < 0 && sig.obuf[0][0] > 0.f) {
-            seen_from = from;
-            seen_count = sig.obuf[0][0];
-            seen_sum = sig.obuf[0][1];
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == 0 && gp >= 0) host.send(0, uint32_t(gp), 0, gain_value);
+        if (i == on) host.send(0, plugin::kBypassParam, 0, 1.f);
+        if (i == off) host.send_table_only(0, plugin::kBypassParam, 0.f);
+        std::memcpy(sig.buf[0].data(), &in[i * kBlock], kBlock * sizeof(float));
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0) {
+            std::memcpy(&out[i * kBlock], sig.obuf[0].data(), kBlock * sizeof(float));
+            got[i] = 1;
         }
         return true;
     });
     report_loop(st);
-    std::printf("  pushed %u changes in callback %llu; the plugin saw %.0f distinct (sum %.2f) in the "
-                "block from callback %lld; host rejected %llu\n",
-                pushed, (unsigned long long)at, double(seen_count), double(seen_sum), (long long)seen_from,
-                (unsigned long long)host.h->params_rejected.load());
-    check(pushed == distinct + 1, "the ring took every change");
-    check(seen_count == float(distinct), "every distinct change reached the plugin in one block");
-    check(std::fabs(seen_sum - float(distinct) * value) < 1e-3f, "with the value pushed");
-    check(host.h->params_rejected.load() == 1, "the change for an unknown ParamID was counted as rejected");
+    std::printf("  reported %u frames; dropped %llu of %llu blocks\n", L,
+                (unsigned long long)count_drops(got), (unsigned long long)total);
+    check(host.h->latency_generation.load() == gen0, "bypass did not change the reported latency");
+    // One block for the crossfade, and L + 2 blocks for the history.
+    const uint64_t settle = (L + kBlock - 1) / kBlock + 3;
+    const auto bypassed = valid_window(got, on + settle, off, L);
+    const double r = residual_at(in, out, bypassed, L);
+    std::printf("  bypassed: worst |out - in delayed by %u| = %.3g\n", L, r);
+    check(r < 1e-6, "bypassed, the chain plays its input delayed by exactly the reported latency");
+    for (const auto& w : {std::make_pair(uint64_t(16) + settle, on), std::make_pair(off + settle, total)}) {
+        const auto valid = valid_window(got, w.first, w.second, L);
+        if (gp >= 0) {
+            double ei = 0, eo = 0;
+            for (uint64_t t = L; t < out.size(); ++t)
+                if (valid[t]) ei += double(in[t - L]) * in[t - L], eo += double(out[t]) * out[t];
+            const double db = 10.0 * std::log10(eo / ei);
+            char what[128];
+            std::snprintf(what, sizeof what, "active from block %llu: %+.4f dB, the plugin's %+.1f dB",
+                          (unsigned long long)w.first, db, gain_db);
+            check(ei > 0 && std::fabs(db - gain_db) < 0.01, what);
+        } else {
+            check_delay(fit_delay(in, out, valid, L), L);
+        }
+    }
     return 0;
 }
 
+// Make-before-break (ADR-0012 §5.3, §5.4): a chain moves to a new host, in a
+// NEW region and a new channel slot, while the old host keeps playing; the
+// plan swap happens in a callback, the old host is shut down and its region
+// released only after the old plan is retired. The new channel's first
+// submit copies the engine's private store in, so a value set after the new
+// host was seeded is the one it plays (A2). A slot reassigned later no
+// longer matches a plan built against its old generation (H1).
+int scenario_swap(const Args& a) {
+    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("swap: %s, make-before-break into a new region and slot\n", join(chain, ',').c_str());
+    const int gp = dense_param(a, chain[0], a.gain_param.empty() ? "gain" : a.gain_param);
+    if (gp < 0) return 1;
+    // The chain's store, keyed by the chain, outlives both hosts.
+    Store store;
+    {
+        const PluginParams d = probe_params(a, chain[0]);
+        const uint32_t n = uint32_t(d.keys.size());
+        store.map = plugin::make_param_map(&n, 1);
+        store.values = d.defaults;
+        store.values.resize(store.map.param_slots);
+    }
+    plugin::SlotGeneration slots[2];
+    struct Node {
+        int slot;
+        uint32_t generation;
+        Host* host;
+    };
+    Host A, B;
+    Host::StartOptions o;
+    o.store = &store;
+    if (int r = start_ready(A, a, clock, chain, o)) return r;
+    Node plans[2] = {{0, plugin::assign_slot(slots[0]), &A}, {1, 0, &B}};
+
+    std::atomic<bool> start_b{false}, b_ready{false}, retired{false}, finished{false};
+    std::atomic<int> b_failed{0};
+    bool a_alive_at_retire = false;
+    std::thread control([&] {
+        while (!start_b.load(std::memory_order_acquire)) usleep(1000);
+        if (start_ready(B, a, clock, chain, o) != 0) {
+            b_failed.store(1);
+            return;
+        }
+        plans[1].generation = plugin::assign_slot(slots[1]);  // before the plan is published
+        B.mark_new_channel();
+        b_ready.store(true, std::memory_order_release);
+        while (!retired.load(std::memory_order_acquire)) usleep(1000);
+        a_alive_at_retire = A.alive();
+        A.stop();  // shut down, region released: never reused
+        // B was forked from this thread, and Linux sends a host's death
+        // signal when the THREAD that forked it exits (ipc.h,
+        // die_with_parent): like the engine's control thread, this one
+        // outlives its hosts.
+        while (!finished.load(std::memory_order_acquire)) usleep(1000);
+    });
+
+    // The late change goes to the old host after the new one was seeded
+    // (b_ready), and the swap comes 20 blocks after that.
+    const uint64_t total = 800, set_a = 100, start_at = 150, set_late = 250;
+    const float db_a = -6.f, db_late = 6.f;
+    std::vector<double> in_e(total, 0), out_e(total, -1);
+    int active = 0;
+    int64_t swap_at = -1, late_at = -1;
+    uint64_t faults = 0;
+    Signal sig(1);
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        // A plan swap is picked up at a callback's start (ADR-0009 §4.1).
+        if (active == 0 && late_at >= 0 && i >= uint64_t(late_at) + 20) {
+            active = 1;
+            swap_at = int64_t(i);
+        } else if (active == 1 && !retired.load(std::memory_order_relaxed)) {
+            retired.store(true, std::memory_order_release);  // the old plan ran its last callback
+        }
+        const Node& node = plans[active];
+        if (i == set_a) node.host->send(0, uint32_t(gp), 0, db_a);
+        if (i == start_at) start_b.store(true, std::memory_order_release);
+        if (late_at < 0 && i >= set_late && b_ready.load(std::memory_order_acquire)) {
+            node.host->send(0, uint32_t(gp), 0, db_late);
+            late_at = int64_t(i);
+        }
+        sig.sine(i, 997.0, 0.1f);
+        for (uint32_t s = 0; s < kBlock; ++s) in_e[i] += double(sig.buf[0][s]) * sig.buf[0][s];
+        // Step 0 of the block protocol: the slot must still be the one the
+        // plan was built against.
+        if (!plugin::slot_current(slots[node.slot], node.generation)) {
+            ++faults;
+            return true;
+        }
+        const int64_t from = node.host->run(sig.in.data(), sig.out.data(), kBlock, i);
+        if (from >= 0) {
+            double e = 0;
+            for (uint32_t s = 0; s < kBlock; ++s) e += double(sig.obuf[0][s]) * sig.obuf[0][s];
+            out_e[size_t(from)] = e;
+        }
+        return true;
+    });
+    if (!retired.load()) retired.store(true);
+    finished.store(true, std::memory_order_release);
+    control.join();
+    report_loop(st);
+    check(b_failed.load() == 0 && swap_at > 0, "the new host came up and the plan swapped to it");
+    if (swap_at <= 0) return 0;
+    std::printf("  swapped at callback %lld; old host %s at its retirement\n", (long long)swap_at,
+                a_alive_at_retire ? "still running" : "already gone");
+    check(a_alive_at_retire, "the old host played until the old plan was retired (make-before-break)");
+    check(A.h == nullptr, "the old region was released after the retirement");
+    check(faults == 0, "no plan ran against a slot of another generation");
+    const auto window_db = [&](uint64_t from, uint64_t to) {
+        double ei = 0, eo = 0;
+        for (uint64_t b = from; b < to; ++b)
+            if (out_e[b] >= 0) ei += in_e[b], eo += out_e[b];
+        return ei > 0 && eo > 0 ? 10.0 * std::log10(eo / ei) : -999.0;
+    };
+    uint64_t silent = 0;
+    for (uint64_t b = uint64_t(swap_at) - 1; b < uint64_t(swap_at) + 4; ++b) silent += out_e[b] < 0 ? 1 : 0;
+    std::printf("  around the swap, %llu block(s) not played\n", (unsigned long long)silent);
+    // The old host's in-flight block (submitted at swap - 1) is discarded,
+    // and the new channel has nothing to collect in its first callback.
+    check(silent <= 2, "the swap costs at most the discarded in-flight block and one silent block");
+    char what[128];
+    const double before = window_db(uint64_t(late_at) + 3, uint64_t(swap_at) - 2);
+    const double after = window_db(uint64_t(swap_at) + 3, total);
+    std::snprintf(what, sizeof what, "the old host played %+.0f dB to the end: %+.4f dB", db_late, before);
+    check(std::fabs(before - db_late) < 0.01, what);
+    std::snprintf(what, sizeof what,
+                  "the new host plays %+.0f dB from its first block (seeded with %+.0f, store copied on "
+                  "first submit): %+.4f dB",
+                  db_late, db_a, after);
+    check(std::fabs(after - db_late) < 0.01, what);
+    // H1: once the slot is given to another host, a plan built against the
+    // old generation matches nothing.
+    const uint32_t old_generation = plans[0].generation;
+    plugin::assign_slot(slots[0]);
+    check(!plugin::slot_current(slots[0], old_generation), "a reassigned slot rejects the retired plan's node");
+    check(st.over_period <= kOsNoiseCallbacks, "no callback overran the period during the swap");
+    B.alive();  // reaps it if it is gone, so death() says how
+    if (B.h)
+        std::printf("  new host: state %s, completed %llu of %llu submitted, %s\n", state_name(B.h->state.load()),
+                    (unsigned long long)B.h->completed_block.load(),
+                    (unsigned long long)B.h->submitted_block.load(), B.death().c_str());
+    return 0;
+}
+
+// Parameters by dense index, tagged with a block and a frame offset
+// (ADR-0012 §5.1), through the params test plugin, which writes how many
+// changes it saw into sample 0, their sum into sample 1, and the offset of
+// parameter 0's change into sample 2:
+//  - as many distinct changes in one block as the ring holds all reach the
+//    plugin in that block, and one for a parameter that does not exist is
+//    counted, not lost silently;
+//  - a change at offset 37 reaches the plugin at frame 37;
+//  - an entry tagged with an older block is applied at offset 0 and counted
+//    late;
+//  - a value carried by the table alone reaches the plugin at offset 0.
+int scenario_params(const Args& a) {
+    const std::vector<std::string> chain = {kVst3Params};
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("params: %s\n", join(chain, ',').c_str());
+    Host host;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
+    // One slot of the ring is left for the change the host must reject.
+    const uint32_t distinct = plugin::kParamRingCapacity - 1;
+    const float value = 0.25f;
+    const uint64_t total = 400, at = 100, at_offset = 150, at_late = 200, at_table = 250;
+    // Each change goes out in the first callback from its time on that will
+    // submit: one that does not is held and arrives through the table at
+    // offset 0 (block protocol step 2), which is not what these check.
+    uint64_t sent_at[4] = {0, 0, 0, 0};
+    const uint64_t when[4] = {at, at_offset, at_late, at_table};
+    std::vector<std::array<float, 3>> seen(total, {-1.f, -1.f, -1.f});
+    Signal sig(1);
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        for (int k = 0; k < 4; ++k) {
+            if (sent_at[k] || i < when[k] || !host.idle()) continue;
+            sent_at[k] = i;
+            if (k == 0) {
+                for (uint32_t d = 0; d < distinct; ++d) host.send(0, d, 0, value);
+                host.send(0, 9999, 0, value);  // no such parameter
+            }
+            if (k == 1) host.send(0, 0, 37, 0.5f);
+            if (k == 2) host.push_raw({host.next_block() - 5, 0, 0, 90, 0.75f});
+            if (k == 3) host.send_table_only(0, 0, 0.125f);
+        }
+        sig.sine(i, 440.0, 0.1f);
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
+        if (from >= 0) seen[size_t(from)] = {sig.obuf[0][0], sig.obuf[0][1], sig.obuf[0][2]};
+        return true;
+    });
+    report_loop(st);
+    // The first block from callback `from` on that carried a change.
+    auto first_change = [&](uint64_t from) -> const std::array<float, 3>* {
+        for (uint64_t b = from; b < from + 20 && b < total; ++b)
+            if (seen[b][0] > 0.f) return &seen[b];
+        return nullptr;
+    };
+    const auto* bulk = first_change(sent_at[0]);
+    std::printf("  pushed %u changes in callback %llu; the plugin saw %.0f (sum %.2f); host rejected %llu, "
+                "late %llu\n",
+                distinct + 1, (unsigned long long)sent_at[0], bulk ? double((*bulk)[0]) : -1.0, bulk ? double((*bulk)[1]) : -1.0,
+                (unsigned long long)host.h->params_rejected.load(), (unsigned long long)host.h->params_late.load());
+    check(sent_at[0] && host.refused() == 0, "the ring took every change");
+    check(bulk && (*bulk)[0] == float(distinct), "every distinct change reached the plugin in one block");
+    check(bulk && std::fabs((*bulk)[1] - float(distinct) * value) < 1e-3f, "with the value pushed");
+    check(host.h->params_rejected.load() == 1, "the change for a parameter that does not exist was counted as rejected");
+    const auto* offset = first_change(sent_at[1]);
+    check(offset && (*offset)[0] == 1.f && (*offset)[1] == 0.5f && (*offset)[2] == 37.f,
+          "a change tagged with frame 37 reached the plugin at frame 37");
+    const auto* late = first_change(sent_at[2]);
+    check(late && (*late)[1] == 0.75f && (*late)[2] == 0.f && host.h->params_late.load() == 1,
+          "an entry for an older block was applied at frame 0 and counted late");
+    const auto* table = first_change(sent_at[3]);
+    check(table && (*table)[0] == 1.f && (*table)[1] == 0.125f && (*table)[2] == 0.f,
+          "a value carried by the table alone reached the plugin at frame 0");
+    return 0;
+}
 // --list --json is one JSON object per line, whatever a scan does: a bundle
 // whose scan hangs is killed and reported on a line of its own, and every
 // record written before that is whole.
@@ -1093,43 +1771,6 @@ int scenario_list_json(const Args& a) {
     check(params_entry, "the classes described before the hang are listed");
     return 0;
 }
-
-// Round trip per block: a measurement of the IPC, not a protocol mode. It
-// sleeps on done_word, which the engine's audio thread never does.
-int scenario_rtt(const Args& a) {
-    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
-    const uint64_t total = a.blocks ? a.blocks : 3000;
-    std::printf("rtt: %s, %u channel(s), %llu blocks of %u at %u Hz, measurement wait, deadline %.0f us\n",
-                join(chain, ',').c_str(), a.channels, (unsigned long long)total, kBlock, kRate,
-                kDeadlineNs / 1e3);
-    Host host;
-    if (int r = start_ready(host, a, chain, a.channels, 0)) return r;
-    std::vector<double> rtt_us;
-    rtt_us.reserve(total);
-    uint64_t dropped = 0;
-    Signal sig(a.channels);
-    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
-        sig.sine(i, 997.0, 0.1f);
-        uint64_t rtt = 0;
-        if (host.round_trip(sig.in.data(), sig.out.data(), kBlock, i, deadline, rtt))
-            rtt_us.push_back(rtt / 1e3);
-        else
-            ++dropped;
-        return true;
-    });
-    report_loop(st);
-    std::printf("  CONTAINER FIGURES, not appliance figures (shared host kernel, no RT kernel):\n");
-    std::printf("  round trip us: p50 %.1f  p99 %.1f  p99.9 %.1f  max %.1f  (n=%zu)\n",
-                percentile(rtt_us, 50), percentile(rtt_us, 99), percentile(rtt_us, 99.9),
-                rtt_us.empty() ? 0.0 : *std::max_element(rtt_us.begin(), rtt_us.end()), rtt_us.size());
-    std::printf("  dropped %llu of %llu (%.2f %%), of which %llu noticed after the deadline; "
-                "host worst block (chain only) %.1f us\n",
-                (unsigned long long)dropped, (unsigned long long)total, 100.0 * dropped / total,
-                (unsigned long long)host.late(), host.h->worst_block_ns.load() / 1e3);
-    check(rtt_us.size() * 2 > total, "more than half the blocks came back in time");
-    return 0;
-}
-
 // Planar float32 (every sample of channel 0, then channel 1, ...), the
 // layout sonora-dsp-measure --host-fixture writes.
 bool read_planar(const std::string& path, uint32_t channels, std::vector<std::vector<float>>& out) {
@@ -1147,40 +1788,30 @@ bool read_planar(const std::string& path, uint32_t channels, std::vector<std::ve
     return true;
 }
 
-// A parameter move for the ring: in block `block` of the render, `id` (the
-// LV2 port index or the VST3 ParamID) to `value`.
+// A parameter move for the render: in block `block`, chain instance 0's
+// dense parameter `dense` to `value` (format-native).
 struct Move {
     uint64_t block;
-    uint32_t id;
+    uint32_t dense;
     float value;
 };
 
-// The id behind each --change's symbol, from the host's own --probe: the
-// engine will do the same, by name from the descriptor to id from the host.
+// Each --change BLOCK:SYMBOL=VALUE by dense index, from the host's own
+// --probe: SYMBOL is what --set takes (LV2 port symbol, VST3 title), as the
+// engine maps a name from the descriptor to the dense index of its scan.
 bool resolve_changes(const Args& a, std::vector<Move>& moves) {
     if (a.changes.empty()) return true;
-    std::string cmd = "'" + a.host + "' --probe '" + a.chain[0] + "' --channels " + std::to_string(a.channels);
-    for (const std::string& b : a.bundles) cmd += " --bundle '" + b + "'";
-    std::FILE* p = popen(cmd.c_str(), "r");
-    if (!p) return false;
-    std::string probe;
-    char buf[4096];
-    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;) probe.append(buf, n);
-    pclose(p);
+    const PluginParams d = probe_params(a, a.chain[0]);
     for (const std::string& c : a.changes) {
         const std::size_t colon = c.find(':'), eq = c.rfind('=');
         if (colon == std::string::npos || eq == std::string::npos || eq < colon) return false;
         const std::string symbol = c.substr(colon + 1, eq - colon - 1);
-        // {"id":N,"symbol":"SYMBOL"}: our symbols and titles need no escaping.
-        const std::string tail = ",\"symbol\":\"" + symbol + "\"}";
-        const std::size_t at = probe.find(tail);
-        const std::size_t open = at == std::string::npos ? at : probe.rfind("{\"id\":", at);
-        if (open == std::string::npos) {
-            std::printf("  --change %s: the host's --probe lists no control '%s'\n", c.c_str(), symbol.c_str());
+        const int dense = d.index_of_symbol(symbol);
+        if (dense < 0) {
+            std::printf("  --change %s: the host's --probe lists no parameter '%s'\n", c.c_str(), symbol.c_str());
             return false;
         }
-        moves.push_back({std::strtoull(c.c_str(), nullptr, 10),
-                         uint32_t(std::strtoul(probe.c_str() + open + 6, nullptr, 10)),
+        moves.push_back({std::strtoull(c.c_str(), nullptr, 10), uint32_t(dense),
                          std::strtof(c.c_str() + eq + 1, nullptr)});
     }
     return true;
@@ -1188,36 +1819,43 @@ bool resolve_changes(const Args& a, std::vector<Move>& moves) {
 
 // Every plane of `planes` (the region's channels: signal, then key) through
 // a started host, block by block, each submitted and waited for; `got` gets
-// the region's output planes. `moves` go on the ring before their block.
-// False when a block did not come back. Not periodic, and it waits: only a
-// harness does this, never the engine (Host::round_trip says why).
+// the region's output planes. Every block is block_frames (contracts/plugin,
+// Frame count): the last, short one is padded with silence and only its
+// head kept. `moves` are sent in the callback that submits their block, so
+// the host applies them at its start. False when a block did not come
+// back. Not periodic, and it waits: only a harness does this, never the
+// engine (Host::round_trip says why).
 bool render_blocks(Host& host, const std::vector<std::vector<float>>& planes, const std::vector<Move>& moves,
-                   std::vector<std::vector<float>>& got, bool& pushed) {
+                   std::vector<std::vector<float>>& got) {
     const std::size_t frames = planes[0].size();
     const std::size_t region_channels = planes.size();
     got.assign(region_channels, std::vector<float>(frames, 0.f));
+    std::vector<std::vector<float>> pad_in(region_channels, std::vector<float>(kBlock)),
+        pad_out(region_channels, std::vector<float>(kBlock));
     std::vector<const float*> ip(region_channels);
     std::vector<float*> op(region_channels);
     uint64_t block = 0;
     for (std::size_t pos = 0; pos < frames; pos += kBlock, ++block) {
         const uint32_t n = uint32_t(std::min<std::size_t>(kBlock, frames - pos));
         for (std::size_t c = 0; c < region_channels; ++c) {
-            ip[c] = planes[c].data() + pos;
-            op[c] = got[c].data() + pos;
+            if (n == kBlock) {
+                ip[c] = planes[c].data() + pos;
+                op[c] = got[c].data() + pos;
+            } else {
+                std::fill(pad_in[c].begin(), pad_in[c].end(), 0.f);
+                std::copy(planes[c].begin() + std::ptrdiff_t(pos), planes[c].end(), pad_in[c].begin());
+                ip[c] = pad_in[c].data();
+                op[c] = pad_out[c].data();
+            }
         }
-        // On the ring before the block is submitted: the host applies it
-        // at the start of this block.
         for (const Move& m : moves)
-            if (m.block == block) pushed &= plugin::push_param(*host.h, plugin::ParamChange{0, m.id, m.value, 0});
-        host.submit(ip.data(), n, block);
-        const uint64_t give_up = monotonic_ns() + 5'000'000'000ull;
-        for (;;) {
-            const uint32_t seen = host.h->done_word.load(std::memory_order_acquire);
-            if (host.idle()) break;
-            if (!host.alive() || monotonic_ns() > give_up) return false;
-            wait_for_change(host.h->done_word, seen, 100'000'000);
-        }
-        host.read_output(op.data(), n);
+            if (m.block == block) host.send(0, m.dense, 0, m.value);
+        uint64_t rtt = 0;
+        if (!host.round_trip(ip.data(), op.data(), kBlock, block, monotonic_ns() + 5'000'000'000ull, rtt))
+            return false;
+        if (n != kBlock)
+            for (std::size_t c = 0; c < region_channels; ++c)
+                std::copy(pad_out[c].begin(), pad_out[c].begin() + n, got[c].begin() + std::ptrdiff_t(pos));
     }
     return true;
 }
@@ -1245,16 +1883,17 @@ int scenario_key(const Args& a) {
         {"two plugins that write into their key input: each reads the key", {kKeyPlugin, kKeyPlugin}, true},
         {"no key routed: the key input reads the plugin's own input", {kKeyPlugin}, false},
     };
+    Clock clock;
+    if (!clock.create(wake_of(a, plugin::WakeMode::Futex))) return 1;
     for (const Case& c : cases) {
         Args ca = a;
         ca.key_channels = c.keyed ? 1 : 0;
         Host host;
         std::vector<std::vector<float>> planes = {signal};
         if (c.keyed) planes.push_back(key);
-        if (int r = start_ready(host, ca, c.chain, uint32_t(planes.size()), 0)) return r;
+        if (int r = start_ready(host, ca, clock, c.chain, uint32_t(planes.size()))) return r;
         std::vector<std::vector<float>> got;
-        bool pushed = true;
-        const bool complete = render_blocks(host, planes, {}, got, pushed);
+        const bool complete = render_blocks(host, planes, {}, got);
         check(complete, "every block came back from the host");
         if (!complete) {
             std::printf("  host: %s\n", host.death().c_str());
@@ -1267,71 +1906,6 @@ int scenario_key(const Args& a) {
                     c.keyed ? "key" : "input");
         check(differ == 0, c.what);
     }
-    return 0;
-}
-
-// A plugin whose exact output is known, rendered through a real host
-// process: Sonora's own bundles against the N0 reference renders
-// (sonora-dsp-measure --host-fixture, ADR-0011 §1.2's checkpoint). Not
-// periodic: each block is submitted and then waited for, so none is dropped
-// and the output is the plugin's, sample for sample. Only a harness waits
-// like this; the engine never does (Host::round_trip says why).
-int scenario_render(const Args& a) {
-    std::printf("render: %s at %u Hz, %u channel(s), %u key channel(s)%s\n", join(a.chain, ',').c_str(),
-                a.rate, a.channels, a.key_channels, a.reactivate ? ", re-activated after loading" : "");
-    std::vector<std::vector<float>> in, want, key;
-    if (a.chain.size() != 1 || !read_planar(a.input, a.channels, in) ||
-        !read_planar(a.expected, a.channels, want) || in[0].size() != want[0].size() ||
-        (a.key_channels > 0 && (!read_planar(a.key, a.key_channels, key) || key[0].size() != in[0].size()))) {
-        check(false, "one plugin, and --input, --expected and --key of the same length and channel count");
-        return 0;
-    }
-    std::vector<Move> moves;
-    if (!resolve_changes(a, moves)) {
-        check(false, "every --change names a control of the plugin");
-        return 0;
-    }
-    Host host;
-    // Depth 0: a block's output is that block's, with no IPC delay to undo.
-    // The key rides in the region after the signal channels.
-    if (int r = start_ready(host, a, a.chain, a.channels + a.key_channels, 0)) return r;
-    const uint32_t latency = plugin::checked_latency(host.h->instances[0].latency_frames.load());
-    if (a.expect_latency >= 0) {
-        char what[128];
-        std::snprintf(what, sizeof what, "the plugin reports %u frames of latency, the reference %lld", latency,
-                      (long long)a.expect_latency);
-        check(int64_t(latency) == a.expect_latency, what);
-    }
-
-    const std::size_t frames = in[0].size();
-    std::vector<std::vector<float>> planes = in;
-    planes.insert(planes.end(), key.begin(), key.end());
-    std::vector<std::vector<float>> got;
-    bool pushed = true;
-    const bool complete = render_blocks(host, planes, moves, got, pushed);
-    check(complete, "every block came back from the host");
-    if (!moves.empty()) check(pushed, "every --change went on the parameter ring");
-    if (!complete) {
-        std::printf("  host: %s\n", host.death().c_str());
-        return 0;
-    }
-
-    double worst = 0.0;
-    std::size_t worst_at = 0;
-    uint32_t worst_ch = 0;
-    for (uint32_t c = 0; c < a.channels; ++c)
-        for (std::size_t i = 0; i < frames; ++i) {
-            const double d = std::fabs(double(got[c][i]) - double(want[c][i]));
-            if (d > worst) worst = d, worst_at = i, worst_ch = c;
-        }
-    std::printf("  %zu frames: max |plugin - reference| = %.3g (channel %u, frame %zu: %.9g against %.9g)\n",
-                frames, worst, worst_ch, worst_at, double(got[worst_ch][worst_at]),
-                double(want[worst_ch][worst_at]));
-    char what[128];
-    std::snprintf(what, sizeof what, "output equals the N0 reference render within %.3g", a.tolerance);
-    check(worst <= a.tolerance, what);
-    check(host.h->instances[0].nonfinite_samples.load() == 0, "no NaN or Inf from the plugin");
-    check(host.h->params_rejected.load() == 0, "no parameter change refused");
     return 0;
 }
 
@@ -1361,6 +1935,113 @@ std::vector<std::string> expand_args(int argc, char** argv) {
     return out;
 }
 
+// Round trip per block: a measurement of the IPC, not a protocol mode. It
+// sleeps on done_word, which the engine's audio thread never does. Futex
+// wake by default: it measures the wake path the gate would turn on.
+int scenario_rtt(const Args& a) {
+    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
+    const uint64_t total = a.blocks ? a.blocks : 3000;
+    Clock clock;
+    // The session rate in both headers: the host checks they agree.
+    if (!clock.create(wake_of(a, plugin::WakeMode::Futex), {}, a.rate)) return 1;
+    std::printf("rtt: %s, %u channel(s), %llu blocks of %u at %u Hz, %s wake, measurement wait, deadline %.0f us\n",
+                join(chain, ',').c_str(), a.channels, (unsigned long long)total, kBlock, kRate,
+                clock.mode == plugin::WakeMode::Futex ? "futex" : "timer", kDeadlineNs / 1e3);
+    Host host;
+    if (int r = start_ready(host, a, clock, chain, a.channels)) return r;
+    std::vector<double> rtt_us;
+    rtt_us.reserve(total);
+    uint64_t dropped = 0;
+    Signal sig(a.channels);
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        sig.sine(i, 997.0, 0.1f);
+        uint64_t rtt = 0;
+        if (host.round_trip(sig.in.data(), sig.out.data(), kBlock, i, monotonic_ns() + kDeadlineNs, rtt))
+            rtt_us.push_back(rtt / 1e3);
+        else
+            ++dropped;
+        return true;
+    });
+    report_loop(st);
+    std::printf("  CONTAINER FIGURES, not appliance figures (shared host kernel, no RT kernel):\n");
+    std::printf("  round trip us: p50 %.1f  p99 %.1f  p99.9 %.1f  max %.1f  (n=%zu)\n",
+                percentile(rtt_us, 50), percentile(rtt_us, 99), percentile(rtt_us, 99.9),
+                rtt_us.empty() ? 0.0 : *std::max_element(rtt_us.begin(), rtt_us.end()), rtt_us.size());
+    std::printf("  dropped %llu of %llu (%.2f %%), of which %llu noticed after the deadline; "
+                "host worst block (chain only) %.1f us\n",
+                (unsigned long long)dropped, (unsigned long long)total, 100.0 * dropped / total,
+                (unsigned long long)host.late(), host.h->worst_block_ns.load() / 1e3);
+    check(rtt_us.size() * 2 > total, "more than half the blocks came back in time");
+    return 0;
+}
+
+// A plugin whose exact output is known, rendered through a real host
+// process: Sonora's own bundles against the N0 reference renders
+// (sonora-dsp-measure --host-fixture, ADR-0011 §1.2's checkpoint). Not
+// periodic: each block is submitted and then waited for, so none is dropped
+// and the output is the plugin's, sample for sample: the output planes after
+// block N are block N's, whatever the pipeline depth says the engine does
+// with them. Only a harness waits like this; the engine never does.
+int scenario_render(const Args& a) {
+    std::printf("render: %s at %u Hz, %u channel(s), %u key channel(s)%s\n", join(a.chain, ',').c_str(),
+                a.rate, a.channels, a.key_channels, a.reactivate ? ", re-activated after loading" : "");
+    std::vector<std::vector<float>> in, want, key;
+    if (a.chain.size() != 1 || !read_planar(a.input, a.channels, in) ||
+        !read_planar(a.expected, a.channels, want) || in[0].size() != want[0].size() ||
+        (a.key_channels > 0 && (!read_planar(a.key, a.key_channels, key) || key[0].size() != in[0].size()))) {
+        check(false, "one plugin, and --input, --expected and --key of the same length and channel count");
+        return 0;
+    }
+    std::vector<Move> moves;
+    if (!resolve_changes(a, moves)) {
+        check(false, "every --change names a parameter of the plugin");
+        return 0;
+    }
+    Clock clock;
+    // The session rate in both headers: the host checks they agree.
+    if (!clock.create(wake_of(a, plugin::WakeMode::Futex), {}, a.rate)) return 1;
+    Host host;
+    // The key rides in the region after the signal channels.
+    if (int r = start_ready(host, a, clock, a.chain, a.channels + a.key_channels)) return r;
+    const uint32_t latency = plugin::checked_latency(host.h->instances[0].latency_frames.load());
+    if (a.expect_latency >= 0) {
+        char what[128];
+        std::snprintf(what, sizeof what, "the plugin reports %u frames of latency, the reference %lld", latency,
+                      (long long)a.expect_latency);
+        check(int64_t(latency) == a.expect_latency, what);
+    }
+
+    const std::size_t frames = in[0].size();
+    std::vector<std::vector<float>> planes = in;
+    planes.insert(planes.end(), key.begin(), key.end());
+    std::vector<std::vector<float>> got;
+    const bool complete = render_blocks(host, planes, moves, got);
+    check(complete, "every block came back from the host");
+    if (!moves.empty()) check(host.refused() == 0, "every --change went on the parameter ring");
+    if (!complete) {
+        std::printf("  host: %s\n", host.death().c_str());
+        return 0;
+    }
+
+    double worst = 0.0;
+    std::size_t worst_at = 0;
+    uint32_t worst_ch = 0;
+    for (uint32_t c = 0; c < a.channels; ++c)
+        for (std::size_t i = 0; i < frames; ++i) {
+            const double d = std::fabs(double(got[c][i]) - double(want[c][i]));
+            if (d > worst) worst = d, worst_at = i, worst_ch = c;
+        }
+    std::printf("  %zu frames: max |plugin - reference| = %.3g (channel %u, frame %zu: %.9g against %.9g)\n",
+                frames, worst, worst_ch, worst_at, double(got[worst_ch][worst_at]),
+                double(want[worst_ch][worst_at]));
+    char what[128];
+    std::snprintf(what, sizeof what, "output equals the N0 reference render within %.3g", a.tolerance);
+    check(worst <= a.tolerance, what);
+    check(host.h->instances[0].nonfinite_samples.load() == 0, "no NaN or Inf from the plugin");
+    check(host.h->params_rejected.load() == 0, "no parameter change refused");
+    return 0;
+}
+
 Args parse(int argc, char** argv) {
     Args a;
     const std::vector<std::string> args = expand_args(argc, argv);
@@ -1369,18 +2050,19 @@ Args parse(int argc, char** argv) {
         if (k == "--host") a.host = v;
         else if (k == "--bundle") a.bundles.push_back(v);
         else if (k == "--format") a.format = v;
-        else if (k == "--gain-param") a.gain_param = uint32_t(std::atoi(v.c_str()));
+        else if (k == "--gain-param") a.gain_param = v;
         else if (k == "--gain-linear") a.gain_linear = v == "1";
         else if (k == "--expect-replicas") a.expect_replicas = uint32_t(std::atoi(v.c_str()));
-        else if (k == "--change-param") a.change_param = uint32_t(std::strtoul(v.c_str(), nullptr, 10)), a.has_change = true;
+        else if (k == "--expect-bypass") a.expect_bypass = v;
+        else if (k == "--change-param") a.change_param = v;
         else if (k == "--change-value") a.change_value = std::strtof(v.c_str(), nullptr);
         else if (k == "--scenario") a.scenario = v;
-        else if (k == "--mode") {
-            if (v != "pipelined" && v != "poll") {
-                std::fprintf(stderr, "plugin_driver: --mode is pipelined or poll\n");
+        else if (k == "--wake") {
+            if (v != "timer" && v != "futex") {
+                std::fprintf(stderr, "plugin_driver: --wake is timer or futex\n");
                 std::exit(2);
             }
-            a.mode = v;
+            a.wake = v;
         }
         else if (k == "--chain") a.chain = split(v, ',');
         else if (k == "--channels") a.channels = uint32_t(std::atoi(v.c_str()));
@@ -1391,6 +2073,15 @@ Args parse(int argc, char** argv) {
         else if (k == "--tolerance") a.tolerance = std::atof(v.c_str());
         else if (k == "--expect-latency") a.expect_latency = std::atoll(v.c_str());
         else if (k == "--set") a.sets.push_back(v);
+        else if (k == "--param") {
+            const auto colon = v.find(':'), eq = v.find('=');
+            if (colon == std::string::npos || eq == std::string::npos || eq < colon) {
+                std::fprintf(stderr, "plugin_driver: --param wants INDEX:KEY=VALUE\n");
+                std::exit(2);
+            }
+            a.seeds.push_back({uint32_t(std::atoi(v.substr(0, colon).c_str())), v.substr(colon + 1, eq - colon - 1),
+                               std::strtof(v.c_str() + eq + 1, nullptr)});
+        }
         else if (k == "--key") a.key = v;
         else if (k == "--key-channels") a.key_channels = uint32_t(std::atoi(v.c_str()));
         else if (k == "--change") a.changes.push_back(v);
@@ -1402,9 +2093,9 @@ Args parse(int argc, char** argv) {
     }
     if (a.host.empty() || a.bundles.empty() || a.scenario.empty()) {
         std::fprintf(stderr, "usage: plugin_driver --host EXE --bundle DIR... --scenario NAME "
-                             "[--chain ID,...] [--channels N] [--mode pipelined|poll] [--blocks N]\n"
-                             "       [--format lv2|vst3] [--gain-param ID] [--gain-linear 1] "
-                             "[--expect-replicas N]\n"
+                             "[--chain ID,...] [--channels N] [--wake timer|futex] [--blocks N]\n"
+                             "       [--format lv2|vst3] [--gain-param KEY] [--gain-linear 1] "
+                             "[--expect-replicas N] [--expect-bypass plugin|host]\n"
                              "       render: [--args-file F] --input F --expected F [--rate HZ] "
                              "[--tolerance X] [--expect-latency N] [--set INDEX:SYMBOL=VALUE]...\n"
                              "               [--key F --key-channels N] [--change BLOCK:SYMBOL=VALUE]... "
@@ -1433,6 +2124,9 @@ int main(int argc, char** argv) {
     else if (a.scenario == "deadline") r = scenario_deadline(a);
     else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
+    else if (a.scenario == "incompatible") r = scenario_incompatible(a);
+    else if (a.scenario == "bypass") r = scenario_bypass(a);
+    else if (a.scenario == "swap") r = scenario_swap(a);
     else if (a.scenario == "rtt") r = scenario_rtt(a);
     else if (a.scenario == "params") r = scenario_params(a);
     else if (a.scenario == "list_json") r = scenario_list_json(a);

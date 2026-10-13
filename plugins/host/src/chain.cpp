@@ -169,6 +169,7 @@ bool Chain::process(const float* const* in, float* const* out, uint32_t frames,
         // its state, so one bad block from k would silence k + 1 for good.
         if (const uint64_t bad = sanitise_stage(k + 1, frames); bad && report)
             report->instances[k].nonfinite_samples.fetch_add(bad, std::memory_order_relaxed);
+        run_bypass(k, frames);
     }
     if (report) report->current_instance.store(-1, std::memory_order_relaxed);
 
@@ -222,15 +223,84 @@ bool Chain::validate(ChainError& error) {
     return true;
 }
 
-bool Chain::set_control(uint32_t instance, uint32_t id, float value) noexcept {
+bool Chain::set_param(uint32_t instance, uint32_t dense, float value, uint32_t offset) noexcept {
     if (instance >= slots_.size()) return false;
-    return slots_[instance]->set_param(id, value);
+    return slots_[instance]->set_param(dense, value, offset);
+}
+
+bool Chain::replace_param(uint32_t instance, uint32_t dense, float value) noexcept {
+    if (instance >= slots_.size()) return false;
+    return slots_[instance]->replace_param(dense, value);
 }
 
 bool Chain::set_control(uint32_t instance, const std::string& symbol, float value) {
     if (instance >= slots_.size()) return false;
-    uint32_t id = 0;
-    return slots_[instance]->param_id(symbol, id) && slots_[instance]->set_param(id, value);
+    uint32_t dense = 0;
+    return slots_[instance]->param_index(symbol, dense) && slots_[instance]->set_param(dense, value, 0);
+}
+
+uint32_t Chain::param_count(std::size_t i) const { return slots_[i]->param_count(); }
+std::string Chain::param_key(std::size_t i, uint32_t dense) const { return slots_[i]->param_key(dense); }
+std::string Chain::param_symbol(std::size_t i, uint32_t dense) const { return slots_[i]->param_symbol(dense); }
+float Chain::param_default(std::size_t i, uint32_t dense) const { return slots_[i]->param_default(dense); }
+
+bool Chain::designated_bypass(std::size_t i) const { return slots_[i]->bypass_param() >= 0; }
+
+bool Chain::set_bypass(uint32_t instance, bool bypassed, uint32_t offset) noexcept {
+    if (instance >= slots_.size()) return false;
+    Processor& p = *slots_[instance];
+    if (const int d = p.bypass_param(); d >= 0)
+        return p.set_param(static_cast<uint32_t>(d), p.bypass_value(bypassed), offset);
+    if (instance >= bypass_.size()) return false;  // before prepare_bypass
+    bypass_[instance].on = bypassed;
+    return true;
+}
+
+void Chain::prepare_bypass() {
+    bypass_.assign(slots_.size(), BypassLine{});
+    for (std::size_t k = 0; k < slots_.size(); ++k) {
+        if (designated_bypass(k)) continue;
+        // Bounded before it sizes anything (auditor L6 on PR #45): a
+        // plugin reporting ~UINT32_MAX would otherwise end the host in
+        // bad_alloc and truncate the mask. Past kMaxLatencyFrames the
+        // engine treats the figure as a fault anyway.
+        const uint32_t latency = std::min(slots_[k]->latency(), plugin::kMaxLatencyFrames);
+        const std::size_t need = std::size_t(latency) * 2 + kBypassHeadroomFrames + config_.max_frames;
+        std::size_t size = 1;
+        while (size < need) size <<= 1;
+        BypassLine& b = bypass_[k];
+        b.ring.assign(config_.channels, std::vector<float>(size, 0.f));
+        b.mask = static_cast<uint32_t>(size - 1);
+    }
+}
+
+// Every block, bypassed or not, so the history is there when bypass turns
+// on. The ring is written before it is read, so a latency of 0 reads the
+// sample just written.
+void Chain::run_bypass(std::size_t k, uint32_t frames) noexcept {
+    if (k >= bypass_.size() || bypass_[k].ring.empty()) return;
+    BypassLine& b = bypass_[k];
+    const uint32_t size = b.mask + 1;
+    const uint32_t delay = std::min(slots_[k]->latency(), size - config_.max_frames);
+    for (uint32_t c = 0; c < config_.channels; ++c) {
+        const float* in = buffer(k, c);
+        float* ring = b.ring[c].data();
+        for (uint32_t s = 0; s < frames; ++s) ring[(b.write + s) & b.mask] = in[s];
+        if (!b.on && !b.was) continue;
+        float* out = buffer(k + 1, c);
+        for (uint32_t s = 0; s < frames; ++s) {
+            const float dry = ring[(b.write + s - delay) & b.mask];
+            if (b.on && b.was) {
+                out[s] = dry;
+                continue;
+            }
+            // A change: one block's linear crossfade, wet to dry or back.
+            const float g = float(s + 1) / float(frames);
+            out[s] = b.on ? out[s] * (1.f - g) + dry * g : dry * (1.f - g) + out[s] * g;
+        }
+    }
+    b.write += frames;
+    b.was = b.on;
 }
 
 uint32_t Chain::instance_latency(std::size_t i) const { return slots_[i]->latency(); }

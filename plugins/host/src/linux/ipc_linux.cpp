@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Linux implementation of the plugin boundary seam: futex wake, memfd region.
+// Linux implementation of the host's side of the plugin boundary: memfd
+// regions, the sealed read-only clock share, scheduling. The futex wake is
+// common/platform's (wake.h).
 #include "ipc.h"
+
+#include "sonora/platform/wake.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -9,7 +13,7 @@
 #include <ctime>
 #include <new>
 
-#include <linux/futex.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -23,31 +27,20 @@
 #include <xmmintrin.h>
 #endif
 
+// glibc before 2.32 lacks the name; the kernel has had it since 5.1.
+#ifndef F_SEAL_FUTURE_WRITE
+#define F_SEAL_FUTURE_WRITE 0x0010
+#endif
+
 namespace sonora::plugin_host {
-
-namespace {
-
-// The futex word must be a plain aligned u32; protocol.h asserts the atomic
-// has that representation. Shared (not FUTEX_PRIVATE) because the waiter and
-// the waker are different processes.
-int* futex_addr(std::atomic<uint32_t>& word) {
-    return reinterpret_cast<int*>(&word);
-}
-
-}  // namespace
 
 void signal(std::atomic<uint32_t>& word) noexcept {
     word.fetch_add(1, std::memory_order_release);
-    syscall(SYS_futex, futex_addr(word), FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
+    platform::wake_all(word);
 }
 
-void wait_for_change(std::atomic<uint32_t>& word, uint32_t seen, uint64_t timeout_ns) noexcept {
-    timespec ts;
-    ts.tv_sec = static_cast<time_t>(timeout_ns / 1000000000ull);
-    ts.tv_nsec = static_cast<long>(timeout_ns % 1000000000ull);
-    // Relative timeout. EAGAIN (word already changed), EINTR and ETIMEDOUT
-    // all mean "go and look", which the caller does anyway.
-    syscall(SYS_futex, futex_addr(word), FUTEX_WAIT, static_cast<int>(seen), &ts, nullptr, 0);
+void wait_for_change(const std::atomic<uint32_t>& word, uint32_t seen, uint64_t timeout_ns) noexcept {
+    platform::wait_for_change(word, seen, timeout_ns);
 }
 
 uint64_t monotonic_ns() noexcept {
@@ -56,8 +49,15 @@ uint64_t monotonic_ns() noexcept {
     return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
 }
 
+void sleep_until_ns(uint64_t at_ns) noexcept {
+    const timespec ts{static_cast<time_t>(at_ns / 1000000000ull), static_cast<long>(at_ns % 1000000000ull)};
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+    }
+}
+
 bool create_region(std::size_t size, SharedRegion& out, std::string& error) {
-    const int fd = static_cast<int>(syscall(SYS_memfd_create, "sonora-plugin-channel", MFD_CLOEXEC));
+    const int fd = static_cast<int>(
+        syscall(SYS_memfd_create, "sonora-plugin-channel", MFD_CLOEXEC | MFD_ALLOW_SEALING));
     if (fd < 0) {
         error = std::string("memfd_create: ") + std::strerror(errno);
         return false;
@@ -76,21 +76,47 @@ bool create_region(std::size_t size, SharedRegion& out, std::string& error) {
     out.base = base;
     out.size = size;
     out.handle = fd;
+    out.writable = true;
     return true;
 }
 
-bool map_region(int handle, SharedRegion& out, std::string& error) {
+// The same steps as common/platform's SharedRegion::create (posix/ipc.cpp):
+// seal after our own writable mapping, then reopen read-only.
+bool share_read_only(SharedRegion& region, int& read_only_handle, std::string& error) {
+    if (fcntl(region.handle, F_ADD_SEALS,
+              F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_FUTURE_WRITE | F_SEAL_SEAL) != 0) {
+        // Refused, not degraded (auditor L2 on PR #45). Without the seal a
+        // host can reopen /proc/<pid>/fd/N read-write (a memfd inode is
+        // mode 0777) and map the clock writable, which is the forgery M1
+        // exists to stop. A read-only descriptor alone does not stop it.
+        error = std::string("cannot seal the region against writable mappings (F_SEAL_FUTURE_WRITE, "
+                            "Linux 5.1 or later): ") +
+                std::strerror(errno) + "; a host could map the clock writable, so it is not shared";
+        return false;
+    }
+    const std::string self = "/proc/self/fd/" + std::to_string(region.handle);
+    read_only_handle = open(self.c_str(), O_RDONLY | O_CLOEXEC);
+    if (read_only_handle < 0) {
+        error = std::string("cannot open a read-only descriptor of the region: ") + std::strerror(errno);
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+bool map_with(int handle, int prot, SharedRegion& out, std::string& error) {
     struct stat st;
     if (fstat(handle, &st) != 0) {
-        error = std::string("fstat on the channel descriptor: ") + std::strerror(errno);
+        error = std::string("fstat on the region descriptor: ") + std::strerror(errno);
         return false;
     }
     const std::size_t size = static_cast<std::size_t>(st.st_size);
     if (size == 0) {
-        error = "the channel region is empty";
+        error = "the region is empty";
         return false;
     }
-    void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, handle, 0);
+    void* base = mmap(nullptr, size, prot, MAP_SHARED, handle, 0);
     if (base == MAP_FAILED) {
         error = std::string("mmap: ") + std::strerror(errno);
         return false;
@@ -98,7 +124,18 @@ bool map_region(int handle, SharedRegion& out, std::string& error) {
     out.base = base;
     out.size = size;
     out.handle = handle;
+    out.writable = (prot & PROT_WRITE) != 0;
     return true;
+}
+
+}  // namespace
+
+bool map_region(int handle, SharedRegion& out, std::string& error) {
+    return map_with(handle, PROT_READ | PROT_WRITE, out, error);
+}
+
+bool map_region_read_only(int handle, SharedRegion& out, std::string& error) {
+    return map_with(handle, PROT_READ, out, error);
 }
 
 void release_region(SharedRegion& region) {
@@ -106,6 +143,18 @@ void release_region(SharedRegion& region) {
     if (region.handle >= 0) close(region.handle);
     region = SharedRegion{};
 }
+
+bool lock_region(const SharedRegion& region, std::string& error) {
+    if (!region.base || region.size == 0) return true;
+    if (mlock(region.base, region.size) == 0) return true;
+    error = std::string("mlock of ") + std::to_string(region.size) + " bytes: " + std::strerror(errno);
+    return false;
+}
+
+void close_handle(int handle) noexcept {
+    if (handle >= 0) close(handle);
+}
+
 
 bool lock_memory() noexcept {
     return mlockall(MCL_CURRENT | MCL_FUTURE) == 0;

@@ -353,13 +353,14 @@ private:
     int64 pos_ = 0;
 };
 
-// Parameter changes for one block. Fixed capacity, filled between blocks by
-// set() from the ring and read by the plugin inside process(): nothing here
-// allocates. An output-side instance takes what a plugin reports (meters)
-// and discards it at the end of the block.
+// Parameter changes for one block. Fixed capacity, filled between blocks
+// from the ring and the last-value table and read by the plugin inside
+// process(): nothing here allocates after construction. An output-side
+// instance takes what a plugin reports (meters) and discards it at the end
+// of the block.
 class ParamQueue final : public V::IParamValueQueue {
 public:
-    static constexpr int32 kMaxPoints = 8;
+    static constexpr int32 kMaxPoints = 16;
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
         if (iid_is(iid, Steinberg::FUnknown_iid) || iid_is(iid, V::IParamValueQueue_iid)) {
             *obj = this;
@@ -387,9 +388,31 @@ public:
         id_ = id;
         count_ = 0;
     }
-    // The ring's semantics: the last value pushed before a block wins, and
-    // it applies from the block's first sample.
-    void set_first(V::ParamValue value) noexcept {
+    // A ring change at its frame offset (ADR-0012 §5.1). VST3 wants points
+    // in ascending offset order; a second change at the same offset replaces
+    // the first. Full: a change at or after the last point replaces it, so
+    // the block still ends on the newest value; an out-of-order one is
+    // refused and counted.
+    bool add_sorted(int32 offset, V::ParamValue value) noexcept {
+        int32 at = count_;
+        while (at > 0 && points_[at - 1].offset > offset) --at;
+        if (at > 0 && points_[at - 1].offset == offset) {
+            points_[at - 1].value = value;
+            return true;
+        }
+        if (count_ >= kMaxPoints) {
+            if (at != count_) return false;
+            points_[count_ - 1] = {offset, value};
+            return true;
+        }
+        for (int32 k = count_; k > at; --k) points_[k] = points_[k - 1];
+        points_[at] = {offset, value};
+        ++count_;
+        return true;
+    }
+    // A last-value table value: from the first sample, and nothing queued
+    // before it in this block survives (contracts/plugin, auditor L1).
+    void set_only(V::ParamValue value) noexcept {
         points_[0] = {0, value};
         count_ = 1;
     }
@@ -406,10 +429,15 @@ private:
 
 class ParamChanges final : public V::IParameterChanges {
 public:
-    // As many distinct ParamIDs as the ring can deliver in one block (the
-    // host drains at most that many per block), so set() from the ring
-    // never runs out of room.
-    static constexpr int32 kMaxQueues = static_cast<int32>(plugin::kParamRingCapacity);
+    // Not RT. Input side: one queue per dense parameter, so a block in which
+    // the whole last-value table is re-applied still has room. Output side:
+    // a fixed number of queues the plugin may fill.
+    void reserve(int32 queues, uint32_t dense_count) {
+        queues_.assign(static_cast<std::size_t>(std::max<int32>(queues, 1)), ParamQueue{});
+        dense_of_.assign(queues_.size(), -1);
+        slot_of_.assign(dense_count, -1);
+        used_ = 0;
+    }
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
         if (iid_is(iid, Steinberg::FUnknown_iid) || iid_is(iid, V::IParameterChanges_iid)) {
             *obj = this;
@@ -429,22 +457,37 @@ public:
                 index = i;
                 return &queues_[i];
             }
-        if (used_ >= kMaxQueues) return nullptr;
-        queues_[used_].reset(id);
+        if (used_ >= static_cast<int32>(queues_.size())) return nullptr;
+        queues_[static_cast<std::size_t>(used_)].reset(id);
         index = used_;
-        return &queues_[used_++];
+        return &queues_[static_cast<std::size_t>(used_++)];
     }
-    bool set(V::ParamID id, V::ParamValue value) noexcept {
-        int32 index = 0;
-        ParamQueue* q = static_cast<ParamQueue*>(addParameterData(id, index));
-        if (!q) return false;
-        q->set_first(value);
-        return true;
+    // Input side, by dense index: the queue for this block, made on first use.
+    ParamQueue* queue_for(uint32_t dense, V::ParamID id) noexcept {
+        if (dense >= slot_of_.size()) return nullptr;
+        int32 s = slot_of_[dense];
+        if (s < 0) {
+            if (used_ >= static_cast<int32>(queues_.size())) return nullptr;
+            s = used_++;
+            queues_[static_cast<std::size_t>(s)].reset(id);
+            slot_of_[dense] = s;
+            dense_of_[static_cast<std::size_t>(s)] = static_cast<int32>(dense);
+        }
+        return &queues_[static_cast<std::size_t>(s)];
     }
-    void clear() noexcept { used_ = 0; }
+    void clear() noexcept {
+        for (int32 i = 0; i < used_; ++i) {
+            int32& d = dense_of_[static_cast<std::size_t>(i)];
+            if (d >= 0) slot_of_[static_cast<std::size_t>(d)] = -1;
+            d = -1;
+        }
+        used_ = 0;
+    }
 
 private:
-    ParamQueue queues_[kMaxQueues];
+    std::vector<ParamQueue> queues_;
+    std::vector<int32> dense_of_;  // queue -> dense index, or -1
+    std::vector<int32> slot_of_;   // dense index -> queue this block, or -1
     int32 used_ = 0;
 };
 
@@ -724,11 +767,19 @@ public:
                 p.min = 0.f;
                 p.max = 1.f;
                 p.def = static_cast<float>(pi.defaultNormalizedValue);
-                if (p.input) writable_.push_back(pi.id);
+                if (p.input) {
+                    if ((pi.flags & V::ParameterInfo::kIsBypass) && bypass_dense_ < 0)
+                        bypass_dense_ = static_cast<int>(dense_ids_.size());
+                    by_id_.push_back({pi.id, static_cast<uint32_t>(dense_ids_.size())});
+                    dense_ids_.push_back(pi.id);
+                    dense_ports_.push_back(info_.ports.size());
+                }
                 info_.ports.push_back(std::move(p));
             }
-            std::sort(writable_.begin(), writable_.end());
+            std::sort(by_id_.begin(), by_id_.end());
         }
+        in_changes_.reserve(static_cast<int32>(dense_ids_.size()), static_cast<uint32_t>(dense_ids_.size()));
+        out_changes_.reserve(kOutputQueues, 0);
         // The default arrangement, for a describe-only start(); negotiate()
         // replaces it with the one agreed.
         read_arrangements(inst_[0]);
@@ -971,24 +1022,43 @@ public:
         validated();
     }
 
-    bool set_param(uint32_t id, float value) noexcept override {
-        if (!std::binary_search(writable_.begin(), writable_.end(), id)) return false;
-        if (!std::isfinite(value)) return false;
-        return in_changes_.set(id, std::clamp(static_cast<double>(value), 0.0, 1.0));
+    uint32_t param_count() const noexcept override { return static_cast<uint32_t>(dense_ids_.size()); }
+
+    // At its frame offset, normalised and clamped to [0, 1] (ADR-0012 §5.2).
+    bool set_param(uint32_t dense, float value, uint32_t offset) noexcept override {
+        if (dense >= dense_ids_.size() || !std::isfinite(value)) return false;
+        ParamQueue* q = in_changes_.queue_for(dense, dense_ids_[dense]);
+        return q && q->add_sorted(static_cast<int32>(offset), std::clamp(static_cast<double>(value), 0.0, 1.0));
     }
 
-    bool param_id(const std::string& symbol, uint32_t& id) const override {
+    bool replace_param(uint32_t dense, float value) noexcept override {
+        if (dense >= dense_ids_.size() || !std::isfinite(value)) return false;
+        ParamQueue* q = in_changes_.queue_for(dense, dense_ids_[dense]);
+        if (!q) return false;
+        q->set_only(std::clamp(static_cast<double>(value), 0.0, 1.0));
+        return true;
+    }
+
+    bool param_index(const std::string& symbol, uint32_t& dense) const override {
         if (!symbol.empty() && symbol[0] == '#') {
-            id = static_cast<uint32_t>(std::strtoul(symbol.c_str() + 1, nullptr, 10));
-            return std::binary_search(writable_.begin(), writable_.end(), id);
+            const auto id = static_cast<uint32_t>(std::strtoul(symbol.c_str() + 1, nullptr, 10));
+            const auto it = std::lower_bound(by_id_.begin(), by_id_.end(), std::make_pair(id, 0u));
+            if (it == by_id_.end() || it->first != id) return false;
+            dense = it->second;
+            return true;
         }
-        for (const PortInfo& p : info_.ports)
-            if (p.kind == PortKind::Control && p.input && p.symbol == symbol) {
-                id = p.index;
+        for (std::size_t d = 0; d < dense_ids_.size(); ++d)
+            if (info_.ports[dense_ports_[d]].symbol == symbol) {
+                dense = static_cast<uint32_t>(d);
                 return true;
             }
         return false;
     }
+
+    std::string param_key(uint32_t dense) const override { return std::to_string(dense_ids_[dense]); }
+    std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].symbol; }
+    float param_default(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].def; }
+    int bypass_param() const noexcept override { return bypass_dense_; }
 
 private:
     struct Instance {
@@ -1120,7 +1190,13 @@ private:
     bool keyed_ = false;  // it reads the chain's key channels
     std::vector<std::vector<float>> aux_in_, aux_out_;
     std::vector<float> trap_;
-    std::vector<uint32_t> writable_;  // sorted ParamIDs the engine may set
+    // The dense parameter list: writable ParamIDs in controller order, where
+    // each sits in info_.ports, and (ParamID, dense) sorted for "#id".
+    std::vector<uint32_t> dense_ids_;
+    std::vector<std::size_t> dense_ports_;
+    std::vector<std::pair<uint32_t, uint32_t>> by_id_;
+    int bypass_dense_ = -1;  // the kIsBypass parameter, if any
+    static constexpr int32 kOutputQueues = 256;
     std::atomic<uint32_t> latency_{0};  // written by the main thread, read by the processing one
 };
 

@@ -48,6 +48,7 @@ struct PluginInfo {
     int64_t latency_frames = -1;   // VST3 --list: getLatencySamples at 48 kHz / 128
     std::vector<std::string> required_features;
     std::vector<std::string> missing_features;  // required and not provided
+    int enabled_port = -1;  // LV2: the input port designated lv2:enabled
 };
 
 struct ChainConfig {
@@ -101,12 +102,31 @@ public:
     // phase mode, a limiter's look-ahead) does, and re-reads the latency.
     // False when an instance refused to activate again: it must not run.
     virtual bool reactivate() = 0;
-    // A parameter change from the ring, applied to the next run(). `id` is
-    // the LV2 port index or the VST3 ParamID. False when the id is not a
-    // writable parameter of this plugin.
-    virtual bool set_param(uint32_t id, float value) noexcept = 0;
-    // A parameter by name, for --set: LV2 port symbol, VST3 title or "#id".
-    virtual bool param_id(const std::string& symbol, uint32_t& id) const = 0;
+    // Parameters by DENSE index (contracts/plugin, "Parameters"): the
+    // writable parameters in the plugin's own order. LV2: input control
+    // ports by port index. VST3: writable parameters in controller order.
+    virtual uint32_t param_count() const noexcept = 0;
+    // A change for the next run(), at frame `offset` inside it. The value is
+    // format-native (LV2 plain, VST3 normalised). LV2 applies it at the
+    // block start (ADR-0012 §5.1). False when `dense` is out of range or the
+    // value is not finite; the caller counts it.
+    virtual bool set_param(uint32_t dense, float value, uint32_t offset) noexcept = 0;
+    // A last-value table value: from the block start, superseding any change
+    // already queued for this parameter in the next run().
+    virtual bool replace_param(uint32_t dense, float value) noexcept { return set_param(dense, value, 0); }
+    // A parameter by name, for --set: LV2 port symbol, VST3 title or "#ParamID".
+    virtual bool param_index(const std::string& symbol, uint32_t& dense) const = 0;
+    // The stable key the session file stores (ADR-0012 §6.1): LV2 port
+    // symbol, VST3 ParamID in decimal. And the default, as described.
+    virtual std::string param_key(uint32_t dense) const = 0;
+    // The name --set takes for it: LV2 port symbol, VST3 title.
+    virtual std::string param_symbol(uint32_t dense) const = 0;
+    virtual float param_default(uint32_t dense) const = 0;
+    // The plugin's own bypass parameter (VST3 kIsBypass, LV2 lv2:enabled),
+    // as a dense index, or -1 when the host bypasses it with a delay line.
+    virtual int bypass_param() const noexcept { return -1; }
+    // The value of bypass_param() for bypassed or not.
+    virtual float bypass_value(bool bypassed) const noexcept { return bypassed ? 1.f : 0.f; }
 
 protected:
     PluginInfo info_;
