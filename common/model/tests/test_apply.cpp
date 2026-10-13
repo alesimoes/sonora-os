@@ -140,6 +140,33 @@ int test_punch_in_and_undo() {
     return 0;
 }
 
+// A split inside a crossfade's span breaks it: the spec drops the crossfade
+// and splits, as Trim, Move and Remove do, rather than refusing the split.
+int test_split_inside_a_crossfade_drops_it() {
+    Base b;
+    CHECK(make_base(b) == 0);
+    const Frames A = 200000, B = 300000, H = 48000, X = 240;
+    Ids ids(b.h.current());
+    const AddSource take = add_source(ids, (B - A) + 2 * H, 1, b.track);
+    CHECK_APPLY(b.h, take);
+    const Id n = ids();
+    RecordTake op;
+    op.track = b.track;
+    op.playlist = b.playlist;
+    op.region = region(n, take.source.id, A, B - A, H);
+    op.split_right_id = ids();
+    op.crossfades = {Crossfade{b.r, n, X, Align::Centre, FadeShape::EqualPower}};
+    CHECK_APPLY(b.h, op);
+    CHECK(playlist_of(b.h.current(), 0).crossfades.size() == 1);
+
+    CHECK_APPLY(b.h, (SplitRegion{b.playlist, n, A + 50, b.h.current().next_id}));
+    const Playlist& p = playlist_of(b.h.current(), 0);
+    CHECK(p.regions.size() == 4);
+    CHECK(p.crossfades.empty());
+    CHECK(invariants_hold(b.h.current()));
+    return 0;
+}
+
 int test_crossfade_without_handle_is_refused() {
     Base b;
     CHECK(make_base(b) == 0);
@@ -393,6 +420,7 @@ int main() {
     t(test_overwrite_four_cases);
     t(test_split_needs_an_id);
     t(test_punch_in_and_undo);
+    t(test_split_inside_a_crossfade_drops_it);
     t(test_crossfade_without_handle_is_refused);
     t(test_record_take_on_the_wrong_track);
     t(test_move_trim_split_remove);

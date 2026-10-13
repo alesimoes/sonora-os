@@ -338,7 +338,9 @@ public:
             if (!fresh(op.new_right_id)) return false;
             bool used = false;
             // A split is an overwrite of the empty range [at, at).
-            return overwrite(p, op.at, op.at, op.new_right_id, used, error_);
+            if (!overwrite(p, op.at, op.at, op.new_right_id, used, error_)) return false;
+            drop_broken_crossfades(p, *before_.sources);
+            return true;
         });
         if (ok) after_.next_id = op.new_right_id + 1;
         return ok;
