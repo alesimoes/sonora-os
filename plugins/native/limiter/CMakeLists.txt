@@ -9,3 +9,7 @@ target_link_libraries(sonora_native_limiter_suite PUBLIC sonora_native_limiter s
 sonora_native_quality_test(limiter)
 # Slow: the stress set at every rate and ceiling. See common/dsp/CMakeLists.txt.
 set_tests_properties(native_limiter PROPERTIES LABELS slow)
+
+# The LV2 and VST3 bundles (ADR-0011 N1).
+sonora_native_plugin(limiter FACTORY make_limiter DISPLAY "Sonora Limiter" UID SNlm
+  LV2_CATEGORY "lv2:LimiterPlugin" VST3_CATEGORIES "Fx|Dynamics")

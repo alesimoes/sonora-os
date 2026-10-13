@@ -135,13 +135,19 @@ void unity_and_mix(Suite& s) {
 
 }  // namespace
 
+// The golden configuration, shared with the host tests (sonora-dsp-measure
+// --host-fixture): the bundles are rendered through Sonora's hosts with it.
+measure::Config compressor_golden_config() {
+    return {{"threshold", -24.0f}, {"ratio", 3.0f}, {"knee", 6.0f}, {"attack", 5.0f},
+            {"release", 120.0f}, {"makeup", 4.0f}, {"sc_hpf_on", 1.0f}, {"mix", 80.0f}};
+}
+
 int compressor(const measure::Args& args) {
     Suite s("compressor", [] { return make_compressor(); }, args);
     static_curve(s);
     attack_release(s);
     unity_and_mix(s);
-    const Config golden = {{"threshold", -24.0f}, {"ratio", 3.0f}, {"knee", 6.0f}, {"attack", 5.0f},
-                           {"release", 120.0f}, {"makeup", 4.0f}, {"sc_hpf_on", 1.0f}, {"mix", 80.0f}};
+    const Config golden = compressor_golden_config();
     const Config zipper = {{"threshold", -18.0f}, {"ratio", 4.0f}};
     measure::check_common(s, golden, {{"default", {}}, {"RMS, linked 50 %", {{"detector", 1.0f}, {"link", 50.0f}}}},
                           &zipper);

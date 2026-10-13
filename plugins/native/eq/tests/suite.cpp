@@ -172,14 +172,20 @@ void thd(Suite& s) {
 
 }  // namespace
 
+// The golden configuration, shared with the host tests (sonora-dsp-measure
+// --host-fixture): the bundles are rendered through Sonora's hosts with it.
+measure::Config eq_golden_config() {
+    return {{"bell1_freq", 120.0f}, {"bell1_gain", 6.0f}, {"bell2_freq", 900.0f},
+            {"bell2_gain", -4.0f}, {"bell2_q", 3.0f}, {"high_shelf_gain", 4.0f},
+            {"hpf_on", 1.0f}, {"hpf_freq", 40.0f}};
+}
+
 int eq(const measure::Args& args) {
     Suite s("eq", [] { return make_eq(); }, args);
     response(s, 1.0f, "analog matched (2x)", true);
     response(s, 0.0f, "zero latency (1x)", false);
     thd(s);
-    const Config golden = {{"bell1_freq", 120.0f}, {"bell1_gain", 6.0f}, {"bell2_freq", 900.0f},
-                           {"bell2_gain", -4.0f}, {"bell2_q", 3.0f}, {"high_shelf_gain", 4.0f},
-                           {"hpf_on", 1.0f}, {"hpf_freq", 40.0f}};
+    const Config golden = eq_golden_config();
     // Every band audible, so each sweep moves something the tone hears.
     const Config zipper = {{"hpf_on", 1.0f}, {"hpf_freq", 30.0f}, {"lpf_on", 1.0f},
                            {"low_shelf_gain", 6.0f}, {"high_shelf_gain", -6.0f},

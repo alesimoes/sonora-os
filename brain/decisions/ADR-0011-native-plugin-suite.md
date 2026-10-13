@@ -995,6 +995,9 @@ unless stated otherwise. Several are expected in the forthcoming
 
 1. **Licences.**
    - DPF's licence, as of the pinned commit, for the LV2 and VST3 parts.
+     **Settled 2026-10-13**: ISC at `4238e1c`, LV2 headers ISC, VST3 via
+     DPF's own ISC "travesty" headers; only those parts are vendored
+     (`plugins/native/format/third_party/dpf/SONORA.md`).
    - Steinberg's VST3 SDK under MIT since 3.8, as reported 2025-10-29: read
      the text in the current distribution. **Settled 2026-10-13**: MIT
      confirmed from Steinberg's press release and the repository's
@@ -1006,6 +1009,11 @@ unless stated otherwise. Several are expected in the forthcoming
 2. **DPF's VST3 against Steinberg's `validator`.** It is reported as an
    independent implementation. Its conformance today is unknown. This is
    settled by the N1 checkpoint (§1.2), run by the dsp-engineer.
+   **Measured 2026-10-13** (`brain/research/native-format-n1.md`): DPF at
+   `4238e1c` passed 46 of validator 3.8.1's 47 tests; "Parameter Bypass
+   persistence" failed on a DPF bug in UI-less plugins. With a 9-line
+   local patch, 47 of 47 for all six bundles. The §1.2 fallback (the MIT
+   SDK) was therefore not taken; that call is the coordinator's to confirm.
 3. **ONNX Runtime on Debian trixie.** Whether it is packaged, at which
    version, and its installed size. If it is not packaged, the build cost
    of vendoring it. Also its Windows availability under MSVC, for

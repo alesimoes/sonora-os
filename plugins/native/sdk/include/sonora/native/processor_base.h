@@ -56,7 +56,7 @@ public:
     void process(const AudioBuffers& io, const ParamEvent* events, std::uint32_t event_count,
                  const Transport& transport) noexcept SONORA_RT final;
     float param(std::uint32_t index) const noexcept final;
-    bool set_param(std::uint32_t index, float value) noexcept final;
+    bool set_param(std::uint32_t index, float value) noexcept SONORA_RT final;
 
     // How many blocks were silenced because the output went non-finite.
     std::uint64_t nonfinite_blocks() const noexcept { return nonfinite_blocks_; }

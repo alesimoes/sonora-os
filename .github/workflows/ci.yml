@@ -164,6 +164,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
+      # The image builds lv2lint and Steinberg's VST3 validator from source
+      # (Debian packages neither), which takes minutes; its layers are
+      # cached in the Actions cache like the UI image's.
+      - name: Build the sonora-plugins image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.plugins
+          tags: sonora-plugins:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-plugins
+          cache-to: type=gha,scope=sonora-plugins,mode=max
+
       # The engine job has no lilv, so plugins/host is skipped there. This
       # builds the whole root in the sonora-plugins image (lilv, eg-amp,
       # x42-dpl, the LSP limiter; the VST3 headers, AGain and the LSP
@@ -172,7 +188,13 @@ jobs:
       # A missing Debian plugin fails the job rather than skipping
       # (SONORA_PLUGIN_TESTS_ALLOW_SKIP is OFF), and missing VST3 headers
       # fail the configure step (SONORA_REQUIRE_VST3=ON).
-      - name: Build and test the plugin host
+      # Sonora's own bundles (ADR-0011 N1) are loaded through the same host,
+      # LV2 and VST3, and compared with the N0 reference renders; lv2lint and
+      # the VST3 validator judge every bundle, and their absence fails the
+      # configure step (SONORA_REQUIRE_PLUGIN_VALIDATORS=ON).
+      - name: Build and test the plugin host and the native bundles
+        env:
+          SONORA_PLUGINS_IMAGE_BUILT: "1"
         run: tools/build-plugins.sh
 
   modes:
