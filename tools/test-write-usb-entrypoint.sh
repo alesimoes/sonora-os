@@ -120,6 +120,12 @@ accepts() {
 sh_identity() { SYS_BLOCK="$1"; device_identity "$2"; }
 # write-usb.sh's partition step, as its main body runs it.
 add_and_find() { add_partition_to_kernel "$1" && find_partition "$2" "$3"; }
+# fd_is_device on descriptor 9, closed or open on a regular file. NAME is
+# write-usb.sh's, read by fd_is_device.
+# shellcheck disable=SC2034
+fd_check_closed() { NAME="$1"; exec 9<&-; fd_is_device 9; }
+# shellcheck disable=SC2034
+fd_check_regular() { NAME="$1"; exec 9</etc/hostname; fd_is_device 9; }
 rejects() {
   local label="$1" why
   shift
@@ -136,6 +142,47 @@ rejects() {
 seed_intact() {
   [[ "$(blkid -p -o value -s PTTYPE "$LOOP")" == gpt \
      && "$(blkid -p -o value -s TYPE "${LOOP}p1")" == ext4 ]]
+}
+
+# A recognisable pattern in the stick's last MiB, short of the backup GPT in
+# its last 33 sectors. The old wipefs only erased signatures libblkid knew;
+# the writer now zeroes the whole last MiB, and this shows that it did.
+SEED_TAIL=SONORA-SEED-TAIL
+seed_tail() {
+  local sectors
+  sectors="$(blockdev --getsz "$1")"
+  # yes dies of SIGPIPE, which pipefail would report; hence the redirection.
+  head -c 524288 < <(yes "$SEED_TAIL") \
+    | dd of="$1" bs=512 seek=$(( sectors - 2048 )) conv=notrunc,fsync status=none
+}
+tail_has_seed() {
+  local sectors
+  sectors="$(blockdev --getsz "$1")"
+  # grep -c, not -q: -q stops reading at the first match, dd dies of SIGPIPE,
+  # and pipefail turns a found pattern into "not found".
+  [[ "$(dd if="$1" bs=512 skip=$(( sectors - 2048 )) count=2048 status=none | grep -ac "$SEED_TAIL")" != 0 ]]
+}
+
+# Another process holding an exclusive BSD lock on the stick, as a
+# partitioning tool does.
+LOCK_PID=""
+# Not `flock DEV sleep 60 &`: the lock then lives in the sleep child, killing
+# flock leaves it held, and the next write in this file waited it out and
+# failed. Here the process holding the descriptor is the one whose PID we
+# have.
+lock_elsewhere() {
+  ( exec 7>&- 8<"$LOOP"; flock -x 8; exec sleep 60 ) &
+  LOCK_PID=$!
+  sleep 0.5
+}
+unlock_elsewhere() {
+  [[ -n "$LOCK_PID" ]] && { kill "$LOCK_PID" 2>/dev/null || true; wait "$LOCK_PID" 2>/dev/null || true; }
+  LOCK_PID=""
+  if flock -n -x "$LOOP" true; then
+    ok "the test's own lock on $LOOP is released"
+  else
+    bad "the test's own lock on $LOOP is still held"
+  fi
 }
 
 # Mounts partition 1 of the stick in a private mount namespace, where this
@@ -245,6 +292,13 @@ verify_stick() {
     test "$(cat /mnt/p3/persistence.conf)" == "/home union"
   umount /mnt/p3
 
+  # Seeded into the last MiB before the first write; see seed_tail.
+  if tail_has_seed "$loop"; then
+    bad "$when: the pattern seeded into the last MiB survived; the end of the device was not wiped"
+  else
+    ok "$when: nothing seeded into the last MiB survives"
+  fi
+
   # A stale GPT from the stick's previous life would sit in the last sector.
   if dd if="$loop" bs=512 skip=$(( $(blockdev --getsz "$loop") - 1 )) count=1 status=none \
        | grep -q "EFI PART"; then
@@ -271,6 +325,9 @@ write)
   attach BIG_LOOP "$BIG"
   info "stick image $STICK ($SIZE, sparse) on $LOOP"
   mkfs.ext4 -q -F "${LOOP}p1"
+  seed_tail "$LOOP"
+  expect "precondition: the seed pattern is in the stick's last MiB" \
+    "precondition failed: no seed pattern in the last MiB" tail_has_seed "$LOOP"
 
   echo "--- refusals ---"
   # The container's root disk is the one under /etc/hosts; / itself is an
@@ -368,6 +425,43 @@ write)
     "--allow-large did not reach the prompt for a 257 GiB device" \
     test "$(printf '%s\n' "$out" | grep -c -e "Target device (275 GB)" -e "aborted.")" == 2
 
+  # Third review: a write-protected SD card failed only at the open after the
+  # prompt, with EROFS. A read-only loop is what the kernel reports for one.
+  attach RO_LOOP -r "$STICK"
+  info "read-only loop $RO_LOOP reports ro=$(cat "/sys/class/block/$(basename "$RO_LOOP")/ro")"
+  refuse "a write-protected device (ro=1), before the prompt" "is write-protected" "$RO_LOOP" "$STICK"
+  losetup -d "$RO_LOOP"
+
+  # Third review: the in-use probe called every failure "in use". Only EBUSY
+  # is; a vanished node or an absent medium must say so instead.
+  probe_says() {
+    local label="$1" path="$2" want="$3" out
+    if out="$(in_writer exclusive_verdict "$path" 2>&1)"; then
+      bad "exclusive_verdict accepted $label"
+    elif [[ "$out" == *"$want"* ]]; then
+      ok "exclusive_verdict on $label says: ${out%%.*}"
+    else
+      bad "exclusive_verdict on $label: $out"
+    fi
+  }
+  probe_says "a path that does not exist (ENOENT)" /dev/sonora-no-such-disk \
+    "cannot be opened (No such file or directory)"
+  # sd major 8, last minor: a node with no device behind it.
+  rm -f /tmp/absent-disk
+  mknod /tmp/absent-disk b 8 255
+  probe_says "a node with no device behind it (ENXIO)" /tmp/absent-disk "cannot be opened (No such device"
+  rm -f /tmp/absent-disk
+
+  # Third review: fd_is_device did $((16#$maj)) on whatever stat printed, so a
+  # closed descriptor became a bash arithmetic error, not a clean "no".
+  for fdcase in closed regular; do
+    rc=0
+    out="$(in_writer "fd_check_$fdcase" "$(basename "$LOOP")" 2>&1)" || rc=$?
+    expect "fd_is_device says no, quietly, for a descriptor that is $fdcase" \
+      "fd_is_device on a $fdcase descriptor: rc=$rc, output '$out'" \
+      test "$rc" != 0 -a -z "$out"
+  done
+
   # Review finding: lsblk is blind to other mount namespaces. The kernel's
   # exclusive-open check is not.
   mount_elsewhere
@@ -398,6 +492,11 @@ write)
   during_prompt "the device was mounted elsewhere while the prompt waited" \
     "in use by something this namespace cannot see" mount_elsewhere
   unmount_elsewhere
+  # Third review: the writer now holds flock -x on the disk while writing, so
+  # udev leaves it alone. It must not write while someone else holds one.
+  during_prompt "another process held an exclusive lock on the device" \
+    "could not lock" lock_elsewhere
+  unlock_elsewhere
 
   # Review finding: on a desktop, udev re-reads the table when dd closes the
   # device and udisks mounts the fresh image, so BLKRRPART fails with EBUSY
@@ -463,7 +562,7 @@ write)
   ln -sfn "$LOOP" /tmp/by-label/OLDSTICK
   rm -f /work/answer
   mkfifo /work/answer
-  ( SONORA_WRITE_USB_TEST_IMAGE="$STICK" strace -f -qq -e trace=openat,ioctl -o /work/write1.strace \
+  ( SONORA_WRITE_USB_TEST_IMAGE="$STICK" strace -f -qq -e trace=openat,ioctl,flock -o /work/write1.strace \
       bash "$WRITER" /tmp/by-label/OLDSTICK < /work/answer > /work/write1.log 2>&1
     echo "exit=$?" >> /work/write1.log ) &
   w_pid=$!
@@ -481,15 +580,29 @@ write)
     grep -q "^exit=0$" /work/write1.log
   tr '\r' '\n' < /work/write1.log | grep -v -e "bytes .* copied" -e '^$' | sed 's/^/WRITE-USB info    /'
 
-  # The script's own descriptor (O_RDWR without O_EXCL, from exec 3<>) must
-  # be opened before wipefs's O_RDWR|O_EXCL open, so that the identity check
-  # between them covers both.
-  first_fd="$(grep -n "\"$LOOP\", O_RDWR" /work/write1.strace | grep -v O_EXCL | head -1 | cut -d: -f1)"
-  wipefs_open="$(grep -n "\"$LOOP\", O_RDWR|O_EXCL" /work/write1.strace | head -1 | cut -d: -f1)"
-  info "strace line of the script's write descriptor: ${first_fd:-none}; of wipefs's exclusive open: ${wipefs_open:-none}"
-  expect "the write descriptors are opened before wipefs, inside the identity bracket" \
-    "wipefs opened the device before the script's descriptors" \
-    test -n "$first_fd" -a -n "$wipefs_open" -a "${first_fd:-0}" -lt "${wipefs_open:-0}"
+  # Third review. Every write to the whole disk must go through the descriptor
+  # the script verified, never through a fresh lookup of its name: a device
+  # that takes the name in between must not be touchable. And no open of the
+  # name may carry O_CREAT, which would turn a vanished node into a regular
+  # file in /dev.
+  info "opens of $LOOP by name: $(grep -c "\"$LOOP\"" /work/write1.strace)"
+  grep "\"$LOOP\"\|/proc/self/fd/[345]\"\|flock(" /work/write1.strace \
+    | sed 's/^[0-9]* */WRITE-USB info    /' | head -30
+  expect "nothing opens $LOOP by name for writing" \
+    "a write-mode open of $LOOP by name: $(grep -m1 -E "\"$LOOP\", O_(RDWR|WRONLY)" /work/write1.strace)" \
+    sh -c "! grep -q -E '\"$LOOP\", O_(RDWR|WRONLY)' /work/write1.strace"
+  expect "no open of $LOOP carries O_CREAT" \
+    "an O_CREAT open of $LOOP: $(grep -m1 "\"$LOOP\".*O_CREAT" /work/write1.strace)" \
+    sh -c "! grep -q '\"$LOOP\".*O_CREAT' /work/write1.strace"
+  expect "the write descriptor is reopened from the verified read-only one (/proc/self/fd/4, O_RDWR)" \
+    "no O_RDWR open of /proc/self/fd/4" \
+    grep -q '"/proc/self/fd/4", O_RDWR' /work/write1.strace
+  lock_line="$(grep -n "flock(3, LOCK_EX" /work/write1.strace | head -1 | cut -d: -f1)"
+  wipe_line="$(grep -n '"/proc/self/fd/3", O_RDWR|O_EXCL' /work/write1.strace | head -1 | cut -d: -f1)"
+  info "strace line of flock -x on fd 3: ${lock_line:-none}; of the wipe's exclusive open: ${wipe_line:-none}"
+  expect "the disk is locked with flock -x before the first write, which is exclusive and through fd 3" \
+    "lock or exclusive wipe open missing, or in the wrong order" \
+    test -n "$lock_line" -a -n "$wipe_line" -a "${lock_line:-0}" -lt "${wipe_line:-0}"
   verify_stick "$LOOP" "first write"
 
   # Rewriting a stick that already carries SonoraOS is the common case for

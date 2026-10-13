@@ -134,14 +134,64 @@ container unless marked.
 - **Proving the write lands on the confirmed device.** diskseq is never
   reused. The writer opens its descriptors, checks that they are the device
   the name refers to, and checks that the name still has the confirmed
-  diskseq. `wipefs`, which can only take a path, runs between two such
-  checks; equal values on both sides mean the name pointed at that medium
-  the whole time. `dd` and the read-back write and read through the
-  descriptors. `wipefs --all` still re-reads the table successfully while
-  those descriptors are open (measured).
+  diskseq. From then on nothing that writes the whole disk looks up its name
+  (third review, 2026-10-13; was: `wipefs` by path between two identity
+  checks, which proved the name had not changed but not that wipefs opened
+  the same medium if the name was briefly something else). See "Writing only
+  through verified descriptors" below.
 - **Never re-resolve the argument.** `/dev/disk/by-label/<label>` is made
-  from content and disappears when `wipefs` erases that content. The writer
+  from content and disappears when the wipe erases that content. The writer
   resolves its argument once, at the start.
+
+## Writing only through verified descriptors
+
+Third review, 2026-10-13. Measured with strace in the same container
+(util-linux 2.41.5, e2fsprogs 1.47.2, perl-base 5.40), by
+`tools/test-write-usb.sh`.
+
+- **bash's `<>` adds O_CREAT.** strace of the old `exec 3<>"$DEV"`:
+  `openat(..., "/dev/loopN", O_RDWR|O_CREAT, 0666)`. Had the node vanished
+  in the window, that would have made a regular file in `/dev` and written
+  the image into RAM. The writer now opens fd 4 by path with `<` (O_RDONLY,
+  no O_CREAT), checks it, and opens fd 3 as `/proc/self/fd/4`. The trace
+  shows `"/proc/self/fd/4", O_RDWR|O_CREAT` -- harmless, the magic link
+  always exists while fd 4 is open -- and no open of `/dev/loopN` with
+  O_CREAT or for writing at all.
+- **`/proc/self/fd/N` is a way to hand a verified inode to a tool that wants
+  a path.** A child inherits fd 3; opening `/proc/self/fd/3` in the child
+  reopens that inode, whatever `/dev` says now. Measured to work for `sfdisk
+  --append` (opens it `O_RDWR|O_EXCL`), `mkfs.ext4` (`O_RDONLY|O_EXCL`, then
+  plain opens), `mount -t ext4` (source shown as the real partition),
+  `blkid` and `blockdev --flushbufs`.
+- **The wipe is perl on `/proc/self/fd/3` with O_RDWR|O_EXCL.** It zeroes the
+  first and last MiB (the reasons for each region are in `wipe_signatures`).
+  The exclusive open keeps the property `wipefs` had: refused if anything
+  claimed the device since the in-use check. The test seeds a pattern into
+  the last MiB of a used GPT stick and finds it gone, along with the backup
+  GPT header, after the write and after a rewrite.
+- **flock.** The writer holds `flock -x` on fd 3 from before the wipe until
+  the partition table is written (trace: `flock(3, LOCK_EX)` before the
+  wipe's open, `LOCK_UN` after sfdisk), so udev does not re-probe or
+  automount mid-write. It is released before the partition step, because
+  `udevadm settle` would otherwise wait on events udev defers while the lock
+  is held. With another process holding `flock -x` on the device during the
+  prompt, the writer gives up after 10 s and writes nothing (tested). That
+  udev honours the lock is systemd's documented behaviour, not observed
+  here: the container runs no udev.
+- **The partition is treated like the disk.** After `find_partition`, fd 5 is
+  opened on the partition node, checked against the major:minor sysfs lists
+  for that partition under the confirmed disk, the disk's diskseq is
+  rechecked, and `mkfs.ext4` and `mount` go through `/proc/self/fd/5`.
+- **errno, not "in use".** The probe reports EBUSY as in use and everything
+  else by name. Measured: a missing path gives "No such file or directory";
+  a node for sd major 8 minor 255 with no disk behind it gives "No such
+  device or address". ENOMEDIUM (a reader with no card) cannot be produced
+  in a container.
+- **Write-protected.** A read-only loop (`losetup -r`) shows `ro` = 1 in
+  sysfs, like an SD card with its lock switch on; the writer now refuses it
+  before the prompt by saying so. The check runs after the transport check,
+  because Docker Desktop's own VM disks `sda` and `sdb` also report `ro` = 1
+  and should be refused as what they are.
 
 ## Re-reading the table while the fresh image is mounted
 
