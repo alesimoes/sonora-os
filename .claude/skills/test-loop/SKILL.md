@@ -11,7 +11,7 @@ back or opening a PR. Never iterate on the full loop.
 | Area changed | Fast loop (iterate) | Full loop (once, at the end) |
 |---|---|---|
 | `common/`, `contracts/`, `engine/`, `drivers/`, `ui/` (C++ modules, ADR-0007) | `tools/build-engine.sh` (incremental, root CMake + ctest) | + `tools/test-engine-docker.sh` (seconds) |
-| `ui/qt` (Qt 6 shell) | no Qt build script on `main` yet: see the branch's handoff | see the branch's handoff |
+| `ui/qt` (Qt 6 shell) | `tools/build-ui.sh` (container, ctest incl. the Xvfb pixel test) | + `tools/build-ui.sh --measure` only if measured cost is the point (minutes) |
 | `iso/`, `audio-stack/` | inspect the built ISO with `xorriso` in the livebuild container | `tools/build-iso.sh` (about 10 min with cache), then `tools/test-boot-qemu.sh` (about 2 min) |
 | `tools/write-usb.sh` | `WRITE_USB_BOOT=0 tools/test-write-usb.sh` (about 2 min, container only) | `tools/test-write-usb.sh` (about 12 min, five QEMU boots) |
 | any `tools/*.sh` | `bash -n` on the file | shellcheck as CI runs it (below) |

@@ -1,58 +1,59 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "measure.h"
 
-#include <QDir>
-#include <QFile>
 #include <QMap>
 #include <QQuickWindow>
 #include <QTextStream>
 #include <algorithm>
+#include <chrono>
 #include <ctime>
-#include <unistd.h>
+
+#include "sonora/platform/thread_cpu.h"
 
 namespace sonora::ui {
 
 namespace {
 
 int64_t mono_ns() {
-    timespec ts{};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return int64_t(ts.tv_sec) * 1'000'000'000 + ts.tv_nsec;
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
 }
 
+// std::clock() is process CPU time on glibc (CLOCK_PROCESS_CPUTIME_ID), so the
+// column is unchanged on the appliance. MSVC's std::clock() is wall time; a
+// Windows build would need process CPU behind common/platform too.
 int64_t process_cpu_ns() {
-    timespec ts{};
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
-    return int64_t(ts.tv_sec) * 1'000'000'000 + ts.tv_nsec;
+    return int64_t(double(std::clock()) * (1e9 / double(CLOCKS_PER_SEC)));
 }
 
-// CPU time per thread name, from /proc. Threads of the same name (llvmpipe's
-// rasteriser pool) are summed, so the report says what kind of work cost what.
-QMap<QString, int64_t> threads_cpu_ns() {
-    QMap<QString, int64_t> out;
-    const long tick = sysconf(_SC_CLK_TCK);
-    const QDir dir(QStringLiteral("/proc/self/task"));
-    for (const QString& tid : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        QFile f(dir.filePath(tid + QStringLiteral("/stat")));
-        if (!f.open(QIODevice::ReadOnly)) continue;
-        const QString line = QString::fromLatin1(f.readAll());
-        const int open = line.indexOf(QLatin1Char('('));
-        const int close = line.lastIndexOf(QLatin1Char(')'));
-        if (open < 0 || close < 0) continue;
-        QString name = line.mid(open + 1, close - open - 1);
+// CPU time per thread name. Threads of the same name (llvmpipe's rasteriser
+// pool) are summed, so the report says what kind of work cost what.
+struct ThreadsCpu {
+    bool available = false;
+    QString unavailable_reason;
+    int64_t resolution_ns = 0;
+    QMap<QString, int64_t> by_name;
+};
+
+ThreadsCpu threads_cpu_ns() {
+    const platform::ThreadCpuTimes t = platform::thread_cpu_times();
+    ThreadsCpu out;
+    out.available = t.available;
+    out.unavailable_reason = QString::fromStdString(t.unavailable_reason);
+    out.resolution_ns = t.resolution_ns;
+    for (const platform::ThreadCpu& th : t.threads) {
+        QString name = QString::fromStdString(th.name);
         // "llvmpipe-3" and "llvmpipe-11" are one pool.
         while (!name.isEmpty() && (name.back().isDigit() || name.back() == QLatin1Char('-'))) {
             name.chop(1);
         }
-        const QStringList rest = line.mid(close + 2).split(QLatin1Char(' '));
-        if (rest.size() < 13) continue;
-        const int64_t ticks = rest[11].toLongLong() + rest[12].toLongLong();  // utime, stime
-        out[name] += ticks * (1'000'000'000 / tick);
+        out.by_name[name] += th.cpu_ns;
     }
     return out;
 }
 
-QMap<QString, int64_t> g_threads_at_begin;
+ThreadsCpu g_threads_at_begin;
 
 struct Pcts {
     double p50 = 0, p99 = 0, max = 0;
@@ -122,7 +123,7 @@ QString FrameMeter::report(const TickStats& ticks, const QString& label, int met
     running_.store(false, std::memory_order_release);
     const int64_t wall = mono_ns() - begin_wall_ns_;
     const int64_t cpu = process_cpu_ns() - begin_cpu_ns_;
-    const QMap<QString, int64_t> threads_end = threads_cpu_ns();
+    const ThreadsCpu threads_end = threads_cpu_ns();
     const std::size_t n = count_.load(std::memory_order_acquire);
 
     std::vector<int64_t> render, interval;
@@ -145,9 +146,15 @@ QString FrameMeter::report(const TickStats& ticks, const QString& label, int met
     s << QString::asprintf("  process CPU: %.1f %% of one core (%.3f s CPU over %.3f s)\n",
                            100.0 * double(cpu) / double(wall), double(cpu) / 1e9,
                            double(wall) / 1e9);
-    s << "  per thread (CPU % of one core, from /proc, 10 ms resolution):\n";
-    for (auto it = threads_end.begin(); it != threads_end.end(); ++it) {
-        const int64_t d = it.value() - g_threads_at_begin.value(it.key(), 0);
+    if (!threads_end.available || !g_threads_at_begin.available) {
+        s << "  per thread: unavailable (" << threads_end.unavailable_reason << ")\n";
+        return out;
+    }
+    s << QString::asprintf("  per thread (CPU %% of one core, %g ms resolution):\n",
+                           double(threads_end.resolution_ns) / 1e6);
+    const QMap<QString, int64_t>& end_by_name = threads_end.by_name;
+    for (auto it = end_by_name.begin(); it != end_by_name.end(); ++it) {
+        const int64_t d = it.value() - g_threads_at_begin.by_name.value(it.key(), 0);
         if (d <= 0) continue;
         s << QString::asprintf("    %-20s %6.1f %%\n", qPrintable(it.key()),
                                100.0 * double(d) / double(wall));

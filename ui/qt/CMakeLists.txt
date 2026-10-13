@@ -41,6 +41,8 @@ add_library(sonora_ui_qt STATIC
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
 target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+# Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
+target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
 qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml

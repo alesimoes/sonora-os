@@ -26,6 +26,8 @@ enable_testing()
 # to compile. Listed by layer; a module may only link the ones above it.
 add_subdirectory(common/base)
 add_subdirectory(common/audiofile)
+# The OS seam (ADR-0008). Linked only by modules that need an OS service.
+add_subdirectory(common/platform)
 add_subdirectory(contracts/api)
 add_subdirectory(engine/core)
 # Temporarily illegal until M2: drivers/jack links engine/core, because
