@@ -75,7 +75,9 @@ every binding, so a typo fails CI rather than a session.
 Phase 1 has no graphical interface, so the only input device is a raw-mode
 terminal, and a terminal sends bytes rather than key events. That is strictly
 less than a keyboard can express, and a binding the device cannot send is a
-key that does nothing however correct the file is. `sonora-engine` therefore
+key that does nothing however correct the file is. `sonora-tui` (which
+`sonora-engine --keymap PATH` starts on its terminal, passing the profile on)
+therefore
 checks, after loading a profile, that the commands an operator *must* have --
 arming a track, starting a take, stopping it, and leaving the engine -- are
 reachable from this device and implemented in this build. Where one is not, it

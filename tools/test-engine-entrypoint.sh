@@ -41,6 +41,48 @@ grep -q "^RESULT files=18 connected=18 " /tmp/fake-backend.out || {
 python3 /usr/local/bin/verify-recording.py --check "$FAKE_DIR/Audio Files" \
   --tracks 18 --rate 48000 --seconds 2
 
+echo "--- the engine as a process, an interface on its socket (ADR-0007 M7) ---"
+# sonora-engine serves its control socket and the memfd state block;
+# sonora-ctl, a separate process, arms, records, stops and asks for
+# playback through the socket alone, checking the state block at each step.
+# Then the files are judged by the same verifier, so the take an interface
+# drove from outside is proven channel for channel.
+if [[ -f /engine-build/sonora-ctl ]]; then
+  cp /engine-build/sonora-ctl /tmp/sonora-ctl
+  chmod 0755 /tmp/sonora-ctl
+  E2E_DIR=/home/sonora/Sessions/e2e
+  E2E_SOCK=/tmp/sonora-e2e/engine.sock
+  rm -rf "$E2E_DIR"
+  "$ENGINE_BIN" --backend fake --dir "$E2E_DIR" --tracks auto --headless \
+    --control-socket "$E2E_SOCK" >/tmp/e2e-engine.out 2>/tmp/e2e-engine.err &
+  E2E_PID=$!
+  /tmp/sonora-ctl --control-socket "$E2E_SOCK" take 2.5 >/tmp/e2e-ctl.out 2>&1 || {
+    echo "FAIL: the socket client's take failed" >&2
+    cat /tmp/e2e-ctl.out /tmp/e2e-engine.out /tmp/e2e-engine.err >&2
+    kill "$E2E_PID" 2>/dev/null || true
+    exit 1
+  }
+  cat /tmp/e2e-ctl.out
+  /tmp/sonora-ctl --control-socket "$E2E_SOCK" state
+  kill -TERM "$E2E_PID"
+  set +e
+  wait "$E2E_PID"
+  E2E_RC=$?
+  set -e
+  [[ "$E2E_RC" == "0" ]] || {
+    echo "FAIL: the engine exited $E2E_RC after SIGTERM" >&2
+    cat /tmp/e2e-engine.err >&2
+    exit 1
+  }
+  [[ ! -e "$E2E_SOCK" ]] || { echo "FAIL: the engine left its socket behind" >&2; exit 1; }
+  python3 /usr/local/bin/verify-recording.py --check "$E2E_DIR/Audio Files" \
+    --tracks 18 --rate 48000 --seconds 2
+  echo "PROCESS SPLIT PASS"
+else
+  echo "FAIL: no sonora-ctl beside the engine" >&2
+  exit 1
+fi
+
 export XDG_RUNTIME_DIR=/tmp/runtime
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"

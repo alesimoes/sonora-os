@@ -1618,3 +1618,89 @@ rt-safety-auditor's, before it merges.
    - An unpaced writer: about 600,000 reads in 400 ms, a few dozen stale,
      0 torn.
    - The publisher at a 1 ms period: 200 publishes in 200 ms.
+
+## Update, 2026-10-13: the process split as landed (M7)
+
+Source: branch `feature/process-split`. §3 is now how the product runs.
+Where this note and the headers differ, the headers are the contract.
+
+1. **The platform seam (ADR-0008 P9).** `common/platform` gains `ipc.h`
+   (`ControlListener`, `ControlChannel`, `SharedRegion`,
+   `default_control_endpoint()`) and `process.h` (`ChildProcess`,
+   `executable_dir()`). POSIX: `AF_UNIX` `SOCK_SEQPACKET`, `MSG_NOSIGNAL`;
+   a memfd sealed `F_SEAL_SHRINK|GROW|FUTURE_WRITE|SEAL` after the engine's
+   own mapping, passed with `SCM_RIGHTS` as a descriptor reopened
+   `O_RDONLY`, mapped `PROT_READ`. The kernel refuses a client's
+   `mprotect(PROT_WRITE)` with `EACCES` (`platform_ipc` checks it). Extra
+   descriptors a peer sends are closed; a datagram over the receiver's size
+   is an error, never a truncation. The `unsupported` implementation fails
+   every call with a reason. `engine/control` and `ui/client` contain no
+   socket or mapping code.
+2. **The engine side.** `EngineControlServer` takes any number of clients
+   (`attach`, `deliver`, `detach`). A reply goes to its asker, events and
+   model updates to all, a `Resync` snapshot to the asker. A late client
+   gets Hello, the Snapshot (undo window included), then the events that
+   still stand: notices, missing inputs, a failed take, a fatal backend. A
+   client whose frames or messages do not decode, or that sends a message
+   only the engine sends, is refused and disconnected; nothing it sent
+   reaches the session. `ControlSocketServer` gives each connection a reader
+   and a writer thread, so the control thread never waits on a client; a
+   client that stops reading is dropped past `kMaxMessageBytes + 16 MiB`
+   queued. The state block lives in `Options::state_memory`, the memfd.
+   **Nothing was added to `Session::process()` or anything it calls**; the
+   socket threads and the publisher are off the audio thread.
+3. **`sonora-engine` is headless** outside `--record`. It listens on
+   `--control-socket` or `$XDG_RUNTIME_DIR/sonora/engine.sock`, and refuses
+   to start while another engine answers there (a dead engine's socket file
+   is replaced). On a terminal, unless `--headless`, it starts `sonora-tui`
+   from beside itself as a **child process**: its quit key (exit 0) ends the
+   session, as on tty1 before; its crash does not, and it is restarted
+   while the take goes on. This keeps `sonora-session.service` and the
+   bwf-interop pty drive unchanged; the two-unit split (`sonora-engine.service`
+   + `sonora-tui.service`) stays the distro squad's Stage 2 item. The
+   headless `--record` mode is unchanged and opens no socket. New flags:
+   `--headless`, `--tui PATH`, `--no-memlock` (development only, says so),
+   and `--announce-versions` for the conformance suite's mismatch check.
+4. **The client side: `ui/client` (`sonora_client`).** `SocketEngine`
+   implements `EngineControl` over the socket; `connect()` may wait for a
+   starting engine, `poll()` and the sends never wait. On a lost connection
+   the `StateView` keeps reading the old block, whose heartbeat stands still
+   (the interface shows "no data"), and `poll()` reconnects; the new Hello
+   brings the new block and the Snapshot, which is the resync. A request
+   made while disconnected is dropped unanswered, as by a dead engine.
+   `sonora-tui` and `sonora-ctl` (a script client) are executables here or
+   in `ui/tui`. **`engine/app` → `ui/tui` is gone**: the engine links
+   nothing of `ui/`. `sonora-engine` depends on `sonora-tui` for build order
+   only.
+5. **The Qt UI on the real engine.** `sonora-ui` uses `SocketEngine` when an
+   engine answers on `--engine-socket` (or the default), and `FakeEngine`
+   otherwise or with `--fake-engine`, saying so on screen. The Edit window's
+   document is the engine's: `ReplicaDocument` keeps a `model::Replica` and
+   shows it with in-flight requests replayed on top (optimistic); a refusal
+   takes the edit back and reaches the status line. `ControlAdapter` routes
+   model updates and the replies to model requests away from the command
+   path. File > Open sends the session to the engine.
+6. **Contract change: `ModelAction::Load = 4`, protocol version 2.** The
+   request carries a session file's bytes (not a path: the engine needs no
+   view of the interface's filesystem, and the dialog's checks stay in the
+   interface). `model::Document::load()` checks it as strictly as a load
+   from disk, refuses another sample rate, replaces the history (undo never
+   crosses sessions) and every replica gets a Snapshot. The conformance
+   suite's twelfth check holds FakeEngine, InProcessEngine and SocketEngine
+   to it. Save needs no engine request: the replica *is* the engine's
+   document, and the interface writes it as before. Moving the edit
+   controller's `resolve_*` into `engine/control` (a key becomes a command
+   the engine resolves and allocates ids for) is still open.
+7. **Tests.** `platform_ipc`; `control_socket` (several clients, a client
+   gone mid-take, malformed frames refused, all over raw platform channels);
+   `client_socket_engine`, which runs `sonora-engine` as a separate process:
+   the conformance suite (10 ok, 2 SKIP: a failed take and missing inputs
+   need in-process hooks, which `control` covers), an interface process
+   SIGKILLed mid-take (the take records on, the WAVs are whole), reconnection
+   with undo and redo in step across two replicas, an engine restart, and
+   malformed frames; `ui_replica_document` on FakeEngine. The container test
+   gains `PROCESS SPLIT PASS`: `sonora-engine --backend fake` with
+   `sonora-ctl` arming, recording, stopping and asking for playback through
+   the socket, checking the state block at each step, then
+   `verify-recording.py` on the 18 files. Playback is refused as
+   `NotImplemented`: the engine has no playback path yet.

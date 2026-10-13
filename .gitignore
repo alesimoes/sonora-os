@@ -25,6 +25,7 @@ compile_commands.json
 # The engine binary is staged into the image by tools/build-iso.sh. It is a
 # build artefact, not source.
 iso/config/includes.chroot/usr/local/bin/sonora-engine
+iso/config/includes.chroot/usr/local/bin/sonora-tui
 
 # `lb config` writes its own defaults into iso/config on every run: its stock
 # hooks, package lists and a dozen stage directories. Only the files we author

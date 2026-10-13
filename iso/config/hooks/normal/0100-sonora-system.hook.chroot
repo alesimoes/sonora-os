@@ -49,6 +49,7 @@ install -D -m 0644 /usr/share/sonora/wireplumber-sonora.conf \
 # permission error that says nothing about why. Set the modes here, where the
 # filesystem actually carries them.
 chmod 0755 /usr/local/bin/sonora-engine
+chmod 0755 /usr/local/bin/sonora-tui
 chmod 0755 /usr/local/bin/sonora-wait-for-audio
 chmod 0755 /usr/local/bin/sonora-smoketest
 
@@ -56,6 +57,11 @@ chmod 0755 /usr/local/bin/sonora-smoketest
 # a missing file. Fail the build instead.
 if [ ! -x /usr/local/bin/sonora-engine ]; then
   echo "E: sonora-engine was not staged into the image." >&2
+  exit 1
+fi
+# Without it the engine runs headless and tty1 shows no interface.
+if [ ! -x /usr/local/bin/sonora-tui ]; then
+  echo "E: sonora-tui was not staged into the image." >&2
   exit 1
 fi
 if [ ! -x /usr/local/bin/sonora-smoketest ]; then
