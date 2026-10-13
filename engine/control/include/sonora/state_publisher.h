@@ -61,6 +61,8 @@ public:
         inputs_connected_.store(count, std::memory_order_relaxed);
     }
     void set_input_connected(uint32_t track, bool connected);
+    // An insert slot's InsertFlag bits, as the document and the hosts say.
+    void set_insert_flags(uint32_t track, uint32_t slot, uint32_t flags);
 
     uint64_t period_ns() const { return period_ns_; }
     uint64_t publishes() const { return publishes_.load(std::memory_order_relaxed); }
@@ -77,6 +79,7 @@ private:
     std::atomic<uint32_t> health_{0};
     std::atomic<uint32_t> inputs_connected_{0};
     std::unique_ptr<std::atomic<bool>[]> input_connected_;
+    std::unique_ptr<std::atomic<uint32_t>[]> insert_flags_;   // track * kInsertSlots + slot
 
     // The publisher thread's own; sized once, so a publish never allocates.
     std::vector<api::TrackFields> tracks_;

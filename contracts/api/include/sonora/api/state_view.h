@@ -15,6 +15,7 @@
 // Not thread-safe: a reader thread owns its StateView.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -34,10 +35,23 @@ struct TransportSnapshot {
     uint32_t health_flags = 0;
     uint32_t inputs_connected = 0;
     uint32_t buffer_frames = 0;
+    uint32_t compensation_frames = 0;
+    uint32_t compensation_shortfall_frames = 0;
     uint64_t heartbeat = 0;
     // The seqlock ran out of retries: these values may be torn, and are the
     // zeros above. Show "stale", never them.
     bool stale = false;
+};
+
+struct InsertSnapshot {
+    uint32_t flags = 0;
+    uint32_t latency_frames = 0;
+    uint32_t misses = 0;
+    uint32_t worst_run_us = 0;
+    uint32_t nonfinite = 0;
+
+    bool present() const { return (flags & kInsertPresent) != 0; }
+    bool faulted() const { return (flags & kInsertFaulted) != 0; }
 };
 
 struct TrackSnapshot {
@@ -46,6 +60,7 @@ struct TrackSnapshot {
     uint32_t overruns = 0;
     uint32_t clip_count = 0;
     uint32_t latency_frames = 0;
+    std::array<InsertSnapshot, kInsertSlots> inserts{};   // slot A first
     bool stale = false;
 
     bool armed() const { return (flags & kTrackArmed) != 0; }

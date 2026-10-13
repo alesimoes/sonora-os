@@ -75,6 +75,61 @@ bool replace_file(const QString& file, const std::string& bytes, std::string& wh
     return true;
 }
 
+// session-format.md, "Versioning": before the first save over a file of an
+// older format version, the original is copied to "Session File
+// Backups/<Name>.v<old>.sonora" and never rotated out, so the build it came
+// from (an A/B rollback) can still open it. A save that cannot keep it does
+// not overwrite it either.
+bool keep_older_version(const QString& file, std::string& why) {
+    QFile in(file);
+    if (!in.exists()) return true;
+    if (!in.open(QIODevice::ReadOnly)) {
+        why = "cannot read " + text(file) + " to keep a copy of it: " + text(in.errorString());
+        return false;
+    }
+    if (in.size() > kMaxSessionBytes) return true;
+    const QByteArray old = in.readAll();
+    std::int64_t version = 0;
+    if (!model::file_format_version(std::string_view(old.constData(), static_cast<std::size_t>(old.size())),
+                                    version) ||
+        version == model::kFormatVersion) {
+        return true;
+    }
+    // Forward compatibility: a newer build's file is never overwritten by an
+    // older one, which cannot even read what it would destroy.
+    if (version > model::kFormatVersion) {
+        why = text(file) + " is a session file of version " + std::to_string(version) +
+              ", newer than the version " + std::to_string(model::kFormatVersion) +
+              " this build writes; it is left as it is. Save under another name";
+        return false;
+    }
+    const QFileInfo info(file);
+    const QString backups = QDir(info.absolutePath()).filePath(QStringLiteral("Session File Backups"));
+    const QString copy = QDir(backups).filePath(info.completeBaseName() + QStringLiteral(".v") +
+                                                QString::number(version) + QStringLiteral(".sonora"));
+    // The first save over it kept it; that copy is the one to keep.
+    if (QFileInfo::exists(copy)) return true;
+    const bool created = !QFileInfo::exists(backups);
+    if (!QDir().mkpath(backups)) {
+        why = "cannot create " + text(backups) + " to keep the version " + std::to_string(version) +
+              " file";
+        return false;
+    }
+    if (created && !sync_folder(info.absolutePath())) {
+        why = "cannot sync the session folder after creating " + text(backups);
+        return false;
+    }
+    if (!replace_file(copy, std::string(old.constData(), static_cast<std::size_t>(old.size())), why)) {
+        return false;
+    }
+    if (!sync_folder(backups)) {
+        why = "cannot sync " + text(backups) + " after keeping the version " +
+              std::to_string(version) + " file";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 QString default_sessions_dir() {
@@ -140,6 +195,7 @@ bool write_session_file(const QString& file, const std::string& bytes, std::stri
         why = "cannot sync the sessions folder after creating " + text(folder);
         ok = false;
     }
+    if (ok) ok = keep_older_version(file, why);
     if (ok) ok = replace_file(file, bytes, why);
     if (!ok) {
         // Empty by now: replace_file's QSaveFile took its temporary file with it.

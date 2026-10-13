@@ -15,11 +15,15 @@ StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* au
       writer_(writer),
       period_ns_(period_ns),
       input_connected_(new std::atomic<bool>[session.tracks().size()]),
+      insert_flags_(new std::atomic<uint32_t>[session.tracks().size() * api::kInsertSlots]),
       tracks_(session.tracks().size()),
       peaks_(session.tracks().size(), 0.0f),
       clips_(session.tracks().size(), 0) {
     for (std::size_t i = 0; i < session.tracks().size(); ++i) {
         input_connected_[i].store(false, std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < session.tracks().size() * api::kInsertSlots; ++i) {
+        insert_flags_[i].store(0, std::memory_order_relaxed);
     }
 }
 
@@ -36,6 +40,12 @@ void StatePublisher::set_health(uint32_t flag, bool on) {
 void StatePublisher::set_input_connected(uint32_t track, bool connected) {
     if (track < session_.tracks().size()) {
         input_connected_[track].store(connected, std::memory_order_relaxed);
+    }
+}
+
+void StatePublisher::set_insert_flags(uint32_t track, uint32_t slot, uint32_t flags) {
+    if (track < session_.tracks().size() && slot < api::kInsertSlots) {
+        insert_flags_[track * api::kInsertSlots + slot].store(flags, std::memory_order_relaxed);
     }
 }
 
@@ -102,6 +112,10 @@ void StatePublisher::publish_once() {
         f.overruns = tr.overruns();
         f.clip_count = clips_[i];
         f.latency_frames = 0;   // no plugin delay exists yet; reported honestly
+        for (uint32_t k = 0; k < api::kInsertSlots; ++k) {
+            f.inserts[k].flags =
+                insert_flags_[i * api::kInsertSlots + k].load(std::memory_order_relaxed);
+        }
     }
     writer_.publish(t, tracks_.data(), peaks_.data());
     publishes_.fetch_add(1, std::memory_order_relaxed);

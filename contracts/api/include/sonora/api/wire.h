@@ -33,12 +33,25 @@ enum class Type : uint8_t {
     CommandReply = 5,
     EngineEvent = 6,
     ModelUpdate = 7,
+    PluginParameterChange = 8,   // protocol 3
+    PluginCatalog = 9,           // protocol 3
 };
 
 // A message's text fields; a session snapshot gets the larger cap.
 constexpr std::size_t kMaxText = std::size_t{64} << 10;
 constexpr std::size_t kMaxModelBytes = std::size_t{64} << 20;
 constexpr std::size_t kMaxListEntries = 4096;
+// A catalog's plugins, and one plugin's parameters: the chain cap of
+// ADR-0012 §5.1, which no one insert can pass either.
+constexpr std::size_t kMaxCatalogPlugins = 4096;
+constexpr std::size_t kMaxPluginParams = 8192;
+// An enum parameter's labels, and a plugin's categories: far past any
+// plugin's, short of a list that would make a catalog unreadable.
+constexpr std::size_t kMaxParamLabels = 4096;
+constexpr std::size_t kMaxPluginCategories = 16;
+// A parameter key: an LV2 port symbol or a VST3 ParamID in decimal (ten
+// digits). No real one comes near it.
+constexpr std::size_t kMaxParamKeyBytes = 256;
 
 // The type byte, or false for an empty buffer.
 bool peek_type(std::string_view bytes, Type& out);
@@ -50,6 +63,10 @@ void encode(const ModelRequest& m, std::string& out);
 void encode(const CommandReply& m, std::string& out);
 void encode(const EngineEvent& m, std::string& out);
 void encode(const ModelUpdate& m, std::string& out);
+void encode(const PluginParameterChange& m, std::string& out);
+// Refuses (false, `error`) a catalog past the caps above, which no receiver
+// would take; nothing else in a catalog can fail to encode.
+bool encode(const PluginCatalog& m, std::string& out, std::string& error);
 
 bool decode(std::string_view bytes, Hello& out, std::string& error);
 bool decode(std::string_view bytes, CommandRequest& out, std::string& error);
@@ -58,6 +75,18 @@ bool decode(std::string_view bytes, ModelRequest& out, std::string& error);
 bool decode(std::string_view bytes, CommandReply& out, std::string& error);
 bool decode(std::string_view bytes, EngineEvent& out, std::string& error);
 bool decode(std::string_view bytes, ModelUpdate& out, std::string& error);
+bool decode(std::string_view bytes, PluginParameterChange& out, std::string& error);
+// Also refuses a catalog that would mislead an interface: a dense index out
+// of place, a non-finite or inverted range, a flag this version does not
+// define, one step, labels that are not one per step.
+bool decode(std::string_view bytes, PluginCatalog& out, std::string& error);
+
+// A client's half: whatever the engine sends to a client (a reply, an
+// event, a model update, a catalog), decoded and appended to the inbox.
+// False, with `error`, for what does not decode or is not a message an
+// engine sends; the inbox is then untouched. Every EngineControl shares it,
+// so a message kind added later reaches all of them at once.
+bool decode_into(std::string_view bytes, Inbox& inbox, std::string& error);
 
 // Reads only the two version fields at the head of a Hello. They come first
 // so that a client can name the mismatch even when everything after them

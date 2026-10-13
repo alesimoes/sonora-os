@@ -60,9 +60,14 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         replies.push_back(std::move(o));
     }
     for (const api::EngineEvent& e : inbox_.events) {
+        // A cleared fault has no slot to clear yet; an empty notice says nothing.
+        if (e.kind == api::EventKind::PluginFault && e.text.empty()) continue;
         EngineEvent o;
         switch (e.kind) {
-            case api::EventKind::Notice: o.kind = EngineEventKind::Notice; break;
+            // A plugin fault is a notice until the mixer has insert slots
+            // to show it on (ADR-0012 checklist 6).
+            case api::EventKind::Notice:
+            case api::EventKind::PluginFault: o.kind = EngineEventKind::Notice; break;
             case api::EventKind::InputsMissing: o.kind = EngineEventKind::InputsMissing; break;
             case api::EventKind::TakeFailed: o.kind = EngineEventKind::TakeFailed; break;
             case api::EventKind::Fatal: o.kind = EngineEventKind::Fatal; break;

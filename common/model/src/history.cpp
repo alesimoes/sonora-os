@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/model/history.h"
 
+#include <algorithm>
 #include <limits>
 #include <unordered_set>
 #include <utility>
@@ -25,8 +26,13 @@ std::size_t playlist_bytes(const Playlist& p) {
 }
 
 std::size_t track_bytes(const TrackEdit& t) {
-    return kNodeOverhead + sizeof(TrackEdit) + t.name.size() +
-           t.playlists.size() * sizeof(std::shared_ptr<const Playlist>);
+    std::size_t n = kNodeOverhead + sizeof(TrackEdit) + t.name.size() +
+                    t.playlists.size() * sizeof(std::shared_ptr<const Playlist>) +
+                    t.inserts.size() * sizeof(Insert);
+    for (const Insert& in : t.inserts) {
+        n += in.plugin.id.size() + in.plugin.name.size() + in.plugin.version.size();
+    }
+    return n;
 }
 
 std::size_t marker_bytes(const MarkerList& m) {
@@ -104,7 +110,25 @@ bool History::restore(Snapshot current, std::vector<WindowStep> steps, std::size
 bool History::drop_oldest() {
     if (steps_.size() < 2 || pos_ == 0) return false;
     pop_front();
+    prune_insert_values();
     return true;
+}
+
+void History::prune_insert_values() {
+    std::vector<InsertMix>& values = current_.mix.inserts;
+    if (values.empty()) return;
+    std::unordered_set<Id> live;
+    std::unordered_set<const void*> seen;
+    for (const Step& s : steps_) {
+        for (const auto& t : s.edit->tracks) {
+            // Steps share most tracks; each is walked once.
+            if (!seen.insert(t.get()).second) continue;
+            for (const Insert& in : t->inserts) live.insert(in.id);
+        }
+    }
+    values.erase(std::remove_if(values.begin(), values.end(),
+                                [&](const InsertMix& m) { return live.count(m.insert) == 0; }),
+                 values.end());
 }
 
 bool History::apply(const Operation& op, std::string& error) {
@@ -119,9 +143,11 @@ bool History::apply(const Operation& op, std::string& error) {
 void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision) {
     // A new edit after an undo discards the redo branch, as every editor's
     // undo does.
+    bool dropped = false;
     while (steps_.size() > pos_ + 1) {
         charged_ -= steps_.back().charge;
         steps_.pop_back();
+        dropped = true;
     }
     const std::size_t charge = exclusive_bytes(*edit, *steps_.back().edit);
     steps_.push_back(Step{std::move(edit), revision, charge});
@@ -129,7 +155,11 @@ void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision
     pos_ = steps_.size() - 1;
     // Two states always stay, the newest and the one before it, so the
     // last edit can be undone however large it was.
-    while (charged_ > budget_ && steps_.size() > 2) pop_front();
+    while (charged_ > budget_ && steps_.size() > 2) {
+        pop_front();
+        dropped = true;
+    }
+    if (dropped) prune_insert_values();
 }
 
 void History::pop_front() {
@@ -157,9 +187,12 @@ bool History::redo() {
 }
 
 void History::evict_below(std::uint64_t floor) {
+    bool dropped = false;
     while (steps_.size() > 1 && pos_ > 0 && steps_.front().revision < floor) {
         pop_front();
+        dropped = true;
     }
+    if (dropped) prune_insert_values();
 }
 
 }  // namespace sonora::model

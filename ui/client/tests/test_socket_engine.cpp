@@ -150,6 +150,7 @@ public:
     const api::Hello& hello() const override { return client_.hello(); }
     uint64_t send(const api::CommandRequest& r) override { return client_.send(r); }
     uint64_t send(const api::ParameterChange& c) override { return client_.send(c); }
+    uint64_t send(const api::PluginParameterChange& c) override { return client_.send(c); }
     uint64_t submit(const api::ModelRequest& m) override { return client_.submit(m); }
     void poll(api::Inbox& in) override { client_.poll(in); }
     api::StateView& state() override { return client_.state(); }

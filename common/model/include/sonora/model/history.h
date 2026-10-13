@@ -93,6 +93,11 @@ private:
 
     void push(std::shared_ptr<const EditState> edit, std::uint64_t revision);
     void pop_front();
+    // An insert's values (MixState::inserts) are kept while a step in the
+    // window holds the insert, so undo and redo bring it back as it was.
+    // Called whenever steps leave the window, on the engine and on a
+    // replica alike, so both drop the same entries at the same revision.
+    void prune_insert_values();
 
     std::deque<Step> steps_;
     std::size_t pos_ = 0;

@@ -28,6 +28,13 @@ std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,
 std::string bus_problem(const MonitorBus& b, std::string& where);
 std::string settings_problem(const SessionSettings& s, std::string& where);
 std::string marker_problem(const Marker& m);
+// Inserts (ADR-0012 §6). Values are checked against the format of the
+// insert they belong to, which the InsertMix does not carry.
+std::string plugin_problem(const PluginRef& p, std::string& where);
+std::string inserts_problem(const std::vector<Insert>& inserts, std::string& where);
+std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::string& where);
+// Empty when `count` values fit one insert.
+std::string insert_param_count_problem(std::size_t count);
 
 const Region* find_region(const Playlist& p, Id id);
 // Canonical order: by the left region's position.

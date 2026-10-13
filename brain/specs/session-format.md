@@ -303,12 +303,12 @@ Ordered by `slot`. Empty for a track with none, never absent.
 | `id` | Session-unique, from the shared id space. |
 | `slot` | 0 to 9, Pro Tools' A to J. Unique on the track; gaps are allowed. Signal flows in slot order, **pre-fader**. |
 | `plugin.format` | `"lv2"` or `"vst3"`. Anything else is refused. |
-| `plugin.id` | The LV2 plugin URI, or the VST3 class id as 32 hex digits. The plugin's identity. |
+| `plugin.id` | The LV2 plugin URI (a scheme, no space or control character), or the VST3 class id as 32 **upper-case** hex digits, so one plugin has one spelling. The plugin's identity. |
 | `plugin.name`, `plugin.version` | As scanned when the insert was made. Shown when the plugin is missing; no logic reads them. |
 | `active` | `false` is Pro Tools' inactive: not instantiated, not in the chain, no latency. Structure, so undoable (ADR-0012 O1). |
 | `bypass` | Instantiated and passing audio through, still delayed by its latency, so a toggle never shifts timing. Mix state: saved, not undoable. |
-| `params` | Parameter values by **stable key**: the LV2 port symbol, or the VST3 ParamID in decimal. Never a port index, which changes between plugin versions. Values are **format-native**: the LV2 port value, the VST3 normalised value (0..1). Floats, parsed straight into `float`. Keys unique per insert. Mix state. |
-| `state` | Optional. The plugin's own state, in a file under `Plugin State/` named by its SHA-256, with its size. Written durably before the session file that names it. Mix state. |
+| `params` | Parameter values by **stable key**: the LV2 port symbol (a C identifier), or the VST3 ParamID in decimal without leading zeros. Never a port index, which changes between plugin versions. Values are **format-native**: the LV2 port value, the VST3 normalised value, which must be from 0 to 1. Finite floats, parsed straight into `float`. Keys unique per insert; at most 8192. Mix state. |
+| `state` | Optional, absent when there is none. The plugin's own state, in a file under `Plugin State/` named by its SHA-256: `file` is exactly `"Plugin State/<sha256>.state"`, `sha256` 64 lower-case hex digits, `bytes` its size. Written durably before the session file that names it. Mix state. |
 
 - **State lives beside the file, not in it.** Some plugins' state runs to
   megabytes, and the session file's bytes cross the control socket inside

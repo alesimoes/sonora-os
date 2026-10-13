@@ -33,6 +33,7 @@ public:
     const api::Hello& hello() const override { return hello_; }
     uint64_t send(const api::CommandRequest& request) override;
     uint64_t send(const api::ParameterChange& change) override;
+    uint64_t send(const api::PluginParameterChange& change) override;
     uint64_t submit(const api::ModelRequest& request) override;
     void poll(api::Inbox& inbox) override;
     api::StateView& state() override { return view_; }

@@ -43,6 +43,8 @@ constexpr Name<MonitorMode> kMonitors[] = {{"auto", MonitorMode::Auto},
 constexpr Name<Fps> kFps[] = {{"23.976", Fps::F23_976}, {"24", Fps::F24},
                               {"25", Fps::F25},         {"29.97", Fps::F29_97},
                               {"29.97df", Fps::F29_97df}, {"30", Fps::F30}};
+constexpr Name<PluginFormat> kPluginFormats[] = {{"lv2", PluginFormat::Lv2},
+                                                 {"vst3", PluginFormat::Vst3}};
 constexpr Name<Edge> kEdges[] = {{"start", Edge::Start}, {"end", Edge::End}};
 constexpr Name<FadeEnd> kFadeEnds[] = {{"in", FadeEnd::In}, {"out", FadeEnd::Out}};
 
@@ -170,6 +172,53 @@ Value marker_value(const Marker& m) {
     v.set("position", integer(m.position));
     v.set("name", Value::string(m.name));
     v.set("length", integer(m.length));
+    return v;
+}
+
+Value plugin_value(const PluginRef& p) {
+    Value v = Value::object();
+    v.set("format", name_of(kPluginFormats, p.format));
+    v.set("id", Value::string(p.id));
+    v.set("name", Value::string(p.name));
+    v.set("version", Value::string(p.version));
+    return v;
+}
+
+Value params_value(const std::vector<ParamValue>& params) {
+    Value v = Value::array();
+    for (const ParamValue& p : params) {
+        Value& e = v.push(Value::object());
+        e.set("key", Value::string(p.key));
+        e.set("value", Value::number_float(p.value));
+    }
+    return v;
+}
+
+// Every key is always present in an operation, so "no state" is null.
+Value state_value(const std::optional<StateRef>& s) {
+    if (!s) return Value::null();
+    Value v = Value::object();
+    v.set("file", Value::string(s->file));
+    v.set("sha256", Value::string(s->sha256));
+    v.set("bytes", integer(static_cast<std::int64_t>(s->bytes)));
+    return v;
+}
+
+Value insert_value(const Insert& in) {
+    Value v = Value::object();
+    v.set("id", id_value(in.id));
+    v.set("slot", integer(in.slot));
+    v.set("plugin", plugin_value(in.plugin));
+    v.set("active", Value::boolean(in.active));
+    return v;
+}
+
+Value insert_mix_value(const InsertMix& m) {
+    Value v = Value::object();
+    v.set("insert", id_value(m.insert));
+    v.set("bypass", Value::boolean(m.bypass));
+    v.set("params", params_value(m.params));
+    v.set("state", state_value(m.state));
     return v;
 }
 
@@ -317,6 +366,61 @@ struct Encoder {
         Value v = with_kind("ReorderTracks");
         Value& order = v.set("order", Value::array());
         for (const Id id : o.order) order.push(id_value(id));
+        return v;
+    }
+    Value operator()(const AddInsert& o) const {
+        Value v = with_kind("AddInsert");
+        v.set("track", id_value(o.track));
+        v.set("insert", id_value(o.insert));
+        v.set("slot", integer(o.slot));
+        v.set("plugin", plugin_value(o.plugin));
+        v.set("params", params_value(o.params));
+        v.set("state", state_value(o.state));
+        return v;
+    }
+    Value operator()(const RemoveInsert& o) const {
+        Value v = with_kind("RemoveInsert");
+        v.set("insert", id_value(o.insert));
+        return v;
+    }
+    Value operator()(const MoveInsert& o) const {
+        Value v = with_kind("MoveInsert");
+        v.set("insert", id_value(o.insert));
+        v.set("to_track", id_value(o.to_track));
+        v.set("to_slot", integer(o.to_slot));
+        return v;
+    }
+    Value operator()(const SetInsertActive& o) const {
+        Value v = with_kind("SetInsertActive");
+        v.set("insert", id_value(o.insert));
+        v.set("active", Value::boolean(o.active));
+        return v;
+    }
+    Value operator()(const ReplaceInsert& o) const {
+        Value v = with_kind("ReplaceInsert");
+        v.set("insert", id_value(o.insert));
+        v.set("replacement", id_value(o.replacement));
+        v.set("plugin", plugin_value(o.plugin));
+        v.set("params", params_value(o.params));
+        v.set("state", state_value(o.state));
+        return v;
+    }
+    Value operator()(const SetInsertBypass& o) const {
+        Value v = with_kind("SetInsertBypass");
+        v.set("insert", id_value(o.insert));
+        v.set("bypass", Value::boolean(o.bypass));
+        return v;
+    }
+    Value operator()(const SetInsertParams& o) const {
+        Value v = with_kind("SetInsertParams");
+        v.set("insert", id_value(o.insert));
+        v.set("params", params_value(o.params));
+        return v;
+    }
+    Value operator()(const SetInsertState& o) const {
+        Value v = with_kind("SetInsertState");
+        v.set("insert", id_value(o.insert));
+        v.set("state", state_value(o.state));
         return v;
     }
 };
@@ -600,6 +704,62 @@ bool read_marker(Reader& rd, const Value& obj, Marker& m) {
     return read_marker_value(rd, *obj.find("marker"), "marker", m);
 }
 
+bool read_plugin(Reader& rd, const Value& obj, const std::string& path, PluginRef& p) {
+    const Value& v = *obj.find("plugin");
+    const std::string pp = Reader::at(path, "plugin");
+    return rd.keys(v, pp, {"format", "id", "name", "version"}) &&
+           rd.choice(v, pp, "format", kPluginFormats, p.format) && rd.text(v, pp, "id", p.id) &&
+           rd.text(v, pp, "name", p.name) && rd.text(v, pp, "version", p.version);
+}
+
+bool read_params(Reader& rd, const Value& obj, const std::string& path,
+                 std::vector<ParamValue>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(obj, path, "params", list)) return false;
+    const std::string pp = Reader::at(path, "params");
+    for (const Value& e : list->items()) {
+        ParamValue p;
+        if (!rd.keys(e, pp, {"key", "value"}) || !rd.text(e, pp, "key", p.key) ||
+            !rd.real(e, pp, "value", p.value)) {
+            return false;
+        }
+        out.push_back(std::move(p));
+    }
+    return true;
+}
+
+bool read_state(Reader& rd, const Value& obj, const std::string& path,
+                std::optional<StateRef>& out) {
+    const Value& v = *obj.find("state");
+    if (v.is_null()) {
+        out.reset();
+        return true;
+    }
+    const std::string sp = Reader::at(path, "state");
+    StateRef s;
+    std::int64_t bytes = 0;
+    if (!rd.keys(v, sp, {"file", "sha256", "bytes"}) || !rd.text(v, sp, "file", s.file) ||
+        !rd.text(v, sp, "sha256", s.sha256) ||
+        !rd.integer(v, sp, "bytes", kMaxInteger, bytes)) {
+        return false;
+    }
+    s.bytes = static_cast<std::uint64_t>(bytes);
+    out = std::move(s);
+    return true;
+}
+
+bool read_insert_value(Reader& rd, const Value& v, const std::string& p, Insert& in) {
+    return rd.keys(v, p, {"id", "slot", "plugin", "active"}) && rd.id(v, p, "id", in.id) &&
+           rd.small(v, p, "slot", in.slot) && read_plugin(rd, v, p, in.plugin) &&
+           rd.flag(v, p, "active", in.active);
+}
+
+bool read_insert_mix_value(Reader& rd, const Value& v, const std::string& p, InsertMix& m) {
+    return rd.keys(v, p, {"insert", "bypass", "params", "state"}) &&
+           rd.id(v, p, "insert", m.insert) && rd.flag(v, p, "bypass", m.bypass) &&
+           read_params(rd, v, p, m.params) && read_state(rd, v, p, m.state);
+}
+
 bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation& out) {
     if (kind == "AddSource") {
         AddSource o;
@@ -759,6 +919,64 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             o.order.push_back(static_cast<Id>(n));
         }
         out = std::move(o);
+    } else if (kind == "AddInsert") {
+        AddInsert o;
+        if (!rd.keys(v, "", {"op", "track", "insert", "slot", "plugin", "params", "state"}) ||
+            !rd.id(v, "", "track", o.track) || !rd.id(v, "", "insert", o.insert) ||
+            !rd.small(v, "", "slot", o.slot) || !read_plugin(rd, v, "", o.plugin) ||
+            !read_params(rd, v, "", o.params) || !read_state(rd, v, "", o.state)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "RemoveInsert") {
+        RemoveInsert o;
+        if (!rd.keys(v, "", {"op", "insert"}) || !rd.id(v, "", "insert", o.insert)) return false;
+        out = o;
+    } else if (kind == "MoveInsert") {
+        MoveInsert o;
+        if (!rd.keys(v, "", {"op", "insert", "to_track", "to_slot"}) ||
+            !rd.id(v, "", "insert", o.insert) || !rd.id(v, "", "to_track", o.to_track) ||
+            !rd.small(v, "", "to_slot", o.to_slot)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "SetInsertActive") {
+        SetInsertActive o;
+        if (!rd.keys(v, "", {"op", "insert", "active"}) || !rd.id(v, "", "insert", o.insert) ||
+            !rd.flag(v, "", "active", o.active)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "ReplaceInsert") {
+        ReplaceInsert o;
+        if (!rd.keys(v, "", {"op", "insert", "replacement", "plugin", "params", "state"}) ||
+            !rd.id(v, "", "insert", o.insert) || !rd.id(v, "", "replacement", o.replacement) ||
+            !read_plugin(rd, v, "", o.plugin) || !read_params(rd, v, "", o.params) ||
+            !read_state(rd, v, "", o.state)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "SetInsertBypass") {
+        SetInsertBypass o;
+        if (!rd.keys(v, "", {"op", "insert", "bypass"}) || !rd.id(v, "", "insert", o.insert) ||
+            !rd.flag(v, "", "bypass", o.bypass)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "SetInsertParams") {
+        SetInsertParams o;
+        if (!rd.keys(v, "", {"op", "insert", "params"}) || !rd.id(v, "", "insert", o.insert) ||
+            !read_params(rd, v, "", o.params)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "SetInsertState") {
+        SetInsertState o;
+        if (!rd.keys(v, "", {"op", "insert", "state"}) || !rd.id(v, "", "insert", o.insert) ||
+            !read_state(rd, v, "", o.state)) {
+            return false;
+        }
+        out = std::move(o);
     } else {
         return rd.fail("op", "\"" + kind + "\" is not an operation this version knows");
     }
@@ -767,7 +985,8 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
 
 // --- the undo window ---------------------------------------------------------
 
-constexpr std::int64_t kWindowFormat = 1;
+// 2: tracks carry their inserts, and the mix the inserts' values.
+constexpr std::int64_t kWindowFormat = 2;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -838,6 +1057,8 @@ private:
         tv.set("name", Value::string(t.name));
         tv.set("channels", integer(t.channels));
         tv.set("active_playlist", id_value(t.active_playlist));
+        Value& ins = tv.set("inserts", Value::array());
+        for (const Insert& in : t.inserts) ins.push(insert_value(in));
         Value& ps = tv.set("playlists", Value::array());
         for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
         tracks_.push(std::move(tv));
@@ -889,6 +1110,8 @@ bool window_value(const History& h, Value& root, std::string& error) {
     root.set("bus", bus_value(cur.mix.bus));
     Value& mix = root.set("mix", Value::array());
     for (const TrackMix& m : cur.mix.tracks) mix.push(mix_value(m));
+    Value& insert_mix = root.set("insert_mix", Value::array());
+    for (const InsertMix& m : cur.mix.inserts) insert_mix.push(insert_mix_value(m));
     Value& sources = root.set("sources", Value::array());
     if (cur.sources) {
         for (const Source& src : cur.sources->sources) sources.push(source_value(src));
@@ -951,12 +1174,19 @@ bool read_tracks(Reader& rd, const Value& root,
     for (const Value& e : list->items()) {
         auto t = std::make_shared<TrackEdit>();
         const Value* ps = nullptr;
-        if (!rd.keys(e, "tracks", {"id", "name", "channels", "active_playlist", "playlists"}) ||
+        const Value* ins = nullptr;
+        if (!rd.keys(e, "tracks",
+                     {"id", "name", "channels", "active_playlist", "inserts", "playlists"}) ||
             !rd.id(e, "tracks", "id", t->id) || !rd.text(e, "tracks", "name", t->name) ||
             !rd.small(e, "tracks", "channels", t->channels) ||
             !rd.id(e, "tracks", "active_playlist", t->active_playlist) ||
-            !rd.array(e, "tracks", "playlists", ps)) {
+            !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "playlists", ps)) {
             return false;
+        }
+        for (const Value& i : ins->items()) {
+            Insert in;
+            if (!read_insert_value(rd, i, "tracks.inserts", in)) return false;
+            t->inserts.push_back(std::move(in));
         }
         for (const Value& i : ps->items()) {
             std::size_t ix = 0;
@@ -1014,10 +1244,9 @@ bool read_edits(Reader& rd, const Value& root,
 }
 
 bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
-    if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
-                            "bus", "mix", "sources", "playlists", "tracks", "markers", "edits",
-                            "steps"})) {
-        return false;
+    // The format first: another version's keys are not this one's to judge.
+    if (!root.is_object() || root.find("window_format") == nullptr) {
+        return rd.fail("", "missing required key \"window_format\"");
     }
     std::int64_t format = 0;
     if (!rd.integer(root, "", "window_format", kMaxInteger, format)) return false;
@@ -1025,6 +1254,11 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
         return rd.fail("window_format", "is " + std::to_string(format) +
                                             " where this version reads " +
                                             std::to_string(kWindowFormat));
+    }
+    if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
+                            "bus", "mix", "insert_mix", "sources", "playlists", "tracks",
+                            "markers", "edits", "steps"})) {
+        return false;
     }
     Snapshot cur;
     std::int64_t revision = 0, position = 0;
@@ -1042,6 +1276,12 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
         TrackMix m;
         if (!read_mix_value(rd, e, "mix", m)) return false;
         cur.mix.tracks.push_back(std::move(m));
+    }
+    if (!rd.array(root, "", "insert_mix", list)) return false;
+    for (const Value& e : list->items()) {
+        InsertMix m;
+        if (!read_insert_mix_value(rd, e, "insert_mix", m)) return false;
+        cur.mix.inserts.push_back(std::move(m));
     }
     auto pool = std::make_shared<SourcePool>();
     if (!rd.array(root, "", "sources", list)) return false;
@@ -1156,7 +1396,9 @@ const char* operation_name(const Operation& op) {
         "TrimRegion",   "SplitRegion",  "RemoveRegion",    "SetFade",
         "SetCrossfade", "RemoveCrossfade", "AddPlaylist",  "SetActivePlaylist",
         "AddMarker",    "MoveMarker",   "RemoveMarker",    "SetTrackName",
-        "ReorderTracks"};
+        "ReorderTracks", "AddInsert",   "RemoveInsert",    "MoveInsert",
+        "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
+        "SetInsertState"};
     static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
                   "a name for every operation");
     return kNames[op.index()];

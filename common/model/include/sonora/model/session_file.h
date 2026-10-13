@@ -15,7 +15,15 @@
 namespace sonora::model {
 
 // The format version this program writes, and the newest it reads.
-constexpr std::int64_t kFormatVersion = 1;
+// 2: plugin inserts on tracks (ADR-0012 §6.2).
+constexpr std::int64_t kFormatVersion = 2;
+
+// The version a session file declares, read without migrating or checking
+// anything else: what a saver needs to know whether the file it is about to
+// replace must first be kept as a pre-migration backup
+// (session-format.md, "Versioning"). False when the bytes are not a session
+// file at all.
+bool file_format_version(std::string_view bytes, std::int64_t& version);
 
 struct WriteInfo {
     std::string written_by;          // "sonora-engine 0.2.0"; diagnostic only

@@ -14,16 +14,19 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "sonora/api/conformance.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/api/wire.h"
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 #include "sonora/session.h"
 #include "sonora/state_publisher.h"
 #include "sonora/wav_writer.h"
@@ -92,6 +95,7 @@ public:
     const api::Hello& hello() const override { return engine_->hello(); }
     uint64_t send(const api::CommandRequest& r) override { return engine_->send(r); }
     uint64_t send(const api::ParameterChange& c) override { return engine_->send(c); }
+    uint64_t send(const api::PluginParameterChange& c) override { return engine_->send(c); }
     uint64_t submit(const api::ModelRequest& m) override { return engine_->submit(m); }
     void poll(api::Inbox& in) override { engine_->poll(in); }
     api::StateView& state() override { return engine_->state(); }
@@ -490,6 +494,206 @@ void housekeeping_and_early_events() {
     CHECK(runs.load() >= 1);
 }
 
+// The events a client attaching now is greeted with: every one that stands.
+std::vector<api::EngineEvent> late_greeting(RealEngine& real, api::Inbox& in) {
+    struct Got {
+        std::mutex mutex;
+        std::vector<std::string> frames;
+    };
+    auto got = std::make_shared<Got>();
+    EngineControlServer& server = real.engine().server();
+    const auto id = server.attach(
+        [got](std::string frame) {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            got->frames.push_back(std::move(frame));
+        },
+        {});
+    // The control thread takes the attach before a request delivered after
+    // it, so once that request is answered the greeting is all there.
+    api::CommandRequest r;
+    r.command = "no.such.command";
+    const uint64_t seq = real.send(r);
+    CHECK(until(real, in, [&]() {
+        for (const auto& reply : in.replies) {
+            if (reply.seq == seq) return true;
+        }
+        return false;
+    }));
+    server.detach(id);
+    std::vector<std::string> frames;
+    {
+        std::lock_guard<std::mutex> lock(got->mutex);
+        frames = got->frames;
+    }
+    api::wire::Reassembler reassembler;
+    api::Inbox late;
+    std::string message, error;
+    for (const std::string& f : frames) {
+        if (reassembler.add(f, message, error) == api::wire::Reassembler::Result::Complete) {
+            api::wire::decode_into(message, late, error);
+        }
+    }
+    return late.events;
+}
+
+std::size_t plugin_faults_in(const std::vector<api::EngineEvent>& events) {
+    std::size_t n = 0;
+    for (const auto& e : events) n += e.kind == api::EventKind::PluginFault ? 1 : 0;
+    return n;
+}
+
+// Until engine/plugin_client lands this engine hosts nothing, and says so
+// at every door: an empty catalog, NotImplemented for whatever would start
+// a host, the health flag, and every insert of a session it opens shown
+// faulted with a PluginFault for each active one (ADR-0012 §5.5: "never
+// silently dry").
+void no_plugin_hosting_yet() {
+    RealEngine real(fresh_dir("plugins"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            const api::ModelUpdate& m = in.model[fed];
+            model::ReplicationUpdate u;
+            u.kind = m.kind == api::ModelUpdateKind::Snapshot
+                         ? model::ReplicationUpdate::Kind::Snapshot
+                         : model::ReplicationUpdate::Kind::Op;
+            u.revision = m.revision;
+            u.undo_floor = m.undo_floor;
+            u.next_id = m.next_id;
+            u.bytes = m.bytes;
+            std::string why;
+            CHECK(replica.receive(u, why));
+        }
+        return replica.synced();
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return feed() && !in.catalogs.empty(); }));
+    CHECK(!in.catalogs.empty() && in.catalogs[0].plugins.empty());
+    CHECK(until(real, in, [&]() {
+        return (real.state().transport().health_flags & api::kHealthPluginsDisabled) != 0;
+    }));
+    if (!replica.synced()) return;
+
+    const model::PluginRef ref{model::PluginFormat::Lv2, "http://gareus.org/oss/lv2/dpl#mono",
+                               "x42-dpl", "0.9.2"};
+    model::AddInsert add;
+    add.track = replica.current().edit->tracks[0]->id;
+    add.insert = replica.current().next_id;
+    add.plugin = ref;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(add, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r));
+    CHECK(r.result == DispatchResult::NotImplemented);
+    CHECK(r.message.find("engine/plugin_client") != std::string::npos);
+    api::PluginParameterChange c;
+    c.insert = add.insert;
+    c.key = "threshold";
+    CHECK(reply_to(real.send(c), r));
+    CHECK(r.result == DispatchResult::NotImplemented);
+
+    // A session that already holds inserts opens: recording must not depend
+    // on a plugin. Both are kept and shown faulted; the active one is named.
+    model::Snapshot doc = replica.current();
+    auto edit = std::make_shared<model::EditState>(*doc.edit);
+    auto track = std::make_shared<model::TrackEdit>(*edit->tracks[0]);
+    const model::Id active = doc.next_id;
+    const model::Id inactive = doc.next_id + 1;
+    track->inserts = {model::Insert{active, 0, ref, true}, model::Insert{inactive, 4, ref, false}};
+    edit->tracks[0] = track;
+    doc.edit = edit;
+    doc.mix.inserts = {model::InsertMix{active, true, {}, {}},
+                       model::InsertMix{inactive, false, {}, {}}};
+    doc.next_id += 2;
+    std::string bytes;
+    CHECK(model::serialize(doc, model::WriteInfo{"test", 1}, bytes, error));
+    m.action = api::ModelAction::Load;
+    m.op = bytes;
+    const std::size_t events = in.events.size();
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        const api::TrackSnapshot t = real.state().track(0);
+        return t.inserts[0].present() && t.inserts[4].present();
+    }));
+    const api::TrackSnapshot t = real.state().track(0);
+    CHECK(t.inserts[0].faulted() && (t.inserts[0].flags & api::kInsertActive) != 0);
+    CHECK((t.inserts[0].flags & api::kInsertBypassed) != 0);
+    CHECK((t.inserts[0].flags & api::kInsertRunning) == 0);
+    CHECK(t.inserts[4].faulted() && (t.inserts[4].flags & api::kInsertActive) == 0);
+    std::size_t faults = 0;
+    for (std::size_t i = events; i < in.events.size(); ++i) {
+        if (in.events[i].kind != api::EventKind::PluginFault) continue;
+        ++faults;
+        CHECK(in.events[i].insert == active && in.events[i].track == -1);
+        CHECK(in.events[i].text.find("x42-dpl (") != std::string::npos &&
+              in.events[i].text.find("slot A) is not running") != std::string::npos);
+    }
+    CHECK(faults == 1);
+
+    // Opened again and again, the session's fault stands once: neither the
+    // last session's nor a copy per open is replayed to a later client, and
+    // none takes a device notice's place (rt-engineer review of #46).
+    for (int i = 0; i < 40; ++i) {
+        CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    }
+    std::vector<api::EngineEvent> late = late_greeting(real, in);
+    CHECK(plugin_faults_in(late) == 1);
+    for (const auto& e : late) {
+        if (e.kind == api::EventKind::PluginFault) CHECK(e.insert == active && !e.text.empty());
+    }
+
+    // Edits that start no host apply: the insert goes out of the chain, and
+    // its fault is cleared, for this client and for a later one.
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetInsertActive{active, false}, m.op, error));
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return (real.state().track(0).inserts[0].flags & api::kInsertActive) == 0;
+    }));
+    CHECK(until(real, in, [&]() {
+        if (in.events.empty()) return false;
+        const api::EngineEvent& e = in.events.back();
+        return e.kind == api::EventKind::PluginFault && e.insert == active && e.text.empty();
+    }));
+    late = late_greeting(real, in);
+    CHECK(plugin_faults_in(late) == 0);
+    // FlushPluginState: nothing runs, so nothing to record, and Ok.
+    api::ModelRequest flush;
+    flush.action = api::ModelAction::FlushPluginState;
+    flush.op = std::to_string(active);
+    CHECK(reply_to(real.submit(flush), r) && r.result == DispatchResult::Ok);
+
+    // A fader ride survives a change to an insert's values: only the
+    // faders' part of the mix goes to the Track atomics.
+    api::ParameterChange ride;
+    ride.track = 0;
+    ride.value = 0.5f;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Ok);
+    CHECK(model::encode_operation(model::SetInsertBypass{inactive, true}, m.op, error));
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return (real.state().track(0).inserts[4].flags & api::kInsertBypassed) != 0;
+    }));
+    CHECK(real.state().track(0).gain == 0.5f);
+}
+
 }  // namespace
 
 int main() {
@@ -506,6 +710,7 @@ int main() {
     take_failure_reaches_the_interface();
     large_snapshot_crosses_in_frames();
     housekeeping_and_early_events();
+    no_plugin_hosting_yet();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

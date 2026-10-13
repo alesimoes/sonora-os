@@ -43,6 +43,8 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
     h->health_flags.store(0, std::memory_order_relaxed);
     h->inputs_connected.store(0, std::memory_order_relaxed);
     h->buffer_frames.store(0, std::memory_order_relaxed);
+    h->compensation_frames.store(0, std::memory_order_relaxed);
+    h->compensation_shortfall_frames.store(0, std::memory_order_relaxed);
 
     TrackState* t = state_tracks(memory);
     for (uint32_t i = 0; i < capacity_tracks; ++i) {
@@ -53,6 +55,13 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
         ts->clip_count.store(0, std::memory_order_relaxed);
         ts->latency_frames.store(0, std::memory_order_relaxed);
         for (auto& s : ts->peaks.entries) s.store(0, std::memory_order_relaxed);
+        for (InsertState& in : ts->inserts) {
+            in.flags.store(0, std::memory_order_relaxed);
+            in.latency_frames.store(0, std::memory_order_relaxed);
+            in.misses.store(0, std::memory_order_relaxed);
+            in.worst_run_us.store(0, std::memory_order_relaxed);
+            in.nonfinite.store(0, std::memory_order_relaxed);
+        }
     }
     // Everything above happens-before a reader that learns of the block
     // through whatever hands it over (a thread start, a mutex, SCM_RIGHTS).
@@ -61,6 +70,8 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
     tracks_ = t;
     track_count_ = track_count;
     tick_ = 0;
+    // Value-initialised: zero, as the block's slots are now.
+    inserts_.reset(new InsertFields[std::size_t{capacity_tracks} * kInsertSlots]());
     return true;
 }
 
@@ -86,6 +97,8 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     h.health_flags.store(transport.health_flags, rel);
     h.inputs_connected.store(transport.inputs_connected, rel);
     h.buffer_frames.store(transport.buffer_frames, rel);
+    h.compensation_frames.store(transport.compensation_frames, rel);
+    h.compensation_shortfall_frames.store(transport.compensation_shortfall_frames, rel);
     for (uint32_t i = 0; i < track_count_; ++i) {
         TrackState& t = tracks_[i];
         t.flags.store(tracks[i].flags, rel);
@@ -93,8 +106,45 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
         t.overruns.store(tracks[i].overruns, rel);
         t.clip_count.store(tracks[i].clip_count, rel);
         t.latency_frames.store(tracks[i].latency_frames, rel);
+        // Twenty fields a track that seldom move (a fault, a latency change,
+        // an edit): stored only when they changed. Every store lengthens the
+        // section a reader retries around, and storing them all on every
+        // publish starved a 60 Hz reader under TSan on a two-core runner.
+        // A slot left alone holds the value it would have been given.
+        InsertFields* published = &inserts_[std::size_t{i} * kInsertSlots];
+        for (uint32_t k = 0; k < kInsertSlots; ++k) {
+            const InsertFields& from = tracks[i].inserts[k];
+            if (from.flags == published[k].flags &&
+                from.latency_frames == published[k].latency_frames) {
+                continue;
+            }
+            InsertState& to = t.inserts[k];
+            to.flags.store(from.flags, rel);
+            to.latency_frames.store(from.latency_frames, rel);
+            published[k].flags = from.flags;
+            published[k].latency_frames = from.latency_frames;
+        }
     }
     h.seq.store(s + 2, rel);
+
+    // The counters move on most publishes once hosts run, so they are kept
+    // out of the section; changed-only still saves the cache lines.
+    for (uint32_t i = 0; i < track_count_; ++i) {
+        InsertFields* published = &inserts_[std::size_t{i} * kInsertSlots];
+        for (uint32_t k = 0; k < kInsertSlots; ++k) {
+            const InsertFields& from = tracks[i].inserts[k];
+            InsertFields& was = published[k];
+            InsertState& to = tracks_[i].inserts[k];
+            if (from.misses != was.misses) to.misses.store(from.misses, rel);
+            if (from.worst_run_us != was.worst_run_us) {
+                to.worst_run_us.store(from.worst_run_us, rel);
+            }
+            if (from.nonfinite != was.nonfinite) to.nonfinite.store(from.nonfinite, rel);
+            was.misses = from.misses;
+            was.worst_run_us = from.worst_run_us;
+            was.nonfinite = from.nonfinite;
+        }
+    }
 
     // The slots before the heartbeat: a reader that sees tick n finds every
     // slot up to n written.

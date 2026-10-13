@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "sonora/api/engine_control.h"
 
@@ -48,6 +49,29 @@ public:
     virtual bool set_inputs_present(EngineControl& engine, bool present) {
         (void)engine;
         (void)present;
+        return false;
+    }
+    // The operator moves `key` of a running insert to `value` in the
+    // plugin's own editor, then ends the gesture (`close` false) or closes
+    // the editor without one (`close` true): the host's ParamTouched and
+    // EditorClosed. False if this rig cannot do it.
+    virtual bool edit_in_plugin_editor(EngineControl& engine, uint64_t insert,
+                                       const std::string& key, float value, bool close) {
+        (void)engine;
+        (void)insert;
+        (void)key;
+        (void)value;
+        (void)close;
+        return false;
+    }
+    // A running insert's plugin now has this state: what its GetState would
+    // be written as. False if this rig cannot do it.
+    virtual bool set_plugin_state(EngineControl& engine, uint64_t insert,
+                                  const std::string& sha256, uint64_t bytes) {
+        (void)engine;
+        (void)insert;
+        (void)sha256;
+        (void)bytes;
         return false;
     }
 };

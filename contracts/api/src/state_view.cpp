@@ -57,6 +57,8 @@ void read_transport(const StateHeader& h, TransportSnapshot& s) {
     s.health_flags = h.health_flags.load(acq);
     s.inputs_connected = h.inputs_connected.load(acq);
     s.buffer_frames = h.buffer_frames.load(acq);
+    s.compensation_frames = h.compensation_frames.load(acq);
+    s.compensation_shortfall_frames = h.compensation_shortfall_frames.load(acq);
 }
 
 void read_track(const TrackState& t, TrackSnapshot& s) {
@@ -66,6 +68,25 @@ void read_track(const TrackState& t, TrackSnapshot& s) {
     s.overruns = t.overruns.load(acq);
     s.clip_count = t.clip_count.load(acq);
     s.latency_frames = t.latency_frames.load(acq);
+    for (uint32_t k = 0; k < kInsertSlots; ++k) {
+        const InsertState& from = t.inserts[k];
+        InsertSnapshot& to = s.inserts[k];
+        to.flags = from.flags.load(acq);
+        to.latency_frames = from.latency_frames.load(acq);
+    }
+}
+
+// Outside the seqlock read, so they do not lengthen the window a publish
+// can collide with; each is one word and needs no other.
+void read_insert_counters(const TrackState& t, TrackSnapshot& s) {
+    constexpr auto acq = std::memory_order_acquire;
+    for (uint32_t k = 0; k < kInsertSlots; ++k) {
+        const InsertState& from = t.inserts[k];
+        InsertSnapshot& to = s.inserts[k];
+        to.misses = from.misses.load(acq);
+        to.worst_run_us = from.worst_run_us.load(acq);
+        to.nonfinite = from.nonfinite.load(acq);
+    }
 }
 
 // A value the writer never writes is a torn or foreign block.
@@ -162,6 +183,7 @@ TrackSnapshot StateView::track(uint32_t index) const {
         out.stale = true;
         return out;
     }
+    read_insert_counters(t, s);
     return s;
 }
 
@@ -192,7 +214,10 @@ void StateView::frame(StateFrame& out) const {
         return;
     }
     out.transport.stale = false;
-    for (TrackSnapshot& t : out.tracks) t.stale = false;
+    for (uint32_t i = 0; i < n; ++i) {
+        out.tracks[i].stale = false;
+        read_insert_counters(tracks_[i], out.tracks[i]);
+    }
     out.transport.heartbeat = h.heartbeat.load(std::memory_order_acquire);
 }
 

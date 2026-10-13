@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -631,6 +633,320 @@ int check_load(Rig& rig) {
 // A take that stops writing is said at once, with the take and the reason,
 // and on the state block; stopping it reports the take as failed; the next
 // take that records cleanly clears both.
+// Inserts (ADR-0012 §8). Every engine sends a catalog after the Snapshot.
+// One that offers a usable plugin with the first track's channel count is
+// held to the whole path: the insert in the document and the state block,
+// its parameters checked against the catalog, its bypass shown, undo
+// taking it out. One that offers none (an engine built before
+// engine/plugin_client) must refuse an insert by saying why, as
+// NotImplemented or Failed, and change nothing.
+int check_inserts(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced() && !s.inbox.catalogs.empty(); }),
+                   "no plugin catalog after the snapshot");
+            const PluginCatalog catalog = s.inbox.catalogs.back();
+            const model::TrackEdit& track = *s.replica.current().edit->tracks.at(0);
+            const PluginInfo* usable = nullptr;
+            for (const PluginInfo& p : catalog.plugins) {
+                if (p.usable && !p.params.empty() && p.inputs == track.channels &&
+                    p.outputs == track.channels) {
+                    usable = &p;
+                    break;
+                }
+            }
+            StateView& v = s.engine->state();
+            model::AddInsert add;
+            add.track = track.id;
+            add.insert = s.replica.current().next_id;
+            add.slot = 2;
+            add.plugin = usable != nullptr
+                             ? model::PluginRef{static_cast<model::PluginFormat>(usable->format),
+                                                usable->id, usable->name, usable->version}
+                             : model::PluginRef{model::PluginFormat::Lv2,
+                                                "urn:sonora:conformance:absent", "Absent", "0"};
+            const uint64_t rev0 = s.replica.current().revision;
+            const std::size_t updates = s.inbox.model.size();
+            CommandReply r;
+            EXPECT(apply(s, add, r), "no reply to AddInsert");
+
+            PluginParameterChange c;
+            c.insert = add.insert;
+            c.key = usable != nullptr ? usable->params[0].key : std::string("gain");
+            if (usable == nullptr) {
+                EXPECT(r.result == DispatchResult::NotImplemented ||
+                           r.result == DispatchResult::Failed,
+                       "an insert of a plugin the catalog does not offer was accepted");
+                EXPECT(!r.message.empty(), "a refused insert does not say why");
+                EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+                EXPECT(s.inbox.model.size() == updates, "a refused insert sent an update");
+                EXPECT(!v.track(0).inserts[2].present(), "a refused insert shows in its slot");
+                EXPECT(s.await(rig_, s.engine->send(c), r) && r.result != DispatchResult::Ok,
+                       "a parameter change for no insert was accepted");
+                EXPECT(!r.message.empty(), "a refused parameter change does not say why");
+                return ok();
+            }
+
+            EXPECT(r.result == DispatchResult::Ok, "AddInsert was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == rev0 + 1; }),
+                   "no update for AddInsert: " + s.replica_error);
+            EXPECT(s.replica.current().edit->tracks[0]->inserts.size() == 1,
+                   "the replica has no insert");
+            EXPECT(s.until(rig_, [&]() { return v.track(0).inserts[2].present(); }),
+                   "the state block never showed the insert in slot C");
+            const InsertSnapshot shown = v.track(0).inserts[2];
+            EXPECT((shown.flags & kInsertActive) != 0, "a new insert is not active");
+            EXPECT((shown.flags & kInsertBypassed) == 0, "a new insert shows bypassed");
+
+            // Parameters by stable key, inside the catalog's range.
+            const PluginParam& q = usable->params[0];
+            c.value = q.max;
+            EXPECT(s.await(rig_, s.engine->send(c), r) && r.result == DispatchResult::Ok,
+                   "a parameter change in range was refused: " + r.message);
+            c.value = std::numeric_limits<float>::quiet_NaN();
+            EXPECT(s.await(rig_, s.engine->send(c), r) && r.result == DispatchResult::Failed,
+                   "a NaN parameter value was accepted");
+            c.value = q.min;
+            c.key = q.key + "-not-a-key";
+            EXPECT(s.await(rig_, s.engine->send(c), r) && r.result == DispatchResult::Failed,
+                   "a key the plugin does not have was accepted");
+
+            // A value moved in the plugin's own editor reaches every replica
+            // as SetInsertParams when the gesture ends, and when the editor
+            // closes on a move with no gesture end.
+            const auto value_in_replica = [&](const std::string& key, float& out) {
+                const model::InsertMix* m = s.replica.current().mix.find_insert(add.insert);
+                if (m == nullptr) return false;
+                for (const model::ParamValue& p : m->params) {
+                    if (p.key != key) continue;
+                    out = p.value;
+                    return true;
+                }
+                return false;
+            };
+            const float moved = q.min + (q.max - q.min) / 4;
+            if (rig_.edit_in_plugin_editor(*s.engine, add.insert, q.key, moved, false)) {
+                float got = 0.0f;
+                EXPECT(s.until(rig_, [&]() { return value_in_replica(q.key, got) && got == moved; }),
+                       "a value moved in the plugin's editor never reached the replica");
+                const PluginParam& q2 = usable->params.back();
+                if (rig_.edit_in_plugin_editor(*s.engine, add.insert, q2.key, q2.max, true)) {
+                    EXPECT(s.until(rig_,
+                                   [&]() { return value_in_replica(q2.key, got) && got == q2.max; }),
+                           "a value moved before the editor closed never reached the replica");
+                    EXPECT(value_in_replica(q.key, got) && got == moved,
+                           "recording one editor value lost another");
+                }
+            }
+
+            // FlushPluginState answers after the state it recorded: when the
+            // reply arrives, the replica already holds it.
+            const std::string digest(64, 'e');
+            if (rig_.set_plugin_state(*s.engine, add.insert, digest, 2048)) {
+                ModelRequest flush;
+                flush.action = ModelAction::FlushPluginState;
+                flush.op = std::to_string(add.insert);
+                EXPECT(s.await(rig_, s.engine->submit(flush), r) &&
+                           r.result == DispatchResult::Ok,
+                       "FlushPluginState was refused: " + r.message);
+                const model::InsertMix* m = s.replica.current().mix.find_insert(add.insert);
+                EXPECT(m != nullptr && m->state && m->state->sha256 == digest &&
+                           m->state->bytes == 2048,
+                       "the reply to FlushPluginState came before its SetInsertState");
+            }
+
+            // Values are mix state: bypass shows, and is not an undo step.
+            EXPECT(apply(s, model::SetInsertBypass{add.insert, true}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "SetInsertBypass was refused: " + r.message);
+            EXPECT(s.until(rig_,
+                           [&]() { return (v.track(0).inserts[2].flags & kInsertBypassed) != 0; }),
+                   "the state block never showed the bypass");
+
+            // An occupied slot is refused and changes nothing.
+            model::AddInsert again = add;
+            again.insert = s.replica.current().next_id;
+            const std::size_t before = s.inbox.model.size();
+            EXPECT(apply(s, again, r) && r.result == DispatchResult::Failed,
+                   "an insert onto an occupied slot was accepted");
+            EXPECT(s.next_publish(rig_) && s.inbox.model.size() == before,
+                   "a refused insert sent an update");
+
+            // Structure is undoable (owner decision O1's default): undo takes
+            // the insert out, and its slot empties.
+            ModelRequest m;
+            m.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "undo failed");
+            EXPECT(s.until(rig_, [&]() {
+                       return s.replica.current().edit->tracks[0]->inserts.empty();
+                   }),
+                   "undo left the insert");
+            EXPECT(s.until(rig_, [&]() { return !v.track(0).inserts[2].present(); }),
+                   "the state block still shows an undone insert");
+            return ok();
+        }
+    };
+    return C(rig, "plugin inserts").go();
+}
+
+// PluginFault names an insert by id, and one fault stands per insert: an
+// active insert whose plugin is not here (or not hostable at all) has one,
+// an inactive one has none, and leaving the chain (removed, made inactive,
+// another session opened) clears it with an empty text. A replayed or
+// stale fault would put a red slot on a plugin that is fine.
+int check_plugin_faults(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        // What a client keeps on screen: the latest text per insert, empty
+        // text taking it off.
+        static std::map<uint64_t, std::string> standing(const Inbox& in) {
+            std::map<uint64_t, std::string> out;
+            for (const EngineEvent& e : in.events) {
+                if (e.kind != EventKind::PluginFault) continue;
+                if (e.text.empty()) {
+                    out.erase(e.insert);
+                } else {
+                    out[e.insert] = e.text;
+                }
+            }
+            return out;
+        }
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            EXPECT(standing(s.inbox).empty(), "a fault stands in a session with no insert");
+
+            // A session holding an active and an inactive insert of a plugin
+            // no engine has.
+            model::Snapshot doc = s.replica.current();
+            const model::PluginRef absent{model::PluginFormat::Lv2,
+                                          "urn:sonora:conformance:absent", "Absent", "0"};
+            const model::Id active = doc.next_id;
+            const model::Id inactive = doc.next_id + 1;
+            auto edit = std::make_shared<model::EditState>(*doc.edit);
+            auto track = std::make_shared<model::TrackEdit>(*edit->tracks.at(0));
+            track->inserts = {model::Insert{active, 0, absent, true},
+                              model::Insert{inactive, 5, absent, false}};
+            edit->tracks[0] = track;
+            doc.edit = edit;
+            doc.mix.inserts = {model::InsertMix{active, false, {}, {}},
+                               model::InsertMix{inactive, false, {}, {}}};
+            doc.next_id += 2;
+            ModelRequest load;
+            load.action = ModelAction::Load;
+            std::string error;
+            EXPECT(model::serialize(doc, model::WriteInfo{"conformance", 1}, load.op, error),
+                   error);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
+                   "the session was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return standing(s.inbox).count(active) != 0; }),
+                   "no PluginFault for the active insert, by its id");
+            EXPECT(standing(s.inbox).size() == 1, "an inactive insert has a fault standing");
+            const EngineEvent* e = s.last_event(EventKind::PluginFault);
+            EXPECT(e != nullptr && e->track == -1 && e->frame == 0,
+                   "a PluginFault names its insert by track or slot number");
+            EXPECT(mentions(e->text, "Absent"), "the fault does not name the plugin");
+
+            // Removed: cleared. Undone: standing again.
+            EXPECT(apply(s, model::RemoveInsert{active}, r) && r.result == DispatchResult::Ok,
+                   "RemoveInsert was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return standing(s.inbox).empty(); }),
+                   "a removed insert's fault still stands");
+            ModelRequest undo;
+            undo.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                   "undo failed");
+            EXPECT(s.until(rig_, [&]() { return standing(s.inbox).count(active) != 0; }),
+                   "an insert undo brought back has no fault standing");
+
+            // Out of the chain: cleared.
+            EXPECT(apply(s, model::SetInsertActive{active, false}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "SetInsertActive was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return standing(s.inbox).empty(); }),
+                   "an inactive insert's fault still stands");
+
+            // Another session: the old one's faults go, the new one's stand.
+            EXPECT(apply(s, model::SetInsertActive{active, true}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "SetInsertActive was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return standing(s.inbox).count(active) != 0; }),
+                   "an insert made active again has no fault standing");
+            model::Snapshot plain = s.replica.current();
+            auto plain_edit = std::make_shared<model::EditState>(*plain.edit);
+            auto plain_track = std::make_shared<model::TrackEdit>(*plain_edit->tracks.at(0));
+            plain_track->inserts.clear();
+            plain_edit->tracks[0] = plain_track;
+            plain.edit = plain_edit;
+            plain.mix.inserts.clear();
+            EXPECT(model::serialize(plain, model::WriteInfo{"conformance", 1}, load.op, error),
+                   error);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
+                   "the session without inserts was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return standing(s.inbox).empty(); }),
+                   "a fault from the session before still stands");
+            return ok();
+        }
+    };
+    return C(rig, "plugin faults by insert").go();
+}
+
+// FlushPluginState: the request File > Save sends first. With nothing
+// running it changes nothing and says Ok; it refuses what is not an
+// insert.
+int check_flush_plugin_state(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            ModelRequest flush;
+            flush.action = ModelAction::FlushPluginState;
+            CommandReply r;
+            const std::size_t updates = s.inbox.model.size();
+            EXPECT(s.await(rig_, s.engine->submit(flush), r) && r.result == DispatchResult::Ok,
+                   "a flush with no insert was refused: " + r.message);
+            EXPECT(s.next_publish(rig_) && s.inbox.model.size() == updates,
+                   "a flush with nothing to record sent an update");
+            flush.op = "12x";
+            EXPECT(s.await(rig_, s.engine->submit(flush), r) && r.result == DispatchResult::Failed,
+                   "a flush of \"12x\" was accepted");
+            EXPECT(mentions(r.message, "not an insert id"), "the refusal does not say why");
+            flush.op = std::to_string(s.replica.current().next_id + 100);
+            EXPECT(s.await(rig_, s.engine->submit(flush), r) && r.result == DispatchResult::Failed,
+                   "a flush of an insert no track holds was accepted");
+            EXPECT(mentions(r.message, "is not on any track"), "the refusal does not say why");
+            return ok();
+        }
+    };
+    return C(rig, "flush plugin state").go();
+}
+
 int check_take_failed(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -821,6 +1137,9 @@ int run(Rig& rig) {
     failures += check_parameters(rig);
     failures += check_model(rig);
     failures += check_load(rig);
+    failures += check_inserts(rig);
+    failures += check_plugin_faults(rig);
+    failures += check_flush_plugin_state(rig);
     failures += check_take_failed(rig);
     failures += check_inputs_missing(rig);
     failures += check_peaks(rig);

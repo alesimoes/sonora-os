@@ -2,6 +2,7 @@
 #include "sonora/api/wire.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "sonora/api/state_block.h"
@@ -97,18 +98,37 @@ public:
         pos_ += n;
         return true;
     }
-    bool list(std::vector<std::string>& v) {
+    bool list(std::vector<std::string>& v, std::size_t cap = kMaxListEntries) {
         uint32_t n = 0;
         if (!u32(n)) return false;
-        if (n > kMaxListEntries) {
+        if (n > cap) {
             return fail("a list of " + std::to_string(n) + " entries, over the cap of " +
-                        std::to_string(kMaxListEntries));
+                        std::to_string(cap));
         }
         v.clear();
         for (uint32_t i = 0; i < n; ++i) {
             std::string s;
             if (!str(s)) return false;
             v.push_back(std::move(s));
+        }
+        return true;
+    }
+    // A bool is a u32 that is 0 or 1; anything else is a peer that does not
+    // mean what it says.
+    bool flag(bool& out) {
+        uint32_t v = 0;
+        if (!u32(v)) return false;
+        if (v > 1) return fail("a flag of " + std::to_string(v) + ", where 0 or 1 was expected");
+        out = v == 1;
+        return true;
+    }
+    // A count of entries to follow, refused past `cap` before anything is
+    // reserved for them.
+    bool count(uint32_t& n, std::size_t cap, const char* what) {
+        if (!u32(n)) return false;
+        if (n > cap) {
+            return fail(std::string("a list of ") + std::to_string(n) + " " + what +
+                        ", over the cap of " + std::to_string(cap));
         }
         return true;
     }
@@ -144,9 +164,10 @@ private:
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
-constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Load);
-constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Fatal);
+constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::FlushPluginState);
+constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::PluginFault);
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::Snapshot);
+constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
 
 }  // namespace
 
@@ -202,6 +223,7 @@ void encode(const EngineEvent& m, std::string& out) {
     w.u32(static_cast<uint32_t>(m.kind));
     w.i32(m.track);
     w.u64(m.frame);
+    w.u64(m.insert);
     w.str(m.text);
 }
 
@@ -212,6 +234,78 @@ void encode(const ModelUpdate& m, std::string& out) {
     w.u64(m.undo_floor);
     w.u64(m.next_id);
     w.str(m.bytes);
+}
+
+void encode(const PluginParameterChange& m, std::string& out) {
+    Writer w(out, Type::PluginParameterChange);
+    w.u64(m.seq);
+    w.u64(m.insert);
+    w.str(m.key);
+    w.f32(m.value);
+}
+
+bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
+    if (m.plugins.size() > kMaxCatalogPlugins) {
+        error = "a catalog of " + std::to_string(m.plugins.size()) + " plugins, over the cap of " +
+                std::to_string(kMaxCatalogPlugins);
+        return false;
+    }
+    for (const PluginInfo& p : m.plugins) {
+        if (p.params.size() > kMaxPluginParams) {
+            error = p.name + " has " + std::to_string(p.params.size()) +
+                    " parameters, over the cap of " + std::to_string(kMaxPluginParams);
+            return false;
+        }
+        if (p.categories.size() > kMaxPluginCategories) {
+            error = p.name + " has " + std::to_string(p.categories.size()) +
+                    " categories, over the cap of " + std::to_string(kMaxPluginCategories);
+            return false;
+        }
+        for (const PluginParam& q : p.params) {
+            if (q.key.size() > kMaxParamKeyBytes) {
+                error = p.name + " parameter " + q.name + " has a key of " +
+                        std::to_string(q.key.size()) + " bytes, over the cap of " +
+                        std::to_string(kMaxParamKeyBytes);
+                return false;
+            }
+            if (q.labels.size() > kMaxParamLabels) {
+                error = p.name + " parameter " + q.name + " has " +
+                        std::to_string(q.labels.size()) + " labels, over the cap of " +
+                        std::to_string(kMaxParamLabels);
+                return false;
+            }
+        }
+    }
+    Writer w(out, Type::PluginCatalog);
+    w.u64(m.generation);
+    w.u32(static_cast<uint32_t>(m.plugins.size()));
+    for (const PluginInfo& p : m.plugins) {
+        w.u32(static_cast<uint32_t>(p.format));
+        w.str(p.id);
+        w.str(p.name);
+        w.str(p.vendor);
+        w.str(p.version);
+        w.list(p.categories);
+        w.u32(p.inputs);
+        w.u32(p.outputs);
+        w.u32(p.usable ? 1 : 0);
+        w.str(p.refusal);
+        w.u32(p.has_editor ? 1 : 0);
+        w.u32(static_cast<uint32_t>(p.params.size()));
+        for (const PluginParam& q : p.params) {
+            w.u32(q.index);
+            w.str(q.key);
+            w.str(q.name);
+            w.f32(q.min);
+            w.f32(q.max);
+            w.f32(q.default_value);
+            w.u32(q.flags);
+            w.str(q.unit);
+            w.u32(q.steps);
+            w.list(q.labels);
+        }
+    }
+    return true;
 }
 
 bool decode_hello_versions(std::string_view bytes, uint32_t& protocol_version,
@@ -286,7 +380,8 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
     Reader r(bytes, error);
     EngineEvent m;
     if (!r.type(Type::EngineEvent) || !r.enumeration(m.kind, kLastEvent) ||
-        !r.i32(m.track) || !r.u64(m.frame) || !r.str(m.text) || !r.done()) {
+        !r.i32(m.track) || !r.u64(m.frame) || !r.u64(m.insert) || !r.str(m.text) ||
+        !r.done()) {
         return false;
     }
     out = std::move(m);
@@ -303,6 +398,114 @@ bool decode(std::string_view bytes, ModelUpdate& out, std::string& error) {
     }
     out = std::move(m);
     return true;
+}
+
+bool decode(std::string_view bytes, PluginParameterChange& out, std::string& error) {
+    Reader r(bytes, error);
+    PluginParameterChange m;
+    if (!r.type(Type::PluginParameterChange) || !r.u64(m.seq) || !r.u64(m.insert) ||
+        !r.str(m.key, kMaxParamKeyBytes) || !r.f32(m.value) || !r.done()) {
+        return false;
+    }
+    out = std::move(m);
+    return true;
+}
+
+bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
+    Reader r(bytes, error);
+    PluginCatalog m;
+    uint32_t plugins = 0;
+    if (!r.type(Type::PluginCatalog) || !r.u64(m.generation) ||
+        !r.count(plugins, kMaxCatalogPlugins, "plugins")) {
+        return false;
+    }
+    for (uint32_t i = 0; i < plugins; ++i) {
+        PluginInfo p;
+        uint32_t params = 0;
+        if (!r.enumeration(p.format, kLastFormat) || !r.str(p.id) || !r.str(p.name) ||
+            !r.str(p.vendor) || !r.str(p.version) ||
+            !r.list(p.categories, kMaxPluginCategories) || !r.u32(p.inputs) || !r.u32(p.outputs) ||
+            !r.flag(p.usable) || !r.str(p.refusal) || !r.flag(p.has_editor) ||
+            !r.count(params, kMaxPluginParams, "parameters")) {
+            return false;
+        }
+        for (uint32_t k = 0; k < params; ++k) {
+            PluginParam q;
+            if (!r.u32(q.index) || !r.str(q.key, kMaxParamKeyBytes) || !r.str(q.name) ||
+                !r.f32(q.min) || !r.f32(q.max) || !r.f32(q.default_value) || !r.u32(q.flags) ||
+                !r.str(q.unit) || !r.u32(q.steps) || !r.list(q.labels, kMaxParamLabels)) {
+                return false;
+            }
+            const std::string where = p.name + " parameter " + std::to_string(k);
+            if (q.index != k) {
+                return r.fail(where + " has dense index " + std::to_string(q.index));
+            }
+            // Written so that NaN fails it.
+            if (!(std::isfinite(q.min) && std::isfinite(q.max) && q.min <= q.max &&
+                  q.default_value >= q.min && q.default_value <= q.max)) {
+                return r.fail(where + " has a range that is not finite, inverted, or does not"
+                                      " hold its default");
+            }
+            if ((q.flags & ~kKnownParamFlags) != 0) {
+                return r.fail(where + " has flags this version does not define");
+            }
+            if (q.steps == 1) {
+                return r.fail(where + " has 1 step; a stepped parameter takes at least 2");
+            }
+            if (!q.labels.empty() && q.labels.size() != q.steps) {
+                return r.fail(where + " has " + std::to_string(q.labels.size()) +
+                              " labels for " + std::to_string(q.steps) + " steps");
+            }
+            p.params.push_back(std::move(q));
+        }
+        m.plugins.push_back(std::move(p));
+    }
+    if (!r.done()) return false;
+    out = std::move(m);
+    return true;
+}
+
+bool decode_into(std::string_view bytes, Inbox& inbox, std::string& error) {
+    Type type{};
+    if (!peek_type(bytes, type)) {
+        error = "an empty message";
+        return false;
+    }
+    switch (type) {
+        case Type::CommandReply: {
+            CommandReply m;
+            if (!decode(bytes, m, error)) return false;
+            inbox.replies.push_back(std::move(m));
+            return true;
+        }
+        case Type::EngineEvent: {
+            EngineEvent m;
+            if (!decode(bytes, m, error)) return false;
+            inbox.events.push_back(std::move(m));
+            return true;
+        }
+        case Type::ModelUpdate: {
+            ModelUpdate m;
+            if (!decode(bytes, m, error)) return false;
+            inbox.model.push_back(std::move(m));
+            return true;
+        }
+        case Type::PluginCatalog: {
+            PluginCatalog m;
+            if (!decode(bytes, m, error)) return false;
+            inbox.catalogs.push_back(std::move(m));
+            return true;
+        }
+        case Type::Hello:
+        case Type::CommandRequest:
+        case Type::ParameterChange:
+        case Type::ModelRequest:
+        case Type::PluginParameterChange:
+            break;
+    }
+    error = "message type " + std::to_string(static_cast<unsigned>(type)) +
+            " is not one an engine sends to a client";
+    return false;
 }
 
 std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_version) {

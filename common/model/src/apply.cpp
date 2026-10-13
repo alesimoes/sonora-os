@@ -43,6 +43,44 @@ std::size_t locate_track(const EditState& e, Id track) {
     return kNone;
 }
 
+struct InsertAt {
+    std::size_t track = kNone;
+    std::size_t index = kNone;
+};
+
+bool locate_insert(const EditState& e, Id insert, InsertAt& at) {
+    for (std::size_t t = 0; t < e.tracks.size(); ++t) {
+        const auto& ins = e.tracks[t]->inserts;
+        for (std::size_t i = 0; i < ins.size(); ++i) {
+            if (ins[i].id == insert) {
+                at.track = t;
+                at.index = i;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void insert_by_slot(std::vector<Insert>& v, Insert in) {
+    const auto it = std::lower_bound(
+        v.begin(), v.end(), in.slot,
+        [](const Insert& a, std::uint8_t slot) { return a.slot < slot; });
+    v.insert(it, std::move(in));
+}
+
+const Insert* in_slot(const std::vector<Insert>& v, std::uint8_t slot) {
+    for (const Insert& in : v) {
+        if (in.slot == slot) return &in;
+    }
+    return nullptr;
+}
+
+std::string slot_name(std::uint8_t slot) {
+    return slot < kInsertSlots ? std::string(1, static_cast<char>('A' + slot))
+                               : std::to_string(slot);
+}
+
 std::size_t region_index(const Playlist& p, Id region) {
     for (std::size_t i = 0; i < p.regions.size(); ++i) {
         if (p.regions[i].id == region) return i;
@@ -490,7 +528,173 @@ public:
         });
     }
 
+    // --- inserts: structure, undoable (O1's default) ---
+
+    bool operator()(const AddInsert& op) {
+        std::string where;
+        std::string why = detail::plugin_problem(op.plugin, where);
+        if (!why.empty()) return fail(where + ": " + why);
+        InsertMix values{op.insert, false, op.params, op.state};
+        why = detail::insert_mix_problem(values, op.plugin.format, where);
+        if (!why.empty()) return fail(where + ": " + why);
+        if (!fresh(op.insert)) return false;
+        const bool ok = edit_track(op.track, [&](TrackEdit& t) {
+            if (!free_slot(t, op.slot, 0)) return false;
+            insert_by_slot(t.inserts, Insert{op.insert, op.slot, op.plugin, true});
+            next_id_ = op.insert + 1;
+            return true;
+        });
+        if (ok) set_insert_mix(after_.mix, std::move(values));
+        return ok;
+    }
+
+    bool operator()(const RemoveInsert& op) {
+        return edit_insert(op.insert, [&](std::vector<Insert>& v, std::size_t i) {
+            v.erase(v.begin() + static_cast<std::ptrdiff_t>(i));
+            return true;
+        });
+    }
+
+    bool operator()(const MoveInsert& op) {
+        InsertAt at;
+        if (!locate_insert(*before_.edit, op.insert, at)) return no_insert(op.insert);
+        const std::size_t to = locate_track(*before_.edit, op.to_track);
+        if (to == kNone) return fail("track " + str(op.to_track) + " does not exist");
+        // A chain runs at its track's channel count, in and out (ADR-0012
+        // §7.1), and the plugin was chosen for this one. Moving it across
+        // would keep a mono plugin on a stereo track, or the reverse.
+        const std::uint16_t from_channels = before_.edit->tracks[at.track]->channels;
+        const std::uint16_t to_channels = before_.edit->tracks[to]->channels;
+        if (from_channels != to_channels) {
+            return fail("insert " + str(op.insert) + " cannot move from a " +
+                        str(static_cast<std::uint64_t>(from_channels)) + "-channel track onto a " +
+                        str(static_cast<std::uint64_t>(to_channels)) +
+                        "-channel one; add the plugin there instead");
+        }
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        auto from_track = std::make_shared<TrackEdit>(*edit->tracks[at.track]);
+        Insert moving = from_track->inserts[at.index];
+        from_track->inserts.erase(from_track->inserts.begin() +
+                                  static_cast<std::ptrdiff_t>(at.index));
+        std::shared_ptr<TrackEdit> to_track =
+            to == at.track ? from_track : std::make_shared<TrackEdit>(*edit->tracks[to]);
+        if (!free_slot(*to_track, op.to_slot, op.insert)) return false;
+        moving.slot = op.to_slot;
+        insert_by_slot(to_track->inserts, std::move(moving));
+        edit->tracks[at.track] = std::move(from_track);
+        if (to != at.track) edit->tracks[to] = std::move(to_track);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    bool operator()(const SetInsertActive& op) {
+        return edit_insert(op.insert, [&](std::vector<Insert>& v, std::size_t i) {
+            v[i].active = op.active;
+            return true;
+        });
+    }
+
+    bool operator()(const ReplaceInsert& op) {
+        std::string where;
+        std::string why = detail::plugin_problem(op.plugin, where);
+        if (!why.empty()) return fail(where + ": " + why);
+        InsertMix values{op.replacement, false, op.params, op.state};
+        why = detail::insert_mix_problem(values, op.plugin.format, where);
+        if (!why.empty()) return fail(where + ": " + why);
+        if (!fresh(op.replacement)) return false;
+        const bool ok = edit_insert(op.insert, [&](std::vector<Insert>& v, std::size_t i) {
+            v[i] = Insert{op.replacement, v[i].slot, op.plugin, v[i].active};
+            return true;
+        });
+        if (ok) {
+            after_.next_id = op.replacement + 1;
+            set_insert_mix(after_.mix, std::move(values));
+        }
+        return ok;
+    }
+
+    // --- inserts: values, mix state ---
+
+    bool operator()(const SetInsertBypass& op) {
+        return edit_insert_mix(op.insert, [&](InsertMix& m) {
+            m.bypass = op.bypass;
+            return true;
+        });
+    }
+
+    bool operator()(const SetInsertParams& op) {
+        return edit_insert_mix(op.insert, [&](InsertMix& m) {
+            m.params = op.params;
+            return true;
+        });
+    }
+
+    bool operator()(const SetInsertState& op) {
+        return edit_insert_mix(op.insert, [&](InsertMix& m) {
+            m.state = op.state;
+            return true;
+        });
+    }
+
 private:
+    bool no_insert(Id insert) {
+        return fail("insert " + str(insert) + " is not on any track");
+    }
+
+    // `slot` on `t` holds nothing, or only the insert `moving` itself.
+    bool free_slot(const TrackEdit& t, std::uint8_t slot, Id moving) {
+        if (slot >= kInsertSlots) {
+            return fail("slot " + str(static_cast<std::uint64_t>(slot)) +
+                        " is not one of the " + str(static_cast<std::uint64_t>(kInsertSlots)) +
+                        " insert slots (A to J)");
+        }
+        const Insert* there = in_slot(t.inserts, slot);
+        if (there != nullptr && there->id != moving) {
+            return fail("slot " + slot_name(slot) + " on track " + str(t.id) +
+                        " already holds insert " + str(there->id) + " (" +
+                        there->plugin.name + ")");
+        }
+        return true;
+    }
+
+    static void set_insert_mix(MixState& mix, InsertMix m) {
+        for (InsertMix& existing : mix.inserts) {
+            if (existing.insert == m.insert) {
+                existing = std::move(m);
+                return;
+            }
+        }
+        mix.inserts.push_back(std::move(m));
+    }
+
+    // The track holding `insert` copied, its insert list edited by `f`.
+    template <typename F>
+    bool edit_insert(Id insert, F&& f) {
+        InsertAt at;
+        if (!locate_insert(*before_.edit, insert, at)) return no_insert(insert);
+        return edit_track(before_.edit->tracks[at.track]->id,
+                          [&](TrackEdit& t) { return f(t.inserts, at.index); });
+    }
+
+    // An insert's values, checked against its plugin's format. Only an
+    // insert that is on a track: values left behind by a removal are kept
+    // for undo, not edited.
+    template <typename F>
+    bool edit_insert_mix(Id insert, F&& f) {
+        InsertAt at;
+        if (!locate_insert(*before_.edit, insert, at)) return no_insert(insert);
+        const Insert& in = before_.edit->tracks[at.track]->inserts[at.index];
+        const InsertMix* existing = before_.mix.find_insert(insert);
+        InsertMix m = existing != nullptr ? *existing : InsertMix{insert, false, {}, {}};
+        if (!f(m)) return false;
+        std::string where;
+        const std::string why = detail::insert_mix_problem(m, in.plugin.format, where);
+        if (!why.empty()) return fail("insert " + str(insert) + "." + where + ": " + why);
+        after_ = before_;
+        set_insert_mix(after_.mix, std::move(m));
+        return true;
+    }
     bool fail(std::string msg) {
         error_ = std::move(msg);
         return false;
@@ -625,7 +829,10 @@ private:
 bool is_undoable(const Operation& op) {
     return !(std::holds_alternative<AddSource>(op) || std::holds_alternative<SetMix>(op) ||
              std::holds_alternative<SetMonitorBus>(op) ||
-             std::holds_alternative<SetSettings>(op));
+             std::holds_alternative<SetSettings>(op) ||
+             std::holds_alternative<SetInsertBypass>(op) ||
+             std::holds_alternative<SetInsertParams>(op) ||
+             std::holds_alternative<SetInsertState>(op));
 }
 
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,

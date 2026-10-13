@@ -174,6 +174,10 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
             case api::EventKind::Notice:
                 notices_.push_back(e.text);
                 break;
+            case api::EventKind::PluginFault:
+                // Empty: the fault cleared, which a notice line cannot show.
+                if (!e.text.empty()) notices_.push_back(e.text);
+                break;
             case api::EventKind::InputsMissing:
                 inputs_missing_ = e.text;
                 break;

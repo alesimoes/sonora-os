@@ -12,7 +12,8 @@
 // the folder synced -- so a power cut leaves the old file or the new one.
 //
 // What it does not do yet, and nothing claims it does: rotated backups in
-// "Session File Backups/", autosave, and offering a newer autosave at open.
+// "Session File Backups/" (it keeps only the pre-migration copy), autosave,
+// and offering a newer autosave at open.
 //
 // The layout is the spec's: <dir>/<Name>/<Name>.sonora, one folder per
 // session, all under one sessions folder. The interface lists that folder
@@ -50,9 +51,12 @@ struct SessionEntry {
 // session file is not listed.
 std::vector<SessionEntry> list_sessions(const QString& dir);
 
-// Atomically replaces `file` with `bytes`, creating its folder. On failure
-// `why` says what failed, and a folder this call created is removed again,
-// so a retry finds the name free. Once the new file has replaced the old one
+// Atomically replaces `file` with `bytes`, creating its folder. A `file` of
+// an older format version is first copied, once, to "Session File
+// Backups/<Name>.v<old>.sonora" (session-format.md, "Versioning"); a `file`
+// of a newer format version is refused and left untouched. On
+// failure `why` says what failed, and a folder this call created is removed
+// again, so a retry finds the name free. Once the new file has replaced the old one
 // the save has happened and this returns true; `caution` is then empty, or
 // says what could not be made durable (a folder that would not sync).
 bool write_session_file(const QString& file, const std::string& bytes, std::string& why,
