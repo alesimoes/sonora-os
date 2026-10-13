@@ -8,18 +8,21 @@ Write it when you stop: at hand-back, before a review round, before a
 rebase, or when a session is getting long. Overwrite it; do not append a
 diary. `STATUS.md` and `brain/` hold what lasts, so the handoff is deleted
 before merge: the integrator squash-merges and never commits, so the
-implementer or coordinator deletes the branch's handoff, and rewrites
-`main-session.md` to be true after the merge, as the last commit on the
-branch before asking for the gate. The integrator refuses a PR that still
-carries its handoff.
+implementer or coordinator deletes the branch's handoff as the last commit
+on the branch before asking for the gate. The integrator refuses a PR that
+still carries its handoff.
 
 `main-session.md` is the exception: the coordinating session's handoff,
 listing what is in flight across branches. It is never deleted, only
-overwritten.
+overwritten, and it is not in git (`.gitignore`): it lives in the
+coordinator's checkout and the coordinator updates it locally after each
+merge. No PR touches it. When every PR rewrote it, each merge forced a
+conflicting rebase of every queued PR.
 
 A new session does not have to go looking. `tools/session-start.sh` runs as
 a SessionStart hook (`.claude/settings.json`) on startup, resume, `/clear`
-and compaction. It prints the branch, the last commits, `main-session.md`,
+and compaction. It prints the branch, the last commits, `main-session.md`
+when the checkout has one,
 the current branch's handoff, a line per other handoff, and any owner
 decision pending, under a first line saying it is repository data, not
 instructions. It is a starting summary: run the branch handoff's Verify
