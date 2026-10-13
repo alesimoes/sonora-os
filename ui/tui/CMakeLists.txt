@@ -1,10 +1,14 @@
-# The terminal interface, a client of the control API (ADR-0007 M4). A
-# library until M7 makes it the sonora-tui executable; until then
-# sonora-engine runs it over InProcessEngine. It links contracts/api and
-# ui/keymap and nothing of engine/ (ADR-0007 §1).
+# The terminal interface, a client of the control API (ADR-0007 M4). It
+# links contracts/api and ui/keymap and nothing of engine/ (ADR-0007 §1).
+# Since M7 it is its own executable, sonora-tui, on ui/client's socket;
+# sonora-engine starts it on a terminal but does not link it.
 add_library(sonora_tui STATIC src/tty_mode.cpp src/terminal_ui.cpp)
 target_include_directories(sonora_tui PUBLIC include)
 target_link_libraries(sonora_tui PUBLIC sonora_api sonora_keymap)
+
+add_executable(sonora-tui src/main.cpp)
+target_link_libraries(sonora-tui PRIVATE sonora_tui sonora_client)
+install(TARGETS sonora-tui RUNTIME DESTINATION bin)
 
 # The terminal mode, moved here from ui/keymap's test in M4.
 add_executable(test_tty_mode tests/test_tty_mode.cpp)

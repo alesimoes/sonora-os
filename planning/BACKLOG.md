@@ -34,7 +34,11 @@ playback can follow edits; it is in flight.
 5b. [ ] M5, M6.
 6. [ ] Take safety in DAW 1: 4 GB limit refused, periodic `fdatasync`, a
        take that survives `kill -9`, bext date.
-7. [ ] M7 process split, during DAW 2.
+7. [x] M7 process split: socket and memfd behind `common/platform`,
+       headless `sonora-engine`, `SocketEngine`, `sonora-tui`, `sonora-ctl`,
+       the Qt UI on the engine's document (`feature/process-split`; ADR-0007
+       M7 update). Still open: the edit controller's `resolve_*` into
+       `engine/control`.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
 
@@ -348,7 +352,7 @@ Order and owners are in ADR-0008 §5.
 - [ ] P8, inside M6: put the ADR-0008 §1 table into OPERATIONS.md and the
       charters, and propose the rule for CLAUDE.md. The CLAUDE.md edit is
       the owner's.
-- [ ] P9, inside M7: socket and shared memory behind `common/platform`
+- [x] P9, inside M7: socket and shared memory behind `common/platform`
       (`ControlChannel`, `SharedRegion`). No socket or mapping code in
       `engine/control` or `ui/client`. rt-engineer and ui-engineer.
 - [ ] P10, once `ui/qt` is on main: Qt in the `portable` job, from a cached

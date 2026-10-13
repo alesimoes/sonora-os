@@ -10,7 +10,14 @@ bool ControlAdapter::connect(std::string& error) {
     info_.buffer_frames = h.buffer_frames;
     info_.track_count = h.track_count;
     info_.implemented_commands = h.implemented_commands;
+    if (probe_) connection_ = probe_();
     return true;
+}
+
+void ControlAdapter::watchConnection(ConnectionProbe probe, LinkSink sink) {
+    probe_ = std::move(probe);
+    link_sink_ = std::move(sink);
+    connection_ = probe_ ? probe_() : 0;
 }
 
 uint64_t ControlAdapter::send(const std::string& command, const CommandContext& ctx) {
@@ -20,13 +27,27 @@ uint64_t ControlAdapter::send(const std::string& command, const CommandContext& 
     r.argument = ctx.argument;
     const uint64_t seq = engine_.send(r);
     pending_[seq] = command;
+    // Seqs only grow, so the first is the oldest.
+    if (pending_.size() > kMaxAwaiting) pending_.erase(pending_.begin());
+    return seq;
+}
+
+uint64_t ControlAdapter::submitModel(const api::ModelRequest& request) {
+    const uint64_t seq = engine_.submit(request);
+    model_seqs_.insert(seq);
+    if (model_seqs_.size() > kMaxAwaiting) model_seqs_.erase(model_seqs_.begin());
     return seq;
 }
 
 void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
     inbox_.clear();
     engine_.poll(inbox_);
+    model_replies_.clear();
     for (const api::CommandReply& r : inbox_.replies) {
+        if (model_seqs_.erase(r.seq) != 0) {
+            model_replies_.push_back(r);
+            continue;
+        }
         CommandOutcome o;
         o.seq = r.seq;
         const auto it = pending_.find(r.seq);
@@ -50,9 +71,23 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         o.text = e.text;
         events_.push_back(std::move(o));
     }
-    // Model updates are for the Edit window's replica, which still runs on
-    // its local document (timeline_document.h); it subscribes here when it
-    // moves onto the engine's.
+    if (model_sink_) model_sink_(inbox_.model, model_replies_);
+
+    // After the sink, so the replies the old connection did bring count.
+    const uint64_t now = probe_ ? probe_() : connection_;
+    if (now == connection_) return;
+    connection_ = now;
+    model_seqs_.clear();
+    for (const auto& [seq, command] : pending_) {
+        CommandOutcome o;
+        o.seq = seq;
+        o.command = command;
+        o.result = DispatchResult::Failed;
+        o.message = "the connection to the engine was lost before it answered";
+        replies.push_back(std::move(o));
+    }
+    pending_.clear();
+    if (link_sink_) link_sink_(now != 0);
 }
 
 void ControlAdapter::take_events(std::vector<EngineEvent>& out) {

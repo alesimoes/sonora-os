@@ -39,6 +39,27 @@ Architecture:
 - Disk I/O on its own thread, with overruns counted rather than hidden.
 - A terminal display showing meters, xruns and overruns separately — they have
   different causes and conflating them sends you after the wrong bug.
+- The engine is a headless process. Every interface — the Qt UI, the
+  terminal interface `sonora-tui`, the script client `sonora-ctl` — connects
+  to its control socket (`$XDG_RUNTIME_DIR/sonora/engine.sock`) and reads the
+  meters and transport from a shared state block it can only read. An
+  interface that crashes mid-take leaves the take recording.
+
+## Run it on a desktop (Linux or WSL)
+
+Build natively (`cmake -S . -B build && cmake --build build -j`; the Qt UI
+needs Qt 6.7 or later), then:
+
+    tools/run-sonora.sh                   # engine + Qt UI, two processes
+    tools/run-sonora.sh --backend fake    # no audio server: 18 synthetic inputs
+    tools/run-sonora.sh --ui tui          # the terminal interface instead
+    tools/run-sonora.sh -- --demo         # options after -- go to the UI
+
+With PipeWire running the engine records through it (JACK API, via
+`pw-jack`); without, `--backend fake` stands in for a UMC1820. Closing the UI
+stops the engine, and the take is closed cleanly. `sonora-ui` started on its
+own uses the engine on the default socket if one is listening and its
+built-in fake engine otherwise, and says which on screen.
 
 ## Build
 

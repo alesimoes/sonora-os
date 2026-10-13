@@ -5,40 +5,25 @@
 // everything they know about the engine passes through EngineAdapter.
 //
 // The model is common/model's (ADR-0007 M8): its Snapshot, its pure
-// apply(), its byte-bounded History. What is still local is *where* the
-// document lives: `ModelDocument` holds the History in this process,
-// because the operation stream (M7) does not carry edits from the engine
-// yet. The swap when it does:
+// apply(), its byte-bounded History. Since M7 the document sonora-ui edits
+// is the engine's: `ReplicaDocument` (replica_document.h) keeps a
+// model::Replica fed by the engine's updates and shows it with the requests
+// in flight applied on top. `ModelDocument` holds a History in this
+// process, for the tests that need no engine.
 //
-//   here                               at M7
-//   --------------------------------   --------------------------------------
-//   ModelDocument (a History here)     a model::Replica fed by the engine's
-//                                      model::Document (replication.h)
-//   TimelineDocument::submit(op)       EngineControl::send(the command); the
-//                                      engine resolves and applies, and the
-//                                      replica changes when the update comes
-//                                      back (ReplicationUpdate::Kind::Op)
-//   TimelineDocument::undo / redo      the edit.undo / edit.redo commands;
-//                                      the replica moves on Kind::Undo/Redo
-//   TimelineDocument::reset            Kind::Snapshot: a session was opened
-//   TimelineDocument::reserve_id       gone: engine/control allocates ids when
-//                                      it resolves a command into an operation
+//   TimelineDocument          ReplicaDocument, on the engine
+//   ------------------------  ---------------------------------------------
+//   submit(op)                ModelAction::Apply with the resolved op;
+//                             shown at once, taken back if refused
+//   undo / redo               ModelAction::Undo / Redo
+//   reset (File > Open)       ModelAction::Load with the session file's
+//                             bytes; every replica gets a Snapshot
+//   reserve_id                from what is shown; a clash with another
+//                             interface's edit is refused by the engine
 //
-// TODO(M7): a ReplicaDocument in place of ModelDocument. #33 put the wire
-// in place (ModelRequest / ModelUpdate, FakeEngine's model::Document) but
-// not yet what this seam needs to sit on it, so it is not routed there now:
-//   - ControlAdapter::poll() drops Inbox::model; the updates must reach a
-//     model::Replica, and a reply from a ModelRequest must not be taken by
-//     the command path that shares the inbox.
-//   - submit() answers at once and EditController reads the snapshot right
-//     after it; over a socket the answer is a later reply, so submit()
-//     becomes "sent", and a refusal arrives as a CommandReply.
-//   - reset() has no ModelAction: File > Open needs the engine to load a
-//     session file and send Kind::Snapshot (session-format.md, "Saving").
-//   - reserve_id() goes: engine/control allocates ids when it resolves.
-// Doing it against FakeEngine alone would leave the demo session (built
-// here, with regions and sources) on one side and the engine's empty
-// document on the other.
+// Still open: the edit controller resolves operations here, in the
+// interface. Moving the resolve_* functions to engine/control, so a key is
+// a command the engine resolves and allocates ids for, is the next step.
 //
 // Rules that keep the swap mechanical:
 //
@@ -77,8 +62,9 @@ public:
     // what apply() checks.
     virtual model::Id reserve_id() = 0;
     // A different session (one was opened): the snapshot replaced, and a new
-    // history, because undo never crosses into another session.
-    virtual void reset(model::Snapshot s) = 0;
+    // history, because undo never crosses into another session. Refused,
+    // with `why`, when the document's owner cannot be reached.
+    virtual bool reset(model::Snapshot s, std::string& why) = 0;
     uint64_t revision() const { return snapshot().revision; }
 };
 
@@ -98,7 +84,7 @@ public:
     bool can_undo() const override { return history_.can_undo(); }
     bool can_redo() const override { return history_.can_redo(); }
     model::Id reserve_id() override;
-    void reset(model::Snapshot s) override;
+    bool reset(model::Snapshot s, std::string& why) override;
 
     const model::History& history() const { return history_; }
 

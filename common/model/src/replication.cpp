@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "sonora/model/op_codec.h"
+#include "sonora/model/session_file.h"
 
 namespace sonora::model {
 
@@ -100,6 +101,29 @@ bool Document::snapshot(ReplicationUpdate& out, std::string& error, std::size_t 
     out.undo_floor = history_.floor();
     out.next_id = history_.current().next_id;
     out.bytes = std::move(bytes);
+    return true;
+}
+
+bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
+                    ReplicationUpdate& out, std::string& error, std::size_t max_bytes) {
+    Loaded loaded;
+    LoadError why;
+    if (!deserialize(session_file, loaded, why)) {
+        error = "the session does not load: " + why.text();
+        return false;
+    }
+    if (sample_rate != 0 && loaded.snapshot.settings.sample_rate != sample_rate) {
+        error = "the session is at " + std::to_string(loaded.snapshot.settings.sample_rate) +
+                " Hz and this system runs at " + std::to_string(sample_rate) +
+                " Hz; it cannot play here until sample-rate conversion exists";
+        return false;
+    }
+    History previous = std::move(history_);
+    history_ = History(std::move(loaded.snapshot), previous.budget());
+    if (!snapshot(out, error, max_bytes)) {
+        history_ = std::move(previous);
+        return false;
+    }
     return true;
 }
 

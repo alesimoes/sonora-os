@@ -16,6 +16,10 @@ TOOLS=/interop-tools
 
 cp /engine-build/sonora-engine /tmp/sonora-engine
 chmod 0755 /tmp/sonora-engine
+# Since M7 the key loop is sonora-tui, which the engine starts from beside
+# itself on its terminal.
+cp /engine-build/sonora-tui /tmp/sonora-tui
+chmod 0755 /tmp/sonora-tui
 
 export XDG_RUNTIME_DIR=/tmp/runtime
 mkdir -p "$XDG_RUNTIME_DIR"

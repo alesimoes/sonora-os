@@ -127,6 +127,10 @@ the CI job of §4 will test:
     disproves the assumption on the first run of §4's CI job.
   - If it fails there, exclusive create moves behind
     `common/platform` (`create_exclusive()`). It is not weakened.
+  - *Update, M7 review (PR #38):* it moved there anyway, for close-on-exec
+    (a take must not leak into the `sonora-tui` child). `create_exclusive()`
+    is `O_CREAT|O_EXCL|O_CLOEXEC` on POSIX and `fopen(path, "wbx")` in the
+    unsupported stub, so the assumption above still holds for Windows.
 - `engine/core/src/disk_thread.cpp:19`, `:40` use `std::thread` and
   `sleep_for`. Standard.
 - `common/base/tests/test_ringbuffer.cpp:6` uses `std::thread`. Standard.

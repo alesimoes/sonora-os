@@ -95,6 +95,10 @@ public:
     // File > Open. Refused while a take is open, at another sample rate
     // than this session's, and over unsaved changes unless `discard`.
     bool openSessionFile(const QString& file, bool discard, std::string& why);
+    // The File > Open just made never reached the engine (its connection was
+    // lost first). What is shown is the engine's document, not that file's,
+    // so the window stops naming the file and Save never writes over it.
+    void openWasLost();
 
     // The interface's editing commands, installed before KeyRouter::prepare().
     void installCommands(CommandRegistry& local);
@@ -103,6 +107,9 @@ public:
 
     // From ShellModel's tick, on the GUI thread, every tick.
     void onTransport(const TransportSnapshot& t, bool alive);
+    // The document changed under the windows: the engine's update, another
+    // interface's edit, or a refused edit taken back (ReplicaDocument).
+    void documentUpdated();
 
     void attachItem(SceneItem* item);
     void detachItem(SceneItem* item);

@@ -312,6 +312,9 @@ void FakeEngine::handle(const std::string& bytes) {
             case ModelAction::Resync:
                 ok = document_->snapshot(u, why, wire::kMaxModelBytes);
                 break;
+            case ModelAction::Load:
+                ok = document_->load(m.op, cfg_.sample_rate, u, why, wire::kMaxModelBytes);
+                break;
         }
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (ok) broadcast(to_wire(u));

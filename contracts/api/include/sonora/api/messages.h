@@ -25,7 +25,8 @@ namespace sonora::api {
 
 // Bump on any change to a message's encoding. A client and an engine that
 // disagree refuse each other at connect, by name, with both numbers.
-constexpr uint32_t kProtocolVersion = 1;
+// 2 (M7): ModelAction::Load.
+constexpr uint32_t kProtocolVersion = 2;
 
 // --- client -> engine -------------------------------------------------------
 
@@ -61,6 +62,12 @@ enum class ModelAction : uint32_t {
     Undo = 1,
     Redo = 2,
     Resync = 3,  // send me the whole document; I lost track of the revisions
+    // Open another session: `op` is a session file's bytes (common/model's
+    // session_file.h). The engine's document becomes it, with a new undo
+    // history, and every replica gets a Snapshot. Bytes rather than a path,
+    // so the engine needs no view of the interface's filesystem and File >
+    // Open's checks stay where the dialog is. Protocol version 2.
+    Load = 4,
 };
 
 struct ModelRequest {

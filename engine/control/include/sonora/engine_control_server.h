@@ -3,13 +3,21 @@
 // The engine's side of the control API (ADR-0007 §4.1): where engine/core
 // and contracts/api meet, and nowhere else.
 //
-// It owns the state block and its publisher, the command handlers
+// It owns the state block's writer and its publisher, the command handlers
 // (install_session_commands), and the session document (ADR-0009 §2), and
 // runs a control thread that takes requests as encoded bytes, handles them
-// in order and answers as encoded bytes. It knows no transport: bytes come
-// in through deliver() and go out through the Outbound callback. In process
-// that is InProcessEngine's queue; at M7 it is a socket, and the state
-// block moves to a memfd. Nothing else changes.
+// in order and answers as encoded bytes. It knows no transport: each client
+// is an Outbound callback, attached with attach() and fed with deliver().
+// In process that is InProcessEngine's queue; across processes it is
+// ControlSocketServer (M7), one client per connection, and the state block
+// lives in the memory Options::state_memory names (a memfd).
+//
+// Any number of clients. A reply goes to the client that asked; events and
+// model updates go to every client. A client that attaches late gets Hello,
+// the document's snapshot (the undo window included), and the events that
+// still stand: notices, missing inputs, a failed take, a fatal backend. A
+// client that frames or encodes wrongly is refused and detached, and nothing
+// it sent reaches the session.
 //
 // Nothing here runs on the audio thread. The handlers reach it only
 // through the atomics Track and Transport already have; the publisher
@@ -21,8 +29,10 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,6 +57,10 @@ class Document;
 class EngineControlServer {
 public:
     using Outbound = std::function<void(std::string bytes)>;
+    // Called on the control thread when a client is dropped for what it
+    // sent; the transport then closes the connection. `why` names the fault.
+    using Refuse = std::function<void(const std::string& why)>;
+    using ClientId = uint64_t;
 
     struct Options {
         // 100 Hz: inside the 100 Hz - 1 kHz the measurement found clean,
@@ -63,7 +77,24 @@ public:
         // to check that a client refuses a mismatch.
         uint32_t protocol_version = api::kProtocolVersion;
         uint32_t state_layout_version = api::kStateLayoutVersion;
+        // Where the state block lives: at least api::state_block_bytes() for
+        // the session's tracks, 64-byte aligned, outliving the server. Null:
+        // anonymous memory of the server's own.
+        void* state_memory = nullptr;
+        std::size_t state_memory_bytes = 0;
+        // What one client may have delivered and not yet handled. Past it,
+        // wait_for_room() holds that client's reader back, so a client that
+        // floods is stopped at its own socket and costs bounded memory.
+        std::size_t max_client_backlog_bytes = std::size_t{1} << 20;
+        // A message over `large_message_bytes` (a Load, mostly) is held
+        // whole while it is reassembled. At most this many are reassembled
+        // at once; another client's large message waits, frames and all,
+        // until one completes, and its reader waits with it.
+        std::size_t large_message_bytes = std::size_t{1} << 20;
+        std::size_t max_large_in_flight = 2;
     };
+
+    static constexpr ClientId kFirstClient = 1;
 
     // `audio` may be null: then there are no xrun counts, no fatal check,
     // and buffer_frames is 0. Sizes the state block for the session's
@@ -73,21 +104,53 @@ public:
     EngineControlServer(const EngineControlServer&) = delete;
     EngineControlServer& operator=(const EngineControlServer&) = delete;
 
-    // Sends Hello, then the document's snapshot, then any event posted
-    // before start, through `out`; then starts the publisher and the
-    // control thread. `out` is called on the control thread from then on.
+    // Starts the publisher and the control thread, with no client.
+    void start();
+    // As start(), with `out` attached first as kFirstClient: its Hello,
+    // snapshot and standing events have gone through `out` when this
+    // returns. `out` is called on the control thread from then on.
     void start(Outbound out);
-    // Joins both threads. Idempotent. Requests delivered afterwards are
-    // dropped: a stopped engine answers nothing.
+    // Joins both threads and drops every client. Idempotent. Requests
+    // delivered afterwards are dropped: a stopped engine answers nothing.
     void stop();
     bool running() const { return running_.load(std::memory_order_acquire); }
 
+    // A new client. Any thread; never waits. Its Hello, snapshot and
+    // standing events go through `out`, on the control thread, before
+    // anything else does. `refuse` may be empty.
+    ClientId attach(Outbound out, Refuse refuse);
+    // The client is gone; nothing more is sent to it. Any thread.
+    void detach(ClientId client);
     // One frame of a client's request (api/wire.h). Any thread; never
     // waits for the request to be handled. Outbound gets frames too.
-    void deliver(std::string frame);
+    void deliver(ClientId client, std::string frame);
+    void deliver(std::string frame) { deliver(kFirstClient, std::move(frame)); }
 
-    const void* state_block() const { return block_.data(); }
-    std::size_t state_block_bytes() const { return block_.bytes(); }
+    enum class Room { Ok, Full, Gone };
+    // For a transport's reader, before it reads the client's next frame:
+    // waits up to `timeout_ms` while that client's backlog is full. Gone:
+    // the client was detached or refused, or the server stopped. Any thread
+    // but the control thread, which never waits on a client.
+    Room wait_for_room(ClientId client, int timeout_ms);
+
+    const void* state_block() const { return block_; }
+    std::size_t state_block_bytes() const { return block_bytes_; }
+    // Whether the block is where it should be. False only when
+    // Options::state_memory was too small or misaligned.
+    bool state_ready() const { return state_ready_; }
+
+    // Clients attached now, and clients refused for what they sent since
+    // construction. For diagnostics and the tests.
+    std::size_t clients() const { return client_count_.load(std::memory_order_acquire); }
+    uint64_t refused() const { return refused_.load(std::memory_order_acquire); }
+    // The most one client has had delivered and not handled, and the most
+    // large messages reassembled at once, since construction.
+    std::size_t peak_backlog_bytes() const {
+        return peak_backlog_.load(std::memory_order_acquire);
+    }
+    std::size_t peak_large_in_flight() const {
+        return peak_large_.load(std::memory_order_acquire);
+    }
 
     // --- the control thread, housekeeping, or before start() ---
     void post_event(const api::EngineEvent& event);
@@ -100,17 +163,53 @@ public:
     const std::vector<std::string>& implemented() const { return implemented_; }
 
 private:
+    struct Client {
+        Outbound out;
+        Refuse refuse;
+        api::wire::Reassembler reassembler;
+        // Frames held back behind a large message that has no slot yet.
+        std::deque<std::string> parked;
+    };
+    struct Inbound {
+        enum class Kind { Attach, Frame, Detach };
+        Kind kind = Kind::Frame;
+        ClientId client = 0;
+        std::string bytes;
+        Outbound out;
+        Refuse refuse;
+    };
+
+    void start_threads();
     void run();
-    void handle(const std::string& bytes);
+    void take(Inbound& in);
+    // One frame into the client's reassembler, or parked behind the cap on
+    // large messages.
+    void frame(ClientId id, std::string bytes);
+    void feed(ClientId id, Client& c, const std::string& bytes);
+    // Parked clients get a slot as slots free up, oldest first.
+    void unpark();
+    void forget(ClientId id);
+    // Handled frames' bytes leave their clients' backlogs.
+    void release_handled();
+    void greet(Client& client);
+    void refuse(ClientId id, const std::string& why);
+    void handle(ClientId from, const std::string& bytes);
     void tick();
+    // To every client.
     void send(const std::string& bytes);
-    void reply(uint64_t seq, DispatchResult result, const std::string& message);
+    void send_to(Client& client, const std::string& bytes);
+    void send_to(ClientId id, const std::string& bytes);
+    void reply(ClientId to, uint64_t seq, DispatchResult result, const std::string& message);
+    void remember(const api::EngineEvent& event, const std::string& bytes);
 
     Session& session_;
     backend::AudioBackend* audio_;
     Options opts_;
 
-    api::StateBlockMemory block_;
+    api::StateBlockMemory own_block_;   // when Options::state_memory is null
+    void* block_ = nullptr;
+    std::size_t block_bytes_ = 0;
+    bool state_ready_ = false;
     api::StateWriter writer_;
     std::unique_ptr<StatePublisher> publisher_;
     std::unique_ptr<model::Document> document_;
@@ -122,15 +221,35 @@ private:
     int take_ = 1;
     bool quit_ = false;   // app.quit's flag; never set, as the engine never runs it
 
-    Outbound out_;
-    std::vector<std::string> early_;   // events posted before start()
+    // The control thread's, or start()'s before that thread exists.
+    std::map<ClientId, Client> clients_;
+    // Events that still stand, encoded, for a client that attaches later:
+    // what a restarted interface must find on screen.
+    std::vector<std::string> notices_;
+    std::string inputs_missing_;
+    std::string take_failed_;
+    std::string fatal_;
+
+    // The control thread's: clients reassembling a large message, clients
+    // waiting for a slot (in arrival order), and bytes handled since the
+    // backlogs were last brought down.
+    std::set<ClientId> large_;
+    std::deque<ClientId> parked_;
+    std::map<ClientId, std::size_t> handled_;
 
     std::mutex mutex_;
     std::condition_variable wake_;
-    std::deque<std::string> inbound_;   // frames
-    api::wire::Reassembler reassembler_;   // the control thread's
+    std::condition_variable room_;
+    std::deque<Inbound> inbound_;
+    // Bytes delivered and not yet handled, per client attached.
+    std::map<ClientId, std::size_t> backlog_;
+    std::atomic<std::size_t> peak_backlog_{0};
+    std::atomic<std::size_t> peak_large_{0};
+    ClientId next_client_ = kFirstClient + 1;
     bool stopping_ = false;
     std::atomic<bool> running_{false};
+    std::atomic<std::size_t> client_count_{0};
+    std::atomic<uint64_t> refused_{0};
     std::thread thread_;
 
     uint64_t next_housekeeping_ns_ = 0;

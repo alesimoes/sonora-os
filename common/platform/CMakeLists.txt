@@ -13,10 +13,25 @@ endif()
 
 add_library(sonora_platform STATIC
   include/sonora/platform/thread_cpu.h
+  include/sonora/platform/ipc.h
+  include/sonora/platform/process.h
+  include/sonora/platform/file.h
   src/${SONORA_PLATFORM_IMPL}/thread_cpu.cpp
+  src/${SONORA_PLATFORM_IMPL}/ipc.cpp
+  src/${SONORA_PLATFORM_IMPL}/process.cpp
+  src/${SONORA_PLATFORM_IMPL}/file.cpp
 )
 target_include_directories(sonora_platform PUBLIC include)
+target_link_libraries(sonora_platform PUBLIC Threads::Threads)
 
 add_executable(test_thread_cpu tests/test_thread_cpu.cpp)
 target_link_libraries(test_thread_cpu PRIVATE sonora_platform Threads::Threads)
 add_test(NAME platform_thread_cpu COMMAND test_thread_cpu)
+
+# The control channel and the read-only region (ADR-0007 §3): POSIX only,
+# because the test also checks what the kernel refuses a client.
+if(UNIX)
+  add_executable(test_platform_ipc tests/test_ipc.cpp)
+  target_link_libraries(test_platform_ipc PRIVATE sonora_platform Threads::Threads)
+  add_test(NAME platform_ipc COMMAND test_platform_ipc)
+endif()

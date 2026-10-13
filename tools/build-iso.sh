@@ -63,7 +63,10 @@ done
   exit 1
 }
 install -m 0755 "$ENGINE" "$STAGE/sonora-engine"
-echo "staged the engine into includes.chroot/usr/local/bin/"
+# The terminal interface, a separate process since ADR-0007 M7: the engine
+# starts it from beside itself on tty1.
+install -m 0755 "$(dirname "$ENGINE")/sonora-tui" "$STAGE/sonora-tui"
+echo "staged the engine and sonora-tui into includes.chroot/usr/local/bin/"
 
 
 # live-build must not work on the bind-mounted host directory. debootstrap

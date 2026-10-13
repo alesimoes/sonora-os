@@ -217,6 +217,20 @@ bool SessionModel::run(bool ok, const std::string& why) {
     return ok;
 }
 
+void SessionModel::documentUpdated() {
+    const model::Snapshot& s = ctl_.snapshot();
+    if (ctl_.selection().track >= static_cast<int>(s.edit->tracks.size())) {
+        ctl_.document_replaced();
+    } else if (ctl_.selection().region != kNoId &&
+               find_region(s, ctl_.selection().region) == nullptr) {
+        ctl_.clear_selection();
+    }
+    // Another interface's edit can arrive at the revision an edit of ours
+    // was shown at, so the revision alone does not say the content changed.
+    seen_revision_ = UINT64_MAX;
+    sync();
+}
+
 void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
     const bool rolling = alive && !t.stale && t.state != TransportMode::Stopped;
     const bool recording = rolling && t.state == TransportMode::Recording;
@@ -506,7 +520,7 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
               " Hz; it cannot play here until sample-rate conversion exists";
         return false;
     }
-    doc_.reset(std::move(loaded.snapshot));
+    if (!doc_.reset(std::move(loaded.snapshot), why)) return false;
     ctl_.document_replaced();
     file_ = file;
     saved_revision_ = doc_.revision();
@@ -521,6 +535,22 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     emit sessionChanged();
     emit notice(QStringLiteral("Opened ") + file_);
     return true;
+}
+
+void SessionModel::openWasLost() {
+    const QString lost = file_;
+    file_.clear();
+    saved_bytes_.clear();
+    save_generation_ = 0;
+    // Nothing on disk holds what is shown, so it reads as unsaved.
+    saved_revision_ = UINT64_MAX;
+    seen_revision_ = UINT64_MAX;
+    sync();
+    emit sessionChanged();
+    if (!lost.isEmpty()) {
+        emit notice(lost + QStringLiteral(" was not opened: the engine was unreachable. "
+                                          "Open it again."));
+    }
 }
 
 QVariantList SessionModel::sessionList() const {

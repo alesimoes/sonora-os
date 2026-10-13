@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// EngineAdapter on the control API (ADR-0007 M4): every call goes to an
-// api::EngineControl and its StateView. Behind it today is FakeEngine
-// (contracts/api/testing), the provider's fake; after M7 it is the socket
-// client to the real engine. Either way this class and everything above it
+// EngineAdapter on the control API (ADR-0007 M4, M7): every call goes to an
+// api::EngineControl and its StateView: ui/client's SocketEngine on the real
+// engine's socket, or FakeEngine (contracts/api/testing) when no engine is
+// running and in the tests. Either way this class and everything above it
 // are unchanged.
 //
 // The Qt interface is not given InProcessEngine: ADR-0007 §3 keeps Qt, Mesa
 // and LLVM out of the process that holds the take, so the Qt UI meets the
-// real engine across the process boundary M7 builds, not before.
+// real engine across the process boundary M7 builds.
+//
+// The model path shares the engine's inbox with the command path, so it is
+// separated here: model updates, and the replies to requests made through
+// submitModel(), go to the model sink (ReplicaDocument), never to the
+// status line's command replies.
 //
 // No Qt type here, so it is tested without a display.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,9 +44,37 @@ public:
     float take_peak(uint32_t index) override;
     bool engine_alive(uint64_t now_ns) const override;
 
+    using ModelSink = std::function<void(const std::vector<api::ModelUpdate>& updates,
+                                         const std::vector<api::CommandReply>& replies)>;
+    // Called from poll() with what arrived for the model, possibly nothing.
+    void setModelSink(ModelSink sink) { model_sink_ = std::move(sink); }
+    uint64_t submitModel(const api::ModelRequest& request);
+
+    // Which connection to the engine is up: 0 for none, and a new value for
+    // each new one (SocketEngine's greetings). An engine in this process has
+    // no connection to lose and needs no probe.
+    using ConnectionProbe = std::function<uint64_t()>;
+    // Told, after the model sink, when the connection went (false) or was
+    // replaced (true). Every request without a reply by then is lost: its
+    // seq is forgotten and a lost command is reported on the status line.
+    using LinkSink = std::function<void(bool up)>;
+    void watchConnection(ConnectionProbe probe, LinkSink sink);
+
+    // Requests unanswered are remembered up to this many each, the oldest
+    // forgotten first, so an engine that never answers costs bounded memory.
+    static constexpr std::size_t kMaxAwaiting = 1024;
+    std::size_t awaiting_model_replies() const { return model_seqs_.size(); }
+    std::size_t awaiting_command_replies() const { return pending_.size(); }
+
 private:
     api::EngineControl& engine_;
     EngineInfo info_;
+    ModelSink model_sink_;
+    ConnectionProbe probe_;
+    LinkSink link_sink_;
+    uint64_t connection_ = 0;
+    std::set<uint64_t> model_seqs_;             // model requests awaiting a reply
+    std::vector<api::CommandReply> model_replies_;
     std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line
     api::Inbox inbox_;
     std::vector<EngineEvent> events_;   // received, not yet taken
