@@ -91,11 +91,32 @@ without asking a question.
       ports named without `AUX` (`capture_1..N`, what `snd-aloop` gives
       without `audio.position`), and registry ids out of channel order. The
       engine must still connect them in channel order. driver-engineer.
-- [ ] Plugin editors under the kiosk compositor: try Qt on `xcb` as the
-      transient parent, a host anchor window, and an alternative compositor,
-      with a real LV2/VST3 editor. Check whether upstream cage still
-      misplaces override-redirect popups. Needed before the Phase 4 plugin
-      ADR and the compositor ADR. researcher, then architect.
+- [ ] Plugin editors under the kiosk compositor. ADR-0010 (proposed) picks
+      labwc with the UI on native Wayland, which retires the `xcb` and
+      anchor-window variants. Remaining: a real Qt 6 UI and a real LV2/VST3
+      X11 editor under ADR-0010's labwc config (placement, override-redirect
+      popups, focus back to the UI, Xwayland lazy-start latency). Needed
+      before the Phase 4 plugin ADR. researcher.
+
+## ADR-0010 display stack (after the owner confirms it)
+
+- [ ] Stage 1, shipped boot unchanged: package block (`libpam-systemd labwc
+      xwayland qt6-wayland` + Qt runtime), `/usr/share/sonora/labwc/`,
+      `/etc/pam.d/sonora-ui`, `sonora-compositor`, `sonora-wait-for-display`,
+      compositor/UI/fallback units behind `sonora.gui`. QEMU checks: ISO size,
+      time to first frame, `kill -9` UI and labwc recover, repeated UI failure
+      ends on tty2, renderer chosen on `-vga std`, Alt-Tab/Super-Return reach
+      the client. distro-engineer.
+- [ ] Stage 1, UI side: `app_id` `sonora-ui`, no fullscreen request, a
+      first-frame log line, a documented "unfit display" exit code; later
+      `sd_notify` watchdog through `common/platform`. ui-engineer.
+- [ ] Stage 2, after M7: `sonora-session.service` becomes
+      `sonora-engine.service` + `sonora-tui.service` (tty2); compositor
+      enabled by default; smoke test kills labwc and the UI mid-take and
+      asserts the engine PID and a growing take file. distro-engineer.
+- [ ] Bare metal: GPU reset/hang under the compositor vs the audio callback;
+      nouveau on NVIDIA; llvmpipe vs GPU xruns (ADR-0006 items 2 and 3).
+      researcher.
 - [ ] M4: fix the key map comment "Matches what engine/src/main.cpp handles
       today" in `keymaps/default.json` **and** in the copy of that profile
       embedded in `ui/keymap/src/keymap.cpp`, in the same commit, once
