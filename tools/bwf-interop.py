@@ -489,10 +489,16 @@ def check(args):
                 v.check(valid_time(b["time"]),
                         f"{name}: OriginationTime is hh:mm:ss",
                         repr(b["time"]))
-                v.check(tags.get("origination_date") == b["date"].decode(
+                # ffmpeg's wav demuxer exposes bext OriginationDate as the
+                # `date` tag and OriginationTime as `creation_time`.
+                v.check(tags.get("date") == b["date"].decode(
                     "ascii", "replace"),
                     f"{name}: ffprobe agrees on the date",
-                    str(tags.get("origination_date")))
+                    str(tags.get("date")))
+                v.check(tags.get("creation_time") == b["time"].decode(
+                    "ascii", "replace"),
+                    f"{name}: ffprobe agrees on the time",
+                    str(tags.get("creation_time")))
             if "iXML" in order:
                 v.check(b"<BWFXML" in open(path, "rb").read(),
                         f"{name}: iXML chunk holds a BWFXML document")
