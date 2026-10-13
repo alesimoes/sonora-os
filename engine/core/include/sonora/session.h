@@ -61,6 +61,10 @@ public:
     // The files are closed either way, and one that reached the limit is
     // valid up to its last whole frame.
     bool stop(std::string* error = nullptr);
+    // While a take runs: empty, or which file failed and why, in the words
+    // stop() will use. Writing stops at the failure, so the operator is told
+    // now rather than when the take ends. Control thread; allocates.
+    std::string take_failure() const;
 
     // --- real-time safe: called from the audio callback ---
     // block.inputs[i] feeds track i; a null input, or a track past

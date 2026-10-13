@@ -369,7 +369,7 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
         float block[64];
         for (float& f : block) f = 0.25f;
         const float* inputs[2] = {block, block};
-        s.process(inputs, 64);
+        feed(s, inputs, 64);
 
         std::string why;
         CHECK(reg.dispatch("transport.stop", {}, why) ==
@@ -387,7 +387,7 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
         s.tracks()[1]->writer().set_riff_size_limit(
             sonora::WavWriter::kRiffSizeLimit);
         CHECK(s.start_recording(2));
-        s.process(inputs, 64);
+        feed(s, inputs, 64);
         std::string none;
         CHECK(s.stop(&none));
         CHECK(none.empty());
@@ -444,6 +444,48 @@ int test_take_refused_without_inputs() {
     return 0;
 }
 
+// The reviewer's medium on PR #16: a take that fails mid-way (full disk,
+// 4 GB limit) stopped writing silently until stop(). take_failure() says so
+// while the take still runs, which is what the screen polls.
+int test_take_failure_is_seen_while_recording() {
+    const sonora::SessionConfig cfg = config("test_takes_live_failure", 2);
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    wipe(cfg.dir);
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        s.tracks()[0]->set_rec_armed(true);
+        s.tracks()[1]->set_rec_armed(true);
+        s.tracks()[1]->writer().set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+        s.disk().start();
+        CHECK(s.start_recording(1));
+        CHECK(s.take_failure().empty());
+
+        float block[64];
+        for (float& f : block) f = 0.25f;
+        const float* inputs[2] = {block, block};
+        feed(s, inputs, 64);
+        // The disk thread drains on its own schedule.
+        std::string why;
+        for (int i = 0; i < 200 && why.empty(); ++i) {
+            ::usleep(10000);
+            why = s.take_failure();
+        }
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        CHECK(why.find("Audio 2_01.wav") != std::string::npos);
+        CHECK(why.find("4 GB") != std::string::npos);
+        CHECK(why.find("Audio 1_01.wav") == std::string::npos);
+
+        std::string at_stop;
+        CHECK(!s.stop(&at_stop));
+        CHECK(at_stop == why);
+        // Closed: nothing is running, so nothing is failing.
+        CHECK(s.take_failure().empty());
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -457,6 +499,7 @@ int main() {
     failures += test_take_starts_with_its_own_samples();
     failures += test_take_at_the_size_limit_fails_with_a_reason();
     failures += test_take_refused_without_inputs();
+    failures += test_take_failure_is_seen_while_recording();
     if (failures != 0) {
         std::fprintf(stderr, "FAIL %d take tests\n", failures);
         return 1;

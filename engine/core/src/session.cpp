@@ -183,6 +183,34 @@ bool Session::start_recording(int take_number, std::string* error) {
     return true;
 }
 
+namespace {
+
+// Past the 4 GB limit every armed track fails together; one line with a
+// count says that better than eighteen.
+std::string describe_failures(const std::string& first, int more) {
+    if (more == 0) return first;
+    return first + " (and " + std::to_string(more) + " more track" +
+           (more == 1 ? "" : "s") + ")";
+}
+
+}  // namespace
+
+std::string Session::take_failure() const {
+    std::string first;
+    int more = 0;
+    for (const auto& t : tracks_) {
+        // failed() is an acquire load, so failure() is settled once it is
+        // true, while the disk thread goes on writing the other tracks.
+        if (!t->writer().is_open() || !t->writer().failed()) continue;
+        if (first.empty()) {
+            first = t->writer().path() + ": " + t->writer().failure();
+        } else {
+            ++more;
+        }
+    }
+    return first.empty() ? first : describe_failures(first, more);
+}
+
 bool Session::stop(std::string* error) {
     transport_->set_state(TransportState::Stopped);
     // Let the disk thread flush what is still buffered before we close files.
@@ -204,13 +232,7 @@ bool Session::stop(std::string* error) {
         }
     }
     if (first_failure.empty()) return true;
-    // Past the 4 GB limit every armed track fails together; one line with a
-    // count says that better than eighteen.
-    std::string why = first_failure;
-    if (more_failures > 0) {
-        why += " (and " + std::to_string(more_failures) + " more track" +
-               (more_failures == 1 ? "" : "s") + ")";
-    }
+    const std::string why = describe_failures(first_failure, more_failures);
     std::fprintf(stderr, "sonora: take failed, %s\n", why.c_str());
     if (error) *error = why;
     return false;

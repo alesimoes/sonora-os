@@ -81,9 +81,13 @@ struct TermiosGuard {
     bool delivers(unsigned char byte) const {
         return !is_tty || sonora::tty_delivers_byte(current, byte);
     }
-    ~TermiosGuard() {
+    // Before anything is printed on the way out: in the key reading mode a
+    // newline does not return the carriage, and the last words staircase.
+    void restore() {
         if (active) tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+        active = false;
     }
+    ~TermiosGuard() { restore(); }
 };
 
 // Everything after the last '.' in a command id. Short enough for a footer,
@@ -142,7 +146,8 @@ std::vector<std::string> build_help(const sonora::KeyMap& map,
 
 void draw(sonora::Session& s, const AudioBackend& audio, int take,
           const std::string& status, const std::vector<std::string>& help,
-          const std::vector<std::string>& notices, const std::string& inputs) {
+          const std::vector<std::string>& notices, const std::string& inputs,
+          const std::string& take_failed) {
     using sonora::TransportState;
     const auto st = s.transport().state();
     const char* label = st == TransportState::Recording ? "REC "
@@ -179,6 +184,9 @@ void draw(sonora::Session& s, const AudioBackend& audio, int take,
     }
     if (!inputs.empty()) {
         std::printf("  \033[31m!\033[0m no inputs: %s\n", inputs.c_str());
+    }
+    if (!take_failed.empty()) {
+        std::printf("  \033[31m! %s\033[0m\n", take_failed.c_str());
     }
     // A key that did nothing is the failure keymaps/README.md warns about, so
     // say what happened rather than leaving the operator guessing.
@@ -705,6 +713,8 @@ int main(int argc, char** argv) {
     // screen says what is missing for as long as it is.
     std::string inputs_missing;
     int frames_to_input_check = 0;
+    std::string take_failed;
+    int failed_take = 0;
 
     while (!sonora::quit_requested() && !quit) {
         // The server dying, or changing rate or buffer size, stops the
@@ -782,19 +792,39 @@ int main(int argc, char** argv) {
             }
         }
 
-        draw(session, *audio, take, status, help, notices, inputs_missing);
+        // Writing stops at a full disk or the 4 GB limit while the
+        // transport still says REC, so the failure is shown the moment the
+        // disk thread records it, and until the next take records cleanly.
+        if (session.transport().state() == sonora::TransportState::Recording) {
+            const std::string failure = session.take_failure();
+            if (!failure.empty()) {
+                take_failed = "take " + std::to_string(take) + " failed: " + failure +
+                              ". Nothing more is being written; stop the take";
+                failed_take = take;
+            } else if (take != failed_take) {
+                take_failed.clear();
+            }
+        }
+
+        draw(session, *audio, take, status, help, notices, inputs_missing, take_failed);
         if (status_frames > 0 && --status_frames == 0) status.clear();
         ::usleep(50000);  // 20 fps is plenty for meters
     }
 
-    session.stop();
+    // stop() says on stderr why a take failed, so the terminal is the
+    // operator's again before it can.
+    term.restore();
+    std::printf("\n");
+    std::fflush(stdout);
+    const bool take_ok = session.stop();
     sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
     audio->deactivate();
-    std::printf("\nsonora: session written to %s\n", cfg.dir.c_str());
+    std::printf("sonora: session written to %s\n", cfg.dir.c_str());
 
     if (backend_failed) {
         std::fprintf(stderr, "sonora: %s.\n", audio->fatal_reason().c_str());
         return 1;
     }
-    return 0;
+    // A quit or SIGTERM in the middle of a failed take is not a clean exit.
+    return take_ok ? 0 : 1;
 }
