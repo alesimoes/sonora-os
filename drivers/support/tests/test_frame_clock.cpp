@@ -65,6 +65,32 @@ int test_gap_is_kept() {
     return 0;
 }
 
+// The server's clock can step backwards: a driver restarted, the graph
+// moved to another driver, the server restarted under the client. Unsigned
+// subtraction read that as a forward jump of nearly 2^32 frames, about a
+// day of invented time. A backward step is a clock change: the wide clock
+// holds still, counts it, and runs on from the new count.
+int test_backward_step_is_a_discontinuity() {
+    FrameClock c;
+    CHECK(c.widen(100000) == 100000);
+    CHECK(c.discontinuities() == 0);
+    CHECK(c.widen(5000) == 100000);
+    CHECK(c.discontinuities() == 1);
+    CHECK(c.widen(5128) == 100128);
+    CHECK(c.widen(5256) == 100256);
+    CHECK(c.discontinuities() == 1);
+    return 0;
+}
+
+// A wrap is forward, and not a discontinuity.
+int test_wrap_is_not_a_discontinuity() {
+    FrameClock c;
+    c.widen(0xFFFFFF80u);
+    c.widen(0x00000000u);
+    CHECK(c.discontinuities() == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -72,6 +98,8 @@ int main() {
     if (test_carries_across_the_wrap() != 0) return 1;
     if (test_wraps_twice() != 0) return 1;
     if (test_gap_is_kept() != 0) return 1;
+    if (test_backward_step_is_a_discontinuity() != 0) return 1;
+    if (test_wrap_is_not_a_discontinuity() != 0) return 1;
     std::printf("test_frame_clock: ok\n");
     return 0;
 }

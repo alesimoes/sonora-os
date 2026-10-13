@@ -80,7 +80,7 @@ struct JackBackend::Impl {
     // thread.
     std::atomic<uint32_t> xruns{0};
     drivers::PeriodGuard guard;
-    drivers::FrameClock clock;  // audio thread only
+    drivers::FrameClock clock;  // widened on the audio thread only
 
     // Ports that have fed one of our inputs, by id, so their going away can
     // be recognised. Touched by JACK's notification callbacks and by
