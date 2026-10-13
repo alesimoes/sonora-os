@@ -67,10 +67,14 @@ implementer fixes; the reviewer re-reads the fix.
     says what is wrong and stops.
 
 Between steps, work moves by handoff: the agent that stops writes
-`planning/handoffs/<branch>.md` (the `handoff` skill), and the next agent is a
-fresh one that starts from that file. Review rounds in particular get a new
-reviewer and a new fixer each time. Sending the same long-running agent round
-after round makes every round pay for all the earlier ones.
+`planning/handoffs/<branch>.md`, the branch name with `/` replaced by `-`
+(`feature/x` → `planning/handoffs/feature-x.md`; the `handoff` skill), and
+the next agent is a fresh one that starts from that file. Review rounds in
+particular get a new reviewer and a new fixer each time. Sending the same
+long-running agent round after round makes every round pay for all the
+earlier ones. The last commit before step 10 deletes the branch's handoff and
+refreshes `planning/handoffs/main-session.md`, because the integrator
+squash-merges and never commits.
 
 Step 8 is the one that gets skipped, and skipping it is what makes the next
 session repeat work already done. Step 9 is the one I got wrong first: pushing

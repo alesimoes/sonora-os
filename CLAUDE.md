@@ -47,18 +47,11 @@ Both builds need Linux. From Windows, use the container wrappers:
 
 ## Working in sessions
 
-Context is the main cost. Keep sessions short and join them with handoffs.
-
-- A new session is told where things stand by the SessionStart hook
-  (`tools/session-start.sh`). Trust it; do not re-read the planning files or
-  old transcripts to rebuild that picture. Stopping: update the branch's
-  handoff and, in the main session, `planning/handoffs/main-session.md`
-  (`handoff` skill).
-- Test with the fast loop, prove once with the full one (`test-loop` skill).
-  Long output goes to a file under `build-*/`; read back the verdict line.
-- Read large files by line range; never paste logs or diffs into a report.
-- One agent per task and per review round; reports point to files rather
-  than repeating them.
+Context is the main cost: short sessions, one agent per task and review round.
+The SessionStart hook (`tools/session-start.sh`) prints a starting summary
+from `planning/handoffs/`; run the branch handoff's Verify command before
+relying on it. Starting and stopping: `handoff` skill. Testing and keeping
+output out of the context: `test-loop` skill.
 
 ## Conventions
 
