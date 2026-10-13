@@ -4,6 +4,8 @@ A Debian-based Linux distribution that boots straight into a multitrack
 recording engine. No desktop, no login, no launching an application: power on
 and the machine is a recorder. Runs from a USB stick.
 
+Progress: see [`planning/PROGRESS.md`](planning/PROGRESS.md).
+
 The engine is written from scratch in C++17 (ADR-0001).
 
 > **Status: early. Nothing here has been booted or compiled yet.**

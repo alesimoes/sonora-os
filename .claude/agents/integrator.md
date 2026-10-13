@@ -56,6 +56,12 @@ for this gate. If the handoff is still there, or `main-session.md` still
 describes this PR as open, refuse and say so: its lasting content belongs in
 `brain/` and `STATUS.md`, and a stale handoff misleads the next session.
 
+The same goes for the progress catalogue. A PR that delivers an item in
+`planning/progress.json` flips its status in the same PR: `done` with
+`evidence` naming the PR and what verified it, or `doing` with its branch.
+It regenerates `planning/PROGRESS.md` with `tools/progress.sh --markdown`,
+and `tools/progress.sh --check` passes. Merged but unverified is not done.
+
 ## Posting the verdict
 
 GitHub refuses a formal approval from the account that opened the PR, so on a
