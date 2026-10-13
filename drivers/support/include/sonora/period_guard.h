@@ -11,7 +11,7 @@ namespace sonora::drivers {
 enum class Fatal : uint32_t {
     None = 0,
     ServerGone,
-    DeviceGone,     // a port an input was connected from went away
+    DeviceGone,     // a physical capture port feeding an input went away
     Stalled,        // no period for kStallNs while active
     RateChanged,    // detail: the new rate
     BufferChanged,  // detail: the refused period's size

@@ -17,6 +17,7 @@
 #include "sonora/frame_clock.h"
 #include "sonora/period_guard.h"
 #include "sonora/port_devices.h"
+#include "sonora/source_watch.h"
 
 namespace sonora {
 namespace {
@@ -82,11 +83,11 @@ struct JackBackend::Impl {
     drivers::PeriodGuard guard;
     drivers::FrameClock clock;  // widened on the audio thread only
 
-    // Ports that have fed one of our inputs, by id, so their going away can
-    // be recognised. Touched by JACK's notification callbacks and by
+    // The physical ports feeding our inputs, so their going away can be
+    // recognised. Touched by JACK's notification callbacks and by
     // fatal_reason(); never by the audio thread.
     mutable std::mutex sources_mutex;
-    std::vector<std::pair<jack_port_id_t, std::string>> sources;
+    drivers::SourceWatch sources;
     std::string gone_port;
 
     std::vector<PortInfo> physical(unsigned long flags) const {
@@ -164,14 +165,13 @@ struct JackBackend::Impl {
         return 0;
     }
 
-    // Remembers every port that feeds one of our inputs, however it was
-    // patched: by connect_inputs_in_order(), or by hand as the container
-    // test does. Not forgotten on disconnect, since JACK may disconnect a
-    // port before it reports the port gone.
+    // Follows every physical port that feeds one of our inputs, however it
+    // was patched: by connect_inputs_in_order() or by hand. A non-physical
+    // source (pw-play, a soft synth) going away is not a device going away,
+    // so it is never followed.
     static void connect_cb(jack_port_id_t a, jack_port_id_t b, int connect,
                            void* arg) noexcept {
         auto* self = static_cast<Impl*>(arg);
-        if (!connect) return;
         jack_port_t* pa = jack_port_by_id(self->client, a);
         jack_port_t* pb = jack_port_by_id(self->client, b);
         jack_port_id_t source_id;
@@ -185,13 +185,16 @@ struct JackBackend::Impl {
         } else {
             return;
         }
-        const char* name = source ? jack_port_name(source) : nullptr;
+        if (!source || !(jack_port_flags(source) & JackPortIsPhysical)) return;
+        const char* name = jack_port_name(source);
+        if (!name) return;
         try {
             std::lock_guard<std::mutex> lock(self->sources_mutex);
-            for (const auto& s : self->sources) {
-                if (s.first == source_id) return;
+            if (connect) {
+                self->sources.linked(source_id, name, now_ns());
+            } else {
+                self->sources.unlinked(source_id, name, now_ns());
             }
-            self->sources.emplace_back(source_id, name ? name : "unknown port");
         } catch (...) {
             // Out of memory in a notification: this port's loss will still
             // show as a stall if the device takes the clock with it.
@@ -202,14 +205,16 @@ struct JackBackend::Impl {
                                 void* arg) noexcept {
         auto* self = static_cast<Impl*>(arg);
         if (registered) return;
+        // By name as well as id: jackd2 reuses ids. pw-jack still knows
+        // the port while it reports it gone.
+        const jack_port_t* port = jack_port_by_id(self->client, id);
+        const char* name = port ? jack_port_name(port) : nullptr;
         try {
             std::lock_guard<std::mutex> lock(self->sources_mutex);
-            for (const auto& s : self->sources) {
-                if (s.first != id) continue;
-                if (self->guard.fatal() == Fatal::None) self->gone_port = s.second;
-                self->guard.raise(Fatal::DeviceGone);
-                return;
-            }
+            std::string gone;
+            if (!self->sources.removed(id, name, now_ns(), gone)) return;
+            if (self->guard.fatal() == Fatal::None) self->gone_port = std::move(gone);
+            self->guard.raise(Fatal::DeviceGone);
         } catch (...) {
             self->guard.raise(Fatal::DeviceGone);
         }

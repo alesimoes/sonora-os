@@ -86,11 +86,11 @@ public:
     // Server-reported xruns since open(). Any thread.
     virtual uint32_t xruns() const = 0;
 
-    // Server loss, loss of a port an input was connected from (the
-    // interface unplugged), no period for one second while active, or a
-    // rate or buffer size change. A period whose rate or size differs from
-    // the first is refused before it reaches process(), so no block at the
-    // wrong rate or size reaches the session. No process() call starts after
+    // Server loss, loss of a physical capture port an input was connected
+    // from (the interface unplugged), no period for one second while
+    // active, or a rate or buffer size change. A period whose rate or size
+    // differs from the first is refused before it reaches process(), so no
+    // block at the wrong rate or size reaches the session. No process() call starts after
     // fatal() first returns true; one already running may finish, and
     // deactivate() is the barrier. The engine closes the take cleanly and
     // says why; it never adapts silently. Any thread.

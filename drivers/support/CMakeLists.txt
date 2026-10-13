@@ -22,3 +22,7 @@ add_test(NAME frame_clock COMMAND test_frame_clock)
 add_executable(test_port_devices tests/test_port_devices.cpp)
 target_link_libraries(test_port_devices PRIVATE sonora_driver_support)
 add_test(NAME port_devices COMMAND test_port_devices)
+
+add_executable(test_source_watch tests/test_source_watch.cpp)
+target_link_libraries(test_source_watch PRIVATE sonora_driver_support)
+add_test(NAME source_watch COMMAND test_source_watch)
