@@ -39,7 +39,7 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
-docker build -t "$IMAGE" \
+docker build -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.livebuild" \
   "$(host_path "$ROOT/tools")"
 
@@ -71,7 +71,9 @@ echo "staged the engine into includes.chroot/usr/local/bin/"
 # Windows bind mount that fails with "Tried to extract package, but tar
 # failed". So the build happens in a Docker volume, which is ext4 inside the
 # Linux VM, and only the finished ISO is copied back out.
-docker volume create "$VOLUME" >/dev/null
+# Kept between runs on purpose: it holds live-build's package cache.
+# tools/clean.sh removes it only with --deep.
+docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
 docker run --rm --privileged \
   -v "$(host_path "$ROOT"):/src:ro" \

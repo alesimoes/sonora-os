@@ -12,6 +12,8 @@ build-qemu/
 build-usb/
 # Session, logs and reader output from the BWF interop test.
 build-interop/
+# The janitor's dry-run and run logs (tools/clean.sh).
+build-clean/
 *.o
 *.a
 compile_commands.json

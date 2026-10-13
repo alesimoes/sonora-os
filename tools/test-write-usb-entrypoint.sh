@@ -21,6 +21,11 @@ PARTTEST=/work/part.img
 ISO=/src/iso/sonora.iso
 WRITER=/src/tools/write-usb.sh
 SIZE="${STICK_SIZE:-8G}"
+# The over-the-limit case needs a device just past write-usb.sh's 256 GiB
+# limit, not a realistic external drive: 300 GiB images left in the work
+# volume once made Docker count it at 350 GB. Nothing sparse exceeds the cap.
+BIG_SIZE=257G
+MAX_SPARSE_BYTES=$(( 257 * 1024 * 1024 * 1024 ))
 
 FAILED=0
 ok()   { echo "WRITE-USB ok    $1"; }
@@ -37,8 +42,22 @@ MOUNTS=()
 cleanup() {
   for m in "${MOUNTS[@]}"; do umount "$m" 2>/dev/null || true; done
   for l in "${LOOPS[@]}"; do losetup -d "$l" 2>/dev/null || true; done
+  # Pass or fail, no disk image outlives its phase: write exports what the
+  # boots need to /out as qcow2, and inspect makes a fresh raw copy each time.
+  rm -f "$STICK" "$SMALL" "$DECOY" "$BIG" "$PARTTEST" /work/booted.img
 }
 trap cleanup EXIT
+
+# sparse FILE SIZE -- a sparse disk image, refused above MAX_SPARSE_BYTES.
+sparse() {
+  local bytes
+  bytes="$(numfmt --from=iec "$2")"
+  if (( bytes > MAX_SPARSE_BYTES )); then
+    echo "FAIL: refusing a $2 sparse image for $1, over the $MAX_SPARSE_BYTES-byte cap" >&2
+    exit 1
+  fi
+  truncate -s "$2" "$1"
+}
 
 # expect OK_MESSAGE FAIL_MESSAGE COMMAND...
 expect() {
@@ -239,10 +258,10 @@ case "$PHASE" in
 write)
   [[ -f "$ISO" ]] || { echo "FAIL: $ISO missing" >&2; exit 1; }
   rm -f "$STICK" "$SMALL" "$DECOY" "$BIG" "$PARTTEST"
-  truncate -s "$SIZE" "$STICK"
-  truncate -s 600M "$SMALL"
-  truncate -s 64M "$DECOY"
-  truncate -s 300G "$BIG"
+  sparse "$STICK" "$SIZE"
+  sparse "$SMALL" 600M
+  sparse "$DECOY" 64M
+  sparse "$BIG" "$BIG_SIZE"
 
   # A stick with a history: GPT, one ext4 partition. The write must leave no
   # trace of it, including the backup GPT header at the far end.
@@ -343,11 +362,11 @@ write)
   refuse "a device too small for image plus persistence" "need" "$SMALL_LOOP" "$SMALL"
 
   # Review finding: an external backup drive passes every other check.
-  refuse "a 300 GiB device without --allow-large" "pass --allow-large" "$BIG_LOOP" "$BIG"
+  refuse "a 257 GiB device without --allow-large" "pass --allow-large" "$BIG_LOOP" "$BIG"
   out="$(echo no | SONORA_WRITE_USB_TEST_IMAGE="$BIG" bash "$WRITER" --allow-large "$BIG_LOOP" 2>&1)" || true
-  expect "--allow-large admits a 300 GiB device as far as the prompt, showing its size" \
-    "--allow-large did not reach the prompt for a 300 GiB device" \
-    test "$(printf '%s\n' "$out" | grep -c -e "Target device (322 GB)" -e "aborted.")" == 2
+  expect "--allow-large admits a 257 GiB device as far as the prompt, showing its size" \
+    "--allow-large did not reach the prompt for a 257 GiB device" \
+    test "$(printf '%s\n' "$out" | grep -c -e "Target device (275 GB)" -e "aborted.")" == 2
 
   # Review finding: lsblk is blind to other mount namespaces. The kernel's
   # exclusive-open check is not.
@@ -393,7 +412,7 @@ write)
   # find it already right.
   for held in "partition 1" "the whole disk" "a stale partition 3 at a different start, and partition 1"; do
     rm -f "$PARTTEST"
-    truncate -s 2G "$PARTTEST"
+    sparse "$PARTTEST" 2G
     dd if="$ISO" of="$PARTTEST" bs=4M conv=notrunc status=none
     if [[ "$held" == *stale* ]]; then
       # The kernel keeps the old partition 3 when dd rewrites the MBR.

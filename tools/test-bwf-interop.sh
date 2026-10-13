@@ -68,10 +68,10 @@ done
 [[ -n "$ENGINE" ]] || { echo "FAIL: no engine binary." >&2; exit 1; }
 
 echo "=== building the images ==="
-docker build -q -t "$RUNTIME_IMAGE" \
+docker build -q -t "$RUNTIME_IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
   "$(host_path "$ROOT")" >"$OUT/build-images.log" 2>&1
-docker build -q -t "$READER_IMAGE" \
+docker build -q -t "$READER_IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.bwfreaders" \
   "$(host_path "$ROOT/tools")" >>"$OUT/build-images.log" 2>&1
 
