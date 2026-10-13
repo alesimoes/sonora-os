@@ -5,13 +5,18 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "sonora/frame_clock.h"
 #include "sonora/period_guard.h"
-#include "sonora/port_order.h"
+#include "sonora/port_devices.h"
 
 namespace sonora {
 namespace {
@@ -19,18 +24,21 @@ namespace {
 using backend::PortInfo;
 using drivers::Fatal;
 
-// Built once, so fatal_reason() can hand out a reference from any thread
-// without formatting anything.
-const std::string kNoReason;
-const std::string kServerGone = "the audio server went away";
-const std::string kRateChanged =
-    "the audio server changed its sample rate mid-session";
-const std::string kBufferChanged =
-    "the audio server changed its buffer size mid-session";
-
 // physical_*_ports() before open() connects under this name and disconnects
 // again, so the probe never shows up as the engine in a patchbay.
 constexpr const char* kProbeClient = "sonora-probe";
+
+// The scratch buffers stand in for a port buffer JACK does not hand over, so
+// the largest period admitted is bounded by them. PipeWire's own ceiling on
+// the quantum is 8192.
+constexpr uint32_t kMinScratchFrames = 8192;
+
+uint64_t now_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 
 std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) {
     std::vector<std::string> names;
@@ -39,14 +47,11 @@ std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) 
         for (int i = 0; hw[i] != nullptr; ++i) names.emplace_back(hw[i]);
         jack_free(hw);
     }
-    std::sort(names.begin(), names.end(), natural_less);
+    return drivers::describe_ports(std::move(names));
+}
 
-    std::vector<PortInfo> out;
-    out.reserve(names.size());
-    for (std::size_t i = 0; i < names.size(); ++i) {
-        out.push_back({std::move(names[i]), static_cast<uint32_t>(i)});
-    }
-    return out;
+std::string device_of(const std::string& port) {
+    return port.substr(0, port.find(':'));
 }
 
 }  // namespace
@@ -54,18 +59,35 @@ std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) 
 struct JackBackend::Impl {
     jack_client_t* client = nullptr;
     bool active = false;
+    std::string capture_device;
     std::vector<jack_port_t*> in_ports;
     std::vector<jack_port_t*> out_ports;
     // Sized in open() and only overwritten afterwards, so the callback never
     // touches the allocator.
     std::vector<const float*> in_bufs;
     std::vector<float*> out_bufs;
+    // jack_port_get_buffer can return NULL (a period larger than the port's
+    // buffer, a port being invalidated). An input then reads silence and an
+    // output writes into scratch, so every pointer in the block is usable
+    // and every track keeps the same length.
+    std::vector<float> silence;
+    std::vector<float> scratch;
     backend::AudioBlock block{};
     backend::ProcessCallback* callback = nullptr;
     uint32_t rate = 0;
-    // Written on JACK's notification thread, read by the control thread.
+    // Bumped by JACK's xrun callback: on the audio thread under PipeWire's
+    // JACK, on a notification thread under jackd2. Read by the control
+    // thread.
     std::atomic<uint32_t> xruns{0};
     drivers::PeriodGuard guard;
+    drivers::FrameClock clock;  // audio thread only
+
+    // Ports that have fed one of our inputs, by id, so their going away can
+    // be recognised. Touched by JACK's notification callbacks and by
+    // fatal_reason(); never by the audio thread.
+    mutable std::mutex sources_mutex;
+    std::vector<std::pair<jack_port_id_t, std::string>> sources;
+    std::string gone_port;
 
     std::vector<PortInfo> physical(unsigned long flags) const {
         if (client) return list_physical(client, flags);
@@ -95,6 +117,10 @@ struct JackBackend::Impl {
         return true;
     }
 
+    bool is_input(jack_port_t* p) const {
+        return p && std::find(in_ports.begin(), in_ports.end(), p) != in_ports.end();
+    }
+
     // The trampoline: fetch the port buffers, hand them over, nothing more
     // (ADR-0007 §2).
     static int process_cb(jack_nframes_t nframes, void* arg) noexcept SONORA_RT {
@@ -103,25 +129,32 @@ struct JackBackend::Impl {
             self->out_bufs[o] = static_cast<float*>(
                 jack_port_get_buffer(self->out_ports[o], nframes));
         }
-        if (!self->guard.admit(nframes)) {
+        // The rate is read every period: the server's notification of a
+        // change can arrive after periods at the new rate have run.
+        if (!self->guard.admit(nframes, jack_get_sample_rate(self->client))) {
             // The engine no longer fills the outputs, and a JACK buffer holds
             // whatever the last cycle left in it.
             for (float* out : self->out_bufs) {
-                std::memset(out, 0, nframes * sizeof(float));
+                if (out) std::memset(out, 0, nframes * sizeof(float));
             }
             return 0;
         }
+        // admit() bounds nframes by the scratch size, so either buffer will do.
+        for (float*& out : self->out_bufs) {
+            if (!out) out = self->scratch.data();
+        }
         for (std::size_t i = 0; i < self->in_ports.size(); ++i) {
-            self->in_bufs[i] = static_cast<const float*>(
+            const auto* in = static_cast<const float*>(
                 jack_port_get_buffer(self->in_ports[i], nframes));
+            self->in_bufs[i] = in ? in : self->silence.data();
         }
         self->block.nframes = nframes;
-        self->block.frame_time = jack_last_frame_time(self->client);
+        self->block.frame_time = self->clock.widen(jack_last_frame_time(self->client));
         self->callback->process(self->block);
         return 0;
     }
 
-    static int xrun_cb(void* arg) noexcept {
+    static int xrun_cb(void* arg) noexcept SONORA_RT {
         static_cast<Impl*>(arg)->xruns.fetch_add(1, std::memory_order_relaxed);
         return 0;
     }
@@ -129,6 +162,57 @@ struct JackBackend::Impl {
     static int sample_rate_cb(jack_nframes_t rate, void* arg) noexcept {
         static_cast<Impl*>(arg)->guard.rate_reported(rate);
         return 0;
+    }
+
+    // Remembers every port that feeds one of our inputs, however it was
+    // patched: by connect_inputs_in_order(), or by hand as the container
+    // test does. Not forgotten on disconnect, since JACK may disconnect a
+    // port before it reports the port gone.
+    static void connect_cb(jack_port_id_t a, jack_port_id_t b, int connect,
+                           void* arg) noexcept {
+        auto* self = static_cast<Impl*>(arg);
+        if (!connect) return;
+        jack_port_t* pa = jack_port_by_id(self->client, a);
+        jack_port_t* pb = jack_port_by_id(self->client, b);
+        jack_port_id_t source_id;
+        jack_port_t* source;
+        if (self->is_input(pb)) {
+            source_id = a;
+            source = pa;
+        } else if (self->is_input(pa)) {
+            source_id = b;
+            source = pb;
+        } else {
+            return;
+        }
+        const char* name = source ? jack_port_name(source) : nullptr;
+        try {
+            std::lock_guard<std::mutex> lock(self->sources_mutex);
+            for (const auto& s : self->sources) {
+                if (s.first == source_id) return;
+            }
+            self->sources.emplace_back(source_id, name ? name : "unknown port");
+        } catch (...) {
+            // Out of memory in a notification: this port's loss will still
+            // show as a stall if the device takes the clock with it.
+        }
+    }
+
+    static void registration_cb(jack_port_id_t id, int registered,
+                                void* arg) noexcept {
+        auto* self = static_cast<Impl*>(arg);
+        if (registered) return;
+        try {
+            std::lock_guard<std::mutex> lock(self->sources_mutex);
+            for (const auto& s : self->sources) {
+                if (s.first != id) continue;
+                if (self->guard.fatal() == Fatal::None) self->gone_port = s.second;
+                self->guard.raise(Fatal::DeviceGone);
+                return;
+            }
+        } catch (...) {
+            self->guard.raise(Fatal::DeviceGone);
+        }
     }
 
     static void shutdown_cb(void* arg) noexcept {
@@ -185,6 +269,17 @@ bool JackBackend::open(const backend::BackendConfig& config,
         return fail();
     }
 
+    // Decided now, so a second card appearing later cannot change which
+    // device the inputs come from.
+    std::vector<PortInfo> chosen;
+    if (!backend::select_device(d.physical(JackPortIsOutput),
+                                config.capture_device, chosen, error)) {
+        return fail();
+    }
+    d.capture_device = config.capture_device.empty() && !chosen.empty()
+                           ? chosen.front().device
+                           : config.capture_device;
+
     if (!d.register_ports(config.inputs, "in", JackPortIsInput, d.in_ports,
                           error) ||
         !d.register_ports(config.outputs, "out", JackPortIsOutput, d.out_ports,
@@ -193,6 +288,11 @@ bool JackBackend::open(const backend::BackendConfig& config,
     }
     d.in_bufs.assign(d.in_ports.size(), nullptr);
     d.out_bufs.assign(d.out_ports.size(), nullptr);
+    const uint32_t scratch_frames =
+        std::max(kMinScratchFrames, jack_get_buffer_size(d.client));
+    d.silence.assign(scratch_frames, 0.0f);
+    d.scratch.assign(scratch_frames, 0.0f);
+    d.guard.set_max_frames(scratch_frames);
     d.block = backend::AudioBlock{
         d.in_bufs.data(),  static_cast<uint32_t>(d.in_bufs.size()),
         d.out_bufs.data(), static_cast<uint32_t>(d.out_bufs.size()),
@@ -206,6 +306,8 @@ bool JackBackend::open(const backend::BackendConfig& config,
     jack_set_process_callback(d.client, Impl::process_cb, &d);
     jack_set_xrun_callback(d.client, Impl::xrun_cb, &d);
     jack_set_sample_rate_callback(d.client, Impl::sample_rate_cb, &d);
+    jack_set_port_connect_callback(d.client, Impl::connect_cb, &d);
+    jack_set_port_registration_callback(d.client, Impl::registration_cb, &d);
     jack_on_shutdown(d.client, Impl::shutdown_cb, &d);
     return true;
 }
@@ -222,6 +324,7 @@ bool JackBackend::activate(std::string& error) {
         return false;
     }
     d.active = true;
+    d.guard.watch_from(now_ns());
     return true;
 }
 
@@ -229,16 +332,22 @@ int JackBackend::connect_inputs_in_order() {
     Impl& d = *impl_;
     if (!d.client) return 0;
 
-    const std::vector<PortInfo> hw = d.physical(JackPortIsOutput);
+    std::vector<PortInfo> hw;
+    std::string why;
+    if (!backend::select_device(d.physical(JackPortIsOutput), d.capture_device,
+                                hw, why)) {
+        std::fprintf(stderr, "sonora: not connecting inputs: %s\n", why.c_str());
+        return 0;
+    }
     if (hw.empty()) return 0;
 
     int connected = 0;
     const std::size_t n = std::min(hw.size(), d.in_ports.size());
     for (std::size_t i = 0; i < n; ++i) {
-        if (jack_connect(d.client, hw[i].name.c_str(),
-                         jack_port_name(d.in_ports[i])) == 0) {
-            ++connected;
-        }
+        const int rc = jack_connect(d.client, hw[i].name.c_str(),
+                                    jack_port_name(d.in_ports[i]));
+        // An existing link is the outcome asked for, not a failure.
+        if (rc == 0 || rc == EEXIST) ++connected;
     }
 
     // A count mismatch either way is worth saying out loud. More tracks than
@@ -270,6 +379,7 @@ int JackBackend::connected_input_count() const {
 void JackBackend::deactivate() noexcept {
     Impl& d = *impl_;
     if (!d.client || !d.active) return;
+    d.guard.unwatch();
     // Before the client is closed and before the caller frees the session,
     // so the callback cannot run against freed state.
     jack_deactivate(d.client);
@@ -278,24 +388,46 @@ void JackBackend::deactivate() noexcept {
 
 uint32_t JackBackend::sample_rate() const { return impl_->rate; }
 
-uint32_t JackBackend::buffer_frames() const {
-    return impl_->client ? jack_get_buffer_size(impl_->client) : 0;
-}
+uint32_t JackBackend::buffer_frames() const { return impl_->guard.frames(); }
 
 uint32_t JackBackend::xruns() const {
     return impl_->xruns.load(std::memory_order_relaxed);
 }
 
-bool JackBackend::fatal() const { return impl_->guard.fatal() != Fatal::None; }
+bool JackBackend::fatal() const { return impl_->guard.check_stall(now_ns()); }
 
-const std::string& JackBackend::fatal_reason() const {
-    switch (impl_->guard.fatal()) {
-        case Fatal::ServerGone:    return kServerGone;
-        case Fatal::RateChanged:   return kRateChanged;
-        case Fatal::BufferChanged: return kBufferChanged;
-        case Fatal::None:          break;
+std::string JackBackend::fatal_reason() const {
+    const Impl& d = *impl_;
+    const uint32_t detail = d.guard.detail();
+    switch (d.guard.fatal()) {
+        case Fatal::None:
+            return {};
+        case Fatal::ServerGone:
+            return "the audio server went away";
+        case Fatal::DeviceGone: {
+            std::lock_guard<std::mutex> lock(d.sources_mutex);
+            if (d.gone_port.empty()) return "a capture device went away";
+            return "capture device " + device_of(d.gone_port) +
+                   " went away (" + d.gone_port + " is gone)";
+        }
+        case Fatal::Stalled:
+            return "the audio server ran no period for over a second";
+        case Fatal::RateChanged:
+            return "the audio server changed its sample rate mid-session (" +
+                   std::to_string(d.rate) + " -> " + std::to_string(detail) +
+                   " Hz)";
+        case Fatal::BufferChanged:
+            if (d.guard.frames() == 0) {
+                return "the audio server's period of " + std::to_string(detail) +
+                       " frames is more than the " +
+                       std::to_string(d.scratch.size()) +
+                       " this backend can hold";
+            }
+            return "the audio server changed its buffer size mid-session (" +
+                   std::to_string(d.guard.frames()) + " -> " +
+                   std::to_string(detail) + " frames)";
     }
-    return kNoReason;
+    return {};
 }
 
 }  // namespace sonora

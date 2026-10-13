@@ -16,7 +16,9 @@ namespace sonora::backend {
 // call that receives it.
 struct AudioBlock {
     // inputs[i] is channel i in the order the backend's ports were
-    // registered, nframes long, or nullptr when nothing is connected to it.
+    // registered, nframes long. It may be nullptr when nothing is connected;
+    // a non-null pointer does not mean connected. Ask
+    // AudioBackend::connected_input_count().
     const float* const* inputs;
     uint32_t input_count;
     // outputs[i] is nframes long. The callback writes every frame of every
@@ -25,17 +27,19 @@ struct AudioBlock {
     float* const* outputs;
     uint32_t output_count;
     uint32_t nframes;
-    // The backend's monotonic frame counter at the start of this block. A
-    // jump larger than the previous block's nframes is a gap: an xrun.
+    // The backend's frame counter at the start of this block. Never
+    // decreases. Equals the previous frame_time + nframes unless frames were
+    // lost or the clock source changed.
     uint64_t frame_time;
 };
 
 // Implemented by the engine (engine/core's Session); called by a backend.
 class ProcessCallback {
 public:
-    // Called on the backend's real-time thread, once per period, never
-    // concurrently with itself. The rules of CLAUDE.md apply to everything
-    // it reaches: no allocation, no lock, no I/O, no logging, no throw.
+    // Called once per period on a thread the backend controls, normally its
+    // real-time thread, never concurrently with itself. The rules of
+    // CLAUDE.md apply to everything it reaches: no allocation, no lock, no
+    // I/O, no logging, no throw.
     virtual void process(const AudioBlock& block) noexcept SONORA_RT = 0;
 
 protected:

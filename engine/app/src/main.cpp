@@ -170,7 +170,8 @@ void draw(sonora::Session& s, const AudioBackend& audio, int take,
 // Waits for something to be patched into our inputs. This is not a test
 // accommodation: on the appliance the engine starts at boot, and a USB
 // interface may not be enumerated yet. Starting a take against ports that
-// are about to be connected would record a silent head.
+// are about to be connected would record a silent head. Gives up early, with
+// 0, once the backend has failed: nothing it connects will ever be read.
 int wait_for_inputs(const AudioBackend& audio, double seconds) {
     const int immediate = audio.connected_input_count();
     if (immediate > 0 || seconds <= 0.0) return immediate;
@@ -179,7 +180,7 @@ int wait_for_inputs(const AudioBackend& audio, double seconds) {
     std::fflush(stdout);
 
     double waited = 0.0;
-    while (waited < seconds && !sonora::quit_requested()) {
+    while (waited < seconds && !sonora::quit_requested() && !audio.fatal()) {
         ::usleep(100000);
         waited += 0.1;
         const int n = audio.connected_input_count();
@@ -199,6 +200,13 @@ int wait_for_inputs(const AudioBackend& audio, double seconds) {
 int run_headless(sonora::Session& session, AudioBackend& audio,
                  double seconds, double wait_seconds) {
     const int connected = wait_for_inputs(audio, wait_seconds);
+    // Before the take opens: a server lost while waiting would otherwise
+    // leave a set of 0-frame files behind it.
+    if (audio.fatal()) {
+        std::fprintf(stderr, "sonora: not recording: %s.\n",
+                     audio.fatal_reason().c_str());
+        return 1;
+    }
     if (connected == 0) {
         std::fprintf(stderr,
                      "sonora: refusing to record with no connected inputs;"
@@ -314,6 +322,7 @@ int main(int argc, char** argv) {
     double wait_for_inputs_seconds = 0.0;
     bool arm_all = false;
     std::string keymap_path;
+    std::string capture_device;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -338,11 +347,15 @@ int main(int argc, char** argv) {
             arm_all = true;
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
+            capture_device = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(
                 "usage: sonora-engine [options]\n"
                 "  --dir PATH        session directory\n"
                 "  --tracks N|auto   track count, or one per capture channel\n"
+                "  --device NAME     capture device to record from; needed when\n"
+                "                    more than one offers capture ports\n"
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
@@ -389,9 +402,18 @@ int main(int argc, char** argv) {
     if (cfg.track_count == 0) {
         // One track per capture channel the interface offers. Guessing a
         // number means either silent tracks or inputs nobody is recording.
-        // A backend of its own, gone before the session's is opened.
-        const int channels = static_cast<int>(
-            make_backend("jack")->physical_capture_ports().size());
+        // A backend of its own, gone before the session's is opened. Only
+        // the chosen device counts: onboard audio's two ports are not
+        // channels of the interface.
+        std::vector<sonora::backend::PortInfo> ports;
+        std::string why;
+        if (!sonora::backend::select_device(
+                make_backend("jack")->physical_capture_ports(), capture_device,
+                ports, why)) {
+            std::fprintf(stderr, "sonora: --tracks auto: %s\n", why.c_str());
+            return 1;
+        }
+        const int channels = static_cast<int>(ports.size());
         if (channels == 0) {
             std::fprintf(stderr,
                          "sonora: --tracks auto found no capture channels."
@@ -399,7 +421,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         cfg.track_count = channels;
-        std::printf("sonora: %d capture channels detected\n", channels);
+        std::printf("sonora: %d capture channels detected on %s\n", channels,
+                    ports.front().device.c_str());
     }
 
     sonora::Session session(cfg);
@@ -413,10 +436,11 @@ int main(int argc, char** argv) {
     // deactivates, and the callback never outlives what it calls into.
     const std::unique_ptr<AudioBackend> audio = make_backend("jack");
     std::string backend_error;
-    // open() refuses a server at any rate but the session's: a mismatch
-    // would write wrong-pitch files.
+    // open() refuses a server at any rate but the session's, since a
+    // mismatch would write wrong-pitch files, and refuses to guess between
+    // two capture devices.
     if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 0,
-                      cfg.sample_rate},
+                      cfg.sample_rate, capture_device},
                      session, backend_error) ||
         !audio->activate(backend_error)) {
         std::fprintf(stderr, "sonora: %s\n", backend_error.c_str());

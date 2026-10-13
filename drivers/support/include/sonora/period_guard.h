@@ -11,8 +11,10 @@ namespace sonora::drivers {
 enum class Fatal : uint32_t {
     None = 0,
     ServerGone,
-    RateChanged,
-    BufferChanged,
+    DeviceGone,     // a port an input was connected from went away
+    Stalled,        // no period for kStallNs while active
+    RateChanged,    // detail: the new rate
+    BufferChanged,  // detail: the refused period's size
 };
 
 // Decides whether a period may reach the engine. Once anything fatal has
@@ -20,47 +22,126 @@ enum class Fatal : uint32_t {
 // started with must not be written into it (ADR-0007 §4.2).
 class PeriodGuard {
 public:
+    static constexpr uint64_t kStallNs = 1000000000ull;
+
     // Before activation, on the control thread.
     void expect_rate(uint32_t rate) noexcept {
         rate_.store(rate, std::memory_order_relaxed);
     }
+    // The most frames the backend's buffers hold, scratch included.
+    void set_max_frames(uint32_t frames) noexcept {
+        max_frames_.store(frames, std::memory_order_relaxed);
+    }
 
-    // From JACK's sample-rate callback. JACK also calls it with the rate it
+    uint32_t expected_rate() const noexcept {
+        return rate_.load(std::memory_order_relaxed);
+    }
+
+    // From a server notification. JACK also calls it with the rate it
     // already has, which is not a change.
     void rate_reported(uint32_t rate) noexcept {
-        if (rate != rate_.load(std::memory_order_relaxed)) raise(Fatal::RateChanged);
+        if (rate != expected_rate()) raise(Fatal::RateChanged, rate);
     }
 
-    // Any thread. The first reason sticks: later ones are consequences.
-    void raise(Fatal why) noexcept {
-        Fatal none = Fatal::None;
-        fatal_.compare_exchange_strong(none, why, std::memory_order_acq_rel);
+    // Any thread. The first reason sticks, with its own detail: later ones
+    // are consequences. Reason and detail share one word so a reader never
+    // pairs one raise's reason with another's detail.
+    void raise(Fatal why, uint32_t detail = 0) noexcept {
+        uint64_t none = 0;
+        state_.compare_exchange_strong(
+            none, (static_cast<uint64_t>(why) << 32) | detail,
+            std::memory_order_acq_rel);
     }
 
-    Fatal fatal() const noexcept { return fatal_.load(std::memory_order_acquire); }
+    Fatal fatal() const noexcept {
+        return static_cast<Fatal>(state_.load(std::memory_order_acquire) >> 32);
+    }
+    uint32_t detail() const noexcept {
+        return static_cast<uint32_t>(state_.load(std::memory_order_acquire));
+    }
 
-    // Top of every period, on the audio thread. The size is taken from the
-    // first period rather than from jack_get_buffer_size() before
-    // activation, which PipeWire's JACK layer can answer with a default;
-    // what a take must not see is the size changing under it.
-    bool admit(uint32_t nframes) noexcept SONORA_RT {
-        if (fatal_.load(std::memory_order_acquire) != Fatal::None) return false;
-        // Only the audio thread touches frames_, one period at a time.
-        if (frames_ == 0) frames_ = nframes;
-        if (nframes != frames_) {
-            raise(Fatal::BufferChanged);
+    // The size the first admitted period set; 0 before it. Any thread.
+    uint32_t frames() const noexcept {
+        return frames_.load(std::memory_order_relaxed);
+    }
+    // Periods the server ran, refused ones included.
+    uint64_t periods() const noexcept {
+        return periods_.load(std::memory_order_relaxed);
+    }
+
+    // Top of every period, on the audio thread, with the rate the server is
+    // running this period at. Checking the rate here, not only on the
+    // server's notification, is what makes the first period at a new rate
+    // the one refused. The size is taken from the first period rather than
+    // from what the server said before activation, which PipeWire's JACK
+    // layer can answer with a default.
+    bool admit(uint32_t nframes, uint32_t rate) noexcept SONORA_RT {
+        // The audio thread is the only writer.
+        periods_.store(periods_.load(std::memory_order_relaxed) + 1,
+                       std::memory_order_relaxed);
+        if (fatal() != Fatal::None) return false;
+        if (rate != expected_rate()) {
+            raise(Fatal::RateChanged, rate);
+            return false;
+        }
+        uint32_t frames = frames_.load(std::memory_order_relaxed);
+        if (frames == 0) {
+            if (nframes > max_frames_.load(std::memory_order_relaxed)) {
+                raise(Fatal::BufferChanged, nframes);
+                return false;
+            }
+            frames = nframes;
+            frames_.store(frames, std::memory_order_relaxed);
+        }
+        if (nframes != frames) {
+            raise(Fatal::BufferChanged, nframes);
             return false;
         }
         return true;
     }
 
+    // Stall watch, from the control thread: at activation, at deactivation,
+    // and on each poll. Two pollers at once only blur the timing.
+    void watch_from(uint64_t now_ns) noexcept {
+        seen_periods_.store(periods(), std::memory_order_relaxed);
+        seen_at_ns_.store(now_ns, std::memory_order_relaxed);
+        watching_.store(true, std::memory_order_release);
+    }
+    void unwatch() noexcept { watching_.store(false, std::memory_order_release); }
+
+    // Raises Stalled once no period has arrived for kStallNs. Returns
+    // whether anything fatal has happened.
+    bool check_stall(uint64_t now_ns) noexcept {
+        if (watching_.load(std::memory_order_acquire) && fatal() == Fatal::None) {
+            const uint64_t p = periods();
+            if (p != seen_periods_.load(std::memory_order_relaxed)) {
+                seen_periods_.store(p, std::memory_order_relaxed);
+                seen_at_ns_.store(now_ns, std::memory_order_relaxed);
+            } else {
+                // Another poller may have stored a later time than ours.
+                const uint64_t seen = seen_at_ns_.load(std::memory_order_relaxed);
+                if (now_ns > seen && now_ns - seen >= kStallNs) {
+                    raise(Fatal::Stalled);
+                }
+            }
+        }
+        return fatal() != Fatal::None;
+    }
+
 private:
-    std::atomic<Fatal> fatal_{Fatal::None};
+    std::atomic<uint64_t> state_{0};
     std::atomic<uint32_t> rate_{0};
-    uint32_t frames_ = 0;
+    std::atomic<uint32_t> max_frames_{UINT32_MAX};
+    std::atomic<uint32_t> frames_{0};
+    std::atomic<uint64_t> periods_{0};
+    std::atomic<bool> watching_{false};
+    std::atomic<uint64_t> seen_periods_{0};
+    std::atomic<uint64_t> seen_at_ns_{0};
 };
 
-static_assert(std::atomic<Fatal>::is_always_lock_free,
-              "the audio thread reads it every period");
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "the audio thread reads and writes it every period");
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+              "the audio thread reads and writes it every period");
 
 }  // namespace sonora::drivers

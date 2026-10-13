@@ -36,7 +36,7 @@ public:
     uint32_t buffer_frames() const override;
     uint32_t xruns() const override;
     bool fatal() const override;
-    const std::string& fatal_reason() const override;
+    std::string fatal_reason() const override;
 
 private:
     struct Impl;
