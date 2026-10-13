@@ -25,6 +25,17 @@
         }                                                                \
     } while (0)
 
+// ASan and TSan intercept mlockall as a no-op, since their shadow memory
+// cannot be locked: it returns success and VmLck stays 0. Those builds are
+// never shipped, so only the refusal is checked there.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define SONORA_MLOCK_INTERCEPTED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define SONORA_MLOCK_INTERCEPTED 1
+#endif
+#endif
+
 namespace {
 
 // With a finite limit, MCL_FUTURE turns the next mapping past it into a
@@ -55,6 +66,11 @@ int test_finite_limit_is_refused() {
 }
 
 int test_locks_now_and_later() {
+#ifdef SONORA_MLOCK_INTERCEPTED
+    std::printf("test_memory_lock: success path skipped: this sanitizer"
+                " makes mlockall a no-op\n");
+    return 0;
+#endif
     rlimit lim{};
     CHECK(::getrlimit(RLIMIT_MEMLOCK, &lim) == 0);
     const rlimit unlimited{RLIM_INFINITY, RLIM_INFINITY};
