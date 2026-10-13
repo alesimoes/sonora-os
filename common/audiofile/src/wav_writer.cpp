@@ -10,6 +10,8 @@
 #include <system_error>
 #include <vector>
 
+#include "sonora/platform/file.h"
+
 namespace sonora {
 namespace {
 
@@ -129,10 +131,11 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
                      uint16_t channels, Format format,
                      uint64_t time_reference) {
     if (file_) return false;
-    // "x" is O_EXCL: if the name is taken, fail with EEXIST rather than
+    // Exclusive: if the name is taken, fail with EEXIST rather than
     // truncate. Choosing a free take number is the session's job; this is
-    // what stops a mistake there from destroying a recording.
-    file_ = std::fopen(path.c_str(), "wbx");
+    // what stops a mistake there from destroying a recording. Not inherited
+    // by the interface the engine starts while a take is open.
+    file_ = platform::create_exclusive(path);
     if (!file_) return false;
     path_ = path;
     format_ = format;

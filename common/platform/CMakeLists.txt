@@ -15,9 +15,11 @@ add_library(sonora_platform STATIC
   include/sonora/platform/thread_cpu.h
   include/sonora/platform/ipc.h
   include/sonora/platform/process.h
+  include/sonora/platform/file.h
   src/${SONORA_PLATFORM_IMPL}/thread_cpu.cpp
   src/${SONORA_PLATFORM_IMPL}/ipc.cpp
   src/${SONORA_PLATFORM_IMPL}/process.cpp
+  src/${SONORA_PLATFORM_IMPL}/file.cpp
 )
 target_include_directories(sonora_platform PUBLIC include)
 target_link_libraries(sonora_platform PUBLIC Threads::Threads)
