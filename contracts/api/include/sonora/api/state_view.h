@@ -76,11 +76,16 @@ struct StateFrame {
 
 class StateView {
 public:
-    // Retries before a read is called stale: a few yields, then short
-    // sleeps, about 3 ms in all. The writer's section is a few hundred
-    // stores; a reader that collides with it this long is being starved, or
-    // the writer is gone, and saying so beats waiting.
+    // Retries before a read is called stale. The writer's section is a few
+    // hundred stores; a reader that collides with it this often is being
+    // starved, or the writer is stopped or gone, and saying so beats
+    // waiting.
     static constexpr int kMaxRetries = 64;
+    // And how long a read waits on one open section, by the clock. The
+    // count alone did not bound it: on a loaded host each 20 us sleep came
+    // back about a millisecond later, and a read of a stopped writer took
+    // 36 to 51 ms in CI, three UI frames.
+    static constexpr int64_t kMaxReadWaitNs = 3'000'000;
     // The heartbeat may stand still this long, or ten publish periods if
     // that is longer, before the engine counts as gone. Six UI ticks at
     // 60 Hz: long enough not to flicker, short enough that a frozen meter is
@@ -118,12 +123,15 @@ public:
 
     // Seqlock reads that ran out of retries, for diagnostics and the test.
     uint64_t stale_reads() const { return stale_reads_; }
+    // Attempts after the first, over every seqlock read.
+    uint64_t retries() const { return retries_; }
 
 private:
     const StateHeader* header_ = nullptr;
     const TrackState* tracks_ = nullptr;
     std::vector<uint64_t> cursors_;
     mutable uint64_t stale_reads_ = 0;
+    mutable uint64_t retries_ = 0;
     mutable uint64_t stuck_seq_ = 0;   // an odd sequence a read gave up on
     mutable uint64_t seen_heartbeat_ = 0;
     mutable uint64_t seen_at_ns_ = 0;

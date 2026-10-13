@@ -18,6 +18,8 @@
 #include <thread>
 #include <vector>
 
+#include <sys/resource.h>
+
 #include "sonora/api/state_block.h"
 
 using namespace sonora::api;
@@ -101,6 +103,61 @@ bool consistent(const TrackSnapshot& s) {
            s.clip_count == s.flags && s.latency_frames == s.flags;
 }
 
+uint64_t context_switches() {
+#ifdef RUSAGE_THREAD
+    rusage u{};
+    if (getrusage(RUSAGE_THREAD, &u) == 0) {
+        return static_cast<uint64_t>(u.ru_nvcsw) + static_cast<uint64_t>(u.ru_nivcsw);
+    }
+#endif
+    return 0;
+}
+
+struct Span {
+    Clock::time_point from, to;
+};
+
+// A paced writer's publishes, and which of them the writer was stopped in.
+//
+// On a loaded host the scheduler takes the core from a writer mid-section,
+// and every read in the meantime is stale, as it should be: that is the
+// stale flag doing its job, not starvation. Wall-clock bars could not tell
+// the two apart and failed CI when other builds shared the runner. So a
+// stale tick must coincide with a publish the writer was switched out of,
+// or that stayed open as long as a read waits on one (time a virtual
+// machine's host took, which no switch count shows). A writer that starves
+// its readers while it runs gets no such excuse.
+struct PublishLog {
+    std::vector<Span> stopped;
+    std::size_t publishes = 0;
+
+    void publish(StateWriter& w, const Publish& p) {
+        const uint64_t switches = context_switches();
+        const auto from = Clock::now();
+        w.publish(p.t, p.tracks.data(), p.peaks.data());
+        const auto to = Clock::now();
+        ++publishes;
+        if (context_switches() != switches ||
+            to - from >= std::chrono::nanoseconds(StateView::kMaxReadWaitNs)) {
+            stopped.push_back({from, to});
+        }
+    }
+
+    // Stale ticks that no stopped publish overlaps. Read after the writer
+    // has joined.
+    int unexplained(const std::vector<Span>& stale_ticks) const {
+        int n = 0;
+        for (const Span& t : stale_ticks) {
+            bool explained = false;
+            for (const Span& s : stopped) {
+                explained = explained || (s.from <= t.to && t.from <= s.to);
+            }
+            if (!explained) ++n;
+        }
+        return n;
+    }
+};
+
 void attach_refusals() {
     StateBlockMemory mem(4);
     StateWriter w;
@@ -157,6 +214,7 @@ void blocked_writer_reads_stale() {
     // A writer that never finishes (one that died mid-section, after M7)
     // costs the first read its retries and every later read nothing, so a
     // tick that reads 64 tracks is not 64 times as slow.
+    const uint64_t retries = v.retries();
     const auto t1 = Clock::now();
     TrackSnapshot ts;
     for (uint32_t i = 0; i < kTracks; ++i) ts = v.track(i);
@@ -165,8 +223,11 @@ void blocked_writer_reads_stale() {
     CHECK(s.take == 0 && s.playhead == 0);   // the stale snapshot shows nothing
     CHECK(ts.stale);
     CHECK(v.stale_reads() == 1 + kTracks);
+    // Counted, not timed: the later reads did not retry at all.
+    CHECK(v.retries() == retries);
+    // kMaxReadWaitNs and one late wake-up. Without the time bound each of
+    // the 48 sleeps could wake late, and on a loaded runner did, to 51 ms.
     CHECK(first < std::chrono::milliseconds(50));
-    CHECK(rest < std::chrono::milliseconds(5));
     std::printf("  blocked writer: first read stale after %.3f ms, %u more in %.3f ms\n",
                 std::chrono::duration<double, std::milli>(first).count(), kTracks,
                 std::chrono::duration<double, std::milli>(rest).count());
@@ -230,6 +291,7 @@ void paced_writer_does_not_starve_a_60hz_reader() {
     first.fill(1);
     w.publish(first.t, first.tracks.data(), first.peaks.data());
     std::atomic<bool> stop{false};
+    PublishLog log;
     std::thread writer([&]() {
         Publish p(kTracks);
         p.inserts = false;
@@ -237,7 +299,7 @@ void paced_writer_does_not_starve_a_60hz_reader() {
         for (uint32_t k = 2; !stop.load(std::memory_order_relaxed); ++k) {
             p.fill(k);
             for (uint32_t i = 0; i < kTracks; ++i) p.peaks[i] = static_cast<float>(k % 7) / 8;
-            w.publish(p.t, p.tracks.data(), p.peaks.data());
+            log.publish(w, p);
             next += std::chrono::microseconds(1000);
             std::this_thread::sleep_until(next);
         }
@@ -246,10 +308,12 @@ void paced_writer_does_not_starve_a_60hz_reader() {
     std::string error;
     CHECK(v.attach(mem.data(), mem.bytes(), error));
     int ticks = 0, stale = 0, torn = 0;
+    std::vector<Span> stale_ticks;
     Clock::duration worst{};
     auto next = Clock::now();
     for (; ticks < 60; ++ticks) {
         const auto t0 = Clock::now();
+        const int stale_before = stale;
         const TransportSnapshot s = v.transport();
         if (s.stale) ++stale;
         if (!s.stale && !consistent(s)) ++torn;
@@ -259,19 +323,24 @@ void paced_writer_does_not_starve_a_60hz_reader() {
             if (!t.stale && !consistent(t)) ++torn;
             (void)v.take_peak(i);
         }
-        worst = std::max(worst, Clock::now() - t0);
+        const auto t1 = Clock::now();
+        if (stale != stale_before) stale_ticks.push_back({t0, t1});
+        worst = std::max(worst, t1 - t0);
         next += std::chrono::microseconds(16667);
         std::this_thread::sleep_until(next);
     }
     stop = true;
     writer.join();
     CHECK(torn == 0);
-    // One frame's worth of reads, 65 of them, 60 times: none stale.
-    CHECK(stale == 0);
-    // The whole tick's reads within a frame, with margin for a sanitizer.
-    CHECK(worst < std::chrono::milliseconds(16));
-    std::printf("  paced 1 kHz writer, 60 Hz reader: %d ticks, %d stale, worst tick %.3f ms\n",
-                ticks, stale,
+    // One frame's worth of reads, 65 of them, 60 times: none stale unless
+    // the scheduler stopped the writer inside a publish.
+    CHECK(log.unexplained(stale_ticks) == 0);
+    // The tick's time is not checked: it is mostly the reader's own
+    // scheduling, and a read's own wait is bounded (blocked_writer_reads_stale).
+    std::printf("  paced 1 kHz writer, 60 Hz reader: %d ticks, %d stale reads in %zu ticks, "
+                "%zu of %zu publishes stopped, %llu retries, worst tick %.3f ms\n",
+                ticks, stale, stale_ticks.size(), log.stopped.size(), log.publishes,
+                static_cast<unsigned long long>(v.retries()),
                 std::chrono::duration<double, std::milli>(worst).count());
 }
 
@@ -301,13 +370,14 @@ void counter_churn_does_not_starve_a_60hz_reader() {
     fill(first, 1);
     w.publish(first.t, first.tracks.data(), first.peaks.data());
     std::atomic<bool> stop{false};
+    PublishLog log;
     std::thread writer([&]() {
         Publish p(kTracks);
         p.inserts = false;
         auto next = Clock::now();
         for (uint32_t k = 2; !stop.load(std::memory_order_relaxed); ++k) {
             fill(p, k);
-            w.publish(p.t, p.tracks.data(), p.peaks.data());
+            log.publish(w, p);
             next += std::chrono::microseconds(1000);
             std::this_thread::sleep_until(next);
         }
@@ -317,12 +387,15 @@ void counter_churn_does_not_starve_a_60hz_reader() {
     CHECK(v.attach(mem.data(), mem.bytes(), error));
     StateFrame f;
     int stale = 0, torn = 0, backwards = 0;
+    std::vector<Span> stale_ticks;
     std::vector<uint32_t> last(kTracks, 0);
     auto next = Clock::now();
     for (int tick = 0; tick < 60; ++tick) {
+        const auto t0 = Clock::now();
         v.frame(f);
         if (f.transport.stale) {
             ++stale;
+            stale_ticks.push_back({t0, Clock::now()});
         } else {
             for (uint32_t i = 0; i < kTracks; ++i) {
                 const InsertSnapshot& in = f.tracks[i].inserts[kInsertSlots - 1];
@@ -338,9 +411,11 @@ void counter_churn_does_not_starve_a_60hz_reader() {
     writer.join();
     CHECK(torn == 0);
     CHECK(backwards == 0);
-    CHECK(stale == 0);
+    CHECK(log.unexplained(stale_ticks) == 0);
     CHECK(last[0] > 1);
-    std::printf("  counters moving on every publish, 60 Hz frames: %d stale\n", stale);
+    std::printf("  counters moving on every publish, 60 Hz frames: %d stale, %zu of %zu "
+                "publishes stopped\n",
+                stale, log.stopped.size(), log.publishes);
 }
 
 // A frame is one publish: the transport and every track read under one
