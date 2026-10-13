@@ -3,7 +3,7 @@
 **Goal.** (1) Pin the PipeWire quantum/rate so no client can move it (an M2 take dies on a change). (2) write-usb.sh review follow-ups a-f.
 **State.** Both done and verified in container + QEMU. Committed locally, not pushed. Nothing on real hardware.
 
-**Commits** (on origin/main 1031fa1): `678b9b0` quantum pin + test + CI job; then write-usb hardening; then planning/handoff.
+**Commits** (on origin/main 1031fa1): `678b9b0` quantum pin + test + CI job; `c159d9d` write-usb hardening; `a03f920` planning + this handoff.
 
 **Verify**
 - `tools/test-quantum-pin.sh` -> `QUANTUM RESULT pass` (17 ok, 2 `QUANTUM gap` lines expected)
