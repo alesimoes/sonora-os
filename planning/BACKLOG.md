@@ -39,6 +39,16 @@ without asking a question.
       check per defect found so far. `tools/test-boot-qemu.sh`.
 - [x] A way to watch it boot by hand: `tools/run-qemu.sh`, going through the
       real bootloader with the shipped command line.
+- [ ] bext OriginationDate/OriginationTime: `WavWriter` leaves both zero
+      (`common/audiofile/src/wav_writer.cpp:83-92`). EBU Tech 3285 v2 §2.3:
+      10 ASCII characters, year-month-day, and 8 ASCII characters,
+      hour-minute-second (separator `-` recommended). Every DAW shows a blank
+      creation date. Fill them in `open()`, which runs on the control thread,
+      not the audio thread, with a regression test in
+      `common/audiofile/tests/test_wav_writer.cpp` first. Then delete the
+      `xfail` branch in `tools/bwf-interop.py`, whose format checks already
+      run once the fields are non-empty. Found by `tools/test-bwf-interop.sh`;
+      see `brain/research/bwf-interop.md`. rt-engineer.
 - [ ] Run the boot test in CI. Needs the ISO built first, which takes tens of
       minutes, so it belongs in a separate workflow on a schedule or manual
       dispatch rather than on every push.
@@ -92,7 +102,6 @@ without asking a question.
 - [ ] M5: add the §7 ctest labels, one per top-level module directory.
 - [ ] With or right after the M1 merge, update docs that name pre-M1 paths
       (`engine/src`, `engine/include`, `engine/tests`):
-      `brain/specs/bwf-broadcast-wave.md`,
       `brain/specs/plugin-latency-compensation.md`,
       `brain/research/multichannel-usb-interfaces.md`,
       `brain/research/adr-0007-measurements.md`,
@@ -167,6 +176,18 @@ Order and owners are in ADR-0008 §5.
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.
+  Until RF64 exists the writer should refuse or split a take at the limit:
+  `close()` casts both sizes with `static_cast<uint32_t>`
+  (`common/audiofile/src/wav_writer.cpp:144`, `:147`), so today a longer take
+  gets a wrapped header and reads back short or garbled, with no error. In
+  the same file, `close()` never writes the RIFF pad byte after an odd-sized
+  `data` chunk. That is unreachable while periods are even (mono 24-bit, odd
+  frame count), and it is free to fix alongside.
+- Session origin. Every session's first take has TimeReference 0, because
+  the playhead starts at 0. Ardour 8 treats 0 as "no timestamp" and imports
+  it at the edit point (`gtk2_ardour/editor_audio_import.cc:989`, tag 8.12).
+  A non-zero session start would avoid that, but it is a timeline decision
+  (ADR), not a writer fix. `brain/research/bwf-interop.md`, finding 2.
 - `DiskThread` polls every 10 ms. Correct, but a condition variable signalled
   by the callback would be better once there is a reason to care. It must not
   make the callback block.

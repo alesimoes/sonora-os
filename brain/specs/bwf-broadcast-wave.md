@@ -1,6 +1,7 @@
 # Broadcast Wave Format (BWF)
 
-Source: EBU Tech 3285, "Specification of the Broadcast Wave Format", v2.
+Source: EBU Tech 3285, "Specification of the Broadcast Wave Format", v2.0
+(May 2011), https://tech.ebu.ch/docs/tech/tech3285.pdf, §2.3 for the chunk.
 A BWF file is a plain RIFF/WAVE file with an extra `bext` chunk. Any reader
 that ignores unknown chunks sees an ordinary WAV, which is why every DAW opens
 these.
@@ -19,8 +20,8 @@ land at zero and someone re-syncs by hand.
 | 0 | 256 | `Description` — ASCII, space-padded |
 | 256 | 32 | `Originator` — we write `Sonora Engine` |
 | 288 | 32 | `OriginatorReference` |
-| 320 | 10 | `OriginationDate` — `yyyy-mm-dd` |
-| 330 | 8 | `OriginationTime` — `hh:mm:ss` |
+| 320 | 10 | `OriginationDate` — `yyyy-mm-dd` (any separator; `- _ : .` or space recommended) |
+| 330 | 8 | `OriginationTime` — `hh:mm:ss`, same separator rule |
 | 338 | 4 | `TimeReferenceLow` — low 32 bits of the sample count |
 | 342 | 4 | `TimeReferenceHigh` — high 32 bits |
 | 346 | 2 | `Version` — 0, 1 or 2 |
@@ -33,17 +34,29 @@ fields that v0 leaves zeroed, so writing zeroes there is valid.
 
 ## Implementation notes
 
-- Strings are **not** null-terminated by the spec; they are padded. Readers
-  vary, so we zero-fill the whole chunk first and write only the bytes we mean.
+- A string shorter than its field "shall be" followed by a null (§2.3, for
+  Description, Originator and OriginatorReference); a full-length string has
+  none. We zero-fill the whole chunk first and write only the bytes we mean,
+  which satisfies both cases.
 - All integers are little-endian, like the rest of RIFF.
 - A `bext` chunk is fixed-size at 602 bytes for v0. Writing a short chunk makes
   some readers mis-parse everything after it.
-- Our writer: `engine/src/wav_writer.cpp`. Field offsets are asserted in
-  `engine/tests/test_wav_writer.cpp`.
+- Our writer: `common/audiofile/src/wav_writer.cpp`. Field offsets are
+  asserted in `common/audiofile/tests/test_wav_writer.cpp`.
+- What we write today: Originator, TimeReference (the session playhead at
+  record start, so session-relative rather than "since midnight") and
+  Version 0. OriginationDate and OriginationTime are left zero, which §2.3
+  does not allow; see BACKLOG.
+- Checked against ffprobe, soxi, libsndfile, mediainfo and Ardour 8.12 by
+  `tools/test-bwf-interop.sh`; results and reader quirks in
+  `brain/research/bwf-interop.md`. Ardour treats a TimeReference of 0 as
+  "no timestamp".
 
 ## Open question
 
 Files over 4 GB overflow the 32-bit RIFF size fields. Pro Tools and most tools
 handle this with **RF64** (`RF64`/`ds64` chunks, EBU Tech 3306). We do not
 write RF64 yet; a 24-bit mono 48 kHz take hits the limit at about 8 hours, so
-this is not urgent but it is a real ceiling. Tracked in the backlog.
+this is not urgent but it is a real ceiling. Tracked in the backlog. The
+writer does not stop at the ceiling: `close()` casts both sizes to 32 bits, so
+a longer take gets a wrapped header rather than an error.

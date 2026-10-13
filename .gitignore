@@ -10,6 +10,8 @@ build-asan/
 build-qemu/
 # Disk images, kernel and serial logs from the USB writer test.
 build-usb/
+# Session, logs and reader output from the BWF interop test.
+build-interop/
 *.o
 *.a
 compile_commands.json

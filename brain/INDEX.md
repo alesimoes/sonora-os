@@ -22,6 +22,7 @@ One line per entry. Agents read this before opening anything else.
 - [Pro Tools and Logic key bindings](research/protools-logic-key-bindings.md) — every binding in both profiles checked against Avid's and Apple's own guides; corrections, collisions, the Commands Keyboard Focus problem, and what the schema cannot express.
 - [Qt shell render cost](research/qt-shell-render-cost.md) — 18 meters at 60 Hz on llvmpipe only: about one core, 0.04 ms GUI tick; no GPU figure yet; the software scene graph cannot draw the meters at all.
 - [USB stick layout](research/usb-stick-layout.md) — the ISO's MBR already has the ESP as partition 2, so persistence is 3; parted cannot edit it; the overlay lives in `home/rw`; `systemd.run=` needs `systemd.unit=` on this image.
+- [BWF interop](research/bwf-interop.md) — takes checked with ffprobe, soxi, libsndfile, mediainfo and headless Ardour 8.12 (`tools/test-bwf-interop.sh`, CI job `interop`). All 36 files open as 24-bit 48 kHz at the right length, and Ardour places each at its TimeReference, including a non-zero take 2. Defect: OriginationDate/Time empty. Ardour treats TimeReference 0 as no timestamp. The writer wraps sizes past 4 GB instead of stopping.
 
 ## Postmortems
 - [2026-10-11 comment in a line continuation](postmortems/2026-10-11-comment-in-line-continuation.md) — dropped half a QEMU command line; bash -n cannot catch it. Also: an edit that reported success without landing.

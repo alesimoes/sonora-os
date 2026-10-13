@@ -79,6 +79,19 @@ jobs:
       - name: Record and verify
         run: tools/test-engine-docker.sh
 
+  interop:
+    name: BWF files read back by third-party tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Phase 1 promises the takes open in another DAW at the right timecode.
+      # ffprobe, soxi, libsndfile, mediainfo and a headless Ardour 8 judge two
+      # recorded takes, the second starting off zero. About two minutes, most
+      # of it installing Ardour into the reader image.
+      - name: Record two takes and read them back
+        run: tools/test-bwf-interop.sh
+
   modes:
     name: Executable bits
     runs-on: ubuntu-latest

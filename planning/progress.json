@@ -261,7 +261,7 @@
           "title": "Audio files",
           "items": [
             {"id": "interchange.audio.bwf", "title": "BWF writer: 24-bit, bext time reference, NaN guard", "size": "M", "phase": 0, "status": "done", "evidence": "c586ac9, PR #5; wav_writer ctest, tools/verify-recording.py in the record CI job"},
-            {"id": "interchange.audio.bwf_other_daw", "title": "Takes open in another DAW at the right timecode", "size": "S", "phase": 1, "status": "todo", "note": "Phase 1 exit criterion; never checked"},
+            {"id": "interchange.audio.bwf_other_daw", "title": "Takes open in another DAW at the right timecode", "size": "S", "phase": 1, "status": "doing", "branch": "test/bwf-interop", "note": "tools/test-bwf-interop.sh: Ardour 8.12 places takes at their TimeReference; OriginationDate/Time empty (BACKLOG)"},
             {"id": "interchange.audio.rf64", "title": "RF64 for files over 4 GB", "size": "M", "phase": 4, "status": "todo"}
           ]
         },
