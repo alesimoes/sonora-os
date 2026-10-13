@@ -220,6 +220,13 @@ const Value* Value::find(std::string_view key) const {
     return nullptr;
 }
 
+Value* Value::find(std::string_view key) {
+    for (auto& kv : members_) {
+        if (kv.first == key) return &kv.second;
+    }
+    return nullptr;
+}
+
 Value& Value::push(Value v) {
     items_.push_back(std::move(v));
     return items_.back();

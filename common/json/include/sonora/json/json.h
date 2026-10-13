@@ -71,6 +71,12 @@ public:
     }
     const Value* find(std::string_view key) const;
 
+    // For a migration that rewrites a parsed tree in place
+    // (session-format.md, "Versioning").
+    std::vector<Value>& items() { return items_; }
+    std::vector<std::pair<std::string, Value>>& members() { return members_; }
+    Value* find(std::string_view key);
+
     // Building. push/set do not check for duplicate keys: the writer's
     // callers build from their own structs, and the parser checks its input.
     Value& push(Value v);

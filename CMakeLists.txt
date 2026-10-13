@@ -28,6 +28,8 @@ add_subdirectory(common/base)
 # Strict JSON for the session file and the key maps (ADR-0009 §5), layer 0.
 add_subdirectory(common/json)
 add_subdirectory(common/audiofile)
+# The session document (ADR-0009), layer 1 beside common/audiofile.
+add_subdirectory(common/model)
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
 add_subdirectory(contracts/api)
