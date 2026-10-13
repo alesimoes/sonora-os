@@ -33,3 +33,7 @@ add_test(NAME plan_exchange COMMAND test_plan_exchange)
 add_executable(test_disk_reader tests/test_disk_reader.cpp)
 target_link_libraries(test_disk_reader PRIVATE sonora_core)
 add_test(NAME disk_reader COMMAND test_disk_reader)
+
+add_executable(test_playback_mix tests/test_playback_mix.cpp)
+target_link_libraries(test_playback_mix PRIVATE sonora_core)
+add_test(NAME playback_mix COMMAND test_playback_mix)

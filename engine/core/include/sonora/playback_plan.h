@@ -119,6 +119,16 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free, "chunk slots");
 PlaybackPlan* create_plan(const PlanSizes& sizes);
 void destroy_plan(PlaybackPlan* plan);
 
+// Phase 2's fixed graph over the plan's tracks: TrackOut i for track i, then
+// one BusSum, then one HardwareOut; edges grouped by to_node, delays 0,
+// delay line = edge index. Needs nodes == tracks + 2 and edges == tracks + 1.
+// Stable ids: track i's TrackOut is i + 1, so a swap that keeps the tracks
+// keeps the ids.
+void layout_monitor_graph(PlaybackPlan& plan);
+
+constexpr uint32_t kBusSumStableId = 0xFFFF0001u;
+constexpr uint32_t kHardwareOutStableId = 0xFFFF0002u;
+
 // The slot that holds source chunk `chunk` of segment channel `ch`, or
 // kNoChunk if the segment does not reach that chunk.
 inline uint32_t chunk_slot_of(const PlanSegment& s, uint32_t ch,

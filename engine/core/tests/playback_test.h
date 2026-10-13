@@ -120,27 +120,8 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
         ++t.segment_count;
         t.channels = specs[i].channels;
     }
-    // TrackOut per track -> BusSum -> HardwareOut, edges grouped by to_node.
-    const uint32_t bus = tracks;
-    const uint32_t out = tracks + 1;
-    for (uint32_t t = 0; t < tracks; ++t) {
-        p->nodes[t].kind = sonora::NodeKind::TrackOut;
-        p->nodes[t].stable_id = t + 1;
-        p->nodes[t].scratch_buffer = t;
-        p->nodes[t].track = t;
-        p->edges[t] = {t, bus, edge_delay, t};
-    }
-    p->nodes[bus].kind = sonora::NodeKind::BusSum;
-    p->nodes[bus].stable_id = 1000000;
-    p->nodes[bus].first_input_edge = 0;
-    p->nodes[bus].input_edge_count = tracks;
-    p->nodes[bus].scratch_buffer = tracks;
-    p->nodes[out].kind = sonora::NodeKind::HardwareOut;
-    p->nodes[out].stable_id = 1000001;
-    p->nodes[out].first_input_edge = tracks;
-    p->nodes[out].input_edge_count = 1;
-    p->nodes[out].scratch_buffer = tracks + 1;
-    p->edges[tracks] = {bus, out, 0, tracks};
+    sonora::layout_monitor_graph(*p);
+    for (uint32_t t = 0; t < tracks; ++t) p->edges[t].delay_frames = edge_delay;
     return p;
 }
 

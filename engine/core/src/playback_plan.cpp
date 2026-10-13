@@ -58,6 +58,25 @@ void destroy_plan(PlaybackPlan* plan) {
     ::operator delete(plan, std::align_val_t{kAlign});
 }
 
+void layout_monitor_graph(PlaybackPlan& plan) {
+    const uint32_t tracks = plan.track_count;
+    const uint32_t bus = tracks;
+    const uint32_t out = tracks + 1;
+    for (uint32_t t = 0; t < tracks; ++t) {
+        PlanNode& n = plan.nodes[t];
+        n.kind = NodeKind::TrackOut;
+        n.stable_id = t + 1;
+        n.first_input_edge = 0;
+        n.input_edge_count = 0;
+        n.scratch_buffer = t;
+        n.track = t;
+        plan.edges[t] = PlanEdge{t, bus, 0, t};
+    }
+    plan.nodes[bus] = PlanNode{NodeKind::BusSum, kBusSumStableId, 0, tracks, bus, 0};
+    plan.nodes[out] = PlanNode{NodeKind::HardwareOut, kHardwareOutStableId, tracks, 1, out, 0};
+    plan.edges[tracks] = PlanEdge{bus, out, 0, tracks};
+}
+
 float fade_in_gain(FadeCurve shape, float x) noexcept SONORA_RT {
     if (x <= 0.0f) return 0.0f;
     if (x >= 1.0f) return 1.0f;
