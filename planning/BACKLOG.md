@@ -103,7 +103,15 @@ not start or extend those items before the Complete DAW closes (owner,
 - [ ] `live-build` config: package list, RT kernel, PipeWire from backports.
 - [ ] `sonora-session.service`: autologin on tty1 into the engine, respawn on
       exit, no display manager.
-- [ ] PipeWire drop-in pinning quantum to 128 and rate to 48000.
+- [x] PipeWire drop-in pinning quantum to 128 and rate to 48000, and holding
+      it against clients: `tools/test-quantum-pin.sh`, in CI.
+- [ ] Repeat `tools/test-quantum-pin.sh`'s routes with the UMC1820 as the
+      graph driver instead of the dummy driver. A real ALSA node may have
+      period-size constraints the container cannot show.
+- [ ] Decide whether to ship `default.clock.quantum-limit = 128`, which
+      closes the measured `clock.max-quantum` + `clock.force-quantum` gap but
+      also sizes the server's ALSA and resampler buffers. Needs a device that
+      cannot run at 48 kHz to test against. `brain/research/quantum-pin.md`.
 - [ ] `limits.d` granting `rtprio 95` and `memlock unlimited` to the audio
       group.
 - [ ] Udev rule naming the first class-compliant USB interface so port
@@ -127,7 +135,8 @@ not start or extend those items before the Complete DAW closes (owner,
       agent's shell tool can arrive as a single one.
 - [ ] Boot test on real hardware; record the xrun count in
       `brain/research/`.
-- [x] QEMU boot smoke test. 19 checks: a running engine that holds its PID,
+- [x] QEMU boot smoke test. 20 checks, including the live PipeWire quantum
+      and rate: a running engine that holds its PID,
       `-rt-` in `uname -r`, no failed units, no serial login prompt, and one
       check per defect found so far. `tools/test-boot-qemu.sh`.
 - [x] A way to watch it boot by hand: `tools/run-qemu.sh`, going through the
