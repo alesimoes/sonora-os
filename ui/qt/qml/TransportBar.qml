@@ -11,6 +11,8 @@ Rectangle {
     id: bar
     required property ShellModel shell
     required property SessionModel session
+    // Open lists the sessions folder in a panel the window owns.
+    signal openRequested()
 
     height: Theme.transportHeight
     color: Theme.panel
@@ -44,6 +46,22 @@ Rectangle {
                 text: "Mix"; fontPx: Theme.textBody; implicitHeight: 28; implicitWidth: 56
                 active: bar.session.window === "mix"
                 onClicked: if (!active) bar.shell.invoke("window.toggle_mix_edit", -1)
+            }
+        }
+
+        // --- File: Save sends what Ctrl+S sends ---
+        Row {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+            SButton {
+                objectName: "saveButton"
+                text: "Save"; implicitHeight: 28; implicitWidth: 52
+                onClicked: bar.shell.invoke("app.save", -1)
+            }
+            SButton {
+                objectName: "openButton"
+                text: "Open"; implicitHeight: 28; implicitWidth: 52
+                onClicked: bar.openRequested()
             }
         }
 

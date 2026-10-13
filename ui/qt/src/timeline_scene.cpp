@@ -113,9 +113,19 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         const double y = v.y_of_track(static_cast<int>(i));
         if (y + v.track_height < 0 || y > v.height) continue;
-        const Playlist* p = tracks[i]->active();
+        const Playlist* p = active_playlist(tracks[i].get());
         if (p == nullptr) continue;
         const uint32_t palette = theme::region_colour(static_cast<int>(i));
+        // A trim in the hand: the playlist as the drop will leave it, so a
+        // neighbour the edge runs into is seen to be overwritten before the
+        // button comes up.
+        if (drag.moved && drag.preview && drag.preview->id == p->id) {
+            for (const Region& r : drag.preview->regions) {
+                draw_region(r, r.position, r.length, r.source_offset, y, v, palette,
+                            r.id == drag.region, false, peaks, out);
+            }
+            continue;
+        }
         for (const Region& r : p->regions) {
             const bool dragged = drag.moved && drag.region == r.id;
             const bool selected = sel.region == r.id;

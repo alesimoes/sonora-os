@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-#include "timeline_model.h"
+#include "model_access.h"
 
 namespace sonora::ui {
 

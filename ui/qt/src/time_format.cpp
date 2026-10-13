@@ -15,13 +15,29 @@ struct FrameRate {
     bool drop = false;
 };
 
-FrameRate parse_fps(const std::string& fps) {
-    if (fps == "23.976") return {24000, 1001, 24, false};
-    if (fps == "24") return {24, 1, 24, false};
-    if (fps == "29.97") return {30000, 1001, 30, false};
-    if (fps == "29.97df") return {30000, 1001, 30, true};
-    if (fps == "30") return {30, 1, 30, false};
+FrameRate frame_rate(model::Fps fps) {
+    switch (fps) {
+        case model::Fps::F23_976: return {24000, 1001, 24, false};
+        case model::Fps::F24: return {24, 1, 24, false};
+        case model::Fps::F25: return {25, 1, 25, false};
+        case model::Fps::F29_97: return {30000, 1001, 30, false};
+        case model::Fps::F29_97df: return {30000, 1001, 30, true};
+        case model::Fps::F30: return {30, 1, 30, false};
+    }
     return {25, 1, 25, false};
+}
+
+// The tempo map's first entry. A session this build writes has only that
+// one (nothing here edits tempo yet); a later entry in a loaded file is kept
+// and saved, but bars and beats are read from the first.
+const model::TempoEntry& first_tempo(const model::SessionSettings& s) {
+    static const model::TempoEntry kDefault{};
+    return s.tempo.empty() ? kDefault : s.tempo.front();
+}
+
+int beats_per_bar(const model::SessionSettings& s) {
+    const auto n = first_tempo(s).meter[0];
+    return n > 0 ? static_cast<int>(n) : 4;
 }
 
 constexpr int64_t kDaySeconds = 24 * 3600;
@@ -34,8 +50,9 @@ std::string printf_string(const char* fmt, A... a) {
 }
 
 double beat_frames(const model::SessionSettings& s) {
-    const double bpm = s.bpm > 0 ? s.bpm : 120.0;
-    const int den = s.meter_den > 0 ? s.meter_den : 4;
+    const model::TempoEntry& t = first_tempo(s);
+    const double bpm = t.bpm > 0 ? t.bpm : 120.0;
+    const int den = t.meter[1] > 0 ? static_cast<int>(t.meter[1]) : 4;
     return static_cast<double>(s.sample_rate) * 60.0 / bpm * 4.0 / den;
 }
 
@@ -43,9 +60,9 @@ double beat_frames(const model::SessionSettings& s) {
 
 std::string format_timecode(model::Frames f, const model::SessionSettings& s) {
     if (s.sample_rate == 0) return "--:--:--:--";
-    const FrameRate r = parse_fps(s.fps);
+    const FrameRate r = frame_rate(s.timecode.fps);
     const int64_t day = kDaySeconds * s.sample_rate;
-    int64_t total = (s.timecode_origin + f) % day;
+    int64_t total = (s.timecode.origin + f) % day;
     if (total < 0) total += day;
     // Video frames since midnight, exact in integers: samples * num / (den * rate).
     // Under 2^47 for a day at 192 kHz times 30000, so int64 holds it exactly.
@@ -67,13 +84,13 @@ std::string format_timecode(model::Frames f, const model::SessionSettings& s) {
 double frames_per_beat(const model::SessionSettings& s) { return beat_frames(s); }
 
 double frames_per_bar(const model::SessionSettings& s) {
-    return beat_frames(s) * (s.meter_num > 0 ? s.meter_num : 4);
+    return beat_frames(s) * beats_per_bar(s);
 }
 
 std::string format_bars_beats(model::Frames f, const model::SessionSettings& s) {
     if (s.sample_rate == 0) return "-|-|---";
     const double fpb = beat_frames(s);
-    const int num = s.meter_num > 0 ? s.meter_num : 4;
+    const int num = beats_per_bar(s);
     const double beats = static_cast<double>(std::max<model::Frames>(0, f)) / fpb;
     // Rounded to the tick first, so a position exactly on a beat never reads
     // as 959 ticks into the one before.
@@ -214,12 +231,12 @@ void ruler_ticks(TimeFormat fmt, double first, double fpp, double width,
             break;
         }
         case TimeFormat::Timecode: {
-            const FrameRate r = parse_fps(s.fps);
+            const FrameRate r = frame_rate(s.timecode.fps);
             const double frame_s = 1.0 / r.base;
             const double kTc[] = {frame_s, 5 * frame_s, 10 * frame_s, 1, 2, 5, 10,
                                   15,      30,          60,           120, 300, 600, 1800, 3600};
             const double iv = pick(kTc, sizeof kTc / sizeof kTc[0], need / rate);
-            const double origin = static_cast<double>(s.timecode_origin);
+            const double origin = static_cast<double>(s.timecode.origin);
             emit_ticks(first, fpp, width, rate, origin, iv, 5, out,
                        [&](double at, int64_t) {
                            return format_timecode(static_cast<model::Frames>(std::llround(at)), s);
@@ -229,7 +246,7 @@ void ruler_ticks(TimeFormat fmt, double first, double fpp, double width,
         case TimeFormat::BarsBeats:
         case TimeFormat::Samples: {
             const double beat = beat_frames(s);
-            const int num = s.meter_num > 0 ? s.meter_num : 4;
+            const int num = beats_per_bar(s);
             const double kBeats[] = {1.0 * 1, 1.0 * num, 2.0 * num, 4.0 * num,
                                      8.0 * num, 16.0 * num, 32.0 * num, 64.0 * num};
             const double iv = pick(kBeats, 8, need / beat);

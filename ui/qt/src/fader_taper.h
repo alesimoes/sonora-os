@@ -21,6 +21,8 @@ float fader_db_from_position(float position);
 
 // Gain at or below this is silence and is written "-inf".
 constexpr float kFaderSilenceDb = -144.0f;
+// The top of the travel.
+constexpr float kFaderMaxDb = 12.0f;
 
 // "+3.5", "0.0", "-12.0", "-inf". One decimal, always signed except 0.0.
 std::string gain_text(float db);

@@ -4,9 +4,9 @@
 // (ADR-0007 §3). It reaches the engine through EngineAdapter on the control
 // API (control_adapter.h). Until M7 gives it a socket to the real engine,
 // the engine behind it is FakeEngine, the provider's fake, with a synthetic
-// signal on every input. The session it edits is a LocalDocument behind
-// TimelineDocument, the model seam; see timeline_document.h for what
-// common/model and M7 replace.
+// signal on every input. The session it edits is common/model's, held in a
+// ModelDocument behind TimelineDocument, the model seam; see
+// timeline_document.h for what M7 replaces.
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QImage>
@@ -49,6 +49,7 @@ struct Options {
     bool no_meters = false;
     bool demo = false;
     QString window = QStringLiteral("edit");
+    QString sessions_dir;
 };
 
 bool parse(QGuiApplication& app, Options& o) {
@@ -90,8 +91,12 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption window({QStringLiteral("window")},
                                     QStringLiteral("Window to open on: edit (default) or mix."),
                                     QStringLiteral("name"));
+    const QCommandLineOption sessions({QStringLiteral("sessions-dir")},
+                                      QStringLiteral("Folder File > Save and Open use "
+                                                     "(default $SONORA_SESSIONS_DIR, else ~/Sessions)."),
+                                      QStringLiteral("path"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window});
+                  window, sessions});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -106,6 +111,7 @@ bool parse(QGuiApplication& app, Options& o) {
     o.no_meters = p.isSet(nometers);
     o.demo = p.isSet(demo);
     if (p.isSet(window)) o.window = p.value(window);
+    o.sessions_dir = p.value(sessions);
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
         std::fprintf(stderr, "sonora-ui: --window must be edit or mix\n");
         return false;
@@ -164,10 +170,13 @@ int main(int argc, char** argv) {
     // session, and the Edit window says the audio is synthetic; without it,
     // empty tracks, one per input.
     const uint32_t rate = engine.info().sample_rate;
-    LocalDocument document(a.opt.demo ? make_demo_session(engine.info().track_count, rate)
+    ModelDocument document(a.opt.demo ? make_demo_session(engine.info().track_count, rate)
                                       : make_empty_session(engine.info().track_count, rate));
-    SyntheticPeakSource peaks(rate, document.snapshot().settings.bpm);
-    SessionModel session(document, peaks, a.opt.demo);
+    // No peak files exist yet, so every waveform is synthetic whichever
+    // session is open; the window says so whenever it draws one.
+    SyntheticPeakSource peaks(rate, 120.0);
+    SessionModel session(document, peaks, true);
+    if (!a.opt.sessions_dir.isEmpty()) session.setSessionsDir(a.opt.sessions_dir);
 
     KeyRouter router(keymap, engine.info().implemented_commands,
                      [&engine](const std::string& c, const CommandContext& ctx) {
@@ -234,7 +243,8 @@ int main(int argc, char** argv) {
         QTimer::singleShot(200, &app, [&session, &model]() {
             model.invoke(QStringLiteral("zoom.fit_session"), -1);
             const int track = std::min(1, session.trackCount() - 1);
-            const auto* p = session.controller().snapshot().edit->tracks[track]->active();
+            const auto* p =
+                active_playlist(session.controller().snapshot().edit->tracks[track].get());
             if (p && p->regions.size() > 1) session.controller().select_region(p->regions[1].id);
             model.invoke(QStringLiteral("track.select"), track);
         });

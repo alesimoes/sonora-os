@@ -54,8 +54,13 @@ public:
 model::Snapshot one_region() {
     model::Snapshot s = make_empty_session(1, 48000);
     auto pool = std::make_shared<model::SourcePool>();
-    pool->sources.push_back({100, "take", 1, 48000 * 60});
+    model::Source src;
+    src.id = 100;
+    src.path = "Audio Files/take.wav";
+    src.length = 48000 * 60;
+    pool->sources.push_back(src);
     s.sources = pool;
+    s.next_id = 101;  // every id above is taken
     auto edit = std::make_shared<model::EditState>(*s.edit);
     auto t = std::make_shared<model::TrackEdit>(*edit->tracks[0]);
     auto p = std::make_shared<model::Playlist>(*t->playlists[0]);
@@ -142,7 +147,7 @@ int main(int argc, char** argv) {
     CHECK(is(img, 5, 250, kBlue));
 
     // --- the timeline: a region, its waveform, the cursor and the playhead ---
-    LocalDocument doc(one_region());
+    ModelDocument doc(one_region());
     FlatPeaks peaks;
     SessionModel session(doc, peaks, false);
     auto* timeline = new TimelineItem(window.contentItem());

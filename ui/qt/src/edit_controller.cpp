@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "fader_taper.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -16,7 +17,7 @@ constexpr double kMinFpp = 1.0;  // one sample a pixel
 constexpr double kEdgePx = 8.0;  // the Smart Tool's trim zone at each end
 constexpr double kDragSlopPx = 3.0;
 
-const Playlist* active(const TrackEdit* t) { return t ? t->active() : nullptr; }
+const Playlist* active(const TrackEdit* t) { return active_playlist(t); }
 
 }  // namespace
 
@@ -53,39 +54,38 @@ int ViewState::track_at(double y) const {
 
 bool resolve_move(const Snapshot& s, Id region, Frames to, Id spare_id, MoveRegion& out) {
     const TrackEdit* t = nullptr;
-    const Region* r = s.find_region(region, &t);
+    const Region* r = find_region(s, region, &t);
     if (r == nullptr) return false;
     to = std::max<Frames>(0, to);
     if (to == r->position) return false;
     const Frames end = to + r->length;
     out = MoveRegion{t->active_playlist, region, to, kNoId};
-    for (const Region& o : t->active()->regions) {
-        if (o.id != region && o.position < to && o.end() > end) out.split_id = spare_id;
+    for (const Region& o : active(t)->regions) {
+        if (o.id != region && o.position < to && o.end() > end) out.split_right_id = spare_id;
     }
     return true;
 }
 
 bool resolve_trim(const Snapshot& s, Id region, Edge edge, Frames to, TrimRegion& out) {
     const TrackEdit* t = nullptr;
-    const Region* r = s.find_region(region, &t);
+    const Region* r = find_region(s, region, &t);
     if (r == nullptr) return false;
-    const auto& rs = t->active()->regions;
-    std::size_t idx = 0;
-    while (idx < rs.size() && rs[idx].id != region) ++idx;
     Frames room = INT64_MAX;
     for (const auto& c : r->channels) {
         const Source* src = s.sources->find(c.source);
         room = std::min(room, src ? src->length : 0);
     }
     if (room == INT64_MAX) room = 0;
+    // Only the timeline start and the source's own material bound a trim. A
+    // neighbour does not: trimming into it overwrites it (timeline-model.md,
+    // "Overwrite"), as a Slip-mode trim does in Pro Tools.
     Frames lo, hi;
     if (edge == Edge::Start) {
-        lo = std::max<Frames>({0, r->position - r->source_offset, idx > 0 ? rs[idx - 1].end() : 0});
+        lo = std::max<Frames>(0, r->position - r->source_offset);
         hi = r->end() - 1;
     } else {
         lo = r->position + 1;
-        hi = std::min(r->position + room - r->source_offset,
-                      idx + 1 < rs.size() ? rs[idx + 1].position : INT64_MAX);
+        hi = r->position + room - r->source_offset;
     }
     if (hi < lo) return false;
     to = std::clamp(to, lo, hi);
@@ -103,6 +103,16 @@ EditController::EditController(TimelineDocument& doc) : doc_(doc) {
     if (!snapshot().edit->tracks.empty()) sel_.track = 0;
 }
 
+void EditController::document_replaced() {
+    drag_ = Drag{};
+    sel_ = Selection{};
+    if (!snapshot().edit->tracks.empty()) sel_.track = 0;
+    has_saved_view_ = false;
+    view_.scroll = 0;
+    view_.scroll_y = 0;
+    clamp_scroll();
+}
+
 const TrackEdit* EditController::track(int index) const {
     const auto& ts = snapshot().edit->tracks;
     if (index < 0 || index >= static_cast<int>(ts.size())) return nullptr;
@@ -112,7 +122,7 @@ const TrackEdit* EditController::track(int index) const {
 Frames EditController::session_end() const {
     Frames end = 0;
     for (const auto& t : snapshot().edit->tracks) {
-        if (const Playlist* p = t->active()) {
+        if (const Playlist* p = active(t.get())) {
             if (!p->regions.empty()) end = std::max(end, p->regions.back().end());
         }
     }
@@ -295,9 +305,9 @@ void EditController::set_insertion(Frames f) {
 
 bool EditController::select_region(Id region) {
     const TrackEdit* t = nullptr;
-    const Region* r = snapshot().find_region(region, &t);
+    const Region* r = find_region(snapshot(), region, &t);
     if (r == nullptr) return false;
-    sel_.track = snapshot().track_index(t->id);
+    sel_.track = track_index(snapshot(), t->id);
     sel_.region = r->id;
     sel_.start = sel_.insertion = r->position;
     sel_.end = r->end();
@@ -348,7 +358,7 @@ bool EditController::press(double x, double y, std::string& why) {
             break;
         case Tool::Trim:
             if (in_region) {
-                const Region* r = snapshot().find_region(h.region);
+                const Region* r = find_region(snapshot(), h.region);
                 const Frames f = view_.frame_at(x);
                 kind = f - r->position < r->end() - f ? Drag::Kind::TrimStart : Drag::Kind::TrimEnd;
             }
@@ -370,7 +380,7 @@ bool EditController::press(double x, double y, std::string& why) {
         drag_ = Drag{};
         return false;
     }
-    const Region* r = snapshot().find_region(h.region);
+    const Region* r = find_region(snapshot(), h.region);
     drag_.region = h.region;
     drag_.orig_start = drag_.start = r->position;
     drag_.orig_end = drag_.end = r->end();
@@ -401,8 +411,20 @@ void EditController::move(double x, double /*y*/) {
             const Frames want = snapped((start ? drag_.orig_start : drag_.orig_end) + delta);
             drag_.start = drag_.orig_start;
             drag_.end = drag_.orig_end;
+            drag_.preview.reset();
             if (resolve_trim(s, drag_.region, start ? Edge::Start : Edge::End, want, t)) {
                 (start ? drag_.start : drag_.end) = t.to;
+                // What the drop will do to the neighbours, drawn while the
+                // edge is still in the hand: apply() is pure, so the preview
+                // is the edit itself, applied to a copy nobody else sees.
+                Snapshot after;
+                std::string ignored;
+                const TrackEdit* track = nullptr;
+                if (apply(s, t, after, ignored) && find_region(after, drag_.region, &track)) {
+                    for (const auto& p : track->playlists) {
+                        if (p->id == track->active_playlist) drag_.preview = p;
+                    }
+                }
             }
             break;
         }
@@ -446,7 +468,7 @@ bool EditController::release(double x, double y, std::string& why) {
         }
         case Drag::Kind::None: break;
     }
-    if (const Region* r = snapshot().find_region(d.region)) {
+    if (const Region* r = find_region(snapshot(), d.region)) {
         sel_.region = r->id;
         sel_.start = r->position;
         sel_.end = r->end();
@@ -459,7 +481,7 @@ bool EditController::release(double x, double y, std::string& why) {
 
 bool EditController::submit(const Operation& op, std::string& why) {
     if (!doc_.submit(op, why)) return false;
-    if (sel_.region != kNoId && snapshot().find_region(sel_.region) == nullptr) {
+    if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) {
         sel_.region = kNoId;
         sel_.start = sel_.end = sel_.insertion;
     }
@@ -470,9 +492,9 @@ const Region* EditController::target_region(int& index) const {
     index = sel_.track;
     if (sel_.region != kNoId) {
         const TrackEdit* t = nullptr;
-        const Region* r = snapshot().find_region(sel_.region, &t);
+        const Region* r = find_region(snapshot(), sel_.region, &t);
         if (r) {
-            index = snapshot().track_index(t->id);
+            index = track_index(snapshot(), t->id);
             if (sel_.insertion > r->position && sel_.insertion < r->end()) return r;
         }
     }
@@ -540,7 +562,7 @@ bool EditController::clear(std::string& why) {
         return false;
     }
     const TrackEdit* t = nullptr;
-    if (snapshot().find_region(sel_.region, &t) == nullptr) {
+    if (find_region(snapshot(), sel_.region, &t) == nullptr) {
         why = "the selected region is gone";
         return false;
     }
@@ -549,7 +571,7 @@ bool EditController::clear(std::string& why) {
 
 bool EditController::nudge(int direction, std::string& why) {
     if (refuse_in_mode("Nudging", why)) return false;
-    const Region* r = sel_.region != kNoId ? snapshot().find_region(sel_.region) : nullptr;
+    const Region* r = sel_.region != kNoId ? find_region(snapshot(), sel_.region) : nullptr;
     if (r == nullptr) {
         why = "select a region to nudge";
         return false;
@@ -562,7 +584,7 @@ bool EditController::nudge(int direction, std::string& why) {
         return false;
     }
     if (!submit(op, why)) return false;
-    if (const Region* moved = snapshot().find_region(id)) {
+    if (const Region* moved = find_region(snapshot(), id)) {
         sel_.start = moved->position;
         sel_.end = moved->end();
         sel_.insertion = moved->position;
@@ -573,56 +595,85 @@ bool EditController::nudge(int direction, std::string& why) {
 bool EditController::undo(std::string& why) {
     drag_ = Drag{};
     if (!doc_.undo(why)) return false;
-    if (sel_.region != kNoId && snapshot().find_region(sel_.region) == nullptr) clear_selection();
+    if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) clear_selection();
     return true;
 }
 
 bool EditController::redo(std::string& why) {
     drag_ = Drag{};
     if (!doc_.redo(why)) return false;
-    if (sel_.region != kNoId && snapshot().find_region(sel_.region) == nullptr) clear_selection();
+    if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) clear_selection();
     return true;
 }
 
 // --- mix ---
+//
+// A mix operation replaces a track's whole TrackMix (operations.h, SetMix),
+// so each of these is a small resolver: the current mix with one field
+// changed. A gain is clamped to the fader's travel here, because the model
+// accepts any finite number and the fader cannot show one beyond its ends.
 
 namespace {
-bool mix_target(const Snapshot& s, int index, Id& id, std::string& why) {
+bool mix_target(const Snapshot& s, int index, TrackMix& mix, std::string& why) {
     if (index < 0 || index >= static_cast<int>(s.edit->tracks.size())) {
         why = index < 0 ? "no track is selected" : "there is no track " + std::to_string(index + 1);
         return false;
     }
-    id = s.edit->tracks[static_cast<std::size_t>(index)]->id;
+    const TrackEdit& t = *s.edit->tracks[static_cast<std::size_t>(index)];
+    const TrackMix* m = s.mix.find(t.id);
+    if (m == nullptr) {
+        why = t.name + " has no mix settings";
+        return false;
+    }
+    mix = *m;
+    return true;
+}
+
+bool fader_gain(float db, float& out, std::string& why) {
+    if (!std::isfinite(db)) {
+        why = "a gain must be a number of dB";
+        return false;
+    }
+    out = std::clamp(db, kFaderSilenceDb, kFaderMaxDb);
     return true;
 }
 }  // namespace
 
 bool EditController::set_gain(int index, float db, std::string& why) {
-    Id id;
-    return mix_target(snapshot(), index, id, why) && submit(SetMix{id, MixField::GainDb, db}, why);
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why) || !fader_gain(db, m.gain_db, why)) return false;
+    return submit(SetMix{m}, why);
 }
 
 bool EditController::set_pan(int index, float pan, std::string& why) {
-    Id id;
-    return mix_target(snapshot(), index, id, why) && submit(SetMix{id, MixField::Pan, pan}, why);
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    if (!std::isfinite(pan)) {
+        why = "a pan position must be a number";
+        return false;
+    }
+    m.pan = std::clamp(pan, -1.0f, 1.0f);
+    return submit(SetMix{m}, why);
 }
 
 bool EditController::toggle_mute(int index, std::string& why) {
-    Id id;
-    if (!mix_target(snapshot(), index, id, why)) return false;
-    const TrackMix* m = snapshot().mix.find(id);
-    return submit(SetMix{id, MixField::Mute, m && m->mute ? 0.0f : 1.0f}, why);
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    m.mute = !m.mute;
+    return submit(SetMix{m}, why);
 }
 
 bool EditController::toggle_solo(int index, std::string& why) {
-    Id id;
-    if (!mix_target(snapshot(), index, id, why)) return false;
-    const TrackMix* m = snapshot().mix.find(id);
-    return submit(SetMix{id, MixField::Solo, m && m->solo ? 0.0f : 1.0f}, why);
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    m.solo = !m.solo;
+    return submit(SetMix{m}, why);
 }
 
 bool EditController::set_bus_gain(float db, std::string& why) {
-    return submit(SetMix{kNoId, MixField::BusGainDb, db}, why);
+    MonitorBus bus = snapshot().mix.bus;
+    if (!fader_gain(db, bus.gain_db, why)) return false;
+    return submit(SetMonitorBus{bus}, why);
 }
 
 }  // namespace sonora::ui

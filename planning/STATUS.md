@@ -162,12 +162,18 @@ end of its run. Keep it short: what is true now, not a diary.
   01:00:00:00, bars|beats, min:secs), scene-graph timeline with waveform
   overviews, Smart/Trim/Select/Grab, Slip and Grid, move/trim/separate/clear/
   nudge with undo, one strip per track plus the monitor bus. Edits go through
-  `TimelineDocument` (`ui/qt/src/timeline_document.h`), a local stand-in
-  shaped to `brain/specs/timeline-model.md`, swapped for `common/model` (on
-  main) at M7.
+  `TimelineDocument` (`ui/qt/src/timeline_document.h`) into `common/model`
+  itself: its apply(), its byte-bounded History with the floor, ids from
+  next_id. Trimming into a neighbour overwrites it, as Slip does in Pro
+  Tools, and the drag previews the overwrite. File > Save / Open write and
+  read the native session file (common/model's codec) under `~/Sessions`,
+  from the interface for now: atomic and synced, but no rotated backups and
+  no autosave until the engine's saver exists. At M7 the document becomes a
+  replica of the engine's (`model::Replica`, PR #33).
   Every colour and size is a token from `brain/specs/ui-design.md`. Open:
   the audio is synthetic (no peak files), mix changes nothing audible (no
-  playback path), Shuffle and Spot refuse edits, Inter is not yet in the ISO.
+  playback path), Shuffle and Spot refuse edits, Open has no key yet (no
+  `app.open` in the catalogue), Inter is not yet in the ISO.
 - **Still unverified:** no real audio interface has ever been attached, so
   there is still no latency or xrun figure from hardware. Nothing has run on a
   physical machine or a physical USB stick: every claim above is a loop

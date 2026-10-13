@@ -25,6 +25,7 @@ Rectangle {
         shell: root.shell
         session: root.session
         z: 2
+        onOpenRequested: openPanel.show()
     }
 
     // --- loud conditions ------------------------------------------------------
@@ -131,9 +132,101 @@ Rectangle {
         }
     }
 
-    // A refused gesture speaks on the status line, like a refused key.
+    // --- Open: the sessions folder, and nothing else ----------------------------
+    // The appliance has no file browser (an operator must never reach one);
+    // the panel lists the session folders File > Save makes, by name.
+    MouseArea {
+        anchors.fill: parent
+        visible: openPanel.visible
+        z: 9
+        onClicked: openPanel.visible = false
+    }
+    Rectangle {
+        id: openPanel
+        objectName: "openPanel"
+        property var entries: []
+        property bool discard: false
+        function show() {
+            entries = root.session.sessionList()
+            discard = false
+            visible = true
+        }
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 520
+        height: panelColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }  // a click inside does not close it
+
+        Column {
+            id: panelColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Open session"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                width: parent.width
+                elide: Text.ElideMiddle
+                text: root.session.sessionsFolder()
+                color: Theme.textTertiary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            Text {
+                visible: openPanel.entries.length === 0
+                text: "No saved sessions yet. Save puts one here."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+            }
+            Repeater {
+                model: openPanel.entries
+                SButton {
+                    required property var modelData
+                    width: panelColumn.width
+                    implicitHeight: 28
+                    bold: false
+                    fontPx: Theme.textBody
+                    text: modelData.name + (modelData.current ? "  (open now)" : "")
+                    onClicked: if (root.session.openSession(modelData.file, openPanel.discard)) openPanel.visible = false
+                }
+            }
+            // Unsaved edits are lost only when the operator says so.
+            Row {
+                visible: root.session.dirty
+                spacing: Theme.space2
+                SButton {
+                    text: "Discard edits"
+                    implicitHeight: 24
+                    active: openPanel.discard
+                    activeColour: Theme.caution
+                    onClicked: openPanel.discard = !openPanel.discard
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "This session has unsaved edits."
+                    color: Theme.caution
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
+            SButton {
+                text: "Cancel"
+                implicitHeight: 24
+                onClicked: openPanel.visible = false
+            }
+        }
+    }
+
+    // A refused gesture speaks on the status line, like a refused key; so
+    // does a save or an open that worked.
     Connections {
         target: root.session
         function onRefused(why) { root.shell.say(why) }
+        function onNotice(text) { root.shell.say(text) }
     }
 }

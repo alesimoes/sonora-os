@@ -15,6 +15,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 #include <vector>
 
 #include "edit_controller.h"
@@ -35,8 +36,10 @@ class SceneItem;
 class SessionModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString window READ window NOTIFY windowChanged)
-    Q_PROPERTY(QString sessionName READ sessionName CONSTANT)
-    Q_PROPERTY(bool synthetic READ synthetic CONSTANT)
+    Q_PROPERTY(QString sessionName READ sessionName NOTIFY sessionChanged)
+    Q_PROPERTY(bool synthetic READ synthetic NOTIFY sessionChanged)
+    Q_PROPERTY(bool dirty READ dirty NOTIFY sessionChanged)
+    Q_PROPERTY(QString sessionFile READ sessionFile NOTIFY sessionChanged)
     Q_PROPERTY(int trackCount READ trackCount NOTIFY contentChanged)
     Q_PROPERTY(QStringList trackNames READ trackNames NOTIFY contentChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY contentChanged)
@@ -63,11 +66,26 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString subCounterFormat READ subCounterFormat NOTIFY counterChanged)
     Q_PROPERTY(bool loopOn READ loopOn NOTIFY contentChanged)
     Q_PROPERTY(bool punchOn READ punchOn NOTIFY contentChanged)
-    Q_PROPERTY(QString tempoText READ tempoText CONSTANT)
+    Q_PROPERTY(QString tempoText READ tempoText NOTIFY sessionChanged)
 
 public:
-    SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool synthetic,
+    // `synthetic_peaks`: the waveforms `peaks` draws are not the sources'
+    // audio, and the window must say so whenever there is a region to draw.
+    SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool synthetic_peaks,
                  QObject* parent = nullptr);
+
+    // Where File > Save puts a new session and File > Open looks
+    // (session_files.h). Set before the first save.
+    void setSessionsDir(const QString& dir) { sessions_dir_ = dir; }
+    const QString& sessionsDir() const { return sessions_dir_; }
+
+    // File > Save: to the file the session came from, or, the first time, to
+    // a new folder named after the session ("Untitled" when it has no
+    // name). A save with nothing changed since the last one writes nothing.
+    bool saveSession(std::string& why);
+    // File > Open. Refused while a take is open, at another sample rate
+    // than this session's, and over unsaved changes unless `discard`.
+    bool openSessionFile(const QString& file, bool discard, std::string& why);
 
     // The interface's editing commands, installed before KeyRouter::prepare().
     void installCommands(CommandRegistry& local);
@@ -86,7 +104,9 @@ public:
 
     QString window() const { return window_; }
     QString sessionName() const;
-    bool synthetic() const { return synthetic_; }
+    bool synthetic() const;
+    bool dirty() const { return doc_.revision() != saved_revision_; }
+    QString sessionFile() const { return file_; }
     int trackCount() const;
     QStringList trackNames() const;
     bool canUndo() const { return doc_.can_undo(); }
@@ -129,6 +149,13 @@ public:
     Q_INVOKABLE void cycleMainCounter();
     Q_INVOKABLE void setWindow(const QString& w);
 
+    // --- File ---
+    // Save is the app.save command, so the button and the key are one path.
+    Q_INVOKABLE QString sessionsFolder() const { return sessions_dir_; }
+    // [{name, file, current}], for the Open panel.
+    Q_INVOKABLE QVariantList sessionList() const;
+    Q_INVOKABLE bool openSession(const QString& file, bool discard);
+
     // --- Mix window ---
     Q_INVOKABLE qreal faderPosition(qreal db) const;
     Q_INVOKABLE QString gainText(qreal db) const;
@@ -153,9 +180,12 @@ signals:
     void viewChanged();
     void mixChanged();
     void counterChanged();
+    void sessionChanged();
     // A refusal from a mouse gesture, for the status line. Keys report
     // through the router.
     void refused(const QString& why);
+    // Something done that the operator should see confirmed: "Saved ...".
+    void notice(const QString& text);
 
 private:
     // Re-publishes what changed since the last call and marks the items.
@@ -165,7 +195,12 @@ private:
 
     TimelineDocument& doc_;
     const PeakSource& peaks_;
-    bool synthetic_;
+    bool synthetic_peaks_;
+    QString sessions_dir_;
+    QString file_;                 // empty until the session is saved or opened
+    uint64_t saved_revision_ = 0;  // the revision the file holds
+    uint64_t save_generation_ = 0;
+    std::string saved_bytes_;      // what the file holds, to skip a save that changes nothing
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
@@ -178,6 +213,7 @@ private:
 
     // What was last published, to emit only on change.
     uint64_t seen_revision_ = UINT64_MAX;
+    bool seen_dirty_ = false;
     int seen_mode_ = -1, seen_tool_ = -1, seen_grid_ = -1;
     Selection seen_sel_;
     bool seen_sel_valid_ = false;

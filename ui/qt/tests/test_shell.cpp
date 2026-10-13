@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
     CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
 
     test::RecordingAdapter engine(18, api::testing::FakeEngine::engine_commands());
-    LocalDocument document(make_demo_session(18, 48000));
+    ModelDocument document(make_demo_session(18, 48000));
     SyntheticPeakSource peaks(48000, 120.0);
     SessionModel session(document, peaks, true);
     KeyRouter router(map, engine.info().implemented_commands,
@@ -208,7 +208,7 @@ int main(int argc, char** argv) {
     session.selectTrack(14);
     session.controller().set_insertion(5 * 96000);
     const auto regions = [&document]() {
-        return document.snapshot().edit->tracks[14]->active()->regions.size();
+        return document.snapshot().edit->tracks[14]->playlists[0]->regions.size();
     };
     const std::size_t had = regions();
     key(view, Qt::Key_E, Qt::ControlModifier, false, 18 + 8);
@@ -222,8 +222,8 @@ int main(int argc, char** argv) {
     session.press(x, y);
     session.drag(x + 40, y);
     session.release(x + 40, y);
-    CHECK(document.snapshot().find_region(
-              document.snapshot().edit->tracks[14]->active()->regions[0].id)->position ==
+    CHECK(find_region(document.snapshot(),
+              document.snapshot().edit->tracks[14]->playlists[0]->regions[0].id)->position ==
           4 * 96000 + static_cast<int64_t>(40 * fpp));
     key(view, Qt::Key_Z, Qt::ControlModifier, false, 44 + 8);
 
