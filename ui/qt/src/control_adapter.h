@@ -43,6 +43,8 @@ public:
     void frame(EngineFrame& out) const override;
     float take_peak(uint32_t index) override;
     bool engine_alive(uint64_t now_ns) const override;
+    uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override;
+    bool take_catalog(api::PluginCatalog& out) override;
 
     using ModelSink = std::function<void(const std::vector<api::ModelUpdate>& updates,
                                          const std::vector<api::CommandReply>& replies)>;
@@ -78,6 +80,8 @@ private:
     std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line
     api::Inbox inbox_;
     std::vector<EngineEvent> events_;   // received, not yet taken
+    api::PluginCatalog catalog_;        // the latest received
+    bool catalog_new_ = false;          // and not yet taken
     mutable api::StateFrame state_;     // kept, so a tick does not allocate
 };
 

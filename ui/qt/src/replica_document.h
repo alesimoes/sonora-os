@@ -60,6 +60,11 @@ public:
     // Sends the session to the engine (ModelAction::Load) and shows it at
     // once.
     bool reset(model::Snapshot s, std::string& why) override;
+    // ModelAction::FlushPluginState. `done` runs from the receive() that
+    // brings the engine's reply, after that call has applied the updates the
+    // engine sent before it (the engine replies after the last of them); a
+    // lost link fails it. Refused at once while the link is down.
+    void flush_plugin_state(model::Id insert, FlushDone done) override;
 
     // What the engine sent since the last call, in arrival order. Returns
     // true when what is shown changed.
@@ -97,6 +102,11 @@ private:
     model::Replica replica_;
     model::History shown_;
     std::deque<Pending> pending_;
+    struct Flush {
+        uint64_t seq = 0;
+        FlushDone done;
+    };
+    std::vector<Flush> flushes_;   // awaiting the engine's reply
     model::Id next_unreserved_ = 0;
     bool offline_ = false;
 };

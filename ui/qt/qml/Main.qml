@@ -14,6 +14,8 @@ Rectangle {
     id: root
     required property ShellModel shell
     required property SessionModel session
+    // The Mix window's insert slots; null where they are not wired.
+    property InsertModel inserts: null
 
     width: 1280
     height: 720
@@ -76,6 +78,7 @@ Rectangle {
             visible: root.session.window === "mix"
             shell: root.shell
             session: root.session
+            inserts: root.inserts
         }
 
         // Over the windows, not instead of them: says why the meters are empty.

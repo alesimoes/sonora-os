@@ -99,6 +99,18 @@ public:
     using TransportSink = std::function<void(const TransportSnapshot&, bool alive)>;
     void setTransportSink(TransportSink s) { transport_sink_ = std::move(s); }
 
+    // The insert slots' view of the engine (ADR-0012 §8), each a C++ call
+    // from the tick: a new plugin catalog when one arrives; a PluginFault,
+    // by insert id, empty text clearing it; and the state block's frame at
+    // the state rate (a quarter of the ticks), for insert flags and the
+    // delay compensation. Faults go to the slot, not to the notice list.
+    struct PluginSinks {
+        std::function<void(const api::PluginCatalog&)> catalog;
+        std::function<void(uint64_t insert, const std::string& text)> fault;
+        std::function<void(const EngineFrame&, bool alive)> frame;
+    };
+    void setPluginSinks(PluginSinks s) { plugin_sinks_ = std::move(s); }
+
     // Measurement hooks; null when not measuring.
     void setTickStats(TickStats* s) { stats_ = s; }
 
@@ -135,6 +147,12 @@ public:
     // A line for the status line, from anything that is not a key: a
     // refused mouse gesture, say.
     Q_INVOKABLE void say(const QString& message);
+    // While a text field has the keyboard (the plugin chooser's search),
+    // keys go to it and not to the profile: typing "s" there must not
+    // solo a track. The field sets this on focus and clears it on leaving,
+    // and must leave on Escape and Return, so the profile is never locked out.
+    Q_INVOKABLE void setTextEntry(bool on) { text_entry_ = on; }
+    bool textEntry() const { return text_entry_; }
 
     // Where `db` sits on a meter of height `h`, in the meter's coordinates,
     // so the scale labels beside the meters use the meters' own mapping.
@@ -176,12 +194,15 @@ private:
     std::vector<float> peaks_;
     std::vector<bool> peak_read_;
     TransportSink transport_sink_;
+    PluginSinks plugin_sinks_;
+    api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
     std::vector<CommandOutcome> replies_;
     std::vector<EngineEvent> events_;
     EngineFrame frame_;
     TickStats* stats_ = nullptr;
     Clock now_ns_;
     bool xkb_scan_codes_ = false;
+    bool text_entry_ = false;
 
     QString transport_text_ = QStringLiteral("STOP");
     bool recording_ = false;

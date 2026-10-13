@@ -66,6 +66,25 @@ public:
         return p;
     }
     bool engine_alive(uint64_t) const override { return alive; }
+    uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override {
+        plugin_changes.push_back({insert, key, value});
+        return ++seq_;
+    }
+    bool take_catalog(api::PluginCatalog& out) override {
+        if (!catalog_new) return false;
+        out = catalog;
+        catalog_new = false;
+        return true;
+    }
+
+    struct PluginChange {
+        uint64_t insert;
+        std::string key;
+        float value;
+    };
+    std::vector<PluginChange> plugin_changes;
+    api::PluginCatalog catalog;
+    bool catalog_new = false;
 
     std::vector<Sent> sent;
     std::vector<float> peaks;

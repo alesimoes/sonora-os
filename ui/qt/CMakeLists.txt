@@ -27,7 +27,8 @@ message(STATUS "ui/qt: building sonora-ui against Qt ${Qt6_VERSION}")
 # Everything but main(), so the tests drive the same code the binary runs.
 # The Qt-free parts (meter_model, key_router, control_adapter, and the
 # Edit/Mix logic: model_access, timeline_document, edit_controller,
-# timeline_scene, time_format, fader_taper, peak_source, theme) are kept free
+# insert_controller, timeline_scene, time_format, fader_taper, peak_source,
+# theme) are kept free
 # of Qt on purpose: they are what common/model and M7 touch, and what a test
 # can check without a display.
 add_library(sonora_ui_qt STATIC
@@ -53,6 +54,8 @@ add_library(sonora_ui_qt STATIC
   src/scene_item.h src/scene_item.cpp
   src/session_files.h src/session_files.cpp
   src/session_model.h src/session_model.cpp
+  src/insert_controller.h src/insert_controller.cpp
+  src/insert_model.h src/insert_model.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
@@ -65,7 +68,8 @@ target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
 qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/EditWindow.qml
-        qml/MixWindow.qml qml/ChannelStrip.qml
+        qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
+        qml/InsertPanel.qml
 )
 
 add_executable(sonora-ui src/main.cpp)
@@ -114,6 +118,15 @@ if(UNIX AND TARGET sonora-engine)
   add_dependencies(test_ui_replica_reconnect sonora-engine)
   add_test(NAME ui_replica_reconnect COMMAND test_ui_replica_reconnect)
 endif()
+
+# Insert slots (ADR-0012 checklist 6) on FakeEngine: add, move, copy,
+# bypass, remove, faults, parameters, undo, and File > Save flushing the
+# plugins' state before it writes; then the Mix window's slots, chooser and
+# panel loaded on the offscreen platform.
+add_executable(test_ui_inserts tests/test_inserts.cpp)
+target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_inserts COMMAND test_ui_inserts)
+set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)

@@ -109,6 +109,16 @@ void ShellModel::hideMeters() {
 void ShellModel::routeKeysFrom(QQuickWindow* window) { window->installEventFilter(this); }
 
 bool ShellModel::eventFilter(QObject* watched, QEvent* event) {
+    if (text_entry_) {
+        switch (event->type()) {
+            case QEvent::ShortcutOverride:
+            case QEvent::KeyPress:
+            case QEvent::KeyRelease:
+                return QObject::eventFilter(watched, event);
+            default:
+                break;
+        }
+    }
     switch (event->type()) {
         case QEvent::ShortcutOverride:
             // Claim every key before Qt's shortcut machinery or a focused
@@ -192,6 +202,7 @@ void ShellModel::tick() {
         say(QString::fromStdString(r.command + ": " + why));
     }
     takeEvents();
+    if (engine_.take_catalog(catalog_) && plugin_sinks_.catalog) plugin_sinks_.catalog(catalog_);
 
     const bool alive = engine_.engine_alive(now_ns_());
     if (alive != alive_) {
@@ -219,6 +230,7 @@ void ShellModel::tick() {
     if (alive && (transport_sink_ || refresh)) engine_.frame(frame_);
     if (transport_sink_) transport_sink_(alive ? frame_.transport : TransportSnapshot{}, alive);
     if (refresh) refreshState(false);
+    if (refresh && plugin_sinks_.frame) plugin_sinks_.frame(frame_, alive);
     if (!status_.isEmpty() && t0 > status_until_ns_) {
         status_.clear();
         emit statusChanged();
@@ -247,6 +259,14 @@ void ShellModel::takeEvents() {
                 break;
             case EngineEventKind::Fatal:
                 fatal_ = text.isEmpty() ? QStringLiteral("the audio backend failed") : text;
+                break;
+            case EngineEventKind::PluginFault:
+                if (plugin_sinks_.fault) {
+                    plugin_sinks_.fault(e.insert, e.text);
+                } else if (!e.text.empty()) {
+                    // No slot to show it on: a notice, so it is not lost.
+                    addNotice(text);
+                }
                 break;
         }
     }
@@ -300,6 +320,7 @@ void ShellModel::refreshState(bool read_frame) {
         if (t.health_flags & kHealthServerGone) health << QStringLiteral("audio server gone");
         if (t.health_flags & kHealthNoInputs) health << QStringLiteral("no inputs connected");
         if (t.health_flags & kHealthTakeFailed) health << QStringLiteral("take failed");
+        if (t.health_flags & kHealthPluginsDisabled) health << QStringLiteral("plugins disabled");
         set(health_text_, health.join(QStringLiteral(" · ")));
     }
 

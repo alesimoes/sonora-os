@@ -18,7 +18,7 @@ cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
 # tools/build-engine.sh and wrong here: this image exists to run the UI tests,
 # and a green run that registered none would say the interface was tested.
 listed=$(ctest --test-dir "$BUILD" -N)
-for t in ui_meter_model ui_keys ui_edit ui_shell ui_render; do
+for t in ui_meter_model ui_keys ui_edit ui_inserts ui_shell ui_render; do
   grep -q " $t\$" <<<"$listed" || { echo "error: $t is not registered; is Qt too old?" >&2; exit 1; }
 done
 
@@ -62,7 +62,10 @@ if [[ "$MODE" == screenshot ]]; then
   shoot "$SHOT" --window edit
   shoot "$mix" --window mix
   shoot "$base-no-engine.png" --window edit --engine-dies-after 2
-  echo "saved /out/$SHOT, /out/$mix and /out/$base-no-engine.png"
+  # The Mix window with the plugin chooser open, and with a parameter panel.
+  shoot "${mix%.png}-browser.png" --window mix --insert-view browser
+  shoot "${mix%.png}-panel.png" --window mix --insert-view panel
+  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png and the Mix window's chooser and panel"
   exit 0
 fi
 

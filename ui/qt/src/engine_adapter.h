@@ -15,6 +15,9 @@
 //   EngineAdapter::frame        StateView::frame      (one publish)
 //   EngineAdapter::take_peak    StateView::take_peak  (per-reader cursor)
 //   EngineAdapter::engine_alive StateView::engine_alive (heartbeat)
+//   EngineAdapter::send_plugin_parameter
+//                               EngineControl::send(PluginParameterChange)
+//   EngineAdapter::take_catalog EngineControl::poll (PluginCatalog, the latest)
 //
 // It stays as a narrow seam rather than handing api::EngineControl to the
 // shell, so the shell's tests can record routing (tests/recording_adapter.h)
@@ -33,10 +36,12 @@
 // Every call is made from the GUI thread and must not block it.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "sonora/api/messages.h"
 #include "sonora/command.h"
 
 namespace sonora::ui {
@@ -60,6 +65,29 @@ enum HealthFlag : uint32_t {
     kHealthServerGone = 1u << 0,
     kHealthNoInputs = 1u << 1,
     kHealthTakeFailed = 1u << 2,
+    // Layout 2: this engine hosts no plugin, so every insert is down.
+    kHealthPluginsDisabled = 1u << 3,
+};
+
+// api::InsertFlag, spelled again: one insert slot of a track as the state
+// block's layout 2 publishes it.
+enum InsertSlotFlag : uint32_t {
+    kSlotPresent = 1u << 0,
+    kSlotActive = 1u << 1,
+    kSlotBypassed = 1u << 2,
+    kSlotRunning = 1u << 3,
+    kSlotRestarting = 1u << 4,
+    kSlotFaulted = 1u << 5,
+    kSlotMissing = 1u << 6,
+};
+
+// Pro Tools' A to J. api::kInsertSlots and model::kInsertSlots are the same
+// number; control_adapter.cpp asserts it.
+constexpr uint32_t kInsertSlotCount = 10;
+
+struct InsertSlotSnapshot {
+    uint32_t flags = 0;            // InsertSlotFlag
+    uint32_t latency_frames = 0;   // the insert's own, as its host reports it
 };
 
 struct TransportSnapshot {
@@ -68,6 +96,10 @@ struct TransportSnapshot {
     int32_t take = 0;          // the take that is open, or the next one
     uint32_t xruns = 0;
     uint32_t health_flags = 0;
+    // Layout 2: the delay compensation the playing plan applies, and how far
+    // short of what the inserts need it falls when clamped at its maximum.
+    uint32_t compensation_frames = 0;
+    uint32_t compensation_shortfall_frames = 0;
     // Update 2026-10-12 item 3: a seqlock read that ran out of retries. The
     // interface shows it as stale for that tick rather than spinning.
     bool stale = false;
@@ -77,6 +109,10 @@ struct TrackSnapshot {
     bool armed = false;
     bool muted = false;
     uint32_t overruns = 0;
+    // Layout 2: the insert chain's latency, its IPC block included; 0 when
+    // no insert on the track runs.
+    uint32_t latency_frames = 0;
+    std::array<InsertSlotSnapshot, kInsertSlotCount> inserts{};   // slot A first
 };
 
 // StateView::frame: the transport and every track from one publish.
@@ -86,13 +122,14 @@ struct EngineFrame {
 };
 
 // api::EventKind, spelled again for the same reason as TransportMode.
-enum class EngineEventKind { Notice, InputsMissing, TakeFailed, Fatal };
+enum class EngineEventKind { Notice, InputsMissing, TakeFailed, Fatal, PluginFault };
 
 // api::EngineEvent: a discrete fact, in the order the engine said it.
 struct EngineEvent {
     EngineEventKind kind = EngineEventKind::Notice;
     uint64_t take = 0;    // TakeFailed: the take it is about
-    std::string text;     // InputsMissing, TakeFailed: empty clears it
+    uint64_t insert = 0;  // PluginFault: the insert's model id
+    std::string text;     // InputsMissing, TakeFailed, PluginFault: empty clears it
 };
 
 // api::CommandReply.
@@ -129,6 +166,17 @@ public:
     // False when the heartbeat has stalled. The interface then shows meters
     // as "no data" rather than frozen values (§3).
     virtual bool engine_alive(uint64_t now_ns) const = 0;
+
+    // A plugin parameter moving (ADR-0012 §8): a drag in the generic
+    // parameter panel, by insert id and stable key. Never blocks; a refusal
+    // comes back through poll() as a command's does.
+    virtual uint64_t send_plugin_parameter(uint64_t insert, const std::string& key,
+                                           float value) = 0;
+    // The latest PluginCatalog poll() has received since the last call, if
+    // any; each replaces the last. api::PluginCatalog is used as it is, not
+    // spelled again: it is plain data, and a field-for-field copy would be a
+    // second catalog format to keep in step for nothing.
+    virtual bool take_catalog(api::PluginCatalog& out) = 0;
 };
 
 }  // namespace sonora::ui

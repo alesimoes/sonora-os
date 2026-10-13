@@ -55,7 +55,66 @@ struct Options {
     QString sessions_dir;
     QString engine_socket;
     bool fake_engine = false;
+    QString insert_view;
 };
+
+// The demo session's inserts, on the fake engine's catalog (fake_catalog()):
+// a few plugins on the drums, the bass and the vocal; one bypassed, one
+// inactive, one whose plugin is not installed. Returns the insert the demo
+// scripts a crash for, so the Mix window shows a fault.
+model::Id add_demo_inserts(model::Snapshot& s) {
+    const auto catalog = api::testing::fake_catalog();
+    const auto ref = [&catalog](std::size_t i) {
+        model::PluginRef r;
+        r.format = catalog[i].format == api::PluginFormat::Vst3 ? model::PluginFormat::Vst3
+                                                                : model::PluginFormat::Lv2;
+        r.id = catalog[i].id;
+        r.name = catalog[i].name;
+        r.version = catalog[i].version;
+        return r;
+    };
+    constexpr std::size_t kGain = 0, kComp = 2;
+    model::Id crashed = 0;
+    const auto apply = [&s](const model::Operation& op) {
+        model::Snapshot after;
+        std::string why;
+        if (model::apply(s, op, after, why)) {
+            s = std::move(after);
+        } else {
+            std::fprintf(stderr, "sonora-ui: the demo inserts: %s\n", why.c_str());
+        }
+    };
+    const auto add = [&](std::size_t track, uint8_t slot, model::PluginRef plugin,
+                         std::vector<model::ParamValue> params = {}) {
+        if (track >= s.edit->tracks.size()) return model::Id{0};
+        model::AddInsert op;
+        op.track = s.edit->tracks[track]->id;
+        op.insert = s.next_id;
+        op.slot = slot;
+        op.plugin = std::move(plugin);
+        op.params = std::move(params);
+        apply(op);
+        return op.insert;
+    };
+    add(0, 0, ref(kComp), {{"0", 0.32f}, {"1", 0.6f}, {"7", 0.5f}});
+    add(0, 1, ref(kGain), {{"gain", -3.0f}});
+    add(1, 0, ref(kGain), {{"gain", 2.5f}});
+    apply(model::SetInsertBypass{add(1, 1, ref(kComp)), true});
+    apply(model::SetInsertActive{add(2, 0, ref(kGain)), false});
+    crashed = add(3, 0, ref(kComp));
+    add(8, 0, ref(kComp), {{"0", 0.4f}, {"1", 0.3f}});
+    add(9, 0, ref(kGain));
+    add(14, 0, ref(kComp), {{"0", 0.28f}, {"1", 0.45f}, {"7", 1.0f}});
+    add(14, 1, ref(kGain), {{"gain", 1.5f}});
+    apply(model::SetInsertBypass{add(14, 2, ref(kGain)), true});
+    model::PluginRef missing;
+    missing.format = model::PluginFormat::Lv2;
+    missing.id = "urn:example:plate-reverb";
+    missing.name = "Plate Reverb";
+    missing.version = "1.4.0";
+    add(15, 0, missing);
+    return crashed;
+}
 
 bool parse(QGuiApplication& app, Options& o) {
     QCommandLineParser p;
@@ -107,8 +166,13 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption fake({QStringLiteral("fake-engine")},
                                   QStringLiteral("Run on the built-in fake engine even when a real "
                                                  "one is listening."));
+    const QCommandLineOption insert_view({QStringLiteral("insert-view")},
+                                         QStringLiteral("With --demo on the fake engine, open the "
+                                                        "plugin chooser (browser) or a parameter "
+                                                        "panel (panel), for screenshots."),
+                                         QStringLiteral("browser|panel"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions, socket, fake});
+                  window, sessions, socket, fake, insert_view});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -126,6 +190,12 @@ bool parse(QGuiApplication& app, Options& o) {
     o.sessions_dir = p.value(sessions);
     o.engine_socket = p.value(socket);
     o.fake_engine = p.isSet(fake);
+    o.insert_view = p.value(insert_view);
+    if (!o.insert_view.isEmpty() && o.insert_view != QStringLiteral("browser") &&
+        o.insert_view != QStringLiteral("panel")) {
+        std::fprintf(stderr, "sonora-ui: --insert-view must be browser or panel\n");
+        return false;
+    }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
         std::fprintf(stderr, "sonora-ui: --window must be edit or mix\n");
         return false;
@@ -219,9 +289,17 @@ int main(int argc, char** argv) {
     ReplicaDocument document(
         [&engine](const api::ModelRequest& r) { return engine.submitModel(r); },
         make_empty_session(engine.info().track_count, rate));
+    // On the fake engine the demo has inserts too, from its scripted catalog;
+    // a real engine's catalog is its own, so there the demo has none.
+    sonora::model::Id demo_crash = 0;
     if (a.opt.demo) {
         std::string why;
-        if (!document.reset(make_demo_session(engine.info().track_count, rate), why)) {
+        sonora::model::Snapshot demo = make_demo_session(engine.info().track_count, rate);
+        if (fake != nullptr) {
+            demo_crash = add_demo_inserts(demo);
+            fake->script_plugin_latency(api::testing::fake_catalog()[2].id, 64);
+        }
+        if (!document.reset(std::move(demo), why)) {
             std::fprintf(stderr, "sonora-ui: the demo session: %s\n", why.c_str());
         }
     }
@@ -238,10 +316,17 @@ int main(int argc, char** argv) {
         if (document.receive(updates, replies)) session.documentUpdated();
     });
     document.on_load_abandoned = [&session]() { session.openWasLost(); };
+    InsertModel inserts(document, session);
+    inserts.controller().set_param_sender(
+        [&engine](sonora::model::Id insert, const std::string& key, float value) {
+            engine.send_plugin_parameter(insert, key, value);
+        });
     if (socket != nullptr) {
         engine.watchConnection(
             [socket]() { return socket->connected() ? socket->greetings() : 0; },
-            [&document, &session](bool up) {
+            [&document, &session, &inserts](bool up) {
+                // A new connection replays the faults that still stand.
+                if (up) inserts.onLinkReplaced();
                 if (document.set_link(up)) session.documentUpdated();
             });
     }
@@ -269,6 +354,13 @@ int main(int argc, char** argv) {
     model.setTransportSink([&session](const TransportSnapshot& t, bool alive) {
         session.onTransport(t, alive);
     });
+    ShellModel::PluginSinks plugin_sinks;
+    plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
+    plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {
+        inserts.onFault(insert, text);
+    };
+    plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
+    model.setPluginSinks(std::move(plugin_sinks));
     session.setWindow(a.opt.window);
     if (!refusal.empty()) model.addNotice(QString::fromStdString(refusal));
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
@@ -282,7 +374,8 @@ int main(int argc, char** argv) {
     view.setColor(QColor::fromRgba(theme::kWindow));
     view.setResizeMode(QQuickView::SizeRootObjectToView);
     view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
-                               {QStringLiteral("session"), QVariant::fromValue(&session)}});
+                               {QStringLiteral("session"), QVariant::fromValue(&session)},
+                               {QStringLiteral("inserts"), QVariant::fromValue(&inserts)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
@@ -309,7 +402,15 @@ int main(int argc, char** argv) {
         // Once the window has its size: the whole session in view, and the
         // snare's second region selected, so a screenshot shows what a
         // selected region looks like.
-        QTimer::singleShot(200, &app, [&session, &model]() {
+        QTimer::singleShot(200, &app, [&session, &model, &inserts, &a, fake, demo_crash]() {
+            // The fake engine has the demo session by now; a crash on Tom 1's
+            // compressor shows what a fault looks like.
+            if (fake != nullptr && demo_crash != 0) {
+                fake->script_insert_fault(
+                    demo_crash, "its host crashed (SIGSEGV); the chain plays dry until Retry");
+            }
+            if (a.opt.insert_view == QStringLiteral("browser")) inserts.openBrowser(14, 3);
+            if (a.opt.insert_view == QStringLiteral("panel")) inserts.openPanel(0, 0);
             model.invoke(QStringLiteral("zoom.fit_session"), -1);
             const int track = std::min(1, session.trackCount() - 1);
             const auto* p =

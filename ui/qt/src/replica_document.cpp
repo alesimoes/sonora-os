@@ -121,8 +121,26 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     return true;
 }
 
+void ReplicaDocument::flush_plugin_state(model::Id insert, FlushDone done) {
+    if (offline_) {
+        done(false, kOffline);
+        return;
+    }
+    Flush f;
+    f.seq = send(api::ModelAction::FlushPluginState,
+                 insert == kNoId ? std::string() : std::to_string(insert));
+    f.done = std::move(done);
+    flushes_.push_back(std::move(f));
+}
+
 bool ReplicaDocument::set_link(bool up) {
     offline_ = !up;
+    // Whatever the old connection was asked to flush, it will never answer.
+    std::vector<Flush> lost;
+    lost.swap(flushes_);
+    for (Flush& f : lost) {
+        f.done(false, "the connection to the engine was lost before the plugins' state arrived");
+    }
     std::size_t dropped = 0;
     bool load_dropped = false;
     for (const Pending& p : pending_) {
@@ -155,7 +173,23 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         }
         changed = true;
     }
+    struct Flushed {
+        FlushDone done;
+        bool ok;
+        std::string why;
+    };
+    std::vector<Flushed> flushed;
     for (const api::CommandReply& r : replies) {
+        const auto f = std::find_if(flushes_.begin(), flushes_.end(),
+                                    [&r](const Flush& x) { return x.seq == r.seq; });
+        if (f != flushes_.end()) {
+            flushed.push_back({std::move(f->done), r.result == DispatchResult::Ok,
+                               r.message.empty() && r.result != DispatchResult::Ok
+                                   ? "the engine could not collect the plugins' state"
+                                   : r.message});
+            flushes_.erase(f);
+            continue;
+        }
         const auto it = std::find_if(pending_.begin(), pending_.end(),
                                      [&r](const Pending& p) { return p.seq == r.seq; });
         if (it == pending_.end()) continue;
@@ -178,6 +212,9 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         changed = changed || pending_.size() != before;
     }
     if (changed) rebuild();
+    // Last, so each sees the updates the flush caused: the engine sent them
+    // before its reply, and they were applied above.
+    for (Flushed& f : flushed) f.done(f.ok, f.why);
     return changed;
 }
 

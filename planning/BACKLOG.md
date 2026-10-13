@@ -134,6 +134,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - Key an instance on (insert id, channel layout) in the plan builder.
        - Wire Qt File > Save to send `FlushPluginState` and wait for its
          reply before serialising (ADR-0012 §8), once a host can hold state.
+         Done in the UI insert-slots PR (ADR-0012 checklist 6); Alt-drag
+         copy flushes the source insert the same way.
 5. [ ] LV2 state save/restore, `worker:schedule`, presets; plugin manager;
        editors under WSLg (the host opens parentless X11 toplevels). VST3
        hosting is done (this PR, `brain/research/plugin-host-vst3.md`);
