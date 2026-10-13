@@ -1,0 +1,78 @@
+name: Nightly
+
+# What PR CI runs reduced, run in full once a day (ADR-0011 §3; PR #34's
+# review: keep PR CI fast). PR CI runs the tests labelled "slow" with
+# SONORA_DSP_QUICK=1: one rate, one ceiling, one release. Here they run at
+# every rate and setting, in Release and under ASan and UBSan, and the
+# §3.5 CPU figures are measured over 60 s renders.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  slow:
+    name: Slow DSP tests in full (${{ matrix.build }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: release
+            flags: ""
+            type: Release
+          - build: asan
+            flags: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+            type: RelWithDebInfo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libjack-jackd2-dev
+
+      - name: Make ASLR compatible with the sanitizers
+        if: matrix.build == 'asan'
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.type }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          cmake --build build -j"$(nproc)"
+
+      # No SONORA_DSP_QUICK: every rate, ceiling and release.
+      - name: Slow tests, every rate and setting
+        run: ctest --test-dir build --output-on-failure -j"$(nproc)" -L slow
+
+  cpu:
+    name: CPU per instance over 60 s (ADR-0011 §3.5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libjack-jackd2-dev
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)" --target sonora-dsp-measure
+
+      # A shared runner is not the reference machine (§3.5): a class bar
+      # missed here is a figure to look at, not a broken build, so this
+      # step does not fail the workflow. The reports are kept.
+      - name: Measure
+        continue-on-error: true
+        run: tools/dsp-cpu.sh build 60
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dsp-cpu-reports
+          path: build/dsp-reports-cpu/

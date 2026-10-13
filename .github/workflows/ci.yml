@@ -27,8 +27,14 @@ jobs:
       - name: Build
         run: cmake --build build -j"$(nproc)"
 
+      # The slow DSP tests (ctest label "slow") run one rate and one setting
+      # here; .github/workflows/nightly.yml runs them in full. Tests run in
+      # parallel: the timing checks among them compare blocks measured side
+      # by side, so a neighbour's load does not move them.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        env:
+          SONORA_DSP_QUICK: "1"
+        run: ctest --test-dir build --output-on-failure -j"$(nproc)"
 
   ui:
     name: Qt interface build and headless tests
@@ -97,7 +103,11 @@ jobs:
           cmake --build build-tsan -j"$(nproc)"
 
       - name: Run under TSan
-        run: ctest --test-dir build-tsan --output-on-failure
+        # TSan is here for the concurrent code. The DSP and native processor
+        # tests are single-threaded arithmetic, slow under TSan's
+        # instrumentation and with nothing for it to find, so they are left
+        # out (ASan and UBSan below run them).
+        run: ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -E '^(dsp|native)_'
 
       - name: Build with ASan and UBSan
         run: |
@@ -106,7 +116,9 @@ jobs:
           cmake --build build-asan -j"$(nproc)"
 
       - name: Run under ASan and UBSan
-        run: ctest --test-dir build-asan --output-on-failure
+        env:
+          SONORA_DSP_QUICK: "1"
+        run: ctest --test-dir build-asan --output-on-failure -j"$(nproc)"
 
   record:
     name: Records audio against PipeWire
