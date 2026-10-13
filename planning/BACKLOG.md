@@ -632,7 +632,11 @@ ADR-0011 "For the owner".
       stage; decay calibration and listening against the Arni and Motus
       room responses (CC BY 4.0); the 63 Hz band, reported but not held to
       the bar below a bandwidth-time product of 100, held by averaging more
-      responses or a longer render. dsp-engineer.
+      responses or a longer render; the shortest decays' residue (decay
+      0.2 s, high x0.1: a -224 dB second-order shelf whose pole near DC
+      leaves a tail 80 dB down falling at about 60 dB/s,
+      `brain/research/native-reverb-n2.md`), by capping the per-line shelf
+      depth or a higher-order absorption design. dsp-engineer.
 - [ ] Before the first capture session: class-E cost of NAM-class
       architectures plus a 200 ms cabinet IR at q128 (Unverified 9).
       dsp-engineer.

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "sonora/dsp/biquad.h"
 #include "sonora/json/json.h"
 #include "sonora/native/processor.h"
 
@@ -85,9 +86,14 @@ long xcorr_lag(const std::vector<float>& in, const std::vector<float>& out, long
 // Peak of y high-passed at 5 kHz (8th-order Butterworth, matched): a step
 // or a click shows up here, a smooth change of a 100 Hz tone does not.
 double hf_residue_peak(const std::vector<float>& y, double fs, std::size_t from = 0);
-// x filtered to the octave band centred on band_hz (sixth-order
-// Butterworth band-pass; band_hz 0: unfiltered), optionally time-reversed
-// first.
+// The octave-band filter centred on band_hz: a sixth-order Butterworth
+// band-pass (a third-order prototype), -3 dB at fc 2^(+-1/2), unity at fc,
+// as biquad sections (analysis.cpp gives its response). Returns how many
+// it wrote (at most 5); a third-order high-pass at the lower edge when the
+// upper edge is above 0.49 fs.
+int octave_band_sections(double fs, double band_hz, dsp::BiquadCoeffs* out);
+// x filtered to the octave band centred on band_hz (octave_band_sections;
+// band_hz 0: unfiltered), optionally time-reversed first.
 std::vector<double> octave_band(const std::vector<float>& x, double fs, double band_hz, bool reversed = false);
 // Reverberation time from an impulse response, ISO 3382-1:2009: filtered
 // to the octave band (band_hz 0: broadband), time-reversed so the filter's

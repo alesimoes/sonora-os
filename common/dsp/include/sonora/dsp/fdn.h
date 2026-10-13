@@ -90,7 +90,7 @@ class SchroederAllpass {
 public:
     // Allocates: call from prepare().
     void prepare(std::uint32_t delay);
-    void reset() noexcept;
+    void reset() noexcept SONORA_RT;
     double tick(double x, double g) noexcept SONORA_RT {
         const double vd = buf_[pos_];
         const double v = x + g * vd;
@@ -122,14 +122,14 @@ public:
     // Allocates lines of up to max_length samples. stereo: two inputs and
     // two decorrelated outputs; otherwise one of each.
     void prepare(double sample_rate, std::uint32_t max_length, bool stereo);
-    void reset() noexcept;
+    void reset() noexcept SONORA_RT;
 
     // New line lengths: at once (jump: prepare, reset, state restore), or
     // by a crossfade of fade_samples from the current taps. A call while a
     // crossfade runs is ignored; the caller re-sends when fading() is false.
     void set_lengths(const std::uint32_t* lengths, std::uint32_t fade_samples, bool jump) noexcept SONORA_RT;
-    bool fading() const noexcept { return fade_pos_ < fade_len_; }
-    const std::uint32_t* lengths() const noexcept { return cur_; }
+    bool fading() const noexcept SONORA_RT { return fade_pos_ < fade_len_; }
+    const std::uint32_t* lengths() const noexcept SONORA_RT { return cur_; }
 
     // Designs each line's absorbent filter for spec and the line's current
     // target length, and ramps to it over ramp samples (0: at once).
@@ -153,8 +153,8 @@ private:
         std::vector<float> buf;
         std::uint32_t mask = 0;
         std::uint32_t pos = 0;
-        float read(std::uint32_t delay) const noexcept { return buf[(pos - delay) & mask]; }
-        void push(float x) noexcept {
+        float read(std::uint32_t delay) const noexcept SONORA_RT { return buf[(pos - delay) & mask]; }
+        void push(float x) noexcept SONORA_RT {
             pos = (pos + 1) & mask;
             buf[pos] = x;
         }

@@ -158,6 +158,12 @@ void Fdn::prepare(double sample_rate, std::uint32_t max_length, bool stereo) {
 }
 
 void Fdn::reset() noexcept {
+    // Bounded and allocation-free, but not cheap: at 192 kHz this zeroes
+    // 16 lines of 16384 floats (1 MB; with the reverb's two pre-delay
+    // lines, about 1.5 MB), on the order of 100 us. It runs on the audio
+    // thread only on the processor's non-finite recovery path, an error
+    // path where one long block is accepted (rt-safety audit of PR #47,
+    // low 2); ordinary playback never reaches it.
     for (Line& l : line_) {
         for (float& x : l.buf) x = 0.0f;
         l.pos = 0;

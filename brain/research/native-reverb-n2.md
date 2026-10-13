@@ -53,7 +53,12 @@ Two choices are ours and are the ones a reviewer should look at:
 | Line filters, every rate, size and setting on a grid to T60 = 40 s | largest \|H\| -0.0055 dB | below 0 dB (stable) |
 | Network alone, broadband T30, 0.5 and 2 s at 44.1/48/96 kHz | -0.37 % to +0.05 % | 2 % |
 | Freeze, line energy over 10 s | relative drift 2e-8 | 1e-4 |
-| Reverb T30 per octave band, 171 bands held (flat decays 0.4, 1.5, 6 s; sizes 0, 50, 100 %; each shelf alone; shaped; defaults; 44.1/48/96 kHz) | worst 2.3 % (44.1 kHz), 1.6 % (48 kHz), 2.0 % (96 kHz) | 5 % |
+| Reverb T30 per octave band, 180 bands held (flat decays 0.4, 1.5, 6 s; sizes 0, 50, 100 %; each shelf alone; shaped; near the defaults with both shelves; defaults; 44.1/48/96 kHz; every case holds at least one band) | worst 2.8 % (44.1 kHz), 2.3 % (48 kHz), 2.6 % (96 kHz) | 5 % |
+| The same 180 bands: the design T60 against the plain settings (decay, x low ratio below the low crossover, x high ratio above the high one), independent of `line_design()` | worst 0.97 %; with the ratios applied the wrong way round, 46 checks fail | 1 % |
+| Octave filter (sixth-order Butterworth band-pass), 63 Hz to 16 kHz | centre within 0.02 dB, edges -3.01 dB exact; one and two octaves out, at least 19.2 and 42.8 dB where fc <= fs/10 (13.5 and 34.0 dB for 16 kHz at 48 kHz) | 0.05 dB; 0.01 dB; 19.0 and 42.5 dB |
+| Meter on two decays split at 1 kHz (4 s / 0.5 s and 0.8 s / 3 s), bands two octaves or more from the split | within 3.6 % | 5 % |
+| Freeze with size swept 0 <-> 100 % 50 times: 1 s RMS of the held tail | 0.061 dB spread (11.7 dB without the hold) | 0.5 dB |
+| Shortest decay (0.2 s, high x0.1 at 1 kHz, size 100 %; and with low x0.5), 44.1 and 96 kHz | finite; falls 81 to 104 dB in 200 ms, 158 to 180 dB in 1 s | 60 dB, 110 dB |
 | Onset: first wet sample at the pre-delay (0, 10, 37.5, 250 ms; sizes 0 and 100 %; stereo and mono) | exact, every case | exact |
 | Latency reported; bypass is the input delayed by it | 0; exact | exact |
 | Freeze: 1 s RMS of the held tail over 9 s | 0.042 dB spread | 0.5 dB |
@@ -101,11 +106,37 @@ formula was not checked against these figures.
 
 **Crossover transitions.** An octave band that straddles a shelf's
 transition mixes two decay rates, and its T30 follows the slower, which
-dominates late in the curve: 44 % above the design value at the 1 kHz band
-for a high decay of x0.3 at 1 kHz, 68 % at 4 kHz in the shaped case. That
+dominates late in the curve: 24 % above the design value at the 1 kHz band
+for a high decay of x0.3 at 1 kHz, 24 % at 4 kHz in the shaped case. That
 is the measurement averaging over a band, not the filter: the bands an
 octave or more away from a crossover are held to the bar and read within
-2.3 %. The design curve in the plot is evaluated at the band centre.
+2.8 %. The design curve in the plot is evaluated at the band centre.
+
+**Leakage between bands.** On two decays split at 1 kHz by a steep
+(eighth-order) crossover, the octave filter's skirt (19.6 dB one octave
+out) lets the slower decay take over the bands next to the split: 0.5 s
+read as 2.97 s at 2 kHz under a 4 s low band, 0.8 s read as 1.98 s at
+500 Hz under a 3 s high band. Two octaves from the split the bands read
+within 3.6 %. The reverb's shelves are second order, far gentler than this
+split, and its 3 % flatness rule keeps held bands out of their transitions.
+The first version of the band filter (third-order high- and low-pass at the
+edges, not a band-pass) rejected 27 dB two octaves out instead of 43.
+
+**The shortest decays leave a residue.** At decay 0.2 s with the high
+decay x0.1 above 1 kHz, the longest line's high shelf is about -224 dB
+deep. A second-order shelf that deep has its pole within about 1 Hz of DC
+(radius 0.99985 at 48 kHz), and the shelf's own memory then decays at about
+60 dB/s, whatever the per-pass attenuation says. The response falls 75 to
+80 dB in the first 200 ms, at the set decay, and then about 60 dB per
+second: a residue 80 dB down rather than a 0.2 s decay to the end. Stable
+and finite (`dsp_fdn`, the suite's shortest-decay checks); listed as a
+follow-up in `planning/BACKLOG.md`.
+
+**Size changes while frozen.** Nothing absorbs at freeze, so a length
+change (a longer tap re-reads history, a shorter one drops some) moves the
+held energy: -11.3 to +3.5 dB over 50 round trips at the network
+(`dsp_fdn`). The reverb holds its lengths while freeze is on or ramping,
+and applies the size once it is off.
 
 **Matched shelves against the analog design.** In the worst case on the
 `dsp_fdn` grid (44.1 kHz, T60 20 s, high x0.1 at 16 kHz, at 7.4 kHz) the

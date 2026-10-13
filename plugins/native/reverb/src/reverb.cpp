@@ -206,8 +206,14 @@ private:
     void control() noexcept {
         // Size: a crossfade to the new lengths, started only from rest; a
         // fast sweep becomes a chain of clean 30 ms crossfades.
+        // Held while freeze is on or on its way: nothing absorbs then, so a
+        // longer tap re-reading history and a shorter one dropping some
+        // would move the held energy, and sweeps ratchet it (measured at
+        // the network, -11 to +3.5 dB over 50 round trips, test_fdn.cpp).
+        // The new size applies once freeze is fully off.
         bool redesign = false;
-        if (!fdn_.fading()) {
+        const bool frozen = freeze_.current() != 0.0 || freeze_.target() != 0.0;
+        if (!fdn_.fading() && !frozen) {
             const std::uint32_t* want = size_lengths();
             const std::uint32_t* have = fdn_.lengths();
             bool differ = false;

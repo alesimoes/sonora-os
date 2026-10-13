@@ -179,6 +179,113 @@ int test_freeze_is_lossless() {
     return 0;
 }
 
+// Length changes while frozen (rt-safety audit of PR #47, low 1): a
+// longer tap re-reads history that has already gone round the network and
+// a shorter one drops some, and nothing absorbs while frozen, so up and
+// down sweeps could ratchet the held energy. Measured here at the network,
+// with no guard: 50 round trips between the size 0 and size 100 lengths,
+// crossfaded as the reverb does, the energy compared at the same lengths.
+// The reverb itself holds the lengths while frozen (reverb.cpp, control());
+// its suite checks that the frozen level then does not move.
+int test_frozen_length_sweeps() {
+    const double fs = 48000.0;
+    Fdn f;
+    std::uint32_t small[Fdn::kLines], big[Fdn::kLines];
+    Fdn::lengths_for(0.0, fs, small);
+    Fdn::lengths_for(1.0, fs, big);
+    std::uint32_t longest = 0;
+    for (std::uint32_t i = 0; i < Fdn::kLines; ++i) longest = big[i] > longest ? big[i] : longest;
+    f.prepare(fs, longest, true);
+    f.set_lengths(small, 0, true);
+    f.set_decay({2.0, 1.0, 250.0, 0.5, 5000.0}, 0);
+    f.reset();
+    Noise n;
+    double l, r;
+    for (int i = 0; i < 24000; ++i) f.tick(n.next(), n.next(), 0.0, l, r);
+    for (int i = 0; i < 100; ++i) f.tick(0.0, 0.0, 1.0, l, r);
+    const double e0 = f.state_energy();
+    double lo = 1.0, hi = 1.0;
+    for (int trip = 0; trip < 50; ++trip) {
+        for (const std::uint32_t* m : {big, small}) {
+            f.set_lengths(m, 1440, false);
+            while (f.fading()) f.tick(0.0, 0.0, 1.0, l, r);
+            for (int i = 0; i < 4000; ++i) f.tick(0.0, 0.0, 1.0, l, r);
+        }
+        const double e = f.state_energy() / e0;
+        lo = std::fmin(lo, e);
+        hi = std::fmax(hi, e);
+    }
+    std::printf("frozen, 50 size sweeps 0 <-> 100 %% at the network: line energy %.3f to %.3f of the start "
+                "(%+.2f to %+.2f dB)\n", lo, hi, 10.0 * std::log10(lo), 10.0 * std::log10(hi));
+    CHECK(std::isfinite(lo) && std::isfinite(hi));
+    return 0;
+}
+
+// The shortest decay the parameters allow (0.2 s, high decay x0.1 above
+// 1 kHz, so 20 ms there: a high shelf of about -224 dB on the longest line
+// at size 100 %) through the filters the network runs (to_svf, SvfState),
+// not only their biquad response: every line's impulse response is finite
+// and carries less energy than the impulse (|H| < 1, Parseval), and the
+// whole network's response is finite and keeps falling.
+//
+// Measured, not designed: so deep a second-order shelf puts its pole
+// within about 1 Hz of DC (radius 0.99985 at 48 kHz on the longest line),
+// and the shelf's own memory then decays at about 60 dB/s whatever the
+// per-pass attenuation says. The network's response falls about 75 dB in
+// its first 200 ms, at the set decay, and then about 60 dB per second from
+// there: a residue 80 dB down, not a 0.2 s decay to the end. The bars
+// below hold what was measured (planning/BACKLOG.md, N2 follow-ups).
+int test_shortest_decay_corner() {
+    const DecaySpec spec{0.2, 1.0, 250.0, 0.1, 1000.0};
+    for (double fs : kRates) {
+        std::uint32_t m[Fdn::kLines];
+        Fdn::lengths_for(1.0, fs, m);
+        std::uint32_t longest = 0;
+        for (std::uint32_t i = 0; i < Fdn::kLines; ++i) {
+            longest = m[i] > longest ? m[i] : longest;
+            const LineFilter lf = design_line(spec, fs, m[i]);
+            SvfRamp lo, hi;
+            lo.set(to_svf(lf.low));
+            hi.set(to_svf(lf.high));
+            SvfState sl, sh;
+            double e = 0.0;
+            bool finite = true;
+            for (int k = 0; k < (1 << 18); ++k) {
+                const double y = lf.gain * sh.tick(hi.next(), sl.tick(lo.next(), k == 0 ? 1.0 : 0.0));
+                finite &= std::isfinite(y);
+                e += y * y;
+            }
+            CHECK(finite);
+            CHECK(e < 1.0);
+        }
+        Fdn f;
+        f.prepare(fs, longest, true);
+        f.set_lengths(m, 0, true);
+        f.set_decay(spec, 0);
+        f.reset();
+        // Ten 100 ms windows of the response to an impulse in both inputs.
+        const std::size_t win = static_cast<std::size_t>(0.1 * fs);
+        double e[10] = {};
+        bool finite = true;
+        double l, r;
+        for (std::size_t i = 0; i < 10 * win; ++i) {
+            f.tick(i == 0 ? 1.0 : 0.0, i == 0 ? 1.0 : 0.0, 0.0, l, r);
+            finite &= std::isfinite(l) && std::isfinite(r);
+            e[i / win] += l * l + r * r;
+        }
+        double db[10];
+        for (int w = 0; w < 10; ++w) db[w] = 10.0 * std::log10(e[w] + 1e-300);
+        std::printf("shortest decay corner, %g Hz, 100 ms windows (dB):", fs);
+        for (double d : db) std::printf(" %.0f", d);
+        std::printf("\n");
+        CHECK(finite);
+        CHECK_LE(db[2] - db[0], -60.0, "fall over the first 200 ms, dB");
+        CHECK_LE(db[9] - db[0], -110.0, "fall over 1 s, dB");
+        CHECK_LE(db[9] - db[5], -15.0, "fall over the last 500 ms, dB");
+    }
+    return 0;
+}
+
 // The network alone, flat T60: the broadband energy decay curve
 // (Schroeder backward integration) falls at 60 dB per T60.
 int test_decay_rate() {
@@ -284,6 +391,8 @@ int main() {
     failed += test_lengths();
     failed += test_line_filters_stable();
     failed += test_freeze_is_lossless();
+    failed += test_frozen_length_sweeps();
+    failed += test_shortest_decay_corner();
     failed += test_decay_rate();
     failed += test_direct_term_and_fade();
     failed += test_allpass();
