@@ -401,6 +401,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Resync:
                 ok = document_->snapshot(u, why, api::wire::kMaxModelBytes);
                 break;
+            case api::ModelAction::Load:
+                ok = document_->load(m.op, session_.config().sample_rate, u, why,
+                                     api::wire::kMaxModelBytes);
+                break;
         }
         reply(from, m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (ok) {

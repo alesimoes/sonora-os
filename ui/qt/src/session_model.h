@@ -103,6 +103,9 @@ public:
 
     // From ShellModel's tick, on the GUI thread, every tick.
     void onTransport(const TransportSnapshot& t, bool alive);
+    // The document changed under the windows: the engine's update, another
+    // interface's edit, or a refused edit taken back (ReplicaDocument).
+    void documentUpdated();
 
     void attachItem(SceneItem* item);
     void detachItem(SceneItem* item);

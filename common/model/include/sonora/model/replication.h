@@ -60,6 +60,14 @@ public:
     // desynced. Fails only when the current state alone is too large.
     bool snapshot(ReplicationUpdate& out, std::string& error,
                   std::size_t max_bytes = SIZE_MAX);
+    // Another session: `session_file` is a session file's bytes
+    // (session_file.h), checked as strictly as a load from disk. The
+    // document becomes it, with a new history, because undo never crosses
+    // into another session; `out` is the Snapshot every replica is sent. A
+    // `sample_rate` other than 0 refuses a session at another rate. On
+    // failure the document is unchanged and `error` says why.
+    bool load(std::string_view session_file, std::uint32_t sample_rate, ReplicationUpdate& out,
+              std::string& error, std::size_t max_bytes = SIZE_MAX);
 
     const Snapshot& current() const { return history_.current(); }
     const History& history() const { return history_; }

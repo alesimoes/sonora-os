@@ -44,6 +44,7 @@ add_library(sonora_ui_qt STATIC
   src/theme.h src/theme_object.h
   src/model_access.h
   src/timeline_document.h src/timeline_document.cpp
+  src/replica_document.h src/replica_document.cpp
   src/peak_source.h src/peak_source.cpp
   src/time_format.h src/time_format.cpp
   src/fader_taper.h src/fader_taper.cpp
@@ -55,7 +56,8 @@ add_library(sonora_ui_qt STATIC
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
-# FakeEngine is the engine behind the adapter until M7 (control_adapter.h).
+# FakeEngine: the engine behind the adapter when no real one is running,
+# and in the tests (control_adapter.h).
 target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap sonora_model sonora_api sonora_api_fake
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 # Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
@@ -67,7 +69,9 @@ qt_add_resources(sonora_ui_qt sonora_qml
 )
 
 add_executable(sonora-ui src/main.cpp)
-target_link_libraries(sonora-ui PRIVATE sonora_ui_qt)
+# ui/client: the socket to the real engine (M7). FakeEngine stays for when
+# none is running, and for the tests.
+target_link_libraries(sonora-ui PRIVATE sonora_ui_qt sonora_client sonora_platform)
 install(TARGETS sonora-ui RUNTIME DESTINATION bin)
 
 # --- tests ------------------------------------------------------------------
@@ -94,6 +98,11 @@ target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The Edit window's document as the engine's, on FakeEngine (ADR-0007 M7).
+add_executable(test_ui_replica_document tests/test_replica_document.cpp)
+target_link_libraries(test_ui_replica_document PRIVATE sonora_ui_qt)
+add_test(NAME ui_replica_document COMMAND test_ui_replica_document)
 
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)

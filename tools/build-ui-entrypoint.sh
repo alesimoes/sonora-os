@@ -55,7 +55,7 @@ if [[ "$MODE" == screenshot ]]; then
       sleep 5
       grim "/out/$out"
       kill "$ui"; wait "$ui" || true
-    ' sh "$file" "$UI" --kiosk --demo --keymap keymaps/protools.json "$@"
+    ' sh "$file" "$UI" --kiosk --demo --fake-engine --keymap keymaps/protools.json "$@"
   }
   base="${SHOT%.png}"
   mix="${base%-edit}-mix.png"
@@ -85,7 +85,7 @@ run() {  # label, then sonora-ui arguments
   echo
 }
 
-run "xcb on Xvfb, 18 meters" env DISPLAY=:99 QT_QPA_PLATFORM=xcb "$UI" --demo
-run "xcb on Xvfb, meters hidden (baseline)" env DISPLAY=:99 QT_QPA_PLATFORM=xcb "$UI" --demo --no-meters
-run "wayland under cage, 18 meters" in_cage "$UI" --kiosk --demo
-run "wayland under cage, meters hidden (baseline)" in_cage "$UI" --kiosk --demo --no-meters
+run "xcb on Xvfb, 18 meters" env DISPLAY=:99 QT_QPA_PLATFORM=xcb "$UI" --demo --fake-engine
+run "xcb on Xvfb, meters hidden (baseline)" env DISPLAY=:99 QT_QPA_PLATFORM=xcb "$UI" --demo --fake-engine --no-meters
+run "wayland under cage, 18 meters" in_cage "$UI" --kiosk --demo --fake-engine
+run "wayland under cage, meters hidden (baseline)" in_cage "$UI" --kiosk --demo --fake-engine --no-meters

@@ -12,6 +12,7 @@
 #include "sonora/api/state_block.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 
 namespace sonora::api::conformance {
 
@@ -476,6 +477,69 @@ int check_model(Rig& rig) {
     return C(rig, "model operations, undo, redo, resync").go();
 }
 
+// File > Open on the engine's document: a session file's bytes replace it,
+// every replica is sent the Snapshot, and undo does not reach back into the
+// session before. A file that does not load, or one at another rate, is
+// refused with a reason and changes nothing.
+int check_load(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            model::AddMarker add;
+            add.marker.id = s.replica.current().next_id;
+            add.marker.position = 1000;
+            add.marker.name = "Before";
+            ModelRequest m;
+            std::string error;
+            EXPECT(model::encode_operation(add, m.op, error), error);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "the marker was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.can_undo(); }), "no undo step");
+
+            // Another session: the engine's own, renamed, marker and all.
+            model::Snapshot other = s.replica.current();
+            other.settings.name = "Opened";
+            std::string bytes;
+            model::WriteInfo info;
+            info.written_by = "conformance";
+            EXPECT(model::serialize(other, info, bytes, error), error);
+            const std::size_t updates = s.inbox.model.size();
+            m.action = ModelAction::Load;
+            m.op = bytes;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "a valid session was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() > updates; }),
+                   "no snapshot after the load");
+            EXPECT(s.inbox.model.back().kind == ModelUpdateKind::Snapshot, "not a Snapshot");
+            EXPECT(s.replica.synced() && s.replica.current().settings.name == "Opened",
+                   "the replica is not the opened session: " + s.replica_error);
+            EXPECT(s.replica.current().edit->markers->markers.size() == 1,
+                   "the opened session lost its marker");
+            EXPECT(!s.replica.can_undo(), "undo reaches into the session before");
+
+            // Refusals.
+            const std::size_t after = s.inbox.model.size();
+            m.op = "{\"not\": \"a session\"}";
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
+                   "bytes that are not a session were loaded");
+            EXPECT(mentions(r.message, "session"), "the refusal does not say why");
+            other.settings.sample_rate = s.engine->hello().sample_rate == 44100 ? 48000 : 44100;
+            EXPECT(model::serialize(other, info, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
+                   "a session at another rate was loaded");
+            EXPECT(mentions(r.message, "Hz"), "the refusal does not name the rates");
+            EXPECT(s.inbox.model.size() == after, "a refusal sent an update");
+            EXPECT(s.replica.current().settings.name == "Opened", "a refusal changed the document");
+            return ok();
+        }
+    };
+    return C(rig, "load another session").go();
+}
+
 // A take that stops writing is said at once, with the take and the reason,
 // and on the state block; stopping it reports the take as failed; the next
 // take that records cleanly clears both.
@@ -667,6 +731,7 @@ int run(Rig& rig) {
     failures += check_take(rig);
     failures += check_parameters(rig);
     failures += check_model(rig);
+    failures += check_load(rig);
     failures += check_take_failed(rig);
     failures += check_inputs_missing(rig);
     failures += check_peaks(rig);

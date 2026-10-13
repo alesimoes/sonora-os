@@ -217,6 +217,20 @@ bool SessionModel::run(bool ok, const std::string& why) {
     return ok;
 }
 
+void SessionModel::documentUpdated() {
+    const model::Snapshot& s = ctl_.snapshot();
+    if (ctl_.selection().track >= static_cast<int>(s.edit->tracks.size())) {
+        ctl_.document_replaced();
+    } else if (ctl_.selection().region != kNoId &&
+               find_region(s, ctl_.selection().region) == nullptr) {
+        ctl_.clear_selection();
+    }
+    // Another interface's edit can arrive at the revision an edit of ours
+    // was shown at, so the revision alone does not say the content changed.
+    seen_revision_ = UINT64_MAX;
+    sync();
+}
+
 void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
     const bool rolling = alive && !t.stale && t.state != TransportMode::Stopped;
     const bool recording = rolling && t.state == TransportMode::Recording;

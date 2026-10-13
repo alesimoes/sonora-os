@@ -144,7 +144,7 @@ private:
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
-constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Resync);
+constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Load);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Fatal);
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::Snapshot);
 

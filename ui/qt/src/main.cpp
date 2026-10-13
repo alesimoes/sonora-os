@@ -2,11 +2,11 @@
 //
 // sonora-ui: the Qt 6 interface, a separate process from the engine
 // (ADR-0007 §3). It reaches the engine through EngineAdapter on the control
-// API (control_adapter.h). Until M7 gives it a socket to the real engine,
-// the engine behind it is FakeEngine, the provider's fake, with a synthetic
-// signal on every input. The session it edits is common/model's, held in a
-// ModelDocument behind TimelineDocument, the model seam; see
-// timeline_document.h for what M7 replaces.
+// API (control_adapter.h): the real engine on its socket when one is
+// listening (ui/client's SocketEngine), FakeEngine, the provider's fake with
+// a synthetic signal on every input, when none is or with --fake-engine.
+// The session it edits is the engine's document, replicated here
+// (ReplicaDocument behind TimelineDocument, the model seam).
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QImage>
@@ -24,9 +24,12 @@
 #include "qt_keys.h"
 #include "register_types.h"
 #include "render_path.h"
+#include "replica_document.h"
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/client/socket_engine.h"
+#include "sonora/platform/ipc.h"
 #include "theme.h"
 #include "timeline_document.h"
 
@@ -50,6 +53,8 @@ struct Options {
     bool demo = false;
     QString window = QStringLiteral("edit");
     QString sessions_dir;
+    QString engine_socket;
+    bool fake_engine = false;
 };
 
 bool parse(QGuiApplication& app, Options& o) {
@@ -95,8 +100,15 @@ bool parse(QGuiApplication& app, Options& o) {
                                       QStringLiteral("Folder File > Save and Open use "
                                                      "(default $SONORA_SESSIONS_DIR, else ~/Sessions)."),
                                       QStringLiteral("path"));
+    const QCommandLineOption socket({QStringLiteral("engine-socket")},
+                                    QStringLiteral("The engine's control socket (default "
+                                                   "$XDG_RUNTIME_DIR/sonora/engine.sock)."),
+                                    QStringLiteral("path"));
+    const QCommandLineOption fake({QStringLiteral("fake-engine")},
+                                  QStringLiteral("Run on the built-in fake engine even when a real "
+                                                 "one is listening."));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions});
+                  window, sessions, socket, fake});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -112,6 +124,8 @@ bool parse(QGuiApplication& app, Options& o) {
     o.demo = p.isSet(demo);
     if (p.isSet(window)) o.window = p.value(window);
     o.sessions_dir = p.value(sessions);
+    o.engine_socket = p.value(socket);
+    o.fake_engine = p.isSet(fake);
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
         std::fprintf(stderr, "sonora-ui: --window must be edit or mix\n");
         return false;
@@ -148,35 +162,73 @@ int main(int argc, char** argv) {
     const KeyMap keymap = keymap_or_built_in(a.opt.keymap.toStdString(), refusal);
     if (!refusal.empty()) std::fprintf(stderr, "sonora-ui: %s\n", refusal.c_str());
 
-    api::testing::FakeEngine::Config fake_config;
-    fake_config.tracks = static_cast<uint32_t>(a.opt.tracks);
-    api::testing::FakeEngine fake(fake_config);
-    ControlAdapter engine(fake);
+    // The real engine when one listens; the fake otherwise, said on screen,
+    // so nobody mistakes the fake's synthetic tones for their inputs.
+    const std::string endpoint = a.opt.engine_socket.isEmpty()
+                                     ? platform::default_control_endpoint()
+                                     : a.opt.engine_socket.toStdString();
+    std::unique_ptr<api::EngineControl> backend;
+    api::testing::FakeEngine* fake = nullptr;
+    std::string engine_notice;
+    if (!a.opt.fake_engine && !endpoint.empty() && platform::endpoint_live(endpoint)) {
+        client::SocketEngine::Options so;
+        so.endpoint = endpoint;
+        backend = std::make_unique<client::SocketEngine>(so);
+        std::fprintf(stderr, "sonora-ui: on the engine at %s\n", endpoint.c_str());
+    } else {
+        api::testing::FakeEngine::Config fake_config;
+        fake_config.tracks = static_cast<uint32_t>(a.opt.tracks);
+        auto f = std::make_unique<api::testing::FakeEngine>(fake_config);
+        fake = f.get();
+        backend = std::move(f);
+        if (!a.opt.fake_engine) {
+            engine_notice = "No engine is running" +
+                            (endpoint.empty() ? std::string() : " at " + endpoint) +
+                            ": this is the built-in fake engine, with synthetic inputs.";
+            std::fprintf(stderr, "sonora-ui: %s\n", engine_notice.c_str());
+        }
+    }
+    ControlAdapter engine(*backend);
     std::string error;
     if (!engine.connect(error)) {
         std::fprintf(stderr, "sonora-ui: %s\n", error.c_str());
         return 1;
     }
     if (a.opt.engine_dies_after_s >= 0) {
-        // Same clock the fake engine reads.
-        const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                             std::chrono::steady_clock::now().time_since_epoch())
-                             .count();
-        fake.die_at(static_cast<uint64_t>(now) +
-                      static_cast<uint64_t>(a.opt.engine_dies_after_s * 1e9));
+        if (fake != nullptr) {
+            // Same clock the fake engine reads.
+            const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+            fake->die_at(static_cast<uint64_t>(now) +
+                         static_cast<uint64_t>(a.opt.engine_dies_after_s * 1e9));
+        } else {
+            std::fprintf(stderr, "sonora-ui: --engine-dies-after is the fake engine's; ignored\n");
+        }
     }
 
-    // The session. With --demo, synthetic regions laid out like a tracking
-    // session, and the Edit window says the audio is synthetic; without it,
-    // empty tracks, one per input.
+    // The session is the engine's document. Until its first Snapshot is
+    // read (the first tick) empty tracks, one per input, stand in. With
+    // --demo, synthetic regions laid out like a tracking session are sent
+    // to the engine as the session to open, and the Edit window says the
+    // audio is synthetic.
     const uint32_t rate = engine.info().sample_rate;
-    ModelDocument document(a.opt.demo ? make_demo_session(engine.info().track_count, rate)
-                                      : make_empty_session(engine.info().track_count, rate));
+    ReplicaDocument document(
+        [&engine](const api::ModelRequest& r) { return engine.submitModel(r); },
+        make_empty_session(engine.info().track_count, rate));
+    if (a.opt.demo) document.reset(make_demo_session(engine.info().track_count, rate));
     // No peak files exist yet, so every waveform is synthetic whichever
     // session is open; the window says so whenever it draws one.
     SyntheticPeakSource peaks(rate, 120.0);
     SessionModel session(document, peaks, true);
     if (!a.opt.sessions_dir.isEmpty()) session.setSessionsDir(a.opt.sessions_dir);
+    document.on_refused = [&session](const std::string& why) {
+        emit session.notice(QString::fromStdString(why));
+    };
+    engine.setModelSink([&document, &session](const std::vector<api::ModelUpdate>& updates,
+                                              const std::vector<api::CommandReply>& replies) {
+        if (document.receive(updates, replies)) session.documentUpdated();
+    });
 
     KeyRouter router(keymap, engine.info().implemented_commands,
                      [&engine](const std::string& c, const CommandContext& ctx) {
@@ -203,6 +255,7 @@ int main(int argc, char** argv) {
     });
     session.setWindow(a.opt.window);
     if (!refusal.empty()) model.addNotice(QString::fromStdString(refusal));
+    if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
     for (const auto& n : notices) {
         std::fprintf(stderr, "sonora-ui: key map \"%s\": %s\n", keymap.name().c_str(), n.c_str());
         model.addNotice(QString::fromStdString(n));

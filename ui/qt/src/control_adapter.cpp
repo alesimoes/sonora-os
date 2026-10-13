@@ -23,10 +23,21 @@ uint64_t ControlAdapter::send(const std::string& command, const CommandContext& 
     return seq;
 }
 
+uint64_t ControlAdapter::submitModel(const api::ModelRequest& request) {
+    const uint64_t seq = engine_.submit(request);
+    model_seqs_.insert(seq);
+    return seq;
+}
+
 void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
     inbox_.clear();
     engine_.poll(inbox_);
+    model_replies_.clear();
     for (const api::CommandReply& r : inbox_.replies) {
+        if (model_seqs_.erase(r.seq) != 0) {
+            model_replies_.push_back(r);
+            continue;
+        }
         CommandOutcome o;
         o.seq = r.seq;
         const auto it = pending_.find(r.seq);
@@ -50,9 +61,7 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         o.text = e.text;
         events_.push_back(std::move(o));
     }
-    // Model updates are for the Edit window's replica, which still runs on
-    // its local document (timeline_document.h); it subscribes here when it
-    // moves onto the engine's.
+    if (model_sink_) model_sink_(inbox_.model, model_replies_);
 }
 
 void ControlAdapter::take_events(std::vector<EngineEvent>& out) {
