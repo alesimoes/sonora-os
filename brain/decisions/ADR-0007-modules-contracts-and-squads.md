@@ -1704,3 +1704,38 @@ Where this note and the headers differ, the headers are the contract.
    the socket, checking the state block at each step, then
    `verify-recording.py` on the 18 files. Playback is refused as
    `NotImplemented`: the engine has no playback path yet.
+8. **Review round (PR #38).**
+   - *A request lost with its connection is dropped, never replayed.* No
+     reply ever comes for a request queued or sent when the connection
+     went, or made while there was none. `ControlAdapter::watchConnection`
+     sees the connection change (SocketEngine's greetings) after the model
+     sink has had the old connection's last replies, forgets every seq
+     still waiting, reports lost commands on the status line, and calls
+     `ReplicaDocument::set_link`, which drops every unanswered request with
+     one notice and shows the engine's document; the new Snapshot is the
+     truth, whether or not the engine had applied them. While the link is
+     down, edits, Undo and File > Open are refused (`TimelineDocument::reset`
+     now returns bool). A lost File > Open makes the window stop naming
+     that file, so Save cannot write the engine's document over it. Seqs
+     waiting for a reply are capped at 1024 each, oldest dropped. Resending
+     with request ids was not chosen: the engine has no request ids to
+     deduplicate on, and the Snapshot already says what happened.
+     `ui_replica_reconnect` runs it against `sonora-engine` as a process.
+   - *Peer credentials.* The listener refuses a peer of another uid
+     (`SO_PEERCRED`) and a client refuses a listener of another uid. The
+     socket's directory must be ours, a real directory, mode 0700: an
+     existing `/tmp/sonora-<uid>` made by someone else, or one open to
+     others, is refused with its owner or mode named.
+   - *Inbound backpressure.* `EngineControlServer` counts each client's
+     frames delivered and not handled; past
+     `Options::max_client_backlog_bytes` (1 MiB) `wait_for_room()` holds
+     that client's socket reader, so it stops being read and its sends
+     block. At most `max_large_in_flight` (2) messages over 1 MiB are
+     reassembled at once; another's frames are parked until a slot frees.
+     The control thread takes one item per client in turn, so a client with
+     much queued never holds another's command behind it.
+   - *Take files close-on-exec.* `common/platform/file.h`
+     `create_exclusive()` (the name ADR-0008 reserved) opens with
+     `O_CREAT|O_EXCL|O_CLOEXEC`; `WavWriter` uses it, so a `sonora-tui`
+     started mid-take does not inherit an open take
+     (`wav_writer_cloexec`).
