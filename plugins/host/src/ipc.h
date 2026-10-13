@@ -53,10 +53,26 @@ void release_region(SharedRegion& region);
 bool lock_memory() noexcept;
 bool make_current_thread_realtime(int priority) noexcept;
 
+// A thread whose stack is `stack_bytes`, not the platform default. Under
+// lock_memory every page of a new thread's stack is populated and locked, so
+// the size is resident RAM, and it is written out with the core when a
+// plugin crashes the host, which delays the exit the engine waits to see.
+// Returns null if the OS refused. join_thread waits for it and frees it.
+void* start_thread(void (*fn)(void*), void* arg, std::size_t stack_bytes) noexcept;
+void join_thread(void* thread) noexcept;
+
 // Flush-to-zero and denormals-are-zero on the calling thread (MXCSR on x86,
 // FPCR.FZ on AArch64). A plugin's filter tail decaying into denormals costs
 // up to two orders of magnitude per sample on x86 without them.
 bool flush_denormals_on_this_thread() noexcept;
+
+// A host that a plugin crashes must be seen gone at once, and its memory
+// holds the session's audio. With a core_pattern pipe and core_pipe_limit
+// set (systemd-coredump, apport), the kernel keeps the dying process until
+// the helper has read and processed the whole core: CI saw a crashed host
+// exit 55 to 137 blocks late. A plugin's core is not ours to collect, so
+// the host is made undumpable; a person debugging one runs it under gdb.
+bool no_core_dumps() noexcept;
 
 // Ask to be killed when the engine dies, then check the engine is still the
 // parent: if it died before the request was made, the request never fires.

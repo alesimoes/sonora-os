@@ -969,7 +969,10 @@ unless stated otherwise. Several are expected in the forthcoming
 1. **Licences.**
    - DPF's licence, as of the pinned commit, for the LV2 and VST3 parts.
    - Steinberg's VST3 SDK under MIT since 3.8, as reported 2025-10-29: read
-     the text in the current distribution.
+     the text in the current distribution. **Settled 2026-10-13**: MIT
+     confirmed from Steinberg's press release and the repository's
+     `LICENSE.txt`; Debian's 3.7.10 headers are GPL-3 under the old dual
+     licence; both GPL-3 compatible (`brain/research/plugin-host-vst3.md`).
    - ONNX Runtime's licence and its bundled third-party notices.
    - Whether the EBU test signals for Tech 3341 and 3342 may be
      redistributed, or must be fetched at test time.

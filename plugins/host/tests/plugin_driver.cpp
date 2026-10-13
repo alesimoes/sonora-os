@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Plays the engine's side of the draft plugin boundary (contracts/plugin)
-// against a real sonora-plugin-host process and real LV2 plugins, until
+// against a real sonora-plugin-host process and real LV2 and VST3 plugins, until
 // engine/plugin_client exists (M4+). Linux-only, like the host.
 //
 // The "callback" here is a periodic SCHED_FIFO loop (when the container
@@ -10,9 +10,10 @@
 // the engine will: never write a slot the host may be reading, never wait
 // on the host at all, drop and count instead.
 //
-//   plugin_driver --host EXE --bundle DIR --scenario NAME [options]
+//   plugin_driver --host EXE --bundle DIR... --scenario NAME [options]
 //
-// Scenarios: gain, latency, crash, deadline, nonfinite, refusals, rtt.
+// Scenarios: gain, latency, latency_change, crash, deadline, nonfinite,
+// refusals (--format lv2|vst3), rtt, params and list_json (VST3).
 // --mode pipelined (pipeline_depth 1, the default) or poll (depth 0,
 // poll-only). Neither waits on the host; rtt is a measurement and does.
 // Exit: 0 pass, 1 fail, 77 a required plugin is not installed (a failure in
@@ -60,12 +61,27 @@ constexpr uint64_t kOsNoiseCallbacks = 2;
 
 const char* const kEgAmp = "http://lv2plug.in/plugins/eg-amp";
 const char* const kDpl = "http://gareus.org/oss/lv2/dpl#mono";
+const char* const kVst3Crash = "vst3:534F4E4F524156535433544553540001";
+const char* const kVst3StereoOnly = "vst3:534F4E4F524156535433544553540002";
+const char* const kVst3YesMan = "vst3:534F4E4F524156535433544553540003";
+const char* const kVst3Liar = "vst3:534F4E4F524156535433544553540004";
+const char* const kVst3Turncoat = "vst3:534F4E4F524156535433544553540005";
+const char* const kVst3Params = "vst3:534F4E4F524156535433544553540006";
 
 struct Args {
-    std::string host, bundle, scenario, mode = "pipelined";
-    std::vector<std::string> chain;
+    std::string host, scenario, mode = "pipelined", format = "lv2";
+    std::vector<std::string> bundles, chain;
     uint32_t channels = 1;
     uint64_t blocks = 0;
+    // gain: the parameter to move, and whether it takes a linear factor
+    // (VST3 AGain, normalised 0..1) rather than dB (LV2 eg-amp).
+    uint32_t gain_param = 0;
+    bool gain_linear = false;
+    uint32_t expect_replicas = 0;
+    // latency_change: the parameter of chain instance 0 to move, and to what.
+    bool has_change = false;
+    uint32_t change_param = 0;
+    float change_value = 0.f;
 };
 
 int failures = 0;
@@ -133,8 +149,12 @@ public:
             else dup2(region_.handle, 3);
             const std::string chain_arg = join(uris, ',');
             std::vector<const char*> argv = {a.host.c_str(), "--shm-fd", "3", "--chain",
-                                             chain_arg.c_str(), "--bundle", a.bundle.c_str(),
-                                             "--engine-pid", engine_pid.c_str(), nullptr};
+                                             chain_arg.c_str(), "--engine-pid", engine_pid.c_str()};
+            for (const std::string& b : a.bundles) {
+                argv.push_back("--bundle");
+                argv.push_back(b.c_str());
+            }
+            argv.push_back(nullptr);
             execv(a.host.c_str(), const_cast<char* const*>(argv.data()));
             _exit(127);
         }
@@ -417,13 +437,21 @@ int scenario_gain(const Args& a) {
     std::printf("gain: %s, %u channel(s), %s\n", join(chain, ',').c_str(), a.channels, a.mode.c_str());
     Host host;
     if (int r = start_ready(host, a, chain, a.channels, depth_of(a))) return r;
-    if (a.channels > 1)
-        check(host.h->instances[0].replicas.load() == a.channels, "a mono plugin is replicated per channel");
+    if (a.channels > 1) {
+        const uint32_t want = a.expect_replicas ? a.expect_replicas : a.channels;
+        check(host.h->instances[0].replicas.load() == want,
+              want == 1 ? "the plugin took the chain's arrangement: one instance"
+                        : "a mono plugin is replicated per channel");
+    }
 
     // eg-amp: port 0 is "gain" in dB (lv2info http://lv2plug.in/plugins/eg-amp).
-    // It applies the gain without smoothing, so every block shows its value.
+    // AGain (VST3): ParamID 0 is a linear factor, normalised 0..1, so it can
+    // only cut. Neither smooths, so every block shows its value.
     struct Phase { uint64_t from; float db; };
-    const Phase phases[] = {{0, 0.f}, {200, -6.f}, {400, 12.f}};
+    const Phase phases[] = {{0, 0.f}, {200, -6.f}, {400, a.gain_linear ? -12.f : 12.f}};
+    auto value_of = [&](float db) {
+        return a.gain_linear ? static_cast<float>(std::pow(10.0, db / 20.0)) : db;
+    };
     const uint64_t total = 600;
     std::vector<double> in_e(total, 0), out_e(total, -1);  // by source callback
     std::vector<char> submitted(total, 0);
@@ -433,7 +461,8 @@ int scenario_gain(const Args& a) {
         int p = 0;
         for (int k = 0; k < 3; ++k)
             if (i >= phases[k].from) p = k;
-        if (i == phases[p].from && i > 0) plugin::push_param(*host.h, {0, 0, phases[p].db, 0});
+        if (i == phases[p].from && i > 0)
+            plugin::push_param(*host.h, {0, a.gain_param, value_of(phases[p].db), 0});
         sig.sine(i, 997.0, 0.1f);
         for (uint32_t c = 0; c < a.channels; ++c)
             for (uint32_t s = 0; s < kBlock; ++s) in_e[i] += double(sig.buf[c][s]) * sig.buf[c][s];
@@ -492,6 +521,47 @@ std::vector<uint32_t> pdc_delays(const std::vector<uint32_t>& path_latency) {
     std::vector<uint32_t> d;
     for (uint32_t l : path_latency) d.push_back(longest - l);
     return d;
+}
+
+// The delay that best explains `out` as `in` delayed, over the samples
+// marked valid, and how well the reported latency L does.
+struct DelayFit {
+    uint32_t best = 0;
+    double at = 1e9, before = 1e9, after = 1e9;
+};
+
+DelayFit fit_delay(const std::vector<float>& in, const std::vector<float>& out,
+                   const std::vector<char>& valid, uint32_t L) {
+    // residual(d): worst |wet - dry delayed by d| over comparable samples.
+    auto residual = [&](uint32_t d) {
+        double worst = 0;
+        uint64_t n = 0;
+        for (uint64_t t = d; t < out.size(); ++t)
+            if (valid[t]) {
+                worst = std::max(worst, std::fabs(double(out[t]) - double(in[t - d])));
+                ++n;
+            }
+        return n > 4 * kBlock ? worst : 1e9;
+    };
+    DelayFit f;
+    double best_r = 1e9;
+    for (uint32_t d = 0; d <= L + 4 * kBlock; ++d) {
+        const double r = residual(d);
+        if (r < best_r) best_r = r, f.best = d;
+    }
+    f.at = residual(L);
+    f.before = L ? residual(L - 1) : 1e9;
+    f.after = residual(L + 1);
+    return f;
+}
+
+void check_delay(const DelayFit& f, uint32_t L) {
+    std::printf("  measured delay %u frames; residual at L %.2e (%.1f dBFS), at L-1 %.2e, at L+1 %.2e\n",
+                f.best, f.at, f.at > 0 ? 20 * std::log10(f.at) : -999.0, f.before, f.after);
+    check(f.best == L, "the measured delay equals the reported latency, to the sample");
+    check(f.at < 1e-4, "PDC-aligned wet path nulls against dry below -80 dBFS");
+    check(f.before > 100 * std::max(f.at, 1e-7) && f.after > 100 * std::max(f.at, 1e-7),
+          "one sample off is audible: the check is sample-accurate");
 }
 
 // A latency-reporting chain: what it reports is what it does, to the sample,
@@ -553,31 +623,82 @@ int scenario_latency(const Args& a) {
     }
     std::printf("  dropped %llu of %llu blocks\n", (unsigned long long)dropped, (unsigned long long)total);
 
-    // residual(d): worst |wet - dry delayed by d| over comparable samples.
-    auto residual = [&](uint32_t d) {
-        double worst = 0;
-        uint64_t n = 0;
-        for (uint64_t t = d; t < out.size(); ++t)
-            if (valid[t]) {
-                worst = std::max(worst, std::fabs(double(out[t]) - double(in[t - d])));
-                ++n;
-            }
-        return n > 4 * kBlock ? worst : 1e9;
-    };
-    uint32_t best = 0;
-    double best_r = 1e9;
-    for (uint32_t d = 0; d <= L + 4 * kBlock; ++d) {
-        const double r = residual(d);
-        if (r < best_r) best_r = r, best = d;
-    }
-    const double at = residual(L), before = L ? residual(L - 1) : 1e9, after = residual(L + 1);
-    std::printf("  measured delay %u frames; residual at L %.2e (%.1f dBFS), at L-1 %.2e, at L+1 %.2e\n",
-                best, at, at > 0 ? 20 * std::log10(at) : -999.0, before, after);
-    check(best == L, "the measured delay equals the reported latency, to the sample");
-    check(at < 1e-4, "PDC-aligned wet path nulls against dry below -80 dBFS");
-    check(before > 100 * std::max(at, 1e-7) && after > 100 * std::max(at, 1e-7),
-          "one sample off is audible: the check is sample-accurate");
+    check_delay(fit_delay(in, out, valid, L), L);
     check(dropped * 20 < total, "fewer than 5 % of blocks dropped");
+    return 0;
+}
+
+// A plugin whose latency changes while running (VST3: the LSP limiter's
+// look-ahead, reported by restartComponent(kLatencyChanged)): the host
+// publishes the new value with a new generation, and the new value is what
+// the plugin then does, to the sample. The blocks between the change and the
+// report are counted, not compared: that lag is how long PDC is wrong.
+int scenario_latency_change(const Args& a) {
+    if (a.chain.empty() || !a.has_change) {
+        std::printf("latency_change: needs --chain and --change-param/--change-value\n");
+        return 1;
+    }
+    const uint32_t depth = depth_of(a);
+    std::printf("latency_change: %s, mono, %s, param %u := %g at block 300\n", join(a.chain, ',').c_str(),
+                a.mode.c_str(), a.change_param, double(a.change_value));
+    Host host;
+    if (int r = start_ready(host, a, a.chain, 1, depth)) return r;
+    const uint32_t L0 = plugin::checked_latency(host.h->latency_frames.load());
+    const uint32_t gen0 = host.h->latency_generation.load();
+
+    const uint64_t total = a.blocks ? a.blocks : 1200, change_at = 300;
+    std::vector<float> in(total * kBlock), out(total * kBlock, 0.f);
+    std::vector<char> got(total, 0);
+    std::vector<uint32_t> reported(total, plugin::kLatencyInvalid);
+    uint32_t lcg = 12345;
+    for (float& s : in) {
+        lcg = lcg * 1664525u + 1013904223u;
+        s = 0.1f * (float(lcg >> 8) / float(1u << 24) * 2.f - 1.f);
+    }
+    Signal sig(1);
+    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
+        if (i == change_at) plugin::push_param(*host.h, {0, a.change_param, a.change_value, 0});
+        std::memcpy(sig.buf[0].data(), &in[i * kBlock], kBlock * sizeof(float));
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0) {
+            std::memcpy(&out[i * kBlock], sig.obuf[0].data(), kBlock * sizeof(float));
+            got[i] = 1;
+        }
+        reported[i] = plugin::checked_latency(host.h->latency_frames.load(std::memory_order_acquire));
+        return true;
+    });
+    report_loop(st);
+    check(host.alive(), "the host is still running");
+    const uint32_t L1 = reported.back();
+    check(L0 != plugin::kLatencyInvalid && L1 != plugin::kLatencyInvalid, "both reported latencies are plausible");
+    if (L0 == plugin::kLatencyInvalid || L1 == plugin::kLatencyInvalid) return 0;
+    check(L1 != L0 && host.h->latency_generation.load() != gen0,
+          "the new latency was published with a new generation");
+    uint64_t settled = total;
+    for (uint64_t b = total; b-- > change_at;)
+        if (reported[b] == L1) settled = b;
+        else break;
+    std::printf("  reported %u frames before, %u after; the report changed %llu block(s) after the push\n",
+                L0, L1, (unsigned long long)(settled - change_at));
+    check(settled < change_at + 40, "the change was reported within 40 blocks (107 ms)");
+
+    auto window = [&](uint64_t from, uint64_t to, uint32_t L) {
+        std::vector<char> valid(total * kBlock, 0);
+        const uint64_t reach = (L + kBlock - 1) / kBlock + 2;
+        uint64_t last_drop = 0;
+        bool any_drop = false;
+        for (uint64_t b = 0; b < to; ++b) {
+            if (!got[b] && !(depth == 1 && b == 0)) any_drop = true, last_drop = b;
+            const bool ok = got[b] && b >= from && (!any_drop || b > last_drop + reach);
+            std::fill(valid.begin() + std::ptrdiff_t(b * kBlock),
+                      valid.begin() + std::ptrdiff_t((b + 1) * kBlock), ok ? 1 : 0);
+        }
+        return valid;
+    };
+    std::printf("  before the change:\n");
+    check_delay(fit_delay(in, out, window((L0 + kBlock - 1) / kBlock + 16, change_at, L0), L0), L0);
+    std::printf("  after the report settled:\n");
+    const uint64_t from1 = settled + (std::max(L0, L1) + kBlock - 1) / kBlock + 16;
+    check_delay(fit_delay(in, out, window(from1, total, L1), L1), L1);
     return 0;
 }
 
@@ -585,7 +706,10 @@ int scenario_latency(const Args& a) {
 // callback still returns inside the period, the death is reported, and the
 // culprit is named.
 int scenario_crash(const Args& a) {
-    const std::vector<std::string> chain = {kEgAmp, "urn:sonora:test#crash"};
+    // Index 1 is the crashing plugin and its parameter 0 the trigger, in
+    // either format (tests/lv2, tests/vst3).
+    const std::vector<std::string> chain =
+        a.chain.empty() ? std::vector<std::string>{kEgAmp, "urn:sonora:test#crash"} : a.chain;
     std::printf("crash: %s, %s\n", join(chain, ',').c_str(), a.mode.c_str());
     Host host;
     if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
@@ -733,7 +857,7 @@ int scenario_refusals(const Args& a) {
         plugin::Refusal want;
         int instance;
     };
-    const Case cases[] = {
+    const std::vector<Case> lv2_cases = {
         {"declares 2 channels, writes 8: refused", {"urn:sonora:test#liar"}, 2,
          plugin::Refusal::WroteOutsideBuffers, 0},
         {"stereo-only plugin on a mono chain: refused", {"urn:sonora:test#liar"}, 1,
@@ -741,7 +865,22 @@ int scenario_refusals(const Args& a) {
         {"unknown URI: refused, and named", {"urn:sonora:test#crash", "urn:sonora:test#absent"}, 1,
          plugin::Refusal::NotFound, 1},
     };
-    std::printf("refusals\n");
+    // tests/vst3/sonora_test_vst3.cpp
+    const std::vector<Case> vst3_cases = {
+        {"VST3 stereo-only plugin on a mono chain: refused", {kVst3StereoOnly}, 1,
+         plugin::Refusal::ChannelMismatch, 0},
+        {"VST3 plugin that says yes to mono and stays stereo: refused", {kVst3YesMan}, 1,
+         plugin::Refusal::ChannelMismatch, 0},
+        {"VST3 plugin that declares 2 channels and writes 8: refused", {kVst3Liar}, 2,
+         plugin::Refusal::WroteOutsideBuffers, 0},
+        // Once read 8 channels for a 2-channel chain and indexed past it.
+        {"VST3 plugin that takes stereo, then answers 8 channels: refused", {kVst3Turncoat}, 2,
+         plugin::Refusal::ChannelMismatch, 0},
+        {"unknown VST3 class: refused, and named", {kVst3Crash, "vst3:00000000000000000000000000000000"},
+         1, plugin::Refusal::NotFound, 1},
+    };
+    const std::vector<Case>& cases = a.format == "vst3" ? vst3_cases : lv2_cases;
+    std::printf("refusals (%s)\n", a.format.c_str());
     for (const Case& c : cases) {
         Host host;
         if (!host.start(a, c.chain, c.channels, plugin::kDefaultPipelineDepth)) return 1;
@@ -756,6 +895,156 @@ int scenario_refusals(const Args& a) {
         check(host.reaped() && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 3,
               "  ...and the host exited with code 3");
     }
+    return 0;
+}
+
+// As many distinct parameter changes in one block as the ring holds all reach
+// the plugin in that block, and one the host cannot apply is counted, not
+// lost silently. The params test plugin writes how many changes it saw into
+// sample 0 and their sum into sample 1.
+int scenario_params(const Args& a) {
+    const std::vector<std::string> chain = {kVst3Params};
+    std::printf("params: %s, %s\n", join(chain, ',').c_str(), a.mode.c_str());
+    Host host;
+    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
+    // One slot of the ring is left for the change the host must reject.
+    const uint32_t distinct = plugin::kParamRingCapacity - 1;
+    const float value = 0.25f;
+    const uint64_t total = 300, at = 100;
+    uint32_t pushed = 0;
+    int64_t seen_from = -1;
+    float seen_count = -1, seen_sum = -1;
+    Signal sig(1);
+    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
+        if (i == at) {
+            for (uint32_t id = 0; id < distinct; ++id)
+                pushed += plugin::push_param(*host.h, {0, id, value, 0}) ? 1 : 0;
+            pushed += plugin::push_param(*host.h, {0, 9999, value, 0}) ? 1 : 0;  // no such ParamID
+        }
+        sig.sine(i, 440.0, 0.1f);
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
+        if (from >= int64_t(at) && seen_from < 0 && sig.obuf[0][0] > 0.f) {
+            seen_from = from;
+            seen_count = sig.obuf[0][0];
+            seen_sum = sig.obuf[0][1];
+        }
+        return true;
+    });
+    report_loop(st);
+    std::printf("  pushed %u changes in callback %llu; the plugin saw %.0f distinct (sum %.2f) in the "
+                "block from callback %lld; host rejected %llu\n",
+                pushed, (unsigned long long)at, double(seen_count), double(seen_sum), (long long)seen_from,
+                (unsigned long long)host.h->params_rejected.load());
+    check(pushed == distinct + 1, "the ring took every change");
+    check(seen_count == float(distinct), "every distinct change reached the plugin in one block");
+    check(std::fabs(seen_sum - float(distinct) * value) < 1e-3f, "with the value pushed");
+    check(host.h->params_rejected.load() == 1, "the change for an unknown ParamID was counted as rejected");
+    return 0;
+}
+
+// --list --json is one JSON object per line, whatever a scan does: a bundle
+// whose scan hangs is killed and reported on a line of its own, and every
+// record written before that is whole.
+namespace json {
+bool value(const std::string& s, std::size_t& i, int depth);
+void ws(const std::string& s, std::size_t& i) {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+}
+bool string(const std::string& s, std::size_t& i) {
+    if (i >= s.size() || s[i] != '"') return false;
+    for (++i; i < s.size(); ++i) {
+        if (s[i] == '\\') {
+            ++i;
+            continue;
+        }
+        if (s[i] == '"') {
+            ++i;
+            return true;
+        }
+        if (static_cast<unsigned char>(s[i]) < 0x20) return false;
+    }
+    return false;
+}
+bool container(const std::string& s, std::size_t& i, int depth, char open, char close, bool keyed) {
+    if (i >= s.size() || s[i] != open || depth > 32) return false;
+    ++i;
+    ws(s, i);
+    if (i < s.size() && s[i] == close) return ++i, true;
+    for (;;) {
+        ws(s, i);
+        if (keyed) {
+            if (!string(s, i)) return false;
+            ws(s, i);
+            if (i >= s.size() || s[i++] != ':') return false;
+        }
+        if (!value(s, i, depth + 1)) return false;
+        ws(s, i);
+        if (i < s.size() && s[i] == ',') {
+            ++i;
+            continue;
+        }
+        return i < s.size() && s[i++] == close;
+    }
+}
+bool value(const std::string& s, std::size_t& i, int depth) {
+    ws(s, i);
+    if (i >= s.size()) return false;
+    const char c = s[i];
+    if (c == '{') return container(s, i, depth, '{', '}', true);
+    if (c == '[') return container(s, i, depth, '[', ']', false);
+    if (c == '"') return string(s, i);
+    for (const char* lit : {"true", "false", "null"})
+        if (s.compare(i, std::strlen(lit), lit) == 0) return i += std::strlen(lit), true;
+    const std::size_t from = i;
+    while (i < s.size() && std::strchr("+-0123456789.eE", s[i])) ++i;
+    return i > from;
+}
+bool object_line(const std::string& line) {
+    std::size_t i = 0;
+    if (line.empty() || line[0] != '{' || !value(line, i, 0)) return false;
+    ws(line, i);
+    return i == line.size();
+}
+}  // namespace json
+
+int scenario_list_json(const Args& a) {
+    // Under SONORA_TEST_VST3_HANG_ON_SCAN=1 the in-tree bundle hangs on its
+    // last class, after a params class whose record is longer than a pipe
+    // buffer.
+    std::string cmd = "'" + a.host + "' --list --json --format vst3 --scan-timeout 3";
+    for (const std::string& b : a.bundles)
+        if (b.size() > 5 && b.compare(b.size() - 5, 5, ".vst3") == 0) cmd += " --bundle '" + b + "'";
+    std::printf("list_json: %s\n", cmd.c_str());
+    std::FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return 1;
+    std::string all;
+    char buf[65536];
+    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;) all.append(buf, n);
+    const int status = pclose(p);
+    std::size_t lines = 0, bad = 0;
+    bool hung_entry = false, params_entry = false;
+    std::size_t start = 0;
+    while (start < all.size()) {
+        std::size_t end = all.find('\n', start);
+        if (end == std::string::npos) end = all.size();
+        const std::string line = all.substr(start, end - start);
+        start = end + 1;
+        ++lines;
+        if (!json::object_line(line)) {
+            ++bad;
+            std::printf("  not a JSON object: %.200s%s\n", line.c_str(), line.size() > 200 ? "..." : "");
+            continue;
+        }
+        if (line.find("\"bundle\":") != std::string::npos && line.find("sonora-test.vst3") != std::string::npos &&
+            line.find("the scan hung") != std::string::npos)
+            hung_entry = true;
+        if (line.find(std::string("\"uri\":\"") + kVst3Params + "\"") != std::string::npos) params_entry = true;
+    }
+    std::printf("  %zu line(s), %zu malformed, %zu bytes; exit status %d\n", lines, bad, all.size(), status);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "--list exited 0");
+    check(lines > 0 && bad == 0, "every line of --list --json is one whole JSON object");
+    check(hung_entry, "the hanging bundle has an entry saying the scan hung");
+    check(params_entry, "the classes described before the hang are listed");
     return 0;
 }
 
@@ -800,7 +1089,13 @@ Args parse(int argc, char** argv) {
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
         if (k == "--host") a.host = v;
-        else if (k == "--bundle") a.bundle = v;
+        else if (k == "--bundle") a.bundles.push_back(v);
+        else if (k == "--format") a.format = v;
+        else if (k == "--gain-param") a.gain_param = uint32_t(std::atoi(v.c_str()));
+        else if (k == "--gain-linear") a.gain_linear = v == "1";
+        else if (k == "--expect-replicas") a.expect_replicas = uint32_t(std::atoi(v.c_str()));
+        else if (k == "--change-param") a.change_param = uint32_t(std::strtoul(v.c_str(), nullptr, 10)), a.has_change = true;
+        else if (k == "--change-value") a.change_value = std::strtof(v.c_str(), nullptr);
         else if (k == "--scenario") a.scenario = v;
         else if (k == "--mode") {
             if (v != "pipelined" && v != "poll") {
@@ -817,9 +1112,11 @@ Args parse(int argc, char** argv) {
             std::exit(2);
         }
     }
-    if (a.host.empty() || a.bundle.empty() || a.scenario.empty()) {
-        std::fprintf(stderr, "usage: plugin_driver --host EXE --bundle DIR --scenario NAME "
-                             "[--chain URI,...] [--channels N] [--mode pipelined|poll] [--blocks N]\n");
+    if (a.host.empty() || a.bundles.empty() || a.scenario.empty()) {
+        std::fprintf(stderr, "usage: plugin_driver --host EXE --bundle DIR... --scenario NAME "
+                             "[--chain ID,...] [--channels N] [--mode pipelined|poll] [--blocks N]\n"
+                             "       [--format lv2|vst3] [--gain-param ID] [--gain-linear 1] "
+                             "[--expect-replicas N]\n");
         std::exit(2);
     }
     return a;
@@ -839,11 +1136,14 @@ int main(int argc, char** argv) {
     int r = 2;
     if (a.scenario == "gain") r = scenario_gain(a);
     else if (a.scenario == "latency") r = scenario_latency(a);
+    else if (a.scenario == "latency_change") r = scenario_latency_change(a);
     else if (a.scenario == "crash") r = scenario_crash(a);
     else if (a.scenario == "deadline") r = scenario_deadline(a);
     else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "rtt") r = scenario_rtt(a);
+    else if (a.scenario == "params") r = scenario_params(a);
+    else if (a.scenario == "list_json") r = scenario_list_json(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
 
     if (r != 0) return r;

@@ -95,10 +95,39 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        the streak named to the operator, the per-plugin NaN/Inf counters
        shown; a
        2048-sample track lands aligned (ctest).
-5. [ ] LV2 state save/restore, `worker:schedule`, presets; VST3, then
-       yabridge; plugin manager; editors under WSLg (the host opens
-       parentless X11 toplevels).
-6. [ ] Freeze, bounce in place, offline processing; the curated stock set.
+5. [ ] LV2 state save/restore, `worker:schedule`, presets; plugin manager;
+       editors under WSLg (the host opens parentless X11 toplevels). VST3
+       hosting is done (this PR, `brain/research/plugin-host-vst3.md`);
+       VST3 state (`getState`/`setState`), instruments (event input, no
+       audio input) and `hostchecker.vst3` against the host remain.
+       - Legacy VST3 bundles without a `moduleinfo.json` (before VST 3.7.5)
+         are loaded into the serving host itself to find a class, so their
+         static constructors and factories run beside the chain's plugins
+         (`brain/research/plugin-host-vst3.md`, Finding 9). Isolate them:
+         resolve the class in a child, as `--list` does, and load only the
+         bundle that has it.
+6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
+       What it needs:
+       - Wine and yabridge (GPL-3.0) in the plugins image and, later, the
+         appliance. Debian trixie main has Wine 10.0 (`wine`, checked
+         2026-10-13) but no yabridge: pin an upstream yabridge release, check
+         which Wine versions it supports, and record both licences.
+       - `yabridgectl sync` turns Windows `.vst3` bundles into Linux `.vst3`
+         bundles under `~/.vst3/yabridge`, which the VST3 host already scans
+         and runs. The Windows VST2 path makes `.so` VST2 plugins, which
+         this host does not load: VST2 needs Steinberg's VST2 SDK licence
+         (no longer offered) or a clean-room header; decide before doing it.
+       - A test plugin with a Windows build under a free licence (an LSP or
+         DPF Windows VST3), so CI runs one through Wine. Measure the cost:
+         yabridge adds its own IPC hop (plugin host -> yabridge -> Wine),
+         which lands inside this host's block budget and must be measured
+         against the 2.67 ms deadline before it is offered.
+       - Crash isolation holds as is: a Wine crash ends this host process.
+       - Licence checks and copy protection inside Windows plugins (iLok and
+         the like) are not circumvented (ADR-0004); a plugin that needs
+         them under Wine either works or is reported unusable.
+       - Editors stay out of scope (ADR-0010).
+7. [ ] Freeze, bounce in place, offline processing; the curated stock set.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 

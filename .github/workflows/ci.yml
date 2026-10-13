@@ -147,17 +147,19 @@ jobs:
         run: tools/test-quantum-pin.sh
 
   plugins:
-    name: Plugin host against real LV2 plugins
+    name: Plugin host against real LV2 and VST3 plugins
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       # The engine job has no lilv, so plugins/host is skipped there. This
       # builds the whole root in the sonora-plugins image (lilv, eg-amp,
-      # x42-dpl, the LSP limiter) and runs every test, including a plugin
-      # that segfaults, one that sleeps past the deadline and one that
-      # writes outside its buffers. A missing Debian plugin fails the job
-      # rather than skipping (SONORA_PLUGIN_TESTS_ALLOW_SKIP is OFF).
+      # x42-dpl, the LSP limiter; the VST3 headers, AGain and the LSP
+      # limiter as VST3) and runs every test, including plugins that
+      # segfault, sleep past the deadline and write outside their buffers.
+      # A missing Debian plugin fails the job rather than skipping
+      # (SONORA_PLUGIN_TESTS_ALLOW_SKIP is OFF), and missing VST3 headers
+      # fail the configure step (SONORA_REQUIRE_VST3=ON).
       - name: Build and test the plugin host
         run: tools/build-plugins.sh
 

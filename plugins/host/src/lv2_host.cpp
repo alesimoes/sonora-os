@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "lv2_host.h"
 
-#include "ipc.h"
-
 #include <lv2/atom/atom.h>
 #include <lv2/buf-size/buf-size.h>
 #include <lv2/core/lv2.h>
+#include <lv2/options/options.h>
 #include <lv2/parameters/parameters.h>
 
 #include <algorithm>
@@ -21,32 +20,9 @@ using plugin::Refusal;
 
 namespace {
 
-// A signalling-NaN bit pattern: no plugin computes it from silence by
-// accident, and it is compared as bits, never as a float.
-constexpr uint32_t kCanary = 0x7FA5A5A5u;
-
-// What is checked behind each buffer on every block: enough to catch a
-// plugin that overruns by a little, cheap enough to do at quantum 128. The
-// whole guard is checked during validation.
-constexpr uint32_t kRuntimeGuardWords = 64;
-
 // Atom port buffers. LSP and x42 plugins use them for UI notifications; we
 // have no UI yet, so inputs are always an empty sequence.
 constexpr std::size_t kAtomBytes = 8192;
-
-// NaN and Inf have an all-ones exponent. Tested as bits so it holds under any
-// floating-point flags a plugin leaves behind.
-bool is_finite_bits(float f) noexcept {
-    uint32_t bits;
-    std::memcpy(&bits, &f, sizeof bits);
-    return (bits & 0x7F800000u) != 0x7F800000u;
-}
-
-bool is_canary(const float* p) {
-    uint32_t bits;
-    std::memcpy(&bits, p, sizeof bits);
-    return bits == kCanary;
-}
 
 std::string node_string(const LilvNode* n) {
     return n ? std::string(lilv_node_as_string(n)) : std::string();
@@ -131,6 +107,7 @@ bool Lv2World::feature_supported(const std::string& uri) {
 
 PluginInfo Lv2World::describe(const LilvPlugin* p) const {
     PluginInfo info;
+    info.format = "lv2";
     info.uri = node_string(lilv_plugin_get_uri(p));
     if (LilvNode* name = lilv_plugin_get_name(p)) {
         info.name = node_string(name);
@@ -185,369 +162,208 @@ PluginInfo Lv2World::describe(const LilvPlugin* p) const {
     return info;
 }
 
-// ---------------------------------------------------------------------------
-// Chain
 
-struct Lv2Chain::Slot {
-    PluginInfo info;
-    std::vector<LilvInstance*> instances;  // one, or one per channel
-    std::vector<float> controls;           // indexed by port; shared by replicas
+// ---------------------------------------------------------------------------
+// Processor
+
+namespace {
+
+class Lv2Processor final : public Processor {
+public:
+    Lv2Processor(Lv2World& world, const ChainConfig& config)
+        : max_block_(static_cast<int32_t>(config.max_frames)),
+          nominal_block_(static_cast<int32_t>(config.block_frames)),
+          rate_f_(static_cast<float>(config.sample_rate)) {
+        UridMap& u = world.urids();
+        const LV2_URID atom_int = u.map(LV2_ATOM__Int);
+        const LV2_URID atom_float = u.map(LV2_ATOM__Float);
+        options_ = {
+            {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_BUF_SIZE__minBlockLength), sizeof(int32_t),
+             atom_int, &min_block_},
+            {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_BUF_SIZE__maxBlockLength), sizeof(int32_t),
+             atom_int, &max_block_},
+            {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_BUF_SIZE__nominalBlockLength), sizeof(int32_t),
+             atom_int, &nominal_block_},
+            {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_PARAMETERS__sampleRate), sizeof(float),
+             atom_float, &rate_f_},
+            {LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr},
+        };
+        map_f_ = {LV2_URID__map, u.map_feature()};
+        unmap_f_ = {LV2_URID__unmap, u.unmap_feature()};
+        options_f_ = {LV2_OPTIONS__options, options_.data()};
+        bounded_f_ = {LV2_BUF_SIZE__boundedBlockLength, nullptr};
+        features_[0] = &map_f_;
+        features_[1] = &unmap_f_;
+        features_[2] = &options_f_;
+        features_[3] = &bounded_f_;
+        features_[4] = nullptr;
+        atom_sequence_ = u.map(LV2_ATOM__Sequence);
+        atom_chunk_ = u.map(LV2_ATOM__Chunk);
+    }
+
+    ~Lv2Processor() override {
+        for (LilvInstance* inst : instances_) {
+            if (active_) lilv_instance_deactivate(inst);
+            lilv_instance_free(inst);
+        }
+    }
+
+    bool init(const LilvPlugin* p, PluginInfo info, uint32_t sample_rate, uint32_t channels,
+              const std::vector<float*>& in, const std::vector<float*>& out, ChainError& error) {
+        info_ = std::move(info);
+        const std::string who = info_.name + " <" + info_.uri + ">";
+        if (!info_.missing_features.empty()) {
+            error.reason = Refusal::UnsupportedFeature;
+            error.message = who + " requires " + info_.missing_features.front();
+            return false;
+        }
+        for (const PortInfo& port : info_.ports) {
+            if ((port.kind == PortKind::CV || port.kind == PortKind::Other) && !port.optional) {
+                error.reason = Refusal::UnsupportedPort;
+                error.message = who + ": port '" + port.symbol + "' has a type this host cannot connect";
+                return false;
+            }
+        }
+        uint32_t replicas = 0;
+        if (info_.audio_in == channels && info_.audio_out == channels)
+            replicas = 1;
+        else if (info_.audio_in == 1 && info_.audio_out == 1)
+            replicas = channels;
+        if (replicas == 0) {
+            error.reason = Refusal::ChannelMismatch;
+            error.message = who + " declares " + std::to_string(info_.audio_in) + " in / " +
+                            std::to_string(info_.audio_out) + " out; the chain carries " +
+                            std::to_string(channels) + " channels";
+            return false;
+        }
+
+        controls_.resize(info_.ports.size(), 0.f);
+        for (const PortInfo& port : info_.ports)
+            if (port.kind == PortKind::Control) controls_[port.index] = port.def;
+
+        for (uint32_t r = 0; r < replicas; ++r) {
+            LilvInstance* inst = lilv_plugin_instantiate(p, sample_rate, features_);
+            if (!inst) {
+                error.reason = Refusal::InstantiateFailed;
+                error.message = who + " failed to instantiate";
+                return false;
+            }
+            instances_.push_back(inst);
+            uint32_t audio_in = 0, audio_out = 0;
+            for (const PortInfo& port : info_.ports) {
+                void* where = nullptr;
+                switch (port.kind) {
+                case PortKind::Audio: {
+                    // Replicated: replica r is channel r. Otherwise port order
+                    // is channel order.
+                    const uint32_t ch = replicas > 1 ? r : (port.input ? audio_in++ : audio_out++);
+                    where = port.input ? in[ch] : out[ch];
+                    break;
+                }
+                case PortKind::Control:
+                    where = &controls_[port.index];
+                    break;
+                case PortKind::Atom:
+                    atoms_.push_back({port.input, std::vector<uint64_t>(kAtomBytes / 8, 0)});
+                    where = atoms_.back().words.data();
+                    break;
+                default:
+                    break;  // optional CV or unknown: left unconnected (null)
+                }
+                lilv_instance_connect_port(inst, port.index, where);
+            }
+        }
+        reset_atom_ports();
+        for (LilvInstance* inst : instances_) lilv_instance_activate(inst);
+        active_ = true;
+        return true;
+    }
+
+    uint32_t replicas() const noexcept override { return static_cast<uint32_t>(instances_.size()); }
+
+    void run(uint32_t frames) noexcept override {
+        reset_atom_ports();
+        for (LilvInstance* inst : instances_) lilv_instance_run(inst, frames);
+        if (info_.latency_port >= 0) {
+            const float v = controls_[static_cast<std::size_t>(info_.latency_port)];
+            latency_ = (std::isfinite(v) && v > 0.f) ? static_cast<uint32_t>(std::lround(v)) : 0;
+        }
+    }
+
+    uint32_t latency() const noexcept override { return latency_; }
+
+    bool set_param(uint32_t port, float value) noexcept override {
+        if (port >= info_.ports.size()) return false;
+        const PortInfo& p = info_.ports[port];
+        if (p.kind != PortKind::Control || !p.input) return false;
+        controls_[port] = value;
+        return true;
+    }
+
+    bool param_id(const std::string& symbol, uint32_t& id) const override {
+        for (const PortInfo& p : info_.ports)
+            if (p.symbol == symbol) {
+                id = p.index;
+                return true;
+            }
+        return false;
+    }
+
+private:
+    void reset_atom_ports() noexcept {
+        for (auto& a : atoms_) {
+            auto* atom = reinterpret_cast<LV2_Atom*>(a.words.data());
+            if (a.input) {
+                atom->size = sizeof(LV2_Atom_Sequence_Body);
+                atom->type = atom_sequence_;
+                reinterpret_cast<LV2_Atom_Sequence*>(atom)->body.unit = 0;
+                reinterpret_cast<LV2_Atom_Sequence*>(atom)->body.pad = 0;
+            } else {
+                // An output atom port is told its capacity this way (LV2 atom spec).
+                atom->size = static_cast<uint32_t>(kAtomBytes - sizeof(LV2_Atom));
+                atom->type = atom_chunk_;
+            }
+        }
+    }
+
+    std::vector<LilvInstance*> instances_;  // one, or one per channel
+    std::vector<float> controls_;           // indexed by port; shared by replicas
     struct AtomBuffer {
         bool input;
         std::vector<uint64_t> words;  // 8-byte aligned, as atoms require
     };
-    std::vector<AtomBuffer> atoms;  // replica-major, one per atom port
-    uint32_t latency = 0;
+    std::vector<AtomBuffer> atoms_;  // replica-major, one per atom port
+    uint32_t latency_ = 0;
+    // An instance that failed half way through init was never activated,
+    // and LV2 forbids deactivating it.
+    bool active_ = false;
+
+    // Features handed to every instance. Built once, address-stable: the
+    // processor lives on the heap and is never moved.
+    int32_t min_block_ = 0, max_block_, nominal_block_;
+    float rate_f_;
+    std::vector<LV2_Options_Option> options_;
+    LV2_Feature map_f_, unmap_f_, options_f_, bounded_f_;
+    const LV2_Feature* features_[5];
+    LV2_URID atom_sequence_, atom_chunk_;
 };
 
-Lv2Chain::Lv2Chain(Lv2World& world, const ChainConfig& config)
-    : world_(world),
-      config_(config),
-      guard_frames_(config.max_frames),
-      stride_(config.max_frames + config.max_frames),
-      max_block_(static_cast<int32_t>(config.max_frames)),
-      nominal_block_(static_cast<int32_t>(config.block_frames)),
-      rate_f_(static_cast<float>(config.sample_rate)) {
-    UridMap& u = world_.urids();
-    const LV2_URID atom_int = u.map(LV2_ATOM__Int);
-    const LV2_URID atom_float = u.map(LV2_ATOM__Float);
-    options_ = {
-        {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_BUF_SIZE__minBlockLength), sizeof(int32_t), atom_int,
-         &min_block_},
-        {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_BUF_SIZE__maxBlockLength), sizeof(int32_t), atom_int,
-         &max_block_},
-        {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_BUF_SIZE__nominalBlockLength), sizeof(int32_t),
-         atom_int, &nominal_block_},
-        {LV2_OPTIONS_INSTANCE, 0, u.map(LV2_PARAMETERS__sampleRate), sizeof(float), atom_float,
-         &rate_f_},
-        {LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr},
-    };
-    map_f_ = {LV2_URID__map, u.map_feature()};
-    unmap_f_ = {LV2_URID__unmap, u.unmap_feature()};
-    options_f_ = {LV2_OPTIONS__options, options_.data()};
-    bounded_f_ = {LV2_BUF_SIZE__boundedBlockLength, nullptr};
-    features_[0] = &map_f_;
-    features_[1] = &unmap_f_;
-    features_[2] = &options_f_;
-    features_[3] = &bounded_f_;
-    features_[4] = nullptr;
-    atom_sequence_ = u.map(LV2_ATOM__Sequence);
-    atom_chunk_ = u.map(LV2_ATOM__Chunk);
-    stages_.emplace_back(std::size_t(config_.channels) * stride_, 0.f);
-}
+}  // namespace
 
-Lv2Chain::~Lv2Chain() {
-    for (auto& s : slots_)
-        for (LilvInstance* inst : s->instances) {
-            lilv_instance_deactivate(inst);
-            lilv_instance_free(inst);
-        }
-}
-
-float* Lv2Chain::buffer(std::size_t stage, uint32_t channel) {
-    return stages_[stage].data() + std::size_t(channel) * stride_;
-}
-
-bool Lv2Chain::add(const std::string& uri, ChainError& error) {
-    const int index = static_cast<int>(slots_.size());
-    error.instance = index;
-    if (slots_.size() >= plugin::kMaxInstances) {
-        error.reason = Refusal::TooManyInstances;
-        error.message = "a host process runs at most " + std::to_string(plugin::kMaxInstances) +
-                        " plugins";
-        return false;
-    }
-    const LilvPlugin* p = world_.find(uri);
+std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const ChainConfig& config,
+                                                 const std::vector<float*>& in,
+                                                 const std::vector<float*>& out,
+                                                 ChainError& error) {
+    const LilvPlugin* p = find(uri);
     if (!p) {
         error.reason = Refusal::NotFound;
         error.message = "no LV2 plugin with URI " + uri + " is installed";
-        return false;
+        return nullptr;
     }
-    auto slot = std::make_unique<Slot>();
-    slot->info = world_.describe(p);
-    const PluginInfo& info = slot->info;
-    const std::string who = info.name + " <" + info.uri + ">";
-
-    if (!info.missing_features.empty()) {
-        error.reason = Refusal::UnsupportedFeature;
-        error.message = who + " requires " + info.missing_features.front();
-        return false;
-    }
-    for (const PortInfo& port : info.ports) {
-        if ((port.kind == PortKind::CV || port.kind == PortKind::Other) && !port.optional) {
-            error.reason = Refusal::UnsupportedPort;
-            error.message = who + ": port '" + port.symbol + "' has a type this host cannot connect";
-            return false;
-        }
-    }
-
-    uint32_t replicas = 0;
-    if (info.audio_in == config_.channels && info.audio_out == config_.channels)
-        replicas = 1;
-    else if (info.audio_in == 1 && info.audio_out == 1)
-        replicas = config_.channels;
-    if (replicas == 0) {
-        error.reason = Refusal::ChannelMismatch;
-        error.message = who + " declares " + std::to_string(info.audio_in) + " in / " +
-                        std::to_string(info.audio_out) + " out; the chain carries " +
-                        std::to_string(config_.channels) + " channels";
-        return false;
-    }
-
-    slot->controls.resize(info.ports.size(), 0.f);
-    for (const PortInfo& port : info.ports)
-        if (port.kind == PortKind::Control) slot->controls[port.index] = port.def;
-
-    stages_.emplace_back(std::size_t(config_.channels) * stride_, 0.f);
-    const std::size_t in_stage = slots_.size(), out_stage = in_stage + 1;
-
-    for (uint32_t r = 0; r < replicas; ++r) {
-        LilvInstance* inst = lilv_plugin_instantiate(p, config_.sample_rate, features_);
-        if (!inst) {
-            error.reason = Refusal::InstantiateFailed;
-            error.message = who + " failed to instantiate";
-            for (LilvInstance* done : slot->instances) lilv_instance_free(done);
-            stages_.pop_back();
-            return false;
-        }
-        slot->instances.push_back(inst);
-        uint32_t audio_in = 0, audio_out = 0;
-        for (const PortInfo& port : info.ports) {
-            void* where = nullptr;
-            switch (port.kind) {
-            case PortKind::Audio: {
-                // Replicated: replica r is channel r. Otherwise port order is
-                // channel order.
-                const uint32_t ch = replicas > 1 ? r : (port.input ? audio_in++ : audio_out++);
-                where = buffer(port.input ? in_stage : out_stage, ch);
-                break;
-            }
-            case PortKind::Control:
-                where = &slot->controls[port.index];
-                break;
-            case PortKind::Atom: {
-                slot->atoms.push_back({port.input, std::vector<uint64_t>(kAtomBytes / 8, 0)});
-                where = slot->atoms.back().words.data();
-                break;
-            }
-            default:
-                break;  // optional CV or unknown: left unconnected (null)
-            }
-            lilv_instance_connect_port(inst, port.index, where);
-        }
-    }
-    reset_atom_ports(*slot);
-    for (LilvInstance* inst : slot->instances) lilv_instance_activate(inst);
-    slots_.push_back(std::move(slot));
-    error = ChainError{};
-    return true;
-}
-
-void Lv2Chain::reset_atom_ports(Slot& s) noexcept {
-    for (auto& a : s.atoms) {
-        auto* atom = reinterpret_cast<LV2_Atom*>(a.words.data());
-        if (a.input) {
-            atom->size = sizeof(LV2_Atom_Sequence_Body);
-            atom->type = atom_sequence_;
-            reinterpret_cast<LV2_Atom_Sequence*>(atom)->body.unit = 0;
-            reinterpret_cast<LV2_Atom_Sequence*>(atom)->body.pad = 0;
-        } else {
-            // An output atom port is told its capacity this way (LV2 atom spec).
-            atom->size = static_cast<uint32_t>(kAtomBytes - sizeof(LV2_Atom));
-            atom->type = atom_chunk_;
-        }
-    }
-}
-
-void Lv2Chain::fill_canaries(uint32_t frames) {
-    float canary;
-    std::memcpy(&canary, &kCanary, sizeof canary);
-    for (auto& stage : stages_)
-        for (uint32_t c = 0; c < config_.channels; ++c)
-            std::fill(stage.begin() + std::ptrdiff_t(c) * stride_ + frames,
-                      stage.begin() + std::ptrdiff_t(c + 1) * stride_, canary);
-}
-
-bool Lv2Chain::canaries_intact(uint32_t from_frame, uint32_t words) const noexcept {
-    for (const auto& stage : stages_)
-        for (uint32_t c = 0; c < config_.channels; ++c) {
-            const float* p = stage.data() + std::size_t(c) * stride_ + from_frame;
-            for (uint32_t i = 0; i < words; ++i)
-                if (!is_canary(p + i)) return false;
-        }
-    return true;
-}
-
-uint64_t Lv2Chain::sanitise_stage(std::size_t stage, uint32_t frames) noexcept {
-    uint64_t bad = 0;
-    for (uint32_t c = 0; c < config_.channels; ++c) {
-        float* b = buffer(stage, c);
-        for (uint32_t i = 0; i < frames; ++i)
-            if (!is_finite_bits(b[i])) {
-                b[i] = 0.f;
-                ++bad;
-            }
-    }
-    return bad;
-}
-
-bool Lv2Chain::process(const float* const* in, float* const* out, uint32_t frames,
-                       plugin::ChannelHeader* report, ChainError& error) noexcept {
-    frames = std::min(frames, config_.max_frames);
-    for (uint32_t c = 0; c < config_.channels; ++c)
-        std::memcpy(buffer(0, c), in[c], frames * sizeof(float));
-
-    for (std::size_t k = 0; k < slots_.size(); ++k) {
-        Slot& s = *slots_[k];
-        if (report) report->current_instance.store(static_cast<int32_t>(k), std::memory_order_relaxed);
-        reset_atom_ports(s);
-        const uint64_t t0 = monotonic_ns();
-        for (LilvInstance* inst : s.instances) lilv_instance_run(inst, frames);
-        const uint64_t took = monotonic_ns() - t0;
-
-        if (s.info.latency_port >= 0) {
-            const float v = s.controls[static_cast<std::size_t>(s.info.latency_port)];
-            s.latency = (std::isfinite(v) && v > 0.f) ? static_cast<uint32_t>(std::lround(v)) : 0;
-        }
-        if (report) {
-            auto& r = report->instances[k];
-            r.last_run_ns.store(took, std::memory_order_relaxed);
-            if (took > r.worst_run_ns.load(std::memory_order_relaxed))
-                r.worst_run_ns.store(took, std::memory_order_relaxed);
-        }
-        // Checking every stage, not only this slot's two, costs a few hundred
-        // compares at most, and a plugin that writes into a neighbour's
-        // buffer is attributed to the plugin that just ran.
-        if (!canaries_intact(config_.max_frames,
-                             std::min<uint32_t>(kRuntimeGuardWords, guard_frames_))) {
-            error.reason = Refusal::WroteOutsideBuffers;
-            error.instance = static_cast<int>(k);
-            return false;
-        }
-        // Before the next plugin sees it: a NaN fed into a filter stays in
-        // its state, so one bad block from k would silence k + 1 for good.
-        if (const uint64_t bad = sanitise_stage(k + 1, frames); bad && report)
-            report->instances[k].nonfinite_samples.fetch_add(bad, std::memory_order_relaxed);
-    }
-    if (report) report->current_instance.store(-1, std::memory_order_relaxed);
-
-    const std::size_t last = slots_.size();
-    for (uint32_t c = 0; c < config_.channels; ++c)
-        std::memcpy(out[c], buffer(last, c), frames * sizeof(float));
-    return true;
-}
-
-bool Lv2Chain::validate(ChainError& error) {
-    const uint32_t frames = config_.block_frames;
-    std::vector<float> silence(config_.max_frames, 0.f), sink(config_.max_frames, 0.f);
-    std::vector<const float*> in(config_.channels, silence.data());
-    std::vector<float*> out(config_.channels, sink.data());
-
-    // Slot by slot, so a violation is attributed to the plugin that made it.
-    // A chain of one is run, checked, then the next is added to the check.
-    for (int pass = 0; pass < 4; ++pass) {
-        fill_canaries(frames);
-        for (uint32_t c = 0; c < config_.channels; ++c)
-            std::fill(buffer(0, c), buffer(0, c) + frames, 0.f);
-        for (std::size_t k = 0; k < slots_.size(); ++k) {
-            Slot& s = *slots_[k];
-            const std::string who = s.info.name + " <" + s.info.uri + ">";
-            reset_atom_ports(s);
-            for (LilvInstance* inst : s.instances) lilv_instance_run(inst, frames);
-            if (s.info.latency_port >= 0) {
-                const float v = s.controls[static_cast<std::size_t>(s.info.latency_port)];
-                s.latency = (std::isfinite(v) && v > 0.f) ? static_cast<uint32_t>(std::lround(v)) : 0;
-            }
-            if (!canaries_intact(frames, stride_ - frames)) {
-                error.reason = Refusal::WroteOutsideBuffers;
-                error.instance = static_cast<int>(k);
-                error.message = who + " declares " + std::to_string(s.info.audio_out) +
-                                " audio output(s) of " + std::to_string(frames) +
-                                " frames and wrote outside them";
-                return false;
-            }
-            for (uint32_t c = 0; c < config_.channels; ++c) {
-                const float* b = buffer(k + 1, c);
-                for (uint32_t i = 0; i < frames; ++i)
-                    if (!std::isfinite(b[i])) {
-                        error.reason = Refusal::NonFiniteOutput;
-                        error.instance = static_cast<int>(k);
-                        error.message = who + " produced NaN or Inf from silence";
-                        return false;
-                    }
-            }
-        }
-    }
-    // Leave the guards whole for the runtime check.
-    fill_canaries(config_.max_frames);
-    error = ChainError{};
-    return true;
-}
-
-bool Lv2Chain::set_control(uint32_t instance, uint32_t port, float value) noexcept {
-    if (instance >= slots_.size()) return false;
-    Slot& s = *slots_[instance];
-    if (port >= s.info.ports.size()) return false;
-    const PortInfo& p = s.info.ports[port];
-    if (p.kind != PortKind::Control || !p.input) return false;
-    s.controls[port] = value;
-    return true;
-}
-
-bool Lv2Chain::set_control(uint32_t instance, const std::string& symbol, float value) {
-    if (instance >= slots_.size()) return false;
-    for (const PortInfo& p : slots_[instance]->info.ports)
-        if (p.symbol == symbol) return set_control(instance, p.index, value);
-    return false;
-}
-
-uint32_t Lv2Chain::instance_latency(std::size_t i) const { return slots_[i]->latency; }
-
-uint32_t Lv2Chain::total_latency() const {
-    uint32_t sum = 0;
-    for (const auto& s : slots_) sum += s->latency;
-    return sum;
-}
-
-uint32_t Lv2Chain::replicas(std::size_t i) const {
-    return static_cast<uint32_t>(slots_[i]->instances.size());
-}
-
-const PluginInfo& Lv2Chain::info(std::size_t i) const { return slots_[i]->info; }
-
-// ---------------------------------------------------------------------------
-
-std::string json_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 2);
-    for (unsigned char ch : s) {
-        switch (ch) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\t': out += "\\t"; break;
-        case '\r': out += "\\r"; break;
-        default:
-            if (ch < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof buf, "\\u%04x", ch);
-                out += buf;
-            } else {
-                out += static_cast<char>(ch);
-            }
-        }
-    }
-    return out;
-}
-
-std::string port_kind_name(PortKind k) {
-    switch (k) {
-    case PortKind::Audio: return "audio";
-    case PortKind::Control: return "control";
-    case PortKind::Atom: return "atom";
-    case PortKind::CV: return "cv";
-    default: return "other";
-    }
+    auto proc = std::make_unique<Lv2Processor>(*this, config);
+    if (!proc->init(p, describe(p), config.sample_rate, config.channels, in, out, error))
+        return nullptr;
+    return proc;
 }
 
 }  // namespace sonora::plugin_host

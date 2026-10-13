@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the whole CMake root with lilv present, so plugins/host is built, and
-# run ctest: the plugin host tests against real LV2 plugins from Debian, the
+# run ctest: the plugin host tests against real LV2 and VST3 plugins from Debian, the
 # in-tree misbehaving plugins, and every other module's tests.
 #
 #   tools/build-plugins.sh                 build + full ctest
@@ -53,7 +53,7 @@ docker run --rm --label org.sonora=1 \
   -e MEASURE="$MEASURE" \
   -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
   set -euo pipefail
-  cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release >/dev/null
+  cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON >/dev/null
   cmake --build build-plugins -j"$(nproc)"
   ctest --test-dir build-plugins --output-on-failure "$@"
   if [[ "$MEASURE" == 1 ]]; then

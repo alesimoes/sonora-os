@@ -18,6 +18,11 @@
 //    a frame offset inside it, so a change lands on a known sample, plus a
 //    last-value table in the region, so a dropped block or a restarted host
 //    never loses the current value of a control.
+//  TODO(accept) Parameter values: ParamChange::value is an LV2 port value
+//    but a NORMALISED VST3 value, so the engine must know each plugin's
+//    format. Format-neutral values need the host to convert plain to
+//    normalised, which in VST3 is a controller call and must happen off the
+//    processing thread (brain/research/plugin-host-vst3.md).
 //  TODO(accept) Crash and restart: a region a dead host touched is never
 //    reused. Restart = new memfd, new host, wait for Ready, re-read
 //    latency_frames, then rejoin through a control-thread plan swap with
@@ -54,8 +59,9 @@
 //
 //  - Every word the host can write is untrusted: completed_block,
 //    latency_frames, latency_generation, current_instance, refusal,
-//    refusal_instance, state, host_flags, heartbeat, param_read, the
-//    instance reports, the output planes' contents, and the fixed part.
+//    refusal_instance, state, host_flags, heartbeat, param_read,
+//    params_rejected, the instance reports, the output planes' contents,
+//    and the fixed part.
 //  - Such a word is bounds-checked before use (checked_instance,
 //    checked_latency, checked_state below) and is NEVER turned into a
 //    pointer, an offset or an index without that check.
@@ -101,7 +107,9 @@
 //    a. Read request_word, then submitted_block (acquire). If it is ahead of
 //       the last block processed, process it; else sleep on request_word
 //       with a timeout and bump heartbeat on every pass, idle or not.
-//    b. Drain the parameter ring, run the chain, write output planes.
+//    b. Drain the parameter ring (at most kParamRingCapacity entries; one it
+//       cannot apply is counted in params_rejected), run the chain, write
+//       output planes.
 //    c. completed_block.store(N, release); done_word.fetch_add(1, release);
 //       wake done_word. Only the control thread (waiting for Ready) and
 //       measurement harnesses sleep on done_word, never the audio thread.
@@ -154,9 +162,10 @@ enum class HostState : uint32_t {
 // goes to the host's stderr and, later, over the HostControl socket.
 enum class Refusal : uint32_t {
     None = 0,
-    NotFound = 1,             // no plugin with that URI is installed
-    ChannelMismatch = 2,      // declared audio ports cannot map to `channels`
-    UnsupportedFeature = 3,   // requires an LV2 feature the host lacks
+    NotFound = 1,             // no plugin with that URI (LV2) or class id (VST3)
+    ChannelMismatch = 2,      // declared audio ports or buses cannot map to `channels`
+    UnsupportedFeature = 3,   // requires an LV2 feature the host lacks; VST3: no
+                              // IAudioProcessor or no 32-bit float processing
     UnsupportedPort = 4,      // a port type the host cannot connect (CV, ...)
     InstantiateFailed = 5,
     WroteOutsideBuffers = 6,  // declared N channels, wrote more (canary)
@@ -165,9 +174,11 @@ enum class Refusal : uint32_t {
 };
 
 // Engine -> host parameter change. `instance` is the index in the chain,
-// `port` the plugin's own port index (LV2 port index). Applied by the host
-// at the start of the next block it processes: the first block submitted
-// after the push. Block-tagged changes are a TODO(accept) above.
+// `port` the plugin's own parameter: the LV2 port index, or the VST3
+// ParamID. `value` is the LV2 port value, or the VST3 NORMALISED value (0..1,
+// clamped by the host). Applied by the host at the start of the next block
+// it processes: the first block submitted after the push. Block-tagged
+// changes and format-neutral values are TODO(accept) above.
 struct ParamChange {
     uint32_t instance;
     uint32_t port;
@@ -226,6 +237,9 @@ struct ChannelHeader {
     std::atomic<int32_t> refusal_instance;     // which chain index, -1 if none
     std::atomic<uint32_t> host_flags;          // HostFlag bits
     std::atomic<uint64_t> worst_block_ns;      // host-side, whole chain
+    // Ring entries the host could not apply: no such instance or writable
+    // parameter, or a non-finite value. Counted, never silently dropped.
+    std::atomic<uint64_t> params_rejected;
 
     InstanceReport instances[kMaxInstances];
 };
