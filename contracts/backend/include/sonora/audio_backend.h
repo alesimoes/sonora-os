@@ -26,6 +26,10 @@ struct PortInfo {
     // so capture_AUX2 is before capture_AUX10: registration order and id
     // order are not channel order.
     uint32_t channel;
+    // True only when the backend established that the device is on USB.
+    // A backend that cannot tell leaves it false, and the device is then
+    // used only when named; see select_device().
+    bool usb = false;
 };
 
 struct BackendConfig {
@@ -36,8 +40,8 @@ struct BackendConfig {
     // fails open(), since recording at another would write wrong-pitch files.
     uint32_t required_rate;
     // The device whose capture ports feed the inputs, by PortInfo::device.
-    // Empty means the one device with capture ports; open() fails, naming
-    // them, if there are several. See select_device().
+    // Empty means the one USB device; open() fails, naming them, if there
+    // are several. See select_device().
     std::string capture_device;
 };
 
@@ -102,35 +106,62 @@ public:
 };
 
 // The ports of `all` that BackendConfig::capture_device selects, in channel
-// order: those of `device`, or, when it is empty, those of the only device
-// there is. Returns false, with `error` naming the devices, only when the
-// name is empty and there are several. A device not present yet -- a USB
-// interface enumerates after boot -- selects nothing and is not an error.
+// order. Default policy, 2026-10-12 (ADR-0007, M2 note):
+//  - a named device is used whatever its bus;
+//  - an empty name means the USB device. Non-USB capture (onboard, PCI,
+//    HDMI) is never chosen unless named: on the appliance it is the
+//    laptop's microphone, recorded while the operator believes the
+//    interface is armed;
+//  - several USB devices and no name: false, with `error` naming them.
+// A device not present yet -- a USB interface enumerates after boot --
+// selects nothing and is not an error: the caller waits, and when the wait
+// is over says why with describe_absent().
 inline bool select_device(const std::vector<PortInfo>& all,
                           const std::string& device,
                           std::vector<PortInfo>& selected, std::string& error) {
     selected.clear();
-    std::vector<std::string> devices;
-    for (const PortInfo& p : all) {
-        if (std::find(devices.begin(), devices.end(), p.device) == devices.end()) {
-            devices.push_back(p.device);
-        }
-    }
     std::string wanted = device;
     if (wanted.empty()) {
-        if (devices.size() > 1) {
-            error = "capture ports on " + std::to_string(devices.size()) +
-                    " devices; name the one to record from:";
-            for (const std::string& d : devices) error += " " + d;
+        std::vector<std::string> usb;
+        for (const PortInfo& p : all) {
+            if (p.usb && std::find(usb.begin(), usb.end(), p.device) == usb.end()) {
+                usb.push_back(p.device);
+            }
+        }
+        if (usb.size() > 1) {
+            error = std::to_string(usb.size()) +
+                    " USB audio interfaces; name the one to record from"
+                    " with --device:";
+            for (const std::string& d : usb) error += " \"" + d + "\"";
             return false;
         }
-        if (devices.empty()) return true;
-        wanted = devices.front();
+        if (usb.empty()) return true;
+        wanted = usb.front();
     }
     for (const PortInfo& p : all) {
         if (p.device == wanted) selected.push_back(p);
     }
     return true;
+}
+
+// Why select_device() found nothing, for the operator: the device asked
+// for, or the USB interface the default wants, and every device present.
+inline std::string describe_absent(const std::vector<PortInfo>& all,
+                                   const std::string& device) {
+    std::string present;
+    std::vector<std::string> seen;
+    for (const PortInfo& p : all) {
+        if (std::find(seen.begin(), seen.end(), p.device) != seen.end()) continue;
+        seen.push_back(p.device);
+        present += (present.empty() ? "" : ", ") + p.device + (p.usb ? " (USB)" : "");
+    }
+    std::string why = device.empty()
+                          ? std::string("no USB audio interface is present")
+                          : "capture device \"" + device + "\" is not present";
+    if (present.empty()) return why + ", and no capture device is";
+    why += "; present: " + present;
+    if (device.empty()) why += ". Name one with --device to record from it";
+    return why;
 }
 
 }  // namespace sonora::backend

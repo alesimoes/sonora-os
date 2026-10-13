@@ -8,12 +8,14 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "sonora/alsa_card.h"
 #include "sonora/frame_clock.h"
 #include "sonora/period_guard.h"
 #include "sonora/port_devices.h"
@@ -41,14 +43,40 @@ uint64_t now_ns() {
             .count());
 }
 
+// Under pw-jack 1.4.2 with jack.fill-aliases on (prepare_process()), a
+// port's first alias is its PipeWire object.path, which names the ALSA
+// card; the kernel says whether that card is USB. Nothing in the JACK API
+// names the bus, and the client name is the node's description ("UMC1820
+// Pro"), which does not either. Under jackd2, or with aliases off, no port
+// reads as USB, and a device is then used only when named.
+bool port_on_usb(jack_client_t* client, const char* name) {
+    jack_port_t* port = jack_port_by_name(client, name);
+    if (!port) return false;
+    const std::size_t size = static_cast<std::size_t>(jack_port_name_size());
+    std::vector<char> first(size, '\0'), second(size, '\0');
+    char* aliases[2] = {first.data(), second.data()};
+    const int n = jack_port_get_aliases(port, aliases);
+    for (int i = 0; i < n && i < 2; ++i) {
+        const std::string card = drivers::alsa_card_of(aliases[i]);
+        if (!card.empty()) return drivers::alsa_card_is_usb(card);
+    }
+    return false;
+}
+
 std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) {
     std::vector<std::string> names;
+    std::vector<std::string> usb;
     if (const char** hw = jack_get_ports(client, nullptr, JACK_DEFAULT_AUDIO_TYPE,
                                          flags | JackPortIsPhysical)) {
-        for (int i = 0; hw[i] != nullptr; ++i) names.emplace_back(hw[i]);
+        for (int i = 0; hw[i] != nullptr; ++i) {
+            names.emplace_back(hw[i]);
+            if (port_on_usb(client, hw[i])) usb.emplace_back(hw[i]);
+        }
         jack_free(hw);
     }
-    return drivers::describe_ports(std::move(names));
+    return drivers::describe_ports(std::move(names), [&usb](const std::string& n) {
+        return std::find(usb.begin(), usb.end(), n) != usb.end();
+    });
 }
 
 std::string device_of(const std::string& port) {
@@ -60,7 +88,12 @@ std::string device_of(const std::string& port) {
 struct JackBackend::Impl {
     jack_client_t* client = nullptr;
     bool active = false;
+    // Empty until a device is chosen: by name in open(), or by the default
+    // policy at open() or at the first connection after it.
     std::string capture_device;
+    // What connect_inputs_in_order() last said, so a caller that polls it
+    // while waiting for an interface does not repeat it every time.
+    std::string last_complaint;
     std::vector<jack_port_t*> in_ports;
     std::vector<jack_port_t*> out_ports;
     // Sized in open() and only overwritten afterwards, so the callback never
@@ -227,6 +260,11 @@ struct JackBackend::Impl {
     }
 };
 
+void JackBackend::prepare_process() {
+    const std::string props = drivers::with_fill_aliases(std::getenv("PIPEWIRE_PROPS"));
+    ::setenv("PIPEWIRE_PROPS", props.c_str(), 1);
+}
+
 JackBackend::JackBackend() : impl_(std::make_unique<Impl>()) {}
 
 JackBackend::~JackBackend() {
@@ -274,8 +312,9 @@ bool JackBackend::open(const backend::BackendConfig& config,
         return fail();
     }
 
-    // Decided now, so a second card appearing later cannot change which
-    // device the inputs come from.
+    // Decided now when it can be, so a second card appearing later cannot
+    // change which device the inputs come from. With no USB device yet it
+    // is decided at the first connection instead.
     std::vector<PortInfo> chosen;
     if (!backend::select_device(d.physical(JackPortIsOutput),
                                 config.capture_device, chosen, error)) {
@@ -337,11 +376,17 @@ int JackBackend::connect_inputs_in_order() {
     Impl& d = *impl_;
     if (!d.client) return 0;
 
+    const auto complain = [&d](const std::string& what) {
+        if (what == d.last_complaint) return;
+        d.last_complaint = what;
+        std::fprintf(stderr, "sonora: %s\n", what.c_str());
+    };
+
     std::vector<PortInfo> hw;
     std::string why;
     if (!backend::select_device(d.physical(JackPortIsOutput), d.capture_device,
                                 hw, why)) {
-        std::fprintf(stderr, "sonora: not connecting inputs: %s\n", why.c_str());
+        complain("not connecting inputs: " + why);
         return 0;
     }
     if (hw.empty()) return 0;
@@ -354,20 +399,20 @@ int JackBackend::connect_inputs_in_order() {
         // An existing link is the outcome asked for, not a failure.
         if (rc == 0 || rc == EEXIST) ++connected;
     }
+    if (connected > 0 && d.capture_device.empty()) d.capture_device = hw.front().device;
 
     // A count mismatch either way is worth saying out loud. More tracks than
     // channels means the extra tracks record silence; more channels than
     // tracks means inputs the operator plugged in are not being captured.
     if (hw.size() < d.in_ports.size()) {
-        std::fprintf(stderr,
-                     "sonora: %zu capture channels for %zu tracks;"
-                     " tracks %zu and above will be silent.\n",
-                     hw.size(), d.in_ports.size(), hw.size() + 1);
+        complain(std::to_string(hw.size()) + " capture channels for " +
+                 std::to_string(d.in_ports.size()) + " tracks; tracks " +
+                 std::to_string(hw.size() + 1) + " and above will be silent.");
     } else if (hw.size() > d.in_ports.size()) {
-        std::fprintf(stderr,
-                     "sonora: %zu capture channels but only %zu tracks;"
-                     " channels %zu and above are not being recorded.\n",
-                     hw.size(), d.in_ports.size(), d.in_ports.size() + 1);
+        complain(std::to_string(hw.size()) + " capture channels but only " +
+                 std::to_string(d.in_ports.size()) + " tracks; channels " +
+                 std::to_string(d.in_ports.size() + 1) +
+                 " and above are not being recorded.");
     }
 
     return connected;

@@ -80,12 +80,29 @@ int test_device_is_before_the_first_colon() {
     return 0;
 }
 
+// The bus is asked per port and carried on every port of its device, so
+// select_device() can choose the interface over onboard audio.
+int test_usb_is_carried_per_port() {
+    const std::vector<PortInfo> ports = describe_ports(
+        {"UMC1820 Pro:capture_AUX1", "Built-in Audio Pro:capture_AUX0",
+         "UMC1820 Pro:capture_AUX0"},
+        [](const std::string& name) { return name.rfind("UMC1820", 0) == 0; });
+    CHECK(ports.size() == 3);
+    CHECK(ports[0].device == "Built-in Audio Pro" && !ports[0].usb);
+    CHECK(ports[1].name == "UMC1820 Pro:capture_AUX0" && ports[1].usb);
+    CHECK(ports[2].name == "UMC1820 Pro:capture_AUX1" && ports[2].usb);
+    // Without a way to tell, nothing is USB.
+    CHECK(!describe_ports({"UMC1820 Pro:capture_AUX0"})[0].usb);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_two_cards_are_numbered_apart() != 0) return 1;
     if (test_a_device_is_contiguous() != 0) return 1;
     if (test_device_is_before_the_first_colon() != 0) return 1;
+    if (test_usb_is_carried_per_port() != 0) return 1;
     std::printf("test_port_devices: ok\n");
     return 0;
 }

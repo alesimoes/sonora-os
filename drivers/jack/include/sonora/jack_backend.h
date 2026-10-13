@@ -15,6 +15,12 @@ namespace sonora {
 // compiles against JACK (ADR-0007 §1).
 class JackBackend final : public backend::AudioBackend {
 public:
+    // Once, before any thread that reads the environment exists and before
+    // the first JackBackend: turns on pw-jack's port aliases through
+    // PIPEWIRE_PROPS, which is how the backend tells a USB interface from
+    // onboard audio. Keeps whatever PIPEWIRE_PROPS already holds.
+    static void prepare_process();
+
     JackBackend();
     ~JackBackend() override;
     JackBackend(const JackBackend&) = delete;

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -13,8 +14,12 @@ namespace sonora::drivers {
 
 // Turns full "device:port" names into PortInfo: grouped by device, devices
 // in natural order, and channels numbered from 0 within each device. The
-// device is everything before the first ':', the JACK client part.
-inline std::vector<backend::PortInfo> describe_ports(std::vector<std::string> names) {
+// device is everything before the first ':', the JACK client part. `usb`
+// says, by port name, whether the port is on a USB device; without it none
+// is.
+inline std::vector<backend::PortInfo> describe_ports(
+    std::vector<std::string> names,
+    const std::function<bool(const std::string&)>& usb = nullptr) {
     const auto device_of = [](const std::string& n) {
         const std::size_t colon = n.find(':');
         return colon == std::string::npos ? n : n.substr(0, colon);
@@ -32,7 +37,8 @@ inline std::vector<backend::PortInfo> describe_ports(std::vector<std::string> na
     for (std::string& n : names) {
         std::string device = device_of(n);
         if (!out.empty() && out.back().device != device) channel = 0;
-        out.push_back({std::move(device), std::move(n), channel++});
+        const bool on_usb = usb && usb(n);
+        out.push_back({std::move(device), std::move(n), channel++, on_usb});
     }
     return out;
 }

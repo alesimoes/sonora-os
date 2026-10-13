@@ -26,3 +26,7 @@ add_test(NAME port_devices COMMAND test_port_devices)
 add_executable(test_source_watch tests/test_source_watch.cpp)
 target_link_libraries(test_source_watch PRIVATE sonora_driver_support)
 add_test(NAME source_watch COMMAND test_source_watch)
+
+add_executable(test_alsa_card tests/test_alsa_card.cpp)
+target_link_libraries(test_alsa_card PRIVATE sonora_driver_support)
+add_test(NAME alsa_card COMMAND test_alsa_card)

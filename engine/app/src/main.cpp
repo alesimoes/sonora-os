@@ -37,6 +37,11 @@ std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
     return nullptr;
 }
 
+// Process-wide setup a backend needs before any thread exists.
+void prepare_backend(const std::string& name) {
+    if (name == "jack") sonora::JackBackend::prepare_process();
+}
+
 struct TermiosGuard {
     termios saved{};
     termios current{};
@@ -127,7 +132,7 @@ std::vector<std::string> build_help(const sonora::KeyMap& map,
 
 void draw(sonora::Session& s, const AudioBackend& audio, int take,
           const std::string& status, const std::vector<std::string>& help,
-          const std::vector<std::string>& notices) {
+          const std::vector<std::string>& notices, const std::string& inputs) {
     using sonora::TransportState;
     const auto st = s.transport().state();
     const char* label = st == TransportState::Recording ? "REC "
@@ -162,18 +167,21 @@ void draw(sonora::Session& s, const AudioBackend& audio, int take,
     for (const std::string& n : notices) {
         std::printf("  \033[33m!\033[0m %s\n", n.c_str());
     }
+    if (!inputs.empty()) {
+        std::printf("  \033[31m!\033[0m no inputs: %s\n", inputs.c_str());
+    }
     // A key that did nothing is the failure keymaps/README.md warns about, so
     // say what happened rather than leaving the operator guessing.
     if (!status.empty()) std::printf("  %s\n", status.c_str());
     std::fflush(stdout);
 }
 
-// Waits for something to be patched into our inputs. This is not a test
-// accommodation: on the appliance the engine starts at boot, and a USB
-// interface may not be enumerated yet. Starting a take against ports that
-// are about to be connected would record a silent head. Gives up early, with
-// 0, once the backend has failed: nothing it connects will ever be read.
-int wait_for_inputs(const AudioBackend& audio, double seconds) {
+// Waits for the inputs to be connected. This is not a test accommodation:
+// on the appliance the engine starts at boot, and a USB interface may not be
+// enumerated yet, so the auto-connect is retried as the wait goes on rather
+// than once at its end. A patch made by hand counts as well. Gives up early,
+// with 0, once the backend has failed: nothing it connects will ever be read.
+int wait_for_inputs(AudioBackend& audio, double seconds) {
     const int immediate = audio.connected_input_count();
     if (immediate > 0 || seconds <= 0.0) return immediate;
 
@@ -181,26 +189,41 @@ int wait_for_inputs(const AudioBackend& audio, double seconds) {
     std::fflush(stdout);
 
     double waited = 0.0;
+    int polls = 0;
     while (waited < seconds && !sonora::quit_requested() && !audio.fatal()) {
         ::usleep(100000);
         waited += 0.1;
-        const int n = audio.connected_input_count();
-        if (n > 0) {
+        // Every half second: it lists the server's ports each time.
+        if (++polls % 5 == 0) audio.connect_inputs_in_order();
+        if (audio.connected_input_count() > 0) {
             // Give the rest of the ports a moment to land, so a 16-channel
             // interface does not start a take with two channels connected.
             ::usleep(500000);
+            audio.connect_inputs_in_order();
             return audio.connected_input_count();
         }
     }
     return 0;
 }
 
+// Why nothing is connected, in terms the operator can act on: the device
+// asked for and the ones present, or the several USB interfaces to choose
+// between.
+std::string why_no_inputs(AudioBackend& audio, const std::string& device) {
+    const std::vector<sonora::backend::PortInfo> all = audio.physical_capture_ports();
+    std::vector<sonora::backend::PortInfo> chosen;
+    std::string why;
+    if (!sonora::backend::select_device(all, device, chosen, why)) return why;
+    if (chosen.empty()) return sonora::backend::describe_absent(all, device);
+    return "nothing is connected to the inputs, though " + chosen.front().device +
+           " is present";
+}
+
 // Records for a fixed duration and reports the result in one machine-readable
 // line. Return code is the test verdict: anything non-zero means the recording
 // is not trustworthy, even if files were produced.
 int run_headless(sonora::Session& session, AudioBackend& audio,
-                 double seconds, double wait_seconds) {
-    const int connected = wait_for_inputs(audio, wait_seconds);
+                 double seconds, int connected, const std::string& device) {
     // Before the take opens: a server lost while waiting would otherwise
     // leave a set of 0-frame files behind it.
     if (audio.fatal()) {
@@ -211,7 +234,8 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
     if (connected == 0) {
         std::fprintf(stderr,
                      "sonora: refusing to record with no connected inputs;"
-                     " the result would be silence.\n");
+                     " the result would be silence: %s.\n",
+                     why_no_inputs(audio, device).c_str());
         return 1;
     }
 
@@ -355,8 +379,9 @@ int main(int argc, char** argv) {
                 "usage: sonora-engine [options]\n"
                 "  --dir PATH        session directory\n"
                 "  --tracks N|auto   track count, or one per capture channel\n"
-                "  --device NAME     capture device to record from; needed when\n"
-                "                    more than one offers capture ports\n"
+                "  --device NAME     capture device to record from. Without it,\n"
+                "                    the one USB audio interface; onboard audio\n"
+                "                    is used only when named here\n"
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
@@ -379,6 +404,9 @@ int main(int argc, char** argv) {
                      " pass --arm-all.\n");
         return 2;
     }
+
+    // First, while this is the only thread: it may set the environment.
+    prepare_backend("jack");
 
     // Before anything that waits: wait_for_inputs() can sit for a minute at
     // boot, and a SIGTERM or hangup in that time must still end in a clean
@@ -463,22 +491,28 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "sonora: %s\n", backend_error.c_str());
         return 1;
     }
-    int auto_connected = audio->connect_inputs_in_order();
-    if (auto_connected == 0 && wait_for_inputs_seconds > 0.0) {
-        // Retry the auto-connect once ports appear, since the interface may
-        // simply not have been enumerated when we started.
-        if (wait_for_inputs(*audio, wait_for_inputs_seconds) == 0) {
-            auto_connected = audio->connect_inputs_in_order();
+    audio->connect_inputs_in_order();
+    const int connected = wait_for_inputs(*audio, wait_for_inputs_seconds);
+    // Every track would record silence. Recording nothing while saying
+    // nothing is the one outcome the operator must never get.
+    if (connected == 0 && !audio->fatal()) {
+        const std::string why = why_no_inputs(*audio, capture_device);
+        // A device named and still absent after the wait is most likely
+        // misspelled, and waiting longer will not fix that. Nor will a
+        // choice between interfaces that nobody made.
+        std::vector<sonora::backend::PortInfo> chosen;
+        std::string several;
+        if (!capture_device.empty() ||
+            !sonora::backend::select_device(audio->physical_capture_ports(), "",
+                                            chosen, several)) {
+            std::fprintf(stderr, "sonora: %s.\n", why.c_str());
+            return 1;
         }
-    }
-    if (auto_connected == 0 && audio->connected_input_count() == 0) {
-        // Every track would record silence. On real hardware this means the
-        // interface was not detected; in a test harness it means nothing was
-        // patched in. Either way, recording nothing while saying nothing is
-        // the one outcome the operator must never get.
-        std::fprintf(stderr,
-                     "sonora: no capture ports were connected. Recording"
-                     " now would produce silence.\n");
+        // Headless says it once, as its refusal; interactive draws it.
+        if (record_seconds <= 0.0) {
+            std::fprintf(stderr, "sonora: no capture ports are connected: %s.\n",
+                         why.c_str());
+        }
     }
     session.disk().start();
 
@@ -488,8 +522,8 @@ int main(int argc, char** argv) {
     }
 
     if (record_seconds > 0.0) {
-        const int rc = run_headless(session, *audio, record_seconds,
-                                    wait_for_inputs_seconds);
+        const int rc = run_headless(session, *audio, record_seconds, connected,
+                                    capture_device);
         audio->deactivate();
         return rc;
     }
@@ -563,6 +597,11 @@ int main(int argc, char** argv) {
         status = std::move(message);
         status_frames = 40;
     };
+    // While nothing is connected the interface is looked for once a second,
+    // so one plugged in after the start-up wait is still picked up, and the
+    // screen says what is missing for as long as it is.
+    std::string inputs_missing;
+    int frames_to_input_check = 0;
 
     while (!sonora::quit_requested() && !quit) {
         // The server dying, or changing rate or buffer size, stops the
@@ -602,7 +641,15 @@ int main(int argc, char** argv) {
             }
         }
 
-        draw(session, *audio, take, status, help, notices);
+        if (--frames_to_input_check <= 0) {
+            frames_to_input_check = 20;
+            if (audio->connected_input_count() == 0) audio->connect_inputs_in_order();
+            inputs_missing = audio->connected_input_count() == 0
+                                 ? why_no_inputs(*audio, capture_device)
+                                 : std::string();
+        }
+
+        draw(session, *audio, take, status, help, notices, inputs_missing);
         if (status_frames > 0 && --status_frames == 0) status.clear();
         ::usleep(50000);  // 20 fps is plenty for meters
     }
