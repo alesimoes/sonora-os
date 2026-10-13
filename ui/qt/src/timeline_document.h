@@ -38,6 +38,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "model_access.h"
@@ -66,6 +67,26 @@ public:
     // with `why`, when the document's owner cannot be reached.
     virtual bool reset(model::Snapshot s, std::string& why) = 0;
     uint64_t revision() const { return snapshot().revision; }
+    // Changes whenever the document may have become another session (an
+    // Open here, or a whole document from the engine), whose ids mean other
+    // things: something that waited across it must not act on an id.
+    uint64_t session_generation() const { return session_generation_; }
+
+    // Brings the document's plugin values up to date with the running
+    // plugins (ADR-0012 §8, ModelAction::FlushPluginState): before File >
+    // Save, and before an insert is copied. `insert` is kNoId for every
+    // insert. `done` is called exactly once, now or from a later tick, once
+    // the updates the flush caused are in snapshot(); `ok` false says which
+    // plugins' state could not be had (the others' still arrived). Here no
+    // plugin runs in this process, so the document is already current.
+    using FlushDone = std::function<void(bool ok, const std::string& why)>;
+    virtual void flush_plugin_state(model::Id insert, FlushDone done) {
+        (void)insert;
+        done(true, {});
+    }
+
+protected:
+    uint64_t session_generation_ = 0;
 };
 
 // The document, held here. Undo is common/model's History: a pointer over

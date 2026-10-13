@@ -3,6 +3,9 @@
 
 namespace sonora::ui {
 
+static_assert(kInsertSlotCount == api::kInsertSlots,
+              "the interface's insert slots are the state block's");
+
 bool ControlAdapter::connect(std::string& error) {
     if (!engine_.connect(error)) return false;
     const api::Hello& h = engine_.hello();
@@ -60,21 +63,23 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         replies.push_back(std::move(o));
     }
     for (const api::EngineEvent& e : inbox_.events) {
-        // A cleared fault has no slot to clear yet; an empty notice says nothing.
-        if (e.kind == api::EventKind::PluginFault && e.text.empty()) continue;
         EngineEvent o;
         switch (e.kind) {
-            // A plugin fault is a notice until the mixer has insert slots
-            // to show it on (ADR-0012 checklist 6).
-            case api::EventKind::Notice:
-            case api::EventKind::PluginFault: o.kind = EngineEventKind::Notice; break;
+            case api::EventKind::Notice: o.kind = EngineEventKind::Notice; break;
             case api::EventKind::InputsMissing: o.kind = EngineEventKind::InputsMissing; break;
             case api::EventKind::TakeFailed: o.kind = EngineEventKind::TakeFailed; break;
             case api::EventKind::Fatal: o.kind = EngineEventKind::Fatal; break;
+            // Shown on its insert slot, by id; an empty text clears it.
+            case api::EventKind::PluginFault: o.kind = EngineEventKind::PluginFault; break;
         }
         o.take = e.frame;
+        o.insert = e.insert;
         o.text = e.text;
         events_.push_back(std::move(o));
+    }
+    if (!inbox_.catalogs.empty()) {
+        catalog_ = std::move(inbox_.catalogs.back());
+        catalog_new_ = true;
     }
     if (model_sink_) model_sink_(inbox_.model, model_replies_);
 
@@ -112,15 +117,52 @@ void ControlAdapter::frame(EngineFrame& out) const {
     t.xruns = s.xruns;
     t.health_flags = ((s.health_flags & api::kHealthServerGone) ? kHealthServerGone : 0u) |
                      ((s.health_flags & api::kHealthNoInputs) ? kHealthNoInputs : 0u) |
-                     ((s.health_flags & api::kHealthTakeFailed) ? kHealthTakeFailed : 0u);
+                     ((s.health_flags & api::kHealthTakeFailed) ? kHealthTakeFailed : 0u) |
+                     ((s.health_flags & api::kHealthPluginsDisabled) ? kHealthPluginsDisabled : 0u);
+    t.compensation_frames = s.compensation_frames;
+    t.compensation_shortfall_frames = s.compensation_shortfall_frames;
     t.stale = s.stale;
     out.tracks.resize(state_.tracks.size());
     for (std::size_t i = 0; i < state_.tracks.size(); ++i) {
         const api::TrackSnapshot& a = state_.tracks[i];
-        out.tracks[i].armed = a.armed();
-        out.tracks[i].muted = a.muted();
-        out.tracks[i].overruns = a.overruns;
+        TrackSnapshot& o = out.tracks[i];
+        o.armed = a.armed();
+        o.muted = a.muted();
+        o.overruns = a.overruns;
+        o.latency_frames = a.latency_frames;
+        for (uint32_t slot = 0; slot < kInsertSlotCount; ++slot) {
+            const uint32_t f = a.inserts[slot].flags;
+            o.inserts[slot].flags =
+                ((f & api::kInsertPresent) ? kSlotPresent : 0u) |
+                ((f & api::kInsertActive) ? kSlotActive : 0u) |
+                ((f & api::kInsertBypassed) ? kSlotBypassed : 0u) |
+                ((f & api::kInsertRunning) ? kSlotRunning : 0u) |
+                ((f & api::kInsertRestarting) ? kSlotRestarting : 0u) |
+                ((f & api::kInsertFaulted) ? kSlotFaulted : 0u) |
+                ((f & api::kInsertMissing) ? kSlotMissing : 0u);
+            o.inserts[slot].latency_frames = a.inserts[slot].latency_frames;
+        }
     }
+}
+
+uint64_t ControlAdapter::send_plugin_parameter(uint64_t insert, const std::string& key,
+                                               float value) {
+    api::PluginParameterChange c;
+    c.insert = insert;
+    c.key = key;
+    c.value = value;
+    const uint64_t seq = engine_.send(c);
+    // Named for the status line, as a command is, so a refusal says what.
+    pending_[seq] = "plugin parameter " + key;
+    if (pending_.size() > kMaxAwaiting) pending_.erase(pending_.begin());
+    return seq;
+}
+
+bool ControlAdapter::take_catalog(api::PluginCatalog& out) {
+    if (!catalog_new_) return false;
+    out = catalog_;
+    catalog_new_ = false;
+    return true;
 }
 
 float ControlAdapter::take_peak(uint32_t index) { return engine_.state().take_peak(index); }

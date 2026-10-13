@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "session_model.h"
 
+#include <QTimer>
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 #include "fader_taper.h"
 #include "scene_item.h"
@@ -423,7 +425,76 @@ void SessionModel::setWindow(const QString& w) {
 
 // --- File ---
 
+namespace {
+
+bool has_inserts(const Snapshot& s) {
+    for (const auto& t : s.edit->tracks) {
+        if (!t->inserts.empty()) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 bool SessionModel::saveSession(std::string& why) {
+    if (save_waiting_) {
+        if (save_wait_.elapsed() < flush_patience_ms_) {
+            why = "a save is already waiting for the plugins' state from the engine";
+            return false;
+        }
+        save_waiting_ = false;
+        ++save_ticket_;   // its answer, if it ever comes, is ignored
+        return writeSession(why, "the engine never sent the plugins' state, so plugin "
+                                 "settings are as last recorded");
+    }
+    // No insert, no plugin state: nothing to wait for.
+    if (!has_inserts(ctl_.snapshot())) return writeSession(why, {});
+
+    save_waiting_ = true;
+    save_wait_.start();
+    const uint64_t ticket = ++save_ticket_;
+    // The flush may answer inside this call (no engine in between) or from
+    // a later tick; the first reports through `why`, the second on its own.
+    struct Inline {
+        bool inside = true;
+        bool answered = false;
+        bool saved = false;
+        std::string why;
+    };
+    auto now = std::make_shared<Inline>();
+    doc_.flush_plugin_state(kNoId, [this, ticket, now](bool ok, const std::string& flush_why) {
+        if (ticket != save_ticket_) return;
+        save_waiting_ = false;
+        std::string why;
+        const bool saved = writeSession(
+            why, ok ? std::string() : "these plugins' settings are as last recorded: " + flush_why);
+        if (now->inside) {
+            now->answered = true;
+            now->saved = saved;
+            now->why = why;
+        } else if (!saved && !why.empty()) {
+            emit refused(q(why));
+        }
+    });
+    now->inside = false;
+    if (now->answered) {
+        why = now->why;
+        return now->saved;
+    }
+    sync();
+    emit notice(QStringLiteral("Saving: collecting the plugins' state from the engine"));
+    // Never left waiting in silence: once the patience is spent the
+    // operator is told what a second Save will do.
+    QTimer::singleShot(static_cast<int>(flush_patience_ms_), this, [this, ticket]() {
+        if (!save_waiting_ || ticket != save_ticket_) return;
+        emit refused(QStringLiteral(
+            "Not saved yet: the engine has not sent the plugins' state. Save again to write the "
+            "session without it; plugin settings would be as last recorded."));
+    });
+    return true;
+}
+
+bool SessionModel::writeSession(std::string& why, std::string caution) {
     QString file = file_;
     // What is written: the session as it is, or, the first time, renamed to
     // its folder's name. The rename reaches the document only once the file
@@ -460,7 +531,7 @@ bool SessionModel::saveSession(std::string& why) {
     model::WriteInfo info;
     info.written_by = "sonora-ui";
     info.save_generation = save_generation_;
-    std::string bytes, error, caution;
+    std::string bytes, error;
     if (!model::serialize(to_write, info, bytes, error)) {
         why = "the session could not be saved: " + error;
         sync();
@@ -474,9 +545,13 @@ bool SessionModel::saveSession(std::string& why) {
             sync();
             return false;
         }
-        if (!writer_(file, bytes, why, caution)) {
+        std::string disk_caution;
+        if (!writer_(file, bytes, why, disk_caution)) {
             sync();
             return false;
+        }
+        if (!disk_caution.empty()) {
+            caution = caution.empty() ? disk_caution : caution + "; " + disk_caution;
         }
         save_generation_ = info.save_generation;
         saved_bytes_ = std::move(bytes);
@@ -504,6 +579,10 @@ bool SessionModel::saveSession(std::string& why) {
 bool SessionModel::openSessionFile(const QString& file, bool discard, std::string& why) {
     if (overlay_.recording) {
         why = "a take is open; stop recording before opening another session";
+        return false;
+    }
+    if (save_waiting_) {
+        why = "a save is waiting for the plugins' state; open the session once it is saved";
         return false;
     }
     if (dirty() && !discard) {

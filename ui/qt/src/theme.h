@@ -48,6 +48,7 @@ constexpr uint32_t kCaution = 0xffe8b04b;    // status line, unverified, stale
 constexpr uint32_t kAlarm = 0xffff5a5f;      // banners: engine gone, software GL
 constexpr uint32_t kAlarmSurface = 0xff3a1618;
 constexpr uint32_t kPlayhead = 0xfff5f7fa;
+constexpr uint32_t kBypass = 0xff9d7cf0;     // a bypassed insert
 
 // --- timeline ---
 constexpr uint32_t kGridBar = 0xff2b3038;
@@ -108,6 +109,7 @@ constexpr int kRulerHeight = 20;
 constexpr int kTrackHeaderWidth = 216;
 constexpr int kTrackHeight = 64;
 constexpr int kRegionNameBand = 14;
+constexpr int kInsertSlotHeight = 16;
 
 // The colour a region on display-order track `index` gets.
 constexpr uint32_t region_colour(int index) {

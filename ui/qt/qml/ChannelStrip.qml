@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // One channel strip, top to bottom as a console reads: input, pan, record /
-// solo / mute, fader beside its meter, gain readout, name. `track` -1 is
-// the monitor bus, which has a fader and two meters and nothing else.
+// solo / mute, inserts A to J and the chain's delay, fader beside its
+// meter, gain readout, name. `track` -1 is the monitor bus, which has a
+// fader and two meters and nothing else; its insert area is left empty so
+// every fader starts at the same height.
 //
 // Fader: drag to ride it, Ctrl-drag for fine (a tenth of the travel),
 // Alt-click to return to 0 dB. Pan: drag sideways, Alt-click centres.
@@ -21,6 +23,12 @@ Rectangle {
     property real pan: 0
     property bool hasPan: true
     property bool selected: false
+    // Null where no insert slots are wired (the shell's routing test).
+    property InsertModel inserts: null
+    property Item dragHost: null
+    readonly property var insertInfo: inserts !== null && !isBus && track < inserts.strips.length
+                                      ? inserts.strips[track] : null
+    readonly property alias insertColumn: insertColumn
 
     readonly property bool isBus: track < 0
     readonly property bool armed: !isBus && shell.engineAlive && shell.armed[track] === true
@@ -124,12 +132,53 @@ Rectangle {
         Item { visible: strip.isBus; width: 1; height: 18 }
     }
 
+    // --- inserts A to J, and the chain's delay ---
+    Item {
+        id: insertArea
+        objectName: strip.isBus ? "" : "inserts" + strip.track
+        anchors { left: parent.left; right: parent.right; top: top.bottom; topMargin: Theme.space2
+                  leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        // Fixed, so the bus (no inserts) keeps its fader level with the tracks'.
+        height: strip.inserts === null ? 0 : 10 * Theme.insertSlotHeight + 9 + 2 + delay.height
+        visible: strip.inserts !== null
+
+        Column {
+            id: insertColumn
+            width: parent.width
+            spacing: 1
+            visible: !strip.isBus
+            Repeater {
+                model: strip.isBus || strip.inserts === null ? 0 : 10
+                InsertSlot {
+                    required property int index
+                    width: insertColumn.width
+                    inserts: strip.inserts
+                    dragHost: strip.dragHost
+                    track: strip.track
+                    slot: index
+                    info: strip.insertInfo !== null ? strip.insertInfo.slots[index]
+                                                    : ({ present: false, letter: String.fromCharCode(65 + index) })
+                }
+            }
+        }
+        Text {
+            id: delay
+            objectName: strip.isBus ? "" : "delay" + strip.track
+            anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter }
+            height: 12
+            visible: !strip.isBus
+            text: strip.insertInfo !== null ? strip.insertInfo.latencyText : ""
+            color: strip.insertInfo !== null && strip.insertInfo.latency > 0 ? Theme.textSecondary : Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+        }
+    }
+
     // --- fader and meter ---
     Item {
         id: faderArea
         anchors {
             left: parent.left; right: parent.right
-            top: top.bottom; bottom: readout.top
+            top: insertArea.bottom; bottom: readout.top
             topMargin: Theme.space3; bottomMargin: Theme.space2
         }
         readonly property real capH: 26

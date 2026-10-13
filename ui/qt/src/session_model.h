@@ -11,6 +11,7 @@
 // are re-published at most at the shell's state rate.
 #pragma once
 
+#include <QElapsedTimer>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -91,7 +92,22 @@ public:
     // File > Save: to the file the session came from, or, the first time, to
     // a new folder named after the session ("Untitled" when it has no
     // name). A save with nothing changed since the last one writes nothing.
+    //
+    // A session with inserts is first brought up to date with its running
+    // plugins (TimelineDocument::flush_plugin_state, ADR-0012 §8): the file
+    // is written only once the engine has answered, so it holds the values
+    // moved in a plugin's own editor and the state each plugin has now.
+    // Until then the save is waiting, and says so; a flush that could not
+    // have every plugin's state still saves, and the notice names what is
+    // not current.
     bool saveSession(std::string& why);
+    bool saveWaiting() const { return save_waiting_; }
+    // How long a save waits for the engine's FlushPluginState reply before
+    // the operator is told, and a second Save may write without it. The
+    // engine bounds each GetState itself (ADR-0012 §8) and answers well
+    // inside this; past it the engine is wedged, and the session matters
+    // more than one plugin's latest state. Tests shorten it.
+    void setFlushPatienceMs(qint64 ms) { flush_patience_ms_ = ms; }
     // File > Open. Refused while a take is open, at another sample rate
     // than this session's, and over unsaved changes unless `discard`.
     bool openSessionFile(const QString& file, bool discard, std::string& why);
@@ -104,6 +120,10 @@ public:
     void installCommands(CommandRegistry& local);
     // The track a target-less track command acts on: the selection.
     int selectedTrackForCommands() const { return ctl_.selection().track; }
+
+    // An edit made beside the Edit controller (an insert slot) went to the
+    // document: re-publish what changed, and say `why` when it was refused.
+    bool reportEdit(bool ok, const std::string& why) { return run(ok, why); }
 
     // From ShellModel's tick, on the GUI thread, every tick.
     void onTransport(const TransportSnapshot& t, bool alive);
@@ -208,6 +228,9 @@ private:
     void sync();
     bool run(bool ok, const std::string& why);
     void updateCounters(bool force);
+    // The save itself, once the document holds what the file must;
+    // `caution` is said with the result.
+    bool writeSession(std::string& why, std::string caution);
 
     TimelineDocument& doc_;
     const PeakSource& peaks_;
@@ -218,6 +241,10 @@ private:
     uint64_t saved_revision_ = 0;  // the revision the file holds
     uint64_t save_generation_ = 0;
     std::string saved_bytes_;      // what the file holds, to skip a save that changes nothing
+    bool save_waiting_ = false;    // a save waits for the plugins' state
+    uint64_t save_ticket_ = 0;     // which save a flush answers, so an abandoned one is ignored
+    QElapsedTimer save_wait_;
+    qint64 flush_patience_ms_ = 10'000;
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");

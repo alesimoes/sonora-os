@@ -81,6 +81,7 @@ background ≥ 4.5:1, non-text indicators ≥ 3:1.
 | `caution` | `#E8B04B` | 9.4 | the status line, synthetic-data labels, gain above 0 dB |
 | `alarm` on `alarmSurface` | `#FF5A5F` on `#3A1618` | 5.3 | banners: engine gone, software rendering |
 | `playhead` | `#F5F7FA` | 16.8 on a lane | the playhead while playing |
+| `bypass` | `#9D7CF0` | 5.8 | a bypassed insert (filled, `textOnAccent` on it at 5.8:1) |
 
 ## Typography
 
@@ -120,6 +121,14 @@ header 216 wide, track lane 64 tall, region name band 14.
 | Track header | `panel`, `textSecondary` name | — | selected: `raised`, `text` name | — |
 | Channel strip | `panel` | — | selected: `raised`, `borderStrong` | — |
 | Fader cap | `hover`, `borderStrong`, a `text` line at the value | — | dragging (no change: the cap follows the hand) | — |
+| Insert slot (`InsertSlot.qml`, `insertSlotHeight` 16) | empty: `sunken` well, the slot letter in `textTertiary`; running: `raised`, name in `text` | `hover` | bypassed: filled `bypass`, `textOnAccent`; inactive: `panel`, name in italic `textSecondary`; faulted: `alarmSurface`, `alarm` border and "! name"; drop target: `accent` border | — |
+
+Insert slots read, loudest first: fault, bypass, inactive, running, empty.
+Under the ten slots the chain's delay reads `dly N` in samples (from the
+state block; `dly –` with no engine); the session's delay compensation reads
+at the Mix window's top right, in `alarm` when it is clamped short of what
+the inserts need. The plugin chooser lists a plugin that cannot go on the
+track dimmed, with the reason in `caution`, never hidden.
 
 ## Timeline
 

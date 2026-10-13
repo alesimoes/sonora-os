@@ -37,6 +37,8 @@ class ThemeObject : public QObject {
     Q_PROPERTY(QColor alarm READ alarm CONSTANT)
     Q_PROPERTY(QColor alarmSurface READ alarmSurface CONSTANT)
     Q_PROPERTY(QColor playhead READ playhead CONSTANT)
+    Q_PROPERTY(QColor bypass READ bypass CONSTANT)
+    Q_PROPERTY(int insertSlotHeight READ insertSlotHeight CONSTANT)
     Q_PROPERTY(QColor meterWell READ meterWell CONSTANT)
     Q_PROPERTY(QColor highlight READ highlight CONSTANT)
     Q_PROPERTY(QColor shadow READ shadow CONSTANT)
@@ -85,6 +87,8 @@ public:
     QColor alarm() const { return QColor::fromRgba(theme::kAlarm); }
     QColor alarmSurface() const { return QColor::fromRgba(theme::kAlarmSurface); }
     QColor playhead() const { return QColor::fromRgba(theme::kPlayhead); }
+    QColor bypass() const { return QColor::fromRgba(theme::kBypass); }
+    int insertSlotHeight() const { return theme::kInsertSlotHeight; }
     QColor meterWell() const { return QColor::fromRgba(theme::kMeterWell); }
     QColor highlight() const { return QColor::fromRgba(theme::kHighlight); }
     QColor shadow() const { return QColor::fromRgba(theme::kShadow); }

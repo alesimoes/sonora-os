@@ -8,7 +8,9 @@
 #
 #   tools/build-ui.sh                       build, then ctest
 #   tools/build-ui.sh --screenshot PATH     ... then the Edit window, the Mix
-#                                           window (PATH-mix.png) and the
+#                                           window (PATH-mix.png), its plugin
+#                                           chooser and parameter panel
+#                                           (-mix-browser, -mix-panel) and the
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the
 #                                           compositor itself (grim)
@@ -57,7 +59,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,22p' "${BASH_SOURCE[0]}"
+      sed -n '2,24p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
