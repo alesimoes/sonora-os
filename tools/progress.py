@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""How far along SonoraOS is, from planning/progress.json.
+
+    tools/progress.py              terminal report
+    tools/progress.py --ascii      same, without Unicode block characters
+    tools/progress.py --markdown   regenerate planning/PROGRESS.md
+    tools/progress.py --check      fail if the JSON is invalid or PROGRESS.md is stale
+    tools/progress.py --summary    one line, for hooks
+
+Only merged and verified work counts as done. Work in progress is reported
+next to the percentage and never folded into it, so the number cannot be
+raised by opening branches.
+"""
+
+import argparse
+import io
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CATALOGUE = os.path.join(ROOT, "planning", "progress.json")
+REPORT = os.path.join(ROOT, "planning", "PROGRESS.md")
+STATUSES = ("todo", "doing", "done")
+BAR_WIDTH = 20
+
+
+class Invalid(Exception):
+    pass
+
+
+def load(path=CATALOGUE):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Invalid("cannot read %s: %s" % (path, e))
+    validate(data)
+    return data
+
+
+def validate(data):
+    errors = []
+    sizes = data.get("sizes")
+    phases = data.get("phases")
+    if not isinstance(sizes, dict) or not sizes:
+        errors.append("'sizes' must map size names to points")
+        sizes = {}
+    if not isinstance(phases, dict) or not phases:
+        errors.append("'phases' must map phase numbers to names")
+        phases = {}
+    seen = set()
+
+    def unique(kind, ident):
+        if not isinstance(ident, str) or not ident:
+            errors.append("%s without an id" % kind)
+        elif ident in seen:
+            errors.append("duplicate id %r" % ident)
+        else:
+            seen.add(ident)
+
+    fronts = data.get("fronts")
+    if not isinstance(fronts, list) or not fronts:
+        errors.append("'fronts' must be a non-empty list")
+        fronts = []
+    for front in fronts:
+        unique("front", front.get("id"))
+        for module in front.get("modules") or []:
+            unique("module", module.get("id"))
+            if not module.get("items"):
+                errors.append("module %r has no items" % module.get("id"))
+            for item in module.get("items") or []:
+                ident = item.get("id")
+                unique("item", ident)
+                where = "item %r" % ident
+                if not item.get("title"):
+                    errors.append("%s has no title" % where)
+                if item.get("size") not in sizes:
+                    errors.append("%s: size %r is not one of %s"
+                                  % (where, item.get("size"), sorted(sizes)))
+                if str(item.get("phase")) not in phases:
+                    errors.append("%s: phase %r is not one of %s"
+                                  % (where, item.get("phase"), sorted(phases)))
+                status = item.get("status")
+                if status not in STATUSES:
+                    errors.append("%s: unknown status %r" % (where, status))
+                if status == "done" and not str(item.get("evidence", "")).strip():
+                    errors.append("%s is done without evidence" % where)
+                if status == "doing" and not str(item.get("branch", "")).strip():
+                    errors.append("%s is doing without a branch" % where)
+    if errors:
+        raise Invalid("\n".join(errors))
+
+
+class Tally:
+    def __init__(self):
+        self.total = 0
+        self.done = 0
+        self.doing = 0
+
+    def add(self, points, status):
+        self.total += points
+        if status == "done":
+            self.done += points
+        elif status == "doing":
+            self.doing += points
+
+    def merge(self, other):
+        self.total += other.total
+        self.done += other.done
+        self.doing += other.doing
+
+    def pct(self):
+        # Floored, so 99.6% never prints as 100%.
+        return 100 * self.done // self.total if self.total else 0
+
+
+def tally(data):
+    """Returns (overall, fronts, phases): fronts is a list of
+    (front, tally, [(module, tally)]), phases maps phase key -> tally."""
+    sizes = data["sizes"]
+    overall = Tally()
+    phases = {key: Tally() for key in data["phases"]}
+    fronts = []
+    for front in data["fronts"]:
+        front_tally = Tally()
+        modules = []
+        for module in front["modules"]:
+            module_tally = Tally()
+            for item in module["items"]:
+                points = sizes[item["size"]]
+                module_tally.add(points, item["status"])
+                phases[str(item["phase"])].add(points, item["status"])
+            front_tally.merge(module_tally)
+            modules.append((module, module_tally))
+        overall.merge(front_tally)
+        fronts.append((front, front_tally, modules))
+    return overall, fronts, phases
+
+
+def bar(t, ascii_only, width=BAR_WIDTH):
+    if not t.total:
+        return " " * width
+    done = t.done * width // t.total
+    doing = min(width - done, -(-t.doing * width // t.total))
+    if ascii_only:
+        return "#" * done + "+" * doing + "." * (width - done - doing)
+    return "█" * done + "▒" * doing + "░" * (width - done - doing)
+
+
+def doing_items(data):
+    for front in data["fronts"]:
+        for module in front["modules"]:
+            for item in module["items"]:
+                if item["status"] == "doing":
+                    yield front, module, item
+
+
+def render_terminal(data, ascii_only):
+    overall, fronts, _ = tally(data)
+    name_width = max(len(m["title"]) + 2 for f in data["fronts"] for m in f["modules"])
+    name_width = max(name_width, max(len(f["title"]) for f in data["fronts"]))
+
+    def line(name, t):
+        extra = "  +%d in progress" % t.doing if t.doing else ""
+        return "%-*s %s %3d%%  %3d/%-3d pts%s" % (
+            name_width, name, bar(t, ascii_only), t.pct(), t.done, t.total, extra)
+
+    legend = ("# done  + in progress  . todo" if ascii_only
+              else "█ done  ▒ in progress  ░ todo")
+    out = ["SonoraOS progress (merged and verified only; %s)" % legend, ""]
+    for front, front_tally, modules in fronts:
+        out.append(line(front["title"], front_tally))
+        for module, module_tally in modules:
+            out.append(line("  " + module["title"], module_tally))
+        out.append("")
+    out.append(line("Overall", overall))
+    return "\n".join(out) + "\n"
+
+
+def render_markdown(data):
+    overall, fronts, phases = tally(data)
+
+    def row(name, t):
+        return "| %s | `%s` | %d%% | %d / %d | %s |" % (
+            name, bar(t, False), t.pct(), t.done, t.total,
+            "%d pts" % t.doing if t.doing else "")
+
+    head = ["| | Progress | Done | Points | In progress |",
+            "|---|---|---:|---:|---:|"]
+    out = [
+        "# Progress",
+        "",
+        "<!-- Generated by tools/progress.py --markdown from planning/progress.json."
+        " Do not edit by hand; CI runs --check. -->",
+        "",
+        "**Overall: %d%%** done (%d of %d points), with %d more points in progress."
+        % (overall.pct(), overall.done, overall.total, overall.doing),
+        "",
+        "`█` done, `▒` in progress, `░` todo.",
+        "",
+        "## By front",
+        "",
+    ] + head + [row("**%s**" % f["title"], t) for f, t, _ in fronts] + [
+        row("**Overall**", overall), "", "## By phase", "",
+    ] + head + [
+        row("%s. %s" % (key, data["phases"][key]), phases[key])
+        for key in sorted(phases, key=int)
+    ] + [""]
+
+    for front, front_tally, modules in fronts:
+        out += ["## %s: %d%%" % (front["title"], front_tally.pct()), ""]
+        out += head + [row(m["title"], t) for m, t in modules] + [""]
+
+    out += ["## In progress", "", "| Item | Module | Branch | Points |",
+            "|---|---|---|---:|"]
+    for front, module, item in doing_items(data):
+        out.append("| %s | %s / %s | `%s` | %d |" % (
+            item["title"], front["title"], module["title"], item["branch"],
+            data["sizes"][item["size"]]))
+    out += [
+        "",
+        "## How this is measured",
+        "",
+        "Every item in `planning/progress.json` has a size (%s) and a status."
+        % ", ".join("%s = %d" % kv for kv in sorted(data["sizes"].items(),
+                                                     key=lambda kv: kv[1])),
+        "A percentage is done points over total points. An item counts as done",
+        "only when it is merged to `main` **and** verified, and its `evidence`",
+        "names the PR or commit and what verified it. Code that exists but that",
+        "no test or run has checked is not done, and neither is anything only",
+        "ever run in a container or QEMU when the item is about real hardware.",
+        "Work on a branch is shown as in progress and never counted as done.",
+        "",
+        "A PR that delivers an item flips its status in the same PR and",
+        "regenerates this file with `tools/progress.sh --markdown`.",
+        "",
+    ]
+    return "\n".join(out)
+
+
+def render_summary(data):
+    overall, fronts, _ = tally(data)
+    ranked = sorted(fronts, key=lambda f: (-f[1].pct(), f[0]["title"]))
+    parts = ", ".join("%s %d%%" % (f["title"], t.pct()) for f, t, _ in ranked[:4])
+    return "Progress: %d%% overall (%d/%d pts, +%d in progress); %s\n" % (
+        overall.pct(), overall.done, overall.total, overall.doing, parts)
+
+
+def read_report():
+    try:
+        with open(REPORT, encoding="utf-8", newline="") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--markdown", action="store_true",
+                      help="regenerate planning/PROGRESS.md")
+    mode.add_argument("--check", action="store_true",
+                      help="exit 1 if the catalogue is invalid or PROGRESS.md is stale")
+    mode.add_argument("--summary", action="store_true", help="print one line")
+    parser.add_argument("--ascii", action="store_true",
+                        help="ASCII bars, for terminals without Unicode")
+    args = parser.parse_args(argv)
+
+    # Windows consoles default to a legacy code page that cannot encode the
+    # bar characters; UTF-8 is what Git Bash's terminal renders.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    try:
+        data = load()
+    except Invalid as e:
+        sys.stderr.write("progress.json is invalid:\n%s\n" % e)
+        return 1
+
+    if args.markdown:
+        with open(REPORT, "w", encoding="utf-8", newline="\n") as f:
+            f.write(render_markdown(data))
+        print("wrote %s" % os.path.relpath(REPORT, ROOT).replace(os.sep, "/"))
+    elif args.check:
+        if read_report() != render_markdown(data):
+            sys.stderr.write("planning/PROGRESS.md is out of date with "
+                             "planning/progress.json.\n"
+                             "Run: tools/progress.sh --markdown\n")
+            return 1
+        print("progress: catalogue valid, PROGRESS.md current")
+    elif args.summary:
+        sys.stdout.write(render_summary(data))
+    else:
+        sys.stdout.write(render_terminal(data, args.ascii))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

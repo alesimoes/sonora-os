@@ -103,6 +103,17 @@ jobs:
           done
           exit "$missing"
 
+  progress:
+    name: Progress catalogue
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PROGRESS.md is generated; a PR that flips an item without regenerating
+      # it, or marks one done without evidence, fails here.
+      - name: Catalogue valid and PROGRESS.md current
+        run: python3 tools/progress.py --check
+
   shellcheck:
     name: Shell scripts
     runs-on: ubuntu-latest

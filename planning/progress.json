@@ -1,0 +1,389 @@
+{
+  "schema": 1,
+  "about": "Catalogue of everything SonoraOS needs, front -> module -> item. Rendered by tools/progress.py into planning/PROGRESS.md. An item is done only when it is merged to main AND verified; done needs evidence, doing needs a branch. Sizes: S=1, M=3, L=8 points.",
+  "sizes": {"S": 1, "M": 3, "L": 8},
+  "phases": {
+    "0": "Foundations",
+    "1": "Bootable appliance",
+    "2": "The engine becomes a DAW",
+    "3": "Workflow layer",
+    "4": "Interchange and plugins",
+    "5": "Hardware and hardening",
+    "6": "Installable to disk"
+  },
+  "fronts": [
+    {
+      "id": "engine",
+      "title": "Engine",
+      "modules": [
+        {
+          "id": "engine.record",
+          "title": "Recording",
+          "items": [
+            {"id": "engine.record.capture", "title": "Multitrack capture to disk: callback -> per-track ring -> disk thread", "size": "L", "phase": 0, "status": "done", "evidence": "ea768b7, 7d8655a; tools/test-engine-docker.sh records 18 tracks at 48 kHz/q128, zero xruns and overruns (CI job record)"},
+            {"id": "engine.record.ringbuffer", "title": "Lock-free SPSC ring buffer, correct memory ordering", "size": "M", "phase": 0, "status": "done", "evidence": "79b94de; ringbuffer ctest runs under TSan in CI (sanitizers job)"},
+            {"id": "engine.record.multichannel", "title": "Session sized to the interface, ports connected in channel order", "size": "M", "phase": 1, "status": "done", "evidence": "88f1dde, PR #1; port_order ctest, per-track tone identity checked by test-engine-docker.sh"},
+            {"id": "engine.record.take_safety", "title": "Takes never overwritten (O_EXCL, numbered from the folder), no arming mid-take", "size": "S", "phase": 1, "status": "done", "evidence": "PR #2 and #5; takes and wav_writer ctests"},
+            {"id": "engine.record.take_epoch", "title": "Take-epoch handshake: no old-take samples at the head of a new file", "size": "S", "phase": 1, "status": "todo", "note": "Known gap in BACKLOG; regression test first"},
+            {"id": "engine.record.mlock", "title": "Engine memory locked before the session exists, lock-free atomics asserted", "size": "S", "phase": 1, "status": "doing", "branch": "contract/backend"},
+            {"id": "engine.record.direct_io", "title": "Measure direct I/O and a signalled disk thread against buffered stdio and 10 ms polling", "size": "S", "phase": 5, "status": "todo", "note": "Unscheduled in BACKLOG; phase assigned here"}
+          ]
+        },
+        {
+          "id": "engine.playback",
+          "title": "Playback and monitoring",
+          "items": [
+            {"id": "engine.playback.disk_read", "title": "Playback path: read from disk into a ring per track", "size": "L", "phase": 2, "status": "todo"},
+            {"id": "engine.playback.mix_out", "title": "Mix to output ports (monitor bus)", "size": "M", "phase": 2, "status": "todo", "note": "Owner decision pending: 2-track bus first or full topology"},
+            {"id": "engine.playback.input_monitor", "title": "Input monitoring with latency compensation, measured by a loopback test", "size": "M", "phase": 2, "status": "todo"}
+          ]
+        },
+        {
+          "id": "engine.transport",
+          "title": "Transport",
+          "items": [
+            {"id": "engine.transport.record_stop", "title": "Record/stop transport with a sample playhead", "size": "S", "phase": 0, "status": "done", "evidence": "ea768b7; playhead drives the BWF time reference, exercised by test-engine-docker.sh"},
+            {"id": "engine.transport.locate", "title": "Sample-accurate locate without dropping a block", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.transport.loop", "title": "Loop playback", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.transport.punch", "title": "Punch in and out over an existing take", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.transport.preroll", "title": "Pre-roll and post-roll", "size": "S", "phase": 2, "status": "todo"}
+          ]
+        },
+        {
+          "id": "engine.timeline",
+          "title": "Timeline model and undo",
+          "items": [
+            {"id": "engine.timeline.model", "title": "common/model: regions over sources (ADR-0007 M8)", "size": "L", "phase": 2, "status": "todo"},
+            {"id": "engine.timeline.undo", "title": "Undo/redo stack, doubling as the UI replica's replication format", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.timeline.region_ops", "title": "Region operations: move, trim, split, duplicate", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.timeline.fades", "title": "Fades in and out", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.timeline.crossfades", "title": "Crossfades", "size": "M", "phase": 2, "status": "todo"}
+          ]
+        },
+        {
+          "id": "engine.session",
+          "title": "Session format",
+          "items": [
+            {"id": "engine.session.spec", "title": "Session file format spec in brain/specs/", "size": "S", "phase": 2, "status": "todo"},
+            {"id": "engine.session.io", "title": "Session reader and writer", "size": "M", "phase": 2, "status": "todo"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "title": "UI",
+      "modules": [
+        {
+          "id": "ui.shell",
+          "title": "Shell",
+          "items": [
+            {"id": "ui.shell.tui", "title": "Terminal interface: key decoding, tty mode, footer", "size": "M", "phase": 1, "status": "done", "evidence": "PR #2, #5; keymap ctest decodes keys and checks bytes against the tty mode main.cpp sets"},
+            {"id": "ui.shell.qt", "title": "Qt 6 shell window against FakeEngine (ADR-0006)", "size": "M", "phase": 3, "status": "doing", "branch": "feature/qt-shell"},
+            {"id": "ui.shell.fullscreen", "title": "Qt shell fullscreen in the image, no desktop visible", "size": "S", "phase": 3, "status": "todo"}
+          ]
+        },
+        {
+          "id": "ui.meters",
+          "title": "Meters",
+          "items": [
+            {"id": "ui.meters.tui", "title": "Terminal meters with xruns and overruns shown separately", "size": "S", "phase": 1, "status": "todo", "note": "Code exists since ea768b7, but no test checks what is displayed"},
+            {"id": "ui.meters.qt", "title": "GPU scene-graph meters, pulled at 60 Hz", "size": "M", "phase": 3, "status": "todo"}
+          ]
+        },
+        {
+          "id": "ui.transport",
+          "title": "Transport display",
+          "items": [
+            {"id": "ui.transport.counter", "title": "Main counter: timecode / bars-beats / samples", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.transport.controls", "title": "Transport window controls and state", "size": "S", "phase": 3, "status": "todo"}
+          ]
+        },
+        {
+          "id": "ui.arming",
+          "title": "Track arming",
+          "items": [
+            {"id": "ui.arming.keys", "title": "Arm and disarm tracks from the keyboard", "size": "S", "phase": 1, "status": "done", "evidence": "PR #2; keymap and takes ctests"},
+            {"id": "ui.arming.qt", "title": "Arm, input-monitor, mute and solo buttons on track headers", "size": "S", "phase": 3, "status": "todo"}
+          ]
+        },
+        {
+          "id": "ui.mixer",
+          "title": "Mixer",
+          "items": [
+            {"id": "ui.mixer.faders", "title": "Channel strips with faders and gain", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.pan", "title": "Pan (mono and stereo)", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.mute_solo", "title": "Mute and solo, solo-safe", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.io", "title": "I/O routing, busses and aux inputs", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.inserts", "title": "Insert slots", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.sends", "title": "Sends, pre/post fader", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.vca", "title": "VCA masters", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.groups", "title": "Mix and edit groups", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.metering", "title": "Per-strip metering, pre/post fader", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.mixer.automation", "title": "Automation: read, write, touch, latch", "size": "L", "phase": 4, "status": "todo", "note": "Not named in a phase; the Phase 4 AAF exit criterion needs it"}
+          ]
+        },
+        {
+          "id": "ui.editing",
+          "title": "Editing",
+          "items": [
+            {"id": "ui.editing.timeline", "title": "Edit window: tracks on a timeline, rulers", "size": "L", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.waveform", "title": "Waveform display with an overview cache", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.regions", "title": "Region display and manipulation", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.modes", "title": "Edit modes: Shuffle, Slip, Spot, Grid", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.smart_tool", "title": "Smart Tool and the individual tools", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.grid_nudge", "title": "Grid and nudge values", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.zoom", "title": "Horizontal/vertical zoom, zoom toggle, fit", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.selection", "title": "Selection, edit cursor, linked timeline/edit selection", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.editing.fades", "title": "Fade and crossfade editing", "size": "S", "phase": 3, "status": "todo"}
+          ]
+        },
+        {
+          "id": "ui.comping",
+          "title": "Playlists and comping",
+          "items": [
+            {"id": "ui.comping.playlists", "title": "Playlists per track", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.comping.loop_takes", "title": "Loop record into takes", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "ui.comping.lanes", "title": "Take lanes and swipe comping", "size": "L", "phase": 3, "status": "todo"},
+            {"id": "ui.comping.consolidate", "title": "Comp to a new playlist, consolidate", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.comping.exit_test", "title": "Phase 3 exit: a Pro Tools engineer comps a vocal without documentation", "size": "S", "phase": 3, "status": "todo"}
+          ]
+        },
+        {
+          "id": "ui.keymaps",
+          "title": "Key maps and workflow profiles",
+          "items": [
+            {"id": "ui.keymaps.catalog", "title": "Command catalog and registry", "size": "S", "phase": 1, "status": "done", "evidence": "PR #2; keymap ctest"},
+            {"id": "ui.keymaps.loader", "title": "JSON key map loader with essentials check and repair", "size": "M", "phase": 1, "status": "done", "evidence": "PR #2; keymap ctest, dead play/stop key repaired to transport.stop"},
+            {"id": "ui.keymaps.profiles", "title": "Pro Tools and Logic profiles checked against vendor guides", "size": "M", "phase": 3, "status": "done", "evidence": "PR #2; brain/research/protools-logic-key-bindings.md, all three profiles load in the keymap ctest"},
+            {"id": "ui.keymaps.switch", "title": "Choose and switch profile from the UI", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.keymaps.focus", "title": "Commands Keyboard Focus mode", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.keymaps.tty1", "title": "Linux console chords: derive sendable keys from the console keymap", "size": "S", "phase": 1, "status": "todo", "note": "Known gap in BACKLOG"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "drivers",
+      "title": "Drivers and hardware",
+      "modules": [
+        {
+          "id": "drivers.backends",
+          "title": "Audio backends",
+          "items": [
+            {"id": "drivers.backends.jack", "title": "JACK API backend on PipeWire", "size": "M", "phase": 0, "status": "done", "evidence": "ea768b7; test-engine-docker.sh against real PipeWire; QEMU boot test checks libjack.so.0 is PipeWire's"},
+            {"id": "drivers.backends.fake", "title": "drivers/fake and the backend conformance suite (ADR-0007 M3)", "size": "M", "phase": 1, "status": "todo"},
+            {"id": "drivers.backends.fake_injections", "title": "Fake backend injections: ports without AUX, registry ids out of order", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "drivers.backends.unplug", "title": "Device unplug and stall handled as fatal through the contract", "size": "S", "phase": 1, "status": "doing", "branch": "contract/backend"},
+            {"id": "drivers.backends.alsa", "title": "Direct ALSA backend", "size": "L", "phase": 5, "status": "todo", "note": "Not in the roadmap; ADR-0003 chose the JACK API. Phase assigned here"}
+          ]
+        },
+        {
+          "id": "drivers.usb",
+          "title": "USB interface detection",
+          "items": [
+            {"id": "drivers.usb.pro_audio", "title": "Pro Audio profile applied, AUX ports in channel order", "size": "M", "phase": 1, "status": "done", "evidence": "PR #1; QEMU boot test sees ...pro-input-0:capture_AUX0"},
+            {"id": "drivers.usb.udev", "title": "Udev rule naming the first class-compliant interface", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "drivers.usb.virtual_card", "title": "Virtual-card QEMU test: snd-dummy rme9652 through ALSA -> PipeWire -> JACK, recording", "size": "M", "phase": 1, "status": "todo"}
+          ]
+        },
+        {
+          "id": "drivers.umc1820",
+          "title": "UMC1820 validation",
+          "items": [
+            {"id": "drivers.umc1820.channels", "title": "All 18 channels exposed on the real UMC1820", "size": "S", "phase": 1, "status": "todo", "note": "Blocked: no interface has been attached"},
+            {"id": "drivers.umc1820.latency", "title": "Lowest zero-xrun quantum on the RT kernel", "size": "S", "phase": 1, "status": "todo", "note": "Blocked on hardware"},
+            {"id": "drivers.umc1820.exit", "title": "Phase 1 exit: 8 tracks, 10 minutes, zero xruns at 128, on two machines", "size": "M", "phase": 1, "status": "todo", "note": "Blocked on hardware"},
+            {"id": "drivers.umc1820.ipc", "title": "ADR-0007 IPC figures on bare metal while recording 18 channels", "size": "S", "phase": 1, "status": "todo", "note": "Blocked on hardware"}
+          ]
+        },
+        {
+          "id": "drivers.surfaces",
+          "title": "Control surfaces",
+          "items": [
+            {"id": "drivers.surfaces.contract", "title": "Control surface boundary (ADR-0007 4.4, M11)", "size": "S", "phase": 5, "status": "todo"},
+            {"id": "drivers.surfaces.hui", "title": "HUI", "size": "L", "phase": 5, "status": "todo"},
+            {"id": "drivers.surfaces.mcu", "title": "Mackie Control", "size": "L", "phase": 5, "status": "todo"}
+          ]
+        },
+        {
+          "id": "drivers.sync",
+          "title": "Clock and sync",
+          "items": [
+            {"id": "drivers.sync.ltc", "title": "LTC chase and generate", "size": "M", "phase": 5, "status": "todo"},
+            {"id": "drivers.sync.mtc", "title": "MTC chase and generate", "size": "M", "phase": 5, "status": "todo"},
+            {"id": "drivers.sync.clock", "title": "Word clock and ADAT clock source, validated", "size": "M", "phase": 5, "status": "todo"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "plugins",
+      "title": "Plugins",
+      "modules": [
+        {
+          "id": "plugins.host",
+          "title": "Plugin host",
+          "items": [
+            {"id": "plugins.host.adr", "title": "Plugin boundary ADR, after the IPC measurements", "size": "S", "phase": 4, "status": "todo"},
+            {"id": "plugins.host.oop", "title": "Out-of-process host: contracts/plugin, engine/plugin_client, plugins/host (M9)", "size": "L", "phase": 4, "status": "todo"},
+            {"id": "plugins.host.editors", "title": "Plugin editors under the kiosk compositor", "size": "M", "phase": 4, "status": "todo"}
+          ]
+        },
+        {
+          "id": "plugins.formats",
+          "title": "Plugin formats",
+          "items": [
+            {"id": "plugins.formats.lv2", "title": "LV2 hosting", "size": "L", "phase": 4, "status": "todo"},
+            {"id": "plugins.formats.vst3", "title": "VST3 hosting", "size": "L", "phase": 4, "status": "todo"},
+            {"id": "plugins.formats.yabridge", "title": "Windows VST through yabridge", "size": "M", "phase": 4, "status": "todo"}
+          ]
+        },
+        {
+          "id": "plugins.graph",
+          "title": "Processing graph and PDC",
+          "items": [
+            {"id": "plugins.graph.pdc_spec", "title": "PDC design spec", "size": "S", "phase": 4, "status": "done", "evidence": "PR #2: brain/specs/plugin-latency-compensation.md (a design, not code)"},
+            {"id": "plugins.graph.parallel", "title": "Parallel processing graph, plugins dropped on deadline", "size": "L", "phase": 4, "status": "todo"},
+            {"id": "plugins.graph.pdc", "title": "Plugin delay compensation: 2048-sample track lands sample-aligned", "size": "M", "phase": 4, "status": "todo"},
+            {"id": "plugins.graph.benchmark", "title": "Phase 4 exit: 18 tracks x 4 plugins at q128, zero xruns", "size": "M", "phase": 4, "status": "todo"},
+            {"id": "plugins.graph.freeze", "title": "Freeze and bounce", "size": "M", "phase": 4, "status": "todo"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "interchange",
+      "title": "Interchange",
+      "modules": [
+        {
+          "id": "interchange.audio",
+          "title": "Audio files",
+          "items": [
+            {"id": "interchange.audio.bwf", "title": "BWF writer: 24-bit, bext time reference, NaN guard", "size": "M", "phase": 0, "status": "done", "evidence": "c586ac9, PR #5; wav_writer ctest, tools/verify-recording.py in the record CI job"},
+            {"id": "interchange.audio.bwf_other_daw", "title": "Takes open in another DAW at the right timecode", "size": "S", "phase": 1, "status": "todo", "note": "Phase 1 exit criterion; never checked"},
+            {"id": "interchange.audio.rf64", "title": "RF64 for files over 4 GB", "size": "M", "phase": 4, "status": "todo"}
+          ]
+        },
+        {
+          "id": "interchange.sessions",
+          "title": "Session interchange",
+          "items": [
+            {"id": "interchange.sessions.aaf_import", "title": "AAF import via libaaf", "size": "L", "phase": 4, "status": "todo"},
+            {"id": "interchange.sessions.aaf_export", "title": "AAF export via libaaf", "size": "L", "phase": 4, "status": "todo"},
+            {"id": "interchange.sessions.ptx", "title": ".ptx read-only via libptformat", "size": "M", "phase": 4, "status": "todo"},
+            {"id": "interchange.sessions.convert", "title": "sonora-convert (ADR-0007 M10)", "size": "S", "phase": 4, "status": "todo"},
+            {"id": "interchange.sessions.roundtrip", "title": "Phase 4 exit: AAF round trip with edits and automation intact", "size": "M", "phase": 4, "status": "todo"}
+          ]
+        },
+        {
+          "id": "interchange.midi",
+          "title": "MIDI",
+          "items": [
+            {"id": "interchange.midi.smf", "title": "Standard MIDI File import and export", "size": "M", "phase": 4, "status": "todo", "note": "Roadmap names MIDI only as a published format; no MIDI recording in any phase"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "system",
+      "title": "Image and system",
+      "modules": [
+        {
+          "id": "system.image",
+          "title": "Bootable image",
+          "items": [
+            {"id": "system.image.livebuild", "title": "live-build hybrid ISO with the engine installed", "size": "M", "phase": 1, "status": "done", "evidence": "7477aab; iso/sonora.iso built 2026-10-12, contents inspected, boots in QEMU"},
+            {"id": "system.image.rt_kernel", "title": "RT kernel, the only and default kernel", "size": "S", "phase": 1, "status": "done", "evidence": "da342af; QEMU boot test checks -rt- in uname -r and both bootloader defaults byte for byte"},
+            {"id": "system.image.audio_tuning", "title": "PipeWire quantum/rate pin, RT limits, sysctl", "size": "M", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Tuning files ship, but min-quantum is 64 and allowed-rates includes 96000, so the quantum is not actually pinned"},
+            {"id": "system.image.autostart", "title": "Boot with no login into the engine, respawn on exit", "size": "M", "phase": 1, "status": "done", "evidence": "PR #1; QEMU boot test: engine holds its PID, NRestarts 0, no serial login prompt"},
+            {"id": "system.image.boot_timeout", "title": "Boot menus time out unattended", "size": "S", "phase": 1, "status": "done", "evidence": "PR #6; unattended isolinux and GRUB boots reach the engine in test-write-usb.sh"},
+            {"id": "system.image.kiosk", "title": "Kiosk compositor for the Qt shell, plus its ADR", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "system.image.followups", "title": "USB writer follow-ups (wipe through the verified fd, recheck before mkfs, flock)", "size": "S", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Branch has no commits yet; scope taken from its name"}
+          ]
+        },
+        {
+          "id": "system.usb",
+          "title": "USB stick",
+          "items": [
+            {"id": "system.usb.writer", "title": "tools/write-usb.sh with persistence partition and device guard", "size": "M", "phase": 1, "status": "done", "evidence": "PR #6; tools/test-write-usb.sh on a loop device, persistence survives a QEMU reboot"},
+            {"id": "system.usb.physical", "title": "Physical stick boots on a physical machine, BIOS and UEFI, session survives reboot", "size": "S", "phase": 1, "status": "todo", "note": "Blocked on hardware time"},
+            {"id": "system.usb.windows", "title": "Verified way to write the stick from Windows", "size": "M", "phase": 1, "status": "todo"}
+          ]
+        },
+        {
+          "id": "system.boot_tests",
+          "title": "Boot tests",
+          "items": [
+            {"id": "system.boot_tests.qemu", "title": "QEMU boot smoke test, 19 checks", "size": "M", "phase": 1, "status": "done", "evidence": "PR #1; tools/test-boot-qemu.sh 19/19 on the 2026-10-12 ISO"},
+            {"id": "system.boot_tests.manual", "title": "Watch it boot by hand: tools/run-qemu.sh", "size": "S", "phase": 1, "status": "done", "evidence": "PR #1; boots through the real bootloader with the shipped command line"},
+            {"id": "system.boot_tests.hardware", "title": "Boot test on real hardware, xrun count in brain/research", "size": "S", "phase": 1, "status": "todo"}
+          ]
+        },
+        {
+          "id": "system.hardening",
+          "title": "Hardening and updates",
+          "items": [
+            {"id": "system.hardening.ro_root", "title": "Read-only root with an overlay", "size": "M", "phase": 5, "status": "todo"},
+            {"id": "system.hardening.ab_updates", "title": "A/B updates of the image", "size": "L", "phase": 5, "status": "todo"},
+            {"id": "system.hardening.crash_recovery", "title": "Session recovered intact after power pulled mid-take", "size": "M", "phase": 5, "status": "todo"},
+            {"id": "system.hardening.soak", "title": "Phase 5 exit: 24 hours continuous recording, zero xruns", "size": "M", "phase": 5, "status": "todo"}
+          ]
+        },
+        {
+          "id": "system.install",
+          "title": "Installer to disk",
+          "items": [
+            {"id": "system.install.adr", "title": "Installer ADR: Debian's, Calamares or our own", "size": "S", "phase": 6, "status": "todo"},
+            {"id": "system.install.installer", "title": "Installer: partition, copy, bootloader, operator account, carry over sessions", "size": "L", "phase": 6, "status": "todo"},
+            {"id": "system.install.rootfs", "title": "Real root filesystem tuned for audio, swap sized for the machine", "size": "M", "phase": 6, "status": "todo"},
+            {"id": "system.install.updates", "title": "Updates on an installed system", "size": "M", "phase": 6, "status": "todo"},
+            {"id": "system.install.secure_boot", "title": "UEFI entry and Secure Boot", "size": "M", "phase": 6, "status": "todo"},
+            {"id": "system.install.exit", "title": "Phase 6 exit: install, boot without the stick, session survives reboot", "size": "S", "phase": 6, "status": "todo"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "title": "Architecture",
+      "modules": [
+        {
+          "id": "architecture.adr0007",
+          "title": "ADR-0007 migration",
+          "items": [
+            {"id": "architecture.adr0007.measure", "title": "Measure ADR-0007's unverified assumptions", "size": "S", "phase": 1, "status": "done", "evidence": "PR #3; brain/research/adr-0007-measurements.md"},
+            {"id": "architecture.adr0007.m0", "title": "M0: commit the key map work", "size": "S", "phase": 1, "status": "done", "evidence": "PR #2; keymap ctest"},
+            {"id": "architecture.adr0007.m1", "title": "M1: module layout, no source change", "size": "M", "phase": 1, "status": "done", "evidence": "PR #5; six ctests and test-engine-docker.sh green after the move"},
+            {"id": "architecture.adr0007.m1_docs", "title": "Update docs that name pre-M1 paths", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.adr0007.m2", "title": "M2: backend contract, JACK out of public headers", "size": "M", "phase": 1, "status": "doing", "branch": "contract/backend"},
+            {"id": "architecture.adr0007.m4", "title": "M4: control API, StateView, InProcessEngine, FakeEngine; removes the illegal edges", "size": "L", "phase": 1, "status": "todo"},
+            {"id": "architecture.adr0007.m5", "title": "M5: dependency check, CONTRACTS.lock, per-module ctest labels", "size": "M", "phase": 1, "status": "todo"},
+            {"id": "architecture.adr0007.m6", "title": "M6: ownership in OPERATIONS.md and agent charters", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.adr0007.m7", "title": "M7: process split, socket control server, memfd state, sonora-tui", "size": "L", "phase": 3, "status": "todo"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "quality",
+      "title": "Quality and CI",
+      "modules": [
+        {
+          "id": "quality.ci",
+          "title": "Continuous integration",
+          "items": [
+            {"id": "quality.ci.unit", "title": "Unit tests in CI (ctest)", "size": "M", "phase": 0, "status": "done", "evidence": "CI job engine: six ctests green on main"},
+            {"id": "quality.ci.sanitizers", "title": "TSan and ASan+UBSan jobs", "size": "M", "phase": 1, "status": "done", "evidence": "CI job sanitizers; caught the ring buffer race (79b94de)"},
+            {"id": "quality.ci.hygiene", "title": "Exec-bit and shellcheck jobs", "size": "S", "phase": 1, "status": "done", "evidence": "a7494e3; CI jobs modes and shellcheck"},
+            {"id": "quality.ci.record", "title": "Recording test against PipeWire in CI", "size": "M", "phase": 1, "status": "done", "evidence": "7d8655a; CI job record runs tools/test-engine-docker.sh"},
+            {"id": "quality.ci.rtsan", "title": "RTSan job with clang-22, SONORA_RT as [[clang::nonblocking]]", "size": "M", "phase": 1, "status": "todo"},
+            {"id": "quality.ci.stateview", "title": "StateView starvation regression and atomic static_asserts (with M4)", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "quality.ci.boot", "title": "Boot test in CI (scheduled ISO build + QEMU)", "size": "M", "phase": 1, "status": "todo"},
+            {"id": "quality.ci.write_usb", "title": "tools/test-write-usb.sh in CI", "size": "S", "phase": 1, "status": "todo"}
+          ]
+        }
+      ]
+    }
+  ]
+}
