@@ -6,7 +6,7 @@
 
 #include "sonora/rt.h"
 
-namespace sonora::jack_detail {
+namespace sonora::drivers {
 
 enum class Fatal : uint32_t {
     None = 0,
@@ -63,4 +63,4 @@ private:
 static_assert(std::atomic<Fatal>::is_always_lock_free,
               "the audio thread reads it every period");
 
-}  // namespace sonora::jack_detail
+}  // namespace sonora::drivers

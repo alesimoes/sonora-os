@@ -10,14 +10,14 @@
 #include <string>
 #include <vector>
 
-#include "period_guard.h"
+#include "sonora/period_guard.h"
 #include "sonora/port_order.h"
 
 namespace sonora {
 namespace {
 
 using backend::PortInfo;
-using jack_detail::Fatal;
+using drivers::Fatal;
 
 // Built once, so fatal_reason() can hand out a reference from any thread
 // without formatting anything.
@@ -65,7 +65,7 @@ struct JackBackend::Impl {
     uint32_t rate = 0;
     // Written on JACK's notification thread, read by the control thread.
     std::atomic<uint32_t> xruns{0};
-    jack_detail::PeriodGuard guard;
+    drivers::PeriodGuard guard;
 
     std::vector<PortInfo> physical(unsigned long flags) const {
         if (client) return list_physical(client, flags);

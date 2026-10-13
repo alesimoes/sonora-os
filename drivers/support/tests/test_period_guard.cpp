@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <thread>
 
-#include "period_guard.h"
+#include "sonora/period_guard.h"
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -23,8 +23,8 @@
 
 namespace {
 
-using sonora::jack_detail::Fatal;
-using sonora::jack_detail::PeriodGuard;
+using sonora::drivers::Fatal;
+using sonora::drivers::PeriodGuard;
 
 int test_steady_periods_pass() {
     PeriodGuard g;
