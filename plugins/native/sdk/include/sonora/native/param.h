@@ -26,6 +26,7 @@ enum class Unit : std::uint8_t {
     Bpm,
     Choice,  // an index into `choices`
     Toggle,  // 0 or 1
+    Seconds,  // appended for the reverb's decay (N2); values never reorder
 };
 
 enum class Taper : std::uint8_t {

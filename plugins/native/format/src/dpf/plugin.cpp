@@ -51,12 +51,13 @@ const Descriptor& bundle_descriptor() {
 }
 
 const char* unit_text(Unit u) {
-    // DPF maps "dB", "Hz", "ms" and "%" to LV2's unit vocabulary; anything
-    // else is written as a custom unit with this text.
+    // DPF maps "dB", "Hz", "ms", "s" and "%" to LV2's unit vocabulary;
+    // anything else is written as a custom unit with this text.
     switch (u) {
     case Unit::Decibel: return "dB";
     case Unit::Hertz: return "Hz";
     case Unit::Milliseconds: return "ms";
+    case Unit::Seconds: return "s";
     case Unit::Percent: return "%";
     case Unit::Bpm: return "BPM";
     default: return "";

@@ -596,11 +596,43 @@ ADR-0011 "For the owner".
 - [ ] N1: descriptor-driven Qt editor panels in `sonora-ui`. ui-engineer.
 - [ ] N1: engine track and master meters on `common/dsp` (peak, loudness,
       true-peak), gated by rt-safety-auditor. rt-engineer.
-- [ ] N2: ngspice in the build container; SPICE reference circuits for the
-      opto, FET, tube and transformer models (Unverified 8). dsp-engineer.
-- [ ] N2: FDN reverb, tape, tube, transformer, opto, FET, mix bus as
-      physical models, modelled noise and hum (seeded, switchable,
-      visible). The tuner's DSP with key/scale parameters. dsp-engineer.
+- [x] N2 slice 1, `feature/dsp-n2`: the FDN reverb end to end.
+      `common/dsp` `fdn.h` (16 lines, Hadamard, three-band T60 per line
+      after Jot and Chaigne, lossless freeze), `plugins/native/reverb`
+      against its `quality.json` (T30 per octave band, ISO 3382-1, within
+      5 % of the set decay; onset on the pre-delay to the sample), LV2 and
+      VST3 bundles, stereo and mono, through N1's format layer.
+      Measurements: `brain/research/native-reverb-n2.md`. dsp-engineer.
+- [ ] N2 slice 2: ngspice in the build container and the SPICE reference
+      harness (netlists of published schematics, rendered offline at 8x,
+      compared in `sonora-dsp-measure`); the triode stage (Koren and
+      Dempwolf models, grid current, supply sag) as the first model held to
+      it, with oversampling or ADAA and measured aliasing (Unverified 8).
+      dsp-engineer.
+- [ ] N2 slice 3: transformer (core saturation and hysteresis, LF first)
+      and the tube drive processor built on slices 2 and 3. dsp-engineer.
+- [ ] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
+      NAB and IEC record and playback EQ, wow and flutter). dsp-engineer.
+- [ ] N2 slice 5: modelled noise and hum in `common/dsp` (seeded, published
+      spectra and levels, digitally silent at zero, per-instance level for
+      the editor: ADR-0011 §3.3), wired into the tube, transformer and tape
+      processors. Default on or off is the owner's (item 7). dsp-engineer.
+- [ ] N2 slice 6: opto levelling amplifier (LDR behavioural model from the
+      literature; SignalTrain CC BY 4.0 measurements as a reference) and
+      FET peak limiter, both against SPICE of the published circuits.
+      dsp-engineer.
+- [ ] N2 slice 7: the mix bus processor (console-bus colour, bus
+      compressor) on slices 2 to 6. dsp-engineer.
+- [ ] N2 slice 8: the tuner's DSP (YIN-family detection, PSOLA or phase
+      vocoder shifting, key and scale as parameters), evaluated on VocalSet
+      and vocadito (CC BY 4.0). dsp-engineer.
+- [ ] N2 reverb follow-ups (slice 1 review): slow modulation of the line
+      lengths against metallic ringing at long decays, measured as a
+      spectral-flatness or modal-ringing figure first; an early-reflection
+      stage; decay calibration and listening against the Arni and Motus
+      room responses (CC BY 4.0); the 63 Hz band, reported but not held to
+      the bar below a bandwidth-time product of 100, held by averaging more
+      responses or a longer render. dsp-engineer.
 - [ ] Before the first capture session: class-E cost of NAM-class
       architectures plus a 200 ms cabinet IR at q128 (Unverified 9).
       dsp-engineer.

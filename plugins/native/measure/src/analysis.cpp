@@ -131,6 +131,76 @@ double hf_residue_peak(const std::vector<float>& y, double fs, std::size_t from)
     return m;
 }
 
+std::vector<double> octave_band(const std::vector<float>& x, double fs, double band_hz, bool reversed) {
+    // Sixth-order Butterworth band-pass between the octave's edges
+    // (third-order high- and low-pass, matched designs), the class of
+    // filter IEC 61260-1 describes. Above 0.49 fs the upper edge is left
+    // open: the band is then everything past the lower edge.
+    std::vector<double> y(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) y[i] = x[reversed ? x.size() - 1 - i : i];
+    if (band_hz <= 0.0) return y;
+    for (const bool high : {true, false}) {
+        const double edge = high ? band_hz / std::sqrt(2.0) : band_hz * std::sqrt(2.0);
+        if (!high && edge >= dsp::kMaxFreqRatio * fs) continue;
+        dsp::FilterSpec secs[5];
+        const int n = dsp::butterworth_sections(3, high, edge, secs);
+        for (int k = 0; k < n; ++k) {
+            const dsp::BiquadCoeffs c = dsp::design_matched(secs[k], fs);
+            dsp::BiquadState st;
+            for (double& v : y) v = st.tick(c, v);
+        }
+    }
+    return y;
+}
+
+double t30_seconds(const Chans& irs, double fs, double band_hz, std::vector<double>* edc_db) {
+    if (irs.empty() || irs[0].empty()) return 0.0;
+    // Time-reversed filtering (ISO 3382-1:2009 §5.3.3, after Jacobsen and
+    // Rindel): the band filter's own ringing then precedes the decay
+    // instead of lengthening it, which matters for short T60 in low bands.
+    // Schroeder backward integration of the forward-time response is a
+    // forward running sum of the reversed one; the responses' energies are
+    // summed first, as ISO 3382 averages decay curves over source and
+    // receiver positions.
+    const std::size_t len = irs[0].size();
+    std::vector<double> sq(len, 0.0);
+    for (const auto& ir : irs) {
+        const std::vector<double> rev = octave_band(ir, fs, band_hz, true);
+        for (std::size_t i = 0; i < len && i < rev.size(); ++i) sq[i] += rev[i] * rev[i];
+    }
+    std::vector<double> e(len);
+    double acc = 0.0;
+    for (std::size_t i = 0; i < len; ++i) {
+        acc += sq[i];
+        e[len - 1 - i] = acc;
+    }
+    if (!(acc > 0.0)) return 0.0;
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0, n = 0.0;
+    bool reached = false;
+    for (std::size_t i = 0; i < e.size(); ++i) {
+        const double db = 10.0 * std::log10(e[i] / acc + 1e-300);
+        if (edc_db != nullptr) edc_db->push_back(db);
+        if (db < -35.0) {
+            reached = true;
+            continue;
+        }
+        if (db > -5.0) continue;
+        const double t = static_cast<double>(i) / fs;
+        sx += t;
+        sy += db;
+        sxx += t * t;
+        sxy += t * db;
+        n += 1.0;
+    }
+    if (!reached || n < 2.0) return 0.0;
+    const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    return slope < 0.0 ? -60.0 / slope : 0.0;
+}
+
+double t30_seconds(const std::vector<float>& ir, double fs, double band_hz, std::vector<double>* edc_db) {
+    return t30_seconds(Chans{ir}, fs, band_hz, edc_db);
+}
+
 double reference_true_peak(const std::vector<float>& y, double near_level) {
     return dsp::reference_true_peak(y.data(), y.size(), near_level);
 }

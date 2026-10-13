@@ -24,6 +24,7 @@ const char* unit_name(Unit u) {
         case Unit::Bpm: return "BPM";
         case Unit::Choice: return "choice";
         case Unit::Toggle: return "toggle";
+        case Unit::Seconds: return "s";
     }
     return "none";
 }
