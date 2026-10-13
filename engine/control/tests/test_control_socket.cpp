@@ -398,6 +398,27 @@ void malformed_input_is_refused_and_nothing_else_changes() {
         bad.send_message(bytes);
         CHECK(bad.closed_within(2000));
     }
+    // A well-formed command with a descriptor attached that nobody asked
+    // for: the server's receive refuses it (common/platform, PR #51) and the
+    // client is closed, its descriptor closed with it, never kept.
+    {
+        RawClient bad(e.endpoint());
+        CHECK(bad.greet());
+        auto region = platform::SharedRegion::create("sonora-test-unasked", 4096, error);
+        CHECK(region != nullptr);
+        if (region) {
+            std::string bytes;
+            api::CommandRequest req;
+            req.command = "transport.stop";
+            api::wire::encode(req, bytes);
+            std::vector<std::string> frames;
+            CHECK(api::wire::split_frames(bytes, frames, error) && frames.size() == 1);
+            CHECK(bad.channel().send_with_region(frames[0], *region, 1000, error) == platform::IoStatus::Ok);
+            CHECK(bad.closed_within(2000));
+            // Not acted on: the take the good client started still records.
+            CHECK(e.session().transport().state() == TransportState::Recording);
+        }
+    }
     // A command whose fields do not decode.
     {
         RawClient bad(e.endpoint());
