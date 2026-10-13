@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/platform/ipc.h"
 
+#include "region_descriptor.h"
+
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -129,6 +131,10 @@ struct SharedRegion::Impl {
     void* addr = nullptr;
     std::size_t bytes = 0;
     bool writable = false;
+    // F_SEAL_FUTURE_WRITE took: no new writable mapping, by anyone.
+    bool write_sealed = false;
+    // create_shared_writable: fd itself may be handed to a child.
+    bool shares_writable = false;
 
     ~Impl() {
         if (addr != nullptr) ::munmap(addr, bytes);
@@ -177,7 +183,9 @@ std::unique_ptr<SharedRegion> SharedRegion::create(const std::string& name, std:
     // before 5.1 do not know it; the read-only descriptor still stops the
     // plain path there.
     if (::fcntl(impl->fd, F_ADD_SEALS,
-                F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_FUTURE_WRITE | F_SEAL_SEAL) != 0) {
+                F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_FUTURE_WRITE | F_SEAL_SEAL) == 0) {
+        impl->write_sealed = true;
+    } else {
         ::fcntl(impl->fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL);
     }
     // A descriptor whose open file description is read-only: a MAP_SHARED
@@ -191,12 +199,57 @@ std::unique_ptr<SharedRegion> SharedRegion::create(const std::string& name, std:
     return std::make_unique<SharedRegion>(std::move(impl));
 }
 
+std::unique_ptr<SharedRegion> SharedRegion::create_shared_writable(const std::string& name,
+                                                                   std::size_t bytes,
+                                                                   std::string& error) {
+    auto impl = std::make_unique<Impl>();
+    impl->fd = ::memfd_create(name.c_str(), MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (impl->fd < 0) {
+        error = os_error("memfd_create");
+        return nullptr;
+    }
+    if (::ftruncate(impl->fd, static_cast<off_t>(bytes)) != 0) {
+        error = os_error("ftruncate");
+        return nullptr;
+    }
+    impl->addr = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, impl->fd, 0);
+    if (impl->addr == MAP_FAILED) {
+        impl->addr = nullptr;
+        error = os_error("mmap");
+        return nullptr;
+    }
+    impl->bytes = bytes;
+    impl->writable = true;
+    impl->shares_writable = true;
+    // The size is part of the layout both sides computed; a peer that
+    // shrank the file would turn the creator's next access into SIGBUS.
+    if (::fcntl(impl->fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL) != 0) {
+        error = os_error("cannot seal the region's size");
+        return nullptr;
+    }
+    return std::make_unique<SharedRegion>(std::move(impl));
+}
+
 SharedRegion::SharedRegion(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 SharedRegion::~SharedRegion() = default;
 void* SharedRegion::writable_data() { return impl_->writable ? impl_->addr : nullptr; }
 const void* SharedRegion::data() const { return impl_->addr; }
 std::size_t SharedRegion::bytes() const { return impl_->bytes; }
 bool SharedRegion::writable() const { return impl_->writable; }
+bool SharedRegion::sealed_against_writes() const { return impl_->write_sealed; }
+
+bool SharedRegion::lock(std::string& error) {
+    if (impl_->addr == nullptr || impl_->bytes == 0) return true;
+    if (::mlock(impl_->addr, impl_->bytes) == 0) return true;
+    error = os_error(("mlock of " + std::to_string(impl_->bytes) + " bytes").c_str());
+    return false;
+}
+
+int region_descriptor(const SharedRegion& region, bool writable) {
+    const SharedRegion::Impl& impl = region.impl();
+    if (writable) return impl.shares_writable ? impl.fd : -1;
+    return impl.ro_fd;
+}
 
 namespace {
 

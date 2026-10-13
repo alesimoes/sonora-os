@@ -46,6 +46,14 @@ public:
     static std::unique_ptr<SharedRegion> create(const std::string& name, std::size_t bytes,
                                                 std::string& error);
 
+    // A zero-filled region of `bytes`, mapped read-write here, for a child
+    // process that must write into it too: a plugin host's channel region
+    // (ADR-0012 §4). Sealed against growing and shrinking, never against
+    // writes, and never sent read-only. Passed with ChildProcess::Options.
+    static std::unique_ptr<SharedRegion> create_shared_writable(const std::string& name,
+                                                                std::size_t bytes,
+                                                                std::string& error);
+
     explicit SharedRegion(std::unique_ptr<Impl> impl);
     ~SharedRegion();
     SharedRegion(const SharedRegion&) = delete;
@@ -56,6 +64,18 @@ public:
     const void* data() const;
     std::size_t bytes() const;
     bool writable() const;
+
+    // True when every new writable mapping of a create()d region is refused,
+    // through any descriptor (F_SEAL_FUTURE_WRITE, Linux 5.1). Without it a
+    // receiver can reopen the read-only descriptor writable through /proc,
+    // so a caller that shares with an untrusted process refuses to when this
+    // is false (ADR-0012, auditor L2 on PR #45).
+    bool sealed_against_writes() const;
+
+    // Keeps every page resident (mlock). Faulted in is not kept in: without
+    // a lock, pages can be reclaimed and fault again on the audio thread.
+    // False, with the reason, when the OS refuses; the caller reports it.
+    bool lock(std::string& error);
 
     Impl& impl() { return *impl_; }
     const Impl& impl() const { return *impl_; }
