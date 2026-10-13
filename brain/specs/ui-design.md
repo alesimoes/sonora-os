@@ -132,9 +132,9 @@ header 216 wide, track lane 64 tall, region name band 14.
   `#6B8299`. The track header shows the same colour as a 3 px bar, the strip
   as its cap.
 - A region is drawn from its palette colour `p`:
-  name band `mix(p, sunken, 0.40)` with the name in `text` (≥ 4.9:1 for all
+  name band `mix(p, sunken, 0.40)` with the name in `text` (≥ 4.87:1 for all
   eight); body `mix(p, sunken, 0.62)`, selected `mix(p, sunken, 0.45)` with a
-  1.5 px `accent` outline; waveform `mix(p, white, 0.35)` (≥ 4.9:1 on the
+  1.5 px `accent` outline; waveform `mix(p, white, 0.35)` (≥ 4.88:1 on the
   body). A muted region is grey (`#2A2E34`) with a `textTertiary` waveform.
 - Waveform overview: one min/max column per pixel, centred, scaled by the
   vertical zoom, from a `PeakSource` (synthetic until peak files exist; the

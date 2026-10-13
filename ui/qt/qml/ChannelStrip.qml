@@ -49,7 +49,7 @@ Rectangle {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: strip.isBus ? "Out 1-2" : "In " + (strip.track + 1)
-            color: Theme.textTertiary
+            color: strip.selected ? Theme.textSecondary : Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
         }
 
@@ -143,7 +143,7 @@ Rectangle {
                 x: 2
                 y: faderArea.capH / 2 + (1 - strip.session.faderPosition(modelData)) * faderArea.travel - height / 2
                 text: modelData > 0 ? "+" + modelData : modelData
-                color: Theme.textTertiary
+                color: strip.selected ? Theme.textSecondary : Theme.textTertiary
                 font { family: Theme.fontFamily; pixelSize: Theme.textOverline; features: { "tnum": 1 } }
             }
         }

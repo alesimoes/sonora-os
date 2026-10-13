@@ -3,9 +3,17 @@
 // A local stand-in for `common/model` (ADR-0007 M8), shaped to
 // brain/specs/timeline-model.md so that the real one replaces it by a
 // namespace and an include, not a redesign. Nothing here is Qt; nothing here
-// is the engine's. When common/model lands (feature/timeline-model), this
-// file and timeline_model.cpp are deleted and `sonora::ui::model` becomes an
-// alias of `sonora::model`. Every name below is the spec's name.
+// is the engine's. common/model is on main now; at the swap this file and
+// timeline_model.cpp are deleted and `sonora::ui::model` becomes an alias of
+// `sonora::model`.
+//
+// What the swap changes beyond the namespace:
+//   - three field names: MoveRegion::to, MoveRegion::split_id and
+//     SplitRegion::new_id here are `position`, `split_right_id` and
+//     `new_right_id` in common/model (TrimRegion::to is the same);
+//   - trimming an edge over a neighbour is refused here and overwrites the
+//     neighbour there, so the test that expects the refusal flips
+//     (test_edit.cpp, the TrimRegion "over B").
 //
 // What is the same as the spec:
 //   - value types; an EditState is never modified, an edit builds a new one

@@ -32,49 +32,37 @@ jobs:
 
   ui:
     name: Qt interface build and headless tests
-    # Ubuntu's own Qt 6 (6.4) from apt, not tools/Dockerfile.ui: the image
-    # carries PipeWire, cage and grim for screenshots and --measure, which
-    # this job does not run, and building it costs more than the whole job.
-    # 6.4 is the floor ui/qt/CMakeLists.txt asks for, so this also proves the
-    # floor; the image (trixie, 6.8) proves the shipped version.
+    # In tools/Dockerfile.ui, the image tools/build-ui.sh uses: Debian trixie
+    # and its Qt 6.8, the Qt the product ships. ui/qt needs 6.7 (QSGTextNode,
+    # QFont::Tag); Ubuntu 24.04's apt has 6.4, on which ui/qt skipped itself
+    # and the job ran no UI test at all. The image layers are cached in the
+    # Actions cache, so only a change to the Dockerfile pays for the install.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      # The QML modules are listed one by one because --no-install-recommends
-      # drops QtQml.WorkerScript, and the shell then fails to load.
-      - name: Install the toolchain and Qt 6
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev \
-            qt6-base-dev qt6-declarative-dev libqt6opengl6-dev \
-            qml6-module-qtquick qml6-module-qtquick-window \
-            qml6-module-qtquick-layouts qml6-module-qtquick-controls \
-            qml6-module-qtqml-workerscript qml6-module-qtquick-templates \
-            libgl1-mesa-dri libglx-mesa0 libegl-mesa0 xvfb xauth
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build the sonora-ui image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tools/Dockerfile.ui
+          tags: sonora-ui:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-ui
+          cache-to: type=gha,scope=sonora-ui,mode=max
 
-      # ui/qt skips itself when Qt or xvfb-run is missing, which is right for
-      # the engine job and wrong here: a green job that ran no UI test would
-      # say the interface was tested. So the tests must be registered.
-      - name: The UI tests are registered, the pixel test included
-        run: |
-          listed=$(ctest --test-dir build -N)
-          for t in ui_meter_model ui_keys ui_shell ui_render; do
-            grep -q " $t\$" <<<"$listed" || { echo "::error::$t is not registered"; exit 1; }
-          done
-
-      - name: Build
-        run: cmake --build build -j"$(nproc)"
-
-      # The pixel test (ui_render) runs under xvfb-run on llvmpipe, as
-      # registered in ui/qt/CMakeLists.txt. --measure is not run here: it is
-      # slow and its figures are only meaningful on the target.
-      - name: Test
-        run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+      # tools/build-ui-entrypoint.sh fails before building if any UI test is
+      # not registered: ui/qt skips itself when Qt is missing or too old, and
+      # a green job that ran no UI test would say the interface was tested.
+      # The pixel test (ui_render) runs under xvfb-run on llvmpipe. --measure
+      # is not run here: it is slow and only meaningful on the target.
+      - name: Build and test, the UI tests included
+        env:
+          SONORA_UI_IMAGE_BUILT: "1"
+        run: tools/build-ui.sh
 
   sanitizers:
     name: Thread and address sanitizers

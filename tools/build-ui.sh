@@ -78,12 +78,17 @@ docker info >/dev/null 2>&1 || {
 # checkout that has built the image, an ISO and live-build's cache; sending
 # all that to the daemon on every run costs minutes. So the context is a
 # scratch directory holding exactly what the Dockerfile reads.
-CONTEXT="$(mktemp -d)"
-trap 'rm -rf "$CONTEXT"' EXIT
-mkdir -p "$CONTEXT/audio-stack"
-cp "$ROOT/tools/Dockerfile.ui" "$CONTEXT/Dockerfile"
-cp "$ROOT/audio-stack/pipewire-sonora.conf" "$CONTEXT/audio-stack/"
-docker build -t "$IMAGE" --label org.sonora=1 "$(host_path "$CONTEXT")"
+#
+# CI builds the image itself, with its layers cached between runs, and sets
+# SONORA_UI_IMAGE_BUILT=1 so it is not built a second time here, uncached.
+if [[ "${SONORA_UI_IMAGE_BUILT:-0}" != 1 ]]; then
+  CONTEXT="$(mktemp -d)"
+  trap 'rm -rf "$CONTEXT"' EXIT
+  mkdir -p "$CONTEXT/audio-stack"
+  cp "$ROOT/tools/Dockerfile.ui" "$CONTEXT/Dockerfile"
+  cp "$ROOT/audio-stack/pipewire-sonora.conf" "$CONTEXT/audio-stack/"
+  docker build -t "$IMAGE" --label org.sonora=1 "$(host_path "$CONTEXT")"
+fi
 
 OUT_MOUNT=()
 SHOT_NAME=""
@@ -94,7 +99,16 @@ if [[ "$MODE" == screenshot ]]; then
   OUT_MOUNT=(-v "$(host_path "$shot_dir"):/out")
 fi
 
-docker run --rm \
+# On a Linux host the bind mount keeps host ownership, so the build tree must
+# be written as the caller: the image's own user (uid 1000) cannot write a
+# checkout owned by anyone else, such as the CI runner's uid 1001. Docker
+# Desktop maps ownership itself.
+AS_CALLER=()
+if [[ "$(uname -s)" == Linux ]]; then
+  AS_CALLER=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
+fi
+
+docker run --rm "${AS_CALLER[@]}" \
   -e LANG=C.UTF-8 \
   -v "$(host_path "$ROOT"):/src" "${OUT_MOUNT[@]}" -w /src "$IMAGE" \
   tools/build-ui-entrypoint.sh "$MODE" "$SHOT_NAME" "$SECONDS_EACH"

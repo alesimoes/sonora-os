@@ -221,7 +221,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             leftPadding: Theme.space2
                             text: edit.session.gainText(edit.session.gains[header.index] || 0) + " dB"
-                            color: Theme.textTertiary
+                            color: header.selected ? Theme.textSecondary : Theme.textTertiary
                             font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
                         }
                     }

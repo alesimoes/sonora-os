@@ -125,7 +125,7 @@ end of its run. Keep it short: what is true now, not a diary.
   AZERTY and ABNT2 arm the right track (`keymaps/README.md`). Measured with
   llvmpipe only (`brain/research/qt-shell-render-cost.md`): no GPU figure.
   Open: no compositor or systemd unit for it in the ISO (a compositor ADR is
-  architect's); no CI job builds it; whether `app.quit` closes only the UI;
+  architect's); whether `app.quit` closes only the UI;
   at M4 `EngineAdapter`/`SyntheticEngine` give way to the control API.
 - **The quantum and rate are pinned against clients (2026-10-13).** Under
   ADR-0007 M2 a block-size or rate change ends a take. The old drop-in let 11

@@ -7,8 +7,9 @@
 // What it stands for (timeline-model.md, "What the UI replica gets"): the
 // ui/client replica of the engine's Document. Today the replica *is* the
 // document -- `LocalDocument` applies operations itself, keeps the undo
-// pointer and allocates ids -- because neither common/model (M8) nor the
-// operation stream (M7) exists on main. The swap:
+// pointer and allocates ids -- because the operation stream (M7) does not
+// exist yet. common/model (M8) is on main; this branch still runs on its
+// local stand-in (timeline_model.h says what differs). The swap:
 //
 //   here                              when common/model and M7 land
 //   -------------------------------   ---------------------------------------

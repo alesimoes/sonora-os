@@ -13,6 +13,15 @@ BUILD=build-ui-container
 UI="$BUILD/sonora-ui"
 
 cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
+
+# ui/qt skips itself when Qt or xvfb-run is missing, which is right for
+# tools/build-engine.sh and wrong here: this image exists to run the UI tests,
+# and a green run that registered none would say the interface was tested.
+listed=$(ctest --test-dir "$BUILD" -N)
+for t in ui_meter_model ui_keys ui_edit ui_shell ui_render; do
+  grep -q " $t\$" <<<"$listed" || { echo "error: $t is not registered; is Qt too old?" >&2; exit 1; }
+done
+
 cmake --build "$BUILD" -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
 
