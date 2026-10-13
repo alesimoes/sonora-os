@@ -362,6 +362,23 @@
             {"id": "architecture.adr0007.m6", "title": "M6: ownership in OPERATIONS.md and agent charters", "size": "S", "phase": 1, "status": "todo"},
             {"id": "architecture.adr0007.m7", "title": "M7: process split, socket control server, memfd state, sonora-tui", "size": "L", "phase": 3, "status": "todo"}
           ]
+        },
+        {
+          "id": "architecture.portability",
+          "title": "Portability (ADR-0008)",
+          "items": [
+            {"id": "architecture.portability.adr", "title": "ADR-0008: platform code stays at the edges", "size": "S", "phase": 1, "status": "doing", "branch": "docs/adr-0008-portability"},
+            {"id": "architecture.portability.session_fs", "title": "P1: session folder creation and take scan on std::filesystem", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.tests_fs", "title": "P2: test_takes on std::filesystem, full-disk wav test to tests/posix", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.process_setup", "title": "P3: engine/app process-setup seam (memory lock, quit handlers, session root)", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.keymap_test", "title": "P4: test_keymap without termios (inside M4)", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.qt_measure", "title": "P5: ui/qt measure.cpp portable; common/platform thread_cpu_times()", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "architecture.portability.cmake_platform", "title": "P6: SONORA_PLATFORM / SONORA_BACKENDS, include allowlist in M5's check", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.ci_windows", "title": "P7: required portable CI job, MSVC on windows-latest, neutral build + ctest", "size": "M", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.charters", "title": "P8: portability rule in OPERATIONS.md and charters (inside M6)", "size": "S", "phase": 1, "status": "todo"},
+            {"id": "architecture.portability.ipc_seam", "title": "P9: M7 socket and shared memory behind common/platform", "size": "M", "phase": 3, "status": "todo"},
+            {"id": "architecture.portability.ci_qt_windows", "title": "P10: Qt UI in the portable CI job", "size": "S", "phase": 3, "status": "todo"}
+          ]
         }
       ]
     },
