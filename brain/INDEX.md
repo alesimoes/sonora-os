@@ -11,10 +11,13 @@ One line per entry. Agents read this before opening anything else.
 - [ADR-0006](decisions/ADR-0006-qt6-ui-toolkit.md) — Qt 6 for the shell, custom GPU scene-graph items for meters and timeline; the UI pulls at 60 Hz, the audio thread never pushes.
 - [ADR-0007](decisions/ADR-0007-modules-contracts-and-squads.md) — modules by owner (`contracts/`, `common/`, `engine/`, `drivers/`, `ui/`, `plugins/`, `interchange/`), a dependency DAG enforced in CI, the RT boundary by module, contract change rules, squad mechanics and a six-step migration; engine and UI as separate processes, and Phase 3/4 work opened early under a fixed scope (both owner decisions, 2026-10-12). Updated with lessons from M1: three illegal edges until M4, so M4 merges before M5; tests live with their subject module; ctest labels go in M5; M2 is a `contract/backend` PR with `noexcept SONORA_RT`.
 - [ADR-0008](decisions/ADR-0008-portability.md) — portability (owner, 2026-10-12): neutral modules are standard C++17 only, platform code sits in `drivers/*`, `engine/app`, `ui/tui` and `common/platform`; `SONORA_PLATFORM` selects linux/neutral/windows(reserved); a required MSVC `windows-latest` job builds and tests the neutral modules; Windows backend will be ASIO, its licence unverified; Linux first.
+- [ADR-0009](decisions/ADR-0009-timeline-snapshots-and-plan-swap.md) — accepted (engine owner, 2026-10-13): the edit state is an immutable value and undo a pointer, bounded by bytes with an engine-sent undo floor; resolved operations through a pure `apply` are both undo and UI replication; sources append-only and mix outside undo; playlists never overlap; a plan is published only once its audio is resident in per-plan chunk slots, retired by a seq_cst block counter; takes close in-band while rolling; canonical strict JSON through a new `common/json`.
 
 ## Specs
 - [Plugin latency compensation](specs/plugin-latency-compensation.md) — real-time plugin playback, PDC, and why the graph must be parallel from the start.
 - [BWF](specs/bwf-broadcast-wave.md) — the `bext` chunk layout we write, field by field.
+- [Session format](specs/session-format.md) — the native `.sonora` file: canonical JSON, integer samples, sources/regions/crossfades/playlists, fixed stereo monitor bus (owner, 2026-10-12), atomic save, versioning, BWF mapping, crash recovery, AAF constraints.
+- [Timeline model](specs/timeline-model.md) — `common/model`: snapshots, operations, undo, punch-in as the exit criterion, the playback plan and the monitor bus graph, residency-gated plan swap.
 
 ## Research
 - [Multichannel USB interfaces](research/multichannel-usb-interfaces.md) — Pro Audio profile, WirePlumber state hooks, port ordering; what is verified and what is not.

@@ -65,6 +65,11 @@ without asking a question.
       read, futex versus eventfd wake. Include the cost of the wake syscall
       on the audio thread, and whether any xrun is attributable to a reader.
       Feeds the Phase 4 plugin ADR. See `brain/research/adr-0007-measurements.md`.
+- [ ] Measure before M8 (ADR-0009 Unverified 5): worst-case `process()` on
+      the target machine with the UMC1820, 18 tracks × 2 voices plus 18
+      inputs at quantum 128, pool and plans pre-faulted. rt-engineer.
+- [ ] Measure before M8 (ADR-0009 Unverified 7): undo-to-audible latency,
+      p99 and max, on a real stick while 18 tracks record. rt-engineer.
 
 ## ADR-0007 follow-ups
 
@@ -162,7 +167,54 @@ Order and owners are in ADR-0008 §5.
 - [ ] Input monitoring with latency compensation measured by a loopback test.
 - [ ] Transport locate without dropping a block.
 - [ ] Timeline data model: regions over sources, with an undo stack.
-- [ ] Session file format spec, then the reader and writer.
+- [ ] Session file format spec, then the reader and writer. Specs written
+      (`brain/specs/session-format.md`, `brain/specs/timeline-model.md`,
+      ADR-0009 accepted 2026-10-13); reader and writer not started.
+- [ ] `common/json`: strict JSON with integer-exact numbers, line and key
+      path in errors, size and depth caps (ADR-0009 §5). `common/model`
+      uses it; `ui/keymap` moves onto it in its own PR. rt-engineer, with
+      ui-engineer review.
+- [ ] Bug: `ui/keymap`'s JSON parser reads numbers with `std::strtod`
+      (`ui/keymap/src/keymap.cpp`, `number()`), which honours the C locale.
+      Under `de_DE` the decimal separator is `,`, so `0.5` parses as `0`.
+      Fix with `std::from_chars`; regression test that sets a comma locale
+      first. ui-engineer.
+- [ ] Close a take while rolling with **in-band boundary records**
+      (`brain/specs/timeline-model.md`, "Closing a take while rolling"):
+      audio thread → SPSC ring → disk thread splits at exactly the frame;
+      the capture ring is never reset; the next take's files opened ahead;
+      the disk thread reports "take closed, length" before `RecordTake`.
+      Capture start/stop and the auto-monitor switch are sample-accurate
+      inside a block, with a ramp at A and B. This **replaces the take-epoch
+      handshake** in "Known gaps": with no ring reset there is no race. The
+      race's regression test is still written first. rt-engineer, audited
+      by rt-safety-auditor.
+- [ ] Periodic `fdatasync` of every open take file from the disk thread,
+      through `common/platform`, with the loss window stated in the UI and
+      in `brain/specs/session-format.md` ("Crash recovery"). Measure its cost
+      on a stick at 18 tracks first; it must not cause an overrun.
+      rt-engineer.
+- [ ] Disk reader thread and source chunk pool with per-plan chunk-slot
+      arrays; plans and locates published only once their window is
+      resident; one pending plan at most; exhaustion never evicts the
+      playing plan (ADR-0009 §4). Comes with the ThreadSanitizer stress test
+      of the retirement protocol (§4.1). rt-engineer, gated by
+      rt-safety-auditor.
+- [ ] Playback to `AudioBlock::outputs` through the monitor bus. The
+      exit-criterion ctest needs `drivers/fake` with captured outputs, so it
+      waits for ADR-0007 M3. rt-engineer.
+- [ ] Measure, before the reader is written: mixed record+playback
+      throughput and worst-case read latency on a physical stick's
+      persistence partition (18 in, 18 out, 8 k and 16 k frame chunks,
+      coalesced reads). researcher; ADR-0009 Unverified 1.
+- [ ] Measure before M8, no hardware needed: pool demand of a 2,000-region
+      comp at the placeholder chunk size (ADR-0009 Unverified 6); undo
+      memory for single and bulk edits on 18 × 2,000 regions against the
+      64 MiB budget (Unverified 3). rt-engineer. The hardware ones are under
+      "Blocked on hardware".
+- [ ] Measure: `rename` plus directory `fsync` durability through the
+      persistence overlay, 200 killed QEMU saves. researcher; ADR-0009
+      Unverified 2.
 
 ## Known gaps, not yet scheduled
 
@@ -173,6 +225,8 @@ Order and owners are in ADR-0008 §5.
   old take's samples at the head of the new file. Needs an RT stall of about
   100 ms to hit. Fix with a take-epoch handshake with the callback; write the
   regression test first. rt-engineer, audited by rt-safety-auditor.
+  **Superseded by ADR-0009:** the fix is now the in-band boundary records
+  in Phase 2 ("Close a take while rolling"), which remove the ring reset.
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.
