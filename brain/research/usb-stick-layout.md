@@ -131,19 +131,19 @@ container unless marked.
   before and after the same reattach. A same-size card swapped in a USB
   reader would look the same to it, which is why the writer refuses without
   diskseq unless given `--weak-identity`.
-- **Proving the write lands on the confirmed device.** diskseq is never
-  reused. The writer opens its descriptors, checks that they are the device
-  the name refers to, and checks that the name still has the confirmed
-  diskseq. From then on nothing that writes the whole disk looks up its name
-  (third review, 2026-10-13; was: `wipefs` by path between two identity
-  checks, which proved the name had not changed but not that wipefs opened
-  the same medium if the name was briefly something else). See "Writing only
-  through verified descriptors" below.
+- **Checking that the write landed on the confirmed device.** diskseq is
+  never reused. The writer opens its descriptors, checks that they are the
+  device the name refers to, and checks that the name still has the confirmed
+  diskseq; after each write step it checks the diskseq again. Nothing that
+  writes the whole disk looks up its name in `/dev` (third review,
+  2026-10-13; was: `wipefs` by path between two identity checks). That is
+  detection after each step, not prevention: see "Writing through
+  descriptors, and what the rechecks prove" below.
 - **Never re-resolve the argument.** `/dev/disk/by-label/<label>` is made
   from content and disappears when the wipe erases that content. The writer
   resolves its argument once, at the start.
 
-## Writing only through verified descriptors
+## Writing through descriptors, and what the rechecks prove
 
 Third review, 2026-10-13. Measured with strace in the same container
 (util-linux 2.41.5, e2fsprogs 1.47.2, perl-base 5.40), by
@@ -157,12 +157,43 @@ Third review, 2026-10-13. Measured with strace in the same container
   shows `"/proc/self/fd/4", O_RDWR|O_CREAT` -- harmless, the magic link
   always exists while fd 4 is open -- and no open of `/dev/loopN` with
   O_CREAT or for writing at all.
-- **`/proc/self/fd/N` is a way to hand a verified inode to a tool that wants
-  a path.** A child inherits fd 3; opening `/proc/self/fd/3` in the child
-  reopens that inode, whatever `/dev` says now. Measured to work for `sfdisk
+- **`/proc/self/fd/N` avoids `/dev`, not a fresh open.** A child inherits
+  fd 3; opening `/proc/self/fd/3` follows the magic link to the device inode
+  and opens it again. For a block device that open goes through
+  `blkdev_open`, which looks the disk up by the inode's `i_rdev`: it reaches
+  whatever disk holds that major:minor *at that moment*, not necessarily the
+  one fd 3 is on. (Code review, 2026-10-13: the earlier wording here, "reopens
+  that inode, whatever `/dev` says now", overstated it.) Used for `sfdisk
   --append` (opens it `O_RDWR|O_EXCL`), `mkfs.ext4` (`O_RDONLY|O_EXCL`, then
   plain opens), `mount -t ext4` (source shown as the real partition),
-  `blkid` and `blockdev --flushbufs`.
+  `blkid`, `blockdev --flushbufs`, the wipe, and fd 3 itself (opened as
+  `/proc/self/fd/4`).
+- **What the rechecks prove.** diskseq is assigned once per disk, bumped on
+  a media change, and never reused, and a disk keeps its major:minor while it
+  exists. So a fresh open of that major:minor that happens between two
+  identity checks which both find the confirmed diskseq reached the confirmed
+  medium. The writer rechecks after opening fds 3 and 4, after the wipe,
+  after dd and before sfdisk, and before formatting the partition.
+- **What they do not prove.** A recheck that fails says only that the device
+  changed since the last one passed. The step in between may already have
+  written to whatever took the number; the run stops after the fact, with a
+  message saying what was done. Held descriptors narrow the window but do not
+  close it: `dd` and `cmp` use fds 3 and 4 directly, and a held descriptor
+  stays on its disk (writes fail if the stick is unplugged rather than follow
+  the number to a newcomer), but a card swapped in a reader is a new medium
+  behind the same disk, and the descriptor reaches it. That is why the writer
+  also reads the diskseq right after `dd`: if the read-back then fails, the
+  message says "the device changed or the stick is faulty" instead of
+  blaming the stick. Not tested: a container cannot swap a medium under a
+  loop device between `dd` and `cmp`.
+- **sfdisk runs with `--lock=no`.** Its open of `/proc/self/fd/3` is a new
+  open file description, so had it taken its own `flock` (it does when
+  `LOCK_BLOCK_DEVICE=1` is in the environment, which `sudo -E` keeps) it
+  would wait forever on the lock fd 3 holds. Measured with util-linux 2.41.5
+  on a file held with `flock -x`: `LOCK_BLOCK_DEVICE=1 sfdisk ...` prints
+  "device already locked, waiting to get lock" and is killed by `timeout 5`;
+  with `--lock=no` it exits 0. The test now writes once with
+  `LOCK_BLOCK_DEVICE=1` exported.
 - **The wipe is perl on `/proc/self/fd/3` with O_RDWR|O_EXCL.** It zeroes the
   first and last MiB (the reasons for each region are in `wipe_signatures`).
   The exclusive open keeps the property `wipefs` had: refused if anything
@@ -182,8 +213,10 @@ Third review, 2026-10-13. Measured with strace in the same container
   opened on the partition node, checked against the major:minor sysfs lists
   for that partition under the confirmed disk, the disk's diskseq is
   rechecked, and `mkfs.ext4` and `mount` go through `/proc/self/fd/5`.
-- **errno, not "in use".** The probe reports EBUSY as in use and everything
-  else by name. Measured: a missing path gives "No such file or directory";
+- **errno, not "in use".** The probe, and the wipe's exclusive open after the
+  prompt, report EBUSY as in use and everything else by its errno text (the
+  wipe's open used to call any failure "claimed by something after the
+  checks"). Measured: a missing path gives "No such file or directory";
   a node for sd major 8 minor 255 with no disk behind it gives "No such
   device or address". ENOMEDIUM (a reader with no card) cannot be produced
   in a container.

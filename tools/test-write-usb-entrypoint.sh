@@ -126,6 +126,18 @@ add_and_find() { add_partition_to_kernel "$1" && find_partition "$2" "$3"; }
 fd_check_closed() { NAME="$1"; exec 9<&-; fd_is_device 9; }
 # shellcheck disable=SC2034
 fd_check_regular() { NAME="$1"; exec 9</etc/hostname; fd_is_device 9; }
+# wipe_signatures on descriptor 9: closed, or open on DEV.
+wipe_closed() { exec 9<&-; wipe_signatures 9; }
+wipe_on() { exec 9<"$1"; wipe_signatures 9; }
+# wipe_exit LABEL WANT_RC WANT_TEXT FUNCTION ARGS... -- exit code and errno text.
+wipe_exit() {
+  local label="$1" want_rc="$2" want="$3" out rc=0
+  shift 3
+  out="$(in_writer "$@" 2>&1)" || rc=$?
+  expect "the wipe's open reports $label as exit $want_rc, '$out'" \
+    "the wipe's open on $label: rc=$rc, output '$out' (wanted $want_rc, '$want')" \
+    test "$rc" == "$want_rc" -a "$out" == "$want"
+}
 rejects() {
   local label="$1" why
   shift
@@ -467,7 +479,11 @@ write)
   mount_elsewhere
   info "lsblk here sees mounts on $LOOP: [$(lsblk -nlo MOUNTPOINT "$LOOP" | tr -d '[:space:]')]"
   refuse "a disk mounted in another mount namespace" "in use by something this namespace cannot see" "$LOOP" "$STICK"
+  # Code review: the wipe called every failed open "claimed after the
+  # checks". Only EBUSY means that; anything else is reported by its errno.
+  wipe_exit "a claimed disk" 1 "Device or resource busy" wipe_on "$LOOP"
   unmount_elsewhere
+  wipe_exit "a closed descriptor" 3 "No such file or directory" wipe_closed
 
   # Review finding: nothing pinned the device across the prompt. Each of these
   # answers ERASE, so they would erase the image if the recheck failed.
@@ -607,9 +623,12 @@ write)
 
   # Rewriting a stick that already carries SonoraOS is the common case for
   # an update, and the one where partition 3 already exists.
-  echo "--- rewrite over a SonoraOS stick ---"
-  if echo ERASE | SONORA_WRITE_USB_TEST_IMAGE="$STICK" bash "$WRITER" "$LOOP" > /work/write2.log 2>&1; then
-    ok "second write-usb.sh run exits 0"
+  # With LOCK_BLOCK_DEVICE=1, as sudo -E passes it on: sfdisk would then flock
+  # its own open of the disk and wait forever on the writer's lock, so the
+  # writer must turn that off. timeout turns a hang into a failure.
+  echo "--- rewrite over a SonoraOS stick, LOCK_BLOCK_DEVICE=1 ---"
+  if echo ERASE | LOCK_BLOCK_DEVICE=1 SONORA_WRITE_USB_TEST_IMAGE="$STICK" timeout 300 bash "$WRITER" "$LOOP" > /work/write2.log 2>&1; then
+    ok "second write-usb.sh run exits 0 with LOCK_BLOCK_DEVICE=1 (sfdisk does not wait on the writer's flock)"
   else
     bad "second write-usb.sh run failed"
     tr '\r' '\n' < /work/write2.log | sed 's/^/WRITE-USB info    /'

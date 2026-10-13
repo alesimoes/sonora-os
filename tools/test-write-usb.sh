@@ -113,6 +113,8 @@ echo "=== building the test image ==="
 docker build -q -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.usbtest" \
   "$(host_path "$ROOT/tools")" >/dev/null
+# The volume holds the 8 GB sparse disk image; one left behind keeps that
+# space in the Docker VM.
 trap 'docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true' EXIT
 docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 

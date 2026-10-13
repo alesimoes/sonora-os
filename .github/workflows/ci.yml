@@ -256,3 +256,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
+
+      # The image installs the copies under iso/, not audio-stack/ itself, so
+      # an edit that skipped tools/sync-audio-stack.sh would ship the old
+      # tuning while every container test (which reads audio-stack/) passed.
+      - name: The image's audio-stack copies match audio-stack/
+        run: |
+          dest=iso/config/includes.chroot/usr/share/sonora
+          drift=0
+          for f in audio-stack/*; do
+            name=$(basename "$f")
+            [ "$name" = README.md ] && continue
+            if ! cmp -s "$f" "$dest/$name"; then
+              echo "::error file=$dest/$name::not byte-identical to $f."
+              echo "  fix with: tools/sync-audio-stack.sh"
+              drift=1
+            fi
+          done
+          exit "$drift"

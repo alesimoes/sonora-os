@@ -126,10 +126,13 @@ end of its run. Keep it short: what is true now, not a diary.
   as gaps. Rebuilt ISO boots in QEMU with the running server reporting
   128/128/128 and `[ 48000 ]`: 20 of 20 smoke checks. Dummy driver only; no
   ALSA device has been the driver. `brain/research/quantum-pin.md`.
-- **The USB writer writes only through verified descriptors (2026-10-13).**
+- **The USB writer writes only through descriptors, rechecked (2026-10-13).**
   No path-based write to the whole disk any more: the wipe (first and last
   MiB, perl, O_EXCL), dd, sfdisk and, for the partition, mkfs and mount all
-  go through descriptors checked against sysfs and diskseq. No O_CREAT open
+  go through descriptors checked against sysfs and diskseq. Reopens through
+  `/proc/self/fd/N` go by major:minor, so a device swapped mid-run is caught
+  by the diskseq recheck after the step, not prevented; sfdisk runs with
+  `--lock=no` so it cannot deadlock on our own flock. No O_CREAT open
   of the device; `flock -x` held during the write; a write-protected device
   is refused before the prompt; a missing or empty device is not reported as
   "in use". Each asserted in `tools/test-write-usb.sh` (strace and seeded

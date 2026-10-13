@@ -144,9 +144,11 @@ fd_is_device() { fd_is_block "$1" "$SYS_BLOCK/$NAME/dev"; }
 
 # wipe_signatures FD
 # Zero the first and the last MiB of the device open on FD. Not wipefs: it
-# takes only a path, and a path can name a different device by the time it is
-# opened. /proc/self/fd/FD reopens the inode FD already holds, whatever /dev
-# says now.
+# takes only a path, and a path is looked up in /dev again when it is opened.
+# /proc/self/fd/FD skips /dev, but it is still a fresh open, not FD itself:
+# the kernel opens the block device by the major:minor of the inode FD holds
+# (blkdev_open on i_rdev), so it reaches whatever device has that number now.
+# The diskseq rechecks either side bound that; see "--- write ---".
 #
 # Opened O_RDWR|O_EXCL, so the first write is still refused if anything has
 # claimed the device since the in-use check, as wipefs's own open was.
@@ -162,13 +164,16 @@ fd_is_device() { fd_is_block "$1" "$SYS_BLOCK/$NAME/dev"; }
 # That covers what wipefs --all erased here, which is only what libblkid
 # recognises on the whole disk: those same structures.
 #
-# Exit 1: the exclusive open was refused and nothing was written. Exit 2: a
-# write failed part-way.
+# Exit 1: the exclusive open was refused with EBUSY -- something claimed the
+# device -- and nothing was written. Exit 3: the open or the size query failed
+# for any other reason (ENXIO for an unplugged stick, ENOMEDIUM, ...) and
+# nothing was written; the errno text says which. Exit 2: a write failed
+# part-way.
 wipe_signatures() {
-  perl -MFcntl=:DEFAULT,:seek -MIO::Handle -e '
+  perl -MFcntl=:DEFAULT,:seek -MErrno=EBUSY -MIO::Handle -e '
     sysopen(my $f, "/proc/self/fd/$ARGV[0]", O_RDWR | O_EXCL)
-      or do { print STDERR "$!\n"; exit 1 };
-    my $size = sysseek($f, 0, SEEK_END) or do { print STDERR "size: $!\n"; exit 1 };
+      or do { print STDERR "$!\n"; exit($! == EBUSY ? 1 : 3) };
+    my $size = sysseek($f, 0, SEEK_END) or do { print STDERR "finding its size: $!\n"; exit 3 };
     my $mib = 1048576;
     my $zero = "\0" x $mib;
     for my $off (0, $size > $mib ? $size - $mib : 0) {
@@ -380,15 +385,32 @@ check_kind
 check_not_in_use
 
 # --- write ---
-# Why the order below proves that every write lands on the confirmed device:
-# the descriptors are opened first, then shown to be the device the name has
-# now, then the name is shown to still carry the confirmed diskseq. diskseq is
-# never reused, so from then on the descriptors are the confirmed medium,
-# whatever happens to the name. Every write to the whole disk -- the wipe, the
-# image, the partition table -- goes through them: dd and cmp directly, perl
-# and sfdisk through /proc/self/fd/3, which reopens the inode fd 3 holds
-# rather than looking anything up in /dev. With --weak-identity none of this
-# is proof, which is why that needs saying out loud.
+# What the order below proves, and what it does not.
+#
+# Opening /proc/self/fd/N is not a lookup in /dev, but it is not a dup of N
+# either: the kernel opens the block device by the major:minor of the inode
+# (blkdev_open on i_rdev), so it gets whatever device holds that number at
+# that moment. That is how fd 3 is opened, and how the wipe, sfdisk and the
+# flush reach the disk.
+#
+# diskseq is what makes such an open checkable. It is assigned once per disk
+# and bumped on every media change, never reused, and a disk keeps its
+# major:minor while it exists. So if the name carries the confirmed diskseq
+# both before and after an open of that major:minor, the open reached the
+# confirmed medium. That is the proof each recheck below gives for the step
+# before it: fds 3 and 4 (checked against sysfs, then recheck), the wipe,
+# dd, sfdisk.
+#
+# What it does not prove: a recheck that fails says only that the device
+# changed somewhere since the last one passed. The step in between may already
+# have written to whatever took the number, and the run stops after the fact,
+# not before. A held descriptor narrows this but does not close it: dd and
+# cmp use fds 3 and 4 directly, and a held descriptor stays on its disk -- if
+# the stick is unplugged, writes through it fail rather than follow the
+# number -- but a card swapped in a reader is a new medium behind the same
+# disk, and the descriptor reaches it. Hence the recheck after dd as well.
+# With --weak-identity there is no diskseq and none of this is proof, which
+# is why that needs saying out loud.
 #
 # fd 4 is opened by path and read-only, so without O_CREAT: a node that
 # vanished in the window fails the open instead of being recreated as a
@@ -414,6 +436,7 @@ out="$(wipe_signatures 3 2>&1)" || rc=$?
 case "$rc" in
   0) ;;
   1) die "$DEV was claimed by something after the checks (the kernel refused an exclusive open: $out). Unmount it everywhere and run again. $AT_START" ;;
+  3) die "$DEV could not be opened for the wipe ($out). If it is a stick, it may have been unplugged; if it is a card reader, check that a card is in it. $AT_START" ;;
   *) die "clearing the signatures on $DEV failed ($out). $AFTER_WIPE" ;;
 esac
 recheck "$AFTER_WIPE"
@@ -421,13 +444,19 @@ recheck "$AFTER_WIPE"
 echo "Writing the image..."
 dd if="$ISO" bs=4M status=progress conv=fsync >&3 \
   || die "writing to $DEV failed. $AFTER_DD"
+# Before the read-back's verdict, so that a mismatch is not blamed on the
+# stick when the device behind the name is no longer the one written to.
+AFTER_DD_IDENTITY="$(device_identity "$NAME")"
 
 # Read it back. Counterfeit and worn-out sticks accept writes they do not
 # keep, and the first symptom would otherwise be a boot failure on stage.
 echo "Verifying the write..."
 blockdev --flushbufs /proc/self/fd/4
-cmp -n "$ISO_BYTES" "$ISO" - <&4 \
-  || die "$DEV does not read back what was written; the stick is faulty. $AFTER_DD"
+if ! cmp -n "$ISO_BYTES" "$ISO" - <&4; then
+  [[ "$AFTER_DD_IDENTITY" == "$IDENTITY" ]] \
+    || die "$DEV does not read back what was written, and it changed during the write ($IDENTITY, now $AFTER_DD_IDENTITY): the device changed or the stick is faulty. $AFTER_DD"
+  die "$DEV does not read back what was written; the stick is faulty. $AFTER_DD"
+fi
 
 # --- persistence partition ---
 # The image's MBR already holds two entries: 1 is the whole ISO and 2 is the
@@ -441,9 +470,12 @@ echo "Creating the persistence partition at ${START_MIB} MiB..."
 # sfdisk's output is shown only on failure. On success it warns that the
 # iso9660 signature "may remain" and recommends wipefs -- advice that, taken
 # at this point, erases the image just written. sfdisk opens /proc/self/fd/3
-# O_RDWR|O_EXCL: the confirmed device, still refused if claimed meanwhile.
+# O_RDWR|O_EXCL, so it is still refused if the disk was claimed meanwhile.
+# --lock=no: that open is a new open file description, so an flock of sfdisk's
+# own -- which LOCK_BLOCK_DEVICE=1, kept in the environment by sudo -E, turns
+# on -- would wait forever on the one fd 3 holds. Measured with 2.41.
 if ! sfdisk_out="$(echo "start=${START_SECTOR}, type=83" \
-      | sfdisk --append --no-reread --no-tell-kernel --wipe never --wipe-partitions never /proc/self/fd/3 2>&1)"; then
+      | sfdisk --lock=no --append --no-reread --no-tell-kernel --wipe never --wipe-partitions never /proc/self/fd/3 2>&1)"; then
   printf '%s\n' "$sfdisk_out" >&2
   die "sfdisk could not add the persistence partition to $DEV. $AFTER_IMAGE"
 fi

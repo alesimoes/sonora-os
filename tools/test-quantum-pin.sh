@@ -40,7 +40,7 @@ echo "=== building the runtime image ==="
 # Run by image ID, not by tag. The tag is shared by every worktree on this
 # Docker host, and another checkout rebuilding it between our build and our
 # run would test its configuration under our name. That happened.
-IMAGE_ID="$(docker build -q -t "$IMAGE" \
+IMAGE_ID="$(docker build -q --label org.sonora=1 -t "$IMAGE" \
   -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
   "$(host_path "$ROOT")")"
 
