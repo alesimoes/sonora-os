@@ -11,7 +11,8 @@
 //   vst3:534F4E4F524156535433544553540005  turncoat     takes stereo, then answers 8 channels
 //                                                       once its main bus is activated
 //   vst3:534F4E4F524156535433544553540006  params       256 parameters; writes how many
-//                                                       changed in a block, and their sum
+//                                                       changed in a block, their sum, and
+//                                                       the frame offset of param 0's change
 //   vst3:534F4E4F524156535433544553540007  latency      param 0 > 0.5: latency 0 -> 64, told
 //                                                       from another thread; segfaults if
 //                                                       asked its latency on the thread
@@ -161,6 +162,7 @@ public:
     tresult PLUGIN_API process(ProcessData& data) override {
         int32 changed = 0;
         double sum = 0;
+        int32 offset0 = -1;  // where parameter 0's last change landed in this block
         if (IParameterChanges* changes = data.inputParameterChanges) {
             changed = changes->getParameterCount();
             for (int32 i = 0; i < changed; ++i) {
@@ -171,7 +173,10 @@ public:
                     q->getPoint(q->getPointCount() - 1, offset, v) != kResultOk)
                     continue;
                 sum += v;
-                if (q->getParameterId() == 0) trigger_ = v;
+                if (q->getParameterId() == 0) {
+                    trigger_ = v;
+                    offset0 = offset;
+                }
             }
         }
         if (kind_ == Kind::Crash && trigger_ > 0.5) {
@@ -194,9 +199,10 @@ public:
             for (int32 c = 0; c < out.numChannels; ++c) {
                 float* o = out.channelBuffers32[c];
                 for (int32 s = 0; s < n; ++s) o[s] = 0.f;
-                if (n > 1) {
+                if (n > 2) {
                     o[0] = static_cast<float>(changed);
                     o[1] = static_cast<float>(sum);
+                    o[2] = static_cast<float>(offset0);
                 }
             }
             return kResultOk;

@@ -24,12 +24,13 @@ endif()
 message(STATUS "plugins/host: building sonora-plugin-host against lilv ${LILV_VERSION}")
 
 # The seam both sides of the boundary use: the host here, and the engine-role
-# test driver. The engine's half moves to common/platform with M4+ (ipc.h).
+# test driver. The wake itself is common/platform's (wake.h), the one the
+# engine's audio thread will use (ADR-0012 §1.2).
 # start_thread: the host's processing thread.
 find_package(Threads REQUIRED)
 add_library(sonora_plugin_ipc STATIC src/ipc.h src/linux/ipc_linux.cpp)
 target_include_directories(sonora_plugin_ipc PUBLIC src)
-target_link_libraries(sonora_plugin_ipc PUBLIC sonora_plugin_protocol Threads::Threads)
+target_link_libraries(sonora_plugin_ipc PUBLIC sonora_plugin_protocol sonora_platform Threads::Threads)
 
 # The URID map plugins call from run() on the SCHED_FIFO thread: lock-free
 # and allocation-free after construction. Needs only the LV2 headers.
@@ -111,31 +112,50 @@ set_tests_properties(plugin_host_probe_liar PROPERTIES PASS_REGULAR_EXPRESSION "
 # A host whose engine is already gone exits before it maps anything: the
 # death signal requested after the engine died would never fire.
 add_test(NAME plugin_host_orphan
-         COMMAND sonora-plugin-host --shm-fd 0 --chain "urn:sonora:test#crash" --engine-pid 999999)
+         COMMAND sonora-plugin-host --shm-fd 0 --clock-fd 0 --chain "urn:sonora:test#crash" --engine-pid 999999)
 set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is not this host.s parent"
                      LABELS plugins)
+# The versions the engine checks at start-up (ADR-0012 §5.5).
+add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1\n$"
+                     LABELS plugins)
+# Hosts are timer-paced by default: the audio thread's futex wake ships gated
+# off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex
+# tests run the same scenarios on the wake path the gate would turn on.
 set(_plugin_tests
-  plugin_host_refusals
-  plugin_host_crash plugin_host_crash_poll
-  plugin_host_deadline plugin_host_deadline_poll
+  plugin_host_refusals plugin_host_incompatible
+  plugin_host_crash plugin_host_crash_futex
+  plugin_host_deadline plugin_host_deadline_futex
   plugin_host_nonfinite
-  plugin_host_gain_mono plugin_host_gain_stereo plugin_host_gain_poll
-  plugin_host_latency_pipelined plugin_host_latency_poll plugin_host_latency_chain
+  plugin_host_gain_mono plugin_host_gain_stereo plugin_host_gain_futex
+  plugin_host_latency_pipelined plugin_host_latency_futex plugin_host_latency_chain
+  plugin_host_bypass plugin_host_bypass_latency plugin_host_bypass_lv2_enabled plugin_host_swap
   plugin_host_rtt)
 add_test(NAME plugin_host_refusals COMMAND ${_drive} --scenario refusals)
-# pipeline_depth 1 is the default mode; poll is depth 0, poll-only.
+add_test(NAME plugin_host_incompatible COMMAND ${_drive} --scenario incompatible)
 add_test(NAME plugin_host_crash COMMAND ${_drive} --scenario crash)
-add_test(NAME plugin_host_crash_poll COMMAND ${_drive} --scenario crash --mode poll)
+add_test(NAME plugin_host_crash_futex COMMAND ${_drive} --scenario crash --wake futex)
 add_test(NAME plugin_host_deadline COMMAND ${_drive} --scenario deadline)
-add_test(NAME plugin_host_deadline_poll COMMAND ${_drive} --scenario deadline --mode poll)
+add_test(NAME plugin_host_deadline_futex COMMAND ${_drive} --scenario deadline --wake futex)
 add_test(NAME plugin_host_nonfinite COMMAND ${_drive} --scenario nonfinite)
 add_test(NAME plugin_host_gain_mono COMMAND ${_drive} --scenario gain)
 add_test(NAME plugin_host_gain_stereo COMMAND ${_drive} --scenario gain --channels 2)
-add_test(NAME plugin_host_gain_poll COMMAND ${_drive} --scenario gain --mode poll)
+add_test(NAME plugin_host_gain_futex COMMAND ${_drive} --scenario gain --wake futex)
 add_test(NAME plugin_host_latency_pipelined COMMAND ${_drive} --scenario latency)
-add_test(NAME plugin_host_latency_poll COMMAND ${_drive} --scenario latency --mode poll)
+add_test(NAME plugin_host_latency_futex COMMAND ${_drive} --scenario latency --wake futex)
 add_test(NAME plugin_host_latency_chain COMMAND ${_drive} --scenario latency
          --chain "http://gareus.org/oss/lv2/dpl#mono,http://lsp-plug.in/plugins/lv2/limiter_mono,http://lv2plug.in/plugins/eg-amp")
+# kBypassParam: host-side (delay line) at latency 0 and with a look-ahead
+# (the in-tree lookahead plugin has no bypass port), and through a plugin's
+# own lv2:enabled port (x42-dpl declares one).
+add_test(NAME plugin_host_bypass COMMAND ${_drive} --scenario bypass --chain http://lv2plug.in/plugins/eg-amp
+         --gain-param gain --expect-bypass host)
+add_test(NAME plugin_host_bypass_latency COMMAND ${_drive} --scenario bypass
+         --chain "urn:sonora:test#lookahead" --gain-param gain --expect-bypass host)
+add_test(NAME plugin_host_bypass_lv2_enabled COMMAND ${_drive} --scenario bypass
+         --chain "http://gareus.org/oss/lv2/dpl#mono" --expect-bypass plugin)
+# Make-before-break into a new region and slot (ADR-0012 §5.3, §5.4).
+add_test(NAME plugin_host_swap COMMAND ${_drive} --scenario swap)
 add_test(NAME plugin_host_rtt COMMAND ${_drive} --scenario rtt --blocks 2000)
 
 # --- VST3 (brain/research/plugin-host-vst3.md). Plugins from Debian
@@ -205,15 +225,21 @@ if(VST3SDK_INCLUDE_DIR)
            --chain ${_again} --gain-param 0 --gain-linear 1)
   add_test(NAME plugin_host_vst3_gain_stereo COMMAND ${_vst3_drive} --scenario gain
            --chain ${_again} --gain-param 0 --gain-linear 1 --channels 2 --expect-replicas 1)
-  add_test(NAME plugin_host_vst3_gain_poll COMMAND ${_vst3_drive} --scenario gain
-           --chain ${_again} --gain-param 0 --gain-linear 1 --mode poll)
+  add_test(NAME plugin_host_vst3_gain_futex COMMAND ${_vst3_drive} --scenario gain
+           --chain ${_again} --gain-param 0 --gain-linear 1 --wake futex)
   add_test(NAME plugin_host_vst3_latency COMMAND ${_vst3_drive} --scenario latency
            --chain ${_lsp_limiter})
-  add_test(NAME plugin_host_vst3_latency_poll COMMAND ${_vst3_drive} --scenario latency
-           --chain ${_lsp_limiter} --mode poll)
-  # LV2 and VST3 in one chain, one host process.
+  add_test(NAME plugin_host_vst3_latency_futex COMMAND ${_vst3_drive} --scenario latency
+           --chain ${_lsp_limiter} --wake futex)
+  # kBypassParam through the plugin's own kIsBypass parameter (AGain's).
+  add_test(NAME plugin_host_vst3_bypass COMMAND ${_vst3_drive} --scenario bypass
+           --chain ${_again} --gain-param 0 --gain-linear 1 --expect-bypass plugin)
+  # LV2 and VST3 in one chain, one host process. AGain's controller
+  # describes its gain's default as 0.5 (-6 dB) while its processor starts
+  # at 1.0; the engine seeds what the description says, so the null needs
+  # the gain set to 1, as a session would store it.
   add_test(NAME plugin_host_vst3_latency_mixed COMMAND ${_vst3_drive} --scenario latency
-           --chain "http://gareus.org/oss/lv2/dpl#mono,${_lsp_limiter},${_again}")
+           --chain "http://gareus.org/oss/lv2/dpl#mono,${_lsp_limiter},${_again}" --param 2:0=1)
   # The look-ahead moved while running: ParamID 467309611 is "Lookahead"
   # (normalised 0.738 = 5 ms = 240 frames, `--list --format vst3`). The new
   # latency reaches the host through LSP's processor -> controller IMessage
@@ -233,15 +259,16 @@ if(VST3SDK_INCLUDE_DIR)
   set_tests_properties(plugin_host_vst3_list_hang PROPERTIES ENVIRONMENT SONORA_TEST_VST3_HANG_ON_SCAN=1)
   add_test(NAME plugin_host_vst3_crash COMMAND ${_vst3_drive} --scenario crash
            --chain "${_again},${_vst3_crash}")
-  add_test(NAME plugin_host_vst3_crash_poll COMMAND ${_vst3_drive} --scenario crash
-           --chain "${_again},${_vst3_crash}" --mode poll)
+  add_test(NAME plugin_host_vst3_crash_futex COMMAND ${_vst3_drive} --scenario crash
+           --chain "${_again},${_vst3_crash}" --wake futex)
   list(APPEND _plugin_tests
     plugin_host_vst3_refusals
-    plugin_host_vst3_gain_mono plugin_host_vst3_gain_stereo plugin_host_vst3_gain_poll
-    plugin_host_vst3_latency plugin_host_vst3_latency_poll plugin_host_vst3_latency_mixed
+    plugin_host_vst3_gain_mono plugin_host_vst3_gain_stereo plugin_host_vst3_gain_futex
+    plugin_host_vst3_latency plugin_host_vst3_latency_futex plugin_host_vst3_latency_mixed
     plugin_host_vst3_latency_change plugin_host_vst3_latency_change_main_thread
+    plugin_host_vst3_bypass
     plugin_host_vst3_params plugin_host_vst3_list_hang
-    plugin_host_vst3_crash plugin_host_vst3_crash_poll)
+    plugin_host_vst3_crash plugin_host_vst3_crash_futex)
 endif()
 
 set_tests_properties(${_plugin_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)

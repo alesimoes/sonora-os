@@ -10,9 +10,11 @@
 // order, which is the "CID" a bundle's moduleinfo.json carries on Linux:
 //   vst3:84E8DE5F92554F5396FAE4133C935A18   (Steinberg's AGain)
 //
-// Parameters are VST3's own: ParamChange::port carries the ParamID and
-// ParamChange::value the NORMALISED value, 0..1, clamped. --list gives each
-// parameter's title, units and normalised default.
+// Parameters (contracts/plugin): ParamChange::param is the DENSE index of a
+// writable parameter in controller order, mapped here to its ParamID, and
+// ParamChange::value the NORMALISED value, 0..1, clamped, delivered at its
+// frame offset. --list gives each parameter's title, units, normalised
+// default and dense index; --probe its key (the ParamID in decimal).
 
 #include "processor.h"
 

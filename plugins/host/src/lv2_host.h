@@ -41,7 +41,7 @@ public:
 
     struct Nodes {
         LilvNode *audio, *control, *atom, *cv, *input, *output;
-        LilvNode *optional, *reports_latency, *latency_designation;
+        LilvNode *optional, *reports_latency, *latency_designation, *enabled_designation;
     } n{};
 
 private:

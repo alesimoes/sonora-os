@@ -16,13 +16,16 @@ add_library(sonora_platform STATIC
   include/sonora/platform/ipc.h
   include/sonora/platform/process.h
   include/sonora/platform/file.h
+  include/sonora/platform/wake.h
   src/${SONORA_PLATFORM_IMPL}/thread_cpu.cpp
   src/${SONORA_PLATFORM_IMPL}/ipc.cpp
   src/${SONORA_PLATFORM_IMPL}/process.cpp
   src/${SONORA_PLATFORM_IMPL}/file.cpp
+  src/${SONORA_PLATFORM_IMPL}/wake.cpp
 )
 target_include_directories(sonora_platform PUBLIC include)
-target_link_libraries(sonora_platform PUBLIC Threads::Threads)
+# sonora_base for SONORA_RT, which wake.h's wake_all() carries (ADR-0012, A3).
+target_link_libraries(sonora_platform PUBLIC sonora_base Threads::Threads)
 
 add_executable(test_thread_cpu tests/test_thread_cpu.cpp)
 target_link_libraries(test_thread_cpu PRIVATE sonora_platform Threads::Threads)
