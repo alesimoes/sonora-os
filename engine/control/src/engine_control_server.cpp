@@ -325,6 +325,13 @@ void EngineControlServer::stop() {
     if (thread_.joinable()) thread_.join();
     publisher_->stop();
     running_.store(false, std::memory_order_release);
+    // No pump will open the gate now. Withdrawn, so a server started again
+    // does not start a take nobody is waiting for.
+    playback_->cancel_record();
+    for (const HeldReply& h : held_records_) {
+        reply(h.to, h.seq, DispatchResult::Failed, "cancelled");
+    }
+    held_records_.clear();
     clients_.clear();
     client_count_.store(0, std::memory_order_release);
 }
@@ -657,14 +664,19 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         bool ok = false;
         // Faders are written from the document only when it changed what
-        // they hold. A change of track order or of the track set counts:
-        // engine track i plays the document's track i in display order.
+        // they hold, whichever request changed it: a fader ride sent as a
+        // ParameterChange must not snap back on an unrelated edit. A change
+        // of track order or of the track set counts too: engine track i
+        // plays the document's track i in display order.
         bool mix_changed = false;
         const std::vector<model::Id> order_before = track_order(document_->current());
+        const model::MixState mix_before = document_->current().mix;
         switch (m.action) {
             case api::ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
+                // Even one that leaves the document as it was: it ends a
+                // ride whose last ParameterChange need not be its value.
                 mix_changed = std::holds_alternative<model::SetMix>(op) ||
                               std::holds_alternative<model::SetMonitorBus>(op);
                 ok = document_->apply(op, u, why);
@@ -690,7 +702,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 send_to(from, out);
             } else {
                 send(out);
-                mix_changed = mix_changed || track_order(document_->current()) != order_before;
+                mix_changed = mix_changed || !(document_->current().mix == mix_before) ||
+                              track_order(document_->current()) != order_before;
                 show_document(mix_changed);
             }
         }

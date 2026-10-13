@@ -17,21 +17,42 @@
 
 namespace sonora {
 
-// Sets the mode on the calling thread if it is not set already. One
-// register read is nothing next to a block, so the audio thread calls this
-// at the top of every block rather than trust whichever thread a backend
-// happens to call it from; only the first call writes.
-inline void flush_denormals_on_this_thread() noexcept SONORA_RT {
+// Sets the mode on the calling thread for one block and puts the thread's
+// own back after it. Under pw-jack the block runs on PipeWire's data loop,
+// shared with other nodes that expect IEEE arithmetic
+// (cpu.zero.denormals defaults to false). A register read per block is
+// nothing next to the block; the writes happen only when the host's mode
+// differs.
+class FlushDenormals {
+public:
+    FlushDenormals() noexcept SONORA_RT {
 #if defined(__x86_64__) || defined(__i386__)
-    // FTZ is bit 15, DAZ bit 6.
-    const unsigned csr = _mm_getcsr();
-    if ((csr & 0x8040u) != 0x8040u) _mm_setcsr(csr | 0x8040u);
+        saved_ = _mm_getcsr();
+        if ((saved_ & kFtzDaz) != kFtzDaz) _mm_setcsr(saved_ | kFtzDaz);
 #elif defined(__aarch64__)
-    uint64_t fpcr;
-    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
-    const uint64_t fz = uint64_t(1) << 24;  // flushes denormal inputs and outputs alike
-    if ((fpcr & fz) == 0) __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr | fz));
+        __asm__ __volatile__("mrs %0, fpcr" : "=r"(saved_));
+        if ((saved_ & kFz) == 0) __asm__ __volatile__("msr fpcr, %0" : : "r"(saved_ | kFz));
 #endif
-}
+    }
+    ~FlushDenormals() {
+#if defined(__x86_64__) || defined(__i386__)
+        if ((saved_ & kFtzDaz) != kFtzDaz) _mm_setcsr(saved_);
+#elif defined(__aarch64__)
+        if ((saved_ & kFz) == 0) __asm__ __volatile__("msr fpcr, %0" : : "r"(saved_));
+#endif
+    }
+    FlushDenormals(const FlushDenormals&) = delete;
+    FlushDenormals& operator=(const FlushDenormals&) = delete;
+
+private:
+#if defined(__x86_64__) || defined(__i386__)
+    static constexpr unsigned kFtzDaz = 0x8040u;  // FTZ is bit 15, DAZ bit 6
+    unsigned saved_ = 0;
+#elif defined(__aarch64__)
+    // Flushes denormal inputs and outputs alike.
+    static constexpr uint64_t kFz = uint64_t(1) << 24;
+    uint64_t saved_ = 0;
+#endif
+};
 
 }  // namespace sonora

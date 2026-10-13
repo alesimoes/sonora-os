@@ -250,6 +250,43 @@ int test_build_from_model() {
     return 0;
 }
 
+// The audio thread reads a segment's source from source_offset with no
+// check (session.cpp, render_segment): a negative one reads before the
+// chunk buffer. The model refuses a crossfade longer than the right
+// region's handle, but the builder shifts the offset itself, so it refuses
+// such a plan on its own rather than trust every path into it.
+int test_crossfade_past_the_handle_is_refused() {
+    auto session = make_session(1);
+    CHECK(write_source(1, 8000));
+    CHECK(write_source(2, 8000));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 8000));
+    CHECK_APPLY(h, source_op(2, 8000));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 1000, 3000, 500), 0}));
+    CHECK_APPLY(h, (PlaceRegion{101, region(211, 2, 4000, 2000, 1000), 0}));
+    CHECK_APPLY(h, (SetCrossfade{101, Crossfade{210, 211, 128, Align::Centre, FadeShape::SCurve}}));
+
+    // What only a bypassed check could produce: 64 frames of crossfade
+    // before the cut with 10 frames of handle.
+    Snapshot bad = h.current();
+    auto edit = std::make_shared<EditState>(*bad.edit);
+    auto track = std::make_shared<TrackEdit>(*edit->tracks[0]);
+    auto list = std::make_shared<Playlist>(*track->playlists[0]);
+    list->regions[1].source_offset = 10;
+    track->playlists[0] = list;
+    edit->tracks[0] = track;
+    bad.edit = edit;
+
+    PlaybackController ctl(*session, kDir);
+    std::string error;
+    CHECK(!ctl.show(bad, error));
+    CHECK(error.find("before its source") != std::string::npos);
+    CHECK(!ctl.pending());
+    CHECK(ctl.show(h.current(), error));
+    return 0;
+}
+
 int test_limits_are_named() {
     auto session = make_session(1);
     CHECK(write_source(1, 8000));
@@ -770,6 +807,7 @@ int main() {
     ::mkdir(kDir.c_str(), 0775);
     ::mkdir((kDir + "/Audio Files").c_str(), 0775);
     if (test_build_from_model()) return 1;
+    if (test_crossfade_past_the_handle_is_refused()) return 1;
     if (test_limits_are_named()) return 1;
     if (test_undo_while_rolling()) return 1;
     if (test_locate_and_cancel()) return 1;

@@ -367,7 +367,7 @@ float segment_gain(const PlanSegment& s, int64_t t) noexcept SONORA_RT {
 void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // Per thread, and a backend may call from a new thread after a
     // reactivation, so it is checked every block.
-    flush_denormals_on_this_thread();
+    const FlushDenormals flush_denormals;
     // ADR-0009 §4.1: the block count, then the plan, before anything reads
     // either. A new plan is told by its epoch, never its address.
     const PlaybackPlan* plan = plans_->acquire();

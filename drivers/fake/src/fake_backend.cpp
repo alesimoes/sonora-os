@@ -90,6 +90,7 @@ struct FakeBackend::Impl {
     std::atomic<uint32_t> pending_xrun_frames{0};
     std::atomic<uint32_t> pending_step_back{0};
     std::atomic<uint32_t> pending_skip_frames{0};
+    std::atomic<uint32_t> pending_late_xrun_frames{0};
     uint32_t counter;  // the server's 32-bit frame counter; audio thread only
 
     drivers::PeriodGuard guard;
@@ -226,8 +227,12 @@ struct FakeBackend::Impl {
         }
         counter -= pending_step_back.exchange(0, std::memory_order_acq_rel);
         counter += pending_skip_frames.exchange(0, std::memory_order_acq_rel);
+        const uint32_t late = pending_late_xrun_frames.exchange(0, std::memory_order_acq_rel);
+        counter += late;
         const uint64_t frame_time =
             clock.widen(counter, nframes, xruns.load(std::memory_order_relaxed));
+        // Reported only once this period's callback has its frame time.
+        if (late != 0) xruns.fetch_add(1, std::memory_order_relaxed);
 
         for (uint32_t i = 0; i < inputs; ++i) {
             const int32_t src = input_source[i].load(std::memory_order_acquire);
@@ -474,6 +479,7 @@ void FakeBackend::deactivate() noexcept {
     }
     // A synchronous period running on another thread finishes first.
     while (d.in_period.load()) std::this_thread::yield();
+    d.clock.finish(d.xruns.load(std::memory_order_relaxed));
 }
 
 uint32_t FakeBackend::sample_rate() const { return impl_->rate; }
@@ -536,6 +542,10 @@ void FakeBackend::unpatch(uint32_t index) {
 
 void FakeBackend::inject_xrun(uint32_t frames) {
     impl_->pending_xrun_frames.fetch_add(frames, std::memory_order_acq_rel);
+}
+
+void FakeBackend::inject_late_xrun(uint32_t frames) {
+    impl_->pending_late_xrun_frames.fetch_add(frames, std::memory_order_acq_rel);
 }
 
 void FakeBackend::inject_server_loss() {

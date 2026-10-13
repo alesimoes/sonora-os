@@ -17,6 +17,10 @@ public:
     // so far; with them a skipped period is told from a reported xrun.
     // nframes 0 judges no step.
     uint64_t widen(uint32_t now, uint32_t nframes = 0, uint32_t xruns = 0) noexcept SONORA_RT {
+        // JACK reports an xrun on its notification thread, which may run
+        // only after the next period has started: a skip with no xrun yet
+        // is judged a period later.
+        if (skip_pending_) settle(xruns);
         if (!started_) {
             started_ = true;
             wide_ = now;
@@ -37,7 +41,7 @@ public:
                 // stays in frame_time; only the excuse was missing.
                 if (!resumed && last_nframes_ != 0 && step > last_nframes_ &&
                     xruns == last_xruns_) {
-                    count_discontinuity();
+                    skip_pending_ = true;
                 }
                 wide_ += step;
             }
@@ -46,6 +50,13 @@ public:
         last_nframes_ = nframes;
         last_xruns_ = xruns;
         return wide_;
+    }
+
+    // The periods have stopped (the server's deactivate has returned): a
+    // skip still waiting for its xrun is judged on the count reported by
+    // now. Never concurrently with widen().
+    void finish(uint32_t xruns) noexcept {
+        if (skip_pending_) settle(xruns);
     }
 
     // The server's clock ran on while no period reached us (a deactivation),
@@ -61,6 +72,17 @@ public:
 private:
     static constexpr uint32_t kMaxForward = 0x7FFFFFFFu;
 
+    // A late xrun excuses the pending skip and no other: it leaves the count
+    // the current period is judged against.
+    void settle(uint32_t xruns) noexcept SONORA_RT {
+        skip_pending_ = false;
+        if (xruns == last_xruns_) {
+            count_discontinuity();
+        } else {
+            ++last_xruns_;
+        }
+    }
+
     void count_discontinuity() noexcept SONORA_RT {
         discontinuities_.store(discontinuities_.load(std::memory_order_relaxed) + 1,
                                std::memory_order_relaxed);
@@ -70,6 +92,7 @@ private:
     uint32_t last_ = 0;
     uint32_t last_nframes_ = 0;
     uint32_t last_xruns_ = 0;
+    bool skip_pending_ = false;
     uint64_t wide_ = 0;
     std::atomic<bool> resumed_{false};
     // The audio thread is the only writer.

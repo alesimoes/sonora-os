@@ -68,6 +68,11 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     out = nullptr;
     report = PlanReport{};
     const auto& tracks = snapshot.edit->tracks;
+    // The audio thread divides by it.
+    if (limits.chunk_frames == 0) {
+        error = "the playback chunk size is 0";
+        return false;
+    }
     if (tracks.size() > limits.engine_tracks) {
         error = "the session has " + str(tracks.size()) + " tracks; the engine was created with " +
                 str(limits.engine_tracks) + " (limit: tracks)";
@@ -159,7 +164,15 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             if (kept[i]) playing.push_back(segs[i]);
         }
         segs.swap(playing);
-        for (std::size_t i = 1; i < segs.size(); ++i) {
+        for (std::size_t i = 0; i < segs.size(); ++i) {
+            // The audio thread indexes the chunk buffer from source_offset
+            // unchecked; a crossfade has just moved it back by its length.
+            if (segs[i].source_offset < 0 || segs[i].end <= segs[i].start) {
+                error = where + ": a segment at " + str(segs[i].start) +
+                        " starts before its source or is empty";
+                return false;
+            }
+            if (i == 0) continue;
             // What the audio thread's cursor and binary search rely on.
             if (segs[i].start < segs[i - 1].start || segs[i].end < segs[i - 1].end) {
                 error = where + ": segments out of order at " + str(segs[i].start);

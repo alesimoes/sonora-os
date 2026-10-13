@@ -16,6 +16,10 @@
 #include "playback_test.h"
 #include "sonora/session.h"
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#endif
+
 namespace {
 
 using namespace playback_test;
@@ -494,8 +498,18 @@ int test_denormals_are_flushed() {
     // 1e-20 x 1e-20 is 1e-40, below FLT_MIN (1.2e-38) and above zero.
     s.tracks()[0]->set_gain(1e-20f);
     for (uint32_t i = 0; i < kBlock; ++i) rig.in[0][i] = 1e-20f;
+#if defined(__x86_64__) || defined(__i386__)
+    // Under pw-jack the callback runs on PipeWire's data loop, shared with
+    // other nodes that expect IEEE arithmetic: the mode is the block's
+    // alone. FTZ is bit 15 of MXCSR, DAZ bit 6.
+    const unsigned host_mode = _mm_getcsr() & 0x8040u;
+    CHECK(host_mode != 0x8040u);
+#endif
     rig.block(kBlock);
     rig.block(kBlock);
+#if defined(__x86_64__) || defined(__i386__)
+    CHECK((_mm_getcsr() & 0x8040u) == host_mode);
+#endif
 #if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
     for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == 0.0f);
 #endif

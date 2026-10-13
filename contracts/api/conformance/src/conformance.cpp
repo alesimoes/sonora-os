@@ -407,6 +407,29 @@ int check_play(Rig& rig) {
                    "the second toggle_play failed: " + r.message);
             EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Stopped; }),
                    "the second toggle_play did not stop the roll");
+
+            // Space is toggle_play in both shipped keymaps and the only key
+            // there that stops a take.
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_,
+                           [&]() { return v.transport().state == TransportState::Recording; }),
+                   "the state block never showed the take running");
+            EXPECT(s.await(rig_, s.command("transport.toggle_play"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_play during a take failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Stopped && t.take == take + 1;
+                   }),
+                   "toggle_play did not close the take and announce the next number");
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "disarming failed: " + r.message);
             return ok();
         }
     };

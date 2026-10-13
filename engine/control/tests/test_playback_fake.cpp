@@ -22,6 +22,8 @@
 
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
+#include "sonora/model/op_codec.h"
+#include "sonora/model/replication.h"
 #include "sonora/session.h"
 
 #define CHECK(cond)                                                      \
@@ -268,6 +270,187 @@ int test_record_replies() {
         CHECK(audio.run_blocks(4) == 4);
         CHECK(c.run("transport.stop"));
 
+        // Still waiting when the server stops: answered, not left for a
+        // server started again to hold.
+        CHECK(c.run("transport.return_to_zero"));
+        const uint64_t held = c.send("transport.record");
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        CHECK(c.reply(held) == nullptr);
+        engine.shutdown();
+        CHECK(c.await(held, r));
+        CHECK(r.result == DispatchResult::Failed && r.message == "cancelled");
+        CHECK(audio.run_blocks(4) == 4);
+        CHECK(s.transport().state() == TransportState::Stopped);
+
+        audio.deactivate();
+        engine.server().after_deactivate();
+    }
+    s.reader().stop();
+    fs::remove_all(dir);
+    return 0;
+}
+
+sonora::model::ReplicationUpdate from_wire(const sonora::api::ModelUpdate& m) {
+    using sonora::api::ModelUpdateKind;
+    using Kind = sonora::model::ReplicationUpdate::Kind;
+    sonora::model::ReplicationUpdate u;
+    u.kind = m.kind == ModelUpdateKind::Op     ? Kind::Op
+             : m.kind == ModelUpdateKind::Undo ? Kind::Undo
+             : m.kind == ModelUpdateKind::Redo ? Kind::Redo
+                                               : Kind::Snapshot;
+    u.revision = m.revision;
+    u.undo_floor = m.undo_floor;
+    u.next_id = m.next_id;
+    u.bytes = m.bytes;
+    return u;
+}
+
+// What a replica shows and what the Track atomics hold are the same mix
+// after every model request, an undo and a redo included (ADR-0009 §2).
+// Mix is outside undo (§3): undoing the edit before a mute leaves the track
+// muted, in the document and in the audio alike.
+int test_mix_follows_the_document() {
+    namespace model = sonora::model;
+    const fs::path dir = fs::temp_directory_path() / "sonora_test_playback_fake_mix";
+    fs::remove_all(dir);
+    sonora::Session s(config(dir));
+    CHECK(s.create_dirs());
+    FakeBackend::Config fc;
+    fc.quantum = kQuantum;
+    FakeBackend audio(fc);
+    std::string error;
+    CHECK(audio.open({"sonora", 2, 2, kRate, ""}, s, error));
+    CHECK(audio.activate(error));
+    s.disk().start();
+    s.reader().start();
+    {
+        sonora::InProcessEngine engine(s, &audio);
+        CHECK(engine.connect(error));
+        Client c{engine, {}};
+        model::Replica replica;
+        std::size_t fed = 0;
+        const auto feed = [&]() {
+            engine.poll(c.inbox);
+            for (; fed < c.inbox.model.size(); ++fed) {
+                std::string why;
+                if (!replica.receive(from_wire(c.inbox.model[fed]), why)) return false;
+            }
+            return true;
+        };
+        const auto submit = [&](sonora::api::ModelAction action, const model::Operation* op) {
+            sonora::api::ModelRequest m;
+            m.action = action;
+            std::string why;
+            if (op != nullptr && !model::encode_operation(*op, m.op, why)) return false;
+            sonora::api::CommandReply r;
+            return c.await(engine.submit(m), r) && r.result == DispatchResult::Ok && feed();
+        };
+        for (int i = 0; i < 500 && !replica.synced(); ++i) {
+            CHECK(feed());
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        CHECK(replica.synced());
+        const model::Id t1 = replica.current().edit->tracks[0]->id;
+        const auto same_mix = [&]() {
+            const model::TrackMix* m = replica.current().mix.find(t1);
+            const sonora::Track& t = *s.tracks()[0];
+            return m != nullptr && t.muted() == m->mute && t.soloed() == m->solo &&
+                   std::fabs(t.gain() - std::pow(10.0f, m->gain_db / 20.0f)) < 1e-6f;
+        };
+
+        // An undoable edit, so the undo has something to take back.
+        model::AddMarker add;
+        add.marker.id = replica.current().next_id;
+        add.marker.name = "verse";
+        model::Operation op = add;
+        CHECK(submit(sonora::api::ModelAction::Apply, &op));
+
+        model::SetMix mute;
+        mute.mix = *replica.current().mix.find(t1);
+        mute.mix.mute = true;
+        mute.mix.gain_db = -6.0f;
+        op = mute;
+        CHECK(submit(sonora::api::ModelAction::Apply, &op));
+        CHECK(s.tracks()[0]->muted());
+        CHECK(same_mix());
+
+        CHECK(submit(sonora::api::ModelAction::Undo, nullptr));
+        CHECK(replica.current().edit->markers->markers.empty());
+        CHECK(replica.current().mix.find(t1)->mute);
+        CHECK(same_mix());
+        CHECK(submit(sonora::api::ModelAction::Redo, nullptr));
+        CHECK(replica.current().edit->markers->markers.size() == 1);
+        CHECK(same_mix());
+
+        mute.mix.mute = false;
+        op = mute;
+        CHECK(submit(sonora::api::ModelAction::Apply, &op));
+        CHECK(!s.tracks()[0]->muted());
+        CHECK(submit(sonora::api::ModelAction::Undo, nullptr));
+        CHECK(same_mix());
+
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+    }
+    s.reader().stop();
+    fs::remove_all(dir);
+    return 0;
+}
+
+// Space is transport.toggle_play in both shipped keymaps, and the only key
+// there that stops a take: during a take it closes it, the take joins the
+// document and the next take number is announced.
+int test_toggle_play_stops_a_take() {
+    const fs::path dir = fs::temp_directory_path() / "sonora_test_playback_fake_toggle";
+    fs::remove_all(dir);
+    sonora::Session s(config(dir));
+    CHECK(s.create_dirs());
+    FakeBackend::Config fc;
+    fc.quantum = kQuantum;
+    FakeBackend audio(fc);
+    std::string error;
+    CHECK(audio.open({"sonora", 2, 2, kRate, ""}, s, error));
+    CHECK(audio.activate(error));
+    CHECK(audio.connect_inputs_in_order() == 2);
+    s.disk().start();
+    s.reader().start();
+    {
+        sonora::InProcessEngine engine(s, &audio);
+        CHECK(engine.connect(error));
+        Client c{engine, {}};
+        const auto take_shown = [&](int32_t take) {
+            for (int i = 0; i < 2500; ++i) {
+                engine.poll(c.inbox);
+                const auto t = engine.state().transport();
+                if (!t.stale && t.take == take) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return false;
+        };
+        const int32_t take = s.next_free_take();
+        CHECK(take_shown(take));
+
+        CHECK(c.run("track.toggle_arm", 0));
+        CHECK(c.run("transport.record"));
+        CHECK(s.transport().state() == TransportState::Recording);
+        CHECK(audio.run_blocks(16) == 16);
+        CHECK(c.run("transport.toggle_play"));
+        CHECK(s.transport().state() == TransportState::Stopped);
+        CHECK(s.tracks()[0]->writer().frames_written() == uint64_t{16} * kQuantum);
+        CHECK(take_shown(take + 1));
+
+        std::size_t ops = 0;
+        for (int i = 0; i < 500 && ops < 2; ++i) {
+            engine.poll(c.inbox);
+            ops = 0;
+            for (const auto& m : c.inbox.model) {
+                ops += m.kind == sonora::api::ModelUpdateKind::Op ? 1 : 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        CHECK(ops == 2);
+
         engine.shutdown();
         audio.deactivate();
         engine.server().after_deactivate();
@@ -282,6 +465,8 @@ int test_record_replies() {
 int main() {
     if (test_record_then_play_back()) return 1;
     if (test_record_replies()) return 1;
+    if (test_mix_follows_the_document()) return 1;
+    if (test_toggle_play_stops_a_take()) return 1;
     std::printf("playback_fake: ok\n");
     return 0;
 }

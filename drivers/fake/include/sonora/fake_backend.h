@@ -134,6 +134,9 @@ public:
     // control thread, in either mode. ---
     // The server loses `frames`: one xrun reported, and frame_time jumps.
     void inject_xrun(uint32_t frames);
+    // The same, with the xrun reported only after that period's callback
+    // has run, as JACK's notification thread can.
+    void inject_late_xrun(uint32_t frames);
     // The server dies: no period runs again and the ports are gone.
     void inject_server_loss();
     // The server runs its next period at `rate`. With `notify` the server

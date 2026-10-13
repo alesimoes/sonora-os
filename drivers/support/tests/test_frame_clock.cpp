@@ -102,9 +102,59 @@ int test_unreported_skip_is_a_discontinuity() {
     CHECK(c.widen(1128, 128, 0) == 1128);
     CHECK(c.discontinuities() == 0);
     CHECK(c.widen(1384, 128, 0) == 1384);
-    CHECK(c.discontinuities() == 1);
+    // Judged a period late: its xrun may still be on its way.
+    CHECK(c.discontinuities() == 0);
     CHECK(c.widen(1512, 128, 0) == 1512);
     CHECK(c.discontinuities() == 1);
+    CHECK(c.widen(1640, 128, 0) == 1640);
+    CHECK(c.discontinuities() == 1);
+    return 0;
+}
+
+// JACK calls xrun_cb on its notification thread, which can run after the
+// next period's process_cb has started: the skip is seen before its excuse.
+// An xrun that lands by the next period excuses it.
+int test_late_xrun_is_not_a_discontinuity() {
+    FrameClock c;
+    c.widen(1000, 128, 0);
+    c.widen(1128, 128, 0);
+    CHECK(c.widen(1640, 128, 0) == 1640);
+    CHECK(c.widen(1768, 128, 1) == 1768);
+    CHECK(c.widen(1896, 128, 1) == 1896);
+    CHECK(c.discontinuities() == 0);
+    return 0;
+}
+
+// One late xrun excuses one skip: a second skip in the period it lands in
+// still needs its own.
+int test_late_xrun_excuses_one_skip() {
+    FrameClock c;
+    c.widen(1000, 128, 0);
+    c.widen(1128, 128, 0);
+    c.widen(1640, 128, 0);
+    c.widen(2000, 128, 1);
+    c.widen(2128, 128, 1);
+    CHECK(c.discontinuities() == 1);
+    return 0;
+}
+
+// The periods stop with a skip still waiting: finish() judges it with the
+// count reported by then.
+int test_finish_judges_a_pending_skip() {
+    FrameClock a;
+    a.widen(1000, 128, 0);
+    a.widen(1128, 128, 0);
+    a.widen(1640, 128, 0);
+    a.finish(0);
+    CHECK(a.discontinuities() == 1);
+    FrameClock b;
+    b.widen(1000, 128, 0);
+    b.widen(1128, 128, 0);
+    b.widen(1640, 128, 0);
+    b.finish(1);
+    CHECK(b.discontinuities() == 0);
+    b.finish(1);
+    CHECK(b.discontinuities() == 0);
     return 0;
 }
 
@@ -138,6 +188,7 @@ int test_step_across_a_reactivation_is_not_a_skip() {
     CHECK(c.widen(480000, 128, 0) == 480000);
     CHECK(c.discontinuities() == 0);
     c.widen(480384, 128, 0);
+    c.widen(480512, 128, 0);
     CHECK(c.discontinuities() == 1);
     return 0;
 }
@@ -153,6 +204,9 @@ int main() {
     if (test_wrap_is_not_a_discontinuity() != 0) return 1;
     if (test_unreported_skip_is_a_discontinuity() != 0) return 1;
     if (test_reported_xrun_is_not_a_discontinuity() != 0) return 1;
+    if (test_late_xrun_is_not_a_discontinuity() != 0) return 1;
+    if (test_late_xrun_excuses_one_skip() != 0) return 1;
+    if (test_finish_judges_a_pending_skip() != 0) return 1;
     if (test_step_of_the_previous_period_is_not_a_skip() != 0) return 1;
     if (test_step_across_a_reactivation_is_not_a_skip() != 0) return 1;
     std::printf("test_frame_clock: ok\n");

@@ -445,6 +445,7 @@ void JackBackend::deactivate() noexcept {
     // Before the client is closed and before the caller frees the session,
     // so the callback cannot run against freed state.
     jack_deactivate(d.client);
+    d.clock.finish(d.xruns.load(std::memory_order_relaxed));
     d.active = false;
 }
 

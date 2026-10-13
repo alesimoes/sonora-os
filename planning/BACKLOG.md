@@ -270,6 +270,10 @@ not start or extend those items before the Complete DAW closes (owner,
       `Session::process()` and the chunk-slot loads through every playback
       path (fades, crossfades, ramps, misses, locates, swaps, delay lines).
       From the PR #31 RT audit. distro-engineer with rt-engineer.
+      PR #41's RT audit adds about ten audio-thread functions checked by
+      reading only (FrameClock, PlanExchange::acquire, render_segment,
+      FlushDenormals): the job should cover `test_playback_fake` and
+      `test_frame_clock` too.
 - [x] With M4, the state publisher is paced on a fixed timer. `StateView`
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
@@ -388,6 +392,19 @@ Order and owners are in ADR-0008 §5.
       queued behind an edit, transport.stop included, waits that long. Move
       the builder to a worker owned by engine/control, as ADR-0009 §4
       allows, before sessions that size are edited. rt-engineer.
+- [ ] The stop reply waits on the closed take's plan rebuild:
+      `follow_transport()` runs before `reply()` in
+      `EngineControlServer::handle()`, so Space's Ok comes after every
+      closed WAV header is read, 2xN operations are applied and the plan
+      is rebuilt (77-96 ms at 18x2000). Audio is unaffected; the
+      acknowledgement is late. Reply first, or fold it into the builder
+      worker above. From the PR #41 review (L1). rt-engineer.
+- [ ] Prove FrameClock's late-xrun deferral on real servers: under pw-jack
+      and jackd2, record `gettid()` in `xrun_cb` and `process_cb`, force
+      50 xruns (SIGSTOP the engine for over a period) and check
+      `clock_discontinuities()` stays 0. The deferral covers an xrun that
+      lands by the next period; one later still would be counted twice.
+      From the PR #41 RT audit. rt-engineer.
 - [ ] A take on N tracks is one undo step: a multi-track `RecordTake` (one
       operation carrying every track's region), as Pro Tools' one undo
       removes the whole take. Today `add_closed_take()` applies one
