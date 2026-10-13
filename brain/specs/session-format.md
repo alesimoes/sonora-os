@@ -13,6 +13,7 @@ both are in [ADR-0009](../decisions/ADR-0009-timeline-snapshots-and-plan-swap.md
   <Session Name>.sonora          the session file (this spec)
   Audio Files/                   every source, one BWF per take per track
   Session File Backups/          rotated saves, autosaves, pre-migration copies
+  Plugin State/                  plugin state blobs, content-addressed (version 2, ADR-0012)
 ```
 
 The folder is the unit. It is what goes on the persistence partition, what
@@ -93,7 +94,7 @@ writes, does not matter at this size (see "Size").
 
 ```json
 {
-  "sonora_session": 1,
+  "sonora_session": 2,
   "written_by": "sonora-engine 0.2.0",
   "save_generation": 42,
   "name": "Vocals Friday",
@@ -245,6 +246,7 @@ not referenced by any region in any playlist is *unused*. It stays.
     "mute": false,
     "solo": false,
     "active_playlist": 11,
+    "inserts": [ ... ],
     "playlists": [
       {
         "id": 11,
@@ -269,6 +271,51 @@ not referenced by any region in any playlist is *unused*. It stays.
   of them. Only the active playlist plays. The others exist for comping
   (Phase 3); the format carries them from the start so the Phase 3 change is
   behaviour, not format.
+- `inserts` (version 2): the track's plugin inserts. See "Inserts".
+
+### Inserts
+
+Version 2, [ADR-0012](../decisions/ADR-0012-plugin-hosting-m9.md) §6.
+Ordered by `slot`. Empty for a track with none, never absent.
+
+```json
+"inserts": [
+  {
+    "id": 41,
+    "slot": 0,
+    "plugin": { "format": "lv2", "id": "http://gareus.org/oss/lv2/dpl#mono",
+                "name": "x42-dpl Digital Peak Limiter Mono", "version": "0.9.2" },
+    "active": true,
+    "bypass": false,
+    "params": [ { "key": "threshold", "value": -1.0 } ],
+    "state": { "file": "Plugin State/3f1c…e9.state", "sha256": "3f1c…e9", "bytes": 812 }
+  }
+]
+```
+
+| Key | Meaning |
+|---|---|
+| `id` | Session-unique, from the shared id space. |
+| `slot` | 0 to 9, Pro Tools' A to J. Unique on the track; gaps are allowed. Signal flows in slot order, **pre-fader**. |
+| `plugin.format` | `"lv2"` or `"vst3"`. Anything else is refused. |
+| `plugin.id` | The LV2 plugin URI, or the VST3 class id as 32 hex digits. The plugin's identity. |
+| `plugin.name`, `plugin.version` | As scanned when the insert was made. Shown when the plugin is missing; no logic reads them. |
+| `active` | `false` is Pro Tools' inactive: not instantiated, not in the chain, no latency. Structure, so undoable (ADR-0012 O1). |
+| `bypass` | Instantiated and passing audio through, still delayed by its latency, so a toggle never shifts timing. Mix state: saved, not undoable. |
+| `params` | Parameter values by **stable key**: the LV2 port symbol, or the VST3 ParamID in decimal. Never a port index, which changes between plugin versions. Values are **format-native**: the LV2 port value, the VST3 normalised value (0..1). Floats, parsed straight into `float`. Keys unique per insert. Mix state. |
+| `state` | Optional. The plugin's own state, in a file under `Plugin State/` named by its SHA-256, with its size. Written durably before the session file that names it. Mix state. |
+
+- **State lives beside the file, not in it.** Some plugins' state runs to
+  megabytes, and the session file's bytes cross the control socket inside
+  every Snapshot and undo window (64 MiB cap). State files are append-only
+  like sources: a later save writes a new file, and unused ones are removed
+  only by an explicit cleanup.
+- **A missing plugin is kept.** An insert whose plugin is not installed
+  loads with everything it had, is left out of the chain and is shown as
+  missing. Dropping it would delete it at the next save.
+- A `state` file that is missing or whose hash does not match is reported
+  at open; the insert loads with the plugin's defaults plus its `params`,
+  and the operator is told.
 
 ### Regions
 
@@ -518,10 +565,13 @@ version cannot carry keys it does not define.
 - Adding a key with a default is still a version bump. That keeps the rule
   mechanical: the migration fills the default.
 
-Worked example, the expected v1→v2 (Phase 3 mixer): `monitor_bus` becomes
+**v1→v2 (inserts, ADR-0012):** every track gains `"inserts": []`. Nothing
+else changes. The frozen v1 fixture loads through it.
+
+Worked example, the expected v2→v3 (Phase 3 mixer): `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
-`pan_law_db`; each track gains `"output": <id of Main>` and empty `inserts`
-and `sends`. Nothing about regions changes. If that migration turns out to
+`pan_law_db`; each track gains `"output": <id of Main>` and empty `sends`
+(inserts already exist from v2), and buses gain empty `inserts`. Nothing about regions changes. If that migration turns out to
 need anything other than filling defaults, Phase 2's format was wrong, and
 that is the test of this design.
 
@@ -555,7 +605,8 @@ saved by this writer. The engine and the UI only ever open native files
 
 ## Not in version 1
 
-Automation, plugins and inserts, sends, VCA, groups, MIDI, clip-based time
+Inserts arrive in version 2 (above). Still not in the format: automation,
+sends, VCA, groups, MIDI, clip-based time
 stretch, video, interface state (zoom, scroll, window layout; ADR-0007 §5
 puts it outside the session), and the undo history. Each is a version bump
 when it arrives.

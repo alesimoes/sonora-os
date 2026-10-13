@@ -91,6 +91,16 @@ average — an average hides exactly the spike that causes the xrun.
 
 ## Status
 
+**2026-10-13, ADR-0012 (M9):** the open questions above are answered for
+plugins. The workers are the plugin hosts' own RT threads, one host per
+insert chain, scheduled by the kernel; the engine runs no plugin worker
+pool. The audio thread never waits: a chain's output is collected one
+block late (declared latency, absorbed by PDC), a missed block is silence,
+and eight in a row remove the chain. The plan's `InsertChain` node and the
+builder's `delay_frames` algorithm are in ADR-0012 §7. Whether shared
+memory with a deadline beats in-process hosting on total latency is still
+open on bare metal (ADR-0012, Unverified 1 and 4).
+
 **2026-10-13:** the host side exists (`plugins/host`, draft
 `contracts/plugin`). Reported latency was checked against measured delay
 with real Debian plugins, and the PDC arithmetic above nulled the wet path

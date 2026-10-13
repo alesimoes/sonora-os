@@ -388,6 +388,31 @@ executes the same list with dependencies (`plugin-latency-compensation.md`),
 and the `delay_frames` per path is where PDC goes. Neither needs the plan's
 shape to change, only its node kinds.
 
+### Insert chains and PDC in the plan
+
+Decided in [ADR-0012](../decisions/ADR-0012-plugin-hosting-m9.md) §7; this
+is the summary, the ADR is the rule.
+
+- `NodeKind` gains `TrackSource` (steps 1–2 above, at the track's channel
+  count), `InsertChain` (one plugin host's channel) and `TrackFader`
+  (step 3). A track with active inserts is `TrackSource → InsertChain →
+  TrackFader → BusSum`: inserts are **pre-fader**. A track without keeps
+  `TrackOut`, which is the three fused.
+- `PlanNode` gains `channel_slot`, `chain_id`, `latency_frames` (the chain's
+  latency as the builder read it, the IPC block included) and `channels`.
+  The plan records `last_insert_node`, after which the audio thread wakes
+  every host once.
+- An `InsertChain` node collects the output its host finished for the
+  previous block (silence and a counted miss if it did not, ramped back in
+  on recovery) and submits this block's input if the host is idle. It
+  never waits.
+- The builder sets every edge's `delay_frames` so all inputs of a node
+  arrive aligned on the slowest, with `delay_line` stable for the same
+  pair of stable ids across plans. Compensation over `max_delay_frames`
+  (default 16 384) is clamped and reported in red, not refused.
+- Capture reads the backend's inputs before any node runs, so nothing here
+  is on the path to disk.
+
 ### When a plan may be published: residency first
 
 This is the part that makes "undo without stopping the transport" true
