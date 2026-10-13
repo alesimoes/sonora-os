@@ -3,11 +3,11 @@ target_include_directories(sonora_keymap PUBLIC include)
 target_link_libraries(sonora_keymap PUBLIC sonora_api sonora_base PRIVATE sonora_json)
 
 add_executable(test_keymap tests/test_keymap.cpp)
-# Until M4 this test drives the handlers sonora-engine really installs, on a
-# real Session, and checks bytes against the terminal mode main.cpp sets. So
-# it links engine/control and ui/tui, an edge no ui/ module may have. M4 moves
-# the handlers behind EngineControl and this link goes with it.
-target_link_libraries(test_keymap PRIVATE sonora_keymap sonora_control sonora_tui)
+# What the engine implements comes from FakeEngine's Hello (contracts/api
+# testing), which engine/control's test holds to the real handlers. The
+# handler tests went to engine/control and the terminal-mode tests to ui/tui
+# in M4, so this test links nothing outside ui/keymap's own edges.
+target_link_libraries(test_keymap PRIVATE sonora_keymap sonora_api_fake)
 # The shipped profiles are part of what this test checks, so it needs to find
 # them wherever the build tree happens to be.
 target_compile_definitions(test_keymap PRIVATE

@@ -3,8 +3,9 @@
 // The shell's view of the engine, and its one clock.
 //
 // ShellModel owns the single 60 Hz GUI-thread timer ADR-0006 requires. Each
-// tick pulls: replies from the engine, one peak per attached meter, and --
-// at a quarter of the rate -- the transport and track flags. Nothing pushes
+// tick pulls: replies and events from the engine, one peak per attached
+// meter, and -- at a quarter of the rate -- one frame of the state block,
+// the transport and every track's flags from the same publish. Nothing pushes
 // into it; the engine is another process (ADR-0007 §3) and the only way in
 // is EngineAdapter, the seam M4 replaces.
 //
@@ -53,6 +54,10 @@ class ShellModel : public QObject {
     Q_PROPERTY(bool engineAlive READ engineAlive NOTIFY engineAliveChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
     Q_PROPERTY(QStringList notices READ notices NOTIFY noticesChanged)
+    // What the operator must act on, in red: why the backend stopped, why
+    // the take stopped writing, why no input is connected. Empty when
+    // nothing is wrong.
+    Q_PROPERTY(QString alertText READ alertText NOTIFY alertChanged)
     Q_PROPERTY(QStringList helpEntries READ helpEntries CONSTANT)
     Q_PROPERTY(QString renderPath READ renderPath NOTIFY renderPathChanged)
     Q_PROPERTY(bool softwareRendering READ softwareRendering NOTIFY renderPathChanged)
@@ -112,6 +117,7 @@ public:
     bool engineAlive() const { return alive_; }
     QString statusText() const { return status_; }
     QStringList notices() const { return notices_; }
+    QString alertText() const { return alert_text_; }
     QStringList helpEntries() const;
     QString renderPath() const { return render_path_; }
     bool softwareRendering() const { return software_; }
@@ -144,6 +150,7 @@ signals:
     void engineAliveChanged();
     void statusChanged();
     void noticesChanged();
+    void alertChanged();
     void renderPathChanged();
 
 protected:
@@ -151,7 +158,9 @@ protected:
 
 private:
     void report(const RouteResult& r);
-    void refreshState();
+    // `read_frame` false: tick() has just read frame_.
+    void refreshState(bool read_frame = true);
+    void takeEvents();
 
     EngineAdapter& engine_;
     KeyRouter& router_;
@@ -168,6 +177,8 @@ private:
     std::vector<bool> peak_read_;
     TransportSink transport_sink_;
     std::vector<CommandOutcome> replies_;
+    std::vector<EngineEvent> events_;
+    EngineFrame frame_;
     TickStats* stats_ = nullptr;
     Clock now_ns_;
     bool xkb_scan_codes_ = false;
@@ -185,6 +196,10 @@ private:
     QString status_;
     int64_t status_until_ns_ = 0;
     QStringList notices_;
+    QString fatal_;
+    QString take_failed_;
+    QString inputs_missing_;
+    QString alert_text_;
     QString render_path_ = QStringLiteral("not yet known");
     bool software_ = false;
     bool meters_available_ = true;

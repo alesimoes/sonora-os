@@ -1,6 +1,6 @@
 {
   "name": "Default",
-  "comment": "Matches what engine/src/main.cpp handles today. Phase 1 only.",
+  "comment": "Matches what the engine and the terminal interface implement today. Phase 1 only.",
   "bindings": {
     "space": "transport.toggle_record",
     "1": { "command": "track.toggle_arm", "target": 1 },

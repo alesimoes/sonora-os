@@ -17,7 +17,7 @@
 #include "key_router.h"
 #include "qt_keys.h"
 #include "recording_adapter.h"
-#include "synthetic_engine.h"
+#include "sonora/api/fake_engine.h"
 
 using namespace sonora;
 using namespace sonora::ui;
@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
         std::string err;
         CHECK(KeyMap::load_file(dir + "/" + file, map, err));
 
-        test::RecordingAdapter engine(18, SyntheticEngine::engine_commands());
+        test::RecordingAdapter engine(18, api::testing::FakeEngine::engine_commands());
         KeyRouter router(map, engine.info().implemented_commands,
                          [&engine](const std::string& c, const CommandContext& ctx) {
                              return engine.send(c, ctx);
@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
         KeyMap map;
         std::string err;
         CHECK(KeyMap::load_file(dir + "/protools.json", map, err));
-        test::RecordingAdapter engine(18, SyntheticEngine::engine_commands());
+        test::RecordingAdapter engine(18, api::testing::FakeEngine::engine_commands());
         KeyRouter router(map, engine.info().implemented_commands,
                          [&engine](const std::string& c, const CommandContext& ctx) {
                              return engine.send(c, ctx);
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
         KeyMap map;
         std::string err;
         CHECK(KeyMap::load_file(dir + "/logic.json", map, err));
-        test::RecordingAdapter engine(18, SyntheticEngine::engine_commands());
+        test::RecordingAdapter engine(18, api::testing::FakeEngine::engine_commands());
         KeyRouter router(map, engine.info().implemented_commands,
                          [&engine](const std::string& c, const CommandContext& ctx) {
                              return engine.send(c, ctx);

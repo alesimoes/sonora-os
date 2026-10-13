@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // sonora-ui: the Qt 6 interface, a separate process from the engine
-// (ADR-0007 §3). Until M4 it draws a synthetic engine through EngineAdapter;
-// see engine_adapter.h for exactly what M4 replaces. The session it edits is
-// a LocalDocument behind TimelineDocument, the model seam; see
-// timeline_document.h for what common/model and M7 replace.
+// (ADR-0007 §3). It reaches the engine through EngineAdapter on the control
+// API (control_adapter.h). Until M7 gives it a socket to the real engine,
+// the engine behind it is FakeEngine, the provider's fake, with a synthetic
+// signal on every input. The session it edits is a LocalDocument behind
+// TimelineDocument, the model seam; see timeline_document.h for what
+// common/model and M7 replace.
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QImage>
@@ -15,6 +17,7 @@
 #include <cstdio>
 #include <memory>
 
+#include "control_adapter.h"
 #include "key_router.h"
 #include "measure.h"
 #include "peak_source.h"
@@ -23,7 +26,7 @@
 #include "render_path.h"
 #include "session_model.h"
 #include "shell_model.h"
-#include "synthetic_engine.h"
+#include "sonora/api/fake_engine.h"
 #include "theme.h"
 #include "timeline_document.h"
 
@@ -56,7 +59,7 @@ bool parse(QGuiApplication& app, Options& o) {
                                     QStringLiteral("Key map profile (JSON)."),
                                     QStringLiteral("path"));
     const QCommandLineOption tracks({QStringLiteral("tracks")},
-                                    QStringLiteral("Tracks the synthetic engine offers (default 18)."),
+                                    QStringLiteral("Tracks the fake engine offers (default 18)."),
                                     QStringLiteral("n"));
     const QCommandLineOption hz({QStringLiteral("meter-hz")},
                                 QStringLiteral("Meter rate; default 60, 30 on a software rasteriser."),
@@ -76,7 +79,7 @@ bool parse(QGuiApplication& app, Options& o) {
                                    QStringLiteral("Seconds before --screenshot (default 3)."),
                                    QStringLiteral("seconds"));
     const QCommandLineOption dies({QStringLiteral("engine-dies-after")},
-                                  QStringLiteral("Stop the synthetic engine's heartbeat after N s."),
+                                  QStringLiteral("Stop the fake engine's heartbeat after N s."),
                                   QStringLiteral("seconds"));
     const QCommandLineOption nometers({QStringLiteral("no-meters")},
                                       QStringLiteral("Hide the meters (baseline for --measure)."));
@@ -139,18 +142,21 @@ int main(int argc, char** argv) {
     const KeyMap keymap = keymap_or_built_in(a.opt.keymap.toStdString(), refusal);
     if (!refusal.empty()) std::fprintf(stderr, "sonora-ui: %s\n", refusal.c_str());
 
-    SyntheticEngine engine(static_cast<uint32_t>(a.opt.tracks));
+    api::testing::FakeEngine::Config fake_config;
+    fake_config.tracks = static_cast<uint32_t>(a.opt.tracks);
+    api::testing::FakeEngine fake(fake_config);
+    ControlAdapter engine(fake);
     std::string error;
     if (!engine.connect(error)) {
         std::fprintf(stderr, "sonora-ui: %s\n", error.c_str());
         return 1;
     }
     if (a.opt.engine_dies_after_s >= 0) {
-        // Same clock the synthetic engine reads.
+        // Same clock the fake engine reads.
         const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count();
-        engine.die_at(static_cast<uint64_t>(now) +
+        fake.die_at(static_cast<uint64_t>(now) +
                       static_cast<uint64_t>(a.opt.engine_dies_after_s * 1e9));
     }
 

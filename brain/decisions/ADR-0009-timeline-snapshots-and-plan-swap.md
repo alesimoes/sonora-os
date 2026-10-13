@@ -391,6 +391,18 @@ DAW 2 to 5 are built on it. That is the risk accepted by doing the product
 first. The proxy figure for item 5 is the early warning: if it uses more
 than half the block on the laptop, raise it before building on the plan.
 
+## Update, 2026-10-13: a resync carries the undo window
+
+Amends §2's "that snapshot is opaque bytes (the session file's canonical
+JSON)". A session file holds one state, so a replica rebuilt from it could
+not undo what the engine could, and the first `Undo` after a resync
+desynced it, against §1's "engine and replica offer exactly the same undo
+steps". The snapshot is now `common/model`'s `encode_window()`: the current
+state with every undo step from the floor up and the pointer, sharing
+tracks and playlists across steps as the engine's history does. It is still
+opaque bytes to `contracts/api`. ADR-0007's M4 update, item 2, has the
+detail and the rule for a window over the wire's cap.
+
 ## Alternatives rejected
 
 **Command pattern with hand-written inverses, over a mutable model.** It is

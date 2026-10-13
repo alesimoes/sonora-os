@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The command vocabulary every interface surface binds to.
+// The command vocabulary every interface surface binds to, and the domain
+// each command belongs to (ADR-0007 §5).
 //
 // Key maps are data (keymaps/*.json) and name commands by stable string id.
 // Nothing here is reachable from Session::process(): it allocates, it holds
@@ -27,6 +28,16 @@ enum class CommandTarget {
     Track,  // track.arm, track.toggle_mute
 };
 
+// Who runs a command (ADR-0007 §5). An interface dispatches Interface
+// commands to its own registry and sends Engine commands to the engine as
+// api::CommandRequest; the engine installs handlers for Engine commands only.
+// The default for anything not listed as Interface is Engine: what is saved
+// in the session is engine state, how the operator looks at it is not.
+enum class CommandDomain {
+    Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
+    Interface,  // tool.*, zoom.*, edit.mode.*, app.quit
+};
+
 struct CommandSpec {
     const char* id;
     CommandTarget target;
@@ -37,6 +48,7 @@ struct CommandSpec {
     // instead of being accepted and then ignored for ever. When a command
     // that needs a value arrives, it sets this and the check starts passing.
     bool takes_argument = false;
+    CommandDomain domain = CommandDomain::Engine;
 };
 
 // Everything the interface may name. A key map is validated against this
@@ -85,30 +97,50 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.select_previous", CommandTarget::None, "Select the next track up"},
 
         // --- edit modes (ADR-0004: workflow, reproduced deliberately) ---
-        {"edit.mode.shuffle", CommandTarget::None, "Shuffle edit mode"},
-        {"edit.mode.slip", CommandTarget::None, "Slip edit mode"},
-        {"edit.mode.spot", CommandTarget::None, "Spot edit mode"},
-        {"edit.mode.grid", CommandTarget::None, "Grid edit mode"},
-        {"edit.mode.next", CommandTarget::None, "Cycle through the edit modes"},
+        {"edit.mode.shuffle", CommandTarget::None, "Shuffle edit mode",
+         false, CommandDomain::Interface},
+        {"edit.mode.slip", CommandTarget::None, "Slip edit mode",
+         false, CommandDomain::Interface},
+        {"edit.mode.spot", CommandTarget::None, "Spot edit mode",
+         false, CommandDomain::Interface},
+        {"edit.mode.grid", CommandTarget::None, "Grid edit mode",
+         false, CommandDomain::Interface},
+        {"edit.mode.next", CommandTarget::None, "Cycle through the edit modes",
+         false, CommandDomain::Interface},
 
         // --- tools ---
-        {"tool.smart", CommandTarget::None, "Smart Tool"},
-        {"tool.zoom", CommandTarget::None, "Zoomer tool"},
-        {"tool.trim", CommandTarget::None, "Trim tool"},
-        {"tool.select", CommandTarget::None, "Selector tool"},
-        {"tool.grab", CommandTarget::None, "Grabber tool"},
-        {"tool.scrub", CommandTarget::None, "Scrubber tool"},
-        {"tool.pencil", CommandTarget::None, "Pencil tool"},
-        {"tool.next", CommandTarget::None, "Cycle through the tools"},
+        {"tool.smart", CommandTarget::None, "Smart Tool",
+         false, CommandDomain::Interface},
+        {"tool.zoom", CommandTarget::None, "Zoomer tool",
+         false, CommandDomain::Interface},
+        {"tool.trim", CommandTarget::None, "Trim tool",
+         false, CommandDomain::Interface},
+        {"tool.select", CommandTarget::None, "Selector tool",
+         false, CommandDomain::Interface},
+        {"tool.grab", CommandTarget::None, "Grabber tool",
+         false, CommandDomain::Interface},
+        {"tool.scrub", CommandTarget::None, "Scrubber tool",
+         false, CommandDomain::Interface},
+        {"tool.pencil", CommandTarget::None, "Pencil tool",
+         false, CommandDomain::Interface},
+        {"tool.next", CommandTarget::None, "Cycle through the tools",
+         false, CommandDomain::Interface},
 
         // --- zoom ---
-        {"zoom.in", CommandTarget::None, "Zoom in horizontally"},
-        {"zoom.out", CommandTarget::None, "Zoom out horizontally"},
-        {"zoom.vertical_in", CommandTarget::None, "Zoom in vertically"},
-        {"zoom.vertical_out", CommandTarget::None, "Zoom out vertically"},
-        {"zoom.toggle", CommandTarget::None, "Toggle between two zoom states"},
-        {"zoom.fit_session", CommandTarget::None, "Fit the session in the window"},
-        {"zoom.fit_selection", CommandTarget::None, "Fit the selection in the window"},
+        {"zoom.in", CommandTarget::None, "Zoom in horizontally",
+         false, CommandDomain::Interface},
+        {"zoom.out", CommandTarget::None, "Zoom out horizontally",
+         false, CommandDomain::Interface},
+        {"zoom.vertical_in", CommandTarget::None, "Zoom in vertically",
+         false, CommandDomain::Interface},
+        {"zoom.vertical_out", CommandTarget::None, "Zoom out vertically",
+         false, CommandDomain::Interface},
+        {"zoom.toggle", CommandTarget::None, "Toggle between two zoom states",
+         false, CommandDomain::Interface},
+        {"zoom.fit_session", CommandTarget::None, "Fit the session in the window",
+         false, CommandDomain::Interface},
+        {"zoom.fit_selection", CommandTarget::None, "Fit the selection in the window",
+         false, CommandDomain::Interface},
 
         // --- nudge ---
         {"nudge.forward", CommandTarget::None, "Nudge forward by the nudge value"},
@@ -144,7 +176,8 @@ inline const std::vector<CommandSpec>& command_catalog() {
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},
-        {"app.quit", CommandTarget::None, "Leave the engine"},
+        {"app.quit", CommandTarget::None, "Leave the engine",
+         false, CommandDomain::Interface},
     };
     return catalog;
 }
@@ -154,6 +187,13 @@ inline const CommandSpec* find_command(const std::string& id) {
         if (id == spec.id) return &spec;
     }
     return nullptr;
+}
+
+// Whether `id` is a catalog command the engine runs. False for an id not in
+// the catalog at all.
+inline bool is_engine_command(const std::string& id) {
+    const CommandSpec* spec = find_command(id);
+    return spec != nullptr && spec->domain == CommandDomain::Engine;
 }
 
 // What a command was invoked with. Commands that do not take a target ignore

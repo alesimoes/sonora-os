@@ -161,11 +161,12 @@ replica applies it and checks the revision is the next one. Undo and redo
 are sent as `Undo{revision, floor}` and `Redo{revision, floor}`, and the
 replica moves its own history pointer; each operation also carries `floor`,
 and the replica evicts history below it (above). A gap or a mismatch
-makes the replica ask for a full snapshot, which is the session file's
-canonical JSON. In `contracts/api` that payload is **opaque bytes**:
-`contracts/api` cannot depend on `common/model` (ADR-0007 §1), so the
-engine encodes and `ui/client` decodes with `common/model`. One codec serves
-saving, replication resync and test fixtures.
+makes the replica ask for a full snapshot: the document with its whole undo
+window (`encode_window()`, ADR-0009's 2026-10-13 update), so the replica
+offers the same undo and redo as the engine from then on. A session file
+would not do: it holds one state. In `contracts/api` that payload is
+**opaque bytes**: `contracts/api` cannot depend on `common/model` (ADR-0007
+§1), so the engine encodes and `ui/client` decodes with `common/model`.
 
 ### Operations Phase 2 needs
 

@@ -118,15 +118,23 @@ end of its run. Keep it short: what is true now, not a diary.
   engine. Nothing caught it, because no test ran a bootloader unattended.
   ISO rebuilt 2026-10-12 with the fix.
 - **Qt 6 shell (`ui/qt`, `sonora-ui`; #10).** 18 scene-graph meters,
-  transport status, footer, track arming and key routing through `ui/keymap`, as a separate process over a
-  synthetic engine. `tools/build-ui.sh` builds it and runs 10 tests in the
-  `sonora-ui` image (one renders frames under Xvfb); the engine container and
-  CI have no Qt and skip it. The digit row is named by its physical key, so
+  transport status, footer, track arming and key routing through `ui/keymap`,
+  plus the Edit and Mix windows (#28), as a separate process talking to the
+  engine through the control API (#33) — `FakeEngine` until M7's socket.
+  `tools/build-ui.sh` builds it and runs 49 tests in the `sonora-ui` image
+  (one renders frames under Xvfb); CI runs them in the `ui` job. The digit row is named by its physical key, so
   AZERTY and ABNT2 arm the right track (`keymaps/README.md`). Measured with
   llvmpipe only (`brain/research/qt-shell-render-cost.md`): no GPU figure.
   Open: no compositor or systemd unit for it in the ISO (a compositor ADR is
-  architect's); whether `app.quit` closes only the UI;
-  at M4 `EngineAdapter`/`SyntheticEngine` give way to the control API.
+  architect's); whether `app.quit` closes only the UI; the real engine
+  reaches Qt only after M7 (process split, socket + state block).
+- **Control API landed (ADR-0007 M4, #33).** `contracts/api`: EngineControl
+  (commands, replies/events, model ops with undo window and floor), a
+  read-only state block read through StateView (consistent frames, stale
+  flag, per-reader peak cursors), ≤64 KiB framing for large messages;
+  `InProcessEngine` over the real Session and `FakeEngine` pass the same
+  conformance suite (11/11). The terminal UI is a client of it; commands
+  reach the audio thread only as atomic stores. Next: M7 process split.
 - **The quantum and rate are pinned against clients (2026-10-13).** Under
   ADR-0007 M2 a block-size or rate change ends a take. The old drop-in let 11
   of 16 client routes move the graph (`jack_set_buffer_size`,
