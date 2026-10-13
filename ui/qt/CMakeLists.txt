@@ -71,3 +71,17 @@ target_compile_definitions(test_ui_shell PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_shell COMMAND test_ui_shell)
 set_tests_properties(ui_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# test_render renders frames, so it needs a display and OpenGL: Xvfb and
+# llvmpipe, on xcb. The offscreen platform would give the software scene
+# graph, where meters draw nothing by design.
+add_executable(test_ui_render tests/test_render.cpp)
+target_link_libraries(test_ui_render PRIVATE sonora_ui_qt Qt6::Test)
+find_program(SONORA_XVFB_RUN xvfb-run)
+if(SONORA_XVFB_RUN)
+  add_test(NAME ui_render
+           COMMAND ${SONORA_XVFB_RUN} -a -s "-screen 0 1280x720x24" $<TARGET_FILE:test_ui_render>)
+  set_tests_properties(ui_render PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+else()
+  message(STATUS "ui/qt: xvfb-run not found; ui_render (a rendered frame) is not run")
+endif()
