@@ -62,6 +62,10 @@ The same goes for the progress catalogue. A PR that delivers an item in
 and `tools/progress.sh --check` passes. Merged but unverified is not done.
 The PR does not touch `planning/PROGRESS.md` (CI fails it if it does): the
 `publish-progress` job regenerates that file on `main` after the merge.
+Evidence that says "this PR" is correct and expected: a PR cannot know its
+number before it is opened, and `publish-progress` rewrites "this PR" to
+"PR #N" on `main` from the squash subject's `(#N)`. Never bounce a PR for
+it, and never ask for the number to be filled in by hand.
 
 ## Posting the verdict
 

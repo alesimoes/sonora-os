@@ -200,6 +200,11 @@ jobs:
       - name: Catalogue valid
         run: python3 tools/progress.py --check
 
+      # The "this PR" -> "PR #N" rewrite and the squash-subject parsing that
+      # publish-progress relies on on main, where a bug could not be caught.
+      - name: progress.py doctests
+        run: python3 -m doctest -v tools/progress.py
+
       # Every PR that regenerated PROGRESS.md conflicted with every other
       # queued PR, so only the publish-progress job below writes it.
       - name: PR leaves PROGRESS.md alone
@@ -238,18 +243,30 @@ jobs:
         with:
           ref: main
 
+      # A PR cannot know its number before it is opened, so its evidence
+      # says "this PR"; the squash subject's "(#N)" suffix names it here.
+      - name: Resolve "this PR" in evidence
+        run: |
+          subject=$(git log -1 --format=%s)
+          pr=$(python3 tools/progress.py --pr-from-subject "$subject")
+          if [ -n "$pr" ]; then
+            python3 tools/progress.py --resolve-this-pr "$pr"
+          else
+            echo "No (#N) in the head subject; evidence left as is."
+          fi
+
       - name: Regenerate
         run: python3 tools/progress.py --markdown
 
       - name: Commit if it changed
         run: |
-          if git diff --quiet -- planning/PROGRESS.md; then
-            echo "PROGRESS.md already current."
+          if git diff --quiet -- planning/progress.json planning/PROGRESS.md; then
+            echo "progress.json and PROGRESS.md already current."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add planning/PROGRESS.md
+          git add planning/progress.json planning/PROGRESS.md
           git commit -m "Regenerate PROGRESS.md [skip ci]"
           git push origin HEAD:main
 
