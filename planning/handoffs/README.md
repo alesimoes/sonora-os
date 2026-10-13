@@ -60,3 +60,7 @@ incomplete; fix the handoff, not just the session.
 Rules: claims carry evidence, not adjectives. "Tests pass" is not evidence;
 `tools/test-write-usb.sh: 81 ok, 0 FAIL` is. Paths, not pasted content. No
 logs, no diffs: they are in git and in `build-*/`.
+
+Evidence in `planning/progress.json` names the PR as "this PR": the number
+is unknown until the PR is opened, and CI rewrites it to "PR #N" on `main`
+at merge. Leave it; nobody bounces a PR for it.

@@ -9,10 +9,18 @@
     tools/progress.py --check-generated
                                    also fail if PROGRESS.md is stale (local use)
     tools/progress.py --summary    one line, for hooks
+    tools/progress.py --resolve-this-pr N
+                                   rewrite "this PR" in evidence to "PR #N"
+    tools/progress.py --pr-from-subject SUBJECT
+                                   print N from a squash subject "... (#N)"
 
 PROGRESS.md is regenerated on main by CI after each merge and never in a
 PR: a generated file edited by every PR made each merge conflict with every
 queued PR.
+
+A PR cannot know its own number before it is opened, so its evidence says
+"this PR". The same CI job on main resolves that to "PR #N" from the squash
+commit's "(#N)" suffix, so nobody has to bounce a PR to fill it in.
 
 Only merged and verified work counts as done. Work in progress is reported
 next to the percentage and never folded into it, so the number cannot be
@@ -23,6 +31,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,6 +106,50 @@ def validate(data):
                     errors.append("%s is doing without a branch" % where)
     if errors:
         raise Invalid("\n".join(errors))
+
+
+THIS_PR = re.compile(r"\bthis PR\b")
+# Evidence values in the raw JSON text, so the rewrite keeps the file's
+# hand-kept layout instead of re-serialising it.
+EVIDENCE = re.compile(r'("evidence"\s*:\s*")((?:[^"\\]|\\.)*)(")')
+SQUASH_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def resolve_this_pr(text, number):
+    """Returns (text, count) with "this PR" in evidence values made "PR #N".
+
+    >>> resolve_this_pr('{"evidence": "this PR: ctest 3/3"}', 33)
+    ('{"evidence": "PR #33: ctest 3/3"}', 1)
+    >>> resolve_this_pr('{"evidence": "see this PR and this PR."}', 7)
+    ('{"evidence": "see PR #7 and PR #7."}', 2)
+    >>> resolve_this_pr('{"evidence": "this PRs, unthis PR, this pr"}', 7)[1]
+    0
+    >>> resolve_this_pr('{"title": "this PR", "evidence": "PR #3"}', 7)[1]
+    0
+    """
+    count = 0
+
+    def fix(m):
+        nonlocal count
+        value, n = THIS_PR.subn("PR #%d" % number, m.group(2))
+        count += n
+        return m.group(1) + value + m.group(3)
+
+    return EVIDENCE.sub(fix, text), count
+
+
+def pr_from_subject(subject):
+    """The PR number from a squash-merge subject, or None.
+
+    >>> pr_from_subject("ADR-0007 M4: control API (contract/api) (#33)")
+    33
+    >>> pr_from_subject("Regenerate PROGRESS.md [skip ci]") is None
+    True
+    >>> pr_from_subject("Fix (#12) in the middle of a subject") is None
+    True
+    """
+    m = SQUASH_SUFFIX.search(subject)
+    return int(m.group(1)) if m else None
 
 
 class Tally:
@@ -273,6 +326,10 @@ def main(argv=None):
     mode.add_argument("--check-generated", action="store_true",
                       help="as --check, and exit 1 if PROGRESS.md is stale")
     mode.add_argument("--summary", action="store_true", help="print one line")
+    mode.add_argument("--resolve-this-pr", type=int, metavar="N",
+                      help='rewrite "this PR" in evidence to "PR #N"')
+    mode.add_argument("--pr-from-subject", metavar="SUBJECT",
+                      help='print N from a subject ending "(#N)", else nothing')
     parser.add_argument("--ascii", action="store_true",
                         help="ASCII bars, for terminals without Unicode")
     args = parser.parse_args(argv)
@@ -282,13 +339,28 @@ def main(argv=None):
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    if args.pr_from_subject is not None:
+        number = pr_from_subject(args.pr_from_subject)
+        if number is not None:
+            print(number)
+        return 0
+
     try:
         data = load()
     except Invalid as e:
         sys.stderr.write("progress.json is invalid:\n%s\n" % e)
         return 1
 
-    if args.markdown:
+    if args.resolve_this_pr is not None:
+        with open(CATALOGUE, encoding="utf-8", newline="") as f:
+            text, count = resolve_this_pr(f.read(), args.resolve_this_pr)
+        if count:
+            validate(json.loads(text))
+            with open(CATALOGUE, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+        print('progress: resolved %d "this PR" to "PR #%d"'
+              % (count, args.resolve_this_pr))
+    elif args.markdown:
         with open(REPORT, "w", encoding="utf-8", newline="\n") as f:
             f.write(render_markdown(data))
         print("wrote %s" % os.path.relpath(REPORT, ROOT).replace(os.sep, "/"))
