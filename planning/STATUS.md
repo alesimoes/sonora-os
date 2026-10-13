@@ -15,10 +15,9 @@ end of its run. Keep it short: what is true now, not a diary.
   the product exists; the UMC1820 is connected at the end. The image work
   below is done and parked, not abandoned.
 - **Build state:** the engine compiles clean under GCC 14 with `-Wall
-  -Wextra` and all six unit tests pass (ringbuffer, wav_writer, takes,
-  quit_signals, port_order, keymap), in the Debian trixie container built by
-  `tools/build-engine.sh`. Verified 2026-10-12 from a clean build directory,
-  and under the CI sanitizer flags (TSan; ASan+UBSan) in the same container
+  -Wextra` and all 15 ctests pass in the Debian trixie container built by
+  `tools/build-engine.sh`. Verified 2026-10-13 on `contract/backend`, and
+  under the CI sanitizer flags (TSan; ASan+UBSan) in the same container
   -- TSan needs `--security-opt seccomp=unconfined` and `setarch -R` there,
   because Docker Desktop's kernel randomises more address bits than TSan
   maps. The writer/disk-thread race TSan found is fixed in `a141e9d`.
@@ -31,6 +30,18 @@ end of its run. Keep it short: what is true now, not a diary.
   disk, not only the tracks open now, and `WavWriter::open` flushes the
   header, so a disk that refuses it fails the take at start with the
   reason instead of in the disk thread later.
+- **ADR-0007 M2, the backend contract (`contract/backend`).** JACK only in
+  `drivers/jack/src`; `contracts/backend` holds `AudioBackend`,
+  `ProcessCallback`, `AudioBlock`; `drivers/support` the shared helpers.
+  Unplug, stall, rate and buffer changes are fatal and close the take; the
+  engine locks its memory. Default policies from the final review
+  (2026-10-12, ADR-0007 M2 note items 8 to 12): without `--device` the one
+  USB interface is used and onboard capture only when named, waiting for a
+  late interface rather than falling back; a misspelled device fails after
+  the wait; a take with no input on an armed track is refused; teardown is
+  bounded to 5 s. All of it is container-verified only: no UMC1820 has
+  been attached, so the USB rule (aliases -> `/proc/asound/<card>/usbid`)
+  is unproven on hardware.
 - **Key map review fixes (2026-10-12, `feature/ui-foundation`):** a take on
   disk is never overwritten -- the take number comes from the session folder
   and the writer creates with O_EXCL; arming is refused during a take; SS3
@@ -110,7 +121,7 @@ end of its run. Keep it short: what is true now, not a diary.
 | Container recording test | rt-engineer | passing, wired into CI |
 | QEMU boot smoke test | distro-engineer | passing, 19 checks |
 | `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
-| ADR-0007 M2, backend contract | rt-engineer + driver-engineer | on `contract/backend`, not pushed; needs both owners' reviews, `code-reviewer` and `rt-safety-auditor` |
+| ADR-0007 M2, backend contract | rt-engineer + driver-engineer | PR from `contract/backend`; reviewed by both owners, `code-reviewer` and `rt-safety-auditor`; hardware untested |
 
 ## Blocked
 
