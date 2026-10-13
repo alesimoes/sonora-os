@@ -182,6 +182,7 @@ end of its run. Keep it short: what is true now, not a diary.
 | `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
 | ADR-0007 M2, backend contract | rt-engineer + driver-engineer | PR from `contract/backend`; reviewed by both owners, `code-reviewer` and `rt-safety-auditor`; hardware untested |
 | LV2 plugin host (`plugins/host`) and draft `contracts/plugin` | plugin-engineer | PR #26: 15 plugin ctest cases pass in `tools/build-plugins.sh` (depth 1 and poll-only); contract merged as a draft, acceptance items in BACKLOG Track 4; engine side is M4+ |
+| VST3 hosting in `plugins/host` (same chain, same protocol) | plugin-engineer | 16 VST3 ctest cases pass in `tools/build-plugins.sh` (AGain, LSP limiter, in-tree crash/mismatch/liar); `brain/research/plugin-host-vst3.md`; yabridge next (BACKLOG Track 4 item 6) |
 
 ## Blocked
 

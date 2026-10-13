@@ -18,6 +18,11 @@
 //    a frame offset inside it, so a change lands on a known sample, plus a
 //    last-value table in the region, so a dropped block or a restarted host
 //    never loses the current value of a control.
+//  TODO(accept) Parameter values: ParamChange::value is an LV2 port value
+//    but a NORMALISED VST3 value, so the engine must know each plugin's
+//    format. Format-neutral values need the host to convert plain to
+//    normalised, which in VST3 is a controller call and must happen off the
+//    processing thread (brain/research/plugin-host-vst3.md).
 //  TODO(accept) Crash and restart: a region a dead host touched is never
 //    reused. Restart = new memfd, new host, wait for Ready, re-read
 //    latency_frames, then rejoin through a control-thread plan swap with
@@ -154,9 +159,10 @@ enum class HostState : uint32_t {
 // goes to the host's stderr and, later, over the HostControl socket.
 enum class Refusal : uint32_t {
     None = 0,
-    NotFound = 1,             // no plugin with that URI is installed
-    ChannelMismatch = 2,      // declared audio ports cannot map to `channels`
-    UnsupportedFeature = 3,   // requires an LV2 feature the host lacks
+    NotFound = 1,             // no plugin with that URI (LV2) or class id (VST3)
+    ChannelMismatch = 2,      // declared audio ports or buses cannot map to `channels`
+    UnsupportedFeature = 3,   // requires an LV2 feature the host lacks; VST3: no
+                              // IAudioProcessor or no 32-bit float processing
     UnsupportedPort = 4,      // a port type the host cannot connect (CV, ...)
     InstantiateFailed = 5,
     WroteOutsideBuffers = 6,  // declared N channels, wrote more (canary)
@@ -165,9 +171,11 @@ enum class Refusal : uint32_t {
 };
 
 // Engine -> host parameter change. `instance` is the index in the chain,
-// `port` the plugin's own port index (LV2 port index). Applied by the host
-// at the start of the next block it processes: the first block submitted
-// after the push. Block-tagged changes are a TODO(accept) above.
+// `port` the plugin's own parameter: the LV2 port index, or the VST3
+// ParamID. `value` is the LV2 port value, or the VST3 NORMALISED value (0..1,
+// clamped by the host). Applied by the host at the start of the next block
+// it processes: the first block submitted after the push. Block-tagged
+// changes and format-neutral values are TODO(accept) above.
 struct ParamChange {
     uint32_t instance;
     uint32_t port;

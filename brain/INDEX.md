@@ -40,6 +40,7 @@ One line per entry. Agents read this before opening anything else.
   - **Open question:** Slakh and StemGMD are MIDI rendered through commercial instruments; it is open whether ADR-0011 §4.6 excludes them.
   - **Code:** a licence table for about 40 DSP projects and about 35 neural-DSP repositories.
   - **Amps, speakers, mics:** a "virtual capture" pipeline (SPICE of published circuits plus maker T/S curves) with its limits and validation plan; mic modelling; vocal-balancing data. Biggest gap: no commercially licensed multitrack corpus.
+- [VST3 in the plugin host](research/plugin-host-vst3.md) — VST3 SDK licence checked at the source (MIT since 3.8, 2025-10-29; Debian's 3.7.10 headers used under GPL-3: compatible). AGain gain exact, LSP limiter latency matches measured to the sample, also in a mixed LV2+VST3 chain and across a runtime look-ahead change (reported 35 ms late); crash, bus-mismatch and 8-channel liar refused. `getLatencySamples()` at activation was 0 for a 240-sample plugin.
 - [LV2 plugin host, container](research/plugin-host-lv2-container.md) — `sonora-plugin-host` with eg-amp, x42-dpl and the LSP limiter: gain exact, reported latency matches measured to the sample and PDC nulls to 0, a segfaulting plugin kills only the host and is named, a late one is dropped then removed; round trip p50 62 µs / p99 252 µs (container). A timed wait overshot 2 ms by 5.9 ms once: argues for pipeline depth 1.
 
 ## Postmortems

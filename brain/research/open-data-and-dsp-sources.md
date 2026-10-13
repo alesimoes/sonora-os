@@ -827,7 +827,8 @@ capability as published, not measured here.
    covers Slakh, StemGMD and E-GMD, which are MIDI rendered through
    commercial sample instruments (A.4 note 1). This is the
    architect's and owner's question.
-2. The VST3 SDK's licence (ADR-0011 Unverified 1). Not re-checked here.
+2. The VST3 SDK's licence (ADR-0011 Unverified 1). Not re-checked here;
+   settled since in `plugin-host-vst3.md` (MIT from 3.8, GPL-3 compatible).
 3. Whether any TONE3000 uploader offers a CC licence on a capture.
 4. The data location and licence of the Surrey microphone IR dataset.
 5. Whether Celestion publishes full T/S for guitar drivers. The official

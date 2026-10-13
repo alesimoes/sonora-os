@@ -7,6 +7,11 @@
 #   lsp-plugins-lv2  the LSP limiter, a second latency-reporting plugin (LGPL-3+)
 # lilv-utils is for a person poking at the image (lv2ls, lv2info), not the tests.
 #
+# VST3, also Debian trixie main (licences: brain/research/plugin-host-vst3.md):
+#   libvst3sdk-dev     Steinberg's VST3 SDK headers, 3.7.10, used under GPL-3
+#   vst3sdk-plugins    the SDK's sample plugins; AGain is the gain test (BSD-3-clause)
+#   lsp-plugins-vst3   the LSP limiter as VST3, the latency test (LGPL-3+)
+#
 # Nothing here ships in the ISO. Which plugins the appliance carries is a
 # separate decision.
 FROM debian:trixie-slim
@@ -25,6 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       lv2-examples \
       x42-plugins \
       lsp-plugins-lv2 \
+      libvst3sdk-dev \
+      vst3sdk-plugins \
+      lsp-plugins-vst3 \
     && rm -rf /var/lib/apt/lists/*
 
 CMD ["bash"]

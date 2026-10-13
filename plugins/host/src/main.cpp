@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-plugin-host: runs third-party LV2 plugins in a process of their own
-// (ADR-0007 §3), so a plugin that crashes ends this process and not the
-// engine's session.
+// sonora-plugin-host: runs third-party LV2 and VST3 plugins in a process of
+// their own (ADR-0007 §3), so a plugin that crashes ends this process and not
+// the engine's session.
 //
-//   sonora-plugin-host --list [--json] [--bundle DIR]...
-//   sonora-plugin-host --probe URI [--channels N] [--bundle DIR]...
-//   sonora-plugin-host --shm-fd FD --chain URI[,URI...] [--bundle DIR]...
+//   sonora-plugin-host --list [--json] [--format lv2|vst3] [--bundle DIR]...
+//   sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...
+//   sonora-plugin-host --shm-fd FD --chain ID[,ID...] [--bundle DIR]...
 //                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
+//
+// An ID is an LV2 plugin URI, or "vst3:" and a VST3 class ID in hex
+// (vst3_host.h). A chain may mix the two. A --bundle ending in ".vst3" is a
+// VST3 bundle searched before ~/.vst3, /usr/lib/vst3 and /usr/local/lib/vst3;
+// any other is an LV2 bundle.
 //
 // --engine-pid is the engine's pid: the host exits at once if that process is
 // not its parent, and later when it stops being so (ipc.h, die_with_parent).
@@ -22,9 +27,14 @@
 // process, with the opaque parent-window token of ADR-0007 update 1 item 6
 // carried but empty on the appliance.
 
+#include "chain.h"
 #include "ipc.h"
+#include "loader.h"
 #include "lv2_host.h"
 #include "sonora/plugin/protocol.h"
+#ifdef SONORA_HAVE_VST3
+#include "vst3_host.h"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -38,9 +48,42 @@ using namespace sonora::plugin_host;
 
 namespace {
 
+bool is_vst3_id(const std::string& id) { return id.rfind("vst3:", 0) == 0; }
+
+bool is_vst3_bundle(std::string path) {
+    while (path.size() > 1 && path.back() == '/') path.pop_back();
+    return path.size() > 5 && path.compare(path.size() - 5, 5, ".vst3") == 0;
+}
+
+// Every format behind one PluginSource, so a chain neither knows nor cares
+// which format each of its plugins is.
+class Catalog : public PluginSource {
+public:
+    Lv2World lv2;
+#ifdef SONORA_HAVE_VST3
+    Vst3World vst3;
+#endif
+
+    std::unique_ptr<Processor> instantiate(const std::string& id, const ChainConfig& config,
+                                           const std::vector<float*>& in,
+                                           const std::vector<float*>& out,
+                                           ChainError& error) override {
+        if (is_vst3_id(id)) {
+#ifdef SONORA_HAVE_VST3
+            return vst3.instantiate(id, config, in, out, error);
+#else
+            error.reason = plugin::Refusal::UnsupportedFeature;
+            error.message = "this sonora-plugin-host was built without VST3: " + id;
+            return nullptr;
+#endif
+        }
+        return lv2.instantiate(id, config, in, out, error);
+    }
+};
+
 struct Options {
     bool list = false, json = false;
-    std::string probe;
+    std::string probe, format;
     int shm_fd = -1;
     int64_t engine_pid = 0;
     std::vector<std::string> chain, bundles;
@@ -56,9 +99,9 @@ struct Options {
 [[noreturn]] void usage(const char* why) {
     std::fprintf(stderr,
                  "sonora-plugin-host: %s\n"
-                 "usage: sonora-plugin-host --list [--json] [--bundle DIR]...\n"
-                 "       sonora-plugin-host --probe URI [--channels N] [--bundle DIR]...\n"
-                 "       sonora-plugin-host --shm-fd FD --chain URI[,URI...] [--bundle DIR]...\n"
+                 "usage: sonora-plugin-host --list [--json] [--format lv2|vst3] [--bundle DIR]...\n"
+                 "       sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...\n"
+                 "       sonora-plugin-host --shm-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
                  "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n",
                  why);
     std::exit(2);
@@ -87,6 +130,10 @@ Options parse(int argc, char** argv) {
         };
         if (a == "--list") o.list = true;
         else if (a == "--json") o.json = true;
+        else if (a == "--format") {
+            o.format = next();
+            if (o.format != "lv2" && o.format != "vst3") usage("--format is lv2 or vst3");
+        }
         else if (a == "--probe") o.probe = next();
         else if (a == "--shm-fd") o.shm_fd = std::atoi(next().c_str());
         else if (a == "--engine-pid") o.engine_pid = std::atoll(next().c_str());
@@ -109,58 +156,145 @@ Options parse(int argc, char** argv) {
     return o;
 }
 
-void load_bundles(Lv2World& world, const Options& o) {
+void load_bundles(Catalog& catalog, const Options& o) {
     for (const std::string& b : o.bundles) {
+        if (is_vst3_bundle(b)) {
+#ifdef SONORA_HAVE_VST3
+            catalog.vst3.add_bundle(b);
+#else
+            std::fprintf(stderr, "sonora-plugin-host: built without VST3, ignoring %s\n", b.c_str());
+#endif
+            continue;
+        }
         std::string err;
-        if (!world.load_bundle(b, err)) std::fprintf(stderr, "sonora-plugin-host: %s\n", err.c_str());
+        if (!catalog.lv2.load_bundle(b, err)) std::fprintf(stderr, "sonora-plugin-host: %s\n", err.c_str());
     }
 }
 
-// --list: static description, no plugin code runs. The latency field says
-// whether the plugin reports one and through which port; the value needs an
-// instance, which is --probe.
-int list(const Options& o) {
-    Lv2World world;
-    load_bundles(world, o);
-    for (const LilvPlugin* p : world.all()) {
-        const PluginInfo info = world.describe(p);
-        if (!o.json) {
-            std::printf("%s\n  uri:      %s\n  class:    %s\n  audio:    %u in, %u out\n",
-                        info.name.c_str(), info.uri.c_str(), info.class_label.c_str(),
-                        info.audio_in, info.audio_out);
-            if (info.latency_port >= 0)
-                std::printf("  latency:  reported on port %d\n", info.latency_port);
-            else
-                std::printf("  latency:  not reported (0)\n");
-            if (!info.missing_features.empty())
-                std::printf("  unusable: requires %s\n", info.missing_features.front().c_str());
-            for (const PortInfo& port : info.ports) {
-                std::printf("  port %2u   %-7s %-3s %-16s", port.index, port_kind_name(port.kind).c_str(),
-                            port.input ? "in" : "out", port.symbol.c_str());
-                if (port.kind == PortKind::Control && port.input)
-                    std::printf(" [%g .. %g] default %g", port.min, port.max, port.def);
-                std::printf("  %s\n", port.name.c_str());
-            }
-            continue;
+// One --list entry, the same shape for every format.
+void print_info(std::FILE* f, const PluginInfo& info, bool json) {
+    const bool vst3 = info.format == "vst3";
+    if (!json) {
+        std::fprintf(f, "%s\n  uri:      %s\n  format:   %s\n  class:    %s\n  audio:    %u in, %u out\n",
+                    info.name.c_str(), info.uri.c_str(), info.format.c_str(), info.class_label.c_str(),
+                    info.audio_in, info.audio_out);
+        if (info.latency_port >= 0)
+            std::fprintf(f, "  latency:  reported on port %d\n", info.latency_port);
+        else if (info.latency_frames >= 0)
+            std::fprintf(f, "  latency:  %lld frames at 48 kHz, 128-frame blocks\n",
+                        static_cast<long long>(info.latency_frames));
+        else
+            std::fprintf(f, "  latency:  not reported (0)\n");
+        if (!info.missing_features.empty())
+            std::fprintf(f, "  unusable: %s%s\n", vst3 ? "" : "requires ", info.missing_features.front().c_str());
+        for (const PortInfo& port : info.ports) {
+            std::fprintf(f, "  port %2u   %-7s %-3s %-16s", port.index, port_kind_name(port.kind).c_str(),
+                        port.input ? "in" : "out", port.symbol.c_str());
+            if (port.kind == PortKind::Audio && vst3) std::fprintf(f, " %u channel(s)", port.channels);
+            if (port.kind == PortKind::Control && port.input)
+                std::fprintf(f, " [%g .. %g] default %g", port.min, port.max, port.def);
+            if (!port.units.empty()) std::fprintf(f, " %s", port.units.c_str());
+            if (!vst3) std::fprintf(f, "  %s", port.name.c_str());
+            std::fprintf(f, "\n");
         }
-        std::printf("{\"uri\":\"%s\",\"name\":\"%s\",\"class\":\"%s\",\"audio_in\":%u,"
-                    "\"audio_out\":%u,\"latency_port\":%d,\"usable\":%s,\"ports\":[",
-                    json_escape(info.uri).c_str(), json_escape(info.name).c_str(),
-                    json_escape(info.class_label).c_str(), info.audio_in, info.audio_out,
-                    info.latency_port, info.missing_features.empty() ? "true" : "false");
-        for (std::size_t i = 0; i < info.ports.size(); ++i) {
-            const PortInfo& port = info.ports[i];
-            std::printf("%s{\"index\":%u,\"symbol\":\"%s\",\"name\":\"%s\",\"type\":\"%s\","
-                        "\"direction\":\"%s\"",
-                        i ? "," : "", port.index, json_escape(port.symbol).c_str(),
-                        json_escape(port.name).c_str(), port_kind_name(port.kind).c_str(),
-                        port.input ? "in" : "out");
-            if (port.kind == PortKind::Control)
-                std::printf(",\"min\":%g,\"max\":%g,\"default\":%g", port.min, port.max, port.def);
-            std::printf("}");
-        }
-        std::printf("]}\n");
+        return;
     }
+    std::fprintf(f, "{\"uri\":\"%s\",\"format\":\"%s\",\"name\":\"%s\",\"class\":\"%s\",\"audio_in\":%u,"
+                "\"audio_out\":%u,\"latency_port\":%d,\"latency_frames\":%lld,\"usable\":%s",
+                json_escape(info.uri).c_str(), json_escape(info.format).c_str(),
+                json_escape(info.name).c_str(), json_escape(info.class_label).c_str(), info.audio_in,
+                info.audio_out, info.latency_port, static_cast<long long>(info.latency_frames),
+                info.missing_features.empty() ? "true" : "false");
+    if (!info.missing_features.empty())
+        std::fprintf(f, ",\"reason\":\"%s\"", json_escape(info.missing_features.front()).c_str());
+    std::fprintf(f, ",\"ports\":[");
+    for (std::size_t i = 0; i < info.ports.size(); ++i) {
+        const PortInfo& port = info.ports[i];
+        std::fprintf(f, "%s{\"index\":%u,\"symbol\":\"%s\",\"name\":\"%s\",\"type\":\"%s\","
+                    "\"direction\":\"%s\"",
+                    i ? "," : "", port.index, json_escape(port.symbol).c_str(),
+                    json_escape(port.name).c_str(), port_kind_name(port.kind).c_str(),
+                    port.input ? "in" : "out");
+        if (port.kind == PortKind::Audio && vst3) std::fprintf(f, ",\"channels\":%u", port.channels);
+        if (port.kind == PortKind::Control)
+            std::fprintf(f, ",\"min\":%g,\"max\":%g,\"default\":%g", port.min, port.max, port.def);
+        if (!port.units.empty()) std::fprintf(f, ",\"units\":\"%s\"", json_escape(port.units).c_str());
+        std::fprintf(f, "}");
+    }
+    std::fprintf(f, "]}\n");
+}
+
+#ifdef SONORA_HAVE_VST3
+void print_failed_bundle(std::FILE* f, const std::string& bundle, const std::string& reason, bool json) {
+    if (json)
+        std::fprintf(f, "{\"bundle\":\"%s\",\"format\":\"vst3\",\"usable\":false,\"reason\":\"%s\"}\n",
+                    json_escape(bundle).c_str(), json_escape(reason).c_str());
+    else
+        std::fprintf(f, "%s\n  format:   vst3\n  unusable: %s\n", bundle.c_str(), reason.c_str());
+}
+#endif
+
+// --list. LV2 is a static description: no plugin code runs, and the latency
+// field says through which port a plugin reports it. A VST3 class has to be
+// loaded and instantiated to be described at all, so each bundle is scanned
+// in a child process of its own: one that crashes or hangs costs its own
+// entry, not the list, and the latency printed is the instance's own at
+// 48 kHz.
+int list(const Options& o) {
+    Catalog catalog;
+    load_bundles(catalog, o);
+    std::size_t lv2_count = 0, vst3_count = 0, vst3_failed = 0;
+    if (o.format.empty() || o.format == "lv2") {
+        for (const LilvPlugin* p : catalog.lv2.all()) {
+            print_info(stdout, catalog.lv2.describe(p), o.json);
+            ++lv2_count;
+        }
+    }
+#ifdef SONORA_HAVE_VST3
+    if (o.format.empty() || o.format == "vst3") {
+        // LSP's bundle, 184 classes each instantiated and run, took 19.9 s
+        // in the container (brain/research/plugin-host-vst3.md).
+        constexpr uint64_t kScanTimeoutNs = 120'000'000'000ull;
+        for (const std::string& bundle : catalog.vst3.bundles()) {
+            const IsolatedResult r = run_isolated(
+                [&](std::FILE* out) {
+                    Vst3World world;
+                    std::vector<PluginInfo> infos;
+                    std::string err;
+                    if (!world.describe_bundle(bundle, infos, err)) {
+                        print_failed_bundle(out, bundle, err, o.json);
+                        return 1;
+                    }
+                    for (const PluginInfo& info : infos) print_info(out, info, o.json);
+                    std::fflush(out);
+                    return 0;
+                },
+                kScanTimeoutNs);
+            std::fwrite(r.output.data(), 1, r.output.size(), stdout);
+            const bool printed_failure = r.exited && r.exit_code == 1;
+            if (r.exited && r.exit_code == 0) {
+                const char* const key = o.json ? "{\"uri\":" : "\n  uri:";
+                for (std::size_t at = r.output.find(key); at != std::string::npos;
+                     at = r.output.find(key, at + 1))
+                    ++vst3_count;
+            } else {
+                ++vst3_failed;
+                if (!printed_failure) {
+                    std::string why;
+                    if (r.timed_out) why = "the scan hung (killed after 120 s)";
+                    else if (!r.exited) why = "the scan crashed (signal " + std::to_string(r.signal) + ", " +
+                                              strsignal(r.signal) + ")";
+                    else why = "the scan exited with code " + std::to_string(r.exit_code);
+                    print_failed_bundle(stdout, bundle, why, o.json);
+                }
+            }
+        }
+    }
+#endif
+    std::fflush(stdout);
+    std::fprintf(stderr, "sonora-plugin-host: listed %zu LV2 plugin(s), %zu VST3 class(es); "
+                         "vst3_failed=%zu bundle(s)\n",
+                 lv2_count, vst3_count, vst3_failed);
     return 0;
 }
 
@@ -168,29 +302,41 @@ int list(const Options& o) {
 // 48 kHz / 128. Runs plugin code, so a scanner runs one probe per process:
 // a plugin that crashes on instantiate then costs one entry, not the list.
 int probe(const Options& o) {
-    Lv2World world;
-    load_bundles(world, o);
-    const LilvPlugin* p = world.find(o.probe);
-    if (!p) {
-        std::printf("{\"uri\":\"%s\",\"ok\":false,\"reason\":\"not installed\"}\n",
-                    json_escape(o.probe).c_str());
+    Catalog catalog;
+    load_bundles(catalog, o);
+    PluginInfo info;
+    ChainError err;
+    bool found = false;
+    if (is_vst3_id(o.probe)) {
+#ifdef SONORA_HAVE_VST3
+        found = catalog.vst3.describe(o.probe, info, err);
+#else
+        err.message = "this sonora-plugin-host was built without VST3";
+#endif
+    } else if (const LilvPlugin* p = catalog.lv2.find(o.probe)) {
+        info = catalog.lv2.describe(p);
+        found = true;
+    } else {
+        err.message = "not installed";
+    }
+    if (!found) {
+        std::printf("{\"uri\":\"%s\",\"ok\":false,\"reason\":\"%s\"}\n", json_escape(o.probe).c_str(),
+                    json_escape(err.message).c_str());
         return 3;
     }
-    const PluginInfo info = world.describe(p);
     ChainConfig cfg;
     cfg.channels = o.channels ? o.channels : (info.audio_in == info.audio_out && info.audio_in ? info.audio_in : 1);
-    Lv2Chain chain(world, cfg);
-    ChainError err;
+    Chain chain(catalog, cfg);
     const bool ok = chain.add(o.probe, err) && chain.validate(err);
     if (!ok) {
         std::printf("{\"uri\":\"%s\",\"ok\":false,\"reason\":\"%s\"}\n", json_escape(o.probe).c_str(),
                     json_escape(err.message).c_str());
         return 3;
     }
-    std::printf("{\"uri\":\"%s\",\"name\":\"%s\",\"ok\":true,\"channels\":%u,\"replicas\":%u,"
-                "\"latency_frames\":%u,\"sample_rate\":%u}\n",
-                json_escape(info.uri).c_str(), json_escape(info.name).c_str(), cfg.channels,
-                chain.replicas(0), chain.instance_latency(0), cfg.sample_rate);
+    std::printf("{\"uri\":\"%s\",\"name\":\"%s\",\"format\":\"%s\",\"ok\":true,\"channels\":%u,"
+                "\"replicas\":%u,\"latency_frames\":%u,\"sample_rate\":%u}\n",
+                json_escape(info.uri).c_str(), json_escape(info.name).c_str(), info.format.c_str(),
+                cfg.channels, chain.replicas(0), chain.instance_latency(0), cfg.sample_rate);
     return 0;
 }
 
@@ -205,7 +351,7 @@ int refuse(plugin::ChannelHeader& h, const ChainError& err, plugin::HostState st
     return state == plugin::HostState::Refused ? 3 : 4;
 }
 
-void publish_latency(plugin::ChannelHeader& h, const Lv2Chain& chain, uint32_t ipc_frames) {
+void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_frames) {
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].latency_frames.store(chain.instance_latency(i), std::memory_order_relaxed);
     // The IPC's own delay is declared like any look-ahead (ADR-0007 §4.3).
@@ -241,20 +387,20 @@ int serve(const Options& o) {
     const plugin::Layout layout = plugin::layout_of(h);
     const uint32_t ipc_frames = h.pipeline_depth * h.block_frames;
 
-    // Loading runs at normal priority: plugins read files and allocate in
-    // instantiate(), and that must not happen at SCHED_FIFO.
-    Lv2World world;
-    load_bundles(world, o);
+    // Loading runs at normal priority: plugins read files and allocate when
+    // they are instantiated, and that must not happen at SCHED_FIFO.
+    Catalog catalog;
+    load_bundles(catalog, o);
     ChainConfig cfg;
     cfg.sample_rate = h.sample_rate;
     cfg.max_frames = layout.max_frames;
     cfg.block_frames = h.block_frames;
     cfg.channels = layout.channels;
     const int rt_priority = h.host_rt_priority;
-    Lv2Chain chain(world, cfg);
+    Chain chain(catalog, cfg);
     ChainError cerr;
-    for (const std::string& uri : o.chain)
-        if (!chain.add(uri, cerr)) return refuse(h, cerr, plugin::HostState::Refused);
+    for (const std::string& id : o.chain)
+        if (!chain.add(id, cerr)) return refuse(h, cerr, plugin::HostState::Refused);
     for (const Options::Set& s : o.sets)
         if (!chain.set_control(s.instance, s.symbol, s.value))
             std::fprintf(stderr, "sonora-plugin-host: --set %u:%s: no such input control\n",
@@ -324,7 +470,6 @@ int serve(const Options& o) {
     signal(h.done_word);
     return 0;
 }
-
 
 }  // namespace
 
