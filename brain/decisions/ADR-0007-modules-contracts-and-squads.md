@@ -1165,21 +1165,62 @@ contract. Nothing here touches §3 or §10.
    container need `--ulimit memlock=-1:-1`.
 
 Items 8 to 12 answer the final code review. Each is the **default policy,
-2026-10-12**, chosen by the coordinator; the owner can override it.
+2026-10-12**, chosen by the coordinator; the owner can override it, and did
+for item 8 on 2026-10-13.
 
-8. **Which device without `--device`.** The appliance's unit passes none,
-   so the default has to be right on a laptop with onboard audio:
-   - an empty name means the one USB audio interface;
-   - non-USB capture (onboard, PCI, HDMI) is used only when named;
-   - no USB device yet means waiting (`--wait-for-inputs`), retrying the
-     auto-connect every half second, and in the terminal UI once a second
-     after that, with the reason on screen; onboard is never a fallback;
-   - several USB devices and no name: `open()` fails naming them;
-   - a named device still absent when the wait ends: the engine exits 1
-     naming it and listing those present (`describe_absent()`), headless
-     and interactive alike;
+8. **Which device without `--device`: default policy, revised by the owner
+   2026-10-13.** The owner connects the UMC1820 only when development as a
+   whole is finished; until then the laptop's onboard audio must record.
+   The 2026-10-12 rule (onboard only when named, never a fallback) is
+   replaced by:
+   - **the name**, in order: `--device NAME`; else the first line of
+     `~/.config/sonora/device` (on the appliance `/home/sonora`, which is on
+     the persistence partition, ADR-0005); else `/etc/sonora/device`. Blank
+     lines and `#` lines name nothing. The file lets the choice survive
+     reboots without editing the systemd unit. The image ships neither file;
+   - a named device is used whatever its bus, and one still absent when the
+     wait ends makes the engine exit 1 naming it and listing those present
+     (`describe_absent()`);
+   - no name: **a USB interface present is recorded from**, unchanged.
+     Several USB devices: `open()` fails naming them;
+   - no name and no USB device: **wait** (`--wait-for-inputs`), retrying
+     the auto-connect every half second; a patch made by hand within the
+     wait counts as inputs, and then nothing else is chosen;
+   - the wait over with nothing connected: **the one non-USB capture
+     device** is recorded from (`select_device(..., wait_over = true)`,
+     `fall_back_after_wait()` in `engine/app`), with a stderr line and a
+     notice kept on screen for the session: "recording from <device>
+     (onboard): no USB interface found". Several non-USB devices: the
+     engine exits 1 listing them. No device at all: not an error; the
+     terminal UI keeps looking once a second with the reason on screen, so
+     the unit never restart-loops on an empty machine. A device that
+     appears only later gets the same fallback there, and several are
+     named on screen instead of exiting;
+   - `--tracks auto` sizes the session to the device chosen this way, so
+     the wait and the fallback happen before the session exists: two
+     tracks on typical onboard audio, the interface's count on it;
+   - a USB interface that appears while recording from onboard **is not
+     switched to**, since that would change the channel count and the
+     ports under the tracks. The screen adds "USB interface <name> found;
+     restart the engine to record from it". The contract gains
+     `AudioBackend::choose_capture_device()`, which pins a device only if
+     none is chosen yet, so the backend itself cannot move either;
    - a take is refused while no armed track's input is connected
-     (`input_connected()`), with the reason on the status line.
+     (`input_connected()`), with the reason on the status line. When some
+     inputs are connected but none to an armed track, the reason says so
+     ("2 of 8 inputs are connected, none of them to an armed track")
+     rather than "nothing is connected".
+
+   Under jackd2, or wherever no device reads as USB, the one device present
+   is announced as onboard even if it is the interface; the notice is
+   wrong in name only, and naming the device silences it.
+
+   Container-verified (`tools/test-engine-docker.sh`): with only a fake
+   onboard device, `--tracks auto` and `--tracks 4` both record from it
+   after the wait with the notice; beside a second fake non-USB device both
+   are refused, the two named; a fake device patched by name and killed
+   mid-take ends the take through `DeviceGone`, the reason naming it, with
+   the files closed and full of what was captured.
 
    *Where the bus comes from.* Nothing in the JACK API names it, and under
    pw-jack 1.4.2 the client part of a port name is the node's
@@ -1194,14 +1235,17 @@ Items 8 to 12 answer the final code review. Each is the **default policy,
    JACK client with physical ports and `object.path` set through
    `PIPEWIRE_PROPS`): without the setting the aliases are empty; with it,
    alias 1 is `alsa:acp:PCH:0:capture:output_0`. Under jackd2, or with the
-   setting overridden, no device reads as USB and one must be named. Not
+   setting overridden, no device reads as USB: the one device present is
+   the fallback after the wait, and with several one must be named. Not
    verified on hardware: that a real UMC1820's ports carry the
    `alsa:acp:UMC1820:...` path, and that `/proc/asound/UMC1820/usbid`
    exists on the target.
 
-   Several USB devices fail fast, so under `Restart=always` the unit can
-   reach its start limit and leave tty1 on the last error. That is the
-   chosen behaviour: the operator has to pick one.
+   Several USB devices, or several non-USB ones with no USB device, fail
+   fast at startup, so under `Restart=always` the unit can reach its start
+   limit and leave tty1 on the last error. That is the chosen behaviour,
+   confirmed by the owner for the non-USB case: the operator has to pick
+   one, in the setting file.
 9. **Which sources `DeviceGone` covers.** Physical ones only: `pw-play`
    ending or a soft synth closing is not a device leaving. A source is
    forgotten once unlinked, so an interface unpatched earlier and removed
@@ -1220,7 +1264,12 @@ Items 8 to 12 answer the final code review. Each is the **default policy,
     means; not trivially safe, so it is left for its own change.
 11. **`frame_time` across a server clock step.** A step backwards in
     JACK's counter is a clock change, not a forward jump of nearly 2^32
-    frames: `FrameClock` holds still and counts a discontinuity.
+    frames: `FrameClock` holds still and counts a discontinuity. The
+    count reaches the operator through
+    `AudioBackend::clock_discontinuities()`: beside the xruns on the
+    terminal UI's status line ("clock steps") and in the headless
+    `RESULT` line (`clock_steps=`). It is reported, not failed: a step puts
+    no hole in the audio, only a break in the timestamps after it.
 12. **`PeriodGuard::state()`** reads the reason and its detail in one load,
     so `fatal_reason()` cannot print "48000 -> 0 Hz".
 

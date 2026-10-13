@@ -166,6 +166,12 @@ not start or extend those items before the Complete DAW closes (owner,
       undo-to-audible latency,
       p99 and max, on a real stick while 18 tracks record. rt-engineer.
 
+- [ ] On the owner's laptop, no interface: the engine records from the
+      onboard card after the 60 s wait, the notice on tty1, `--tracks auto`
+      gives its channel count (expected 2). Then with the UMC1820: it is
+      chosen over onboard, and plugged in mid-session it is noticed and not
+      switched to (ADR-0007 M2 note, item 8).
+
 ## ADR-0007 follow-ups
 
 - [ ] RTSan CI job: `clang-22` from trixie main, its own build

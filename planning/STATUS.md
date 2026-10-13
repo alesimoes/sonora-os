@@ -15,7 +15,7 @@ end of its run. Keep it short: what is true now, not a diary.
   the product exists; the UMC1820 is connected at the end. The image work
   below is done and parked, not abandoned.
 - **Build state:** the engine compiles clean under GCC 14 with `-Wall
-  -Wextra` and all 15 ctests pass in the Debian trixie container built by
+  -Wextra` and all 17 ctests pass in the Debian trixie container built by
   `tools/build-engine.sh`. Verified 2026-10-13 on `contract/backend`, and
   under the CI sanitizer flags (TSan; ASan+UBSan) in the same container
   -- TSan needs `--security-opt seccomp=unconfined` and `setarch -R` there,
@@ -34,14 +34,21 @@ end of its run. Keep it short: what is true now, not a diary.
   `drivers/jack/src`; `contracts/backend` holds `AudioBackend`,
   `ProcessCallback`, `AudioBlock`; `drivers/support` the shared helpers.
   Unplug, stall, rate and buffer changes are fatal and close the take; the
-  engine locks its memory. Default policies from the final review
-  (2026-10-12, ADR-0007 M2 note items 8 to 12): without `--device` the one
-  USB interface is used and onboard capture only when named, waiting for a
-  late interface rather than falling back; a misspelled device fails after
-  the wait; a take with no input on an armed track is refused; teardown is
-  bounded to 5 s. All of it is container-verified only: no UMC1820 has
-  been attached, so the USB rule (aliases -> `/proc/asound/<card>/usbid`)
-  is unproven on hardware.
+  engine locks its memory. Device policy, revised by the owner 2026-10-13
+  (ADR-0007 M2 note item 8): `--device`, else `~/.config/sonora/device`,
+  else `/etc/sonora/device`; else the one USB interface; else, once the
+  `--wait-for-inputs` window is over with nothing connected, the one
+  onboard device, with a notice kept on screen; several non-USB devices
+  fail listing them; a USB interface plugged in later is noticed, not
+  switched to. `--tracks auto` sizes to the chosen device (2 on onboard).
+  Also from the final review (items 9 to 12): a misspelled device fails
+  after the wait; a take with no input on an armed track is refused, saying
+  whether some inputs are connected; teardown is bounded to 5 s; clock
+  steps are shown beside xruns. All of it is container-verified only,
+  including DeviceGone on a killed patched device: no UMC1820 has been
+  attached, so the USB rule (aliases -> `/proc/asound/<card>/usbid`) is
+  unproven on hardware, and the onboard fallback is unproven on the
+  owner's laptop.
 - **Key map review fixes (2026-10-12, `feature/ui-foundation`):** a take on
   disk is never overwritten -- the take number comes from the session folder
   and the writer creates with O_EXCL; arming is refused during a take; SS3
