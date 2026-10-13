@@ -61,6 +61,37 @@ stops the engine, and the take is closed cleanly. `sonora-ui` started on its
 own uses the engine on the default socket if one is listening and its
 built-in fake engine otherwise, and says which on screen.
 
+### On Windows 11, through WSL2
+
+`tools/dev-wsl.ps1` installs a Debian WSL distro if there is none (no admin
+rights or reboot needed where WSL2 already runs, as it does for Docker
+Desktop), then runs `tools/dev-wsl.sh` inside it. That script installs the
+packages, builds into the distro's own disk, starts PipeWire with two
+pulse-tunnels to WSLg's PulseAudio server (the Windows speakers and
+microphone), and opens the engine and the Qt UI through WSLg. From
+PowerShell, in the checkout:
+
+    powershell -ExecutionPolicy Bypass -File tools\dev-wsl.ps1
+    # first time only: it stops after installing Debian; run `wsl -d Debian`
+    # once to create your Linux user, exit, and run the line above again
+
+Or from inside the distro, in the checkout (`/mnt/c/source/sound`):
+
+    tools/dev-wsl.sh                  # deps, build, engine + Qt UI
+    tools/dev-wsl.sh selftest         # record 4 s from the mic, play it back,
+                                      # print the levels of the take and of
+                                      # what was sent to the speakers
+    tools/dev-wsl.sh selftest --tone  # the same with a test tone, no mic
+
+Two tracks record the Windows default input. Armed tracks do not monitor
+their input, since a laptop's own mic and speakers feed back; disarm a track
+to hear it play, or set `SONORA_MONITOR=1` with headphones on. If the take is
+silent, allow desktop apps to use the microphone in Windows Settings >
+Privacy & security > Microphone. This is a development path: the engine runs
+with `--no-memlock`, without RT priority, and its sound goes through RDP
+audio, so xruns and latency here say nothing about the appliance. The script
+never shuts WSL down and leaves Docker Desktop's distros alone.
+
 ## Build
 
 Both builds need Linux; on Windows or macOS they run in a container.

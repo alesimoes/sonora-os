@@ -104,7 +104,7 @@
           "owner": "distro-engineer, researcher",
           "items": [
             {"id": "devenv.wsl_measure", "title": "Measure WSLg audio through PipeWire: stable quantum, round-trip latency, xruns over 10 min, microphone input", "size": "S", "phase": 2, "status": "todo", "note": "Assumption until measured: PipeWire inside WSL2 can bridge to WSLg's PulseAudio server for playback and capture. researcher"},
-            {"id": "devenv.wsl", "title": "tools/dev-wsl.sh: WSL2 Debian trixie with WSLg, builds engine and UI, starts PipeWire on onboard audio, runs both", "size": "M", "phase": 2, "status": "todo", "note": "Written when engine and UI are first connected (owner, 2026-10-13)"}
+            {"id": "devenv.wsl", "title": "tools/dev-wsl.sh: WSL2 Debian trixie with WSLg, builds engine and UI, starts PipeWire on onboard audio, runs both", "size": "M", "phase": 2, "status": "doing", "branch": "tools/dev-wsl", "evidence": "this PR: tools/dev-wsl.sh + tools/dev-wsl.ps1; run end to end in a trixie container with a real PulseAudio server standing in for WSLg (mic tone recorded at -14.7 dBFS, played back, -11.7 dBFS at the stand-in speaker sink, 0 xruns; docs/images/dev-wsl-ui.png)", "note": "Written when engine and UI are first connected (owner, 2026-10-13). Done once the owner has run it under WSL on the laptop"}
           ]
         },
         {
