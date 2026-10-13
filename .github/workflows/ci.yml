@@ -16,7 +16,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev
+            build-essential cmake pkg-config libjack-jackd2-dev locales
+          # The comma-decimal regression tests (common/json, common/model,
+          # ui/keymap) skip without it.
+          sudo locale-gen de_DE.UTF-8
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -83,7 +86,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev
+            build-essential cmake pkg-config libjack-jackd2-dev locales
+          # The comma-decimal regression tests (common/json, common/model,
+          # ui/keymap) skip without it.
+          sudo locale-gen de_DE.UTF-8
 
       # The ring buffer is the one piece of genuinely concurrent code in the
       # tree, so a data race in it is worth a dedicated job. TSan is the only

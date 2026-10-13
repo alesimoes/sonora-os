@@ -1,4 +1,6 @@
-# Toolchain for building the engine and its tests.
+# Toolchain for building the engine and its tests. de_DE is generated so the
+# comma-decimal regression tests (common/json, ui/keymap) run instead of
+# skipping.
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -7,6 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config \
       libjack-jackd2-dev \
       ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+      locales \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^# *de_DE.UTF-8 UTF-8/de_DE.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen
 
 CMD ["bash"]
