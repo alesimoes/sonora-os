@@ -32,7 +32,11 @@
 // and engine/control's ChainResolver fills ChainBinding::latency_frames from
 // PluginClient::latency_frames(slot), with the slot, generation, store and
 // node state the supervisor assigned. kNoChannelSlot is plugin_client's
-// kNoSlot; kNoParamStore and kNoNodeState are 0xFFFFFFFF on both sides.
+// kNoSlot and kNoParamStore its kNoStore (both 0xFFFFFFFF). InsertChainRef
+// has no "none" for node_state: every bound chain needs a valid one, so the
+// resolver assigns it per chain stable id, as a delay line is kept, and a
+// node still at kNoNodeState is passed through by the adapter rather than
+// handed to process_chain.
 #pragma once
 
 #include <cstdint>
