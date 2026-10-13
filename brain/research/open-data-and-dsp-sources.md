@@ -129,8 +129,8 @@ What this section establishes:
 | **MIT IR Survey** (https://mcdermottlab.mit.edu/Reverb/IR_Survey.html) | **No licence on the page** (read). A Hugging Face mirror claims CC BY 4.0 | **Excluded until the lab confirms** | 271 everyday-space IRs |
 | **Voxengo free IRs** (https://www.voxengo.com/impulses) | Royalty-free use "for any purpose, including commercial", but **no profit, direct or indirect, from distributing the files** | Usable to *use* or *train*. **Not to ship** in a product we might sell | ~40 synthetic IRs made with a discontinued modeller |
 | **EchoThief** (https://www.cs.bu.edu/fac/snyder/cs583/Homeworks/ImpulseResponses/EchoThiefImpulseResponseLibrary/EchoThief%20License.pdf, a copy hosted on a course page) | Derivative works allowed; any other use needs permission | **Excluded** for shipping | ~115 locations |
-| **C4DM RIR**, **MIRACLE** | CC BY-NC-SA (compilation) | **No** | — |
-| **ACE Challenge** | CC BY-ND 4.0 (compilation) | **No.** NoDerivatives | — |
+| **C4DM RIR**, **MIRACLE** | CC BY-NC-SA per the compilation https://github.com/RoyJames/room-impulse-responses (**secondary**, read 2026-10-13; not confirmed at the source) | **No** | — |
+| **ACE Challenge** | CC BY-ND 4.0 per the compilation https://github.com/RoyJames/room-impulse-responses (**secondary**, read 2026-10-13; not confirmed at the source) | **No.** NoDerivatives | — |
 
 **What we would use them for:**
 - training and evaluating the blind RT60, DRR and pre-delay estimators
@@ -238,7 +238,7 @@ vocals. That panel is ours to run.
 | **vocadito** | CC BY 4.0 | 40 solo excerpts, several languages | Evaluation |
 | **VCTK 0.92** (https://datashare.ed.ac.uk/handle/10283/3443) | **CC BY 4.0** (the record's `license_text.txt` opens "Creative Commons License: Attribution 4.0 International") | Speech, 110 speakers, hemi-anechoic room. Recorded at 96 kHz/24-bit with DPA 4035 and Sennheiser MKH 800 mics; released at 48 kHz/16-bit | Clean full-band reference for "air" and sibilance; spoken, not sung |
 | **Hi-Fi TTS** (https://openslr.org/109) | CC BY 4.0 (OpenSLR page, via search); source material is public-domain LibriVox | 292 h, 10 speakers, 44.1 kHz. Home-studio audiobook recordings, bandwidth ≥ 13 kHz and SNR ≥ 32 dB (paper, https://arxiv.org/abs/2104.01497) | *Real* uncontrolled mic and room colouration: realistic harshness and boxiness to detect |
-| **Common Voice** | CC0, according to secondary sources (Mozilla's official dataset page was not readable to the fetcher) | Crowd speech on consumer mics, very varied quality | Robustness only; "megaphone" is common here. **Confirm the current terms**: the dataset's distribution and its terms have moved since 2019 |
+| **Common Voice** | **Unverified for the audio.** The README of https://github.com/common-voice/common-voice (read 2026-10-13) puts the code under MPL-2.0 and the *sentence text* under CC0. It says nothing about the voice recordings, and neither did https://github.com/common-voice/cv-dataset. The official page https://commonvoice.mozilla.org/en/datasets was not readable to the fetcher. CC0 for the audio rests on unnamed search snippets only | Crowd speech on consumer mics, very varied quality | Robustness only; "megaphone" is common here. **Confirm the current terms**: the dataset's distribution and its terms have moved since 2019 |
 | **ccMixter a cappellas** | Per upload; only CC BY or CC0 | Real produced pop vocals, often already processed | Realistic evaluation; filter by licence on each page |
 | **Freesound** vocals | CC0 or CC BY only | Assorted | Small additions |
 | **EARS** (https://github.com/facebookresearch/ears_dataset) | **CC BY-NC 4.0** ("CC-NC 4.0" in the README) | Anechoic 48 kHz speech, 100 h | **No** |
@@ -256,15 +256,15 @@ Recommended mix:
 |---|---|---|---|---|
 | **Spleeter** (https://github.com/deezer/spleeter) | MIT | **MIT.** The JOSS paper (doi 10.21105/joss.02154): "source code and pre-trained models … distributed under a MIT license" | **Deezer internal datasets**, not MUSDB: "we cannot release the training data for copyright reasons" (paper) | **Least-bad separation option.** The rights holder of the training catalogue released the weights under MIT. Residual risk: we rely on Deezer's representation. Quality is 2019-era (below Demucs) |
 | **Demucs / HTDemucs** (https://github.com/adefossez/demucs; the facebookresearch repo is archived) | MIT | **No separate weights licence** in the README | `htdemucs`: "MusDB + 800 songs"; `mdx_extra` includes the MUSDB test set (README) | **No.** MUSDB18 is non-commercial, and the 800 songs are undocumented |
-| **Open-Unmix** | MIT | `umxl`: **CC BY-NC-SA 4.0** (README); `umxhq` and `umx`: MUSDB18 | — | **No** |
+| **Open-Unmix** (https://github.com/sigsep/open-unmix-pytorch) | MIT (GitHub licence field, 2026-10-13) | `umxl`: "the weights are only licensed for non-commercial use (CC BY-NC-SA 4.0)" (https://github.com/sigsep/open-unmix-pytorch/blob/master/README.md, read 2026-10-13); `umxhq` and `umx`: trained on MUSDB18 (same README) | — | **No** |
 | **BS-RoFormer / MDX23 community weights** (https://github.com/ZFTurbo/Music-Source-Separation-Training) | MIT (code) | Per checkpoint, mostly undocumented | MUSDB18 and private sets | **No** (unclear) |
-| **CREPE / torchcrepe** | MIT | MIT | MDB-stem-synth (**CC BY-NC**) and RWC-synth | **No.** Retrain |
+| **CREPE / torchcrepe** (https://github.com/marl/crepe, https://github.com/maxrmorrison/torchcrepe) | MIT (GitHub licence field of both repos, 2026-10-13) | Bundled in the same MIT repos (no separate weights licence seen) | MDB-stem-synth (**CC BY-NC 4.0**, https://zenodo.org/records/1481172, read 2026-10-13) and RWC-synth (CREPE paper, https://arxiv.org/abs/1802.06182) | **No.** Retrain |
 | **SwiftF0** (https://github.com/lars76/swift-f0) | MIT | MIT | pitch-benchmark train split (**CC BY-NC-SA**): MDB-stem-synth, NSynth, PTDB-TUG, MOCHA-TIMIT, CMU Arctic, with MUSDB18 augmentation | **No.** Retrain. The MIT training code (https://github.com/lars76/swift-f0-training) is a good recipe |
 | **PESTO** (https://github.com/SonyCSLParis/pesto) | LGPL-3.0 | (repo) | Released model trained on **MIR-1K** (README) | **No** (MIR-1K unclear). The method is self-supervised: retrain on VocalSet, vocadito and GuitarSet |
 | **RMVPE** (https://github.com/Dream-High/RMVPE) | Apache-2.0 | — | Not stated in the README | **Unclear: excluded** |
 | **Basic Pitch** (https://github.com/spotify/basic-pitch) | Apache-2.0 | (repo) | GuitarSet, MAESTRO, Slakh, **iKala**, **MedleyDB** (paper Table 1, https://arxiv.org/abs/2203.09893) | **No.** MedleyDB is NC; iKala's terms were research-only and are not checked here |
 | **beat_this** (https://github.com/CPJKU/beat_this) | MIT | **MIT**, but the README adds: "some of the training files are fully copyrighted or under limited Creative Commons licenses, and it is up to the user to assess" | 16 datasets | **Not without counsel.** The authors disclaim the data question explicitly |
-| **madmom models** | BSD (code) | **CC BY-NC-SA 4.0** (`LICENSE`, "Data/model files") | — | **No** |
+| **madmom models** (https://github.com/CPJKU/madmom) | BSD-style (https://github.com/CPJKU/madmom/blob/main/LICENSE, "Source code files", read 2026-10-13) | **CC BY-NC-SA 4.0** (same `LICENSE`, "Data/model files") | — | **No** |
 | **Essentia models** | AGPL (code) | NC (`native-plugin-suite.md` §3) | — | **No** |
 | **micro-TCN** (https://github.com/csteinmetz1/micro-tcn) | Apache-2.0 | Weights on Google Drive with no separate licence | **SignalTrain LA-2A (CC BY 4.0)** | **Probably yes**, with attribution to SignalTrain. Confirm the authors intend Apache for the weights. Better: retrain ourselves (cheap) |
 | **ChowCentaur / KlonCentaur** (https://github.com/jatinchowdhury18/KlonCentaur) | BSD-3 | BSD-3 (in repo) | ~4 min of the author's DI guitar processed through a **SPICE model** (README) | **Yes** (BSD-3). The exact precedent for §D's virtual capture |
@@ -401,7 +401,8 @@ means it was read from a source file.
     (CC BY 4.0) plus synthetic degradations; evaluate on vocadito and CC BY
     a cappellas.
   - **Pitch**: retrain a SwiftF0- or PESTO-class model on CC BY data
-    (VocalSet, vocadito, GuitarSet, Dagstuhl, NSynth CC BY 4.0) with the MIT
+    (VocalSet, vocadito, GuitarSet, Dagstuhl, and NSynth, CC BY 4.0 per
+    https://magenta.tensorflow.org/datasets/nsynth, read 2026-10-13) with the MIT
     training code.
   - **Key**: template method, no model.
 
@@ -468,13 +469,17 @@ them, never redistribute them (D.4).
   - Owner's manuals for current models are hosted by Gibson, the current
     owner (e.g. https://www.gibson.com/cdn/shop/files/fillmore50-WEB.pdf).
     They give control ranges and voicing descriptions, not schematics.
-  - The founding patent is public and expired: **US 4,211,893**, "Dual mode
-    music instrument amplifier", R. C. Smith
-    (https://patents.google.com/patent/US4211893A). Also a 1980 JASA paper of
-    the same title (JASA 68(5)).
-  - **US 4,701,957** (Smith), a preamp with separate clean and
-    saturation-distortion modes, is listed on
-    https://patents.justia.com/inventor/randall-c-smith.
+  - **US 4,211,893**, "Dual mode music instrument amplifier", R. C. Smith,
+    filed 1978-11-13 (https://patents.google.com/patent/US4211893A, read
+    2026-10-13). Google Patents lists it as "Expired - Lifetime", with
+    anticipated expiration 1998-11-13. Google states that this status is an
+    assumption, not a legal conclusion. **Needs review** (Open question 10).
+    Also a 1980 JASA paper of the same title (JASA 68(5)).
+  - **US 4,701,957**, "Dual mode music instrument preamplifier", R. C. Smith,
+    filed 1986-11-26 (https://patents.google.com/patent/US4701957A, read
+    2026-10-13). A preamp with separate clean and saturation-distortion
+    modes. Google Patents lists it as expired, with anticipated expiration
+    2006-11-26, under the same caveat. **Needs review** (Open question 10).
   - Patents are published technical disclosures, intended to be read.
 - **Marshall, Orange.** No official schematic source was found this
   session. Marshall's early heads are widely documented as derived from the
@@ -663,8 +668,11 @@ The goal is training pairs without recording the unit.
   - T/S tables, frequency-response values read off a chart;
   - cabinet dimensions;
   - patent disclosures (expired or not: reading a patent is lawful;
-    *practising* a live claim is not; the US 4,211,893 status is "Expired -
-    Lifetime" per Google Patents).
+    *practising* a live claim is not).
+  - All four patents named in this note **need review** before we rely on
+    their status: US 4,211,893 and US 4,701,957 (Google lists both as
+    expired) and US 8,666,090 and US 8,284,952 (Google lists both as active).
+    See Open question 10.
 
   Functional behaviour is not protected expression (*SAS Institute v World
   Programming*, C-406/10; `native-plugin-suite.md` §5).
@@ -830,10 +838,15 @@ capability as published, not measured here.
    incompatible).
 8. The terms of the MIT IR Survey, the 800 extra Demucs songs, URMP and
    RMVPE's training data.
-9. Common Voice's current terms under its post-2025 distribution.
+9. The licence of Common Voice's *audio*. Only its sentence text is
+   confirmed CC0 (A.6).
 10. A patent search on pitch correction (carried over from
-    `native-plugin-suite.md` §5), plus US 8,666,090 and US 8,284,952 for
-    mic modelling.
+    `native-plugin-suite.md` §5), plus a review of every patent named here:
+    - US 8,666,090 and US 8,284,952, for mic modelling; Google lists both
+      as active;
+    - US 4,211,893 and US 4,701,957, the Mesa amplifier patents; Google lists
+      both as expired (anticipated 1998-11-13 and 2006-11-26), which is
+      Google's assumption, not a legal conclusion.
 11. GPL-3's "preferred form of modification" for shipped weights
     (`native-plugin-suite.md` §3). This note assumes we publish the
     training code and a data recipe.
