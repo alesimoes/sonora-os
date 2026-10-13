@@ -32,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -81,6 +82,16 @@ public:
         // anonymous memory of the server's own.
         void* state_memory = nullptr;
         std::size_t state_memory_bytes = 0;
+        // What one client may have delivered and not yet handled. Past it,
+        // wait_for_room() holds that client's reader back, so a client that
+        // floods is stopped at its own socket and costs bounded memory.
+        std::size_t max_client_backlog_bytes = std::size_t{1} << 20;
+        // A message over `large_message_bytes` (a Load, mostly) is held
+        // whole while it is reassembled. At most this many are reassembled
+        // at once; another client's large message waits, frames and all,
+        // until one completes, and its reader waits with it.
+        std::size_t large_message_bytes = std::size_t{1} << 20;
+        std::size_t max_large_in_flight = 2;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -115,6 +126,13 @@ public:
     void deliver(ClientId client, std::string frame);
     void deliver(std::string frame) { deliver(kFirstClient, std::move(frame)); }
 
+    enum class Room { Ok, Full, Gone };
+    // For a transport's reader, before it reads the client's next frame:
+    // waits up to `timeout_ms` while that client's backlog is full. Gone:
+    // the client was detached or refused, or the server stopped. Any thread
+    // but the control thread, which never waits on a client.
+    Room wait_for_room(ClientId client, int timeout_ms);
+
     const void* state_block() const { return block_; }
     std::size_t state_block_bytes() const { return block_bytes_; }
     // Whether the block is where it should be. False only when
@@ -125,6 +143,14 @@ public:
     // construction. For diagnostics and the tests.
     std::size_t clients() const { return client_count_.load(std::memory_order_acquire); }
     uint64_t refused() const { return refused_.load(std::memory_order_acquire); }
+    // The most one client has had delivered and not handled, and the most
+    // large messages reassembled at once, since construction.
+    std::size_t peak_backlog_bytes() const {
+        return peak_backlog_.load(std::memory_order_acquire);
+    }
+    std::size_t peak_large_in_flight() const {
+        return peak_large_.load(std::memory_order_acquire);
+    }
 
     // --- the control thread, housekeeping, or before start() ---
     void post_event(const api::EngineEvent& event);
@@ -141,6 +167,8 @@ private:
         Outbound out;
         Refuse refuse;
         api::wire::Reassembler reassembler;
+        // Frames held back behind a large message that has no slot yet.
+        std::deque<std::string> parked;
     };
     struct Inbound {
         enum class Kind { Attach, Frame, Detach };
@@ -154,6 +182,15 @@ private:
     void start_threads();
     void run();
     void take(Inbound& in);
+    // One frame into the client's reassembler, or parked behind the cap on
+    // large messages.
+    void frame(ClientId id, std::string bytes);
+    void feed(ClientId id, Client& c, const std::string& bytes);
+    // Parked clients get a slot as slots free up, oldest first.
+    void unpark();
+    void forget(ClientId id);
+    // Handled frames' bytes leave their clients' backlogs.
+    void release_handled();
     void greet(Client& client);
     void refuse(ClientId id, const std::string& why);
     void handle(ClientId from, const std::string& bytes);
@@ -193,9 +230,21 @@ private:
     std::string take_failed_;
     std::string fatal_;
 
+    // The control thread's: clients reassembling a large message, clients
+    // waiting for a slot (in arrival order), and bytes handled since the
+    // backlogs were last brought down.
+    std::set<ClientId> large_;
+    std::deque<ClientId> parked_;
+    std::map<ClientId, std::size_t> handled_;
+
     std::mutex mutex_;
     std::condition_variable wake_;
+    std::condition_variable room_;
     std::deque<Inbound> inbound_;
+    // Bytes delivered and not yet handled, per client attached.
+    std::map<ClientId, std::size_t> backlog_;
+    std::atomic<std::size_t> peak_backlog_{0};
+    std::atomic<std::size_t> peak_large_{0};
     ClientId next_client_ = kFirstClient + 1;
     bool stopping_ = false;
     std::atomic<bool> running_{false};

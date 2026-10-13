@@ -76,7 +76,7 @@ class EngineProcess {
 public:
     EngineProcess(const fs::path& dir, uint32_t protocol = api::kProtocolVersion,
                   uint32_t layout = api::kStateLayoutVersion)
-        : dir_(dir), endpoint_((dir / "engine.sock").string()) {
+        : dir_(dir), endpoint_((dir / "sock" / "engine.sock").string()) {
         start(protocol, layout);
     }
     ~EngineProcess() { stop(); }

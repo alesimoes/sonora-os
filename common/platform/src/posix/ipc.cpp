@@ -2,6 +2,7 @@
 #include "sonora/platform/ipc.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -45,11 +46,17 @@ bool make_address(const std::string& endpoint, sockaddr_un& addr, std::string& e
     return true;
 }
 
-// Owner-only, because the socket is the engine's whole control surface.
+// Owner-only, because the socket is the engine's whole control surface. A
+// directory that already exists must be ours alone and not a symlink: under
+// /tmp anyone can create /tmp/sonora-<uid> first, and a directory open to
+// others lets them swap the socket for their own.
 bool make_parent_dirs(const std::string& endpoint, std::string& error) {
     const std::size_t slash = endpoint.rfind('/');
-    if (slash == std::string::npos || slash == 0) return true;
-    const std::string dir = endpoint.substr(0, slash);
+    if (slash == std::string::npos) {
+        error = "socket path \"" + endpoint + "\" names no directory";
+        return false;
+    }
+    const std::string dir = slash == 0 ? std::string("/") : endpoint.substr(0, slash);
     for (std::size_t i = 1; i <= dir.size(); ++i) {
         if (i != dir.size() && dir[i] != '/') continue;
         const std::string part = dir.substr(0, i);
@@ -58,6 +65,39 @@ bool make_parent_dirs(const std::string& endpoint, std::string& error) {
             return false;
         }
     }
+    struct stat st {};
+    if (::lstat(dir.c_str(), &st) != 0) {
+        error = os_error(("cannot inspect " + dir).c_str());
+        return false;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        error = "the socket's directory " + dir + " is not a directory (a symlink?)";
+        return false;
+    }
+    if (st.st_uid != ::geteuid()) {
+        error = "the socket's directory " + dir + " belongs to uid " +
+                std::to_string(st.st_uid) + ", not to this user";
+        return false;
+    }
+    if ((st.st_mode & 077) != 0) {
+        char mode[8];
+        std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+        error = "the socket's directory " + dir + " is open to others (mode " + mode +
+                "); it must be 0700";
+        return false;
+    }
+    return true;
+}
+
+// The user at the other end of a connected socket.
+bool peer_uid(int fd, uid_t& uid, std::string& error) {
+    ucred cred{};
+    socklen_t len = sizeof cred;
+    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) {
+        error = os_error("SO_PEERCRED");
+        return false;
+    }
+    uid = cred.uid;
     return true;
 }
 
@@ -215,6 +255,15 @@ std::unique_ptr<ControlChannel> ControlChannel::connect(const std::string& endpo
     }
     if (::connect(impl->fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) {
         error = os_error(("cannot connect to " + endpoint).c_str());
+        return nullptr;
+    }
+    // What listens there could be anyone's if the directory was not ours;
+    // an interface hands its commands to its own user's engine only.
+    uid_t uid = 0;
+    if (!peer_uid(impl->fd, uid, error)) return nullptr;
+    if (uid != ::geteuid()) {
+        error = "what listens on " + endpoint + " runs as uid " + std::to_string(uid) +
+                ", not as this user; refusing it";
         return nullptr;
     }
     return std::make_unique<ControlChannel>(std::move(impl));
@@ -443,6 +492,13 @@ std::unique_ptr<ControlChannel> ControlListener::accept(int timeout_ms, std::str
     }
     auto impl = std::make_unique<ControlChannel::Impl>();
     impl->fd = fd;
+    uid_t uid = 0;
+    if (!peer_uid(fd, uid, error)) return nullptr;
+    if (uid != ::geteuid()) {
+        error = "refused a connection from uid " + std::to_string(uid) +
+                ": the engine serves its own user only";
+        return nullptr;
+    }
     return std::make_unique<ControlChannel>(std::move(impl));
 }
 

@@ -11,6 +11,7 @@
 //   that client disconnected; the take and the other clients carry on.
 #include <sys/mman.h>
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -75,7 +76,8 @@ public:
         session_.disk().start();
         region_ = platform::SharedRegion::create("sonora-state", api::state_block_bytes(kTracks),
                                                  error);
-        endpoint_ = dir_.string() + ".sock";
+        // A directory of its own, made 0700 by the listener.
+        endpoint_ = dir_.string() + "-sock/engine.sock";
         auto listener = platform::ControlListener::listen(endpoint_, error);
         ok_ = ok_ && region_ && listener;
         if (!ok_) {
@@ -101,6 +103,7 @@ public:
         session_.stop();
         std::error_code ec;
         fs::remove_all(dir_, ec);
+        fs::remove_all(dir_.string() + "-sock", ec);
     }
 
     bool ok() const { return ok_ && server_ && server_->state_ready(); }
@@ -422,6 +425,75 @@ void malformed_input_is_refused_and_nothing_else_changes() {
     CHECK(eventually([&]() { return e.server().clients() == 1; }));
 }
 
+// Clients that flood: frames of large messages that never end, as fast as
+// their sockets take them. The engine stops reading each once its backlog is
+// full, so what it holds stays bounded; no more large messages than the cap
+// are reassembled at once; and another client's commands are answered as
+// promptly as ever.
+void flooding_clients_are_held_back_and_others_carry_on() {
+    Engine e("flood");
+    if (!e.ok()) {
+        CHECK(e.ok());
+        return;
+    }
+    const EngineControlServer::Options defaults;
+    RawClient good(e.endpoint());
+    CHECK(good.greet());
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> sent{0};
+    std::vector<std::thread> flooders;
+    for (int k = 0; k < 3; ++k) {
+        flooders.emplace_back([&]() {
+            RawClient f(e.endpoint());
+            if (!f.connected()) return;
+            const uint32_t total = 8u << 20;
+            const std::size_t payload = api::wire::kMaxFrameBytes - api::wire::kFrameHeaderBytes;
+            std::string frame(api::wire::kMaxFrameBytes, 'x');
+            const auto put = [&frame](std::size_t at, uint32_t v) {
+                for (int i = 0; i < 4; ++i) frame[at + i] = static_cast<char>(v >> (8 * i));
+            };
+            put(0, total);
+            uint32_t offset = 0;
+            std::string error;
+            // Never the last frame: the message stays open, its slot held.
+            while (!stop.load() && offset + 2 * payload < total) {
+                put(4, offset);
+                const IoStatus s = f.channel().send(frame, 50, error);
+                if (s == IoStatus::Closed || s == IoStatus::Error) return;
+                if (s == IoStatus::Ok) {
+                    offset += static_cast<uint32_t>(payload);
+                    sent.fetch_add(frame.size());
+                }
+            }
+            while (!stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        });
+    }
+    CHECK(eventually([&]() { return e.server().clients() == 4; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Each command of the good client answered promptly, flood or not.
+    for (int i = 0; i < 20; ++i) {
+        const auto t0 = Clock::now();
+        const uint64_t seq = good.command("track.toggle_arm", 0);
+        api::CommandReply r;
+        CHECK(good.reply(seq, r) && r.result == DispatchResult::Ok);
+        CHECK(Clock::now() - t0 < std::chrono::milliseconds(500));
+    }
+    CHECK(sent.load() > defaults.max_client_backlog_bytes);
+    CHECK(e.server().peak_backlog_bytes() <=
+          defaults.max_client_backlog_bytes + api::wire::kMaxFrameBytes);
+    CHECK(e.server().peak_large_in_flight() <= defaults.max_large_in_flight);
+    CHECK(e.server().peak_large_in_flight() >= 1);
+
+    stop.store(true);
+    for (auto& t : flooders) t.join();
+    CHECK(eventually([&]() { return e.server().clients() == 1; }));
+    const uint64_t seq = good.command("track.toggle_arm", 0);
+    api::CommandReply r;
+    CHECK(good.reply(seq, r) && r.result == DispatchResult::Ok);
+}
+
 }  // namespace
 
 int main() {
@@ -429,6 +501,7 @@ int main() {
     a_reply_goes_to_the_asker_alone();
     a_client_gone_mid_take_leaves_the_take_recording();
     malformed_input_is_refused_and_nothing_else_changes();
+    flooding_clients_are_held_back_and_others_carry_on();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

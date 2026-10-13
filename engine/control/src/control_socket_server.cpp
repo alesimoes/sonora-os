@@ -90,9 +90,22 @@ struct ControlSocketServer::Connection {
         writer_done.store(true, std::memory_order_release);
     }
 
+    bool is_closing() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return closing;
+    }
+
     void read_loop(EngineControlServer& server) {
         std::string frame, error;
         for (;;) {
+            // Backpressure: while the engine has this client's backlog in
+            // hand, its frames stay in its socket and its sends block.
+            const EngineControlServer::Room room = server.wait_for_room(id, 100);
+            if (room == EngineControlServer::Room::Gone) break;
+            if (room == EngineControlServer::Room::Full) {
+                if (is_closing()) break;
+                continue;
+            }
             const platform::IoStatus s =
                 channel->receive(frame, api::wire::kMaxFrameBytes, nullptr, -1, error);
             if (s == platform::IoStatus::Ok) {

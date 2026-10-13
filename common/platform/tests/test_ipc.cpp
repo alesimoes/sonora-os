@@ -6,11 +6,14 @@
 // reader, a live endpoint refused and a dead one's socket file replaced,
 // and child processes.
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -162,6 +165,139 @@ void a_live_endpoint_is_refused_and_a_dead_one_replaced() {
     CHECK(::access(ep.c_str(), F_OK) != 0);
 }
 
+// The /tmp/sonora-<uid> fallback is in a directory anyone can create in:
+// another user who makes it first, or opens it up, could put their own
+// socket where the interface connects. A socket directory not ours alone is
+// refused.
+void a_socket_dir_not_ours_alone_is_refused() {
+    const std::string base = "/tmp/sonora-test-ipc-" + std::to_string(::getpid()) + "-dirs";
+    ::mkdir(base.c_str(), 0700);
+    std::string error;
+
+    const std::string open_dir = base + "/open";
+    CHECK(::mkdir(open_dir.c_str(), 0700) == 0);
+    ::chmod(open_dir.c_str(), 0755);
+    CHECK(ControlListener::listen(open_dir + "/engine.sock", error) == nullptr);
+    CHECK(error.find(open_dir) != std::string::npos);
+    CHECK(::access((open_dir + "/engine.sock").c_str(), F_OK) != 0);
+
+    // Not a directory of ours: /tmp is root's, or open to all when we are root.
+    error.clear();
+    CHECK(ControlListener::listen("/tmp/sonora-test-ipc-shared.sock", error) == nullptr);
+    CHECK(!error.empty());
+
+    // A symlink to a directory of ours is still refused: what it points to
+    // can be changed by whoever owns the link's directory.
+    const std::string real = base + "/real";
+    const std::string link = base + "/link";
+    CHECK(::mkdir(real.c_str(), 0700) == 0);
+    CHECK(::symlink(real.c_str(), link.c_str()) == 0);
+    error.clear();
+    CHECK(ControlListener::listen(link + "/engine.sock", error) == nullptr);
+    CHECK(!error.empty());
+
+    // Ours alone: accepted, created or not.
+    error.clear();
+    auto ok = ControlListener::listen(real + "/engine.sock", error);
+    CHECK(ok != nullptr);
+    ok.reset();
+    auto made = ControlListener::listen(base + "/new/engine.sock", error);
+    CHECK(made != nullptr);
+    made.reset();
+
+    ::unlink(link.c_str());
+    ::rmdir(real.c_str());
+    ::rmdir((base + "/new").c_str());
+    ::rmdir(open_dir.c_str());
+    ::rmdir(base.c_str());
+}
+
+// SO_PEERCRED: the engine accepts only its own user, and an interface talks
+// only to an engine of its own user. Needs root to be someone else.
+void another_user_is_refused_both_ways() {
+    if (::geteuid() != 0) {
+        std::printf("SKIP another_user_is_refused_both_ways: needs root to change uid\n");
+        return;
+    }
+    const std::string dir = "/tmp/sonora-test-ipc-" + std::to_string(::getpid()) + "-peer";
+    const std::string ep = dir + "/engine.sock";
+    std::string error;
+    auto listener = ControlListener::listen(ep, error);
+    CHECK(listener != nullptr);
+    if (!listener) return;
+    // Opened up after the check, as a misconfiguration would, so that only
+    // the credential check stands between the other user and the engine.
+    ::chmod(dir.c_str(), 0711);
+    ::chmod(ep.c_str(), 0666);
+
+    const pid_t child = ::fork();
+    if (child == 0) {
+        if (::setgid(65534) != 0 || ::setuid(65534) != 0) ::_exit(2);
+        std::string e;
+        auto c = ControlChannel::connect(ep, e);
+        // Refused at once: we are not the listener's user.
+        if (c != nullptr) ::_exit(3);
+        // A raw connection, to see the engine side refuse it too.
+        const int fd = ::socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::strncpy(addr.sun_path, ep.c_str(), sizeof addr.sun_path - 1);
+        if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) ::_exit(4);
+        char b[16];
+        // The engine closes it: end of file, never a Hello.
+        const ssize_t n = ::recv(fd, b, sizeof b, 0);
+        ::_exit(n <= 0 ? 0 : 5);
+    }
+    // Both of the child's connections: the one it gave up on and the raw one.
+    for (int i = 0; i < 2; ++i) {
+        error.clear();
+        auto accepted = listener->accept(5000, error);
+        CHECK(accepted == nullptr);
+        CHECK(error.find("uid 65534") != std::string::npos);
+    }
+    int status = 0;
+    ::waitpid(child, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // A listener of another user, as a hijacked /tmp/sonora-<uid> would hold.
+    listener.reset();
+    const std::string other_dir = dir + "-other";
+    CHECK(::mkdir(other_dir.c_str(), 0777) == 0);
+    ::chmod(other_dir.c_str(), 0777);
+    const std::string other_ep = other_dir + "/engine.sock";
+    int ready[2];
+    CHECK(::pipe(ready) == 0);
+    const pid_t other = ::fork();
+    if (other == 0) {
+        ::close(ready[0]);
+        if (::setgid(65534) != 0 || ::setuid(65534) != 0) ::_exit(2);
+        const int fd = ::socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::strncpy(addr.sun_path, other_ep.c_str(), sizeof addr.sun_path - 1);
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) ::_exit(3);
+        ::chmod(other_ep.c_str(), 0666);
+        if (::listen(fd, 4) != 0) ::_exit(4);
+        (void)!::write(ready[1], "r", 1);
+        const int c = ::accept(fd, nullptr, nullptr);
+        ::sleep(2);
+        ::close(c);
+        ::_exit(0);
+    }
+    ::close(ready[1]);
+    char r = 0;
+    CHECK(::read(ready[0], &r, 1) == 1);
+    ::close(ready[0]);
+    error.clear();
+    CHECK(ControlChannel::connect(other_ep, error) == nullptr);
+    CHECK(error.find("uid 65534") != std::string::npos);
+    ::kill(other, SIGKILL);
+    ::waitpid(other, &status, 0);
+    ::unlink(other_ep.c_str());
+    ::rmdir(other_dir.c_str());
+    ::rmdir(dir.c_str());
+}
+
 void child_processes() {
     std::string error;
     auto ok = ChildProcess::spawn({"/bin/sh", "-c", "exit 3"}, {}, error);
@@ -200,6 +336,8 @@ int main() {
     a_closed_peer_reads_as_closed();
     shutdown_wakes_a_blocked_reader();
     a_live_endpoint_is_refused_and_a_dead_one_replaced();
+    a_socket_dir_not_ours_alone_is_refused();
+    another_user_is_refused_both_ways();
     child_processes();
     ::rmdir(("/tmp/sonora-test-ipc-" + std::to_string(::getpid())).c_str());
     if (failures != 0) {

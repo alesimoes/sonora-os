@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/engine_control_server.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 #include "sonora/api/wire.h"
 #include "sonora/audio_backend.h"
@@ -193,6 +195,10 @@ void EngineControlServer::start(Outbound out) {
     if (running()) return;
     Client& c = clients_[kFirstClient];
     c.out = std::move(out);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        backlog_[kFirstClient] = 0;
+    }
     client_count_.store(clients_.size(), std::memory_order_release);
     greet(c);
     start_threads();
@@ -203,8 +209,10 @@ void EngineControlServer::stop() {
         std::lock_guard<std::mutex> lock(mutex_);
         stopping_ = true;
         inbound_.clear();
+        backlog_.clear();
     }
     wake_.notify_all();
+    room_.notify_all();
     if (thread_.joinable()) thread_.join();
     publisher_->stop();
     running_.store(false, std::memory_order_release);
@@ -223,6 +231,7 @@ EngineControlServer::ClientId EngineControlServer::attach(Outbound out, Refuse r
         id = next_client_++;
         in.client = id;
         if (stopping_ || !running()) return id;
+        backlog_[id] = 0;
         inbound_.push_back(std::move(in));
     }
     wake_.notify_one();
@@ -235,23 +244,144 @@ void EngineControlServer::detach(ClientId client) {
     in.client = client;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        backlog_.erase(client);
         if (stopping_ || !running()) return;
         inbound_.push_back(std::move(in));
     }
     wake_.notify_one();
+    room_.notify_all();
 }
 
 void EngineControlServer::deliver(ClientId client, std::string frame) {
     Inbound in;
     in.kind = Inbound::Kind::Frame;
     in.client = client;
+    const std::size_t n = frame.size();
     in.bytes = std::move(frame);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopping_ || !running()) return;
+        const auto b = backlog_.find(client);
+        if (b != backlog_.end()) {
+            b->second += n;
+            if (b->second > peak_backlog_.load(std::memory_order_relaxed)) {
+                peak_backlog_.store(b->second, std::memory_order_release);
+            }
+        }
         inbound_.push_back(std::move(in));
     }
     wake_.notify_one();
+}
+
+EngineControlServer::Room EngineControlServer::wait_for_room(ClientId client, int timeout_ms) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const auto settled = [this, client]() {
+        if (stopping_) return true;
+        const auto b = backlog_.find(client);
+        return b == backlog_.end() || b->second < opts_.max_client_backlog_bytes;
+    };
+    if (!room_.wait_for(lock, std::chrono::milliseconds(timeout_ms), settled)) return Room::Full;
+    if (stopping_ || backlog_.find(client) == backlog_.end()) return Room::Gone;
+    return Room::Ok;
+}
+
+void EngineControlServer::forget(ClientId id) {
+    large_.erase(id);
+    handled_.erase(id);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        backlog_.erase(id);
+    }
+    room_.notify_all();
+}
+
+namespace {
+
+// The length of the message a frame belongs to, from its header (wire.h).
+std::size_t message_length(const std::string& frame) {
+    if (frame.size() < api::wire::kFrameHeaderBytes) return 0;
+    std::size_t v = 0;
+    for (int i = 0; i < 4; ++i) {
+        v |= static_cast<std::size_t>(static_cast<uint8_t>(frame[i])) << (8 * i);
+    }
+    return v;
+}
+
+}  // namespace
+
+void EngineControlServer::frame(ClientId id, std::string bytes) {
+    const auto it = clients_.find(id);
+    if (it == clients_.end()) return;
+    Client& c = it->second;
+    const bool needs_slot = c.reassembler.idle() &&
+                            message_length(bytes) > opts_.large_message_bytes &&
+                            large_.size() >= opts_.max_large_in_flight;
+    if (c.parked.empty() && !needs_slot) {
+        feed(id, c, bytes);
+        return;
+    }
+    // Behind its own parked frames too, so the client's order holds.
+    if (c.parked.empty()) parked_.push_back(id);
+    c.parked.push_back(std::move(bytes));
+}
+
+void EngineControlServer::feed(ClientId id, Client& c, const std::string& bytes) {
+    handled_[id] += bytes.size();
+    if (c.reassembler.idle() && message_length(bytes) > opts_.large_message_bytes) {
+        large_.insert(id);
+        if (large_.size() > peak_large_.load(std::memory_order_relaxed)) {
+            peak_large_.store(large_.size(), std::memory_order_release);
+        }
+    }
+    std::string message, error;
+    // `c` may be gone once refuse() or handle() returns.
+    switch (c.reassembler.add(bytes, message, error)) {
+        case api::wire::Reassembler::Result::Partial: return;
+        case api::wire::Reassembler::Result::Error:
+            large_.erase(id);
+            refuse(id, "a frame out of place: " + error);
+            return;
+        case api::wire::Reassembler::Result::Complete:
+            large_.erase(id);
+            handle(id, message);
+            return;
+    }
+}
+
+void EngineControlServer::unpark() {
+    while (!parked_.empty() && large_.size() < opts_.max_large_in_flight) {
+        const ClientId id = parked_.front();
+        bool waits = false;
+        for (;;) {
+            const auto it = clients_.find(id);
+            if (it == clients_.end() || it->second.parked.empty()) break;
+            Client& c = it->second;
+            if (c.reassembler.idle() &&
+                message_length(c.parked.front()) > opts_.large_message_bytes &&
+                large_.size() >= opts_.max_large_in_flight) {
+                waits = true;
+                break;
+            }
+            const std::string bytes = std::move(c.parked.front());
+            c.parked.pop_front();
+            feed(id, c, bytes);
+        }
+        if (waits) break;
+        parked_.pop_front();
+    }
+}
+
+void EngineControlServer::release_handled() {
+    if (handled_.empty()) return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& [id, n] : handled_) {
+            const auto b = backlog_.find(id);
+            if (b != backlog_.end()) b->second -= std::min(n, b->second);
+        }
+    }
+    handled_.clear();
+    room_.notify_all();
 }
 
 void EngineControlServer::refuse(ClientId id, const std::string& why) {
@@ -263,6 +393,7 @@ void EngineControlServer::refuse(ClientId id, const std::string& why) {
     // frames wrongly cannot be resynchronised.
     if (!it->second.refuse) return;
     const Refuse r = std::move(it->second.refuse);
+    forget(id);
     clients_.erase(it);
     client_count_.store(clients_.size(), std::memory_order_release);
     r(why);
@@ -279,28 +410,18 @@ void EngineControlServer::take(Inbound& in) {
             return;
         }
         case Inbound::Kind::Detach:
+            forget(in.client);
             clients_.erase(in.client);
             client_count_.store(clients_.size(), std::memory_order_release);
             return;
-        case Inbound::Kind::Frame: {
-            const auto it = clients_.find(in.client);
-            if (it == clients_.end()) return;
-            std::string message, error;
-            switch (it->second.reassembler.add(in.bytes, message, error)) {
-                case api::wire::Reassembler::Result::Partial: return;
-                case api::wire::Reassembler::Result::Error:
-                    refuse(in.client, "a frame out of place: " + error);
-                    return;
-                case api::wire::Reassembler::Result::Complete:
-                    handle(in.client, message);
-                    return;
-            }
-        }
+        case Inbound::Kind::Frame: frame(in.client, std::move(in.bytes)); return;
     }
 }
 
 void EngineControlServer::run() {
     std::deque<Inbound> batch;
+    std::vector<std::deque<Inbound>> lanes;
+    std::map<ClientId, std::size_t> lane_of;
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -308,10 +429,28 @@ void EngineControlServer::run() {
             if (stopping_) return;
             batch.swap(inbound_);
         }
-        while (!batch.empty()) {
-            take(batch.front());
-            batch.pop_front();
+        // One item per client in turn: a client with much queued cannot
+        // hold another's request behind all of it. Each client's own order
+        // is kept.
+        lanes.clear();
+        lane_of.clear();
+        for (Inbound& in : batch) {
+            const auto [it, fresh] = lane_of.emplace(in.client, lanes.size());
+            if (fresh) lanes.emplace_back();
+            lanes[it->second].push_back(std::move(in));
         }
+        batch.clear();
+        for (bool more = true; more;) {
+            more = false;
+            for (std::deque<Inbound>& lane : lanes) {
+                if (lane.empty()) continue;
+                take(lane.front());
+                lane.pop_front();
+                more = more || !lane.empty();
+            }
+        }
+        unpark();
+        release_handled();
         tick();
     }
 }
