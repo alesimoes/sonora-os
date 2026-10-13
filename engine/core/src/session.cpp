@@ -5,8 +5,8 @@
 #include <sys/stat.h>
 
 #include <algorithm>
-#include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -135,6 +135,7 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
     delay_pos_.reset(new uint32_t[delay_lines_ + 1]());
     line_owner_.reset(new uint64_t[delay_lines_ + 1]());
     line_filled_.reset(new uint32_t[delay_lines_ + 1]());
+    line_stamp_.reset(new uint64_t[delay_lines_ + 1]());
     cursor_.reset(new uint32_t[tracks + 1]());
     cursor_frame_.reset(new uint64_t[tracks + 1]);
     for (uint32_t t = 0; t <= tracks; ++t) cursor_frame_[t] = ~uint64_t{0};
@@ -382,9 +383,25 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     if (plan->epoch != seen_epoch_) {
         seen_epoch_ = plan->epoch;
         reseek_ = true;
+        plan_valid_ = plan_in_bounds(*plan);
     }
+    ++callbacks_;
 
     const uint32_t nframes = block.nframes;
+    // insert_chain_runner.h: once per callback, whole callback, or not at
+    // all.
+    runner_ = nullptr;
+    if (plan_valid_ && plan->last_insert_node != kNoNode) {
+        InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
+        if (r != nullptr && nframes <= max_block_) {
+            runner_ = r;
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            runner_->begin(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()));
+        } else if (r != nullptr) {
+            chain_bypassed_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     const TransportState state = transport_->state();
     const bool recording = state == TransportState::Recording;
     const bool rolling = state != TransportState::Stopped;
@@ -450,7 +467,13 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     if (recording && !take_started) take_origin_.store(playhead, std::memory_order_release);
     if (playhead != expected_playhead_) reseek_ = true;
     block_frames_ = nframes;
-    for (uint32_t off = 0; off < nframes;) {
+    if (!plan_valid_) {
+        for (uint32_t o = 0; o < block.output_count; ++o) {
+            std::memset(block.outputs[o], 0, nframes * sizeof(float));
+        }
+        invalid_plan_blocks_.fetch_add(1, std::memory_order_relaxed);
+    }
+    for (uint32_t off = 0; plan_valid_ && off < nframes;) {
         const uint32_t n = nframes - off < max_block_ ? nframes - off : max_block_;
         block_done_ = off;
         mix(*plan, block, off, n, rolling, recording, playhead + off);
@@ -476,9 +499,6 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
 
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
-        // Valid by construction: the session sizes scratch for the largest
-        // graph a plan can have.
-        assert(node.scratch_buffer < scratch_buffers_);
         float* const out[2] = {scratch(node.scratch_buffer, 0), scratch(node.scratch_buffer, 1)};
         float* const L = out[0];
         float* const R = out[1];
@@ -504,12 +524,13 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 // edges into the bus.
                 const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
                 const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
-                if (chains_ != nullptr && node.channel_slot != kNoChannelSlot) {
-                    chains_->run(node, in, out, n);
+                if (runner_ != nullptr && node.channel_slot != kNoChannelSlot) {
+                    runner_->run(node, in, out, n);
                 } else {
                     std::memcpy(L, in[0], n * sizeof(float));
                     std::memcpy(R, in[1], n * sizeof(float));
                 }
+                if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
                 continue;
             }
             case NodeKind::TrackFader: {
@@ -607,6 +628,53 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
     }
 }
 
+bool Session::plan_in_bounds(const PlaybackPlan& plan) const noexcept SONORA_RT {
+    if (plan.last_insert_node != kNoNode &&
+        (plan.last_insert_node >= plan.node_count ||
+         plan.nodes[plan.last_insert_node].kind != NodeKind::InsertChain)) {
+        return false;
+    }
+    for (uint32_t t = 0; t < plan.track_count; ++t) {
+        const PlanTrack& pt = plan.tracks[t];
+        if (pt.engine_track >= tracks_.size()) return false;
+        if (pt.first_segment > plan.segment_count ||
+            pt.segment_count > plan.segment_count - pt.first_segment) {
+            return false;
+        }
+    }
+    for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
+        const PlanNode& node = plan.nodes[ni];
+        if (node.scratch_buffer >= scratch_buffers_) return false;
+        if (node.first_input_edge > plan.edge_count ||
+            node.input_edge_count > plan.edge_count - node.first_input_edge) {
+            return false;
+        }
+        switch (node.kind) {
+            case NodeKind::TrackOut:
+            case NodeKind::TrackSource:
+                if (node.track >= plan.track_count) return false;
+                break;
+            case NodeKind::TrackFader:
+                if (node.track >= plan.track_count) return false;
+                if (node.input_edge_count != 1) return false;
+                break;
+            case NodeKind::InsertChain:
+                if (node.input_edge_count != 1) return false;
+                break;
+            case NodeKind::BusSum:
+            case NodeKind::HardwareOut:
+                break;
+            default:
+                return false;
+        }
+        for (uint32_t k = 0; k < node.input_edge_count; ++k) {
+            const PlanEdge& edge = plan.edges[node.first_input_edge + k];
+            if (edge.from_node >= plan.node_count || edge.to_node >= plan.node_count) return false;
+        }
+    }
+    return true;
+}
+
 void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
                        float* const out[2], uint32_t n) noexcept SONORA_RT {
     // kNoDelayLine is past the pool too: the builder left the edge
@@ -621,12 +689,14 @@ void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const flo
     const uint32_t line = edge.delay_line;
     const uint64_t pair =
         edge_pair(plan.nodes[edge.from_node].stable_id, plan.nodes[edge.to_node].stable_id);
-    if (line_owner_[line] != pair) {
-        // Another edge's past is in it: forget it in O(1) rather than clear
-        // 2 x max_delay samples here.
+    // Another edge's past is in it, or this edge's with a hole where it went
+    // unwritten: forget it in O(1) rather than clear 2 x max_delay samples
+    // here. Pieces of one callback share its stamp.
+    if (line_owner_[line] != pair || line_stamp_[line] + 1 < callbacks_) {
         line_owner_[line] = pair;
         line_filled_[line] = 0;
     }
+    line_stamp_[line] = callbacks_;
     float* const ring = delay_.get() + static_cast<std::size_t>(line) * 2 * delay_len_;
     const uint32_t d = edge.delay_frames < delay_len_ ? edge.delay_frames : delay_len_ - 1;
     uint32_t pos = delay_pos_[line];

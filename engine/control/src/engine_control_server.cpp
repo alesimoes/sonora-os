@@ -289,6 +289,9 @@ void EngineControlServer::pump_playback() {
         for (std::size_t t = 0; t < r.track_latency.size(); ++t) {
             publisher_->set_track_latency(static_cast<uint32_t>(t), r.track_latency[t]);
         }
+        for (std::size_t t = 0; t < r.track_shortfall.size(); ++t) {
+            publisher_->set_track_shortfall(static_cast<uint32_t>(t), r.track_shortfall[t]);
+        }
     }
     // A take asked for behind the gate starts inside pump().
     publisher_->set_take(take_);

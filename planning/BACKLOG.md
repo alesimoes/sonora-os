@@ -153,13 +153,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
          bring an insert into the chain (rt-engineer review of #46, low 4).
        - Key an instance on (insert id, channel layout) in the plan builder.
-       - Implement `InsertChainRunner` (engine/core, PDC PR) over
-         HostChannel. Session calls `run()` once per mix piece of at most
-         `max_block_frames`, not once per callback; the depth-1 protocol
-         submits once per block, so either refuse a period above
-         `max_block_frames` with plugins on or carry the collect/submit
-         across pieces. The tick after `last_insert_node` (§7.2 step 3)
-         needs a hook in Session::mix(); the plan already records the index.
+       - Implement `InsertChainRunner` (engine/core, PR #48) over
+         PluginClient: begin -> begin_callback, run -> process_chain,
+         end -> end_callback (the mapping is in insert_chain_runner.h);
+         the ChainResolver fills latency_frames from
+         PluginClient::latency_frames(slot) and the slot, generation,
+         store and node state from the supervisor. Match the explicit
+         0xFFFFFFFF "none" for param_store and node_state. A callback
+         longer than max_block_frames passes every chain through unrun
+         (counted); show Session::chain_bypassed_blocks() somewhere.
        - Wire Qt File > Save to send `FlushPluginState` and wait for its
          reply before serialising (ADR-0012 §8), once a host can hold state.
          Done in the UI insert-slots PR (ADR-0012 checklist 6); Alt-drag
@@ -472,9 +474,9 @@ Order and owners are in ADR-0008 §5.
       Left out of the PDC PR (ADR-0012 checklist 3) to keep it reviewable:
       `show()` reports a refused plan synchronously today, and the worker
       changes that contract. The worker takes the PlaybackController's
-      DelayLinePool and ChainResolver with it (both control-thread state,
-      read only by the builder), and one build at a time keeps the pool's
-      per-build bookkeeping sound.
+      PlanContinuity and ChainResolver with it (control-thread state, read
+      only by the builder); each build starts from a copy of the playing
+      plan's continuity.
 - [ ] The stop reply waits on the closed take's plan rebuild:
       `follow_transport()` runs before `reply()` in
       `EngineControlServer::handle()`, so Space's Ok comes after every

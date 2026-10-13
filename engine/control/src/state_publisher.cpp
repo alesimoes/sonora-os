@@ -17,12 +17,14 @@ StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* au
       input_connected_(new std::atomic<bool>[session.tracks().size()]),
       insert_flags_(new std::atomic<uint32_t>[session.tracks().size() * api::kInsertSlots]),
       track_latency_(new std::atomic<uint32_t>[session.tracks().size()]),
+      track_shortfall_(new std::atomic<uint32_t>[session.tracks().size()]),
       tracks_(session.tracks().size()),
       peaks_(session.tracks().size(), 0.0f),
       clips_(session.tracks().size(), 0) {
     for (std::size_t i = 0; i < session.tracks().size(); ++i) {
         input_connected_[i].store(false, std::memory_order_relaxed);
         track_latency_[i].store(0, std::memory_order_relaxed);
+        track_shortfall_[i].store(0, std::memory_order_relaxed);
     }
     for (std::size_t i = 0; i < session.tracks().size() * api::kInsertSlots; ++i) {
         insert_flags_[i].store(0, std::memory_order_relaxed);
@@ -59,6 +61,12 @@ void StatePublisher::set_compensation(uint32_t frames, uint32_t shortfall_frames
 void StatePublisher::set_track_latency(uint32_t track, uint32_t frames) {
     if (track < session_.tracks().size()) {
         track_latency_[track].store(frames, std::memory_order_relaxed);
+    }
+}
+
+void StatePublisher::set_track_shortfall(uint32_t track, uint32_t shortfall_frames) {
+    if (track < session_.tracks().size()) {
+        track_shortfall_[track].store(shortfall_frames, std::memory_order_relaxed);
     }
 }
 
@@ -122,6 +130,9 @@ void StatePublisher::publish_once() {
                   (tr.muted() ? api::kTrackMuted : 0u) |
                   (input_connected_[i].load(std::memory_order_relaxed)
                        ? api::kTrackInputConnected
+                       : 0u) |
+                  (track_shortfall_[i].load(std::memory_order_relaxed) != 0
+                       ? api::kTrackCompensationShort
                        : 0u);
         f.gain = tr.gain();
         f.overruns = tr.overruns();

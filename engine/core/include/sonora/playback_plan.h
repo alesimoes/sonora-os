@@ -39,8 +39,10 @@ enum class NodeKind : uint8_t {
 // An InsertChain node bound to no host channel: the chain passes its input
 // through. What every chain is until engine/plugin_client binds one.
 constexpr uint32_t kNoChannelSlot = 0xFFFFFFFFu;
-// A chain whose parameter store the control thread has not assigned.
+// A chain whose parameter store, or fade state, the control thread has not
+// assigned. Explicit, never 0: index 0 is a real store and a real state.
 constexpr uint32_t kNoParamStore = 0xFFFFFFFFu;
+constexpr uint32_t kNoNodeState = 0xFFFFFFFFu;
 // An edge that runs through no delay line.
 constexpr uint32_t kNoDelayLine = 0xFFFFFFFFu;
 constexpr uint32_t kNoNode = 0xFFFFFFFFu;
@@ -90,6 +92,9 @@ struct PlanNode {
     uint32_t channel_slot = kNoChannelSlot;
     uint32_t channel_generation = 0;
     uint32_t param_store = kNoParamStore;   // auditor A2.5
+    // The node's miss fade and ramp state, kept for the chain across plans
+    // like a delay line (rt-engineer M5 on PR #45).
+    uint32_t node_state = kNoNodeState;
     // The chain's checked latency, IPC block included, as read at build.
     // The audio thread never recomputes alignment from it.
     uint32_t latency_frames = 0;

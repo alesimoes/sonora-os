@@ -160,9 +160,23 @@ public:
     uint32_t max_delay_frames() const { return delay_len_ ? delay_len_ - 1 : 0; }
 
     // What InsertChain nodes run; null passes every chain through. Not
-    // owned. Set before the backend is activated, or after it is
-    // deactivated: the audio thread reads it unsynchronised.
-    void set_insert_chains(InsertChainRunner* runner) { chains_ = runner; }
+    // owned: a runner must outlive every callback that can have loaded it,
+    // so replace or clear it while the backend is active only if the old
+    // one is kept until a callback has passed. The release store publishes
+    // whatever the runner set up before the call.
+    void set_insert_chains(InsertChainRunner* runner) {
+        chains_.store(runner, std::memory_order_release);
+    }
+    // Callbacks whose chains passed through unrun because the callback was
+    // longer than max_block_frames (insert_chain_runner.h).
+    uint64_t chain_bypassed_blocks() const {
+        return chain_bypassed_.load(std::memory_order_relaxed);
+    }
+    // Callbacks played silent because the plan failed the audio thread's
+    // bounds check when it was adopted. A plan from the builder never does.
+    uint64_t invalid_plan_blocks() const {
+        return invalid_plan_blocks_.load(std::memory_order_relaxed);
+    }
 
 private:
     void mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
@@ -179,6 +193,10 @@ private:
     // Step 3: the track's ramped gain and pan, from `in` into stereo `out`.
     void apply_fader(uint32_t engine_track, bool stereo, const float* const in[2],
                      float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // Whether every index the audio thread follows in `plan` is in bounds:
+    // nodes, edges, tracks, segments, scratch buffers. Run once per plan,
+    // when the audio thread adopts it.
+    bool plan_in_bounds(const PlaybackPlan& plan) const noexcept SONORA_RT;
     // Adds `in` to `out`, `edge.delay_frames` late through its line.
     void sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
                   float* const out[2], uint32_t n) noexcept SONORA_RT;
@@ -213,7 +231,15 @@ private:
     std::unique_ptr<uint32_t[]> delay_pos_;
     std::unique_ptr<uint64_t[]> line_owner_; // edge_pair(); 0 is none
     std::unique_ptr<uint32_t[]> line_filled_;
-    InsertChainRunner* chains_ = nullptr;
+    // The callback that last wrote each line. A line skipped for even one
+    // callback (its edge undelayed or gone) holds a past with a hole in
+    // it, and is restarted from silence when its edge comes back.
+    std::unique_ptr<uint64_t[]> line_stamp_;
+    uint64_t callbacks_ = 0;
+    std::atomic<InsertChainRunner*> chains_{nullptr};
+    // This callback's runner, when its chains run: loaded once per callback.
+    InsertChainRunner* runner_ = nullptr;
+    bool plan_valid_ = true;
     std::unique_ptr<uint32_t[]> cursor_;     // per plan track
     // The frame each plan track's cursor is good for: the end of what it
     // last rendered. A track that sent its input, or nothing, has not
@@ -233,6 +259,8 @@ private:
     std::atomic<float> bus_peak_[2] = {{0.0f}, {0.0f}};
     std::atomic<uint64_t> misses_{0};
     std::atomic<uint64_t> locates_dropped_{0};
+    std::atomic<uint64_t> chain_bypassed_{0};
+    std::atomic<uint64_t> invalid_plan_blocks_{0};
     // Reset by start_recording() before it publishes Recording; set by the
     // audio thread in the take's first block.
     std::atomic<uint64_t> take_origin_{kNoOrigin};

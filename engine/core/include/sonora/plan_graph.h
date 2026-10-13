@@ -16,14 +16,21 @@
 
 namespace sonora {
 
-// One track's chain as the control thread knows it when it builds a plan.
-// Inactive: the track is a TrackOut, with no latency.
+// One track as the control thread knows it when it builds a plan: the key
+// its nodes' stable ids derive from, and its chain. Inactive: the track is
+// a TrackOut, with no latency.
 struct ChainBinding {
+    // Never a track's position: a delete or a reorder would hand one track
+    // another's delay history. engine/control gives each model track a key
+    // for the session (PlanContinuity); 0 falls back to position + 1, for
+    // plans built by hand.
+    uint32_t stable_key = 0;
     bool active = false;
     uint64_t chain_id = 0;   // the model track id
     uint32_t channel_slot = kNoChannelSlot;
     uint32_t channel_generation = 0;
     uint32_t param_store = kNoParamStore;
+    uint32_t node_state = kNoNodeState;
     uint32_t latency_frames = 0;
 };
 
@@ -32,11 +39,14 @@ struct ChainBinding {
 inline uint32_t graph_nodes(uint32_t tracks, uint32_t chains) { return tracks + 2 * chains + 2; }
 inline uint32_t graph_edges(uint32_t tracks, uint32_t chains) { return tracks + 2 * chains + 1; }
 
-// Stable ids: track t's TrackOut is t + 1, as layout_monitor_graph() has
-// it, and its chain nodes are t + 1 with a tag. A track that gains its
-// first insert therefore feeds the bus through a new pair, (TrackFader,
-// BusSum), whose delay line starts from silence: the one silent block
-// ADR-0012's Consequences accept for a chain edit.
+// Stable ids: a track's TrackOut is its key, its chain nodes the key with a
+// tag. Keys stay below the tags. A track that gains its first insert feeds
+// the bus through a new pair, (TrackFader, BusSum), whose delay line starts
+// from silence: the one silent block ADR-0012's Consequences accept for a
+// chain edit.
+constexpr uint32_t kMaxTrackKey = 0x007FFFFFu;
+// An engine track with no model track behind it.
+constexpr uint32_t kSpareTrackKeyTag = 0x00800000u;
 constexpr uint32_t kTrackSourceIdTag = 0x01000000u;
 constexpr uint32_t kInsertChainIdTag = 0x02000000u;
 constexpr uint32_t kTrackFaderIdTag = 0x03000000u;
@@ -62,6 +72,8 @@ public:
     // The pair's line, or kNoDelayLine when every line is taken by this
     // build (auditor L3: never an index past the pool).
     uint32_t assign(uint64_t pair);
+    // The pair a line was last assigned to; 0 if none. For tests.
+    uint64_t owner(uint32_t line) const { return line < owner_.size() ? owner_[line] : 0; }
 
 private:
     std::vector<uint64_t> owner_;      // 0: never assigned

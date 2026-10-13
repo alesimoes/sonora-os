@@ -95,6 +95,8 @@ public:
     // latency changes only through a new plan: after the resolver's answer
     // changes, show() the snapshot again (ADR-0012 §7.3).
     void set_chain_resolver(ChainResolver resolver) { resolver_ = std::move(resolver); }
+    // What the next build starts from. For tests.
+    const PlanContinuity& playing_continuity() const { return playing_continuity_; }
     uint64_t plans_published() const { return published_; }
     // Locate request to the audio thread's queue, in milliseconds.
     double last_locate_ms() const { return last_locate_ms_; }
@@ -121,9 +123,12 @@ private:
     BuildLimits limits_;
     std::unordered_map<model::Id, uint32_t> slots_;
     ChainResolver resolver_;
-    // Kept across builds, so an edge keeps its delay line from one plan to
-    // the next.
-    DelayLinePool pool_;
+    // Each build starts from the playing plan's continuity, so a plan
+    // cancelled before it plays cannot move a playing edge to another line
+    // (rt-safety audit of PR #48); the pending plan's becomes the playing
+    // one when it is published.
+    PlanContinuity playing_continuity_;
+    PlanContinuity pending_continuity_;
 
     PlaybackPlan* pending_ = nullptr;
     uint64_t pending_gen_ = 0;

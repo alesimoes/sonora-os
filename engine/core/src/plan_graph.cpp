@@ -13,7 +13,7 @@ void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains) {
     std::vector<uint32_t> last(tracks);
     plan.last_insert_node = kNoNode;
     for (uint32_t t = 0; t < tracks; ++t) {
-        const uint32_t id = t + 1;
+        const uint32_t id = chains && chains[t].stable_key != 0 ? chains[t].stable_key : t + 1;
         if (!chains || !chains[t].active) {
             plan.nodes[n] = PlanNode{};
             plan.nodes[n].kind = NodeKind::TrackOut;
@@ -47,6 +47,7 @@ void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains) {
         ch.channel_slot = c.channel_slot;
         ch.channel_generation = c.channel_generation;
         ch.param_store = c.param_store;
+        ch.node_state = c.node_state;
         ch.latency_frames = c.latency_frames;
         ch.channels = channels;
         ch.chain_id = c.chain_id;

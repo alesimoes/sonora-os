@@ -290,6 +290,10 @@ void publisher_reads_the_session() {
     s.transport().set_playhead(4800);
     p.set_take(7);
     p.set_input_connected(1, true);
+    // ADR-0012 §7.3, as the server hands over the playing plan's report.
+    p.set_compensation(2048, 1048);
+    p.set_track_latency(0, 2048);
+    p.set_track_shortfall(1, 1048);
     p.publish_once();
     api::StateView v;
     std::string error;
@@ -300,6 +304,10 @@ void publisher_reads_the_session() {
     CHECK(!v.track(0).armed() && v.track(1).armed());
     CHECK(v.track(0).gain == 0.25f);
     CHECK(!v.track(0).input_connected() && v.track(1).input_connected());
+    CHECK(v.transport().compensation_frames == 2048);
+    CHECK(v.transport().compensation_shortfall_frames == 1048);
+    CHECK(v.track(0).latency_frames == 2048 && v.track(1).latency_frames == 0);
+    CHECK(!v.track(0).compensation_short() && v.track(1).compensation_short());
     // The first publish took the 0.5 from the Track before this reader
     // attached; the publisher is the one caller of take_peak().
     CHECK(v.take_peak(0) == 0.0f);

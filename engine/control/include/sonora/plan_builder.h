@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "sonora/model/model.h"
@@ -42,6 +43,19 @@ struct BuildLimits {
 // its input through with no latency; tests inject a latency here.
 using ChainResolver = std::function<void(const model::TrackEdit& track, uint32_t engine_track,
                                          ChainBinding& binding)>;
+
+// What one build hands the next, so a swap keeps each track's channel state:
+// the delay line of each pair of stable ids, and the stable key of each
+// model track. A track keeps its key for the session whatever its position,
+// so a delete or a reorder never hands it another track's delay history.
+// Copyable: the publisher builds on a copy of the playing plan's, so a plan
+// that is cancelled before it plays leaves no trace.
+struct PlanContinuity {
+    explicit PlanContinuity(uint32_t delay_lines = 0) : pool(delay_lines) {}
+    DelayLinePool pool;
+    std::unordered_map<model::Id, uint32_t> track_keys;
+    uint32_t next_key = 1;
+};
 
 // The engine source-table slot of a model source, registering it on first
 // sight. False, with `error`, if its file cannot be opened.
@@ -81,13 +95,13 @@ struct PlanReport {
 // A track with an active insert is TrackSource -> InsertChain -> TrackFader
 // (ADR-0012 §7.1), bound through `chains` (may be empty); every edge into
 // the bus is delayed so all tracks arrive aligned on the slowest, with lines
-// from `pool`, which the caller keeps from one build to the next.
+// and track keys from `continuity`, which the build updates.
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, const ChainResolver& chains,
-                DelayLinePool& pool, uint64_t epoch, PlaybackPlan*& out, PlanReport& report,
-                std::string& error);
-// No chain bound, a pool of its own: for callers with no host and no plan
-// before this one.
+                PlanContinuity& continuity, uint64_t epoch, PlaybackPlan*& out,
+                PlanReport& report, std::string& error);
+// No chain bound, a continuity of its own: for callers with no host and no
+// plan before this one.
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error);

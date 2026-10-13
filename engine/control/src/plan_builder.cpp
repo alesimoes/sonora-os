@@ -65,15 +65,15 @@ float gain_of_db(float db) {
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error) {
-    DelayLinePool pool(limits.delay_lines);
-    return build_plan(snapshot, limits, source_slot, ChainResolver(), pool, epoch, out, report,
-                      error);
+    PlanContinuity continuity(limits.delay_lines);
+    return build_plan(snapshot, limits, source_slot, ChainResolver(), continuity, epoch, out,
+                      report, error);
 }
 
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, const ChainResolver& chains,
-                DelayLinePool& pool, uint64_t epoch, PlaybackPlan*& out, PlanReport& report,
-                std::string& error) {
+                PlanContinuity& continuity, uint64_t epoch, PlaybackPlan*& out,
+                PlanReport& report, std::string& error) {
     out = nullptr;
     report = PlanReport{};
     const auto& tracks = snapshot.edit->tracks;
@@ -221,17 +221,32 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
 
     // A track with no active insert keeps the fused TrackOut (ADR-0012 §7.1).
     std::vector<ChainBinding> bindings(limits.engine_tracks);
+    for (uint32_t ti = 0; ti < limits.engine_tracks; ++ti) {
+        bindings[ti].stable_key = kSpareTrackKeyTag | (ti + 1);
+    }
     uint32_t active_chains = 0;
     for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
         const model::TrackEdit& t = *tracks[ti];
         ChainBinding& b = bindings[ti];
+        auto key = continuity.track_keys.find(t.id);
+        if (key == continuity.track_keys.end()) {
+            if (continuity.next_key > kMaxTrackKey) {
+                error = "the session has seen more than " + str(kMaxTrackKey) +
+                        " tracks; save and reopen it (limit: track keys)";
+                return false;
+            }
+            key = continuity.track_keys.emplace(t.id, continuity.next_key++).first;
+        }
+        b.stable_key = key->second;
         b.active = std::any_of(t.inserts.begin(), t.inserts.end(),
                                [](const model::Insert& in) { return in.active; });
         if (!b.active) continue;
         b.chain_id = t.id;
         if (chains) chains(t, static_cast<uint32_t>(ti), b);
-        // The resolver binds a chain; it does not decide whether there is one.
+        // The resolver binds a chain; it decides neither whether there is
+        // one nor the track's key.
         b.active = true;
+        b.stable_key = key->second;
         ++active_chains;
     }
 
@@ -265,7 +280,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     layout_track_graph(*plan, bindings.data());
     report.track_shortfall.assign(limits.engine_tracks, 0);
     const Compensation comp =
-        compensate(*plan, limits.max_delay_frames, pool, report.track_shortfall.data());
+        compensate(*plan, limits.max_delay_frames, continuity.pool, report.track_shortfall.data());
     report.compensation_frames = comp.compensation_frames;
     report.compensation_shortfall_frames = comp.shortfall_frames;
     report.clamped_edges = comp.clamped_edges;

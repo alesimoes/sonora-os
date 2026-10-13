@@ -843,7 +843,7 @@ int test_build_with_chains() {
         b.param_store = 20 + engine_track;
         b.latency_frames = t.id == 100 ? 2048 : 100;
     };
-    sonora::DelayLinePool pool(limits.delay_lines);
+    sonora::PlanContinuity continuity(limits.delay_lines);
     const sonora::SourceSlot no_sources = [](const Source&, uint32_t&, std::string& e) {
         e = "no source expected";
         return false;
@@ -851,7 +851,7 @@ int test_build_with_chains() {
     PlaybackPlan* plan = nullptr;
     sonora::PlanReport report;
     std::string error;
-    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, pool, 1, plan, report,
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 1, plan, report,
                              error));
     const PlaybackPlan& p = *plan;
     CHECK(p.node_count == 9);
@@ -877,7 +877,7 @@ int test_build_with_chains() {
     // Over a 1000-frame maximum: built anyway, clamped, and the shortfall
     // reported against the tracks it leaves early.
     limits.max_delay_frames = 1000;
-    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, pool, 2, plan, report,
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 2, plan, report,
                              error));
     CHECK(report.clamped_edges == 2);
     CHECK(report.compensation_shortfall_frames == 1048);
@@ -891,6 +891,68 @@ int test_build_with_chains() {
     CHECK(plan->compensation_frames == 0);
     for (uint32_t e = 0; e < plan->edge_count; ++e) CHECK(plan->edges[e].delay_frames == 0);
     sonora::destroy_plan(plan);
+
+    // Review of PR #48 (M1): stable ids come from the model track, so a
+    // reorder moves each track's ids and delay line with it.
+    limits.max_delay_frames = 16384;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 4, plan, report,
+                             error));
+    const uint32_t chain_a = plan->nodes[1].stable_id;
+    const uint32_t out_c = plan->nodes[6].stable_id;
+    const uint32_t line_c = plan->edges[plan->nodes[7].first_input_edge + 2].delay_line;
+    CHECK(line_c != sonora::kNoDelayLine);
+    sonora::destroy_plan(plan);
+    CHECK_APPLY(h, (ReorderTracks{{104, 100, 102}}));
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 5, plan, report,
+                             error));
+    CHECK(plan->nodes[0].kind == sonora::NodeKind::TrackOut);   // C, first now
+    CHECK(plan->nodes[0].stable_id == out_c);
+    CHECK(plan->nodes[2].kind == sonora::NodeKind::InsertChain && plan->nodes[2].chain_id == 100);
+    CHECK(plan->nodes[2].stable_id == chain_a);
+    const sonora::PlanEdge& c_into_bus = plan->edges[plan->nodes[7].first_input_edge];
+    CHECK(c_into_bus.delay_frames == 2048 && c_into_bus.delay_line == line_c);
+    sonora::destroy_plan(plan);
+    return 0;
+}
+
+// rt audit of PR #48: a plan cancelled before it plays must leave the
+// delay-line pool as the playing plan left it. Otherwise it can move an
+// edge that is still playing to another line, which restarts from silence.
+int test_cancelled_plan_leaves_the_pool_alone() {
+    auto session = make_session(3);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, track_op(102, 103, "B"));
+    CHECK_APPLY(h, track_op(104, 105, "C"));
+    CHECK_APPLY(h, insert_op(100, 500, 0));
+    PlaybackController ctl(s, kDir);
+    ctl.set_chain_resolver([](const TrackEdit&, uint32_t, sonora::ChainBinding& b) {
+        b.latency_frames = 256;
+    });
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    const uint32_t lines = s.delay_lines();
+    std::vector<uint64_t> owners;
+    for (uint32_t l = 0; l < lines; ++l) owners.push_back(ctl.playing_continuity().pool.owner(l));
+
+    // Pending, never published: A's insert moves to C, so B and A need
+    // lines and C's goes to one of them.
+    CHECK_APPLY(h, RemoveInsert{500});
+    CHECK_APPLY(h, insert_op(104, 501, 0));
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.pending());
+    for (uint32_t l = 0; l < lines; ++l) {
+        CHECK(ctl.playing_continuity().pool.owner(l) == owners[l]);
+    }
+    CHECK(ctl.settle(2.0));
+    // Published now: the next build starts from it.
+    bool moved = false;
+    for (uint32_t l = 0; l < lines; ++l) {
+        moved = moved || ctl.playing_continuity().pool.owner(l) != owners[l];
+    }
+    CHECK(moved);
     return 0;
 }
 
@@ -954,6 +1016,7 @@ int main() {
     if (test_huge_gain_is_no_nan()) return 1;
     if (test_build_with_chains()) return 1;
     if (test_latency_change_is_a_new_plan()) return 1;
+    if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;
