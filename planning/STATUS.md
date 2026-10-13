@@ -22,6 +22,15 @@ end of its run. Keep it short: what is true now, not a diary.
   -- TSan needs `--security-opt seccomp=unconfined` and `setarch -R` there,
   because Docker Desktop's kernel randomises more address bits than TSan
   maps. The writer/disk-thread race TSan found is fixed in `a141e9d`.
+- **ADR-0007 M1 landed (2026-10-12, `aa4fbec`, PR #5).** The C++ is in the
+  module layout of ADR-0007 §1 (`common/`, `contracts/api`, `engine/core`,
+  `engine/control`, `engine/app`, `drivers/jack`, `ui/keymap`, `ui/tui`)
+  under one CMake root; `build/sonora-engine` is where it was. Three
+  forbidden edges remain until M2 and M4, each commented where it is
+  linked. Landed with it: a take's number comes after any track's files on
+  disk, not only the tracks open now, and `WavWriter::open` flushes the
+  header, so a disk that refuses it fails the take at start with the
+  reason instead of in the disk thread later.
 - **Key map review fixes (2026-10-12, `feature/ui-foundation`):** a take on
   disk is never overwritten -- the take number comes from the session folder
   and the writer creates with O_EXCL; arming is refused during a take; SS3
@@ -101,6 +110,7 @@ end of its run. Keep it short: what is true now, not a diary.
 | Container recording test | rt-engineer | passing, wired into CI |
 | QEMU boot smoke test | distro-engineer | passing, 19 checks |
 | `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
+| ADR-0007 M2, backend contract | rt-engineer + driver-engineer | on `contract/backend`, not pushed; needs both owners' reviews, `code-reviewer` and `rt-safety-auditor` |
 
 ## Blocked
 
