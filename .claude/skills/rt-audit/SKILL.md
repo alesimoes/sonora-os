@@ -10,8 +10,9 @@ on the audio thread waited.
 
 ## Scope of the audit
 
-Start at `JackBackend::process_cb` in `drivers/jack/src/jack_backend.cpp` and
-follow every call transitively. That is the audit surface. Anything on it must not
+Start at every SONORA_RT function (grep SONORA_RT); today
+`JackBackend::Impl::process_cb` and `xrun_cb` in
+`drivers/jack/src/jack_backend.cpp`. Follow every call transitively. That is the audit surface. Anything on it must not
 allocate, free, lock, wait, perform a syscall, or throw.
 
 For the detailed method and the list of standard-library traps, use the

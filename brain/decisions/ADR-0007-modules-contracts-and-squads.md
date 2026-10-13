@@ -1130,21 +1130,19 @@ contract. Nothing here touches §3 or §10.
    there must be RT-safe and `natural_less` allocates. Edges:
    `drivers/support` → `contracts/backend`, `common/base`; `drivers/jack`
    and `drivers/fake` → `drivers/support`.
-3. **Ports carry a device.** `PortInfo { device, name, channel }`, where
-   `channel` counts within the device. `BackendConfig::capture_device`
-   chooses the device. Empty means the only one, and `open()` fails naming
-   the devices when there are several. Pro Audio applies to every ALSA
-   card, so onboard audio plus the UMC1820 in one sorted list shifted
-   channels. The rule is stated once, in the contract, as the pure
-   function `select_device()`. A device that is not present yet selects
-   nothing and is not an error, so a USB interface may still enumerate
-   late. `sonora-engine --device NAME` sets it.
-4. **What is fatal.** Server loss; `DeviceGone`, when a port that fed an
-   input is unregistered; `Stalled`, when no period arrives for one second
-   while active, checked by `fatal()` against the control thread's clock;
-   and a rate or buffer-size change. `DeviceGone` covers any source port,
-   not only physical ones: an input that loses its source has lost its
-   take either way, and this lets the container test exercise it.
+3. **Ports carry a device.** `PortInfo { device, name, channel, usb }`,
+   where `channel` counts within the device. `BackendConfig::capture_device`
+   chooses the device. Pro Audio applies to every ALSA card, so onboard
+   audio plus the UMC1820 in one sorted list shifted channels. The rule is
+   stated once, in the contract, as the pure function `select_device()`; an
+   empty name follows the device policy in item 8. A device that is not
+   present yet selects nothing and is not an error, so a USB interface may
+   still enumerate late. `sonora-engine --device NAME` sets it.
+4. **What is fatal.** Server loss; `DeviceGone`, when a physical capture
+   port that feeds an input is unregistered; `Stalled`, when no period
+   arrives for one second while active, checked by `fatal()` against the
+   control thread's clock; and a rate or buffer-size change. Item 9 says
+   which sources count.
 5. **Guarantees added to §4.2.**
    - A period whose rate or size differs from the first is refused before
      `process()`. The rate is read in the period itself, not only from
@@ -1165,6 +1163,72 @@ contract. Nothing here touches §3 or §10.
    `RLIMIT_MEMLOCK` is or can be raised to unlimited (see the commit for
    why a finite limit is refused). Tests that start the engine in a
    container need `--ulimit memlock=-1:-1`.
+
+Items 8 to 12 answer the final code review. Each is the **default policy,
+2026-10-12**, chosen by the coordinator; the owner can override it.
+
+8. **Which device without `--device`.** The appliance's unit passes none,
+   so the default has to be right on a laptop with onboard audio:
+   - an empty name means the one USB audio interface;
+   - non-USB capture (onboard, PCI, HDMI) is used only when named;
+   - no USB device yet means waiting (`--wait-for-inputs`), retrying the
+     auto-connect every half second, and in the terminal UI once a second
+     after that, with the reason on screen; onboard is never a fallback;
+   - several USB devices and no name: `open()` fails naming them;
+   - a named device still absent when the wait ends: the engine exits 1
+     naming it and listing those present (`describe_absent()`), headless
+     and interactive alike;
+   - a take is refused while no armed track's input is connected
+     (`input_connected()`), with the reason on the status line.
+
+   *Where the bus comes from.* Nothing in the JACK API names it, and under
+   pw-jack 1.4.2 the client part of a port name is the node's
+   description ("UMC1820 Pro"), not `node.name` (`alsa_input.usb-...`).
+   With `jack.fill-aliases = true` (off by default) a port's first alias is
+   its PipeWire `object.path`, `alsa:acp:<card id>:...` (or `alsa:pcm:`
+   with ACP off), from `spa/plugins/alsa` and `impl-port.c`. The kernel's
+   snd-usb-audio, and only it, creates `/proc/asound/cardN/usbid`, and
+   `/proc/asound/<card id>` links to `cardN`. The engine sets
+   `jack.fill-aliases` for itself through `PIPEWIRE_PROPS` before any thread
+   exists, keeping what the variable held. Measured in the container (a
+   JACK client with physical ports and `object.path` set through
+   `PIPEWIRE_PROPS`): without the setting the aliases are empty; with it,
+   alias 1 is `alsa:acp:PCH:0:capture:output_0`. Under jackd2, or with the
+   setting overridden, no device reads as USB and one must be named. Not
+   verified on hardware: that a real UMC1820's ports carry the
+   `alsa:acp:UMC1820:...` path, and that `/proc/asound/UMC1820/usbid`
+   exists on the target.
+
+   Several USB devices fail fast, so under `Restart=always` the unit can
+   reach its start limit and leave tty1 on the last error. That is the
+   chosen behaviour: the operator has to pick one.
+9. **Which sources `DeviceGone` covers.** Physical ones only: `pw-play`
+   ending or a soft synth closing is not a device leaving. A source is
+   forgotten once unlinked, so an interface unpatched earlier and removed
+   later does not end the take. But under pw-jack 1.4.2 a destroyed node's
+   link disconnect arrives before its port's unregistration, in the same
+   batch (measured in the container), so a source unlinked less than one
+   second before its port goes still counts (`SourceWatch`). A removal is
+   matched by name as well as id, since jackd2 reuses port ids.
+10. **Teardown is bounded.** With the server stalled, the take closed but
+    the exit waited in `jack_deactivate()` for good, and `Restart=always`
+    could not act. After the take is closed, every exit path arms a
+    watchdog thread that writes a message and `_exit(1)`s after five
+    seconds. `WatchdogSec=` in the unit is not added: it needs the engine
+    to send `WATCHDOG=1` through `sd_notify` from a loop that proves
+    progress, which means linking libsystemd and choosing what "alive"
+    means; not trivially safe, so it is left for its own change.
+11. **`frame_time` across a server clock step.** A step backwards in
+    JACK's counter is a clock change, not a forward jump of nearly 2^32
+    frames: `FrameClock` holds still and counts a discontinuity.
+12. **`PeriodGuard::state()`** reads the reason and its detail in one load,
+    so `fatal_reason()` cannot print "48000 -> 0 Hz".
+
+*Known, harmless.* `jack_get_sample_rate()` inside pw-jack 1.4.2 writes
+`c->sample_rate` back on the calling thread (`pipewire-jack.c:5346`), here
+the RT thread, racing the notify thread that updates it. The value is only
+used to compare against the expected rate, and the first fatal reason
+sticks, so a torn or stale read can at worst delay detection by a period.
 
 ## Alternatives rejected
 
