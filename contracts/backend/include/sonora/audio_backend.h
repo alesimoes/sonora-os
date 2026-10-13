@@ -78,6 +78,9 @@ public:
     // How many inputs have something connected right now. Asked at record
     // time, since a port can be unpatched after it was connected.
     virtual int connected_input_count() const = 0;
+    // Whether input `index` (in_1 is 0) has anything connected right now,
+    // so a take can be refused when no armed track would hear anything.
+    virtual bool input_connected(uint32_t index) const = 0;
 
     // After return, process() will not be called again and no call is still
     // running; safe to tear down. Idempotent. The destructor calls it.

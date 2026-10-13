@@ -223,7 +223,8 @@ std::string why_no_inputs(AudioBackend& audio, const std::string& device) {
 // line. Return code is the test verdict: anything non-zero means the recording
 // is not trustworthy, even if files were produced.
 int run_headless(sonora::Session& session, AudioBackend& audio,
-                 double seconds, int connected, const std::string& device) {
+                 double seconds, int connected, const std::string& device,
+                 const sonora::MayRecord& may_record) {
     // Before the take opens: a server lost while waiting would otherwise
     // leave a set of 0-frame files behind it.
     if (audio.fatal()) {
@@ -242,7 +243,7 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
     // Never take 1 unconditionally: a test run against a session folder that
     // already holds takes must add one, not replace one.
     std::string why;
-    if (!session.start_recording(session.next_free_take(), &why)) {
+    if (!may_record(why) || !session.start_recording(session.next_free_take(), &why)) {
         std::fprintf(stderr, "sonora: cannot record: %s\n", why.c_str());
         return 1;
     }
@@ -516,6 +517,22 @@ int main(int argc, char** argv) {
     }
     session.disk().start();
 
+    // Before every take, headless or from a key: when no armed track has
+    // anything connected, every file would be silence.
+    const sonora::MayRecord may_record = [&session, &audio,
+                                          &capture_device](std::string& why) {
+        bool armed = false;
+        for (std::size_t i = 0; i < session.tracks().size(); ++i) {
+            if (!session.tracks()[i]->rec_armed()) continue;
+            armed = true;
+            if (audio->input_connected(static_cast<uint32_t>(i))) return true;
+        }
+        // start_recording() says "no track is armed" better than this would.
+        if (!armed) return true;
+        why = "no armed track has an input connected (" +
+              why_no_inputs(*audio, capture_device) + ")";
+        return false;
+    };
 
     if (arm_all) {
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
@@ -523,7 +540,7 @@ int main(int argc, char** argv) {
 
     if (record_seconds > 0.0) {
         const int rc = run_headless(session, *audio, record_seconds, connected,
-                                    capture_device);
+                                    capture_device, may_record);
         audio->deactivate();
         return rc;
     }
@@ -537,7 +554,7 @@ int main(int argc, char** argv) {
     std::string status;
 
     sonora::CommandRegistry commands;
-    sonora::install_session_commands(commands, session, take, quit);
+    sonora::install_session_commands(commands, session, take, quit, may_record);
 
     // The terminal mode is set before anything is measured against it: which
     // control bytes reach us depends on it, and a check made against the

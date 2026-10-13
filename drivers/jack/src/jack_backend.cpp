@@ -426,6 +426,11 @@ int JackBackend::connected_input_count() const {
     return n;
 }
 
+bool JackBackend::input_connected(uint32_t index) const {
+    return index < impl_->in_ports.size() &&
+           jack_port_connected(impl_->in_ports[index]) > 0;
+}
+
 void JackBackend::deactivate() noexcept {
     Impl& d = *impl_;
     if (!d.client || !d.active) return;

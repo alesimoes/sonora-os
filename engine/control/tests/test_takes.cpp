@@ -403,6 +403,47 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
     return 0;
 }
 
+// A take whose armed tracks have nothing connected records silence on all
+// of them: a misspelled --device, or the interface not plugged in yet. The
+// record keys refuse it with the caller's reason, and leave no file.
+int test_take_refused_without_inputs() {
+    const sonora::SessionConfig cfg = config("test_takes_no_inputs", 2);
+    const std::string audio = cfg.dir + "/Audio Files/";
+    wipe(cfg.dir);
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        s.tracks()[0]->set_rec_armed(true);
+
+        bool inputs = false;
+        sonora::CommandRegistry reg;
+        int take = 1;
+        bool quit = false;
+        sonora::install_session_commands(
+            reg, s, take, quit, [&inputs](std::string& why) {
+                if (!inputs) why = "no input is connected to an armed track";
+                return inputs;
+            });
+        s.disk().start();
+
+        for (const char* command : {"transport.record", "transport.toggle_record"}) {
+            std::string why;
+            CHECK(reg.dispatch(command, {}, why) == sonora::DispatchResult::Failed);
+            CHECK(why == "no input is connected to an armed track");
+            CHECK(s.transport().state() == sonora::TransportState::Stopped);
+            CHECK(!exists(audio + "Audio 1_01.wav"));
+        }
+
+        inputs = true;
+        CHECK(reg.dispatch("transport.record") == sonora::DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        CHECK(reg.dispatch("transport.stop") == sonora::DispatchResult::Ok);
+        CHECK(exists(audio + "Audio 1_01.wav"));
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -415,6 +456,7 @@ int main() {
     failures += test_partial_take_is_refused();
     failures += test_take_starts_with_its_own_samples();
     failures += test_take_at_the_size_limit_fails_with_a_reason();
+    failures += test_take_refused_without_inputs();
     if (failures != 0) {
         std::fprintf(stderr, "FAIL %d take tests\n", failures);
         return 1;

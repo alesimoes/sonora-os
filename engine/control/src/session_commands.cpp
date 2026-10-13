@@ -9,11 +9,12 @@
 namespace sonora {
 
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
-                              bool& quit) {
+                              bool& quit, MayRecord may_record) {
     // The counter is a hint, never trusted on its own: the folder may hold
     // takes from before a restart, and start_recording() refuses a name that
     // is taken, so the number is re-read from disk before every take.
-    const auto start = [&session, &take](std::string& why) {
+    const auto start = [&session, &take, may_record](std::string& why) {
+        if (may_record && !may_record(why)) return false;
         const int free = session.next_free_take();
         if (take < free) take = free;
         return session.start_recording(take, &why);
