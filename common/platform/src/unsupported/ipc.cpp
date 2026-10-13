@@ -32,7 +32,17 @@ SharedRegion::~SharedRegion() = default;
 void* SharedRegion::writable_data() { return nullptr; }
 const void* SharedRegion::data() const { return nullptr; }
 std::size_t SharedRegion::bytes() const { return 0; }
+std::unique_ptr<SharedRegion> SharedRegion::create_shared_writable(const std::string&, std::size_t,
+                                                                   std::string& error) {
+    error = kUnsupported;
+    return nullptr;
+}
 bool SharedRegion::writable() const { return false; }
+bool SharedRegion::sealed_against_writes() const { return false; }
+bool SharedRegion::lock(std::string& error) {
+    error = kUnsupported;
+    return false;
+}
 
 std::unique_ptr<ControlChannel> ControlChannel::connect(const std::string&, std::string& error) {
     error = kUnsupported;

@@ -3,7 +3,7 @@
 The single place to learn where the work stands. Any agent updates this at the
 end of its run. Keep it short: what is true now, not a diary.
 
-- **Updated:** 2026-10-13
+- **Updated:** 2026-10-13 (PRs #41-#47, and engine/plugin_client after the PR #49 reviews)
 - **Current focus:** the **Complete DAW** milestone, stage DAW 1 (engine
   core, contracts, model). Owner, 2026-10-13: the whole product first, at
   parity with the workflow Avid and Apple document for Pro Tools and Logic,
@@ -178,8 +178,50 @@ end of its run. Keep it short: what is true now, not a diary.
   back through the fixed stereo monitor bus, driven over the M7 socket by
   `sonora-ui`, `sonora-tui` or `sonora-ctl`; `tools/run-sonora.sh` starts
   engine and UI as two processes.
-- **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, this
-  branch).** Debian trixie under WSL2: packages, build, PipeWire with
+- **ADR-0012, plugin hosting (M9), accepted in part (#42).** One host per
+  insert chain, depth 1, a missed block is silence (64-frame fade-out,
+  ramp-in), make-before-break restarts, inserts in the model, PDC by the
+  plan builder. The audio thread's futex wake is gated off
+  (`kHostWakeEnabled = false`, hosts timer-paced) until a bare-metal
+  measurement passes.
+- **Native plugins N1 follow-up (#43).** A mono bundle beside each stereo
+  one, a side-chain key on the compressor and gate, automation and
+  re-activation through the hosts; lv2lint 12/12, VST3 validator 47/47 x 12,
+  84 renders through `sonora-plugin-host` bit-exact against N0.
+- **`contracts/plugin` accepted as layout 1 (#45, ADR-0012 checklist 1).**
+  Block-tagged dense parameters with a last-value table and engine-only
+  `values_seq`, `kBypassParam`, the read-only sealed clock region, exit 3 on
+  a version mismatch, `plugins/host` and its driver on it.
+- **Native reverb, ADR-0011 N2 slice 1 (#47).** An FDN reverb (16 lines,
+  three-band decay, freeze) as stereo and mono LV2 and VST3 bundles; T30
+  within 2.3 % of the set decay on 171 octave bands, 14 renders through
+  `sonora-plugin-host` bit-exact against the reference, lv2lint and the
+  VST3 validator pass. Container figures (`brain/research/native-reverb-n2.md`).
+- **Inserts in the model, protocol 3 (#46)** merged; plan nodes and PDC
+  (checklist 3) are in progress on `feature/plan-pdc`.
+- **`engine/plugin_client`, the RT half (ADR-0012 checklist 4,
+  `feature/plugin-client`).** `PluginClient::process_chain` per InsertChain
+  node: blocks numbered per channel from 1, depth-1 collect through
+  `collect_output` (NaN/Inf a miss and a fault), fade/ramp state per node
+  (M5), swap silence not counted, 8 misses remove the channel (the culprit
+  sampled by the control thread), slot generations (H1, moved again on
+  retire), the A2.2 copy budget and A2.5 store index, once per node per
+  callback, in-place nodes, `kNoStore` (PR #48's sentinel).
+  `HostSupervisor`/`SupervisedChain`: a non-RT stub that starts the
+  real `plugins/host` binary through `common/platform` (new: writable
+  shared regions, regions passed at fixed descriptors, `sealed_against_writes`,
+  `lock`), locks the clock and channel regions, checks `--version`, the
+  clock seal and the block size at start-up, detaches the clock safely at
+  teardown, and restarts make-before-break, at most 3 in 60 s (blocking for
+  now; asynchronous before checklist 5). A3: an `nm` ALLOWLIST test holds
+  that the audio thread's object references only memcpy, memset, memmove
+  and `wake_all`, and `wake_all`'s object only `syscall`; three canaries
+  (another platform call, `new`, a `std::string` at -O2) must fail it. The RTSan check of
+  `wake_all` is written but skipped: the toolchain is GCC 14 (BACKLOG).
+  Not yet called from `Session::process`: the InsertChain node (checklist 3)
+  and the control-server wiring with `host_control.h` (checklist 5) remain.
+  Container only.
+- **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays
   back and prints levels. Run end to end 2026-10-13 in a trixie container

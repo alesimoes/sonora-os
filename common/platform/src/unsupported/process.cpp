@@ -7,6 +7,7 @@ namespace sonora::platform {
 struct ChildProcess::Impl {};
 
 std::string executable_dir() { return {}; }
+int64_t current_process_id() { return 0; }
 
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>&, const Options&,
                                                   std::string& error) {

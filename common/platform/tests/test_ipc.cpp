@@ -378,6 +378,39 @@ void child_processes() {
     CHECK(!executable_dir().empty());
 }
 
+// A plugin host is handed its channel region read-write and the clock
+// read-only, at fixed descriptors (ADR-0012 §4). A shell stands in for the
+// host: printf into a passed descriptor writes the memfd at offset 0, which
+// the creator sees through its mapping; the read-only one refuses the write.
+void regions_are_passed_to_a_child_at_fixed_descriptors() {
+    std::string error;
+    auto channel = SharedRegion::create_shared_writable("sonora-test-channel", 4096, error);
+    auto clock = SharedRegion::create("sonora-test-clock", 4096, error);
+    CHECK(channel != nullptr && clock != nullptr);
+    if (!channel || !clock) return;
+    CHECK(channel->writable() && !channel->sealed_against_writes());
+    // Every kernel the image ships is past 5.1, and so is CI's.
+    CHECK(clock->sealed_against_writes());
+    std::string lock_error;
+    if (!channel->lock(lock_error)) std::printf("  (mlock refused here: %s)\n", lock_error.c_str());
+
+    ChildProcess::Options options;
+    options.regions = {{3, channel.get(), true}, {4, clock.get(), false}};
+    auto child = ChildProcess::spawn({"/bin/sh", "-c", "printf 'SNPH' >&3 && ! printf x >&4 2>/dev/null"},
+                                     options, error);
+    CHECK(child != nullptr);
+    if (!child) return;
+    CHECK(child->wait(5000));
+    CHECK(child->exited_normally() && child->exit_code() == 0);
+    CHECK(std::memcmp(channel->data(), "SNPH", 4) == 0);
+    CHECK(static_cast<const char*>(clock->data())[0] == 0);
+
+    // The read-write descriptor exists only for create_shared_writable.
+    options.regions = {{3, clock.get(), true}};
+    CHECK(ChildProcess::spawn({"/bin/true"}, options, error) == nullptr && !error.empty());
+    CHECK(current_process_id() == static_cast<int64_t>(::getpid()));
+}
+
 }  // namespace
 
 int main() {
@@ -393,6 +426,7 @@ int main() {
     a_socket_dir_not_ours_alone_is_refused();
     another_user_is_refused_both_ways();
     child_processes();
+    regions_are_passed_to_a_child_at_fixed_descriptors();
     ::rmdir(("/tmp/sonora-test-ipc-" + std::to_string(::getpid())).c_str());
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

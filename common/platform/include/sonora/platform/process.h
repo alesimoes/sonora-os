@@ -5,23 +5,41 @@
 // Not for the audio thread.
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace sonora::platform {
 
+class SharedRegion;
+
 // The directory this executable was started from, or empty if unknown.
 std::string executable_dir();
+
+// This process's id, as a child is told its parent's (a plugin host's
+// --engine-pid).
+int64_t current_process_id();
 
 class ChildProcess {
 public:
     struct Impl;
 
+    // A region the child finds at descriptor `child_fd`, mapped by it as it
+    // chooses. `writable` passes the read-write descriptor (only a region
+    // from create_shared_writable has one); otherwise the read-only one.
+    struct PassedRegion {
+        int child_fd = -1;
+        const SharedRegion* region = nullptr;
+        bool writable = false;
+    };
+
     struct Options {
         // Empty: inherit this process's stream.
         std::string stdout_path;
         std::string stderr_path;
+        // Each at its child_fd, 3 or above; nothing else is inherited.
+        std::vector<PassedRegion> regions;
     };
 
     // argv[0] is the program's path. Fails with a reason, never silently.

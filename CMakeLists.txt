@@ -52,14 +52,21 @@ add_subdirectory(plugins/native/reverb)
 add_subdirectory(plugins/native/measure/app)
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
-# DRAFT, Phase 4: the engine <-> plugin host shared-memory layout, awaiting
-# rt-engineer review. Nothing in engine/ links it yet.
+# The engine <-> plugin host shared-memory layout, accepted as layout 1
+# (ADR-0012 §5).
 add_subdirectory(contracts/plugin)
+# Optional: skipped, with one status line, where lilv is not installed.
+# tools/build-plugins.sh builds and tests it. Before engine/plugin_client,
+# whose end-to-end tests run it when it is built.
+add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # Platform-neutral (ADR-0008): the backend engine tests run on, any OS.
 add_subdirectory(drivers/fake)
+# The engine's side of the plugin boundary (ADR-0012 checklist 4). Not
+# linked by engine/core until the InsertChain node lands.
+add_subdirectory(engine/plugin_client)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
@@ -70,6 +77,3 @@ add_subdirectory(ui/client)
 # Optional: skipped, with one status line, where Qt 6 is not installed (the
 # engine's build container and CI). tools/build-ui.sh builds it.
 add_subdirectory(ui/qt)
-# Optional the same way: skipped where lilv is not installed.
-# tools/build-plugins.sh builds and tests it.
-add_subdirectory(plugins/host)

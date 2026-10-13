@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/platform/process.h"
 
+#include "region_descriptor.h"
+
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -50,6 +52,8 @@ std::string executable_dir() {
     return slash == std::string::npos ? std::string() : path.substr(0, slash);
 }
 
+int64_t current_process_id() { return static_cast<int64_t>(::getpid()); }
+
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>& argv,
                                                   const Options& options, std::string& error) {
     if (argv.empty()) {
@@ -60,8 +64,35 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     for (const std::string& a : argv) args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
 
+    // Each passed region is first duplicated, close-on-exec, above any
+    // child_fd, so that one dup2 into place cannot overwrite the source of
+    // another; the dup2 in the child clears close-on-exec on the target only.
+    std::vector<int> staged;
+    auto close_staged = [&staged] {
+        for (int fd : staged) ::close(fd);
+    };
+    for (const PassedRegion& r : options.regions) {
+        const int fd = r.region ? region_descriptor(*r.region, r.writable) : -1;
+        if (r.child_fd < 3 || fd < 0) {
+            error = "cannot pass a region to " + argv[0] + " at descriptor " +
+                    std::to_string(r.child_fd) +
+                    (fd < 0 ? ": the region has no such descriptor" : ": 0-2 are the streams");
+            close_staged();
+            return nullptr;
+        }
+        const int high = ::fcntl(fd, F_DUPFD_CLOEXEC, 64);
+        if (high < 0) {
+            error = "cannot duplicate a region descriptor: " + std::string(std::strerror(errno));
+            close_staged();
+            return nullptr;
+        }
+        staged.push_back(high);
+    }
+
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
+    for (std::size_t i = 0; i < staged.size(); ++i)
+        posix_spawn_file_actions_adddup2(&actions, staged[i], options.regions[i].child_fd);
     if (!options.stdout_path.empty()) {
         posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, options.stdout_path.c_str(),
                                          O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -86,6 +117,7 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     const int rc = ::posix_spawn(&impl->pid, args[0], &actions, &attr, args.data(), environ);
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
+    close_staged();
     if (rc != 0) {
         error = "cannot start " + argv[0] + ": " + std::strerror(rc);
         return nullptr;
