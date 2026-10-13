@@ -7,6 +7,8 @@
 // apply the same operations reach equal snapshots.
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -160,12 +162,82 @@ struct ReorderTracks {
     std::vector<Id> order;
 };
 
+// --- inserts (ADR-0012 §6.3) ------------------------------------------------
+//
+// Structure (which plugin, which slot, active) is undoable: owner decision
+// O1's default. Flipping it moves the next five into is_undoable()'s
+// not-undoable list and TrackEdit::inserts into MixState; neither the
+// codec nor the session file changes. Values (bypass, parameters, state)
+// are mix state either way, saved and never undone, as a fader is.
+
+// A new insert in a free slot of `track`, active, with these values.
+struct AddInsert {
+    Id track = 0;
+    Id insert = 0;
+    std::uint8_t slot = 0;
+    PluginRef plugin;
+    std::vector<ParamValue> params;
+    std::optional<StateRef> state;
+};
+
+// Its values outlive it in MixState, so undoing the removal brings the
+// plugin back as it was.
+struct RemoveInsert {
+    Id insert = 0;
+};
+
+// Between slots of one track or onto another track; refused onto a slot
+// another insert holds.
+struct MoveInsert {
+    Id insert = 0;
+    Id to_track = 0;
+    std::uint8_t to_slot = 0;
+};
+
+// Pro Tools' active and inactive: in the chain or out of it.
+struct SetInsertActive {
+    Id insert = 0;
+    bool active = true;
+};
+
+// Another plugin in the same slot: the insert is removed and `replacement`
+// takes its slot and its active state, with these values, as one undo
+// step. A new id, because the old one's values belong to the old plugin and
+// undo brings them back with it.
+struct ReplaceInsert {
+    Id insert = 0;
+    Id replacement = 0;
+    PluginRef plugin;
+    std::vector<ParamValue> params;
+    std::optional<StateRef> state;
+};
+
+struct SetInsertBypass {
+    Id insert = 0;
+    bool bypass = false;
+};
+
+// Every value the insert holds, replacing the list: the end of a gesture,
+// and every insert's values at save.
+struct SetInsertParams {
+    Id insert = 0;
+    std::vector<ParamValue> params;
+};
+
+// At save, after the engine has had the plugin's state written to its file.
+struct SetInsertState {
+    Id insert = 0;
+    std::optional<StateRef> state;
+};
+
 using Operation =
     std::variant<AddSource, SetMix, SetMonitorBus, SetSettings, AddTrack,
                  PlaceRegion, RecordTake, MoveRegion, TrimRegion, SplitRegion,
                  RemoveRegion, SetFade, SetCrossfade, RemoveCrossfade,
                  AddPlaylist, SetActivePlaylist, AddMarker, MoveMarker,
-                 RemoveMarker, SetTrackName, ReorderTracks>;
+                 RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
+                 RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
+                 SetInsertBypass, SetInsertParams, SetInsertState>;
 
 // Whether applying the operation makes an undo step. The non-undoable ones
 // leave Snapshot::edit untouched.

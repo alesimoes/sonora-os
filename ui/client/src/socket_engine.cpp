@@ -97,20 +97,9 @@ void SocketEngine::take(const std::string& message) {
         return;
     }
 
-    api::wire::Type type{};
-    if (!api::wire::peek_type(message, type)) return;
     // What does not decode is dropped: the engine is the trusted side, and
     // a newer one's message this build cannot read must not end the session.
-    if (type == api::wire::Type::CommandReply) {
-        api::CommandReply r;
-        if (api::wire::decode(message, r, error)) held_.replies.push_back(std::move(r));
-    } else if (type == api::wire::Type::EngineEvent) {
-        api::EngineEvent e;
-        if (api::wire::decode(message, e, error)) held_.events.push_back(std::move(e));
-    } else if (type == api::wire::Type::ModelUpdate) {
-        api::ModelUpdate m;
-        if (api::wire::decode(message, m, error)) held_.model.push_back(std::move(m));
-    }
+    api::wire::decode_into(message, held_, error);
 }
 
 void SocketEngine::pump(int wait_ms) {
@@ -222,6 +211,14 @@ uint64_t SocketEngine::send(const api::ParameterChange& change) {
     return queue(bytes, c.seq);
 }
 
+uint64_t SocketEngine::send(const api::PluginParameterChange& change) {
+    api::PluginParameterChange c = change;
+    c.seq = ++seq_;
+    std::string bytes;
+    api::wire::encode(c, bytes);
+    return queue(bytes, c.seq);
+}
+
 uint64_t SocketEngine::submit(const api::ModelRequest& request) {
     api::ModelRequest m = request;
     m.seq = ++seq_;
@@ -242,6 +239,7 @@ void SocketEngine::poll(api::Inbox& inbox) {
     append(inbox.replies, held_.replies);
     append(inbox.events, held_.events);
     append(inbox.model, held_.model);
+    append(inbox.catalogs, held_.catalogs);
 }
 
 }  // namespace sonora::client

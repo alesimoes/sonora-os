@@ -228,6 +228,10 @@ private:
     // The document changed: its plan to the controller, and its mix to the
     // Track atomics only when `mix_changed` (see show()).
     void show_document(bool mix_changed);
+    // The document's inserts to the state block, every one faulted until
+    // this engine can host plugins; with `report`, a PluginFault for each
+    // active one (a session just opened).
+    void show_inserts(bool report);
     // A take that has just closed joins the document.
     void follow_transport();
     // Held record replies, once the controller no longer waits to start.

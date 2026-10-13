@@ -29,6 +29,11 @@ target_compile_definitions(test_model_session_file PRIVATE
   SONORA_MODEL_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME model_session_file COMMAND test_model_session_file)
 
+# Plugin inserts (ADR-0012 6): operations, undo under O1, refusals.
+add_executable(test_model_inserts tests/test_inserts.cpp)
+target_link_libraries(test_model_inserts PRIVATE sonora_model)
+add_test(NAME model_inserts COMMAND test_model_inserts)
+
 add_executable(test_model_random_edits tests/test_random_edits.cpp)
 target_link_libraries(test_model_random_edits PRIVATE sonora_model)
 add_test(NAME model_random_edits COMMAND test_model_random_edits)

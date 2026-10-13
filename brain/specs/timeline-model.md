@@ -69,6 +69,7 @@ struct TrackEdit {             // the undoable part of a track
     uint16_t channels;
     Id active_playlist;
     std::vector<std::shared_ptr<const Playlist>> playlists;
+    std::vector<Insert> inserts;   // by slot, A..J; structure only (ADR-0012 §6.1)
 };
 
 struct EditState {             // one undo step's worth of state
@@ -116,6 +117,8 @@ That gives three things for the price of one:
 | Tracks' playlists, regions, fades, crossfades; active playlist; track names and order; markers | yes | The edit. This is `EditState`. |
 | Sources | **no**, append-only | Undoing a take removes its region, never its audio. The source stays in the pool, unused, available to comping. Losing a take is the worst outcome. |
 | Mix state: gain, pan, mute, solo, monitor bus | no | As in Pro Tools, a fader move is not an edit. If mix lived in `EditState`, undoing a trim would also jump the faders back. |
+| Insert structure: which plugin in which slot, active or not | yes | ADR-0012 owner decision O1's default. Lives in `TrackEdit::inserts`; flipping O1 moves it to `MixState` and leaves the file as it is. |
+| Insert values: bypass, parameters, plugin state | no | Mix state, like a fader (`MixState::inserts`, keyed by insert id). An entry outlives an undone `AddInsert` or a `RemoveInsert`, so undo and redo bring the plugin back with its settings. |
 | Settings: timecode, tempo, loop, punch | no | Session settings, changed deliberately. |
 
 The undo stack is **bounded by bytes, not steps** (ADR-0009 §1). Each step
@@ -185,6 +188,27 @@ would not do: it holds one state. In `contracts/api` that payload is
 
 Region moves, trims and edit modes beyond these (Shuffle, Spot, Grid,
 nudge) are Phase 3 commands that resolve into the same operations.
+
+### Insert operations (ADR-0012 §6.3)
+
+| Operation | Undoable | Effect |
+|---|---|---|
+| `AddInsert{track, insert, slot, plugin, params, state}` | yes | a new active insert in a free slot (0..9) |
+| `RemoveInsert{insert}` | yes | its values stay in `MixState` for undo |
+| `MoveInsert{insert, to_track, to_slot}` | yes | between slots or tracks; refused onto a slot another insert holds |
+| `SetInsertActive{insert, active}` | yes | Pro Tools' active and inactive |
+| `ReplaceInsert{insert, replacement, plugin, params, state}` | yes | another plugin in the same slot, with a new id and its own values, one undo step; undo brings back the old plugin with its values |
+| `SetInsertBypass{insert, bypass}` | no | mix state |
+| `SetInsertParams{insert, params}` | no | every value the insert holds, by stable key; the end of a gesture, and at save |
+| `SetInsertState{insert, state}` | no | at save, after the engine has written the plugin's state file |
+
+`apply()` checks what the session file checks (`session-format.md`,
+"Inserts"): slot range and uniqueness, the plugin id's shape for its
+format, parameter keys (LV2 port symbols, VST3 ParamIDs in decimal),
+finite values and VST3 values in 0..1, and a state reference that names
+its own file. Whether the engine can host the plugin is the engine's
+question, not the model's: a model accepts an insert of a plugin that is
+not installed, because a session opened on another machine must keep it.
 
 ### Overwrite: how a region goes on top of another
 

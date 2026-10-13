@@ -97,6 +97,14 @@ uint64_t InProcessEngine::send(const api::ParameterChange& change) {
     return deliver(bytes, c.seq);
 }
 
+uint64_t InProcessEngine::send(const api::PluginParameterChange& change) {
+    api::PluginParameterChange c = change;
+    c.seq = ++seq_;
+    std::string bytes;
+    api::wire::encode(c, bytes);
+    return deliver(bytes, c.seq);
+}
+
 uint64_t InProcessEngine::submit(const api::ModelRequest& request) {
     api::ModelRequest m = request;
     m.seq = ++seq_;
@@ -108,19 +116,8 @@ uint64_t InProcessEngine::submit(const api::ModelRequest& request) {
 void InProcessEngine::poll(api::Inbox& inbox) {
     std::string bytes;
     while (next_message(bytes)) {
-        api::wire::Type type{};
         std::string error;
-        if (!api::wire::peek_type(bytes, type)) continue;
-        if (type == api::wire::Type::CommandReply) {
-            api::CommandReply r;
-            if (api::wire::decode(bytes, r, error)) inbox.replies.push_back(std::move(r));
-        } else if (type == api::wire::Type::EngineEvent) {
-            api::EngineEvent e;
-            if (api::wire::decode(bytes, e, error)) inbox.events.push_back(std::move(e));
-        } else if (type == api::wire::Type::ModelUpdate) {
-            api::ModelUpdate m;
-            if (api::wire::decode(bytes, m, error)) inbox.model.push_back(std::move(m));
-        }
+        api::wire::decode_into(bytes, inbox, error);
     }
 }
 

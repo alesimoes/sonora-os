@@ -88,6 +88,11 @@ std::vector<Operation> one_of_each() {
     m.name = "Chorus";
     m.length = 9600;
 
+    const PluginRef lv2{PluginFormat::Lv2, "urn:sonora:test:gain", "Gain \xC3\xA9", "1.0"};
+    const PluginRef vst3{PluginFormat::Vst3, "565354436F6D703A6C73702D636F6D70", "Comp", "2"};
+    const std::string digest(64, 'b');
+    const StateRef state{plugin_state_file(digest), digest, 99};
+
     return {AddSource{src},
             SetMix{mix},
             SetMonitorBus{bus},
@@ -108,7 +113,15 @@ std::vector<Operation> one_of_each() {
             MoveMarker{20, 96000},
             RemoveMarker{20},
             SetTrackName{2, "Kick In"},
-            ReorderTracks{{2, 5, 9}}};
+            ReorderTracks{{2, 5, 9}},
+            AddInsert{2, 30, 4, lv2, {{"gain", -3.5f}}, state},
+            RemoveInsert{30},
+            MoveInsert{30, 5, 9},
+            SetInsertActive{30, false},
+            ReplaceInsert{30, 31, vst3, {{"7", 0.5f}}, std::nullopt},
+            SetInsertBypass{30, true},
+            SetInsertParams{30, {{"gain", 1.5f}, {"mix", 0.25f}}},
+            SetInsertState{30, state}};
 }
 
 bool same_op(const Operation& a, const Operation& b) {
@@ -165,6 +178,12 @@ int test_codec_refuses_what_is_not_an_operation() {
         {R"({"op": "TrimRegion", "playlist": 1, "region": 2, "edge": "middle", "to": 3})",
          "edge"},
         {R"({"op": "SetTrackName", "track": 1, "name": 7})", "must be a string"},
+        {R"({"op": "SetInsertBypass", "insert": 1})", "missing required key \"bypass\""},
+        {R"({"op": "SetInsertState", "insert": 1, "state": {"file": "x", "sha256": "y"}})",
+         "missing required key \"bytes\""},
+        {R"({"op": "SetInsertState", "insert": 1, "state": 3})", "state: must be an object"},
+        {R"({"op": "MoveInsert", "insert": 1, "to_track": 2, "to_slot": 256})", "to_slot"},
+        {R"({"op": "RemoveInsert", "insert": 1, "plugin": null})", "unknown key \"plugin\""},
     };
     for (const Bad& b : bad) {
         error.clear();
@@ -425,7 +444,8 @@ int test_window_refuses_what_does_not_fit() {
         std::string err;
         return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 1", "\"window_format\": 2", "window_format"));
+    CHECK(refused("\"window_format\": 2", "\"window_format\": 1", "window_format"));
+    CHECK(refused("\"window_format\": 2", "\"window_format\": 3", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

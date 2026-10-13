@@ -15,7 +15,9 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -103,6 +105,64 @@ struct Playlist {
     bool operator==(const Playlist& o) const;
 };
 
+// --- plugin inserts (ADR-0012 §6, session format version 2) ---------------
+
+// Pro Tools' A to J: the most inserts one chain carries (ADR-0012 §2).
+inline constexpr std::uint8_t kInsertSlots = 10;
+// The chain cap of ADR-0012 §5.1, so one insert never holds more values
+// than its chain can automate.
+inline constexpr std::size_t kMaxInsertParams = 8192;
+
+enum class PluginFormat : std::uint8_t { Lv2, Vst3 };
+
+// `id` is the plugin's identity. `name` and `version` are what the scan said
+// when the insert was made: shown when the plugin is missing, read by no
+// logic.
+struct PluginRef {
+    PluginFormat format = PluginFormat::Lv2;
+    std::string id;   // the LV2 plugin URI, or the VST3 class id as 32 upper-case hex digits
+    std::string name;
+    std::string version;
+    bool operator==(const PluginRef& o) const {
+        return format == o.format && id == o.id && name == o.name && version == o.version;
+    }
+};
+
+// By stable key, never by port index or dense index: both change between
+// plugin versions and scans.
+struct ParamValue {
+    std::string key;      // LV2 port symbol, or the VST3 ParamID in decimal
+    float value = 0.0f;   // format-native (ADR-0012 §5.2): LV2 plain, VST3 normalised
+    bool operator==(const ParamValue& o) const { return key == o.key && value == o.value; }
+};
+
+// The plugin's own state lives in a file beside the session, never inline:
+// some run to megabytes, and the document crosses the control socket whole
+// with every Snapshot.
+struct StateRef {
+    std::string file;     // plugin_state_file(sha256)
+    std::string sha256;   // 64 lower-case hex digits
+    std::uint64_t bytes = 0;
+    bool operator==(const StateRef& o) const {
+        return file == o.file && sha256 == o.sha256 && bytes == o.bytes;
+    }
+};
+
+// "Plugin State/<sha256>.state": where a state file with this digest lives
+// in the session folder.
+std::string plugin_state_file(const std::string& sha256);
+
+// Which plugin sits in which slot, and whether it is in the chain.
+struct Insert {
+    Id id = 0;
+    std::uint8_t slot = 0;   // below kInsertSlots; unique on the track, gaps allowed
+    PluginRef plugin;
+    bool active = true;      // false: not instantiated, not in the chain, no latency
+    bool operator==(const Insert& o) const {
+        return id == o.id && slot == o.slot && plugin == o.plugin && active == o.active;
+    }
+};
+
 // The undoable part of a track. Input, monitor mode and the mix live in
 // TrackMix, because a fader move is not an edit.
 struct TrackEdit {
@@ -111,6 +171,11 @@ struct TrackEdit {
     std::uint16_t channels = 1;
     Id active_playlist = 0;
     std::vector<std::shared_ptr<const Playlist>> playlists;
+    // Sorted by slot; signal flows in slot order, pre-fader. Here and not in
+    // MixState because insert structure is undoable (owner decision O1's
+    // default, ADR-0012). If the owner rules otherwise this list moves to
+    // MixState and the session file stays as it is.
+    std::vector<Insert> inserts;
     bool operator==(const TrackEdit& o) const;
 };
 
@@ -179,15 +244,32 @@ struct MonitorBus {
     }
 };
 
+// An insert's values: saved and not undoable, like a fader (ADR-0012 §6.1).
+struct InsertMix {
+    Id insert = 0;
+    bool bypass = false;   // still delayed by its latency, so a toggle never shifts timing
+    std::vector<ParamValue> params;   // keys unique
+    std::optional<StateRef> state;
+    bool operator==(const InsertMix& o) const {
+        return insert == o.insert && bypass == o.bypass && params == o.params &&
+               state == o.state;
+    }
+};
+
 // Saved, never undone.
 struct MixState {
     MonitorBus bus;
     // Keyed by track id. An entry outlives an undone AddTrack, so redo
     // brings the track back with its faders where they were.
     std::vector<TrackMix> tracks;
+    // Keyed by insert id, and outliving an undone AddInsert or a
+    // RemoveInsert the same way, so undo and redo bring a plugin back with
+    // its settings.
+    std::vector<InsertMix> inserts;
     const TrackMix* find(Id track) const;
+    const InsertMix* find_insert(Id insert) const;
     bool operator==(const MixState& o) const {
-        return bus == o.bus && tracks == o.tracks;
+        return bus == o.bus && tracks == o.tracks && inserts == o.inserts;
     }
 };
 

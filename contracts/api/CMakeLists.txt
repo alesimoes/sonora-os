@@ -24,5 +24,6 @@ target_link_libraries(test_api_state_view PRIVATE sonora_api)
 add_test(NAME api_state_view COMMAND test_api_state_view)
 
 add_executable(test_api_fake_engine tests/test_fake_engine.cpp)
-target_link_libraries(test_api_fake_engine PRIVATE sonora_api_fake sonora_api_conformance)
+target_link_libraries(test_api_fake_engine PRIVATE sonora_api_fake sonora_api_conformance
+                                                   sonora_model)
 add_test(NAME api_conformance_fake COMMAND test_api_fake_engine)

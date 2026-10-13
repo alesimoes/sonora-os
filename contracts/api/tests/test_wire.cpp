@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -326,10 +327,160 @@ void frames_refuse_what_is_out_of_place() {
     CHECK(refused({header(10, 0) + "abcd", header(3, 0) + "xyz"}, "offset 0"));
 }
 
+PluginCatalog sample_catalog() {
+    PluginCatalog c;
+    c.generation = 0x1122334455667788ull;
+    c.plugins.resize(2);
+    PluginInfo& a = c.plugins[0];
+    a.format = PluginFormat::Lv2;
+    a.id = "http://gareus.org/oss/lv2/dpl#mono";
+    a.name = "x42-dpl \xC3\xA9";
+    a.vendor = "x42";
+    a.version = "0.9.2";
+    a.inputs = a.outputs = 1;
+    a.has_editor = true;
+    PluginParam q;
+    q.index = 0;
+    q.key = "threshold";
+    q.name = "Threshold";
+    q.min = -10.0f;
+    q.max = 0.0f;
+    q.default_value = -1.0f;
+    q.flags = kParamAutomatable | kParamLogarithmic;
+    a.params.push_back(q);
+    q.index = 1;
+    q.key = "enable";
+    q.flags = kParamToggle | kParamPastCap;
+    q.min = 0.0f;
+    q.max = 1.0f;
+    q.default_value = 1.0f;
+    a.params.push_back(q);
+    PluginInfo& b = c.plugins[1];
+    b.format = PluginFormat::Vst3;
+    b.id = "565354436F6D703A6C73702D636F6D70";
+    b.inputs = 2;
+    b.outputs = 2;
+    b.usable = false;
+    b.refusal = "the scan timed out";
+    return c;
+}
+
+// Protocol 3 (ADR-0012 §8): the plugin messages, and the one inbox decoder
+// every EngineControl shares.
+void plugin_messages() {
+    std::string bytes, error;
+    {
+        PluginParameterChange c;
+        c.seq = 41;
+        c.insert = 0x00ABCDEF01234567ull;
+        c.param = 8191;
+        c.value = -0.75f;
+        wire::encode(c, bytes);
+        PluginParameterChange back;
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.seq == 41 && back.insert == c.insert && back.param == 8191 &&
+              back.value == -0.75f);
+        CHECK(!wire::decode(bytes + "x", back, error) && mentions(error, "left over"));
+    }
+    const PluginCatalog c = sample_catalog();
+    CHECK(wire::encode(c, bytes, error));
+    PluginCatalog back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.generation == c.generation && back.plugins.size() == 2);
+    const PluginInfo& a = back.plugins[0];
+    CHECK(a.format == PluginFormat::Lv2 && a.id == c.plugins[0].id && a.name == c.plugins[0].name);
+    CHECK(a.vendor == "x42" && a.version == "0.9.2" && a.inputs == 1 && a.outputs == 1);
+    CHECK(a.usable && a.refusal.empty() && a.has_editor && a.params.size() == 2);
+    CHECK(a.params[0].key == "threshold" && a.params[0].min == -10.0f &&
+          a.params[0].max == 0.0f && a.params[0].default_value == -1.0f &&
+          a.params[0].flags == (kParamAutomatable | kParamLogarithmic));
+    CHECK(a.params[1].index == 1 && a.params[1].flags == (kParamToggle | kParamPastCap));
+    const PluginInfo& b = back.plugins[1];
+    CHECK(b.format == PluginFormat::Vst3 && !b.usable && b.refusal == "the scan timed out");
+    CHECK(!b.has_editor && b.params.empty() && b.inputs == 2);
+
+    // Each refusal names what is wrong, and leaves the output alone.
+    const auto refused = [&](PluginCatalog bad, const char* says) {
+        std::string enc, err;
+        if (!wire::encode(bad, enc, err)) return mentions(err, says);
+        PluginCatalog out;
+        out.generation = 7;
+        return !wire::decode(enc, out, err) && mentions(err, says) && out.generation == 7;
+    };
+    PluginCatalog bad = c;
+    bad.plugins[0].params[1].index = 5;
+    CHECK(refused(bad, "dense index 5"));
+    bad = c;
+    bad.plugins[0].params[0].min = std::numeric_limits<float>::quiet_NaN();
+    CHECK(refused(bad, "range"));
+    bad = c;
+    bad.plugins[0].params[0].max = -20.0f;
+    CHECK(refused(bad, "range"));
+    bad = c;
+    bad.plugins[0].params[0].default_value = 3.0f;
+    CHECK(refused(bad, "default"));
+    bad = c;
+    bad.plugins[0].params[0].flags = 1u << 9;
+    CHECK(refused(bad, "flags"));
+    bad = c;
+    bad.plugins[0].format = static_cast<PluginFormat>(2);
+    CHECK(refused(bad, "enum value 2"));
+    bad = c;
+    bad.plugins.resize(wire::kMaxCatalogPlugins + 1);
+    CHECK(refused(bad, "over the cap"));
+    // A flag byte that is neither 0 nor 1. `usable` follows the outputs:
+    // type, generation, count, format, four strings, inputs, outputs.
+    std::string enc;
+    PluginCatalog one;
+    one.plugins.resize(1);
+    CHECK(wire::encode(one, enc, error));
+    const std::size_t usable_at = 1 + 8 + 4 + 4 + 4 * 4 + 4 + 4;
+    enc[usable_at] = 2;
+    CHECK(!wire::decode(enc, back, error) && mentions(error, "a flag of 2"));
+    // A count past the cap is refused before anything is reserved for it.
+    enc.clear();
+    CHECK(wire::encode(one, enc, error));
+    enc[9] = '\xFF';
+    enc[10] = '\xFF';
+    CHECK(!wire::decode(enc, back, error) && mentions(error, "over the cap"));
+
+    // decode_into: each message an engine sends lands in its list.
+    Inbox inbox;
+    CHECK(wire::encode(c, bytes, error) && wire::decode_into(bytes, inbox, error));
+    CommandReply r;
+    r.seq = 3;
+    wire::encode(r, bytes);
+    CHECK(wire::decode_into(bytes, inbox, error));
+    EngineEvent e;
+    e.kind = EventKind::PluginFault;
+    e.track = 2;
+    e.frame = 9;
+    e.text = "x42-dpl (slot J) crashed";
+    wire::encode(e, bytes);
+    CHECK(wire::decode_into(bytes, inbox, error));
+    ModelUpdate m;
+    m.revision = 4;
+    wire::encode(m, bytes);
+    CHECK(wire::decode_into(bytes, inbox, error));
+    CHECK(inbox.catalogs.size() == 1 && inbox.catalogs[0].plugins.size() == 2);
+    CHECK(inbox.replies.size() == 1 && inbox.replies[0].seq == 3);
+    CHECK(inbox.events.size() == 1 && inbox.events[0].kind == EventKind::PluginFault &&
+          inbox.events[0].frame == 9);
+    CHECK(inbox.model.size() == 1 && inbox.model[0].revision == 4);
+    // What a client sends is not for a client's inbox.
+    PluginParameterChange pc;
+    wire::encode(pc, bytes);
+    CHECK(!wire::decode_into(bytes, inbox, error) && mentions(error, "not one an engine sends"));
+    CHECK(!wire::decode_into("", inbox, error));
+    inbox.clear();
+    CHECK(inbox.catalogs.empty());
+}
+
 }  // namespace
 
 int main() {
     round_trips();
+    plugin_messages();
     refusals();
     version_check();
     domains();

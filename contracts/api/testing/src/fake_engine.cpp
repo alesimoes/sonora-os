@@ -4,14 +4,115 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <limits>
 #include <utility>
+#include <variant>
 
 #include "sonora/api/wire.h"
+#include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 
 namespace sonora::api::testing {
 
 namespace {
+
+static_assert(kInsertSlots == model::kInsertSlots,
+              "the state block has a slot for every insert slot the model has");
+static_assert(static_cast<uint32_t>(PluginFormat::Lv2) ==
+                      static_cast<uint32_t>(model::PluginFormat::Lv2) &&
+                  static_cast<uint32_t>(PluginFormat::Vst3) ==
+                      static_cast<uint32_t>(model::PluginFormat::Vst3),
+              "the catalog and the model spell the formats alike");
+
+std::string number(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", static_cast<double>(v));
+    return buf;
+}
+
+const PluginInfo* find_plugin(const std::vector<PluginInfo>& catalog, model::PluginFormat format,
+                              const std::string& id) {
+    for (const PluginInfo& p : catalog) {
+        if (static_cast<uint32_t>(p.format) == static_cast<uint32_t>(format) && p.id == id) {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+const model::TrackEdit* track_by_id(const model::Snapshot& s, model::Id id) {
+    for (const auto& t : s.edit->tracks) {
+        if (t->id == id) return t.get();
+    }
+    return nullptr;
+}
+
+const model::Insert* find_insert(const model::Snapshot& s, model::Id id,
+                                 const model::TrackEdit** on = nullptr) {
+    for (const auto& t : s.edit->tracks) {
+        for (const model::Insert& in : t->inserts) {
+            if (in.id != id) continue;
+            if (on != nullptr) *on = t.get();
+            return &in;
+        }
+    }
+    return nullptr;
+}
+
+// What validation refuses before a host is started (ADR-0012 §7.1): a
+// plugin not installed, one the scan refused, one whose channels do not
+// map to the track's.
+std::string hostable(const std::vector<PluginInfo>& catalog, const model::PluginRef& ref,
+                     uint16_t channels) {
+    const PluginInfo* p = find_plugin(catalog, ref.format, ref.id);
+    if (p == nullptr) return "no plugin " + ref.id + " is installed";
+    if (!p->usable) return p->name + " cannot be used: " + p->refusal;
+    if (p->inputs != channels || p->outputs != channels) {
+        return p->name + " has " + std::to_string(p->inputs) + " in and " +
+               std::to_string(p->outputs) + " out; the track has " + std::to_string(channels) +
+               (channels == 1 ? " channel" : " channels");
+    }
+    return {};
+}
+
+// Empty when the operation is not an insert operation or can be hosted;
+// apply() names whatever else is wrong with it.
+std::string insert_refusal(const model::Snapshot& s, const std::vector<PluginInfo>& catalog,
+                           const model::Operation& op) {
+    if (const auto* a = std::get_if<model::AddInsert>(&op)) {
+        const model::TrackEdit* t = track_by_id(s, a->track);
+        return t == nullptr ? std::string() : hostable(catalog, a->plugin, t->channels);
+    }
+    if (const auto* r = std::get_if<model::ReplaceInsert>(&op)) {
+        const model::TrackEdit* t = nullptr;
+        if (find_insert(s, r->insert, &t) == nullptr) return {};
+        return hostable(catalog, r->plugin, t->channels);
+    }
+    if (const auto* m = std::get_if<model::MoveInsert>(&op)) {
+        const model::TrackEdit* from = nullptr;
+        const model::Insert* in = find_insert(s, m->insert, &from);
+        const model::TrackEdit* to = track_by_id(s, m->to_track);
+        if (in == nullptr || to == nullptr || to == from) return {};
+        // A missing plugin moves as it is; it is out of the chain anyway.
+        if (find_plugin(catalog, in->plugin.format, in->plugin.id) == nullptr) return {};
+        return hostable(catalog, in->plugin, to->channels);
+    }
+    return {};
+}
+
+PluginParam param(uint32_t index, const char* key, const char* name, float min, float max,
+                  float def, uint32_t flags) {
+    PluginParam p;
+    p.index = index;
+    p.key = key;
+    p.name = name;
+    p.min = min;
+    p.max = max;
+    p.default_value = def;
+    p.flags = flags;
+    return p;
+}
 
 uint64_t steady_ns() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -37,6 +138,50 @@ ModelUpdate to_wire(const model::ReplicationUpdate& u) {
 }
 
 }  // namespace
+
+std::vector<PluginInfo> fake_catalog() {
+    std::vector<PluginInfo> c(4);
+    c[0].format = PluginFormat::Lv2;
+    c[0].id = "urn:sonora:fake:gain";
+    c[0].name = "Fake Gain";
+    c[0].vendor = "Sonora";
+    c[0].version = "1.0.0";
+    c[0].inputs = c[0].outputs = 1;
+    c[0].params = {param(0, "gain", "Gain", -24.0f, 24.0f, 0.0f, kParamAutomatable),
+                   param(1, "invert", "Invert", 0.0f, 1.0f, 0.0f,
+                         kParamAutomatable | kParamToggle)};
+
+    c[1].format = PluginFormat::Lv2;
+    c[1].id = "urn:sonora:fake:limiter-stereo";
+    c[1].name = "Fake Limiter Stereo";
+    c[1].vendor = "Sonora";
+    c[1].version = "1.0.0";
+    c[1].inputs = c[1].outputs = 2;
+    c[1].params = {param(0, "ceiling", "Ceiling", -12.0f, 0.0f, -1.0f, kParamAutomatable),
+                   param(1, "release", "Release", 0.001f, 1.0f, 0.05f,
+                         kParamAutomatable | kParamLogarithmic)};
+
+    c[2].format = PluginFormat::Vst3;
+    c[2].id = "534F4E4F524146414B45434F4D503031";
+    c[2].name = "Fake Compressor";
+    c[2].vendor = "Sonora";
+    c[2].version = "2.1.0";
+    c[2].inputs = c[2].outputs = 1;
+    c[2].has_editor = true;
+    c[2].params = {param(0, "0", "Threshold", 0.0f, 1.0f, 0.5f, kParamAutomatable),
+                   param(1, "1", "Ratio", 0.0f, 1.0f, 0.25f, kParamAutomatable),
+                   param(2, "7", "Mode", 0.0f, 1.0f, 0.0f, kParamAutomatable | kParamEnum)};
+
+    c[3].format = PluginFormat::Lv2;
+    c[3].id = "urn:sonora:fake:refused";
+    c[3].name = "Fake Refused";
+    c[3].vendor = "Sonora";
+    c[3].version = "0.1.0";
+    c[3].inputs = c[3].outputs = 1;
+    c[3].usable = false;
+    c[3].refusal = "it needs the instance-access feature, which no out-of-process host offers";
+    return c;
+}
 
 const std::vector<std::string>& FakeEngine::engine_commands() {
     // engine/control's install_session_commands(), less app.quit, which is
@@ -132,7 +277,141 @@ bool FakeEngine::connect(std::string& error) {
     model::ReplicationUpdate snap;
     std::string why;
     if (document_->snapshot(snap, why, wire::kMaxModelBytes)) broadcast(to_wire(snap));
+    send_catalog();
     return true;
+}
+
+void FakeEngine::send_catalog() {
+    PluginCatalog c;
+    c.generation = catalog_generation_;
+    c.plugins = cfg_.plugins;
+    std::string bytes, error;
+    if (wire::encode(c, bytes, error)) queue(outbound_, bytes);
+}
+
+void FakeEngine::script_catalog(std::vector<PluginInfo> plugins) {
+    cfg_.plugins = std::move(plugins);
+    ++catalog_generation_;
+    if (connected_) send_catalog();
+}
+
+void FakeEngine::script_plugin_latency(const std::string& plugin_id, uint32_t frames) {
+    plugin_latency_[plugin_id] = frames;
+}
+
+void FakeEngine::script_insert_fault(uint64_t insert, const std::string& why) {
+    if (why.empty()) {
+        faults_.erase(insert);
+        return;
+    }
+    faults_[insert] = why;
+    ++misses_[insert];
+    const model::Snapshot& s = document_->current();
+    for (std::size_t t = 0; t < s.edit->tracks.size(); ++t) {
+        for (const model::Insert& in : s.edit->tracks[t]->inserts) {
+            if (in.id != insert) continue;
+            EngineEvent e;
+            e.kind = EventKind::PluginFault;
+            e.track = static_cast<int32_t>(t);
+            e.frame = in.slot;
+            e.text = in.plugin.name + " (slot " + std::string(1, static_cast<char>('A' + in.slot)) +
+                     "): " + why;
+            post_event(e);
+        }
+    }
+}
+
+float FakeEngine::plugin_value(uint64_t insert, uint32_t param) const {
+    const auto it = plugin_values_.find(insert);
+    if (it == plugin_values_.end() || param >= it->second.size()) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    return it->second[param];
+}
+
+// ADR-0012 §6.1: an insert whose plugin is not here is kept, left out of
+// the chain, and named.
+void FakeEngine::report_missing() {
+    const model::Snapshot& s = document_->current();
+    for (std::size_t t = 0; t < s.edit->tracks.size(); ++t) {
+        for (const model::Insert& in : s.edit->tracks[t]->inserts) {
+            if (find_plugin(cfg_.plugins, in.plugin.format, in.plugin.id) != nullptr) continue;
+            EngineEvent e;
+            e.kind = EventKind::PluginFault;
+            e.track = static_cast<int32_t>(t);
+            e.frame = in.slot;
+            e.text = in.plugin.name + " (" + in.plugin.id +
+                     ") is not installed here; the insert is kept, out of the chain";
+            post_event(e);
+        }
+    }
+}
+
+bool FakeEngine::plugin_change(const PluginParameterChange& c, std::string& why) {
+    const model::Insert* in = find_insert(document_->current(), c.insert);
+    if (in == nullptr) {
+        why = "insert " + std::to_string(c.insert) + " is not on any track";
+        return false;
+    }
+    const PluginInfo* p = find_plugin(cfg_.plugins, in->plugin.format, in->plugin.id);
+    if (p == nullptr) {
+        why = in->plugin.name + " is not installed here";
+        return false;
+    }
+    if (c.param >= p->params.size()) {
+        why = p->name + " has no parameter " + std::to_string(c.param);
+        return false;
+    }
+    const PluginParam& q = p->params[c.param];
+    // Written so that NaN fails it.
+    if (!(c.value >= q.min && c.value <= q.max)) {
+        why = q.name + " must be from " + number(q.min) + " to " + number(q.max);
+        return false;
+    }
+    std::vector<float>& values = plugin_values_[c.insert];
+    if (values.size() < p->params.size()) {
+        values.resize(p->params.size(), std::numeric_limits<float>::quiet_NaN());
+    }
+    values[c.param] = c.value;
+    return true;
+}
+
+// One host per chain (ADR-0012 §2): a faulted insert takes its whole chain
+// down, and a chain that runs adds one IPC block to its inserts' latency.
+void FakeEngine::insert_fields(TrackFields* tracks, uint32_t count, TransportFields& tf) const {
+    const model::Snapshot& s = document_->current();
+    uint32_t worst = 0;
+    for (uint32_t t = 0; t < count && t < s.edit->tracks.size(); ++t) {
+        const model::TrackEdit& tr = *s.edit->tracks[t];
+        bool down = false;
+        for (const model::Insert& in : tr.inserts) {
+            down = down || (in.active && faults_.count(in.id) != 0);
+        }
+        uint32_t chain = 0;
+        bool running = false;
+        for (const model::Insert& in : tr.inserts) {
+            InsertFields& f = tracks[t].inserts[in.slot];
+            const model::InsertMix* m = s.mix.find_insert(in.id);
+            f.flags = kInsertPresent | (in.active ? kInsertActive : 0u) |
+                      (m != nullptr && m->bypass ? kInsertBypassed : 0u);
+            const auto miss = misses_.find(in.id);
+            f.misses = miss != misses_.end() ? miss->second : 0;
+            if (find_plugin(cfg_.plugins, in.plugin.format, in.plugin.id) == nullptr) {
+                f.flags |= kInsertMissing;
+            } else if (faults_.count(in.id) != 0) {
+                f.flags |= kInsertFaulted;
+            } else if (in.active && !down) {
+                f.flags |= kInsertRunning;
+                const auto lat = plugin_latency_.find(in.plugin.id);
+                f.latency_frames = lat != plugin_latency_.end() ? lat->second : 0;
+                chain += f.latency_frames;
+                running = true;
+            }
+        }
+        tracks[t].latency_frames = running ? chain + cfg_.buffer_frames : 0;
+        worst = std::max(worst, tracks[t].latency_frames);
+    }
+    tf.compensation_frames = worst;
 }
 
 void FakeEngine::queue(std::deque<std::string>& q, const std::string& message) {
@@ -190,6 +469,15 @@ uint64_t FakeEngine::send(const CommandRequest& request) {
 
 uint64_t FakeEngine::send(const ParameterChange& change) {
     ParameterChange c = change;
+    c.seq = ++seq_;
+    std::string bytes;
+    wire::encode(c, bytes);
+    queue(inbound_, bytes);
+    return c.seq;
+}
+
+uint64_t FakeEngine::send(const PluginParameterChange& change) {
+    PluginParameterChange c = change;
     c.seq = ++seq_;
     std::string bytes;
     wire::encode(c, bytes);
@@ -256,18 +544,7 @@ void FakeEngine::poll(Inbox& inbox) {
         if (client_side_.add(frame, bytes, error) != wire::Reassembler::Result::Complete) {
             continue;
         }
-        wire::Type type{};
-        if (!wire::peek_type(bytes, type)) continue;
-        if (type == wire::Type::CommandReply) {
-            CommandReply r;
-            if (wire::decode(bytes, r, error)) inbox.replies.push_back(std::move(r));
-        } else if (type == wire::Type::EngineEvent) {
-            EngineEvent e;
-            if (wire::decode(bytes, e, error)) inbox.events.push_back(std::move(e));
-        } else if (type == wire::Type::ModelUpdate) {
-            ModelUpdate m;
-            if (wire::decode(bytes, m, error)) inbox.model.push_back(std::move(m));
-        }
+        wire::decode_into(bytes, inbox, error);
     }
 }
 
@@ -307,6 +584,12 @@ void FakeEngine::handle(const std::string& bytes) {
             gain_[c.track] = c.value;
             reply(c.seq, DispatchResult::Ok, "");
         }
+    } else if (type == wire::Type::PluginParameterChange) {
+        PluginParameterChange c;
+        if (!wire::decode(bytes, c, error)) return;
+        std::string why;
+        const bool ok = plugin_change(c, why);
+        reply(c.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
     } else if (type == wire::Type::ModelRequest) {
         ModelRequest m;
         if (!wire::decode(bytes, m, error)) return;
@@ -314,7 +597,14 @@ void FakeEngine::handle(const std::string& bytes) {
         std::string why;
         bool ok = false;
         switch (m.action) {
-            case ModelAction::Apply: ok = document_->apply(m.op, u, why); break;
+            case ModelAction::Apply: {
+                model::Operation op;
+                if (!model::decode_operation(m.op, op, why)) break;
+                why = insert_refusal(document_->current(), cfg_.plugins, op);
+                if (!why.empty()) break;
+                ok = document_->apply(op, u, why);
+                break;
+            }
             case ModelAction::Undo: ok = document_->undo(u, why); break;
             case ModelAction::Redo: ok = document_->redo(u, why); break;
             case ModelAction::Resync:
@@ -326,6 +616,7 @@ void FakeEngine::handle(const std::string& bytes) {
         }
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (ok) broadcast(to_wire(u));
+        if (ok && m.action == ModelAction::Load) report_missing();
     }
 }
 
@@ -446,6 +737,7 @@ void FakeEngine::publish() {
         tracks[i].gain = gain_[i];
         tracks[i].clip_count = clips_[i];
     }
+    insert_fields(tracks.data(), cfg_.tracks, tf);
     writer_.publish(tf, tracks.data(), peaks.data());
 }
 

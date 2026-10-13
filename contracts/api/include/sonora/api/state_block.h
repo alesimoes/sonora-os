@@ -27,7 +27,9 @@
 namespace sonora::api {
 
 // Bump on any change to the layout below, and to what a field means.
-constexpr uint32_t kStateLayoutVersion = 1;
+// 2 (ADR-0012 §8): an InsertState per insert slot on every track, and the
+//   session's delay compensation in the header.
+constexpr uint32_t kStateLayoutVersion = 2;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -49,6 +51,37 @@ enum HealthFlag : uint32_t {
     kHealthServerGone = 1u << 0,   // the backend is fatal; see the Fatal event
     kHealthNoInputs = 1u << 1,     // no capture input is connected
     kHealthTakeFailed = 1u << 2,   // the open take stopped writing
+    // Plugin hosting is off for this run: the host binary does not speak
+    // this engine's versions, or this engine cannot host plugins at all.
+    // Every insert shows faulted; recording and playback without inserts
+    // still work (ADR-0012 §5.5). Layout 2.
+    kHealthPluginsDisabled = 1u << 3,
+    // The clocksource is not tsc, so reading the time in the callback is a
+    // syscall (ADR-0012 §1.1). Layout 2.
+    kHealthClocksource = 1u << 4,
+};
+
+// Pro Tools' A to J: insert slots per track (ADR-0012 §2). common/model's
+// kInsertSlots is the same number; engine/control asserts that it is.
+constexpr uint32_t kInsertSlots = 10;
+
+enum InsertFlag : uint32_t {
+    kInsertPresent = 1u << 0,      // the slot holds an insert
+    kInsertActive = 1u << 1,       // in the chain (Pro Tools' active)
+    kInsertBypassed = 1u << 2,
+    kInsertRunning = 1u << 3,      // its host is up and collecting
+    kInsertRestarting = 1u << 4,   // its host is being started again
+    kInsertFaulted = 1u << 5,      // down: crashed, removed, refused, or hosting is off
+    kInsertMissing = 1u << 6,      // the plugin is not installed here
+};
+
+// One insert slot of a track. Under the header's seqlock.
+struct InsertState {
+    std::atomic<uint32_t> flags;            // InsertFlag
+    std::atomic<uint32_t> latency_frames;   // the insert's own, as its host reports it
+    std::atomic<uint32_t> misses;           // blocks not collected; monotonic
+    std::atomic<uint32_t> worst_run_us;     // the longest block its host took
+    std::atomic<uint32_t> nonfinite;        // NaN or Inf samples replaced; monotonic
 };
 
 // A slot packs the publish tick's low 32 bits above the peak's float bits,
@@ -65,9 +98,13 @@ struct alignas(64) TrackState {
     std::atomic<float> gain;             // linear
     std::atomic<uint32_t> overruns;      // capture frames lost on this track
     std::atomic<uint32_t> clip_count;    // monotonic; a reader compares, never clears
+    // The track's insert chain, IPC block included: what PDC delays the
+    // other paths by for it.
     std::atomic<uint32_t> latency_frames;
     // Not under the seqlock; see above.
     PeakRing peaks;
+    // Under the seqlock, slot A first. Layout 2.
+    InsertState inserts[kInsertSlots];
 };
 
 struct alignas(64) StateHeader {
@@ -97,6 +134,11 @@ struct alignas(64) StateHeader {
     std::atomic<uint32_t> health_flags;      // HealthFlag
     std::atomic<uint32_t> inputs_connected;
     std::atomic<uint32_t> buffer_frames;     // 0 until the backend's first period
+    // Layout 2 (ADR-0012 §7.3): the delay compensation the playing plan
+    // applies at the output, and how far short of what the inserts need it
+    // falls when the session maximum clamped it. Non-zero shortfall is red.
+    std::atomic<uint32_t> compensation_frames;
+    std::atomic<uint32_t> compensation_shortfall_frames;
 };
 
 // Shared memory needs atomics that never fall back to libatomic's lock
@@ -168,6 +210,16 @@ struct TransportFields {
     uint32_t health_flags = 0;
     uint32_t inputs_connected = 0;
     uint32_t buffer_frames = 0;
+    uint32_t compensation_frames = 0;
+    uint32_t compensation_shortfall_frames = 0;
+};
+
+struct InsertFields {
+    uint32_t flags = 0;
+    uint32_t latency_frames = 0;
+    uint32_t misses = 0;
+    uint32_t worst_run_us = 0;
+    uint32_t nonfinite = 0;
 };
 
 struct TrackFields {
@@ -176,6 +228,7 @@ struct TrackFields {
     uint32_t overruns = 0;
     uint32_t clip_count = 0;
     uint32_t latency_frames = 0;
+    InsertFields inserts[kInsertSlots];
 };
 
 // The writer's side. Not a thread: the publisher (engine/control) and

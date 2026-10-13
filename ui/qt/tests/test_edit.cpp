@@ -1070,12 +1070,51 @@ int test_save_failures() {
     return 0;
 }
 
+// session-format.md, "Versioning": the first save over a file of an older
+// format version keeps the original, once, beside the session.
+int test_pre_migration_backup() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    std::string why, caution;
+    const QString file = session_file_path(dir.path(), QStringLiteral("Old"));
+    const std::string v1 = "{\n  \"sonora_session\": 1,\n  \"name\": \"Old\"\n}\n";
+    CHECK(QDir().mkpath(QFileInfo(file).absolutePath()));
+    {
+        QFile out(file);
+        CHECK(out.open(QIODevice::WriteOnly));
+        CHECK(out.write(v1.data(), static_cast<qint64>(v1.size())) ==
+              static_cast<qint64>(v1.size()));
+    }
+    const QString kept = QDir(QFileInfo(file).absolutePath())
+                             .filePath(QStringLiteral("Session File Backups/Old.v1.sonora"));
+    const auto contents = [](const QString& f) {
+        QFile in(f);
+        return in.open(QIODevice::ReadOnly) ? in.readAll().toStdString() : std::string("<none>");
+    };
+    OK(write_session_file(file, "{\"sonora_session\": 2}\n", why, caution));
+    OK(contents(kept) == v1);
+    OK(contents(file) == "{\"sonora_session\": 2}\n");
+    // Kept once: later saves neither replace the copy nor make another.
+    OK(write_session_file(file, "{\"sonora_session\": 2, \"x\": 1}\n", why, caution));
+    OK(contents(kept) == v1);
+    const QDir backups(QFileInfo(kept).absolutePath());
+    OK(backups.entryList(QDir::Files).size() == 1);
+    // A file of this version, or not a session file at all, is not kept.
+    const QString fresh = session_file_path(dir.path(), QStringLiteral("New"));
+    OK(write_session_file(fresh, "{}", why, caution));
+    OK(write_session_file(fresh, "{}", why, caution));
+    OK(!QFileInfo::exists(QDir(QFileInfo(fresh).absolutePath())
+                              .filePath(QStringLiteral("Session File Backups"))));
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_taper() || test_time() ||
-        test_scene() || test_routing() || test_files() || test_save_failures()) {
+        test_scene() || test_routing() || test_files() || test_save_failures() ||
+        test_pre_migration_backup()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

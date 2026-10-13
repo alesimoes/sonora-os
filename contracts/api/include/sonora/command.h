@@ -42,11 +42,10 @@ struct CommandSpec {
     const char* id;
     CommandTarget target;
     const char* help;
-    // No command in this build reads CommandContext::argument, so this is
-    // false for every entry below. It exists so that an "argument" in a
-    // profile is refused by name the way an out-of-place "target" already is,
-    // instead of being accepted and then ignored for ever. When a command
-    // that needs a value arrives, it sets this and the check starts passing.
+    // Whether the command reads CommandContext::argument. False, an
+    // "argument" in a profile is refused by name the way an out-of-place
+    // "target" already is, instead of being accepted and then ignored for
+    // ever. The plugin editor commands are the first to set it.
     bool takes_argument = false;
     CommandDomain domain = CommandDomain::Engine;
 };
@@ -169,6 +168,15 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"edit.fade_to_end", CommandTarget::None,
          "Fade from the insertion point to the region end"},
         {"edit.fade_selection", CommandTarget::None, "Fade or crossfade the selection"},
+
+        // --- plugins (ADR-0012 §8) ---
+        {"plugin.rescan", CommandTarget::None, "Scan the installed plugins again"},
+        // Argument: "<slot> <parent token>", the slot 0..9 (A..J) and the
+        // window to parent the editor to, opaque, empty on the appliance.
+        {"plugin.editor.open", CommandTarget::Track, "Open a plugin's own editor", true},
+        {"plugin.editor.close", CommandTarget::Track, "Close a plugin's own editor", true},
+        {"plugin.retry", CommandTarget::Track,
+         "Start a track's plugin chain again after it was left down"},
 
         // --- windows ---
         {"window.toggle_mix_edit", CommandTarget::None,

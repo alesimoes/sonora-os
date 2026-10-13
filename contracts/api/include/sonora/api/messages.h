@@ -26,7 +26,9 @@ namespace sonora::api {
 // Bump on any change to a message's encoding. A client and an engine that
 // disagree refuse each other at connect, by name, with both numbers.
 // 2 (M7): ModelAction::Load.
-constexpr uint32_t kProtocolVersion = 2;
+// 3 (ADR-0012 §8): PluginParameterChange, PluginCatalog,
+//   EventKind::PluginFault; insert operations ride ModelRequest as before.
+constexpr uint32_t kProtocolVersion = 3;
 
 // --- client -> engine -------------------------------------------------------
 
@@ -49,6 +51,22 @@ struct ParameterChange {
     uint64_t seq = 0;
     uint32_t track = 0;
     ParamId param = ParamId::Gain;
+    float value = 0.0f;
+};
+
+// A plugin parameter moving: a knob drag or a surface encoder (ADR-0012 §8).
+// ParameterChange stays track-only. The engine maps it to the insert's
+// chain and hands it to the audio thread; the end of the gesture is saved
+// with the model's SetInsertParams, as a fader's is with SetMix.
+// Protocol version 3.
+struct PluginParameterChange {
+    uint64_t seq = 0;
+    uint64_t insert = 0;   // the insert's model id
+    // The dense index from the PluginCatalog entry of the insert's plugin,
+    // never a VST3 ParamID or an LV2 port index (ADR-0012 §5.1).
+    uint32_t param = 0;
+    // Format-native (ADR-0012 §5.2): the LV2 port value, or the VST3
+    // normalised value. The engine refuses one outside the catalog's range.
     float value = 0.0f;
 };
 
@@ -116,6 +134,12 @@ enum class EventKind : uint32_t {
     // change, device gone). The engine closes the take; the interface says
     // why and leaves.
     Fatal = 3,
+    // An insert went wrong: its host crashed, was removed for missed
+    // blocks, restarted, refused the plugin, produced non-finite samples;
+    // the plugin is missing at open; or the host binary does not speak this
+    // engine's versions (ADR-0012 §8). `track` is the track index, `frame`
+    // the slot (0..9, A..J), and the text names the plugin. Protocol 3.
+    PluginFault = 4,
 };
 
 struct EngineEvent {
@@ -151,16 +175,69 @@ struct ModelUpdate {
     std::string bytes;
 };
 
+// --- the plugin catalog (ADR-0012 §8), protocol 3 ---------------------------
+
+// Append-only enum. The model's PluginFormat spells the same two.
+enum class PluginFormat : uint32_t { Lv2 = 0, Vst3 = 1 };
+
+enum PluginParamFlag : uint32_t {
+    kParamAutomatable = 1u << 0,
+    kParamToggle = 1u << 1,
+    kParamEnum = 1u << 2,
+    kParamLogarithmic = 1u << 3,
+    // Past the chain's kMaxParamsPerChain: not automatable from Sonora, still
+    // saved in the plugin's own state.
+    kParamPastCap = 1u << 4,
+};
+constexpr uint32_t kKnownParamFlags = (1u << 5) - 1;
+
+struct PluginParam {
+    uint32_t index = 0;    // dense; equal to the entry's place in `params`
+    std::string key;       // the stable key the session file stores (ADR-0012 §6.1)
+    std::string name;
+    // Format-native, as the value a PluginParameterChange carries.
+    float min = 0.0f;
+    float max = 1.0f;
+    float default_value = 0.0f;
+    uint32_t flags = 0;    // PluginParamFlag
+};
+
+struct PluginInfo {
+    PluginFormat format = PluginFormat::Lv2;
+    std::string id;        // LV2 URI or VST3 class id: the model's PluginRef::id
+    std::string name;
+    std::string vendor;
+    std::string version;
+    uint32_t inputs = 0;   // audio channels
+    uint32_t outputs = 0;
+    // False when the scan refused the plugin; `refusal` says why, and an
+    // AddInsert naming it is refused with the same words.
+    bool usable = true;
+    std::string refusal;
+    bool has_editor = false;
+    std::vector<PluginParam> params;
+};
+
+// Every plugin the engine can host, as its last scan found them. Sent after
+// the Snapshot when a client connects, and again after a rescan; each one
+// replaces the last.
+struct PluginCatalog {
+    uint64_t generation = 0;   // bumped by every scan
+    std::vector<PluginInfo> plugins;
+};
+
 // What one poll() hands over, appended in arrival order per kind.
 struct Inbox {
     std::vector<CommandReply> replies;
     std::vector<EngineEvent> events;
     std::vector<ModelUpdate> model;
+    std::vector<PluginCatalog> catalogs;
 
     void clear() {
         replies.clear();
         events.clear();
         model.clear();
+        catalogs.clear();
     }
 };
 

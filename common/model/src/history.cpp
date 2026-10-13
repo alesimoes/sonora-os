@@ -25,8 +25,13 @@ std::size_t playlist_bytes(const Playlist& p) {
 }
 
 std::size_t track_bytes(const TrackEdit& t) {
-    return kNodeOverhead + sizeof(TrackEdit) + t.name.size() +
-           t.playlists.size() * sizeof(std::shared_ptr<const Playlist>);
+    std::size_t n = kNodeOverhead + sizeof(TrackEdit) + t.name.size() +
+                    t.playlists.size() * sizeof(std::shared_ptr<const Playlist>) +
+                    t.inserts.size() * sizeof(Insert);
+    for (const Insert& in : t.inserts) {
+        n += in.plugin.id.size() + in.plugin.name.size() + in.plugin.version.size();
+    }
+    return n;
 }
 
 std::size_t marker_bytes(const MarkerList& m) {

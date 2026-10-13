@@ -13,7 +13,16 @@
 //
 // What it does: the Engine-domain commands engine/control installs, with
 // the same refusals in the same words; ParamId::Gain; the model path on a
-// real common/model Document. The transport rolls on a script: play starts
+// real common/model Document. Plugins (ADR-0012 §8) on a script: a catalog
+// (fake_catalog() unless Config::plugins says otherwise) sent after the
+// Snapshot; insert operations accepted when they name a usable catalog
+// plugin with the track's channel count; PluginParameterChange checked
+// against the catalog's dense index and range; every insert's flags and
+// latency in the state block, its chain's latency (one IPC block plus its
+// running inserts') on the track, and the largest as the session's
+// compensation. No audio passes through a plugin.
+//
+// The transport rolls on a script: play starts
 // the playhead from where it stands at the sample rate, stop holds it,
 // return to zero puts it at 0, and a take starts at the playhead, as the
 // real one's does. There is no residency gate: everything is resident. A synthetic signal per channel feeds the
@@ -28,6 +37,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -43,6 +53,11 @@ class Document;
 
 namespace sonora::api::testing {
 
+// A small catalog to develop insert slots against: a mono LV2 gain, a
+// stereo LV2 limiter, a mono VST3 compressor with an editor, and an LV2
+// plugin the scan refused.
+std::vector<PluginInfo> fake_catalog();
+
 class FakeEngine final : public EngineControl {
 public:
     using Clock = std::function<uint64_t()>;   // monotonic nanoseconds
@@ -57,6 +72,7 @@ public:
         uint32_t state_layout_version = kStateLayoutVersion;
         bool signal = true;
         Clock clock;   // empty: std::chrono::steady_clock
+        std::vector<PluginInfo> plugins = fake_catalog();
     };
 
     FakeEngine();
@@ -67,6 +83,7 @@ public:
     const Hello& hello() const override { return hello_; }
     uint64_t send(const CommandRequest& request) override;
     uint64_t send(const ParameterChange& change) override;
+    uint64_t send(const PluginParameterChange& change) override;
     uint64_t submit(const ModelRequest& request) override;
     void poll(Inbox& inbox) override;
     StateView& state() override { return view_; }
@@ -95,6 +112,18 @@ public:
     // InputsMissing event, the health flag and the per-track flags, as the
     // engine's housekeeping reports them.
     void script_inputs(bool connected, const std::string& why = "");
+    // A new scan found `plugins`: the catalog is replaced, its generation
+    // bumped and sent, as after plugin.rescan. Inserts whose plugin is gone
+    // show missing.
+    void script_catalog(std::vector<PluginInfo> plugins);
+    // The latency a plugin reports, by catalog id, for every insert of it.
+    void script_plugin_latency(const std::string& plugin_id, uint32_t frames);
+    // An insert's host goes down (`why` says how: a PluginFault event, the
+    // faulted flag, a miss counted) or, with an empty `why`, comes back.
+    void script_insert_fault(uint64_t insert, const std::string& why);
+    // The last value a PluginParameterChange set, by insert and dense index;
+    // NaN when none has.
+    float plugin_value(uint64_t insert, uint32_t param) const;
 
     // The linear level channel `ch` shows at `t_s` seconds: a level of its
     // own per channel, so a meter showing a neighbour's signal is visible.
@@ -115,6 +144,11 @@ private:
     static std::string take_file(int32_t take);
     void check_take();
     uint64_t playhead() const;
+    void send_catalog();
+    bool plugin_change(const PluginParameterChange& c, std::string& why);
+    // PluginFault for every insert whose plugin is not in the catalog.
+    void report_missing();
+    void insert_fields(TrackFields* tracks, uint32_t count, TransportFields& tf) const;
 
     Config cfg_;
     Hello hello_;
@@ -151,6 +185,12 @@ private:
     uint32_t clock_steps_ = 0;
     uint64_t start_ns_ = 0;
     uint64_t last_publish_ns_ = 0;
+
+    uint64_t catalog_generation_ = 1;
+    std::map<std::string, uint32_t> plugin_latency_;   // by catalog id
+    std::map<uint64_t, std::string> faults_;           // by insert id
+    std::map<uint64_t, uint32_t> misses_;              // by insert id
+    std::map<uint64_t, std::vector<float>> plugin_values_;
 };
 
 }  // namespace sonora::api::testing

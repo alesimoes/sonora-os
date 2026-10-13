@@ -40,6 +40,8 @@ constexpr Name<MonitorMode> kMonitors[] = {{"auto", MonitorMode::Auto},
 constexpr Name<Fps> kFps[] = {{"23.976", Fps::F23_976}, {"24", Fps::F24},
                               {"25", Fps::F25},         {"29.97", Fps::F29_97},
                               {"29.97df", Fps::F29_97df}, {"30", Fps::F30}};
+constexpr Name<PluginFormat> kPluginFormats[] = {{"lv2", PluginFormat::Lv2},
+                                                 {"vst3", PluginFormat::Vst3}};
 
 template <typename E, std::size_t N>
 const char* name_of(const Name<E> (&table)[N], E v) {
@@ -54,9 +56,29 @@ const char* name_of(const Name<E> (&table)[N], E v) {
 // kMigrations[v - 1] turns a version-v tree into version v + 1, in place: a
 // pure function on the parsed tree (session-format.md, "Versioning"). Each
 // gets a frozen fixture in common/model/tests/fixtures that must load
-// forever. Version 1 is the first, so there are none yet.
+// forever.
 using Migration = bool (*)(Value& root, std::string& error);
-const std::array<Migration, kFormatVersion - 1> kMigrations{};
+
+// v1 -> v2 (ADR-0012 §6.2): every track gains "inserts": [], nothing else.
+// Whatever is not shaped like a track is left for the reader to refuse with
+// its own message and line.
+bool v1_to_v2(Value& root, std::string& error) {
+    Value* tracks = root.find("tracks");
+    if (tracks == nullptr || !tracks->is_array()) return true;
+    for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+        Value& t = tracks->items()[i];
+        if (!t.is_object()) continue;
+        if (t.find("inserts") != nullptr) {
+            error = "tracks[" + std::to_string(i) +
+                    "] has \"inserts\", which version 1 does not define";
+            return false;
+        }
+        t.set("inserts", Value::array());
+    }
+    return true;
+}
+
+const std::array<Migration, kFormatVersion - 1> kMigrations{{v1_to_v2}};
 
 bool migrate(Value& root, std::int64_t from, std::string& error) {
     for (std::int64_t v = from; v < kFormatVersion; ++v) {
@@ -118,6 +140,34 @@ Value source_value(const Source& s) {
         v.set("take", integer(s.take));
         v.set("recorded_on_track", id_value(s.recorded_on_track));
         v.set("latency_compensation", integer(s.latency_compensation));
+    }
+    return v;
+}
+
+// The file holds an insert's structure and values in one object, in the
+// order session-format.md lists the keys; `state` only when there is one.
+Value insert_value(const Insert& in, const InsertMix& m) {
+    Value v = Value::object();
+    v.set("id", id_value(in.id));
+    v.set("slot", integer(in.slot));
+    Value& p = v.set("plugin", Value::object());
+    p.set("format", Value::string(name_of(kPluginFormats, in.plugin.format)));
+    p.set("id", Value::string(in.plugin.id));
+    p.set("name", Value::string(in.plugin.name));
+    p.set("version", Value::string(in.plugin.version));
+    v.set("active", Value::boolean(in.active));
+    v.set("bypass", Value::boolean(m.bypass));
+    Value& params = v.set("params", Value::array());
+    for (const ParamValue& pv : m.params) {
+        Value& e = params.push(Value::object());
+        e.set("key", Value::string(pv.key));
+        e.set("value", Value::number_float(pv.value));
+    }
+    if (m.state) {
+        Value& s = v.set("state", Value::object());
+        s.set("file", Value::string(m.state->file));
+        s.set("sha256", Value::string(m.state->sha256));
+        s.set("bytes", integer(static_cast<std::int64_t>(m.state->bytes)));
     }
     return v;
 }
@@ -509,6 +559,72 @@ bool read_playlist(Reader& rd, const Value& v, const std::string& p,
     return rd.checked(detail::playlist_problem(pl, pool, channels, where), v, p, where);
 }
 
+bool read_inserts(Reader& rd, const Value& track, const std::string& path, TrackEdit& t,
+                  MixState& mix) {
+    const Value* list = nullptr;
+    if (!rd.array(track, path, "inserts", list)) return false;
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& v = list->items()[i];
+        const std::string p = index_path(path + ".inserts", i);
+        if (!rd.keys(v, p, {"id", "slot", "plugin", "active", "bypass", "params"}, {"state"})) {
+            return false;
+        }
+        Insert in;
+        InsertMix m;
+        if (!rd.id(v, p, "id", in.id)) return false;
+        if (!rd.claim(in.id, v, p)) return false;
+        m.insert = in.id;
+        std::int64_t slot = 0;
+        if (!rd.integer(v, p, "slot", kInsertSlots - 1, slot)) return false;
+        in.slot = static_cast<std::uint8_t>(slot);
+        const Value& pv = *v.find("plugin");
+        const std::string pp = p + ".plugin";
+        if (!rd.keys(pv, pp, {"format", "id", "name", "version"})) return false;
+        if (!rd.choice(pv, pp, "format", kPluginFormats, in.plugin.format)) return false;
+        if (!rd.text(pv, pp, "id", in.plugin.id)) return false;
+        if (!rd.text(pv, pp, "name", in.plugin.name)) return false;
+        if (!rd.text(pv, pp, "version", in.plugin.version)) return false;
+        if (!rd.flag(v, p, "active", in.active)) return false;
+        if (!rd.flag(v, p, "bypass", m.bypass)) return false;
+        const Value* params = nullptr;
+        if (!rd.array(v, p, "params", params)) return false;
+        for (std::size_t k = 0; k < params->items().size(); ++k) {
+            const Value& e = params->items()[k];
+            const std::string kp = index_path(p + ".params", k);
+            ParamValue pval;
+            if (!rd.keys(e, kp, {"key", "value"})) return false;
+            if (!rd.text(e, kp, "key", pval.key)) return false;
+            if (!rd.real(e, kp, "value", pval.value)) return false;
+            m.params.push_back(std::move(pval));
+        }
+        if (const Value* sv = v.find("state")) {
+            const std::string sp = p + ".state";
+            if (!rd.keys(*sv, sp, {"file", "sha256", "bytes"})) return false;
+            StateRef st;
+            std::int64_t bytes = 0;
+            if (!rd.text(*sv, sp, "file", st.file)) return false;
+            if (!rd.text(*sv, sp, "sha256", st.sha256)) return false;
+            if (!rd.integer(*sv, sp, "bytes", kMaxInteger, bytes)) return false;
+            st.bytes = static_cast<std::uint64_t>(bytes);
+            m.state = std::move(st);
+        }
+        std::string where;
+        if (!rd.checked(detail::plugin_problem(in.plugin, where), v, p, where)) return false;
+        if (!rd.checked(detail::insert_mix_problem(m, in.plugin.format, where), v, p, where)) {
+            return false;
+        }
+        if (!t.inserts.empty() && in.slot <= t.inserts.back().slot) {
+            return rd.fail(*v.find("slot"), p + ".slot",
+                           in.slot == t.inserts.back().slot
+                               ? "slot " + std::to_string(in.slot) + " is used twice"
+                               : std::string("inserts must be ordered by slot"));
+        }
+        t.inserts.push_back(std::move(in));
+        mix.inserts.push_back(std::move(m));
+    }
+    return true;
+}
+
 bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditState& edit,
                  MixState& mix) {
     const Value* list = nullptr;
@@ -518,7 +634,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditStat
         const std::string p = index_path("tracks", i);
         if (!rd.keys(v, p,
                      {"id", "name", "channels", "input", "monitor", "gain_db", "pan",
-                      "mute", "solo", "active_playlist", "playlists"})) {
+                      "mute", "solo", "active_playlist", "inserts", "playlists"})) {
             return false;
         }
         auto t = std::make_shared<TrackEdit>();
@@ -557,6 +673,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditStat
             return false;
         }
         if (!rd.id(v, p, "active_playlist", t->active_playlist)) return false;
+        if (!read_inserts(rd, v, p, *t, mix)) return false;
         const Value* pls = nullptr;
         if (!rd.array(v, p, "playlists", pls)) return false;
         if (pls->items().empty()) {
@@ -619,6 +736,18 @@ std::string LoadError::text() const {
     return s + message;
 }
 
+bool file_format_version(std::string_view bytes, std::int64_t& version) {
+    Value root;
+    json::Error perr;
+    if (!json::parse(bytes, root, perr)) return false;
+    if (!root.is_object() || root.members().empty() ||
+        root.members().front().first != "sonora_session") {
+        return false;
+    }
+    const Value& v = root.members().front().second;
+    return v.is_integer_lexeme() && v.to_int64(version);
+}
+
 bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
                std::string& error) {
     std::string why;
@@ -678,6 +807,11 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         tv.set("mute", Value::boolean(m.mute));
         tv.set("solo", Value::boolean(m.solo));
         tv.set("active_playlist", id_value(t.active_playlist));
+        Value& inserts = tv.set("inserts", Value::array());
+        for (const Insert& in : t.inserts) {
+            // check_invariants guarantees every insert its values.
+            inserts.push(insert_value(in, *s.mix.find_insert(in.id)));
+        }
         Value& pls = tv.set("playlists", Value::array());
         for (const auto& pp : t.playlists) {
             Value& pv = pls.push(Value::object());

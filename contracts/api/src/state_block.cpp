@@ -43,6 +43,8 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
     h->health_flags.store(0, std::memory_order_relaxed);
     h->inputs_connected.store(0, std::memory_order_relaxed);
     h->buffer_frames.store(0, std::memory_order_relaxed);
+    h->compensation_frames.store(0, std::memory_order_relaxed);
+    h->compensation_shortfall_frames.store(0, std::memory_order_relaxed);
 
     TrackState* t = state_tracks(memory);
     for (uint32_t i = 0; i < capacity_tracks; ++i) {
@@ -53,6 +55,13 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
         ts->clip_count.store(0, std::memory_order_relaxed);
         ts->latency_frames.store(0, std::memory_order_relaxed);
         for (auto& s : ts->peaks.entries) s.store(0, std::memory_order_relaxed);
+        for (InsertState& in : ts->inserts) {
+            in.flags.store(0, std::memory_order_relaxed);
+            in.latency_frames.store(0, std::memory_order_relaxed);
+            in.misses.store(0, std::memory_order_relaxed);
+            in.worst_run_us.store(0, std::memory_order_relaxed);
+            in.nonfinite.store(0, std::memory_order_relaxed);
+        }
     }
     // Everything above happens-before a reader that learns of the block
     // through whatever hands it over (a thread start, a mutex, SCM_RIGHTS).
@@ -86,6 +95,8 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     h.health_flags.store(transport.health_flags, rel);
     h.inputs_connected.store(transport.inputs_connected, rel);
     h.buffer_frames.store(transport.buffer_frames, rel);
+    h.compensation_frames.store(transport.compensation_frames, rel);
+    h.compensation_shortfall_frames.store(transport.compensation_shortfall_frames, rel);
     for (uint32_t i = 0; i < track_count_; ++i) {
         TrackState& t = tracks_[i];
         t.flags.store(tracks[i].flags, rel);
@@ -93,6 +104,15 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
         t.overruns.store(tracks[i].overruns, rel);
         t.clip_count.store(tracks[i].clip_count, rel);
         t.latency_frames.store(tracks[i].latency_frames, rel);
+        for (uint32_t k = 0; k < kInsertSlots; ++k) {
+            const InsertFields& from = tracks[i].inserts[k];
+            InsertState& to = t.inserts[k];
+            to.flags.store(from.flags, rel);
+            to.latency_frames.store(from.latency_frames, rel);
+            to.misses.store(from.misses, rel);
+            to.worst_run_us.store(from.worst_run_us, rel);
+            to.nonfinite.store(from.nonfinite, rel);
+        }
     }
     h.seq.store(s + 2, rel);
 

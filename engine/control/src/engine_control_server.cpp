@@ -74,6 +74,22 @@ std::vector<model::Id> track_order(const model::Snapshot& s) {
 // interface's screen.
 constexpr std::size_t kMaxStandingNotices = 32;
 
+static_assert(api::kInsertSlots == model::kInsertSlots,
+              "the state block has a slot for every insert slot the model has");
+
+// This engine hosts no plugin until engine/plugin_client lands (ADR-0012
+// checklist 4). It says so rather than accept an insert it would play dry
+// or silent with nothing on screen to say why: an operation that would
+// start a host is NotImplemented, its catalog is empty, every insert a
+// loaded session holds shows faulted, and the health flag is up.
+const char* const kNoHosting =
+    "plugin hosting is not in this engine yet (engine/plugin_client, ADR-0012 checklist 4)";
+
+bool starts_a_host(const model::Operation& op) {
+    return std::holds_alternative<model::AddInsert>(op) ||
+           std::holds_alternative<model::ReplaceInsert>(op);
+}
+
 }  // namespace
 
 EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend* audio,
@@ -119,6 +135,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     // The plan is published once the reader has its window, in the
     // control thread's first turns.
     show_document(true);
+    publisher_->set_health(api::kHealthPluginsDisabled, true);
+    show_inserts(true);
 }
 
 EngineControlServer::~EngineControlServer() {
@@ -150,6 +168,33 @@ void EngineControlServer::show_document(bool mix_changed) {
         e.kind = api::EventKind::Notice;
         e.text = "playback: the session as edited cannot be played: " + why;
         post_event(e);
+    }
+}
+
+void EngineControlServer::show_inserts(bool report) {
+    const model::Snapshot& doc = document_->current();
+    const auto& tracks = doc.edit->tracks;
+    static const std::vector<model::Insert> kNoInserts;
+    for (std::size_t t = 0; t < session_.tracks().size(); ++t) {
+        uint32_t flags[api::kInsertSlots] = {};
+        const auto& inserts = t < tracks.size() ? tracks[t]->inserts : kNoInserts;
+        for (const model::Insert& in : inserts) {
+            const model::InsertMix* m = doc.mix.find_insert(in.id);
+            flags[in.slot] = api::kInsertPresent | api::kInsertFaulted |
+                             (in.active ? api::kInsertActive : 0u) |
+                             (m != nullptr && m->bypass ? api::kInsertBypassed : 0u);
+            if (!report || !in.active) continue;
+            api::EngineEvent e;
+            e.kind = api::EventKind::PluginFault;
+            e.track = static_cast<int32_t>(t);
+            e.frame = in.slot;
+            e.text = in.plugin.name + " (slot " + std::string(1, static_cast<char>('A' + in.slot)) +
+                     ") is not running: " + kNoHosting;
+            post_event(e);
+        }
+        for (uint32_t k = 0; k < api::kInsertSlots; ++k) {
+            publisher_->set_insert_flags(static_cast<uint32_t>(t), k, flags[k]);
+        }
     }
 }
 
@@ -211,6 +256,7 @@ bool EngineControlServer::playback_busy() const {
 void EngineControlServer::remember(const api::EngineEvent& event, const std::string& bytes) {
     switch (event.kind) {
         case api::EventKind::Notice:
+        case api::EventKind::PluginFault:
             if (notices_.size() < kMaxStandingNotices) notices_.push_back(bytes);
             break;
         case api::EventKind::InputsMissing:
@@ -275,6 +321,10 @@ void EngineControlServer::greet(Client& client) {
         api::wire::encode(to_wire(snap), bytes);
         send_to(client, bytes);
     }
+    // Empty until a scan exists to fill it (kNoHosting).
+    api::PluginCatalog catalog;
+    catalog.generation = 1;
+    if (api::wire::encode(catalog, bytes, why)) send_to(client, bytes);
     for (const std::string& e : notices_) send_to(client, e);
     for (const std::string* e : {&inputs_missing_, &take_failed_, &fatal_}) {
         if (!e->empty()) send_to(client, *e);
@@ -654,6 +704,16 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         return;
     }
 
+    if (type == api::wire::Type::PluginParameterChange) {
+        api::PluginParameterChange c;
+        if (!api::wire::decode(bytes, c, error)) {
+            refuse(from, "a plugin parameter change that does not decode: " + error);
+            return;
+        }
+        reply(from, c.seq, DispatchResult::NotImplemented, kNoHosting);
+        return;
+    }
+
     if (type == api::wire::Type::ModelRequest) {
         api::ModelRequest m;
         if (!api::wire::decode(bytes, m, error)) {
@@ -663,6 +723,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         model::ReplicationUpdate u;
         std::string why;
         bool ok = false;
+        DispatchResult refusal = DispatchResult::Failed;
         // Faders are written from the document only when it changed what
         // they hold, whichever request changed it: a fader ride sent as a
         // ParameterChange must not snap back on an unrelated edit. A change
@@ -675,6 +736,11 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
+                if (starts_a_host(op)) {
+                    refusal = DispatchResult::NotImplemented;
+                    why = kNoHosting;
+                    break;
+                }
                 // Even one that leaves the document as it was: it ends a
                 // ride whose last ParameterChange need not be its value.
                 mix_changed = std::holds_alternative<model::SetMix>(op) ||
@@ -693,7 +759,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 mix_changed = true;
                 break;
         }
-        reply(from, m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+        reply(from, m.seq, ok ? DispatchResult::Ok : refusal, ok ? "" : why);
         if (ok) {
             std::string out;
             api::wire::encode(to_wire(u), out);
@@ -702,9 +768,14 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 send_to(from, out);
             } else {
                 send(out);
-                mix_changed = mix_changed || !(document_->current().mix == mix_before) ||
+                // The faders' part of the mix only: an insert's bypass or
+                // parameters are not what the Track atomics hold.
+                const model::MixState& mix_after = document_->current().mix;
+                mix_changed = mix_changed || !(mix_after.bus == mix_before.bus) ||
+                              !(mix_after.tracks == mix_before.tracks) ||
                               track_order(document_->current()) != order_before;
                 show_document(mix_changed);
+                show_inserts(m.action == api::ModelAction::Load);
             }
         }
         return;

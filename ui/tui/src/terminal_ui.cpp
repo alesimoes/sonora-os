@@ -172,6 +172,7 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
     for (const api::EngineEvent& e : inbox_.events) {
         switch (e.kind) {
             case api::EventKind::Notice:
+            case api::EventKind::PluginFault:
                 notices_.push_back(e.text);
                 break;
             case api::EventKind::InputsMissing:

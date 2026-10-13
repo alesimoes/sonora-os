@@ -55,12 +55,21 @@ struct Publish {
         t.health_flags = k;
         t.inputs_connected = k;
         t.buffer_frames = k;
+        t.compensation_frames = k;
+        t.compensation_shortfall_frames = k;
         for (auto& tr : tracks) {
             tr.flags = k;
             tr.gain = static_cast<float>(k);
             tr.overruns = k;
             tr.clip_count = k;
             tr.latency_frames = k;
+            for (InsertFields& in : tr.inserts) {
+                in.flags = k;
+                in.latency_frames = k;
+                in.misses = k;
+                in.worst_run_us = k;
+                in.nonfinite = k;
+            }
         }
     }
 };
@@ -69,11 +78,17 @@ bool consistent(const TransportSnapshot& s) {
     const auto k = static_cast<uint32_t>(s.take);
     return static_cast<uint32_t>(s.state) == k % 3 && s.playhead == uint64_t{k} * 1000 &&
            s.xruns == k && s.overruns == k && s.clock_steps == k && s.health_flags == k &&
-           s.inputs_connected == k && s.buffer_frames == k;
+           s.inputs_connected == k && s.buffer_frames == k && s.compensation_frames == k &&
+           s.compensation_shortfall_frames == k;
 }
 
 bool consistent(const TrackSnapshot& s) {
-    return s.gain == static_cast<float>(s.flags) && s.overruns == s.flags &&
+    bool inserts = true;
+    for (const InsertSnapshot& in : s.inserts) {
+        inserts = inserts && in.flags == s.flags && in.latency_frames == s.flags &&
+                  in.misses == s.flags && in.worst_run_us == s.flags && in.nonfinite == s.flags;
+    }
+    return inserts && s.gain == static_cast<float>(s.flags) && s.overruns == s.flags &&
            s.clip_count == s.flags && s.latency_frames == s.flags;
 }
 
@@ -425,10 +440,54 @@ void heartbeat() {
     CHECK(!sv.engine_alive(s + 1'000'000'000));
 }
 
+// Layout 2: each insert slot of each track reads back as its own, slot A
+// first, through track() and frame() alike.
+void insert_slots_by_track() {
+    StateBlockMemory mem(3);
+    StateWriter w;
+    CHECK(w.init(mem.data(), mem.bytes(), 3, 3, 10'000'000));
+    Publish p(3);
+    p.fill(0);
+    for (uint32_t t = 0; t < 3; ++t) {
+        for (uint32_t k = 0; k < kInsertSlots; ++k) {
+            InsertFields& in = p.tracks[t].inserts[k];
+            in.flags = kInsertPresent | (k % 2 == 0 ? kInsertActive : 0u);
+            in.latency_frames = 100 * t + k;
+            in.misses = 1000 * t + k;
+            in.worst_run_us = 7 + k;
+            in.nonfinite = t;
+        }
+    }
+    p.t.compensation_frames = 2048;
+    p.t.compensation_shortfall_frames = 64;
+    w.publish(p.t, p.tracks.data(), p.peaks.data());
+
+    StateView v;
+    std::string error;
+    CHECK(v.attach(mem.data(), mem.bytes(), error));
+    StateFrame f;
+    v.frame(f);
+    CHECK(!f.transport.stale);
+    CHECK(f.transport.compensation_frames == 2048);
+    CHECK(f.transport.compensation_shortfall_frames == 64);
+    for (uint32_t t = 0; t < 3; ++t) {
+        const TrackSnapshot one = v.track(t);
+        for (uint32_t k = 0; k < kInsertSlots; ++k) {
+            const InsertSnapshot& a = f.tracks[t].inserts[k];
+            const InsertSnapshot& b = one.inserts[k];
+            CHECK(a.present() && b.present() && !a.faulted());
+            CHECK(((a.flags & kInsertActive) != 0) == (k % 2 == 0));
+            CHECK(a.latency_frames == 100 * t + k && b.latency_frames == a.latency_frames);
+            CHECK(a.misses == 1000 * t + k && a.worst_run_us == 7 + k && a.nonfinite == t);
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
     attach_refusals();
+    insert_slots_by_track();
     blocked_writer_reads_stale();
     never_torn_unpaced();
     paced_writer_does_not_starve_a_60hz_reader();

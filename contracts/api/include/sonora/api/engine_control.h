@@ -34,9 +34,10 @@ public:
     virtual const Hello& hello() const = 0;
 
     // Each queues a request and returns its seq, which the reply carries.
-    // Seqs start at 1 and increase across all three kinds of request.
+    // Seqs start at 1 and increase across every kind of request.
     virtual uint64_t send(const CommandRequest& request) = 0;
     virtual uint64_t send(const ParameterChange& change) = 0;
+    virtual uint64_t send(const PluginParameterChange& change) = 0;
     virtual uint64_t submit(const ModelRequest& request) = 0;
 
     // Appends whatever has arrived since the last call. Called from the

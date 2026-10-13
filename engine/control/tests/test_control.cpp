@@ -24,6 +24,7 @@
 #include "sonora/fake_backend.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 #include "sonora/session.h"
 #include "sonora/state_publisher.h"
 #include "sonora/wav_writer.h"
@@ -92,6 +93,7 @@ public:
     const api::Hello& hello() const override { return engine_->hello(); }
     uint64_t send(const api::CommandRequest& r) override { return engine_->send(r); }
     uint64_t send(const api::ParameterChange& c) override { return engine_->send(c); }
+    uint64_t send(const api::PluginParameterChange& c) override { return engine_->send(c); }
     uint64_t submit(const api::ModelRequest& m) override { return engine_->submit(m); }
     void poll(api::Inbox& in) override { engine_->poll(in); }
     api::StateView& state() override { return engine_->state(); }
@@ -490,6 +492,131 @@ void housekeeping_and_early_events() {
     CHECK(runs.load() >= 1);
 }
 
+// Until engine/plugin_client lands this engine hosts nothing, and says so
+// at every door: an empty catalog, NotImplemented for whatever would start
+// a host, the health flag, and every insert of a session it opens shown
+// faulted with a PluginFault for each active one (ADR-0012 §5.5: "never
+// silently dry").
+void no_plugin_hosting_yet() {
+    RealEngine real(fresh_dir("plugins"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            const api::ModelUpdate& m = in.model[fed];
+            model::ReplicationUpdate u;
+            u.kind = m.kind == api::ModelUpdateKind::Snapshot
+                         ? model::ReplicationUpdate::Kind::Snapshot
+                         : model::ReplicationUpdate::Kind::Op;
+            u.revision = m.revision;
+            u.undo_floor = m.undo_floor;
+            u.next_id = m.next_id;
+            u.bytes = m.bytes;
+            std::string why;
+            CHECK(replica.receive(u, why));
+        }
+        return replica.synced();
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return feed() && !in.catalogs.empty(); }));
+    CHECK(!in.catalogs.empty() && in.catalogs[0].plugins.empty());
+    CHECK(until(real, in, [&]() {
+        return (real.state().transport().health_flags & api::kHealthPluginsDisabled) != 0;
+    }));
+    if (!replica.synced()) return;
+
+    const model::PluginRef ref{model::PluginFormat::Lv2, "http://gareus.org/oss/lv2/dpl#mono",
+                               "x42-dpl", "0.9.2"};
+    model::AddInsert add;
+    add.track = replica.current().edit->tracks[0]->id;
+    add.insert = replica.current().next_id;
+    add.plugin = ref;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(add, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r));
+    CHECK(r.result == DispatchResult::NotImplemented);
+    CHECK(r.message.find("engine/plugin_client") != std::string::npos);
+    api::PluginParameterChange c;
+    c.insert = add.insert;
+    CHECK(reply_to(real.send(c), r));
+    CHECK(r.result == DispatchResult::NotImplemented);
+
+    // A session that already holds inserts opens: recording must not depend
+    // on a plugin. Both are kept and shown faulted; the active one is named.
+    model::Snapshot doc = replica.current();
+    auto edit = std::make_shared<model::EditState>(*doc.edit);
+    auto track = std::make_shared<model::TrackEdit>(*edit->tracks[0]);
+    const model::Id active = doc.next_id;
+    const model::Id inactive = doc.next_id + 1;
+    track->inserts = {model::Insert{active, 0, ref, true}, model::Insert{inactive, 4, ref, false}};
+    edit->tracks[0] = track;
+    doc.edit = edit;
+    doc.mix.inserts = {model::InsertMix{active, true, {}, {}},
+                       model::InsertMix{inactive, false, {}, {}}};
+    doc.next_id += 2;
+    std::string bytes;
+    CHECK(model::serialize(doc, model::WriteInfo{"test", 1}, bytes, error));
+    m.action = api::ModelAction::Load;
+    m.op = bytes;
+    const std::size_t events = in.events.size();
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        const api::TrackSnapshot t = real.state().track(0);
+        return t.inserts[0].present() && t.inserts[4].present();
+    }));
+    const api::TrackSnapshot t = real.state().track(0);
+    CHECK(t.inserts[0].faulted() && (t.inserts[0].flags & api::kInsertActive) != 0);
+    CHECK((t.inserts[0].flags & api::kInsertBypassed) != 0);
+    CHECK((t.inserts[0].flags & api::kInsertRunning) == 0);
+    CHECK(t.inserts[4].faulted() && (t.inserts[4].flags & api::kInsertActive) == 0);
+    std::size_t faults = 0;
+    for (std::size_t i = events; i < in.events.size(); ++i) {
+        if (in.events[i].kind != api::EventKind::PluginFault) continue;
+        ++faults;
+        CHECK(in.events[i].track == 0 && in.events[i].frame == 0);
+        CHECK(in.events[i].text.find("x42-dpl (slot A) is not running") != std::string::npos);
+    }
+    CHECK(faults == 1);
+
+    // Edits that start no host apply: the insert goes out of the chain.
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetInsertActive{active, false}, m.op, error));
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return (real.state().track(0).inserts[0].flags & api::kInsertActive) == 0;
+    }));
+
+    // A fader ride survives a change to an insert's values: only the
+    // faders' part of the mix goes to the Track atomics.
+    api::ParameterChange ride;
+    ride.track = 0;
+    ride.value = 0.5f;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Ok);
+    CHECK(model::encode_operation(model::SetInsertBypass{inactive, true}, m.op, error));
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return (real.state().track(0).inserts[4].flags & api::kInsertBypassed) != 0;
+    }));
+    CHECK(real.state().track(0).gain == 0.5f);
+}
+
 }  // namespace
 
 int main() {
@@ -506,6 +633,7 @@ int main() {
     take_failure_reaches_the_interface();
     large_snapshot_crosses_in_frames();
     housekeeping_and_early_events();
+    no_plugin_hosting_yet();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

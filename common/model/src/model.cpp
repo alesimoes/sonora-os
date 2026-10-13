@@ -79,7 +79,7 @@ bool Playlist::operator==(const Playlist& o) const {
 
 bool TrackEdit::operator==(const TrackEdit& o) const {
     if (id != o.id || name != o.name || channels != o.channels ||
-        active_playlist != o.active_playlist ||
+        active_playlist != o.active_playlist || inserts != o.inserts ||
         playlists.size() != o.playlists.size()) {
         return false;
     }
@@ -129,6 +129,17 @@ const TrackMix* MixState::find(Id track) const {
     return nullptr;
 }
 
+const InsertMix* MixState::find_insert(Id insert) const {
+    for (const InsertMix& m : inserts) {
+        if (m.insert == insert) return &m;
+    }
+    return nullptr;
+}
+
+std::string plugin_state_file(const std::string& sha256) {
+    return "Plugin State/" + sha256 + ".state";
+}
+
 Snapshot new_session(const SessionSettings& settings) {
     auto edit = std::make_shared<EditState>();
     edit->markers = std::make_shared<const MarkerList>();
@@ -158,6 +169,11 @@ bool same_document(const Snapshot& a, const Snapshot& b) {
         const TrackMix* ma = a.mix.find(t->id);
         const TrackMix* mb = b.mix.find(t->id);
         if (ma == nullptr || mb == nullptr || !(*ma == *mb)) return false;
+        for (const Insert& i : t->inserts) {
+            const InsertMix* ia = a.mix.find_insert(i.id);
+            const InsertMix* ib = b.mix.find_insert(i.id);
+            if (ia == nullptr || ib == nullptr || !(*ia == *ib)) return false;
+        }
     }
     return true;
 }
@@ -476,6 +492,124 @@ std::string marker_problem(const Marker& m) {
     return {};
 }
 
+static bool hex_digits(const std::string& s, std::size_t n, char ten) {
+    if (s.size() != n) return false;
+    for (const char c : s) {
+        if (!((c >= '0' && c <= '9') || (c >= ten && c <= ten + 5))) return false;
+    }
+    return true;
+}
+
+// The LV2 spec's grammar for a port symbol: a C identifier.
+static bool lv2_symbol(const std::string& s) {
+    if (s.empty()) return false;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        const bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+        if (!(alpha || (i > 0 && c >= '0' && c <= '9'))) return false;
+    }
+    return true;
+}
+
+// A VST3 ParamID is a uint32, written in decimal without leading zeros, so
+// one parameter has one spelling.
+static bool vst3_param_id(const std::string& s) {
+    if (s.empty() || s.size() > 10 || (s.size() > 1 && s[0] == '0')) return false;
+    std::uint64_t n = 0;
+    for (const char c : s) {
+        if (c < '0' || c > '9') return false;
+        n = n * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    return n <= 0xFFFFFFFFu;
+}
+
+std::string plugin_problem(const PluginRef& p, std::string& where) {
+    where = "plugin.id";
+    if (p.id.empty()) return "is empty";
+    if (p.format == PluginFormat::Lv2) {
+        if (!valid_text(p.id)) return "is not valid UTF-8";
+        for (const char c : p.id) {
+            if (static_cast<unsigned char>(c) <= 0x20 || c == 0x7F) {
+                return "an LV2 plugin URI has no space or control character";
+            }
+        }
+        if (p.id.find(':') == std::string::npos) {
+            return "an LV2 plugin URI needs a scheme (\"http:\", \"urn:\")";
+        }
+    } else if (!hex_digits(p.id, 32, 'A')) {
+        return "a VST3 class id is 32 upper-case hex digits";
+    }
+    where = "plugin.name";
+    if (!valid_text(p.name)) return "is not valid UTF-8";
+    where = "plugin.version";
+    if (!valid_text(p.version)) return "is not valid UTF-8";
+    where.clear();
+    return {};
+}
+
+std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::string& where) {
+    where = "params";
+    if (m.params.size() > kMaxInsertParams) {
+        return "holds " + str(static_cast<std::int64_t>(m.params.size())) +
+               " values; an insert holds at most " +
+               str(static_cast<std::int64_t>(kMaxInsertParams));
+    }
+    std::unordered_set<std::string> keys;
+    for (std::size_t i = 0; i < m.params.size(); ++i) {
+        const ParamValue& p = m.params[i];
+        where = "params[" + str(static_cast<std::int64_t>(i)) + "]";
+        if (format == PluginFormat::Lv2 && !lv2_symbol(p.key)) {
+            return "key \"" + (valid_text(p.key) ? p.key : std::string("?")) +
+                   "\" is not an LV2 port symbol";
+        }
+        if (format == PluginFormat::Vst3 && !vst3_param_id(p.key)) {
+            return "key \"" + (valid_text(p.key) ? p.key : std::string("?")) +
+                   "\" is not a VST3 ParamID in decimal";
+        }
+        if (!keys.insert(p.key).second) return "key \"" + p.key + "\" appears twice";
+        if (!std::isfinite(p.value)) return "value must be a finite number";
+        // Written so that NaN fails it, though isfinite already has.
+        if (format == PluginFormat::Vst3 && !(p.value >= 0.0f && p.value <= 1.0f)) {
+            return "a VST3 value is normalised, from 0 to 1";
+        }
+    }
+    if (m.state) {
+        const StateRef& st = *m.state;
+        where = "state";
+        if (!hex_digits(st.sha256, 64, 'a')) return "sha256 must be 64 lower-case hex digits";
+        if (st.file != plugin_state_file(st.sha256)) {
+            return "file must be \"" + plugin_state_file(st.sha256) + "\"";
+        }
+        if (st.bytes > static_cast<std::uint64_t>(kMaxInteger)) return "bytes is out of range";
+    }
+    where.clear();
+    return {};
+}
+
+std::string inserts_problem(const std::vector<Insert>& inserts, std::string& where) {
+    for (std::size_t i = 0; i < inserts.size(); ++i) {
+        const Insert& in = inserts[i];
+        where = "inserts[" + str(static_cast<std::int64_t>(i)) + "]";
+        if (in.id == 0) return "id must be at least 1";
+        if (in.slot >= kInsertSlots) {
+            return "slot " + str(static_cast<std::int64_t>(in.slot)) + " is not one of 0 to " +
+                   str(static_cast<std::int64_t>(kInsertSlots - 1));
+        }
+        if (i > 0 && in.slot == inserts[i - 1].slot) {
+            return "slot " + str(static_cast<std::int64_t>(in.slot)) + " is used twice";
+        }
+        if (i > 0 && in.slot < inserts[i - 1].slot) return "inserts are not sorted by slot";
+        std::string inner;
+        const std::string why = plugin_problem(in.plugin, inner);
+        if (!why.empty()) {
+            where += "." + inner;
+            return why;
+        }
+    }
+    where.clear();
+    return {};
+}
+
 }  // namespace detail
 
 bool check_invariants(const Snapshot& s, std::string& error) {
@@ -550,6 +684,26 @@ bool check_invariants(const Snapshot& s, std::string& error) {
         if (!why.empty()) {
             error = path + "." + where + ": " + why;
             return false;
+        }
+        why = inserts_problem(tr.inserts, where);
+        if (!why.empty()) {
+            error = path + "." + where + ": " + why;
+            return false;
+        }
+        for (std::size_t i = 0; i < tr.inserts.size(); ++i) {
+            const Insert& in = tr.inserts[i];
+            const std::string ipath = path + ".inserts[" + std::to_string(i) + "]";
+            if (!claim(in.id, ipath)) return false;
+            const InsertMix* im = s.mix.find_insert(in.id);
+            if (im == nullptr) {
+                error = ipath + ": has no values (bypass, params, state)";
+                return false;
+            }
+            why = insert_mix_problem(*im, in.plugin.format, where);
+            if (!why.empty()) {
+                error = ipath + "." + where + ": " + why;
+                return false;
+            }
         }
         bool active_found = false;
         for (std::size_t p = 0; p < tr.playlists.size(); ++p) {

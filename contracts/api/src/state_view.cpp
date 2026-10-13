@@ -57,6 +57,8 @@ void read_transport(const StateHeader& h, TransportSnapshot& s) {
     s.health_flags = h.health_flags.load(acq);
     s.inputs_connected = h.inputs_connected.load(acq);
     s.buffer_frames = h.buffer_frames.load(acq);
+    s.compensation_frames = h.compensation_frames.load(acq);
+    s.compensation_shortfall_frames = h.compensation_shortfall_frames.load(acq);
 }
 
 void read_track(const TrackState& t, TrackSnapshot& s) {
@@ -66,6 +68,15 @@ void read_track(const TrackState& t, TrackSnapshot& s) {
     s.overruns = t.overruns.load(acq);
     s.clip_count = t.clip_count.load(acq);
     s.latency_frames = t.latency_frames.load(acq);
+    for (uint32_t k = 0; k < kInsertSlots; ++k) {
+        const InsertState& from = t.inserts[k];
+        InsertSnapshot& to = s.inserts[k];
+        to.flags = from.flags.load(acq);
+        to.latency_frames = from.latency_frames.load(acq);
+        to.misses = from.misses.load(acq);
+        to.worst_run_us = from.worst_run_us.load(acq);
+        to.nonfinite = from.nonfinite.load(acq);
+    }
 }
 
 // A value the writer never writes is a torn or foreign block.
