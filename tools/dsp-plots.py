@@ -5,7 +5,9 @@
 
 Reads <name>.json for the native processors and writes PNGs: the EQ's
 measured response against its analog target in both modes, the dynamics
-processors' static curves, and the CPU figures against the class bars.
+processors' static curves, the reverb's reverberation time per octave
+band against its design and its frozen level, and the CPU figures
+against the class bars.
 Needs matplotlib. A reporting aid, not a test: the bars live in each
 processor's quality.json and are checked by ctest.
 """
@@ -86,6 +88,45 @@ def static_curves(comp, gate, out_dir):
     plt.close(fig)
 
 
+def reverb_plots(rev, out_dir):
+    curves = rev["data"].get("t60_bands", [])
+    frozen = rev["data"].get("freeze_rms_db_per_second", [])
+    if not curves:
+        return
+    cols = 3
+    rows = (len(curves) + 1 + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(13, 3.3 * rows), squeeze=False)
+    for k, c in enumerate(curves):
+        ax = axes[k // cols][k % cols]
+        pts = c["points_hz_measured_design"]
+        f = [p[0] for p in pts]
+        ax.semilogx(f, [p[2] for p in pts], color="0.6", lw=3, marker="o", label="design T60")
+        ax.semilogx(f, [p[1] for p in pts], color="C0", lw=1, marker="x", label="measured T30")
+        ax.set_title(c["curve"], fontsize=8)
+        ax.set_ylabel("s")
+        ax.set_ylim(0, 1.15 * max(max(p[1], p[2]) for p in pts))
+        ax.grid(True, which="both", alpha=0.3)
+        if k == 0:
+            ax.legend(fontsize=7)
+    ax = axes[len(curves) // cols][len(curves) % cols]
+    if frozen:
+        ax.plot([1.5 + i for i in range(len(frozen))], frozen, marker="o")
+        ax.set_title("freeze: 1 s RMS of the held tail", fontsize=8)
+        ax.set_xlabel("s after the start (frozen at 1 s)")
+        ax.set_ylabel("dBFS")
+        mid = sum(frozen) / len(frozen)
+        ax.set_ylim(mid - 1.0, mid + 1.0)
+        ax.grid(True, alpha=0.3)
+    for k in range(len(curves) + 1, rows * cols):
+        axes[k // cols][k % cols].axis("off")
+    for k in range(len(curves)):
+        axes[k // cols][k % cols].set_xlabel("octave band, Hz")
+    fig.suptitle("Sonora Reverb, 48 kHz: T30 per octave band (ISO 3382-1) against the set decay")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(os.path.join(out_dir, "reverb-t60-bands.png"), dpi=110)
+    plt.close(fig)
+
+
 def cpu(reports, out_dir):
     rows = []
     for name, rep in reports.items():
@@ -133,11 +174,13 @@ def main():
         return 2
     report_dir, out_dir = sys.argv[1], sys.argv[2]
     os.makedirs(out_dir, exist_ok=True)
-    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus"]
+    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus", "reverb"]
     reports = {n: load(report_dir, n) for n in names}
     if reports["eq"]:
         eq_responses(reports["eq"], out_dir)
     static_curves(reports["compressor"], reports["gate"], out_dir)
+    if reports["reverb"]:
+        reverb_plots(reports["reverb"], out_dir)
     cpu(reports, out_dir)
     print("plots written to", out_dir)
     return 0

@@ -1,0 +1,19 @@
+{
+  "processor": "org.sonora.reverb",
+  "class": "C",
+  "note": "ADR-0011 §3.2 first bars, and the reverberation-time check of native-plugin-suite.md §1.2: T30 per octave band (ISO 3382-1, Schroeder backward integration, time-reversed band filtering) against the set decay, wherever the design curve is flat across the band; bands in a crossover's transition are reported. The first wet sample lands exactly on the pre-delay. Freeze is the lossless network: its level must hold. Class C (space and bus, §3.5).",
+  "reverb": {
+    "t60_tolerance": 0.05,
+    "freeze_drift_db": 0.5,
+    "tail_correlation": 0.2,
+    "thdn_db": -110.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["predelay", "decay", "size", "diffusion", "low_ratio", "low_freq", "high_ratio", "high_freq", "low_cut", "high_cut", "width", "freeze", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 150.0,
+    "max_us": 300.0
+  }
+}

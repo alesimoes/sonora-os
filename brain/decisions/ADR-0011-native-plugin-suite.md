@@ -1332,8 +1332,8 @@ in `plugins/native/format/third_party/dpf/SONORA.md`.
    and no processor change, because `Processor` already takes timestamped
    events.
 3. **§2.4, the key input: an unconnected or inactive key is no key
-   (added on the review of PR #43, `feature/dsp-n1-io`; a behaviour
-   decision for the coordinator to confirm).** The compressor and gate
+   (added on the review of PR #43, `feature/dsp-n1-io`; decided by the
+   coordinator, 2026-10-13).** The compressor and gate
    bundles have a key input (an LV2 `lv2:isSideChain` port, a VST3 aux
    input bus), and their "External key" switch selects it. A key input
    the host routes nothing to means "no key", and the processor keys from

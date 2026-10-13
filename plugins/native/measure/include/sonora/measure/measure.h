@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "sonora/dsp/biquad.h"
 #include "sonora/json/json.h"
 #include "sonora/native/processor.h"
 
@@ -85,6 +86,27 @@ long xcorr_lag(const std::vector<float>& in, const std::vector<float>& out, long
 // Peak of y high-passed at 5 kHz (8th-order Butterworth, matched): a step
 // or a click shows up here, a smooth change of a 100 Hz tone does not.
 double hf_residue_peak(const std::vector<float>& y, double fs, std::size_t from = 0);
+// The octave-band filter centred on band_hz: a sixth-order Butterworth
+// band-pass (a third-order prototype), -3 dB at fc 2^(+-1/2), unity at fc,
+// as biquad sections (analysis.cpp gives its response). Returns how many
+// it wrote (at most 5); a third-order high-pass at the lower edge when the
+// upper edge is above 0.49 fs.
+int octave_band_sections(double fs, double band_hz, dsp::BiquadCoeffs* out);
+// x filtered to the octave band centred on band_hz (octave_band_sections;
+// band_hz 0: unfiltered), optionally time-reversed first.
+std::vector<double> octave_band(const std::vector<float>& x, double fs, double band_hz, bool reversed = false);
+// Reverberation time from an impulse response, ISO 3382-1:2009: filtered
+// to the octave band (band_hz 0: broadband), time-reversed so the filter's
+// ringing does not lengthen the decay, Schroeder backward integration, and
+// a least-squares line through the decay curve from -5 to -35 dB (T30),
+// extrapolated to 60 dB. 0 when the curve never reaches -35 dB. The curve
+// in dB is appended to edc_db when given.
+double t30_seconds(const std::vector<float>& ir, double fs, double band_hz,
+                   std::vector<double>* edc_db = nullptr);
+// The same from several responses of one system (sources and receivers),
+// their band energies summed before the integration, as ISO 3382-1
+// averages decay curves over positions. Equal lengths.
+double t30_seconds(const Chans& irs, double fs, double band_hz, std::vector<double>* edc_db = nullptr);
 // 16x true peak, Kaiser-windowed sinc +-256 taps (finer, and longer, than
 // any detector of ours), exact wherever it reaches near_level
 // (common/dsp/reference_peak.h says how it finds those places).

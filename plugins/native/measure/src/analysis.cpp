@@ -131,6 +131,137 @@ double hf_residue_peak(const std::vector<float>& y, double fs, std::size_t from)
     return m;
 }
 
+int octave_band_sections(double fs, double band_hz, dsp::BiquadCoeffs* out) {
+    // A third-order Butterworth low-pass prototype taken to a band-pass by
+    // s -> (s^2 + w0^2) / (B s), so sixth order with its -3 dB points on the
+    // octave's edges fc 2^(-1/2) and fc 2^(1/2) (base-2 octaves, as ISO
+    // 3382-1 and IEC 61260-1 define them), then the bilinear transform with
+    // both edges prewarped, so they stay exact at every rate. In analog
+    // terms its magnitude is 1 / sqrt(1 + W^6), W = sqrt(2) (f/fc - fc/f):
+    // -3.0 dB at the edges, -19.6 dB one octave from the centre, -43.4 dB
+    // two octaves out and -62.6 dB three. The digital filter keeps the
+    // edges and the centre exactly and the skirts within 0.5 dB of these
+    // for fc <= fs / 10; nearer Nyquist the prewarped axis compresses the
+    // lower skirt (the 8 kHz band at 44.1 kHz: 18.0 and 40.9 dB one and two
+    // octaves below). plugins/native/reverb's meter_check measures it.
+    // Above 0.49 fs the upper edge is left open: the band is then
+    // everything past the lower edge, a third-order Butterworth high-pass.
+    const double lo = band_hz / std::sqrt(2.0);
+    const double hi = band_hz * std::sqrt(2.0);
+    if (hi >= dsp::kMaxFreqRatio * fs) {
+        dsp::FilterSpec secs[5];
+        const int n = dsp::butterworth_sections(3, true, lo, secs);
+        for (int k = 0; k < n; ++k) out[k] = dsp::design_matched(secs[k], fs);
+        return n;
+    }
+    const double c = 2.0 * fs;
+    const double w1 = c * std::tan(kPi * lo / fs);
+    const double w2 = c * std::tan(kPi * hi / fs);
+    const double w0sq = w1 * w2;
+    const double bw = w2 - w1;
+    // The prototype's real pole, -1, gives the analog section
+    // B s / (s^2 + B s + w0^2), taken through the bilinear transform as it
+    // stands (its poles are real when the band is wide in the prewarped
+    // axis, as the top octaves are near Nyquist). Its complex pair
+    // -1/2 +- j sqrt(3)/2 gives the roots of s^2 - p B s + w0^2, never real
+    // for a complex p, each one section with its conjugate. Every section
+    // has a zero at s = 0 and one at infinity (z = 1 and z = -1).
+    {
+        const double a0 = c * c + bw * c + w0sq;
+        dsp::BiquadCoeffs& q = out[0];
+        q.b0 = bw * c / a0;
+        q.b1 = 0.0;
+        q.b2 = -q.b0;
+        q.a1 = 2.0 * (w0sq - c * c) / a0;
+        q.a2 = (c * c - bw * c + w0sq) / a0;
+    }
+    const std::complex<double> pb = std::complex<double>(-0.5, std::sqrt(3.0) / 2.0) * bw;
+    const std::complex<double> root = std::sqrt(pb * pb - 4.0 * w0sq);
+    for (int k = 1; k <= 2; ++k) {
+        const std::complex<double> sp = 0.5 * (pb + (k == 1 ? 1.0 : -1.0) * root);
+        const std::complex<double> z = (c + sp) / (c - sp);
+        dsp::BiquadCoeffs& q = out[k];
+        q.b0 = 1.0;
+        q.b1 = 0.0;
+        q.b2 = -1.0;
+        q.a1 = -2.0 * z.real();
+        q.a2 = std::norm(z);
+    }
+    // Unity at the digital image of w0, the analog prototype's peak.
+    const double w0d = 2.0 * std::atan(std::sqrt(w0sq) / c);
+    const std::complex<double> zi = std::polar(1.0, -w0d);  // z^-1 there
+    std::complex<double> h = 1.0;
+    for (int k = 0; k < 3; ++k) {
+        const dsp::BiquadCoeffs& q = out[k];
+        h *= (q.b0 + q.b1 * zi + q.b2 * zi * zi) / (1.0 + q.a1 * zi + q.a2 * zi * zi);
+    }
+    const double g = 1.0 / std::abs(h);
+    out[1].b0 *= g;
+    out[1].b2 *= g;
+    return 3;
+}
+
+std::vector<double> octave_band(const std::vector<float>& x, double fs, double band_hz, bool reversed) {
+    std::vector<double> y(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) y[i] = x[reversed ? x.size() - 1 - i : i];
+    if (band_hz <= 0.0) return y;
+    dsp::BiquadCoeffs secs[5];
+    const int n = octave_band_sections(fs, band_hz, secs);
+    for (int k = 0; k < n; ++k) {
+        dsp::BiquadState st;
+        for (double& v : y) v = st.tick(secs[k], v);
+    }
+    return y;
+}
+
+double t30_seconds(const Chans& irs, double fs, double band_hz, std::vector<double>* edc_db) {
+    if (irs.empty() || irs[0].empty()) return 0.0;
+    // Time-reversed filtering (ISO 3382-1:2009 §5.3.3, after Jacobsen and
+    // Rindel): the band filter's own ringing then precedes the decay
+    // instead of lengthening it, which matters for short T60 in low bands.
+    // Schroeder backward integration of the forward-time response is a
+    // forward running sum of the reversed one; the responses' energies are
+    // summed first, as ISO 3382 averages decay curves over source and
+    // receiver positions.
+    const std::size_t len = irs[0].size();
+    std::vector<double> sq(len, 0.0);
+    for (const auto& ir : irs) {
+        const std::vector<double> rev = octave_band(ir, fs, band_hz, true);
+        for (std::size_t i = 0; i < len && i < rev.size(); ++i) sq[i] += rev[i] * rev[i];
+    }
+    std::vector<double> e(len);
+    double acc = 0.0;
+    for (std::size_t i = 0; i < len; ++i) {
+        acc += sq[i];
+        e[len - 1 - i] = acc;
+    }
+    if (!(acc > 0.0)) return 0.0;
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0, n = 0.0;
+    bool reached = false;
+    for (std::size_t i = 0; i < e.size(); ++i) {
+        const double db = 10.0 * std::log10(e[i] / acc + 1e-300);
+        if (edc_db != nullptr) edc_db->push_back(db);
+        if (db < -35.0) {
+            reached = true;
+            continue;
+        }
+        if (db > -5.0) continue;
+        const double t = static_cast<double>(i) / fs;
+        sx += t;
+        sy += db;
+        sxx += t * t;
+        sxy += t * db;
+        n += 1.0;
+    }
+    if (!reached || n < 2.0) return 0.0;
+    const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    return slope < 0.0 ? -60.0 / slope : 0.0;
+}
+
+double t30_seconds(const std::vector<float>& ir, double fs, double band_hz, std::vector<double>* edc_db) {
+    return t30_seconds(Chans{ir}, fs, band_hz, edc_db);
+}
+
 double reference_true_peak(const std::vector<float>& y, double near_level) {
     return dsp::reference_true_peak(y.data(), y.size(), near_level);
 }

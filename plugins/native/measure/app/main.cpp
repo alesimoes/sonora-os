@@ -26,6 +26,7 @@ int gate(const measure::Args&);
 int limiter(const measure::Args&);
 int delay(const measure::Args&);
 int chorus(const measure::Args&);
+int reverb(const measure::Args&);
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -80,6 +81,7 @@ int main(int argc, char** argv) {
     if (which == "limiter") return native::suites::limiter(args);
     if (which == "delay") return native::suites::delay(args);
     if (which == "chorus") return native::suites::chorus(args);
+    if (which == "reverb") return native::suites::reverb(args);
     std::fprintf(stderr, "unknown processor '%s'\n", which.c_str());
     return 2;
 }
