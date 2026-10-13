@@ -1,0 +1,24 @@
+# Third-party readers for tools/test-bwf-interop.sh.
+#
+# Kept apart from the runtime image on purpose: Ardour's dependencies pull in
+# libjack-jackd2-0 (checked 2026-10-12 on trixie, via libfluidsynth3), which is
+# exactly the library Dockerfile.runtime keeps out because it shadows
+# pipewire-jack. Recording happens in the image we ship; judging happens here.
+#
+# Every reader is Debian trixie's own package. Versions are printed by the
+# test, so a verdict always names the reader that gave it.
+FROM debian:trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ardour \
+      ffmpeg \
+      mediainfo \
+      python3 \
+      sndfile-programs \
+      sox \
+    && rm -rf /var/lib/apt/lists/*
+
+# Readers have no reason to be root, and Ardour writes its config under $HOME.
+RUN useradd --create-home --uid 1000 reader
+USER reader
+WORKDIR /home/reader
