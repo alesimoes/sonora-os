@@ -95,6 +95,10 @@ int test_locks_now_and_later() {
     // session's rings are.
     std::vector<char> ring(8 * 1024 * 1024);
     std::memset(ring.data(), 1, ring.size());
+    // Escapes the buffer, or clang drops an allocation nothing reads.
+    static char* volatile keep;
+    keep = ring.data();
+    (void)keep;
     const long after = sonora::locked_kb();
     CHECK(after - before >= 8 * 1024 * 9 / 10);
     return 0;
