@@ -101,6 +101,30 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        the streak named to the operator, the per-plugin NaN/Inf counters
        shown; a
        2048-sample track lands aligned (ctest).
+       Carried from the PR #45 reviews (ADR-0012 checklist 4):
+       - [ ] rt-eng M5: fade/ramp state per node, keyed by the chain's
+             stable id like the delay lines, not per slot, so make-before-
+             break does not cut hard; the silent block a channel switch
+             causes does not count toward the 8-miss streak; below quantum
+             64 the 64-frame fade spans blocks. One line in ADR-0012 §3/§5.4.
+       - [ ] A2.2: the caller charges `value_copy_bytes` against
+             `kValueCopyBudgetBytes` per callback (first submits wait,
+             held-change resyncs submit without the copy and stay set).
+       - [ ] A2.5: the plan node carries the store's index, not a pointer.
+       - [ ] A3: the reachability test (no `common/platform` symbol but
+             `wake_all` reachable from `Session::process`) and the RTSan
+             test for `wake_all` (Unverified 10) land BEFORE the first
+             `SONORA_RT` caller of `wake_all`.
+       - [ ] `contracts/plugin/host_control.h` (fd-3 socket messages,
+             `kHostWireVersion`, `wire N` appended to `--version`) as its own
+             contract PR with both reviews, before plugin_client's host
+             supervisor (Hello/Ready, `GetState` for make-before-break).
+       - [ ] Use the contract's helpers: `EngineChannel` per slot,
+             `collect_output` (count is a miss and a fault), `hold_param`,
+             `submit_block`; `parse_version_line` at start-up; `mlock` each
+             region and report a failure (auditor L3); refuse plugin
+             hosting when `common/platform`'s SharedRegion could not add
+             `F_SEAL_FUTURE_WRITE` (needs an accessor there; auditor L2).
        - Start and stop hosts from the document diff (the set of active
          insert ids before and after each change), not from the op kind:
          today `starts_a_host()` in `engine_control_server.cpp` gates only
@@ -575,13 +599,24 @@ ADR-0011 "For the owner".
       on DPF, LV2 and VST3; `lv2lint` and Steinberg `validator` in CI; the
       DPF-VST3 checkpoint on the EQ (Unverified 2). dsp-engineer,
       plugin-engineer reviews.
-- [ ] N1 follow-up (PR #40 review, code L2): render through a bundle the
-      paths the host fixture never reaches. Parameter changes after the
-      first block (smoothed, and VST3's one-block-late delivery,
-      ADR-0011 Amendment 2), and reconfiguring values (the EQ's zero-latency
-      mode, a non-default limiter look-ahead) through a host that
-      re-activates the instance. Needs a driver scenario that sets values
-      mid-render and re-activates. dsp-engineer, plugin-engineer reviews.
+- [x] N1 follow-up (PR #40 review, code L2): render through a bundle the
+      paths the host fixture never reaches. Done in `feature/dsp-n1-io`:
+      a parameter moved on the ring mid-render (`automation-48000`, every
+      processor, both formats, bit-exact), VST3's one-block-late delivery
+      at a nonzero offset (`native_format_late_vst3_*`), and the EQ's mode
+      and the limiter's look-ahead set at load through a host that
+      re-activates (`reconfigure-48000`, host `--reactivate`).
+- [ ] N1, with M9: re-activating a plugin while it runs, for a
+      latency-changing value moved during playback, then re-planning PDC.
+      Needs the HostControl channel: the host pauses its processing
+      thread, re-activates on its main thread (`Processor::reactivate`
+      exists), publishes the new latency. Only the load-time case
+      (`--reactivate`) is tested now. plugin-engineer + rt-engineer.
+- [ ] N1, with M9: how the engine routes a key to a plugin's side-chain.
+      The host takes it today as the last N channels of the region
+      (`sonora-plugin-host --sidechain N`, the header unchanged);
+      `contracts/plugin` should say so, or carry key planes of its own,
+      before the engine writes against it. plugin-engineer + rt-engineer.
 - [ ] N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
       `setBufferSize(..., true)`, which deactivates and re-activates, and so
       re-prepares and allocates, on whatever thread the host calls

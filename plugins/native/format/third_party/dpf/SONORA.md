@@ -42,8 +42,8 @@ Only what an LV2 or VST3 plugin without a UI compiles:
 
 ## Local changes
 
-Six, each marked `SONORA LOCAL PATCH` in the source. Patches 1 to 5 are
-worth offering upstream; 6 is ours.
+Seven, each marked `SONORA LOCAL PATCH` in the source. Patches 1 to 5 are
+worth offering upstream; 6 and 7 are ours.
 
 1. `distrho/src/DistrhoPluginVST3.cpp`, `setParameterNormalized()`,
    `getParamNormalized()` and `_setNormalizedPluginParameterValue()`: a
@@ -87,9 +87,23 @@ worth offering upstream; 6 is ours.
    unknown atom type, every `DISTRHO_SAFE_ASSERT`) from inside `run()` and
    `process()`, and `fprintf` locks the stream and writes on the audio
    thread. The checks still return or skip as upstream; the TTL generator
-   is built without the define and keeps DPF's messages.
+   is built without the define and keeps DPF's messages. That covers
+   `DISTRHO_SAFE_ASSERT_INT_BREAK` in VST3 `process()` when a host hands
+   over more channels than declared, the key bus included
+   (`d_safe_assert_int` prints through `d_stderr2`):
+   `native_format_wide_vst3_*` sends one channel too many with fds 1 and 2
+   captured and finds nothing written.
+7. `distrho/src/DistrhoPluginVST3.cpp`, `process()`: a side-chain input
+   (`kAudioPortIsSidechain`) on a bus the host left inactive, or did not
+   hand over, gets a null pointer instead of the zeroed dummy buffer.
+   Upstream's zeros read as a silent key, so a compressor or gate with its
+   external key on never acted when nothing was routed; a null is "no key"
+   to our glue (`format/bridge.h`), and the processor keys from its input,
+   as an unconnected LV2 port does (ADR-0011 Amendment 2 item 3). Main
+   inputs keep the dummy buffer. `native_format_nokey_vst3_*`. Ours: DPF's
+   other plugins may dereference an input pointer without checking it.
 
-Updating is: copy the same file list from a newer commit, reapply the six
+Updating is: copy the same file list from a newer commit, reapply the seven
 patches (or drop the ones upstream has taken), update the commit above,
 rebuild, and rerun the format tests, lv2lint and the VST3 validator
 (`tools/build-plugins.sh`).

@@ -33,6 +33,7 @@ public:
     std::unique_ptr<Processor> instantiate(const std::string& uri, const ChainConfig& config,
                                            const std::vector<float*>& in,
                                            const std::vector<float*>& out,
+                                           const std::vector<float*>& key,
                                            ChainError& error) override;
 
     LilvWorld* world() const { return world_; }
@@ -41,7 +42,7 @@ public:
 
     struct Nodes {
         LilvNode *audio, *control, *atom, *cv, *input, *output;
-        LilvNode *optional, *reports_latency, *latency_designation;
+        LilvNode *optional, *reports_latency, *latency_designation, *enabled_designation, *sidechain;
     } n{};
 
 private:

@@ -88,11 +88,80 @@ adapter; the render against the preroll-aware reference is exact.
 
 ## Not done in this stage
 
-- Mono bundles. Every bundle is 2 in, 2 out; the host refuses a stereo
-  plugin on a mono chain.
-- A side-chain input for the compressor and gate. The host routes none.
+- (Done in the second N1 PR, below.) Mono bundles; a side-chain input for
+  the compressor and gate.
 - The other N1 items: descriptor-driven Qt panels (the descriptor JSON is
   now in every bundle), the telemetry region, engine meters, and the
   bundles in the ISO (install rules exist: `lib/lv2`, `lib/vst3`).
 - CPU: the adapter adds an atomic exchange per block and a scan when a
   parameter changed. Not measured separately from the N0 figures.
+
+## Second N1 PR: mono, key input, automation, re-activation
+
+- Date: 2026-10-13. Branch `feature/dsp-n1-io`. Same container, GCC 14,
+  Release; conformance and equality results, no timing figure.
+
+**What was added.**
+
+- A mono bundle beside every stereo one: `sonora-<name>-mono.lv2` and
+  `.vst3`, 1 in and 1 out, URI `urn:sonora:native:<name>-mono`, VST3
+  plugin word `SM..` (the stereo ones keep `SN..`, their URIs and class
+  IDs unchanged). DPF fixes the port count at compile time, so a layout is
+  a bundle. ADR-0011 asks for mono in, stereo out only of the class-E amp
+  (§3.5), so no N0 processor has a mono-to-stereo build.
+- A key input on the compressor and gate, in both layouts, as many
+  channels as the main input: LV2 ports `lv2_key_in_1` (and `_2`) with
+  `lv2:isSideChain`, after the main inputs; in VST3 an aux input bus,
+  inactive until a host activates it. Adding the ports moved
+  the stereo compressor's and gate's LV2 control port indices up by two;
+  the symbols are unchanged and nothing saved refers to the indices yet.
+  An unconnected key port (a null from LV2) or an inactive key bus
+  (VST3, through DPF patch 7) is no key; a connected or active silent one
+  is a silent key (`format/bridge.h`, ADR-0011 Amendment 2 item 3).
+- The plugin host routes a key: `--sidechain N` takes the last N of the
+  region's channels as the key; LV2 side-chain ports and the first VST3
+  aux input bus read it, and without one they read the plugin's own input
+  (LV2) or stay inactive (VST3), which both key from the input. `--reactivate` re-activates every plugin after the
+  first validation, so a latency-changing value given at load takes
+  effect. `--probe` now lists each writable control's id, which the
+  driver uses to put a named change on the parameter ring.
+
+**Results.**
+
+| Check | Result |
+|---|---|
+| lv2lint 0.16.2 | 12 of 12 bundles pass, the same two warnings each |
+| validator 3.8.1 | 47 of 47 for each of the 12, the aux bus included |
+| Renders through the host, LV2 and VST3 | 84 of 84 bit-exact against the N0 reference: per processor golden x3, bypass, mono and automation, plus key and key-mono for the compressor and gate, plus reconfigure for the EQ and limiter |
+| Latency after re-activation | EQ mode 0: 0 (69 before); limiter look-ahead 3 ms at 48 kHz: 502 (430 before), equal to the Processor's |
+| Mutation check | Each new case fails when its feature is removed from its args: no key (max difference 0.46 compressor, 0.50 gate), no change (0.22 to 0.77), no re-activation (latency 69 against 0, 430 against 502) |
+| VST3 timing, `native_format_late_vst3_*` | A change at offset 64 of block k is not heard in block k and is heard from sample 0 of block k+1, identical to the same change sent at offset 0 of block k+1; all 12 bundles |
+| TSan, ASan and UBSan | `native_format_*`, 61 tests: clean |
+
+**Delivery, as measured.** The host puts a ring change into the block it
+is applied to at offset 0. LV2 delivers it in that block's `run()`; DPF's
+VST3 applies an offset-0 point before `run()`. So through Sonora's host
+both formats smooth the change from the first sample of the block it was
+sent for, and the reference with the event at that block's first frame is
+matched exactly. A nonzero offset only comes from another VST3 host, and
+there it lands a block late (Amendment 2), which the `late` scenario pins.
+
+**Review fixes (PR #43, RT audit and code review).** Same container, GCC
+14, Release unless stated; equality results, no timing figure.
+
+| Finding | Fix | Test, before the fix, after it |
+|---|---|---|
+| High: External key on, nothing routed, keyed from silence (compressor never acted, gate stayed shut) | DPF patch 7: an inactive or missing VST3 side-chain input is null; Sonora's host connects an LV2 key port with no key to the plugin's own input (ADR-0011 Amendment 2 item 3) | `native_{lv2,vst3}_{compressor,gate}_nokey{,-mono}-48000`, 8 renders: failed (max difference 0.464 compressor, 0.496 gate), now bit-exact. The fixture fails unless a silent key moves the reference (0.464, 0.496). `native_format_nokey_vst3_*`, 4 bundles: 8163 to 16374 samples differed from the switch off, now 0; an active silent key still differs (0.113 compressor, 0.250 gate) |
+| Medium: the chain's key buffers shared and unguarded | Copied again before every plugin; canaries behind them, checked like the stages; at least one key buffer per signal channel, so each replica of a mono plugin has its own | `plugin_host_key`: two plugins that overwrite their key input, the second's output 8192 of 8192 samples wrong, now 0; with no key the key input reads the input (8192 wrong, now 0). `plugin_host_refusals`: a plugin that writes 64 samples past its key input ran, now refused (WroteOutsideBuffers), with and without a key routed |
+| Low: VST3 re-activation ignored a failed `setActive(true)` | `Processor::reactivate()` returns bool; `serve` refuses the chain (InstantiateFailed) | `plugin_host_vst3_refusals`, a test class that activates once: was Ready, now Refused |
+| Low: DPF's channel assertion printing from `process()` | None needed: `SONORA_DPF_QUIET` already silences it | `native_format_wide_vst3_*`, 12 bundles, one channel too many with fds 1 and 2 captured: 0 bytes. The same bundles built with `-USONORA_DPF_QUIET`: 1300 bytes, and the test fails |
+
+Totals: `tools/build-plugins.sh` 296 of 296 (lv2lint 12 of 12, validator
+12 of 12 bundles, 92 renders); `tools/build-engine.sh` 137 of 137;
+`native_format_*` under TSan and under ASan with UBSan, 77 of 77 each.
+
+**Not done.** Re-activation while running, for a latency-changing value
+moved during playback: the host pauses nothing today, and pausing the
+processing thread for the main thread's `setActive` is the M9 control
+channel's job (`planning/BACKLOG.md`). How the engine asks for a key is
+likewise M9's (`--sidechain` anticipates it without changing the header).

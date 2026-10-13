@@ -22,6 +22,9 @@
 
 #include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
+#include "sonora/platform/wake.h"
+
+#include <atomic>
 
 static int failures = 0;
 #define CHECK(c)                                                              \
@@ -112,6 +115,56 @@ void the_region_is_read_only_in_the_receiver() {
     // The kernel refuses to make the receiver's mapping writable.
     const int rc = ::mprotect(const_cast<void*>(seen->data()), 4096, PROT_READ | PROT_WRITE);
     CHECK(rc != 0 && errno == EACCES);
+}
+
+// ADR-0012 Unverified 2: a plugin host sleeps on the clock region's tick
+// through a READ-ONLY mapping of a sealed memfd (auditor M1), and the engine
+// wakes it through its writable mapping of the same page. FUTEX_WAIT only
+// reads the word and a shared futex is keyed on the file, not the mapping,
+// so this is expected to work; here it is checked. A wake that did not reach
+// the read-only mapping would leave the waiter asleep for its 5 s timeout.
+void a_futex_wait_works_on_a_read_only_mapping() {
+    Pair p = make_pair("futex");
+    if (!p.server) return;
+    std::string error;
+    auto region = SharedRegion::create("sonora-test-clock", 4096, error);
+    CHECK(region != nullptr);
+    if (!region) return;
+    CHECK(p.server->send_with_region("clock", *region, 0, error) == IoStatus::Ok);
+    std::string got;
+    std::unique_ptr<SharedRegion> seen;
+    CHECK(p.client->receive(got, 1000, &seen, 1000, error) == IoStatus::Ok && seen &&
+          !seen->writable());
+    if (!seen) return;
+    auto* tick = static_cast<std::atomic<uint32_t>*>(region->writable_data());
+    const auto* ro_tick = static_cast<const std::atomic<uint32_t>*>(seen->data());
+
+    // Already changed: returns at once.
+    tick->store(5, std::memory_order_release);
+    const auto t0 = std::chrono::steady_clock::now();
+    wait_for_change(*ro_tick, 4, 5'000'000'000ull);
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
+
+    std::atomic<bool> woke{false};
+    std::chrono::steady_clock::duration slept{};
+    std::thread waiter([&] {
+        const auto start = std::chrono::steady_clock::now();
+        const uint32_t value = ro_tick->load(std::memory_order_acquire);
+        while (ro_tick->load(std::memory_order_acquire) == value &&
+               std::chrono::steady_clock::now() - start < std::chrono::seconds(5))
+            wait_for_change(*ro_tick, value, 5'000'000'000ull);
+        slept = std::chrono::steady_clock::now() - start;
+        woke.store(true, std::memory_order_release);
+    });
+    // Long enough for the waiter to be inside FUTEX_WAIT.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    tick->fetch_add(1, std::memory_order_release);
+    wake_all(*tick);
+    waiter.join();
+    CHECK(woke.load());
+    CHECK(slept < std::chrono::seconds(2));
+    std::printf("  futex on a read-only mapping: woken after %.1f ms\n",
+                std::chrono::duration<double, std::milli>(slept).count());
 }
 
 void a_closed_peer_reads_as_closed() {
@@ -333,6 +386,7 @@ int main() {
     datagrams_keep_boundaries_and_order();
     an_oversized_datagram_is_an_error_not_a_truncation();
     the_region_is_read_only_in_the_receiver();
+    a_futex_wait_works_on_a_read_only_mapping();
     a_closed_peer_reads_as_closed();
     shutdown_wakes_a_blocked_reader();
     a_live_endpoint_is_refused_and_a_dead_one_replaced();

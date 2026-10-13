@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// The OS seam of the plugin boundary (ADR-0008: platform code at the edges,
-// behind a neutral header). Only src/linux/ implements it today.
+// The OS seam of the plugin boundary as the host and its engine-role test
+// driver see it (ADR-0008: platform code at the edges, behind a neutral
+// header). Only src/linux/ implements it today.
 //
-// Wake mechanism: a futex on a 32-bit word inside the shared region. The
-// measurements (brain/research/adr-0007-measurements.md §3-4) found futex and
-// eventfd equivalent (round trip p50 ~60 us, p99 210-245 us, container), and
-// ruled out spinning at SCHED_FIFO (RT throttling stalls of ~50 ms). Futex
-// wins on shape, not speed: the word lives in the region the engine already
-// shares, so there is no second descriptor to create, pass and close per
-// host. An eventfd implementation fits behind the same three functions.
+// The wake itself is common/platform's (wake.h: wake_all, wait_for_change),
+// the one seam the engine's audio thread will use too (ADR-0012 §1.2). What
+// is here is what only a host process, or a test standing in for the
+// engine's control thread, needs: inherited descriptors, the sealed
+// read-only clock region, scheduling, denormals, death of the parent.
 //
-// When engine/plugin_client lands (M4+), the engine's half of this seam
-// (signal) moves to common/platform, where ADR-0008 §3 already reserves "the
-// Phase 4 plugin wake (SONORA_RT, auditor-gated)". It lives here until then
-// because plugins/host and its test driver are its only users.
+// engine/plugin_client will create the channel and clock regions with
+// common/platform's SharedRegion and pass them over the host's socketpair
+// with SCM_RIGHTS (ADR-0012 §4). Until host_control.h lands, the driver
+// passes them as inherited descriptors (--shm-fd, --clock-fd), sealed and
+// reopened read-only exactly the way SharedRegion does it.
 
 #include <atomic>
 #include <cstddef>
@@ -24,28 +24,51 @@
 
 namespace sonora::plugin_host {
 
-// Bump `word` (release) and wake every sleeper on it. One syscall; no lock,
-// no allocation. This is the call whose use on the audio thread needs the
-// rt-safety-auditor's ruling (ADR-0007 update 1, item 4).
+// Bump `word` (release) and wake every sleeper on it. Not for the audio
+// thread: the engine's audio thread bumps the clock tick and, only behind
+// kHostWakeEnabled, calls platform::wake_all itself.
 void signal(std::atomic<uint32_t>& word) noexcept;
 
 // Sleep while `word` still equals `seen`, at most `timeout_ns`. Returns
 // early on a change, a wake or a signal; the caller always re-checks its
-// condition. Never for the audio thread.
-void wait_for_change(std::atomic<uint32_t>& word, uint32_t seen, uint64_t timeout_ns) noexcept;
+// condition. Works on a read-only mapping. Never for the audio thread.
+void wait_for_change(const std::atomic<uint32_t>& word, uint32_t seen, uint64_t timeout_ns) noexcept;
 
 uint64_t monotonic_ns() noexcept;
+
+// Sleep until CLOCK_MONOTONIC reaches `at_ns` (absolute, so a late wake does
+// not push the next one later). The timer-paced host's wait (ADR-0012 §1.3).
+void sleep_until_ns(uint64_t at_ns) noexcept;
 
 // A shared-memory region handed from the engine to a host process.
 struct SharedRegion {
     void* base = nullptr;
     std::size_t size = 0;
     int handle = -1;  // the OS handle that is passed to the host
+    bool writable = false;
 };
 
+// A zeroed region of `size` bytes, mapped read-write here. Sealable.
 bool create_region(std::size_t size, SharedRegion& out, std::string& error);
+// The creator's half of a read-only share (auditor M1): seal the region
+// against every new writable mapping (F_SEAL_FUTURE_WRITE where the kernel
+// has it) and open a read-only descriptor of it into `read_only_handle`. A
+// receiver can then map it PROT_READ only: PROT_WRITE fails with EACCES.
+// Fails, with the reason in `error`, on a kernel without
+// F_SEAL_FUTURE_WRITE: a read-only descriptor alone can be reopened
+// writable through /proc, so there is no degraded mode (auditor L2).
+bool share_read_only(SharedRegion& region, int& read_only_handle, std::string& error);
+// The receiver's halves. map_region maps read-write (the channel region);
+// map_region_read_only maps PROT_READ (the clock region).
 bool map_region(int handle, SharedRegion& out, std::string& error);
+bool map_region_read_only(int handle, SharedRegion& out, std::string& error);
 void release_region(SharedRegion& region);
+// Keep a region's pages resident (mlock). prefault faults them in, but
+// without a lock (mlockall refused, a low RLIMIT_MEMLOCK) they can be
+// reclaimed under pressure and fault again on the audio thread. False when
+// the OS refused; the caller reports it, never silently (auditor L3).
+bool lock_region(const SharedRegion& region, std::string& error);
+void close_handle(int handle) noexcept;
 
 // Process setup for the host. Each returns false if the OS refused, which
 // the host reports in host_flags rather than treating as fatal: a container

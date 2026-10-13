@@ -2,8 +2,8 @@
 
 - Status: **Proposed**, 2026-10-13. Amendment 1 (coordinator, 2026-10-13):
   §2.2 edges and the N0 decisions, at the end. Amendment 2 (2026-10-13):
-  the DPF patch instead of the §1.2 fallback, and block-accurate VST3
-  automation under §2.4, at the end.
+  the DPF patch instead of the §1.2 fallback, block-accurate VST3
+  automation under §2.4, and an unrouted key input as no key, at the end.
 - Date: 2026-10-13
 - Decided by: architect, for the owner. The points that are the owner's to
   settle are listed at the end, under "For the owner".
@@ -1331,3 +1331,27 @@ in `plugins/native/format/third_party/dpf/SONORA.md`.
    needs a DPF change or the MIT-SDK adapter. Either is a later amendment
    and no processor change, because `Processor` already takes timestamped
    events.
+3. **§2.4, the key input: an unconnected or inactive key is no key
+   (added on the review of PR #43, `feature/dsp-n1-io`; a behaviour
+   decision for the coordinator to confirm).** The compressor and gate
+   bundles have a key input (an LV2 `lv2:isSideChain` port, a VST3 aux
+   input bus), and their "External key" switch selects it. A key input
+   the host routes nothing to means "no key", and the processor keys from
+   its own input, exactly as with the switch off:
+   - VST3: the key bus is inactive, or the host hands over fewer buses.
+     Upstream DPF feeds both a zeroed buffer, so the switch keyed from
+     silence: the compressor never acted and the gate stayed shut. A local
+     patch hands the plugin a null pointer for an inactive side-chain
+     input instead (SONORA.md, patch 7).
+   - LV2: the port is unconnected (a null pointer). The LV2 spec has a
+     host connect every port, so Sonora's own host connects a key port
+     with no key routed to the plugin's own input, which keys the same
+     way.
+   - An **active** key bus, or a connected port, that carries silence is
+     a silent key: the host routed something, and it is quiet.
+
+   Why: a switch the operator left on must not quietly stop a dynamics
+   processor because nothing is routed yet, and the two formats must
+   agree. The tests run a keyed bundle with no key in both formats,
+   through Sonora's host (`native_{lv2,vst3}_{compressor,gate}_nokey*`)
+   and through DPF directly (`native_format_nokey_vst3_*`).

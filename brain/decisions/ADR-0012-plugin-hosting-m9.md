@@ -890,6 +890,13 @@ Each has the measurement that settles it and who takes it.
    rate under 18 chains with the gate on and off. **Pass: max under about
    130 µs (5 % of the period) at 18 and 64.** Pass turns the gate on by
    amendment; fail makes §1.3 the decision. Also informs depth 0.
+   The run also counts the **hosts' own per-block `FUTEX_WAKE` on
+   `done_word`** (block protocol step e, auditor L4 on PR #45): off the
+   audio thread, but with N hosts it is N bucket-lock acquisitions every
+   period on `PREEMPT_RT`, in the same hash table as the audio thread's
+   wake. Measure the audio thread's wake with it on, and with hosts waking
+   `done_word` only on a state change (the harnesses then poll); if the
+   difference shows at max, the contract drops the per-block wake.
    Researcher, with the "ADR-0007 IPC figures on the RT kernel" BACKLOG
    item.
 2. **`FUTEX_WAIT` on a sealed read-only shared memfd mapping.** Expected

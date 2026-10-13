@@ -96,6 +96,27 @@ private:
     std::vector<std::vector<float>> line_;
 };
 
+// Takes a key input (Descriptor::sidechain) and outputs whatever keys it:
+// the external key when the host hands one over, its own input otherwise
+// (ProcessorBase's rule), so a test sees which one reached it.
+const ParamInfo kKeyParams[] = {kBypassParam};
+const Descriptor kKeyDesc = {"org.sonora.test.key", "Key test", "Test", 1, kKeyParams, 1, 1, 2, true};
+
+class KeyToy : public ProcessorBase {
+public:
+    KeyToy() : ProcessorBase(kKeyDesc) {}
+
+protected:
+    bool on_prepare() override { return true; }
+    void on_reset() noexcept override {}
+    void render(const float* const*, float* const* out, const float* const* key, std::uint32_t,
+                std::uint32_t frames) noexcept override {
+        for (std::uint32_t c = 0; c < channels(); ++c) {
+            for (std::uint32_t i = 0; i < frames; ++i) out[c][i] = key[c][i];
+        }
+    }
+};
+
 using Chans = std::vector<std::vector<float>>;
 
 Chans ramp_input(std::uint32_t frames) {
@@ -353,6 +374,105 @@ int test_changed_activate_prepares() {
     return 0;
 }
 
+// The bundle's key input reaches the processor (ADR-0011 N1, the
+// compressor's and gate's side-chain): stereo key on a stereo bundle, and a
+// mono key on a stereo bundle feeds both channels' detectors.
+int test_key_reaches_processor() {
+    const Chans in = ramp_input(256);
+    Chans key = ramp_input(256);
+    for (auto& c : key) {
+        for (float& v : c) v = 0.5f * v - 0.2f;
+    }
+    for (const std::uint32_t key_channels : {2u, 1u}) {
+        Bridge b(std::make_unique<KeyToy>(), 2, key_channels);
+        CHECK(b.sidechain_channels() == key_channels);
+        CHECK(b.activate(48000.0, 128));
+        Chans out(2, std::vector<float>(256, 7.0f));
+        for (std::uint32_t pos = 0; pos < 256; pos += 128) {
+            const float* ip[2] = {in[0].data() + pos, in[1].data() + pos};
+            const float* kp[2] = {key[0].data() + pos, key[1].data() + pos};
+            float* op[2] = {out[0].data() + pos, out[1].data() + pos};
+            b.run(ip, op, kp, 128, Transport{});
+        }
+        for (std::uint32_t c = 0; c < 2; ++c) {
+            const std::uint32_t kc = c < key_channels ? c : key_channels - 1;
+            for (std::uint32_t i = 0; i < 256; ++i) CHECK(out[c][i] == key[kc][i]);
+        }
+    }
+    return 0;
+}
+
+// A key port the host left unconnected (LV2 allows a host to, DPF hands the
+// null through) is no key: the processor keys from its own input, and
+// nothing reads through the null. The same for a host that passes no
+// side-chain array at all.
+int test_unconnected_key_is_no_key() {
+    const Chans in = ramp_input(128);
+    const Chans key(2, std::vector<float>(128, 0.75f));
+    Bridge b(std::make_unique<KeyToy>(), 2, 2);
+    CHECK(b.activate(48000.0, 128));
+    Chans out(2, std::vector<float>(128, 7.0f));
+    const float* ip[2] = {in[0].data(), in[1].data()};
+    float* op[2] = {out[0].data(), out[1].data()};
+    const float* half[2] = {key[0].data(), nullptr};
+    b.run(ip, op, half, 128, Transport{});
+    for (std::uint32_t c = 0; c < 2; ++c) {
+        for (std::uint32_t i = 0; i < 128; ++i) CHECK(out[c][i] == in[c][i]);
+    }
+    b.run(ip, op, nullptr, 128, Transport{});
+    for (std::uint32_t i = 0; i < 128; ++i) CHECK(out[1][i] == in[1][i]);
+    return 0;
+}
+
+// A bundle cannot hand a key to a processor that declares none: the
+// bundle's side-chain count is ignored for it, so a mistaken build flag
+// changes nothing the processor sees.
+int test_key_needs_descriptor() {
+    Bridge b(std::make_unique<Toy>(), 2, 2);
+    CHECK(b.sidechain_channels() == 0);
+    return 0;
+}
+
+// The mono bundles: one channel in, one out, through the same bridge, equal
+// to the Processor's own mono render. Three channels is not a layout any
+// N0 processor takes: refused, and silent rather than garbage.
+int test_mono_bridge_equals_direct_render() {
+    const Chans in2 = ramp_input(1024);
+    const Chans in(1, in2[0]);
+    Toy direct;
+    direct.set_param(kGain, 0.7f);
+    direct.set_param(kDelay, 5.0f);
+    CHECK(direct.prepare(48000.0, 128, 1));
+    std::vector<float> want(1024), got(1024);
+    for (std::size_t pos = 0; pos < 1024; pos += 128) {
+        const float* ip[1] = {in[0].data() + pos};
+        float* op[1] = {want.data() + pos};
+        direct.process(AudioBuffers{ip, op, nullptr, 1, 0, 128}, nullptr, 0, Transport{});
+    }
+    Bridge b(std::make_unique<Toy>(), 1);
+    b.set_value(kDelay, 5.0f);
+    CHECK(b.activate(48000.0, 128));
+    CHECK(b.latency() == 5);
+    for (std::size_t pos = 0; pos < 1024; pos += 128) {
+        if (pos == 0) b.set_value(kGain, 0.7f);
+        const float* ip[1] = {in[0].data() + pos};
+        float* op[1] = {got.data() + pos};
+        b.run(ip, op, 128, Transport{});
+    }
+    for (std::size_t i = 0; i < 1024; ++i) CHECK(got[i] == want[i]);
+
+    Bridge three(std::make_unique<Toy>(), 3);
+    CHECK(!three.activate(48000.0, 128));
+    Chans out(3, std::vector<float>(64, 7.0f));
+    const float* ip[3] = {in[0].data(), in[0].data(), in[0].data()};
+    float* op[3] = {out[0].data(), out[1].data(), out[2].data()};
+    three.run(ip, op, 64, Transport{});
+    for (const auto& c : out) {
+        for (float v : c) CHECK(v == 0.0f);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -367,6 +487,10 @@ int main() {
     failures += test_bypass_keeps_latency();
     failures += test_unchanged_activate_does_not_allocate();
     failures += test_changed_activate_prepares();
+    failures += test_key_reaches_processor();
+    failures += test_unconnected_key_is_no_key();
+    failures += test_key_needs_descriptor();
+    failures += test_mono_bridge_equals_direct_render();
     if (failures == 0) std::printf("native_format: all cases pass\n");
     return failures == 0 ? 0 : 1;
 }
