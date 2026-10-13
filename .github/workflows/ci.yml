@@ -167,11 +167,63 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # PROGRESS.md is generated; a PR that flips an item without regenerating
-      # it, or marks one done without evidence, fails here.
-      - name: Catalogue valid and PROGRESS.md current
+      # A done item without evidence, or a doing item without a branch,
+      # fails here. PROGRESS.md is not compared: it is regenerated on main.
+      - name: Catalogue valid
         run: python3 tools/progress.py --check
+
+      # Every PR that regenerated PROGRESS.md conflicted with every other
+      # queued PR, so only the publish-progress job below writes it.
+      - name: PR leaves PROGRESS.md alone
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -qx 'planning/PROGRESS.md'; then
+            echo "::error file=planning/PROGRESS.md::PRs must not change PROGRESS.md; CI regenerates it on main after the merge."
+            echo "  fix with: git checkout origin/main -- planning/PROGRESS.md"
+            exit 1
+          fi
+
+  publish-progress:
+    name: Regenerate PROGRESS.md on main
+    # Only after a merge, never in a PR. The bot's own commit carries
+    # [skip ci], and the actor check stops a loop should that ever be lost.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor != 'github-actions[bot]'
+    needs: progress
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Two merges in quick succession must not race to push; the later run
+    # regenerates from the later main, so the earlier one can be dropped.
+    concurrency:
+      group: publish-progress
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Regenerate
+        run: python3 tools/progress.py --markdown
+
+      - name: Commit if it changed
+        run: |
+          if git diff --quiet -- planning/PROGRESS.md; then
+            echo "PROGRESS.md already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add planning/PROGRESS.md
+          git commit -m "Regenerate PROGRESS.md [skip ci]"
+          git push origin HEAD:main
 
   shellcheck:
     name: Shell scripts

@@ -86,3 +86,8 @@ Thumbs.db
 
 # Agent worktrees, one per parallel squad (ADR-0007).
 /.claude/worktrees/
+
+# The coordinating session's handoff is the coordinator's local file. When
+# every PR rewrote it, each merge forced a conflicting rebase of every queued
+# PR. tools/session-start.sh still prints it when it exists.
+/planning/handoffs/main-session.md

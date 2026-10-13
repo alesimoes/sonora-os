@@ -48,19 +48,20 @@ catching this before merge is the only cheap moment.
 left `brain/` and `planning/STATUS.md` untouched is not finished. Say so.
 
 The branch's handoff, `planning/handoffs/<branch>.md` (`/` replaced by `-`),
-must already be gone from the PR head, and `planning/handoffs/main-session.md`
-must read true for the moment after this merge. You merge with
-`gh pr merge --squash` and never commit, so the implementer or coordinator
-makes that deletion and refresh the last commit on the branch, before asking
-for this gate. If the handoff is still there, or `main-session.md` still
-describes this PR as open, refuse and say so: its lasting content belongs in
-`brain/` and `STATUS.md`, and a stale handoff misleads the next session.
+must already be gone from the PR head. You merge with `gh pr merge --squash`
+and never commit, so the implementer or coordinator makes that deletion the
+last commit on the branch, before asking for this gate. If the handoff is
+still there, refuse and say so: its lasting content belongs in `brain/` and
+`STATUS.md`, and a stale handoff misleads the next session.
+`planning/handoffs/main-session.md` is the coordinator's local file, not in
+git; it is not yours to check.
 
 The same goes for the progress catalogue. A PR that delivers an item in
 `planning/progress.json` flips its status in the same PR: `done` with
-`evidence` naming the PR and what verified it, or `doing` with its branch.
-It regenerates `planning/PROGRESS.md` with `tools/progress.sh --markdown`,
+`evidence` naming the PR and what verified it, or `doing` with its branch,
 and `tools/progress.sh --check` passes. Merged but unverified is not done.
+The PR does not touch `planning/PROGRESS.md` (CI fails it if it does): the
+`publish-progress` job regenerates that file on `main` after the merge.
 
 ## Posting the verdict
 

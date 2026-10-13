@@ -25,20 +25,18 @@ handoff.
 
 In the main (coordinating) session, also overwrite
 `planning/handoffs/main-session.md`: what is in flight, what landed, what
-waits on the owner, and what is next.
+waits on the owner, and what is next. It is the coordinator's local file,
+ignored by git: no PR ever touches it, because a file every PR rewrites
+makes each merge conflict with every queued PR. The coordinator updates it
+in its own checkout after each merge.
 
 ## Before asking for the merge gate
 
 The integrator merges with `gh pr merge --squash` and never commits, so the
 handoff cannot be deleted at merge time. The implementer or coordinator
-makes the last commit on the branch, before asking for the gate:
-
-1. Delete `planning/handoffs/<branch>.md` (lasting content is already in
-   `brain/` and `STATUS.md`).
-2. Overwrite `planning/handoffs/main-session.md` so it is true after the
-   merge: this PR under landed, not in flight.
-
-The integrator checks both and refuses the merge otherwise.
+makes the last commit on the branch, before asking for the gate: delete
+`planning/handoffs/<branch>.md` (lasting content is already in `brain/` and
+`STATUS.md`). The integrator refuses the merge if it is still there.
 
 ## When starting
 

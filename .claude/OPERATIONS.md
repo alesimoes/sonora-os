@@ -72,9 +72,16 @@ Between steps, work moves by handoff: the agent that stops writes
 the next agent is a fresh one that starts from that file. Review rounds in
 particular get a new reviewer and a new fixer each time. Sending the same
 long-running agent round after round makes every round pay for all the
-earlier ones. The last commit before step 10 deletes the branch's handoff and
-refreshes `planning/handoffs/main-session.md`, because the integrator
-squash-merges and never commits.
+earlier ones. The last commit before step 10 deletes the branch's handoff,
+because the integrator squash-merges and never commits.
+
+No PR touches a file that every PR would otherwise rewrite, since each merge
+would then force a conflicting rebase of every queued PR.
+`planning/handoffs/main-session.md` is the coordinator's local file, ignored
+by git, and the coordinator updates it after each merge. `planning/PROGRESS.md`
+is generated on `main` by the `publish-progress` CI job after each merge; a
+PR flips items in `planning/progress.json` only, and CI fails a PR whose diff
+touches `PROGRESS.md`.
 
 Step 8 is the one that gets skipped, and skipping it is what makes the next
 session repeat work already done. Step 9 is the one I got wrong first: pushing
