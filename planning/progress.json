@@ -41,7 +41,7 @@
             {"id": "quality.ci.stateview", "title": "StateView starvation regression and atomic static_asserts (with M4)", "size": "S", "phase": 1, "status": "done", "evidence": "PR #33: api_state_view ctest (1 kHz paced writer vs 60 Hz reader: 0 stale, 0 torn; blocked writer reads stale in bounded time), static_assert per shared atomic type; TSan job"},
             {"id": "architecture.adr0007.m5", "title": "M5: dependency check, CONTRACTS.lock, per-module ctest labels", "size": "M", "phase": 1, "status": "todo"},
             {"id": "architecture.adr0007.m6", "title": "M6: ownership in OPERATIONS.md and agent charters", "size": "S", "phase": 1, "status": "todo"},
-            {"id": "architecture.adr0007.m7", "title": "M7: process split, socket control server, memfd state, sonora-tui", "size": "L", "phase": 2, "status": "done", "evidence": "this PR: client_socket_engine (conformance on SocketEngine against a sonora-engine process, UI process SIGKILLed mid-take, reconnect with undo/redo in step), control_socket, platform_ipc, ui_replica_document ctests; PROCESS SPLIT PASS in tools/test-engine-docker.sh", "note": "The Qt UI edits the engine's document through ReplicaDocument (ModelAction::Load, protocol 2). Open: resolve_* into engine/control; the two systemd units are the distro Stage 2 item"}
+            {"id": "architecture.adr0007.m7", "title": "M7: process split, socket control server, memfd state, sonora-tui", "size": "L", "phase": 2, "status": "done", "evidence": "PR #38: client_socket_engine (conformance on SocketEngine against a sonora-engine process, UI process SIGKILLed mid-take, reconnect with undo/redo in step), control_socket, platform_ipc, ui_replica_document ctests; PROCESS SPLIT PASS in tools/test-engine-docker.sh", "note": "The Qt UI edits the engine's document through ReplicaDocument (ModelAction::Load, protocol 2). Open: resolve_* into engine/control; the two systemd units are the distro Stage 2 item"}
           ]
         },
         {
@@ -403,7 +403,7 @@
             {"id": "architecture.portability.cmake_platform", "title": "P6: SONORA_PLATFORM / SONORA_BACKENDS, include allowlist in M5's check", "size": "S", "phase": 1, "status": "todo"},
             {"id": "architecture.portability.ci_windows", "title": "P7: required portable CI job, MSVC on windows-latest, neutral build + ctest", "size": "M", "phase": 1, "status": "todo"},
             {"id": "architecture.portability.charters", "title": "P8: portability rule in OPERATIONS.md and charters (inside M6)", "size": "S", "phase": 1, "status": "todo"},
-            {"id": "architecture.portability.ipc_seam", "title": "P9: M7 socket and shared memory behind common/platform", "size": "M", "phase": 2, "status": "done", "evidence": "this PR: common/platform ipc.h and process.h (posix + unsupported), platform_ipc ctest incl. the kernel refusing a client write to the mapping"},
+            {"id": "architecture.portability.ipc_seam", "title": "P9: M7 socket and shared memory behind common/platform", "size": "M", "phase": 2, "status": "done", "evidence": "PR #38: common/platform ipc.h and process.h (posix + unsupported), platform_ipc ctest incl. the kernel refusing a client write to the mapping"},
             {"id": "architecture.portability.ci_qt_windows", "title": "P10: Qt UI in the portable CI job", "size": "S", "phase": 2, "status": "todo"}
           ]
         }
