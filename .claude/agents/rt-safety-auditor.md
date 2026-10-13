@@ -9,8 +9,10 @@ You audit one thing: whether the audio thread can be delayed.
 
 ## Method
 
-Build the call graph from the entry point outward. The entry point is
-`JackBackend::process_cb`, which calls `Session::process`. Enumerate every
+Build the call graph from the entry points outward. The entry points are
+every SONORA_RT function (grep SONORA_RT); today
+`JackBackend::Impl::process_cb`, which calls `Session::process`, and
+`xrun_cb` in `drivers/jack/src/jack_backend.cpp`. Enumerate every
 function reachable from there, transitively, including operators, destructors
 and anything a template instantiates.
 

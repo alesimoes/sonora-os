@@ -1,110 +1,419 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/jack_backend.h"
 
+#include <jack/jack.h>
+
 #include <algorithm>
-#include <cctype>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
-#include "sonora/port_order.h"
-#include "sonora/session.h"
+#include "sonora/alsa_card.h"
+#include "sonora/frame_clock.h"
+#include "sonora/period_guard.h"
+#include "sonora/port_devices.h"
+#include "sonora/source_watch.h"
 
 namespace sonora {
+namespace {
 
-int probe_capture_channels(const std::string& client_name) {
-    jack_status_t status{};
-    jack_client_t* probe =
-        jack_client_open(client_name.c_str(), JackNoStartServer, &status);
-    if (!probe) return 0;
+using backend::PortInfo;
+using drivers::Fatal;
 
-    int n = 0;
-    const char** hw = jack_get_ports(probe, nullptr, JACK_DEFAULT_AUDIO_TYPE,
-                                     JackPortIsOutput | JackPortIsPhysical);
-    if (hw) {
-        while (hw[n] != nullptr) ++n;
-        jack_free(hw);
-    }
-    jack_client_close(probe);
-    return n;
+// physical_*_ports() before open() connects under this name and disconnects
+// again, so the probe never shows up as the engine in a patchbay.
+constexpr const char* kProbeClient = "sonora-probe";
+
+// The scratch buffers stand in for a port buffer JACK does not hand over, so
+// the largest period admitted is bounded by them. PipeWire's own ceiling on
+// the quantum is 8192.
+constexpr uint32_t kMinScratchFrames = 8192;
+
+uint64_t now_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
 }
 
-JackBackend::~JackBackend() { close(); }
+// Under pw-jack 1.4.2 with jack.fill-aliases on (prepare_process()), a
+// port's first alias is its PipeWire object.path, which names the ALSA
+// card; the kernel says whether that card is USB. Nothing in the JACK API
+// names the bus, and the client name is the node's description ("UMC1820
+// Pro"), which does not either. Under jackd2, or with aliases off, no port
+// reads as USB, and a device is then used only when named.
+bool port_on_usb(jack_client_t* client, const char* name) {
+    jack_port_t* port = jack_port_by_name(client, name);
+    if (!port) return false;
+    const std::size_t size = static_cast<std::size_t>(jack_port_name_size());
+    std::vector<char> first(size, '\0'), second(size, '\0');
+    char* aliases[2] = {first.data(), second.data()};
+    const int n = jack_port_get_aliases(port, aliases);
+    for (int i = 0; i < n && i < 2; ++i) {
+        const std::string card = drivers::alsa_card_of(aliases[i]);
+        if (!card.empty()) return drivers::alsa_card_is_usb(card);
+    }
+    return false;
+}
 
-bool JackBackend::open(const std::string& client_name, Session* session) {
-    jack_status_t status{};
-    client_ = jack_client_open(client_name.c_str(), JackNoStartServer, &status);
-    if (!client_) {
-        error_ = "cannot reach the audio server (is PipeWire running?)";
+std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) {
+    std::vector<std::string> names;
+    std::vector<std::string> usb;
+    if (const char** hw = jack_get_ports(client, nullptr, JACK_DEFAULT_AUDIO_TYPE,
+                                         flags | JackPortIsPhysical)) {
+        for (int i = 0; hw[i] != nullptr; ++i) {
+            names.emplace_back(hw[i]);
+            if (port_on_usb(client, hw[i])) usb.emplace_back(hw[i]);
+        }
+        jack_free(hw);
+    }
+    return drivers::describe_ports(std::move(names), [&usb](const std::string& n) {
+        return std::find(usb.begin(), usb.end(), n) != usb.end();
+    });
+}
+
+std::string device_of(const std::string& port) {
+    return port.substr(0, port.find(':'));
+}
+
+}  // namespace
+
+struct JackBackend::Impl {
+    jack_client_t* client = nullptr;
+    bool active = false;
+    // Empty until a device is chosen: by name in open(), by the default
+    // policy at open() or at the first connection after it, or by the
+    // caller's fallback (choose_capture_device()). Never changed once set.
+    std::string capture_device;
+    // What connect_inputs_in_order() last said, so a caller that polls it
+    // while waiting for an interface does not repeat it every time.
+    std::string last_complaint;
+    std::vector<jack_port_t*> in_ports;
+    std::vector<jack_port_t*> out_ports;
+    // Sized in open() and only overwritten afterwards, so the callback never
+    // touches the allocator.
+    std::vector<const float*> in_bufs;
+    std::vector<float*> out_bufs;
+    // jack_port_get_buffer can return NULL (a period larger than the port's
+    // buffer, a port being invalidated). An input then reads silence and an
+    // output writes into scratch, so every pointer in the block is usable
+    // and every track keeps the same length.
+    std::vector<float> silence;
+    std::vector<float> scratch;
+    backend::AudioBlock block{};
+    backend::ProcessCallback* callback = nullptr;
+    uint32_t rate = 0;
+    // Bumped by JACK's xrun callback: on the audio thread under PipeWire's
+    // JACK, on a notification thread under jackd2. Read by the control
+    // thread.
+    std::atomic<uint32_t> xruns{0};
+    drivers::PeriodGuard guard;
+    drivers::FrameClock clock;  // widened on the audio thread only
+
+    // The physical ports feeding our inputs, so their going away can be
+    // recognised. Touched by JACK's notification callbacks and by
+    // fatal_reason(); never by the audio thread.
+    mutable std::mutex sources_mutex;
+    drivers::SourceWatch sources;
+    std::string gone_port;
+
+    std::vector<PortInfo> physical(unsigned long flags) const {
+        if (client) return list_physical(client, flags);
+        jack_status_t status{};
+        jack_client_t* probe =
+            jack_client_open(kProbeClient, JackNoStartServer, &status);
+        if (!probe) return {};
+        std::vector<PortInfo> out = list_physical(probe, flags);
+        jack_client_close(probe);
+        return out;
+    }
+
+    bool register_ports(uint32_t count, const char* prefix, unsigned long flags,
+                        std::vector<jack_port_t*>& ports, std::string& error) {
+        ports.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            char name[32];
+            std::snprintf(name, sizeof name, "%s_%u", prefix, i + 1);
+            jack_port_t* p = jack_port_register(client, name,
+                                                JACK_DEFAULT_AUDIO_TYPE, flags, 0);
+            if (!p) {
+                error = std::string("cannot register port ") + name;
+                return false;
+            }
+            ports.push_back(p);
+        }
+        return true;
+    }
+
+    bool is_input(jack_port_t* p) const {
+        return p && std::find(in_ports.begin(), in_ports.end(), p) != in_ports.end();
+    }
+
+    // The trampoline: fetch the port buffers, hand them over, nothing more
+    // (ADR-0007 §2).
+    static int process_cb(jack_nframes_t nframes, void* arg) noexcept SONORA_RT {
+        auto* self = static_cast<Impl*>(arg);
+        for (std::size_t o = 0; o < self->out_ports.size(); ++o) {
+            self->out_bufs[o] = static_cast<float*>(
+                jack_port_get_buffer(self->out_ports[o], nframes));
+        }
+        // The rate is read every period: the server's notification of a
+        // change can arrive after periods at the new rate have run.
+        if (!self->guard.admit(nframes, jack_get_sample_rate(self->client))) {
+            // The engine no longer fills the outputs, and a JACK buffer holds
+            // whatever the last cycle left in it.
+            for (float* out : self->out_bufs) {
+                if (out) std::memset(out, 0, nframes * sizeof(float));
+            }
+            return 0;
+        }
+        // admit() bounds nframes by the scratch size, so either buffer will do.
+        for (float*& out : self->out_bufs) {
+            if (!out) out = self->scratch.data();
+        }
+        for (std::size_t i = 0; i < self->in_ports.size(); ++i) {
+            const auto* in = static_cast<const float*>(
+                jack_port_get_buffer(self->in_ports[i], nframes));
+            self->in_bufs[i] = in ? in : self->silence.data();
+        }
+        self->block.nframes = nframes;
+        self->block.frame_time = self->clock.widen(jack_last_frame_time(self->client));
+        self->callback->process(self->block);
+        return 0;
+    }
+
+    static int xrun_cb(void* arg) noexcept SONORA_RT {
+        static_cast<Impl*>(arg)->xruns.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
+
+    static int sample_rate_cb(jack_nframes_t rate, void* arg) noexcept {
+        static_cast<Impl*>(arg)->guard.rate_reported(rate);
+        return 0;
+    }
+
+    // Follows every physical port that feeds one of our inputs, however it
+    // was patched: by connect_inputs_in_order() or by hand. A non-physical
+    // source (pw-play, a soft synth) going away is not a device going away,
+    // so it is never followed.
+    static void connect_cb(jack_port_id_t a, jack_port_id_t b, int connect,
+                           void* arg) noexcept {
+        auto* self = static_cast<Impl*>(arg);
+        jack_port_t* pa = jack_port_by_id(self->client, a);
+        jack_port_t* pb = jack_port_by_id(self->client, b);
+        jack_port_id_t source_id;
+        jack_port_t* source;
+        if (self->is_input(pb)) {
+            source_id = a;
+            source = pa;
+        } else if (self->is_input(pa)) {
+            source_id = b;
+            source = pb;
+        } else {
+            return;
+        }
+        if (!source || !(jack_port_flags(source) & JackPortIsPhysical)) return;
+        const char* name = jack_port_name(source);
+        if (!name) return;
+        try {
+            std::lock_guard<std::mutex> lock(self->sources_mutex);
+            if (connect) {
+                self->sources.linked(source_id, name, now_ns());
+            } else {
+                self->sources.unlinked(source_id, name, now_ns());
+            }
+        } catch (...) {
+            // Out of memory in a notification: this port's loss will still
+            // show as a stall if the device takes the clock with it.
+        }
+    }
+
+    static void registration_cb(jack_port_id_t id, int registered,
+                                void* arg) noexcept {
+        auto* self = static_cast<Impl*>(arg);
+        if (registered) return;
+        // By name as well as id: jackd2 reuses ids. pw-jack still knows
+        // the port while it reports it gone.
+        const jack_port_t* port = jack_port_by_id(self->client, id);
+        const char* name = port ? jack_port_name(port) : nullptr;
+        try {
+            std::lock_guard<std::mutex> lock(self->sources_mutex);
+            std::string gone;
+            if (!self->sources.removed(id, name, now_ns(), gone)) return;
+            if (self->guard.fatal() == Fatal::None) self->gone_port = std::move(gone);
+            self->guard.raise(Fatal::DeviceGone);
+        } catch (...) {
+            self->guard.raise(Fatal::DeviceGone);
+        }
+    }
+
+    static void shutdown_cb(void* arg) noexcept {
+        // Called from a JACK thread. Only flag it: the client handle is
+        // already dead, so calling back into the API here is not allowed.
+        static_cast<Impl*>(arg)->guard.raise(Fatal::ServerGone);
+    }
+};
+
+void JackBackend::prepare_process() {
+    const std::string props = drivers::with_fill_aliases(std::getenv("PIPEWIRE_PROPS"));
+    ::setenv("PIPEWIRE_PROPS", props.c_str(), 1);
+}
+
+JackBackend::JackBackend() : impl_(std::make_unique<Impl>()) {}
+
+JackBackend::~JackBackend() {
+    deactivate();
+    if (impl_->client) jack_client_close(impl_->client);
+}
+
+std::vector<PortInfo> JackBackend::physical_capture_ports() {
+    return impl_->physical(JackPortIsOutput);
+}
+
+std::vector<PortInfo> JackBackend::physical_playback_ports() {
+    return impl_->physical(JackPortIsInput);
+}
+
+bool JackBackend::open(const backend::BackendConfig& config,
+                       backend::ProcessCallback& callback, std::string& error) {
+    if (impl_->client) {
+        error = "the audio backend is already open";
         return false;
     }
-    session_ = session;
+    Impl& d = *impl_;
+    const auto fail = [this, &d]() {
+        jack_client_close(d.client);
+        // A fresh Impl, so a later open() starts with no ports and no
+        // fatal state left over from this attempt.
+        impl_ = std::make_unique<Impl>();
+        return false;
+    };
 
-    const std::size_t n = session->tracks().size();
-    in_ports_.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        char port[32];
-        std::snprintf(port, sizeof(port), "in_%zu", i + 1);
-        jack_port_t* p = jack_port_register(client_, port,
-                                            JACK_DEFAULT_AUDIO_TYPE,
-                                            JackPortIsInput, 0);
-        if (!p) {
-            error_ = std::string("cannot register port ") + port;
-            return false;
-        }
-        in_ports_.push_back(p);
+    jack_status_t status{};
+    d.client = jack_client_open(config.client_name.c_str(), JackNoStartServer,
+                                &status);
+    if (!d.client) {
+        error = "cannot reach the audio server (is PipeWire running?)";
+        return false;
     }
-    // Sized once here so process_cb never touches the allocator.
-    in_bufs_.assign(n, nullptr);
 
-    jack_set_process_callback(client_, process_cb, this);
-    jack_set_xrun_callback(client_, xrun_cb, this);
-    jack_on_shutdown(client_, shutdown_cb, this);
+    // The server decides the rate; a mismatch would write wrong-pitch files.
+    d.rate = jack_get_sample_rate(d.client);
+    if (d.rate != config.required_rate) {
+        error = "server runs at " + std::to_string(d.rate) +
+                " Hz, session asked for " +
+                std::to_string(config.required_rate) + " Hz";
+        return fail();
+    }
+
+    // Decided now when it can be, so a second card appearing later cannot
+    // change which device the inputs come from. With no USB device yet it
+    // is decided at the first connection instead.
+    std::vector<PortInfo> chosen;
+    if (!backend::select_device(d.physical(JackPortIsOutput),
+                                config.capture_device, chosen, error)) {
+        return fail();
+    }
+    d.capture_device = config.capture_device.empty() && !chosen.empty()
+                           ? chosen.front().device
+                           : config.capture_device;
+
+    if (!d.register_ports(config.inputs, "in", JackPortIsInput, d.in_ports,
+                          error) ||
+        !d.register_ports(config.outputs, "out", JackPortIsOutput, d.out_ports,
+                          error)) {
+        return fail();
+    }
+    d.in_bufs.assign(d.in_ports.size(), nullptr);
+    d.out_bufs.assign(d.out_ports.size(), nullptr);
+    const uint32_t scratch_frames =
+        std::max(kMinScratchFrames, jack_get_buffer_size(d.client));
+    d.silence.assign(scratch_frames, 0.0f);
+    d.scratch.assign(scratch_frames, 0.0f);
+    d.guard.set_max_frames(scratch_frames);
+    d.block = backend::AudioBlock{
+        d.in_bufs.data(),  static_cast<uint32_t>(d.in_bufs.size()),
+        d.out_bufs.data(), static_cast<uint32_t>(d.out_bufs.size()),
+        0, 0,
+    };
+    d.callback = &callback;
+
+    // Before the callback is set: JACK calls it at once with the current
+    // rate, which must not read as a change.
+    d.guard.expect_rate(d.rate);
+    jack_set_process_callback(d.client, Impl::process_cb, &d);
+    jack_set_xrun_callback(d.client, Impl::xrun_cb, &d);
+    jack_set_sample_rate_callback(d.client, Impl::sample_rate_cb, &d);
+    jack_set_port_connect_callback(d.client, Impl::connect_cb, &d);
+    jack_set_port_registration_callback(d.client, Impl::registration_cb, &d);
+    jack_on_shutdown(d.client, Impl::shutdown_cb, &d);
     return true;
 }
 
-std::vector<std::string> JackBackend::capture_ports() const {
-    std::vector<std::string> out;
-    if (!client_) return out;
-
-    const char** hw = jack_get_ports(client_, nullptr, JACK_DEFAULT_AUDIO_TYPE,
-                                     JackPortIsOutput | JackPortIsPhysical);
-    if (!hw) return out;
-    for (int i = 0; hw[i] != nullptr; ++i) out.emplace_back(hw[i]);
-    jack_free(hw);
-
-    std::sort(out.begin(), out.end(), natural_less);
-    return out;
+bool JackBackend::activate(std::string& error) {
+    Impl& d = *impl_;
+    if (!d.client) {
+        error = "the audio backend is not open";
+        return false;
+    }
+    if (d.active) return true;
+    if (jack_activate(d.client) != 0) {
+        error = "jack_activate failed";
+        return false;
+    }
+    d.active = true;
+    d.guard.watch_from(now_ns());
+    return true;
 }
 
-int JackBackend::auto_connect_inputs() {
-    if (!client_) return 0;
+int JackBackend::connect_inputs_in_order() {
+    Impl& d = *impl_;
+    if (!d.client) return 0;
 
-    const std::vector<std::string> hw = capture_ports();
+    const auto complain = [&d](const std::string& what) {
+        if (what == d.last_complaint) return;
+        d.last_complaint = what;
+        std::fprintf(stderr, "sonora: %s\n", what.c_str());
+    };
+
+    std::vector<PortInfo> hw;
+    std::string why;
+    if (!backend::select_device(d.physical(JackPortIsOutput), d.capture_device,
+                                hw, why)) {
+        complain("not connecting inputs: " + why);
+        return 0;
+    }
     if (hw.empty()) return 0;
 
     int connected = 0;
-    const std::size_t n = std::min(hw.size(), in_ports_.size());
+    const std::size_t n = std::min(hw.size(), d.in_ports.size());
     for (std::size_t i = 0; i < n; ++i) {
-        if (jack_connect(client_, hw[i].c_str(),
-                         jack_port_name(in_ports_[i])) == 0) {
-            ++connected;
-        }
+        const int rc = jack_connect(d.client, hw[i].name.c_str(),
+                                    jack_port_name(d.in_ports[i]));
+        // An existing link is the outcome asked for, not a failure.
+        if (rc == 0 || rc == EEXIST) ++connected;
     }
+    if (connected > 0 && d.capture_device.empty()) d.capture_device = hw.front().device;
 
     // A count mismatch either way is worth saying out loud. More tracks than
     // channels means the extra tracks record silence; more channels than
     // tracks means inputs the operator plugged in are not being captured.
-    if (hw.size() < in_ports_.size()) {
-        std::fprintf(stderr,
-                     "sonora: %zu capture channels for %zu tracks;"
-                     " tracks %zu and above will be silent.\n",
-                     hw.size(), in_ports_.size(), hw.size() + 1);
-    } else if (hw.size() > in_ports_.size()) {
-        std::fprintf(stderr,
-                     "sonora: %zu capture channels but only %zu tracks;"
-                     " channels %zu and above are not being recorded.\n",
-                     hw.size(), in_ports_.size(), in_ports_.size() + 1);
+    if (hw.size() < d.in_ports.size()) {
+        complain(std::to_string(hw.size()) + " capture channels for " +
+                 std::to_string(d.in_ports.size()) + " tracks; tracks " +
+                 std::to_string(hw.size() + 1) + " and above will be silent.");
+    } else if (hw.size() > d.in_ports.size()) {
+        complain(std::to_string(hw.size()) + " capture channels but only " +
+                 std::to_string(d.in_ports.size()) + " tracks; channels " +
+                 std::to_string(d.in_ports.size() + 1) +
+                 " and above are not being recorded.");
     }
 
     return connected;
@@ -112,58 +421,81 @@ int JackBackend::auto_connect_inputs() {
 
 int JackBackend::connected_input_count() const {
     int n = 0;
-    for (jack_port_t* p : in_ports_) {
+    for (jack_port_t* p : impl_->in_ports) {
         if (jack_port_connected(p) > 0) ++n;
     }
     return n;
 }
 
-bool JackBackend::activate() {
-    if (!client_) return false;
-    if (jack_activate(client_) != 0) {
-        error_ = "jack_activate failed";
-        return false;
-    }
+bool JackBackend::input_connected(uint32_t index) const {
+    return index < impl_->in_ports.size() &&
+           jack_port_connected(impl_->in_ports[index]) > 0;
+}
+
+bool JackBackend::choose_capture_device(const std::string& device) {
+    Impl& d = *impl_;
+    if (!d.client || !d.capture_device.empty() || device.empty()) return false;
+    d.capture_device = device;
     return true;
 }
 
-void JackBackend::close() {
-    if (!client_) return;
-    // Deactivate first so the callback cannot run against freed state.
-    jack_deactivate(client_);
-    jack_client_close(client_);
-    client_ = nullptr;
-    in_ports_.clear();
+void JackBackend::deactivate() noexcept {
+    Impl& d = *impl_;
+    if (!d.client || !d.active) return;
+    d.guard.unwatch();
+    // Before the client is closed and before the caller frees the session,
+    // so the callback cannot run against freed state.
+    jack_deactivate(d.client);
+    d.active = false;
 }
 
-uint32_t JackBackend::sample_rate() const {
-    return client_ ? jack_get_sample_rate(client_) : 0;
+uint32_t JackBackend::sample_rate() const { return impl_->rate; }
+
+uint32_t JackBackend::buffer_frames() const { return impl_->guard.frames(); }
+
+uint32_t JackBackend::xruns() const {
+    return impl_->xruns.load(std::memory_order_relaxed);
 }
 
-uint32_t JackBackend::buffer_size() const {
-    return client_ ? jack_get_buffer_size(client_) : 0;
+uint32_t JackBackend::clock_discontinuities() const {
+    return impl_->clock.discontinuities();
 }
 
-int JackBackend::process_cb(jack_nframes_t nframes, void* arg) {
-    auto* self = static_cast<JackBackend*>(arg);
-    for (std::size_t i = 0; i < self->in_ports_.size(); ++i) {
-        self->in_bufs_[i] = static_cast<const float*>(
-            jack_port_get_buffer(self->in_ports_[i], nframes));
+bool JackBackend::fatal() const { return impl_->guard.check_stall(now_ns()); }
+
+std::string JackBackend::fatal_reason() const {
+    const Impl& d = *impl_;
+    const drivers::PeriodGuard::State state = d.guard.state();
+    const uint32_t detail = state.detail;
+    switch (state.why) {
+        case Fatal::None:
+            return {};
+        case Fatal::ServerGone:
+            return "the audio server went away";
+        case Fatal::DeviceGone: {
+            std::lock_guard<std::mutex> lock(d.sources_mutex);
+            if (d.gone_port.empty()) return "a capture device went away";
+            return "capture device " + device_of(d.gone_port) +
+                   " went away (" + d.gone_port + " is gone)";
+        }
+        case Fatal::Stalled:
+            return "the audio server ran no period for over a second";
+        case Fatal::RateChanged:
+            return "the audio server changed its sample rate mid-session (" +
+                   std::to_string(d.rate) + " -> " + std::to_string(detail) +
+                   " Hz)";
+        case Fatal::BufferChanged:
+            if (d.guard.frames() == 0) {
+                return "the audio server's period of " + std::to_string(detail) +
+                       " frames is more than the " +
+                       std::to_string(d.scratch.size()) +
+                       " this backend can hold";
+            }
+            return "the audio server changed its buffer size mid-session (" +
+                   std::to_string(d.guard.frames()) + " -> " +
+                   std::to_string(detail) + " frames)";
     }
-    self->session_->process(self->in_bufs_.data(), nframes);
-    return 0;
-}
-
-int JackBackend::xrun_cb(void* arg) {
-    static_cast<JackBackend*>(arg)->xruns_++;
-    return 0;
-}
-
-void JackBackend::shutdown_cb(void* arg) {
-    // Called from a JACK thread. Only flag it: the client handle is
-    // already dead, so calling back into the API here is not allowed.
-    static_cast<JackBackend*>(arg)->server_gone_.store(
-        true, std::memory_order_release);
+    return {};
 }
 
 }  // namespace sonora

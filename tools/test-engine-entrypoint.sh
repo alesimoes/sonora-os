@@ -28,7 +28,7 @@ chmod 0700 "$XDG_RUNTIME_DIR"
 eval "$(dbus-launch --sh-syntax)"
 
 cleanup() {
-  for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
+  for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${ONBOARD_PID:-}" "${HDMI_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -96,11 +96,39 @@ CHANNEL_MAP=$(python3 -c "print(','.join('AUX%d' % i for i in range($TRACKS)))")
 pw-play --target test-source --channel-map "$CHANNEL_MAP" /tmp/test-tone.wav >/tmp/pw-play.log 2>&1 &
 PLAY_PID=$!
 
+echo "--- adding a physical capture device that is not USB ---"
+# A laptop has onboard audio. Without --device the engine records from it
+# only once the startup wait is over with nothing connected, so here, where
+# the inputs are patched by hand within the wait, it must be left alone. A
+# JACK client with physical ports and an onboard card's object.path stands in
+# for it; no /proc/asound/PCH/usbid exists here, so it reads as not USB, as
+# onboard audio does.
+ONBOARD_NAME="Built-in Audio Pro"
+# What pw-link calls it: the node.name, where JACK clients see the description.
+ONBOARD_NODE=fake-capture
+if [[ -f /engine-build/sonora-fake-capture ]]; then
+  cp /engine-build/sonora-fake-capture /tmp/sonora-fake-capture
+  chmod 0755 /tmp/sonora-fake-capture
+  PIPEWIRE_PROPS="{ object.path = \"alsa:acp:PCH:0:capture\" node.description = \"$ONBOARD_NAME\" }" \
+    /tmp/sonora-fake-capture 2 >/tmp/onboard.log 2>&1 &
+  ONBOARD_PID=$!
+  for _ in $(seq 1 25); do
+    pw-link -o 2>/dev/null | grep -q "^$ONBOARD_NODE:capture_AUX0" && break
+    sleep 0.2
+  done
+  pw-link -o 2>/dev/null | grep -q "^$ONBOARD_NODE:capture_AUX0" || {
+    echo "FAIL: the stand-in onboard device never exposed its ports." >&2
+    exit 1
+  }
+else
+  echo "note: no sonora-fake-capture beside the engine; onboard check skipped" >&2
+fi
+
 echo "--- starting the engine ---"
-# The engine auto-connects to physical capture ports; a container has none, so
-# the patching happens below. --wait-for-inputs is what makes that possible,
-# and it is the same flag the appliance uses for a USB interface that is
-# enumerated after boot.
+# The engine auto-connects to a USB interface during the wait; a container
+# has none, so the patching happens below. --wait-for-inputs is what makes
+# that possible, and it is the same flag the appliance uses for a USB
+# interface that is enumerated after boot.
 "$ENGINE_BIN" \
   --dir "$SESSION_DIR" \
   --tracks "$TRACKS" \
@@ -127,6 +155,17 @@ for i in $(seq 1 "$TRACKS"); do
 done
 echo "patched $CONNECTED of $TRACKS inputs"
 
+if [[ -n "${ONBOARD_PID:-}" ]]; then
+  # By now the engine has had more than one of its half-second retries.
+  sleep 1
+  if pw-link -l 2>/dev/null | grep -A2 "^$ONBOARD_NODE:capture_" | grep -q "sonora:in_"; then
+    echo "FAIL: the engine connected the onboard device over a hand patch." >&2
+    pw-link -l >&2 2>/dev/null
+    exit 1
+  fi
+  echo "onboard device left unconnected"
+fi
+
 if [[ "$CONNECTED" == "0" ]]; then
   echo "FAIL: nothing could be patched into the engine." >&2
   echo "outputs:" >&2; pw-link -o >&2 2>/dev/null
@@ -148,3 +187,123 @@ fi
 echo "--- verifying the files ---"
 python3 /usr/local/bin/verify-recording.py --check "$SESSION_DIR/Audio Files" \
   --tracks "$TRACKS" --rate "$RATE" --seconds "$SECONDS_TO_RECORD"
+
+# The device policy, with the fake onboard device as the laptop's own audio
+# (revised by the owner 2026-10-13; ADR-0007 M2 note, item 8). Each engine
+# run below is short; its stderr is kept and shown when a check fails.
+if [[ -z "${ONBOARD_PID:-}" ]]; then
+  echo "note: device policy checks skipped: no sonora-fake-capture" >&2
+  exit 0
+fi
+kill "$PLAY_PID" 2>/dev/null || true
+PLAY_PID=""
+
+# Runs the engine to completion: ENGINE_RC, and its output in /tmp/$1.out
+# and /tmp/$1.err.
+run_engine() {
+  local tag=$1
+  shift
+  rm -rf "/home/sonora/Sessions/$tag"
+  set +e
+  "$ENGINE_BIN" --dir "/home/sonora/Sessions/$tag" --rate "$RATE" --arm-all "$@" \
+    >"/tmp/$tag.out" 2>"/tmp/$tag.err"
+  ENGINE_RC=$?
+  set -e
+}
+
+fail_with() {
+  echo "FAIL: $1" >&2
+  echo "--- stdout ---" >&2; cat "/tmp/$2.out" >&2
+  echo "--- stderr ---" >&2; cat "/tmp/$2.err" >&2
+  exit 1
+}
+
+wait_for_node_ports() {
+  for _ in $(seq 1 25); do
+    pw-link -o 2>/dev/null | grep -q "^$1:capture_AUX0" && return 0
+    sleep 0.2
+  done
+  echo "FAIL: $1 never exposed its ports." >&2
+  exit 1
+}
+
+NOTICE="recording from $ONBOARD_NAME (onboard): no USB interface found"
+
+echo "--- only onboard audio, --tracks auto: recorded from after the wait ---"
+run_engine onboard-auto --tracks auto --wait-for-inputs 2 --record 2
+[[ "$ENGINE_RC" == "0" ]] || fail_with "the engine exited $ENGINE_RC on onboard audio" onboard-auto
+grep -qF "$NOTICE" /tmp/onboard-auto.err || fail_with "no onboard notice" onboard-auto
+grep -q "^RESULT files=2 connected=2 " /tmp/onboard-auto.out ||
+  fail_with "--tracks auto did not size to the 2 onboard channels" onboard-auto
+grep "^RESULT" /tmp/onboard-auto.out
+echo "onboard notice: $(grep -F "$NOTICE" /tmp/onboard-auto.err)"
+
+echo "--- only onboard audio, --tracks 4: the same, after the session exists ---"
+run_engine onboard-fixed --tracks 4 --wait-for-inputs 2 --record 2
+[[ "$ENGINE_RC" == "0" ]] || fail_with "the engine exited $ENGINE_RC on onboard audio" onboard-fixed
+grep -qF "$NOTICE" /tmp/onboard-fixed.err || fail_with "no onboard notice" onboard-fixed
+grep -q "^RESULT .*connected=2 " /tmp/onboard-fixed.out ||
+  fail_with "the onboard channels were not connected" onboard-fixed
+grep "^RESULT" /tmp/onboard-fixed.out
+
+echo "--- the patched onboard device killed mid-take: DeviceGone ends it ---"
+GONE_DIR=/home/sonora/Sessions/device-gone
+rm -rf "$GONE_DIR"
+"$ENGINE_BIN" --dir "$GONE_DIR" --rate "$RATE" --arm-all --device "$ONBOARD_NAME" \
+  --tracks auto --wait-for-inputs 5 --record 30 >/tmp/device-gone.out 2>/tmp/device-gone.err &
+ENGINE_PID=$!
+for _ in $(seq 1 50); do
+  pw-link -l 2>/dev/null | grep -A2 "^$ONBOARD_NODE:capture_AUX0" | grep -q "sonora:in_1" && break
+  sleep 0.2
+done
+pw-link -l 2>/dev/null | grep -A2 "^$ONBOARD_NODE:capture_AUX0" | grep -q "sonora:in_1" ||
+  fail_with "the named onboard device was never connected" device-gone
+# Into the take, so there is audio on disk for the close to keep.
+sleep 2
+kill "$ONBOARD_PID"
+wait "$ONBOARD_PID" 2>/dev/null || true
+ONBOARD_PID=""
+set +e
+wait "$ENGINE_PID"
+ENGINE_RC=$?
+set -e
+ENGINE_PID=""
+[[ "$ENGINE_RC" == "1" ]] || fail_with "the engine exited $ENGINE_RC, not 1, on DeviceGone" device-gone
+grep -q "capture device $ONBOARD_NAME went away" /tmp/device-gone.err ||
+  fail_with "the reason does not name the device that went away" device-gone
+python3 - "$GONE_DIR/Audio Files" <<'PY' || fail_with "the take was not closed with audio in it" device-gone
+import pathlib, sys, wave
+files = sorted(pathlib.Path(sys.argv[1]).glob("*.wav"))
+assert len(files) == 2, files
+for f in files:
+    with wave.open(str(f)) as w:
+        assert w.getnframes() > 48000, (f.name, w.getnframes())
+print(f"closed take: {len(files)} files, {wave.open(str(files[0])).getnframes()} frames each")
+PY
+echo "reason: $(grep "went away" /tmp/device-gone.err)"
+
+echo "--- two non-USB devices and none named: refused, both listed ---"
+start_fake() {
+  PIPEWIRE_PROPS="{ object.path = \"$3\" node.description = \"$2\" }" \
+    /tmp/sonora-fake-capture 2 "$1" >"/tmp/$1.log" 2>&1 &
+}
+start_fake "$ONBOARD_NODE" "$ONBOARD_NAME" "alsa:acp:PCH:0:capture"
+ONBOARD_PID=$!
+start_fake fake-hdmi "HDMI Audio Pro" "alsa:acp:HDMI:3:capture"
+HDMI_PID=$!
+wait_for_node_ports "$ONBOARD_NODE"
+wait_for_node_ports fake-hdmi
+for tracks in auto 2; do
+  run_engine "two-onboard-$tracks" --tracks "$tracks" --wait-for-inputs 2 --record 2
+  [[ "$ENGINE_RC" == "1" ]] ||
+    fail_with "the engine exited $ENGINE_RC with two non-USB devices" "two-onboard-$tracks"
+  for listed in "\"$ONBOARD_NAME\"" '"HDMI Audio Pro"'; do
+    grep -qF "$listed" "/tmp/two-onboard-$tracks.err" ||
+      fail_with "the refusal does not list $listed" "two-onboard-$tracks"
+  done
+  echo "refused (--tracks $tracks): $(tail -1 "/tmp/two-onboard-$tracks.err")"
+done
+kill "$HDMI_PID" 2>/dev/null || true
+HDMI_PID=""
+
+echo "DEVICE POLICY PASS"

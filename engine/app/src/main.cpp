@@ -3,11 +3,13 @@
 // sonora-engine: the recording core. Phase 1 drives it from a terminal UI so
 // the audio path can be proven before any graphical shell exists.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,15 +17,40 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "sonora/audio_backend.h"
 #include "sonora/command.h"
+#include "sonora/device_policy.h"
+#include "sonora/exit_watchdog.h"
 #include "sonora/jack_backend.h"
 #include "sonora/keymap.h"
+#include "sonora/memory_lock.h"
 #include "sonora/quit_signals.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
 #include "sonora/tty_mode.h"
 
 namespace {
+
+using sonora::backend::AudioBackend;
+
+// The one place that names a concrete backend; everything below speaks
+// AudioBackend. ADR-0007 M3 adds "fake" here.
+std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
+    if (name == "jack") return std::make_unique<sonora::JackBackend>();
+    return nullptr;
+}
+
+// Process-wide setup a backend needs before any thread exists.
+void prepare_backend(const std::string& name) {
+    if (name == "jack") sonora::JackBackend::prepare_process();
+}
+
+// How long leaving may take once the take is closed. jack_deactivate() and
+// jack_client_close() wait on the server, and a stalled one never answers.
+constexpr unsigned kTeardownSeconds = 5;
+constexpr const char* kTeardownHung =
+    "sonora: the audio server did not let go within 5 seconds; exiting"
+    " without it. The take was already closed.\n";
 
 struct TermiosGuard {
     termios saved{};
@@ -54,9 +81,13 @@ struct TermiosGuard {
     bool delivers(unsigned char byte) const {
         return !is_tty || sonora::tty_delivers_byte(current, byte);
     }
-    ~TermiosGuard() {
+    // Before anything is printed on the way out: in the key reading mode a
+    // newline does not return the carriage, and the last words staircase.
+    void restore() {
         if (active) tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+        active = false;
     }
+    ~TermiosGuard() { restore(); }
 };
 
 // Everything after the last '.' in a command id. Short enough for a footer,
@@ -113,9 +144,10 @@ std::vector<std::string> build_help(const sonora::KeyMap& map,
     return lines;
 }
 
-void draw(sonora::Session& s, sonora::JackBackend& jack, int take,
+void draw(sonora::Session& s, const AudioBackend& audio, int take,
           const std::string& status, const std::vector<std::string>& help,
-          const std::vector<std::string>& notices) {
+          const std::vector<std::string>& notices, const std::string& inputs,
+          const std::string& take_failed) {
     using sonora::TransportState;
     const auto st = s.transport().state();
     const char* label = st == TransportState::Recording ? "REC "
@@ -127,9 +159,9 @@ void draw(sonora::Session& s, sonora::JackBackend& jack, int take,
     std::printf("  SONORA  %s  %02d:%02d:%06.3f   take %d\n",
                 label, static_cast<int>(t) / 3600, (static_cast<int>(t) / 60) % 60,
                 t - 60.0 * (static_cast<int>(t) / 60), take);
-    std::printf("  %u Hz / %u frames   xruns %u   overruns %u\n\n",
-                jack.sample_rate(), jack.buffer_size(), jack.xruns(),
-                s.disk().total_overruns());
+    std::printf("  %u Hz / %u frames   xruns %u   clock steps %u   overruns %u\n\n",
+                audio.sample_rate(), audio.buffer_frames(), audio.xruns(),
+                audio.clock_discontinuities(), s.disk().total_overruns());
 
     for (const auto& tr : s.tracks()) {
         const float peak = tr->take_peak();
@@ -150,55 +182,84 @@ void draw(sonora::Session& s, sonora::JackBackend& jack, int take,
     for (const std::string& n : notices) {
         std::printf("  \033[33m!\033[0m %s\n", n.c_str());
     }
+    if (!inputs.empty()) {
+        std::printf("  \033[31m!\033[0m no inputs: %s\n", inputs.c_str());
+    }
+    if (!take_failed.empty()) {
+        std::printf("  \033[31m! %s\033[0m\n", take_failed.c_str());
+    }
     // A key that did nothing is the failure keymaps/README.md warns about, so
     // say what happened rather than leaving the operator guessing.
     if (!status.empty()) std::printf("  %s\n", status.c_str());
     std::fflush(stdout);
 }
 
-// Waits for something to be patched into our inputs. This is not a test
-// accommodation: on the appliance the engine starts at boot, and a USB
-// interface may not be enumerated yet. Starting a take against ports that
-// are about to be connected would record a silent head.
-int wait_for_inputs(sonora::JackBackend& jack, double seconds) {
-    const int immediate = jack.connected_input_count();
+// Waits for the inputs to be connected. This is not a test accommodation:
+// on the appliance the engine starts at boot, and a USB interface may not be
+// enumerated yet, so the auto-connect is retried as the wait goes on rather
+// than once at its end. A patch made by hand counts as well. Gives up early,
+// with 0, once the backend has failed: nothing it connects will ever be read.
+int wait_for_inputs(AudioBackend& audio, double seconds) {
+    const int immediate = audio.connected_input_count();
     if (immediate > 0 || seconds <= 0.0) return immediate;
 
     std::printf("sonora: waiting up to %.0fs for inputs...\n", seconds);
     std::fflush(stdout);
 
     double waited = 0.0;
-    while (waited < seconds && !sonora::quit_requested()) {
+    int polls = 0;
+    while (waited < seconds && !sonora::quit_requested() && !audio.fatal()) {
         ::usleep(100000);
         waited += 0.1;
-        const int n = jack.connected_input_count();
-        if (n > 0) {
+        // Every half second: it lists the server's ports each time.
+        if (++polls % 5 == 0) audio.connect_inputs_in_order();
+        if (audio.connected_input_count() > 0) {
             // Give the rest of the ports a moment to land, so a 16-channel
             // interface does not start a take with two channels connected.
             ::usleep(500000);
-            return jack.connected_input_count();
+            audio.connect_inputs_in_order();
+            return audio.connected_input_count();
         }
     }
     return 0;
 }
 
+// After choose_capture_device(): jack_connect() returns before every server
+// reports the link, so the count is read again for up to two seconds.
+int connect_and_settle(AudioBackend& audio) {
+    audio.connect_inputs_in_order();
+    for (int i = 0; i < 20 && audio.connected_input_count() == 0; ++i) {
+        ::usleep(100000);
+    }
+    return audio.connected_input_count();
+}
+
 // Records for a fixed duration and reports the result in one machine-readable
 // line. Return code is the test verdict: anything non-zero means the recording
 // is not trustworthy, even if files were produced.
-int run_headless(sonora::Session& session, sonora::JackBackend& jack,
-                 double seconds, double wait_seconds) {
-    const int connected = wait_for_inputs(jack, wait_seconds);
+int run_headless(sonora::Session& session, AudioBackend& audio,
+                 double seconds, int connected, const std::string& device,
+                 const sonora::MayRecord& may_record) {
+    // Before the take opens: a server lost while waiting would otherwise
+    // leave a set of 0-frame files behind it.
+    if (audio.fatal()) {
+        std::fprintf(stderr, "sonora: not recording: %s.\n",
+                     audio.fatal_reason().c_str());
+        return 1;
+    }
     if (connected == 0) {
         std::fprintf(stderr,
                      "sonora: refusing to record with no connected inputs;"
-                     " the result would be silence.\n");
+                     " the result would be silence: %s.\n",
+                     sonora::why_no_inputs(audio, device, session.tracks().size())
+                         .c_str());
         return 1;
     }
 
     // Never take 1 unconditionally: a test run against a session folder that
     // already holds takes must add one, not replace one.
     std::string why;
-    if (!session.start_recording(session.next_free_take(), &why)) {
+    if (!may_record(why) || !session.start_recording(session.next_free_take(), &why)) {
         std::fprintf(stderr, "sonora: cannot record: %s\n", why.c_str());
         return 1;
     }
@@ -214,8 +275,10 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
 
     while (!sonora::quit_requested() &&
            session.transport().playhead() < target) {
-        if (jack.server_gone()) {
-            std::fprintf(stderr, "sonora: the audio server went away.\n");
+        // Server loss, or a rate or buffer size change: the backend has
+        // stopped feeding the session, so close the take and say why.
+        if (audio.fatal()) {
+            std::fprintf(stderr, "sonora: %s.\n", audio.fatal_reason().c_str());
             session.stop();
             return 1;
         }
@@ -239,7 +302,8 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
 
     // Read the counters after stop(), so the disk thread has flushed and the
     // overrun total is final rather than a snapshot mid-drain.
-    const uint32_t xruns = jack.xruns();
+    const uint32_t xruns = audio.xruns();
+    const uint32_t steps = audio.clock_discontinuities();
     const uint32_t overruns = session.disk().total_overruns();
 
     uint64_t frames_on_disk = 0;
@@ -261,12 +325,14 @@ int run_headless(sonora::Session& session, sonora::JackBackend& jack,
         }
     }
 
+    // A clock step puts no hole in the audio, so it is reported rather than
+    // failed: the take's timestamps after it do not follow on from before.
     std::printf("RESULT files=%d connected=%d frames=%llu requested=%llu"
-                " rate=%u buffer=%u xruns=%u overruns=%u\n",
+                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u\n",
                 files, connected,
                 static_cast<unsigned long long>(frames_on_disk),
                 static_cast<unsigned long long>(target),
-                jack.sample_rate(), jack.buffer_size(), xruns, overruns);
+                audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns);
 
     if (files == 0) {
         std::fprintf(stderr, "sonora: no audio was written.\n");
@@ -301,6 +367,7 @@ int main(int argc, char** argv) {
     double wait_for_inputs_seconds = 0.0;
     bool arm_all = false;
     std::string keymap_path;
+    std::string capture_device;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -325,18 +392,26 @@ int main(int argc, char** argv) {
             arm_all = true;
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
+            capture_device = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(
                 "usage: sonora-engine [options]\n"
                 "  --dir PATH        session directory\n"
                 "  --tracks N|auto   track count, or one per capture channel\n"
+                "  --device NAME     capture device to record from. Without it,\n"
+                "                    the first line of ~/.config/sonora/device or\n"
+                "                    /etc/sonora/device; without those, the one USB\n"
+                "                    audio interface or, once the wait is over with\n"
+                "                    none, the one onboard device\n"
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
                 "  --keymap PATH     key map to use instead of the built-in one\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
-                "                    wait for a capture connection before recording\n");
+                "                    wait for a capture connection, or a USB\n"
+                "                    interface, before recording\n");
             return 0;
         } else {
             std::fprintf(stderr, "sonora: unknown option %s\n", argv[i]);
@@ -352,6 +427,25 @@ int main(int argc, char** argv) {
                      " pass --arm-all.\n");
         return 2;
     }
+
+    // The appliance's unit passes no --device, so a choice that has to
+    // survive a reboot lives in a file the operator can edit instead.
+    if (capture_device.empty()) {
+        std::string from;
+        capture_device = sonora::read_device_setting(
+            sonora::device_setting_paths(std::getenv("HOME"), "/etc/sonora"), &from);
+        if (!capture_device.empty()) {
+            std::printf("sonora: capture device \"%s\", from %s\n",
+                        capture_device.c_str(), from.c_str());
+        }
+    }
+    // Named, the device is never replaced by the default policy's choice.
+    const bool device_named = !capture_device.empty();
+    // Set when the default fell back to a non-USB device, for the screen.
+    std::string onboard_notice;
+
+    // First, while this is the only thread: it may set the environment.
+    prepare_backend("jack");
 
     // Before anything that waits: wait_for_inputs() can sit for a minute at
     // boot, and a SIGTERM or hangup in that time must still end in a clean
@@ -373,18 +467,71 @@ int main(int argc, char** argv) {
                     keymap.name().c_str(), keymap.bindings().size());
     }
 
-    if (cfg.track_count == 0) {
-        // One track per capture channel the interface offers. Guessing a
-        // number means either silent tracks or inputs nobody is recording.
-        const int channels = sonora::probe_capture_channels("sonora-probe");
-        if (channels == 0) {
+    // Before the session's rings and before any JACK client and its threads
+    // exist, so all of them are locked as they are mapped. Refused rather
+    // than warned about: on the appliance the unit grants unlimited memlock,
+    // so a failure means the image is wrong, and a page fault on the audio
+    // thread shows up only as xruns nobody can explain.
+    {
+        std::string why;
+        if (!sonora::lock_memory(why)) {
             std::fprintf(stderr,
-                         "sonora: --tracks auto found no capture channels."
-                         " Is the interface connected?\n");
+                         "sonora: cannot lock memory: %s. Refusing to start:"
+                         " the audio thread could page-fault mid-take.\n",
+                         why.c_str());
+            return 1;
+        }
+    }
+
+    double wait_left = wait_for_inputs_seconds;
+    if (cfg.track_count == 0) {
+        // One track per capture channel of the device recorded from. Guessing
+        // a number means either silent tracks or inputs nobody is recording.
+        // The session is sized before it exists, so the startup wait for a
+        // late interface, and the fallback after it, happen here. Only the
+        // chosen device counts: onboard audio's two ports are not channels
+        // of the interface, nor the interface's eighteen of onboard audio.
+        // A backend of its own, gone before the session's is opened.
+        const std::unique_ptr<AudioBackend> probe = make_backend("jack");
+        std::vector<sonora::backend::PortInfo> all, ports;
+        std::string why;
+        bool said = false;
+        for (double waited = 0.0;; waited += 0.5) {
+            const bool over = waited >= wait_for_inputs_seconds || sonora::quit_requested();
+            all = probe->physical_capture_ports();
+            if (!sonora::backend::select_device(all, capture_device, ports, why, over)) {
+                std::fprintf(stderr, "sonora: --tracks auto: %s\n", why.c_str());
+                return 1;
+            }
+            if (!ports.empty() || over) {
+                wait_left = std::max(0.0, wait_for_inputs_seconds - waited);
+                break;
+            }
+            if (!said) {
+                std::printf("sonora: waiting up to %.0fs for %s...\n",
+                            wait_for_inputs_seconds,
+                            device_named ? capture_device.c_str() : "a USB interface");
+                std::fflush(stdout);
+                said = true;
+            }
+            ::usleep(500000);
+        }
+        const int channels = static_cast<int>(ports.size());
+        if (channels == 0) {
+            std::fprintf(stderr, "sonora: --tracks auto found no capture channels: %s.\n",
+                         sonora::backend::describe_absent(all, capture_device).c_str());
             return 1;
         }
         cfg.track_count = channels;
-        std::printf("sonora: %d capture channels detected\n", channels);
+        // Pinned by name, so a second card appearing before open() cannot
+        // change the device the session was sized to.
+        capture_device = ports.front().device;
+        if (!device_named && !ports.front().usb) {
+            onboard_notice = sonora::onboard_notice(capture_device);
+            std::fprintf(stderr, "sonora: %s\n", onboard_notice.c_str());
+        }
+        std::printf("sonora: %d capture channels detected on %s\n", channels,
+                    capture_device.c_str());
     }
 
     sonora::Session session(cfg);
@@ -394,50 +541,97 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    sonora::JackBackend jack;
-    if (!jack.open("sonora", &session)) {
-        std::fprintf(stderr, "sonora: %s\n", jack.error().c_str());
+    // Declared after the session, so it is destroyed first: its destructor
+    // deactivates, and the callback never outlives what it calls into.
+    const std::unique_ptr<AudioBackend> audio = make_backend("jack");
+    std::string backend_error;
+    // Destroyed before `audio`, so every way out from here bounds the
+    // backend's teardown; the explicit deactivate() calls below arm it first
+    // themselves.
+    struct BoundedTeardown {
+        ~BoundedTeardown() { sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung); }
+    } const bounded_teardown;
+    // open() refuses a server at any rate but the session's, since a
+    // mismatch would write wrong-pitch files, and refuses to guess between
+    // two USB interfaces.
+    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 0,
+                      cfg.sample_rate, capture_device},
+                     session, backend_error) ||
+        !audio->activate(backend_error)) {
+        std::fprintf(stderr, "sonora: %s\n", backend_error.c_str());
         return 1;
     }
-    // The server decides the rate; a mismatch would write wrong-pitch files.
-    if (jack.sample_rate() != cfg.sample_rate) {
-        std::fprintf(stderr,
-                     "sonora: server runs at %u Hz, session asked for %u Hz\n",
-                     jack.sample_rate(), cfg.sample_rate);
-        return 1;
-    }
-    if (!jack.activate()) {
-        std::fprintf(stderr, "sonora: %s\n", jack.error().c_str());
-        return 1;
-    }
-    int auto_connected = jack.auto_connect_inputs();
-    if (auto_connected == 0 && wait_for_inputs_seconds > 0.0) {
-        // Retry the auto-connect once ports appear, since the interface may
-        // simply not have been enumerated when we started.
-        if (wait_for_inputs(jack, wait_for_inputs_seconds) == 0) {
-            auto_connected = jack.auto_connect_inputs();
+    audio->connect_inputs_in_order();
+    int connected = wait_for_inputs(*audio, wait_left);
+    // The wait is over with nothing connected, by the interface or by hand:
+    // the laptop's own audio, if it is the only device, rather than an
+    // engine that records nothing until the interface it may never get.
+    if (connected == 0 && !audio->fatal() && capture_device.empty()) {
+        const sonora::Fallback fallback = sonora::fall_back_after_wait(*audio);
+        if (!fallback.ok) {
+            std::fprintf(stderr, "sonora: %s.\n", fallback.error.c_str());
+            return 1;
+        }
+        if (!fallback.device.empty()) {
+            capture_device = fallback.device;
+            onboard_notice = fallback.notice;
+            if (!onboard_notice.empty()) {
+                std::fprintf(stderr, "sonora: %s\n", onboard_notice.c_str());
+            }
+            connected = connect_and_settle(*audio);
         }
     }
-    if (auto_connected == 0 && jack.connected_input_count() == 0) {
-        // Every track would record silence. On real hardware this means the
-        // interface was not detected; in a test harness it means nothing was
-        // patched in. Either way, recording nothing while saying nothing is
-        // the one outcome the operator must never get.
-        std::fprintf(stderr,
-                     "sonora: no capture ports were connected. Recording"
-                     " now would produce silence.\n");
+    // Every track would record silence. Recording nothing while saying
+    // nothing is the one outcome the operator must never get.
+    if (connected == 0 && !audio->fatal()) {
+        const std::string why =
+            sonora::why_no_inputs(*audio, capture_device, session.tracks().size());
+        // A device named and still absent after the wait is most likely
+        // misspelled, and waiting longer will not fix that. Nor will a
+        // choice between interfaces that nobody made.
+        std::vector<sonora::backend::PortInfo> chosen;
+        std::string several;
+        if (device_named ||
+            !sonora::backend::select_device(audio->physical_capture_ports(), "",
+                                            chosen, several)) {
+            std::fprintf(stderr, "sonora: %s.\n", why.c_str());
+            return 1;
+        }
+        // Headless says it once, as its refusal; interactive draws it.
+        if (record_seconds <= 0.0) {
+            std::fprintf(stderr, "sonora: no capture ports are connected: %s.\n",
+                         why.c_str());
+        }
     }
     session.disk().start();
 
+    // Before every take, headless or from a key: when no armed track has
+    // anything connected, every file would be silence.
+    const sonora::MayRecord may_record = [&session, &audio,
+                                          &capture_device](std::string& why) {
+        bool armed = false;
+        for (std::size_t i = 0; i < session.tracks().size(); ++i) {
+            if (!session.tracks()[i]->rec_armed()) continue;
+            armed = true;
+            if (audio->input_connected(static_cast<uint32_t>(i))) return true;
+        }
+        // start_recording() says "no track is armed" better than this would.
+        if (!armed) return true;
+        why = "no armed track has an input connected (" +
+              sonora::why_no_inputs(*audio, capture_device, session.tracks().size()) +
+              ")";
+        return false;
+    };
 
     if (arm_all) {
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
     }
 
     if (record_seconds > 0.0) {
-        const int rc = run_headless(session, jack, record_seconds,
-                                    wait_for_inputs_seconds);
-        jack.close();
+        const int rc = run_headless(session, *audio, record_seconds, connected,
+                                    capture_device, may_record);
+        sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
+        audio->deactivate();
         return rc;
     }
 
@@ -445,12 +639,12 @@ int main(int argc, char** argv) {
     // exits, and a counter that started over numbered the next take like the
     // last session's first one.
     int take = session.next_free_take();
-    bool server_lost = false;
+    bool backend_failed = false;
     bool quit = false;
     std::string status;
 
     sonora::CommandRegistry commands;
-    sonora::install_session_commands(commands, session, take, quit);
+    sonora::install_session_commands(commands, session, take, quit, may_record);
 
     // The terminal mode is set before anything is measured against it: which
     // control bytes reach us depends on it, and a check made against the
@@ -500,6 +694,10 @@ int main(int argc, char** argv) {
                      keymap.name().c_str(), n.c_str());
     }
     const std::vector<std::string> help = build_help(keymap, commands, device);
+    // Kept on screen for the whole session: the operator must not take the
+    // laptop's microphone for the interface.
+    if (!onboard_notice.empty()) notices.push_back(onboard_notice);
+    bool late_usb_said = false;
 
     sonora::TerminalInput input;
     // A message stays up for about two seconds. Clearing it only on the next
@@ -510,13 +708,21 @@ int main(int argc, char** argv) {
         status = std::move(message);
         status_frames = 40;
     };
+    // While nothing is connected the interface is looked for once a second,
+    // so one plugged in after the start-up wait is still picked up, and the
+    // screen says what is missing for as long as it is.
+    std::string inputs_missing;
+    int frames_to_input_check = 0;
+    std::string take_failed;
+    int failed_take = 0;
 
     while (!sonora::quit_requested() && !quit) {
-        // The server dying stops the callback without stopping us. Close
-        // the take so what was captured is a valid file, then let the
-        // service unit restart us against a fresh server.
-        if (jack.server_gone()) {
-            server_lost = true;
+        // The server dying, or changing rate or buffer size, stops the
+        // callback without stopping us. Close the take so what was captured
+        // is a valid file, then let the service unit restart us against a
+        // fresh server.
+        if (audio->fatal()) {
+            backend_failed = true;
             break;
         }
 
@@ -548,18 +754,77 @@ int main(int argc, char** argv) {
             }
         }
 
-        draw(session, jack, take, status, help, notices);
+        if (--frames_to_input_check <= 0) {
+            frames_to_input_check = 20;
+            std::string fallback_error;
+            if (audio->connected_input_count() == 0) {
+                audio->connect_inputs_in_order();
+                // A device that appeared only after the wait gets the same
+                // fallback; several are named on screen instead of exiting,
+                // so the unit does not restart into the same choice.
+                if (audio->connected_input_count() == 0 && capture_device.empty()) {
+                    const sonora::Fallback f = sonora::fall_back_after_wait(*audio);
+                    fallback_error = f.error;
+                    if (!f.notice.empty()) {
+                        capture_device = f.device;
+                        onboard_notice = f.notice;
+                        notices.push_back(onboard_notice);
+                        std::fprintf(stderr, "sonora: %s\n", onboard_notice.c_str());
+                    }
+                    if (!f.device.empty()) audio->connect_inputs_in_order();
+                }
+            }
+            inputs_missing =
+                audio->connected_input_count() != 0 ? std::string()
+                : !fallback_error.empty()
+                    ? fallback_error
+                    : sonora::why_no_inputs(*audio, capture_device,
+                                            session.tracks().size());
+            // On onboard, an interface plugged in later is not switched to.
+            if (!onboard_notice.empty() && !late_usb_said) {
+                const std::string late =
+                    sonora::late_usb_notice(audio->physical_capture_ports());
+                if (!late.empty()) {
+                    notices.push_back(late);
+                    std::fprintf(stderr, "sonora: %s\n", late.c_str());
+                    late_usb_said = true;
+                }
+            }
+        }
+
+        // Writing stops at a full disk or the 4 GB limit while the
+        // transport still says REC, so the failure is shown the moment the
+        // disk thread records it, and until the next take records cleanly.
+        if (session.transport().state() == sonora::TransportState::Recording) {
+            const std::string failure = session.take_failure();
+            if (!failure.empty()) {
+                take_failed = "take " + std::to_string(take) + " failed: " + failure +
+                              ". Nothing more is being written; stop the take";
+                failed_take = take;
+            } else if (take != failed_take) {
+                take_failed.clear();
+            }
+        }
+
+        draw(session, *audio, take, status, help, notices, inputs_missing, take_failed);
         if (status_frames > 0 && --status_frames == 0) status.clear();
         ::usleep(50000);  // 20 fps is plenty for meters
     }
 
-    session.stop();
-    jack.close();
-    std::printf("\nsonora: session written to %s\n", cfg.dir.c_str());
+    // stop() says on stderr why a take failed, so the terminal is the
+    // operator's again before it can.
+    term.restore();
+    std::printf("\n");
+    std::fflush(stdout);
+    const bool take_ok = session.stop();
+    sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
+    audio->deactivate();
+    std::printf("sonora: session written to %s\n", cfg.dir.c_str());
 
-    if (server_lost) {
-        std::fprintf(stderr, "sonora: the audio server went away.\n");
+    if (backend_failed) {
+        std::fprintf(stderr, "sonora: %s.\n", audio->fatal_reason().c_str());
         return 1;
     }
-    return 0;
+    // A quit or SIGTERM in the middle of a failed take is not a clean exit.
+    return take_ok ? 0 : 1;
 }

@@ -1,10 +1,13 @@
-add_executable(sonora-engine src/main.cpp src/quit_signals.cpp)
+add_executable(sonora-engine
+  src/main.cpp src/quit_signals.cpp src/memory_lock.cpp src/exit_watchdog.cpp
+  src/device_policy.cpp)
 target_include_directories(sonora-engine PRIVATE include)
 # main.cpp is still the terminal interface (M4 turns it into a client of
 # InProcessEngine), so until then it links ui/keymap and ui/tui, which
 # ADR-0007 §1 forbids to anything outside ui/.
 target_link_libraries(sonora-engine PRIVATE
-  sonora_control sonora_core sonora_backend_jack sonora_keymap sonora_tui)
+  sonora_control sonora_core sonora_backend_jack sonora_keymap sonora_tui
+  Threads::Threads)
 
 install(TARGETS sonora-engine RUNTIME DESTINATION bin)
 
@@ -13,3 +16,17 @@ install(TARGETS sonora-engine RUNTIME DESTINATION bin)
 add_executable(test_quit_signals tests/test_quit_signals.cpp src/quit_signals.cpp)
 target_include_directories(test_quit_signals PRIVATE include)
 add_test(NAME quit_signals COMMAND test_quit_signals)
+
+add_executable(test_memory_lock tests/test_memory_lock.cpp src/memory_lock.cpp)
+target_include_directories(test_memory_lock PRIVATE include)
+add_test(NAME memory_lock COMMAND test_memory_lock)
+
+add_executable(test_exit_watchdog tests/test_exit_watchdog.cpp src/exit_watchdog.cpp)
+target_include_directories(test_exit_watchdog PRIVATE include)
+target_link_libraries(test_exit_watchdog PRIVATE Threads::Threads)
+add_test(NAME exit_watchdog COMMAND test_exit_watchdog)
+
+add_executable(test_device_policy tests/test_device_policy.cpp src/device_policy.cpp)
+target_include_directories(test_device_policy PRIVATE include)
+target_link_libraries(test_device_policy PRIVATE sonora_backend_api)
+add_test(NAME device_policy COMMAND test_device_policy)

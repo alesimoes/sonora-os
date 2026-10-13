@@ -55,7 +55,9 @@ docker info >/dev/null 2>&1 || {
 
 docker build -t "$IMAGE" --label org.sonora=1 -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")"
 # The build directory is container-specific; keep it out of the host tree.
-docker run --rm -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
+# Unlimited memlock, as the appliance grants it, so test_memory_lock can
+# check that locking works and not only that a finite limit is refused.
+docker run --rm --ulimit memlock=-1:-1 -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
   set -euo pipefail
   # forget_pre_m1_tree, inside the container where the tree was configured.
   if grep -qs "^CMAKE_HOME_DIRECTORY:INTERNAL=.*/engine\$" build-container/CMakeCache.txt; then

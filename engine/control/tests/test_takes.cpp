@@ -51,6 +51,15 @@ std::string slurp(const std::string& path) {
     return out;
 }
 
+// One block of one input per track, as a backend delivers it.
+void feed(sonora::Session& s, const float* const* inputs, uint32_t nframes) {
+    sonora::backend::AudioBlock block{};
+    block.inputs = inputs;
+    block.input_count = static_cast<uint32_t>(s.tracks().size());
+    block.nframes = nframes;
+    s.process(block);
+}
+
 // A failed earlier run leaves its files behind, and a leftover take is
 // exactly what these tests are about, so every test starts from nothing.
 void wipe(const std::string& dir) {
@@ -219,7 +228,7 @@ int test_restart_never_overwrites() {
         CHECK(s.start_recording(1));
         const float block[64] = {0.25f};
         const float* inputs[2] = {block, block};
-        s.process(inputs, 64);
+        feed(s, inputs, 64);
         s.stop();
         CHECK(s.tracks()[0]->writer().frames_written() == 64);
     }
@@ -308,7 +317,7 @@ int test_take_starts_with_its_own_samples() {
         for (float& f : old_block) f = 0.25f;
         const float* old_inputs[1] = {old_block};
         CHECK(s.start_recording(1));
-        s.process(old_inputs, 64);
+        feed(s, old_inputs, 64);
         s.stop();  // no disk thread ran: 64 frames are still in the ring
 
         float new_block[64];
@@ -316,7 +325,7 @@ int test_take_starts_with_its_own_samples() {
         const float* new_inputs[1] = {new_block};
         s.disk().start();
         CHECK(s.start_recording(2));
-        s.process(new_inputs, 64);
+        feed(s, new_inputs, 64);
         s.stop();
         CHECK(s.tracks()[0]->writer().frames_written() == 64);
     }
@@ -360,7 +369,7 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
         float block[64];
         for (float& f : block) f = 0.25f;
         const float* inputs[2] = {block, block};
-        s.process(inputs, 64);
+        feed(s, inputs, 64);
 
         std::string why;
         CHECK(reg.dispatch("transport.stop", {}, why) ==
@@ -378,7 +387,7 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
         s.tracks()[1]->writer().set_riff_size_limit(
             sonora::WavWriter::kRiffSizeLimit);
         CHECK(s.start_recording(2));
-        s.process(inputs, 64);
+        feed(s, inputs, 64);
         std::string none;
         CHECK(s.stop(&none));
         CHECK(none.empty());
@@ -390,6 +399,89 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
     uint32_t riff = 0;
     std::memcpy(&riff, b.data() + 4, 4);
     CHECK(riff == b.size() - 8);
+    wipe(cfg.dir);
+    return 0;
+}
+
+// A take whose armed tracks have nothing connected records silence on all
+// of them: a misspelled --device, or the interface not plugged in yet. The
+// record keys refuse it with the caller's reason, and leave no file.
+int test_take_refused_without_inputs() {
+    const sonora::SessionConfig cfg = config("test_takes_no_inputs", 2);
+    const std::string audio = cfg.dir + "/Audio Files/";
+    wipe(cfg.dir);
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        s.tracks()[0]->set_rec_armed(true);
+
+        bool inputs = false;
+        sonora::CommandRegistry reg;
+        int take = 1;
+        bool quit = false;
+        sonora::install_session_commands(
+            reg, s, take, quit, [&inputs](std::string& why) {
+                if (!inputs) why = "no input is connected to an armed track";
+                return inputs;
+            });
+        s.disk().start();
+
+        for (const char* command : {"transport.record", "transport.toggle_record"}) {
+            std::string why;
+            CHECK(reg.dispatch(command, {}, why) == sonora::DispatchResult::Failed);
+            CHECK(why == "no input is connected to an armed track");
+            CHECK(s.transport().state() == sonora::TransportState::Stopped);
+            CHECK(!exists(audio + "Audio 1_01.wav"));
+        }
+
+        inputs = true;
+        CHECK(reg.dispatch("transport.record") == sonora::DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        CHECK(reg.dispatch("transport.stop") == sonora::DispatchResult::Ok);
+        CHECK(exists(audio + "Audio 1_01.wav"));
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
+// The reviewer's medium on PR #16: a take that fails mid-way (full disk,
+// 4 GB limit) stopped writing silently until stop(). take_failure() says so
+// while the take still runs, which is what the screen polls.
+int test_take_failure_is_seen_while_recording() {
+    const sonora::SessionConfig cfg = config("test_takes_live_failure", 2);
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    wipe(cfg.dir);
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        s.tracks()[0]->set_rec_armed(true);
+        s.tracks()[1]->set_rec_armed(true);
+        s.tracks()[1]->writer().set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+        s.disk().start();
+        CHECK(s.start_recording(1));
+        CHECK(s.take_failure().empty());
+
+        float block[64];
+        for (float& f : block) f = 0.25f;
+        const float* inputs[2] = {block, block};
+        feed(s, inputs, 64);
+        // The disk thread drains on its own schedule.
+        std::string why;
+        for (int i = 0; i < 200 && why.empty(); ++i) {
+            ::usleep(10000);
+            why = s.take_failure();
+        }
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        CHECK(why.find("Audio 2_01.wav") != std::string::npos);
+        CHECK(why.find("4 GB") != std::string::npos);
+        CHECK(why.find("Audio 1_01.wav") == std::string::npos);
+
+        std::string at_stop;
+        CHECK(!s.stop(&at_stop));
+        CHECK(at_stop == why);
+        // Closed: nothing is running, so nothing is failing.
+        CHECK(s.take_failure().empty());
+    }
     wipe(cfg.dir);
     return 0;
 }
@@ -406,6 +498,8 @@ int main() {
     failures += test_partial_take_is_refused();
     failures += test_take_starts_with_its_own_samples();
     failures += test_take_at_the_size_limit_fails_with_a_reason();
+    failures += test_take_refused_without_inputs();
+    failures += test_take_failure_is_seen_while_recording();
     if (failures != 0) {
         std::fprintf(stderr, "FAIL %d take tests\n", failures);
         return 1;

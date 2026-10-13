@@ -76,7 +76,9 @@ docker build -q -t "$READER_IMAGE" --label org.sonora=1 \
   "$(host_path "$ROOT/tools")" >>"$OUT/build-images.log" 2>&1
 
 echo "=== recording two takes ==="
-if ! docker run --rm \
+# Unlimited memlock as sonora-session.service grants it: the engine refuses
+# to start without it.
+if ! docker run --rm --ulimit memlock=-1:-1 \
     -e TRACKS="$TRACKS" -e RATE="$RATE" \
     -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro" \
     -v "$(host_path "$ROOT/tools"):/interop-tools:ro" \
