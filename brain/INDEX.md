@@ -40,6 +40,7 @@ One line per entry. Agents read this before opening anything else.
   - **Open question:** Slakh and StemGMD are MIDI rendered through commercial instruments; it is open whether ADR-0011 §4.6 excludes them.
   - **Code:** a licence table for about 40 DSP projects and about 35 neural-DSP repositories.
   - **Amps, speakers, mics:** a "virtual capture" pipeline (SPICE of published circuits plus maker T/S curves) with its limits and validation plan; mic modelling; vocal-balancing data. Biggest gap: no commercially licensed multitrack corpus.
+- [LV2 plugin host, container](research/plugin-host-lv2-container.md) — `sonora-plugin-host` with eg-amp, x42-dpl and the LSP limiter: gain exact, reported latency matches measured to the sample and PDC nulls to 0, a segfaulting plugin kills only the host and is named, a late one is dropped then removed; round trip p50 62 µs / p99 252 µs (container). A timed wait overshot 2 ms by 5.9 ms once: argues for pipeline depth 1.
 
 ## Postmortems
 - [2026-10-11 comment in a line continuation](postmortems/2026-10-11-comment-in-line-continuation.md) — dropped half a QEMU command line; bash -n cannot catch it. Also: an edit that reported success without landing.

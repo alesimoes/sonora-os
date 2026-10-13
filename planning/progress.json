@@ -226,9 +226,9 @@
           "items": [
             {"id": "plugins.graph.pdc_spec", "title": "PDC design spec", "size": "S", "phase": 0, "status": "done", "evidence": "PR #2: brain/specs/plugin-latency-compensation.md (a design, not code)"},
             {"id": "plugins.host.adr", "title": "Plugin boundary ADR, after the IPC measurements", "size": "S", "phase": 5, "status": "todo"},
-            {"id": "plugins.host.test_plugins", "title": "Crash, hang and liar test plugins; a plugin crash keeps playback and recording", "size": "S", "phase": 5, "status": "todo"},
-            {"id": "plugins.host.oop", "title": "Out-of-process host: contracts/plugin, engine/plugin_client, plugins/host (M9)", "size": "L", "phase": 5, "status": "todo"},
-            {"id": "plugins.formats.lv2", "title": "LV2 hosting", "size": "L", "phase": 5, "status": "todo"},
+            {"id": "plugins.host.test_plugins", "title": "Crash, hang and liar test plugins; a plugin crash keeps playback and recording", "size": "S", "phase": 5, "status": "done", "evidence": "PR #26: plugins/host/tests crash, sleep and liar plugins; a segfaulting plugin kills only the host and is named (tools/build-plugins.sh, 15 plugin ctest cases, depth 1 and poll-only)"},
+            {"id": "plugins.host.oop", "title": "Out-of-process host: contracts/plugin, engine/plugin_client, plugins/host (M9)", "size": "L", "phase": 5, "status": "todo", "note": "plugins/host and a draft contracts/plugin landed with PR #26; engine/plugin_client waits for M4 and the contract for rt-engineer review"},
+            {"id": "plugins.formats.lv2", "title": "LV2 hosting", "size": "L", "phase": 5, "status": "done", "evidence": "PR #26: sonora-plugin-host (lilv) lists, probes and runs LV2 chains; latency matches measured to the sample; brain/research/plugin-host-lv2-container.md"},
             {"id": "plugins.graph.pdc", "title": "Plugin delay compensation: 2048-sample track lands sample-aligned", "size": "M", "phase": 5, "status": "todo"},
             {"id": "plugins.host.manager", "title": "Plugin manager: scan, validate, blocklist, categories, favourites", "size": "M", "phase": 5, "status": "todo", "ref": "PT-RG: Plug-ins; LP-UG: Work with plug-ins"},
             {"id": "plugins.host.state", "title": "Plugin presets and state saved in the session", "size": "M", "phase": 5, "status": "todo"},

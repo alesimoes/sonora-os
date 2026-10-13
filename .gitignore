@@ -3,6 +3,8 @@ build/
 build-container/
 # The Qt interface, built by tools/build-ui.sh in the sonora-ui image.
 build-ui-container/
+# The plugin host and its tests, built by tools/build-plugins.sh.
+build-plugins/
 # The sanitizer builds, named as in .github/workflows/ci.yml.
 build-tsan/
 build-asan/
