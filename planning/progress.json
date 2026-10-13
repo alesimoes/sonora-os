@@ -302,7 +302,7 @@
             {"id": "system.image.audio_tuning", "title": "PipeWire quantum/rate pin, RT limits, sysctl", "size": "M", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Tuning files ship, but min-quantum is 64 and allowed-rates includes 96000, so the quantum is not actually pinned"},
             {"id": "system.image.autostart", "title": "Boot with no login into the engine, respawn on exit", "size": "M", "phase": 1, "status": "done", "evidence": "PR #1; QEMU boot test: engine holds its PID, NRestarts 0, no serial login prompt"},
             {"id": "system.image.boot_timeout", "title": "Boot menus time out unattended", "size": "S", "phase": 1, "status": "done", "evidence": "PR #6; unattended isolinux and GRUB boots reach the engine in test-write-usb.sh"},
-            {"id": "system.image.kiosk", "title": "Kiosk compositor for the Qt shell, plus its ADR", "size": "M", "phase": 3, "status": "doing", "branch": "docs/adr-compositor", "note": "ADR-0010 proposed (labwc); image work waits for the owner"},
+            {"id": "system.image.kiosk", "title": "Kiosk compositor for the Qt shell, plus its ADR", "size": "M", "phase": 3, "status": "doing", "branch": "docs/adr-compositor", "note": "ADR-0010 accepted by the owner 2026-10-13 (labwc; sway fallback); image work follows its Migration stages"},
             {"id": "system.image.followups", "title": "USB writer follow-ups (wipe through the verified fd, recheck before mkfs, flock)", "size": "S", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Branch has no commits yet; scope taken from its name"}
           ]
         },

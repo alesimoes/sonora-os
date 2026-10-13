@@ -4,9 +4,8 @@
   if labwc fails on real hardware). Image work follows "Migration".
 - Date: 2026-10-13
 - Decided by: the owner, on the architect's recommendation.
-- Numbering: ADR-0008 (portability) is on `docs/adr-0008-portability`, and
-  ADR-0009 may be taken on another branch. This one is 0010 so that neither
-  collides.
+- Numbering: follows ADR-0008 (portability) and ADR-0009 (timeline
+  snapshots and plan swap).
 
 ## Context
 

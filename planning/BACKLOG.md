@@ -91,14 +91,14 @@ without asking a question.
       ports named without `AUX` (`capture_1..N`, what `snd-aloop` gives
       without `audio.position`), and registry ids out of channel order. The
       engine must still connect them in channel order. driver-engineer.
-- [ ] Plugin editors under the kiosk compositor. ADR-0010 (proposed) picks
+- [ ] Plugin editors under the kiosk compositor. ADR-0010 (accepted) picks
       labwc with the UI on native Wayland, which retires the `xcb` and
       anchor-window variants. Remaining: a real Qt 6 UI and a real LV2/VST3
       X11 editor under ADR-0010's labwc config (placement, override-redirect
       popups, focus back to the UI, Xwayland lazy-start latency). Needed
       before the Phase 4 plugin ADR. researcher.
 
-## ADR-0010 display stack (after the owner confirms it)
+## ADR-0010 display stack (accepted by the owner 2026-10-13)
 
 - [ ] Stage 1, shipped boot unchanged: package block (`libpam-systemd labwc
       xwayland qt6-wayland` + Qt runtime), `/usr/share/sonora/labwc/`,
