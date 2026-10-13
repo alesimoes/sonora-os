@@ -22,15 +22,21 @@ This destroys everything on the target device. Confirm the device with
 `lsblk` and read the output back to the user **before** running it. Writing to
 the wrong disk is unrecoverable, so never infer the device — have it confirmed.
 
-It writes the ISO to partition 1 and creates the ext4 `persistence` partition
-(ADR-0005).
+The image's own MBR already holds partition 1 (the ISO) and partition 2 (the
+EFI system partition, inside the ISO). The script adds partition 3, ext4,
+labelled `persistence` (ADR-0005 and its correction,
+`brain/research/usb-stick-layout.md`). Devices over 256 GiB need
+`--allow-large`. It is tested without a real device by
+`tools/test-write-usb.sh`.
 
 ## Boot testing
 
 QEMU proves the image boots and little else. Audio latency, interface
-detection and xrun counts are only meaningful on real hardware:
+detection and xrun counts are only meaningful on real hardware. Which QEMU
+test to run, and when, is in the `test-loop` skill:
 
-    qemu-system-x86_64 -m 4096 -enable-kvm -cdrom iso/sonora.iso
+    tools/test-boot-qemu.sh     # headless, asserts, about 2 min
+    tools/run-qemu.sh [uefi]    # a window, for a human to watch
 
 What matters is the real boot. When you run one, write the result into
 `brain/research/` with the machine, the interface, the buffer size and the xrun

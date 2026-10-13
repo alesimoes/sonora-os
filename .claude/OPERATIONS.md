@@ -9,7 +9,8 @@ change gets from an idea to a commit.
 |---|---|
 | Where is what we know? | `brain/` — ADRs, specs, research, postmortems. Indexed in `brain/INDEX.md`. |
 | Where is what we intend? | `planning/` — `ROADMAP.md` (phases), `BACKLOG.md` (ready work), `STATUS.md` (what is true now). |
-| Where are the skills? | `.claude/skills/` — the repeatable procedures: build, audit, write to the brain. |
+| Where are the skills? | `.claude/skills/` — the repeatable procedures: build, audit, write to the brain, choose a test loop, hand off. |
+| Where is work in progress? | `planning/handoffs/` — one short file per open branch, deleted on the branch before merge. |
 | Where are the agents? | `.claude/agents/` — the roles, each with its own scope and standards. |
 
 ## The agents
@@ -34,7 +35,7 @@ those is a different kind of care, and each charter says so.
 
 ## Who reviews the code
 
-`code-reviewer` reviews every diff touching `engine/` or `iso/`, after the
+`code-reviewer` reviews every diff touching a C++ module (`common/`, `contracts/`, `engine/`, `drivers/`, `ui/`), `iso/` or the session hook (`.claude/settings.json`, `tools/session-start.sh`), after the
 implementer reports done and before anything is committed. Its priority order
 is real-time safety, then correctness on the data path, then concurrency, then
 failure behaviour, then simplification.
@@ -65,9 +66,41 @@ implementer fixes; the reviewer re-reads the fix.
     reproduced, nothing unwanted in the diff, brain current. It merges, or it
     says what is wrong and stops.
 
+Between steps, work moves by handoff: the agent that stops writes
+`planning/handoffs/<branch>.md`, the branch name with `/` replaced by `-`
+(`feature/x` → `planning/handoffs/feature-x.md`; the `handoff` skill), and
+the next agent is a fresh one that starts from that file. Review rounds in
+particular get a new reviewer and a new fixer each time. Sending the same
+long-running agent round after round makes every round pay for all the
+earlier ones. The last commit before step 10 deletes the branch's handoff and
+refreshes `planning/handoffs/main-session.md`, because the integrator
+squash-merges and never commits.
+
 Step 8 is the one that gets skipped, and skipping it is what makes the next
 session repeat work already done. Step 9 is the one I got wrong first: pushing
 every commit put six broken intermediate states on a public repository.
+
+## Spending context
+
+Measured on one task, `write-usb.sh` (2026-10-12): a single agent session
+carried the implementation, two review rounds and a rebase. Every round
+re-read all the earlier ones, two full 12-minute test runs were thrown away
+because a script was edited while the test read it, and the full QEMU loop
+was used where the 2-minute container loop would have proved the change.
+The rules that follow from it:
+
+| Waste | Rule | Where |
+|---|---|---|
+| One session across many rounds | Fresh agent per task and round, joined by a handoff | `handoff` skill |
+| Full test loop used to iterate | Fast loop to iterate, full loop once | `test-loop` skill |
+| Logs and diffs in the context | Output to `build-*/`, read the verdict line | `test-loop` skill |
+| Files read whole to find one line | `grep -n`, then read the range | `CLAUDE.md` |
+| Reports restating `brain/` | Reports point to files | `handoff` skill |
+| Stale skill text, rediscovered by every session | Fix the skill in the same change that made it stale | review checklist |
+
+Interactive sessions: `/clear` between unrelated tasks. Skills load only
+when invoked, so procedures belong in skills, not in `CLAUDE.md`, which every
+session pays for.
 
 ## Running it unattended
 

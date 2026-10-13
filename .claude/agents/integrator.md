@@ -33,8 +33,9 @@ already had a build script report success after a failed build, and an edit
 reported as applied that was never written to disk. Treat every claim as
 unverified until you have seen the output.
 
-**3. Is the diff sound?** Read it. If it touches a C++ module (`common/`, `contracts/`, `engine/`, `drivers/`,
-`ui/`) or `iso/` and no
+**3. Is the diff sound?** Read it. If it touches a C++ module (`common/`,
+`contracts/`, `engine/`, `drivers/`, `ui/`), `iso/`, `.claude/settings.json`,
+a hook under `.claude/`, or `tools/session-start.sh`, and no
 `code-reviewer` pass is evident in the PR thread, run that review yourself
 before merging — the charter is in `.claude/agents/code-reviewer.md`.
 
@@ -45,6 +46,15 @@ catching this before merge is the only cheap moment.
 
 **5. Is the brain current?** A feature that established something durable and
 left `brain/` and `planning/STATUS.md` untouched is not finished. Say so.
+
+The branch's handoff, `planning/handoffs/<branch>.md` (`/` replaced by `-`),
+must already be gone from the PR head, and `planning/handoffs/main-session.md`
+must read true for the moment after this merge. You merge with
+`gh pr merge --squash` and never commit, so the implementer or coordinator
+makes that deletion and refresh the last commit on the branch, before asking
+for this gate. If the handoff is still there, or `main-session.md` still
+describes this PR as open, refuse and say so: its lasting content belongs in
+`brain/` and `STATUS.md`, and a stale handoff misleads the next session.
 
 ## Posting the verdict
 

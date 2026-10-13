@@ -45,6 +45,14 @@ Both builds need Linux. From Windows, use the container wrappers:
     tools/build-engine.sh      # cmake + ctest
     tools/build-iso.sh         # produces iso/sonora.iso
 
+## Working in sessions
+
+Context is the main cost: short sessions, one agent per task and review round.
+The SessionStart hook (`tools/session-start.sh`) prints a starting summary
+from `planning/handoffs/`; run the branch handoff's Verify command before
+relying on it. Starting and stopping: `handoff` skill. Testing and keeping
+output out of the context: `test-loop` skill.
+
 ## Conventions
 
 - C++17, 4-space indent, `snake_case` members with a trailing underscore.
