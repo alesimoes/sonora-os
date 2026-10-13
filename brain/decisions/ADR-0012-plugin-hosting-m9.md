@@ -6,10 +6,13 @@
     is silence), §4 (`HostControl`), §5 (the five contract items), §6
     (inserts in the model and the session format), §7 (plan nodes and PDC),
     §8 (the control API).
-  - **Proposed, awaiting the rt-safety-auditor's ruling**: §1, the one wake
-    syscall per callback, and the two other RT items listed under
-    "For the rt-safety-auditor". The contract can be accepted before the
-    ruling, because its layout does not depend on it (§1.4).
+  - **Ruled by the rt-safety-auditor** (PR #42, 2026-10-13), conditions
+    folded in: A1 (the one broadcast wake, §1.1) **accepted with
+    conditions, provisional**: the wake gate stays **off** and hosts run
+    timer-paced (§1.3) until the bare-metal measurement in Unverified 1
+    passes. A2 (§5.1) and A3 (Consequences) accepted with conditions.
+    Findings H1, M1–M3 and L1–L4 are applied in the sections they name
+    ("Rulings of the rt-safety-auditor" maps them).
   - **Two owner decisions**, each with a default this ADR builds on until
     the owner rules ("For the owner"). Neither blocks the contract.
 - Date: 2026-10-13
@@ -67,9 +70,11 @@ What the measurements already settle (container, `[measured]`):
 
 What the hard constraints say:
 
-- The real-time path cannot allocate, lock or block. A wake syscall does
-  not block, but it is still a syscall, and whether one is allowed in the
-  callback is the auditor's to rule (ADR-0007 §4.3).
+- The real-time path cannot allocate, lock or block. A wake syscall never
+  waits on another thread's progress, but on the RT kernel it can sleep on
+  a contended futex hash-bucket lock (§1.1); whether one is allowed in the
+  callback was the auditor's to rule (ADR-0007 §4.3), and the ruling makes
+  it wait for a bare-metal measurement.
 - Losing a take is the worst outcome. Capture is pre-insert
   (`plugin-latency-compensation.md`), so **no decision here can touch what
   lands on disk.** That is checked again in §7.
@@ -81,24 +86,55 @@ What the hard constraints say:
 
 ### 1. How the audio thread wakes the hosts
 
-**1.1 One shared futex wake per callback, broadcast.**
+**1.1 One shared futex wake per callback, broadcast (accepted, provisional,
+gate off until measured).**
 
 - The engine creates one small **clock region** per session (a sealed memfd
   in `common/platform`, like the state block). It holds:
   - `tick`, a `uint32_t` word the audio thread increments once per callback
     in which it submitted to at least one host;
-  - `callback_ns`, the `CLOCK_MONOTONIC` time the callback started (vDSO,
-    no syscall), and `period_ns`. These serve the fallback in §1.3 and the
-    host's own diagnostics.
-- Every host maps it **read-only** and sleeps on `tick` with a shared
-  `FUTEX_WAIT` and a timeout (100 ms, which also paces its heartbeat).
-  Because the mapping is read-only, a scribbling plugin in one host cannot
-  forge a wake for the others.
-- The audio thread, **after the last `InsertChain` node of the plan has
-  submitted** (§7.2), does `tick.fetch_add(1, release)` and **one**
-  `FUTEX_WAKE` with `INT_MAX` waiters on it. Not one wake per host: one
-  syscall per callback whatever the host count. The result is ignored. It
-  never calls `FUTEX_WAIT`, never retries, never spins.
+  - `callback_ns`, the `CLOCK_MONOTONIC` time the callback started, and
+    `period_ns`. These pace the timer path (§1.3) and the host's own
+    diagnostics. `CLOCK_MONOTONIC` is a vDSO read **only when the
+    clocksource supports it** (`tsc`); with `hpet` or `acpi_pm` it is a real
+    syscall in the callback. So the engine reuses a timestamp the callback
+    already takes if there is one, and otherwise start-up reads
+    `/sys/devices/system/clocksource/clocksource0/current_clocksource` and
+    reports a non-`tsc` source in the health flags (Unverified 9).
+- **Read-only is enforced by the descriptor, not left to the host.** The
+  clock region crosses `SCM_RIGHTS` as the `O_RDONLY` `/proc/self/fd`
+  reopen, sealed with `F_SEAL_FUTURE_WRITE` where the kernel has it,
+  exactly the path `common/platform/src/posix/ipc.cpp:179-186` already uses
+  for the state block; a `PROT_WRITE` mapping of it fails with `EACCES`.
+  The contract states this. So a scribbling plugin in one host cannot forge
+  a wake or a `callback_ns` for the others.
+- Every host sleeps on `tick` with a shared `FUTEX_WAIT` and a timeout
+  (100 ms, which also paces its heartbeat), in this order, written into
+  `protocol.h`'s rule text: **load `tick` (acquire) first, then check
+  `submitted_block`, then `FUTEX_WAIT(tick, seen)`**, as
+  `plugins/host/src/main.cpp:390-396` does today for `request_word`. A
+  submit between the check and the wait has already changed `tick`, so the
+  wait returns at once. Reversed, a lost wake costs the 100 ms timeout,
+  about 37 misses, and the chain is removed at 8.
+- When the gate is on, the audio thread, **after the last `InsertChain`
+  node of the plan has submitted** (§7.2), does `tick.fetch_add(1,
+  release)` and **one** `FUTEX_WAKE` with `INT_MAX` waiters on it. Not one
+  wake per host: one syscall per callback whatever the host count. It is
+  skipped when nothing was submitted, never retried, and its result and
+  errno are ignored. It never calls `FUTEX_WAIT` and never spins. `tick` is
+  incremented whether the gate is on or off, so turning the gate on changes
+  only which call the host sleeps in (§1.3), not what it reads.
+- **What the wake costs, from the kernel's design (auditor, not
+  measured):** `FUTEX_WAKE` takes the futex hash-bucket lock, walks the
+  waiters, and wakes each one after releasing it: O(N waiters) work in the
+  callback, possibly with IPIs. On `PREEMPT_RT` (the appliance runs
+  `rt-amd64`) that bucket lock is an rt_mutex-backed `spinlock_t`: if it is
+  contended, **the audio thread sleeps on it**, with priority inheritance,
+  for the holder's critical section. Shared futexes hash into the global
+  table, so the holder can be any process on the box, and every host
+  waiting on the one `tick` lands in the same bucket. The wake is therefore
+  **not** non-blocking on the RT kernel; its cost is PI-bounded and
+  plausibly small, but unproven. That is why the gate is off by default.
 - A host woken with nothing new for it (it was not submitted to, because
   it was still busy) re-reads its own `submitted_block` and sleeps again.
 - `request_word` leaves `ChannelHeader`; `done_word` stays, for the control
@@ -113,22 +149,31 @@ mechanism replaceable: `common/platform/wake.h`, `WakeWord` and
 `wait_for_change(const WakeWord&, uint32_t seen, timeout)` on the host side.
 On Windows (ADR-0008) the same seam is a named event.
 
-**1.3 If the auditor refuses a syscall in the callback.** The fallback
-needs no change to the contract: hosts become **timer-paced**. Each host
-sleeps with an absolute `clock_nanosleep` until `callback_ns + period_ns +
-offset` (offset 150 µs, placeholder) and then checks `submitted_block`; if
-the callback was late, it sleeps 50 µs and checks again, at most until
-half a period has gone. The cost, stated: hosts wake on a guess, every
-host takes a timer wake every period even when idle, and the time left to
-process shrinks by the offset plus the timer's jitter (rtload woke
-53 µs p50, 252 µs p99 late in the container). Expect more dropped blocks.
-That is why it is the fallback, not the choice.
+**1.3 Timer-paced hosts: the default path until the wake is measured.**
+This is what ships first, and it needs no change to the contract. Each
+host sleeps with an absolute `clock_nanosleep` until `callback_ns +
+period_ns + offset` (offset 150 µs, placeholder) and then checks
+`submitted_block` (after loading `tick`, as in §1.1); if the callback was
+late, it sleeps 50 µs and checks again, at most until half a period has
+gone. The cost, stated: hosts wake on a guess, every host takes a timer
+wake every period even when idle, and the time left to process shrinks by
+the offset plus the timer's jitter (rtload woke 53 µs p50, 252 µs p99 late
+in the container). Expect more dropped blocks than with the wake. It
+becomes the permanent decision if the measurement in Unverified 1 fails.
 
-**1.4 Why the contract does not wait for the ruling.** The clock region,
-the per-host header and every ordering rule are the same under §1.1 and
-§1.3. Only whether `wake_all()` is called differs. So the contract (§5) is
-accepted now, and `engine/plugin_client` calls `wake_all()` behind one
-`constexpr bool` that the ruling sets.
+**1.4 The gate.** The clock region, the per-host header and every ordering
+rule are the same under §1.1 and §1.3. Only whether `wake_all()` is called,
+and whether hosts sleep in `FUTEX_WAIT` or `clock_nanosleep`, differs. So
+the contract (§5) is accepted now, and `engine/plugin_client` calls
+`wake_all()` behind one `constexpr bool kHostWakeEnabled`, **default
+`false`**. The host learns which mode to use from the clock header (a
+`wake_mode` field written by the control thread at creation), so one host
+binary serves both. The gate turns on only by an amendment recording that
+Unverified 1 passed: with 18 and 64 waiting hosts, under `stress-ng
+--futex` from unrelated processes for at least 1 h, the wake's max inside
+the callback stays under 5 % of the period at quantum 128 (about 130 µs),
+and its p99.9 and max are reported for the case where every host is in a
+wait at once.
 
 **1.5 Depth 0 leaves the v1 contract.** `pipeline_depth` stays in the
 header, but `header_valid` accepts only 1. Depth 0 (submit early, look once
@@ -169,8 +214,16 @@ without its inserts (a DAW 4/5 mixer feature, not a protocol mode).
   `InsertChain` node output **silence** for that block, and the miss is
   counted on the chain and on the instance seen running.
 - On the first block collected after a miss, the node **ramps that block
-  in linearly** from 0, so recovery is not a step. The onset of the hole
-  cannot be ramped: that audio was never returned.
+  in linearly** from 0, so recovery is not a step.
+- **The onset is faded out, not cut (auditor L4).** The audio that should
+  follow was never returned, so it cannot be faded; what clicks is the step
+  from the last sample played to zero. On the first missed block the node
+  outputs, per channel, a linear decay from the last sample it played to 0
+  over 64 frames (1.3 ms at 48 kHz), then silence. It is a ramp of one
+  value, not repeated music, and costs one stored float per channel and no
+  latency. Holding back a short tail of every block so that real audio can
+  be faded was rejected: it adds that tail to every chain's latency, all
+  the time, for a fault event. Unverified 6 judges both edges by ear.
 - With one input slot (protocol rule 1), a host late for block N−1 also
   costs block N, which is not submitted. One late host is therefore at
   least two silent blocks on that path.
@@ -261,21 +314,50 @@ are theirs to settle in the acceptance PR.
   `kMaxParamsPerChain` = 8192. Parameters past the cap are not automatable
   from Sonora; the catalog says so, and the plugin still saves them in its
   state.
-  - The engine keeps the **authoritative** copy in private memory, keyed by
-    the chain's stable id (§7.1), so it survives a host replacement. The
-    shared table is a mirror for the host and is never read back.
-  - The audio thread writes the table entry before pushing the ring entry.
-    A push refused because the ring is full sets `values_dirty`; the host,
-    seeing it, re-reads the whole table at the start of its next block and
-    applies every value that differs. A full ring therefore delays a value
-    by at most one block and never loses it.
+  - The engine keeps the **authoritative** copy in private memory. The
+    control thread maps the chain's stable id (§7.1) to a store index, so
+    the store survives a host replacement; the audio thread only ever sees
+    the index. The shared table is a mirror for the host and is never read
+    back.
+  - The audio thread writes the table entry (relaxed atomic store) before
+    pushing the ring entry. A push refused because the ring is full bumps
+    **`values_seq`**, a `uint32_t` counter in the region that **only the
+    engine writes** (release). The host keeps the last `values_seq` it saw
+    in its own memory; when the region's differs, it loads it (acquire),
+    re-reads the whole table and applies every value that differs. No
+    host-written word sits on this path, so a set that lands while the host
+    reads the table bumps the counter again and is picked up next block
+    (auditor M3; a dirty flag cleared by the host would lose it). A full
+    ring therefore delays a value by at most one block and never loses it.
+  - **Precedence inside one block (auditor L1).** At the start of block N
+    the host first drains the ring entries for blocks ≤ N in order, then,
+    if `values_seq` moved, applies the table, which is never older than
+    any ring entry already pushed for those blocks (the table entry is
+    written before its ring entry). Ring entries for block N at a non-zero
+    offset are then delivered at their offset as usual. So the newest value
+    always wins, and an older ring value can never overwrite the table.
   - The control thread seeds the table from the model before the host
     starts, so the host instantiates with the right values and reports the
     right latency (a look-ahead parameter changes it).
   - On the **first submit to a new channel** the audio thread copies its
-    private store into the region (at most 32 KiB, bounded) and sets
-    `values_dirty`. That covers every change made between seeding and the
-    swap. This copy is an auditor item.
+    private store into the region and bumps `values_seq`. That covers every
+    change made between seeding and the swap. Conditions (auditor A2):
+    1. It copies the chain's actual `param_slots` entries, not the
+       `kMaxParamsPerChain` cap.
+    2. The copies are capped **per callback**, at 64 KiB in total
+       (placeholder, about 16 384 values). A channel whose copy would pass
+       the cap waits one callback before its first submit; it plays
+       silence either way, so nothing audible changes. Without the cap a
+       session open bringing up 64 chains would copy 2 MiB in one callback.
+    3. Each `last_value` element is written with a relaxed atomic store,
+       never `memcpy`, and `values_seq` is bumped with release after them.
+    4. The destination is faulted in before the swap: the control thread
+       pre-touches the region (or maps it `MAP_POPULATE`) whatever the
+       `mlockall` state, because `MCL_FUTURE` only covers it if the lock
+       succeeded.
+    5. The private store is a fixed array of stores allocated at session
+       creation; the plan node carries its **index** (§7.1). The audio
+       thread never looks a store up by chain id.
 
 **5.2 Parameter values are format-native, not format-neutral.**
 
@@ -325,11 +407,24 @@ are theirs to settle in the acceptance PR.
 
 - **`HostChannel` state lives outside the plan,** in a fixed table of
   channel slots that `engine/plugin_client` allocates at session creation
-  (`kMaxChannels`, default 256). A slot's lifetime is its host's. A plan
-  swap that keeps the host keeps the slot, its block counters, its miss
-  streak and its in-flight block: nothing resets. The per-chain private
-  parameter store is keyed by the chain's stable id, so it survives a host
-  replacement too.
+  (`kMaxChannels`, default 256). A plan swap that keeps the host keeps the
+  slot, its block counters, its miss streak and its in-flight block:
+  nothing resets. The per-chain private parameter store follows the
+  chain's stable id through its index, so it survives a host replacement
+  too.
+- **A slot is retired by epoch, like a region (auditor H1).** A slot whose
+  host has gone (crash, kill, make-before-break) returns to the free list
+  only after **every plan that names it has been retired** by ADR-0009
+  §4.1's epoch rule, the same rule §5.3 applies to regions. Until then a
+  retired-but-still-running plan could name the slot index, and if the
+  slot had already been handed to a new host the old plan would collect
+  that host's output or submit into it. As a second guard, each slot
+  carries a `generation` (`uint32_t`, bumped by the control thread when it
+  assigns the slot to a new host, before publishing the plan that uses
+  it), and the plan node carries the generation it was built against. The
+  audio thread compares them in `collect` and `submit`; a mismatch is
+  treated as a miss and counted as a fault, never as data. The free-list
+  and the generation are written by the control thread only.
 - **A swap that changes a node's channel** (a new host) discards the old
   channel's in-flight block. The first callback on the new channel submits
   and outputs silence; the next collects and ramps in (§3). One silent
@@ -367,8 +462,9 @@ are theirs to settle in the acceptance PR.
   without inserts still work. A session with inserts then opens with every
   insert shown faulted, never silently dry.
 
-**5.6 The wake.** As §1: one shared `FUTEX_WAKE` per callback, pending the
-auditor; the timer-paced fallback otherwise.
+**5.6 The wake.** As §1: timer-paced hosts by default; one shared
+`FUTEX_WAKE` per callback once Unverified 1 passes and an amendment turns
+the gate on. The clock header's `wake_mode` tells the host which.
 
 ### 6. Inserts in the model and the session format
 
@@ -482,15 +578,18 @@ with no active insert keeps today's `TrackOut`, which fuses all three.
 | Kind | Does | Fields it uses |
 |---|---|---|
 | `TrackSource` | steps 1–2 of the monitor-bus plan: input or playback, region gain and fades, at the track's channel count (1 or 2), no fader, no pan | `track` |
-| `InsertChain` | collects the chain's previous output from its channel, submits this block's input (§7.2) | `channel_slot`, `latency_frames`, `channels`, `chain_id` |
+| `InsertChain` | collects the chain's previous output from its channel, submits this block's input (§7.2) | `channel_slot`, `channel_generation`, `param_store`, `latency_frames`, `channels`, `chain_id` |
 | `TrackFader` | step 3: the track's gain, mute, solo and pan from the `Track` atomics, ramped per block, into stereo | `track` |
 
 - A track with inserts is `TrackSource → InsertChain → TrackFader →
   BusSum`. **Inserts are pre-fader**, as in Pro Tools and Logic, so a fader
   move never changes what a compressor sees.
 - `PlanNode` gains `channel_slot` (the `HostChannel` slot, §5.4),
-  `chain_id` (the chain's stable id: the track id, so the private
-  parameter store follows the track), `latency_frames` (the chain's checked
+  `channel_generation` (the slot generation it was built against, §5.4),
+  `param_store` (the index of the chain's private parameter store, §5.1),
+  `chain_id` (the chain's stable id: the track id, so the control thread
+  can keep the store with the track; never looked up on the audio thread),
+  `latency_frames` (the chain's checked
   figure, IPC block included, as read when the plan was built) and
   `channels`. Stable ids: `TrackSource` and `TrackFader` derive from the
   track id like `TrackOut` (`layout_monitor_graph`), `InsertChain` from
@@ -505,14 +604,19 @@ with no active insert keeps today's `TrackOut`, which fuses all three.
 **7.2 Execution on the audio thread.** The node list stays serial and in
 topological order. An `InsertChain` node, per protocol:
 
+0. If the slot's `generation` differs from the node's
+   `channel_generation`, the node is a miss (faded out, §3) and submits
+   nothing.
 1. If its channel's `completed_block` is the block submitted last callback
    (depth 1), copy the output planes into its scratch buffer (ramped in
-   after a miss); otherwise silence, counted.
+   after a miss); otherwise the §3 fade-out then silence, counted.
 2. If the host is idle (`completed_block == submitted_block`), write its
-   input from the upstream node, push any pending parameter entries,
+   input from the upstream node, push any pending parameter entries (on a
+   first submit, the store copy of §5.1 within the per-callback byte cap),
    publish `submitted_block`; otherwise skip the submit and count it.
 3. After the plan's last `InsertChain` node (the builder records its index
-   as `last_insert_node`), one `wake_all()` if anything was submitted.
+   as `last_insert_node`), `tick.fetch_add(1, release)` if anything was
+   submitted, and, only with `kHostWakeEnabled`, one `wake_all()`.
 
 Nothing here waits, allocates or reads a pointer from the region; plane
 addresses come from the engine's private `Layout`.
@@ -533,6 +637,15 @@ addresses come from the engine's private `Layout`.
   `max_delay_frames` (the field #41 already has), default **16 384**
   frames (0.34 s at 48 kHz). Memory: edges × 2 channels × 16 384 × 4 bytes,
   32 MiB at 128 delayed edges, preallocated and locked.
+- **The delay-line pool is capped by edge count too (auditor L3).** The
+  pool is sized at session creation for `max_delayed_edges` (default 128)
+  lines. The builder, on the control thread, assigns `delay_line` indices
+  only below that bound. A plan needing more delayed edges is built with
+  the excess edges undelayed (aligned to nothing, so audibly early),
+  flagged in red with the count, by the same reasoning as the clamp below.
+  The audio thread never indexes past the pool: a `delay_line` index is
+  valid by construction, and `Session::process()` asserts it in debug
+  builds only.
 - **Over the maximum, the plan is built, not refused, and the overrun is
   reported.** The edge is clamped to the maximum and the track is flagged
   in red in the state block with the shortfall in frames. This departs from
@@ -602,8 +715,12 @@ updates `FakeEngine` and the conformance suite in the same PR.
   - *One broadcast wake* keeps the audio thread's syscall count at one,
     whatever the number of chains grows to. Per-host wakes would put 18 to
     64 syscalls in a callback at full mixes, and that number would only
-    grow. If the auditor refuses even one, §1.3 is ready, and the contract
-    does not move.
+    grow. Its later cost is that on the RT kernel it can sleep on a
+    contended, PI-bounded hash-bucket lock (§1.1), which is why it ships
+    gated off: the timer path costs dropped blocks we can count, the wake
+    costs an unbounded-until-measured stall in the one thread that must not
+    stall. If the measurement fails, §1.3 stays, and the contract does not
+    move.
   - *Host per chain* keeps a crash to one track, gets parallelism without
     writing a scheduler, and matches "once per block per host process"
     (ADR-0007 §4.3), which per-plugin hosting would turn into once per
@@ -621,7 +738,8 @@ updates `FakeEngine` and the conformance suite in the same PR.
   - *Make-before-break* means one code path for load, edit and crash, and a
     chain edit during playback never stops what is playing.
 - **The hard constraints.** No mutex, no wait and no allocation is added to
-  the callback; the one syscall is non-blocking and gated. Capture is
+  the callback. The one syscall can block briefly on the RT kernel, so it
+  is off until bare metal proves its bound. Capture is
   pre-insert in every case. Version mismatch is found when the engine
   starts, not when the operator inserts the first plugin.
 - **Prior art for a wake from the RT thread (recalled, not verified in this
@@ -629,15 +747,26 @@ updates `FakeEngine` and the conformance suite in the same PR.
   or semaphore posts, and PipeWire's graph signals the next node from its
   data loop with an eventfd write. If that holds, our audio thread runs
   inside a server that already makes this kind of call every period. The
-  researcher confirms it from the sources (Unverified 7); the auditor
-  rules either way.
+  researcher confirms it from the sources (Unverified 7). Prior art does
+  not replace the measurement: the gate follows Unverified 1 only.
 
 ## Consequences
 
 - **ADR-0007 §2's table changes (this is the amendment §6 requires for
   moving code into the RT boundary):** `common/platform` may contribute
-  exactly `wake_all()` (`SONORA_RT`, auditor-gated) to the audio thread.
-  Nothing else in `common/platform` may be reached from it.
+  exactly `wake_all()` to the audio thread, under the auditor's A3
+  conditions:
+  - it is the **only** `common/platform` symbol marked `SONORA_RT`;
+  - it is `noexcept` and calls raw `syscall(SYS_futex, ...)`: no logging,
+    no allocation, nothing on its failure path, errno ignored;
+  - a test fails the build if any other `common/platform` symbol is
+    reachable from `Session::process` (an `nm`/link check on
+    `engine/core` and `engine/plugin_client`);
+  - the RTSan job either allows it with a scoped suppression around that
+    one call or reports it as the one known syscall. Whether RTSan
+    intercepts `syscall()` at all is unknown (Unverified 10); a one-line
+    RTSan test calling `wake_all()` from a `[[clang::nonblocking]]`
+    function settles it, and it is written even while the gate is off.
 - ADR-0007 §4.3's sketch is superseded where it differs: no `deadline_ns`
   on `collect` (nothing waits); `HostChannel` has `collect(out) →
   Collected | Missed | Removed` and `submit(in, frames)`, both `SONORA_RT`.
@@ -657,23 +786,29 @@ updates `FakeEngine` and the conformance suite in the same PR.
   build is unreadable by an older one, loudly (`session-format.md`,
   "Versioning").
 
-## For the rt-safety-auditor
+## Rulings of the rt-safety-auditor
 
-Rulings needed before `engine/plugin_client` merges. Each is code in the
-callback's call graph.
+Ruled on PR #42 (comment 6149365704) against `e62eff6`. Where each is
+applied:
 
-- **A1. One `FUTEX_WAKE` (shared, `INT_MAX` waiters) per callback** on the
-  clock region's `tick`, through `common/platform`'s `wake_all()`, after
-  the last `InsertChain` node. Non-blocking by the futex API, but on
-  `PREEMPT_RT` the futex hash-bucket lock is a sleeping lock with priority
-  inheritance, so a contended wake can briefly block. The ruling should
-  rest on Unverified 1. Refused means §1.3.
-- **A2. The bounded copy** of a chain's private parameter store into a new
-  region on its first submit: at most 32 KiB, once per channel lifetime.
-- **A3. `common/platform` in the RT boundary** for `wake_all()` only.
-- Already in the draft and still the auditor's: every host-written word
-  checked before use; plane addresses from the private `Layout`; the masked
-  parameter ring.
+| Item | Ruling | Applied in |
+|---|---|---|
+| A1, one shared `FUTEX_WAKE` per callback | Accepted with conditions, **provisional**: gate off, timer-paced hosts by default, on only after the bare-metal measurement; skip when nothing submitted, never retry, ignore errno; rt-kernel hash-bucket-lock caveat recorded | §1.1, §1.3, §1.4, §7.2 step 3, Unverified 1, checklist 7 |
+| A2, first-submit store copy | Accepted with conditions: `param_slots` only, 64 KiB per callback cap, atomic stores, control-thread pre-touch, store by index from the plan node | §5.1, §7.1, §7.2 step 2 |
+| A3, `common/platform` on the RT path | Accepted with conditions: `wake_all()` the only `SONORA_RT` symbol, `noexcept`, raw syscall, no logging; reachability test; RTSan check | Consequences, Unverified 10, checklist 4 |
+| H1, slot reuse | Slots retired by plan epoch, per-slot generation checked on the audio thread | §5.4, §7.1, §7.2 step 0 |
+| M1, read-only clock region | Sent as the `O_RDONLY` reopen with `F_SEAL_FUTURE_WRITE`, as `ipc.cpp:179-186` | §1.1 |
+| M2, lost-wakeup order | Host loads `tick` before `submitted_block`, rule in `protocol.h`, as `main.cpp:390-396` | §1.1, §1.3, checklist 1 |
+| M3, two-writer `values_dirty` | Replaced by the engine-only `values_seq` counter | §5.1, checklist 1 |
+| L1, table vs ring precedence | Ring entries ≤ N first, then the table; newest wins | §5.1 |
+| L2, clocksource | vDSO only on `tsc`; reuse a timestamp or report the source | §1.1, Unverified 9 |
+| L3, delay-line pool | Capped by `max_delayed_edges` at plan build; audio thread never indexes past it | §7.3 |
+| L4, hard cut on a miss | 64-frame fade-out of the last sample; holdback rejected | §3, Alternatives |
+
+Still the auditor's on every diff: every host-written word checked before
+use; plane addresses from the private `Layout`; the masked parameter ring.
+The general claims (depth 1 never waits, miss handling, SPSC ring,
+regions never reused, swap discards the in-flight block) were found sound.
 
 ## For the owner
 
@@ -699,11 +834,20 @@ the work proceeds on until the owner rules.
 
 Each has the measurement that settles it and who takes it.
 
-1. **The wake's cost in the callback, bare metal, RT kernel.** p50, p99.9
-   and max of `wake_all()` measured inside the callback with 1, 18 and 64
-   waiting hosts, against 18 per-host wakes; and dropped-block rate under
-   18 chains. Settles A1 and depth 0. Researcher, with the
-   "ADR-0007 IPC figures on the RT kernel" BACKLOG item.
+1. **The wake's cost in the callback, bare metal, `rt-amd64` kernel.**
+   The cost of the wake syscall alone, on the waker's side, has never been
+   measured (`adr-0007-measurements.md`, "Still unverified" 2); the round
+   trips we have bound nothing about it. Measure p50, p99.9 and max of
+   `wake_all()` inside the callback with 1, 18 and 64 waiting hosts, at
+   quantum 128, for at least 1 h, while unrelated processes run
+   `stress-ng --futex` so that bucket contention is in the run; report
+   separately the case where every host is in a wait at once (the worst
+   O(N) walk); compare with 18 per-host wakes; and give the dropped-block
+   rate under 18 chains with the gate on and off. **Pass: max under about
+   130 µs (5 % of the period) at 18 and 64.** Pass turns the gate on by
+   amendment; fail makes §1.3 the decision. Also informs depth 0.
+   Researcher, with the "ADR-0007 IPC figures on the RT kernel" BACKLOG
+   item.
 2. **`FUTEX_WAIT` on a sealed read-only shared memfd mapping.** Expected
    to work (the kernel takes the futex key without write access for a
    wait), not checked. A `platform_ipc`-style test in the container settles
@@ -717,14 +861,24 @@ Each has the measurement that settles it and who takes it.
    Bare metal. Researcher.
 5. **Make-before-break time:** from `AddInsert` applied to the plan swap,
    for a chain of five plugins, p50 and max. Container. plugin-engineer.
-6. **Silence with a ramp-in on a miss** is acceptable by ear compared with
-   the alternatives. A listening check on forced misses (the `sleep` test
-   plugin). Owner's ears, when a build plays.
+6. **Silence with a 64-frame fade-out and a ramp-in on a miss** is
+   acceptable by ear compared with the alternatives. A listening check on
+   forced misses (the `sleep` test plugin). Owner's ears, when a build
+   plays.
 7. **JACK2 and PipeWire wake syscalls from their RT threads** (Rationale).
    Researcher, from the sources.
 8. **Default compensation maximum 16 384** is a placeholder that matches
    what Pro Tools operators expect; researcher to confirm the figure
    Avid documents for its delay compensation limit.
+9. **The target box's clocksource is `tsc`**, so `callback_ns` is a vDSO
+   read and not a syscall. Read
+   `/sys/devices/system/clocksource/clocksource0/current_clocksource` on
+   the bare-metal machine; the start-up check of §1.1 covers boxes we have
+   never seen. Researcher, with Unverified 1.
+10. **Whether RTSan intercepts `syscall()`.** A one-line RTSan test calling
+    `wake_all()` from a `[[clang::nonblocking]]` function. Decides between
+    a scoped suppression and a reported known syscall (Consequences).
+    rt-engineer, in the `engine/plugin_client` PR.
 
 ## Alternatives rejected
 
@@ -736,9 +890,22 @@ Each has the measurement that settles it and who takes it.
 - **Wake: hosts spin.** Measured into RT throttling (46–51 ms stalls); a
   core per host. Making it work needs `sched_rt_runtime_us=-1`, which
   removes the kernel's protection against a runaway RT thread.
-- **Wake: timer-paced hosts as the choice.** No syscall on the audio
-  thread, but hosts wake on a guess and lose the timer jitter from every
-  period. It is the fallback (§1.3).
+- **Wake: timer-paced hosts as the permanent choice.** No syscall on the
+  audio thread, but hosts wake on a guess and lose the timer jitter from
+  every period. It is the default until the wake is measured (§1.3), and
+  the decision only if the measurement fails.
+- **Wake: the broadcast wake on by default, measured later.** Rejected by
+  the auditor's condition: on `PREEMPT_RT` the wake can sleep on a bucket
+  lock any process can hold, and nothing bounds it yet. A stall we cannot
+  bound in the callback is worse than dropped blocks we can count.
+- **Parameters: a `values_dirty` flag the host clears.** Two writers on
+  one word; a set landing while the host reads the table is lost (M3).
+  The engine-only `values_seq` counter has one writer.
+- **Miss onset: hold back a short tail of every block to fade real
+  audio.** Adds the tail to every chain's latency all the time, for a
+  fault event. The fade of the last sample (§3) costs no latency.
+- **Slots reused as soon as their host dies.** A retired plan still
+  running could submit into the next host's slot (H1).
 - **Granularity: one host per plugin.** Smallest blast radius, but the
   boundary crossed once per plugin (72 serial round trips at 18 × 4,
   roughly 60 µs each at p50), which ADR-0007 §4.3 forbids.
@@ -779,12 +946,14 @@ Each has the measurement that settles it and who takes it.
 1. **Contract acceptance** (`contract/plugin-v1`), rt-engineer and
    plugin-engineer, both reviews in the thread plus `code-reviewer`:
    `protocol.h` to layout 1 per §5 (tagged `ParamChange`, last-value table
-   and `values_dirty`, `header_bytes`, `request_word` gone, `kBypassParam`,
-   depth 1 only, exit code 3); the clock region header;
-   `host_control.h`; size and offset asserts; Unverified 2's test;
-   `plugins/host` and its driver moved onto it; `CONTRACTS.lock`.
-   **In parallel:** the auditor's rulings A1–A3 (A1 provisional on
-   Unverified 1; §1.4 keeps the work moving either way).
+   and the engine-only `values_seq`, `header_bytes`, `request_word` gone,
+   `kBypassParam`, depth 1 only, exit code 3; rule text for the host's
+   order: load `tick`, then `submitted_block`, then wait; table/ring
+   precedence); the clock region header with `wake_mode`, sent as the
+   read-only sealed descriptor; `host_control.h`; size and offset asserts;
+   Unverified 2's test; `plugins/host` and its driver moved onto it, with
+   the **timer-paced loop as the default** and the futex loop behind
+   `wake_mode`; `CONTRACTS.lock`.
 2. **Model and spec**, rt-engineer with ui-engineer review: §6 in
    `common/model` (types, operations, op codec, v1→v2 migration with a
    frozen v1 fixture, `Plugin State/` on the saver thread); then the
@@ -794,16 +963,23 @@ Each has the measurement that settles it and who takes it.
    check for inserts. O1's default applies until the owner rules.
 3. **Plan nodes and PDC** in `engine/core` and `plan_builder`, after #41
    merges: `TrackSource`, `InsertChain`, `TrackFader`; the §7.3 algorithm;
-   clamp and report; a test channel inside `engine/core`'s tests that
+   clamp and report, and the `max_delayed_edges` cap; a test channel
+   inside `engine/core`'s tests that
    behaves like a host with a declared latency, so the **2048-sample track
    lands aligned** (the DAW 5 exit ctest) before any host is involved.
 4. **`engine/plugin_client`**, rt-engineer, auditor on every diff:
-   `HostChannel` (collect, submit, tags, store, miss streak, culprit,
-   removal), the channel-slot table, `wake_all()` in `common/platform`,
-   the host supervisor on the control thread (fork, pidfd, heartbeat,
-   restart policy, make-before-break, retire by epoch); end-to-end tests
-   with the `crash`, `sleep`, `nan` and `liar` test plugins; RTSan job over
-   it.
+   `HostChannel` (collect, submit, tags, store by index with the
+   per-callback copy cap and atomic stores, miss streak with fade-out,
+   culprit, removal), the channel-slot table with epoch retire and
+   generations (a regression test: a retired plan naming a reassigned slot
+   collects nothing), `wake_all()` in `common/platform` behind
+   `kHostWakeEnabled = false`, the host supervisor on the control thread
+   (fork, pidfd, heartbeat, restart policy, make-before-break, region
+   pre-touch, retire by epoch); end-to-end tests with the `crash`, `sleep`,
+   `nan` and `liar` test plugins on the timer path; RTSan job over it;
+   **the RTSan test for `wake_all()` (Unverified 10)**; **the reachability
+   test that no other `common/platform` symbol is reachable from
+   `Session::process`**; the start-up clocksource check.
 5. **Control-server wiring**, rt-engineer: the scan worker and catalog
    cache, §6.3 operations driving host lifecycle and replans,
    `PluginParameterChange` to `RtCommand`, save (`GetState`,
@@ -814,6 +990,11 @@ Each has the measurement that settles it and who takes it.
    chain latency and the session's compensation (red when clamped), fault
    states with retry/inactive/remove, the generic parameter panel from the
    descriptor; screenshots in the PR. O2 before third-party editors ship.
-7. **Bare-metal follow-up**, when the hardware is attached: Unverified 1,
-   3 and 4, then an amendment for depth 0, the wake if needed, and the
-   chains-per-host question.
+7. **Bare-metal wake measurement**, researcher, when the hardware is
+   attached: Unverified 1 exactly as specified (18 and 64 waiting hosts,
+   `stress-ng --futex` for at least 1 h, quantum 128, p99.9 and max with
+   every host waiting, pass at max under about 130 µs), plus Unverified 9.
+   Pass: an amendment sets `kHostWakeEnabled = true`, auditor reviewing.
+   Fail: an amendment makes §1.3 the decision.
+8. **Other bare-metal follow-up**: Unverified 3 and 4, then amendments for
+   depth 0 and the chains-per-host question if the figures call for them.
