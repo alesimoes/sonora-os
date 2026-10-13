@@ -374,3 +374,66 @@ Order and owners are in ADR-0008 §5.
   only arm, record, stop or quit key there would pass the check and not work.
   Fix by deriving the device set from the console's keymap (`dumpkeys`), or
   by a tty1-specific table.
+
+## ADR-0011 native plugin suite (proposed 2026-10-13)
+
+Stages N0–N7 are ADR-0011 §6. Nothing here goes into `engine/` except the
+meters (N1), which the rt-engineer writes. Owner rulings that gate items are
+ADR-0011 "For the owner".
+
+- [ ] N0: `common/dsp` skeleton (neutral, `arch/generic` + `arch/x86_64`
+      for flush-to-zero), `plugins/native/sdk` (`Processor`, parameter table,
+      descriptor and preset codecs on `common/json`), and the new edges in
+      M5's check. dsp-engineer.
+- [ ] N0: `sonora-dsp-measure` harness and golden-file infrastructure:
+      response, THD, step timing, aliasing, latency equals reported,
+      denormal, non-finite, zipper; RTSan job runs it. dsp-engineer.
+- [ ] N0: BS.1770 loudness and true-peak in `common/dsp`, checked against
+      EBU Tech 3341/3342 cases (redistribution of the test files to be
+      checked first). dsp-engineer.
+- [ ] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s,
+      meeting their `quality.json`. CPU figures on the owner's laptop
+      recorded in `brain/research/` (ADR-0011 Unverified 4). dsp-engineer.
+- [ ] Research, before N1: licences of DPF (pinned commit), the VST3 SDK
+      (MIT since 3.8, reported), ONNX Runtime; ONNX Runtime on trixie and
+      its installed size (ADR-0011 Unverified 1, 3). researcher; feeds
+      `brain/research/native-plugin-suite.md`.
+- [ ] N1, after `feature/plugin-host-lv2` merges: `plugins/native/format`
+      on DPF, LV2 and VST3; `lv2lint` and Steinberg `validator` in CI; the
+      DPF-VST3 checkpoint on the EQ (Unverified 2). dsp-engineer,
+      plugin-engineer reviews.
+- [ ] N1, with M9: plugin-parameter target on `ParameterChange` and the
+      read-only telemetry region in `contracts/plugin`. plugin-engineer +
+      rt-engineer + ui-engineer.
+- [ ] N1: descriptor-driven Qt editor panels in `sonora-ui`. ui-engineer.
+- [ ] N1: engine track and master meters on `common/dsp` (peak, loudness,
+      true-peak), gated by rt-safety-auditor. rt-engineer.
+- [ ] N2: ngspice in the build container; SPICE reference circuits for the
+      opto, FET, tube and transformer models (Unverified 8). dsp-engineer.
+- [ ] N2: FDN reverb, tape, tube, transformer, opto, FET, mix bus as
+      physical models, modelled noise and hum (seeded, switchable,
+      visible). The tuner's DSP with key/scale parameters. dsp-engineer.
+- [ ] Before the first capture session: class-E cost of NAM-class
+      architectures plus a 200 ms cabinet IR at q128 (Unverified 9).
+      dsp-engineer.
+- [ ] N3: `common/dsp/neural` kernels, `.nam` reader, partitioned
+      convolution, amp and cab processors; equivalence test against the NAM
+      MIT reference implementation; first captures and IRs of owned or
+      rented hardware with capture cards. dsp-engineer; hardware is the
+      owner's (item 6).
+- [ ] N4: mastering console as one processor; `sonora-analyze` with a
+      rule-based mastering-suggestion pass. dsp-engineer.
+- [ ] Research, before N5: a source-separation model whose weights we may
+      ship (Unverified 10); accuracy of reverb/delay estimation from a
+      reference (Unverified 11). researcher.
+- [ ] N5: mix assistant plan machinery (plans as `common/model`
+      operations, diff preview, one compound undo); first feature
+      tempo-synced reverb and delay with reference estimation and the
+      excess check; then gain staging, buses, parallel chains, mix bus.
+      dsp-engineer with ui-engineer.
+- [ ] N6: ONNX Runtime in `sonora-analyze`, model cards and manifest; key
+      detection, timbre matching, artist-tone matching, tuner following the
+      session key. dsp-engineer; researcher clears each card.
+- [ ] N7, only after the owner's rulings (item 8): `sonora-assistant`, the
+      optional Claude layer over analysis features and session state, never
+      audio; graceful fallback to native suggestions. ui-engineer.

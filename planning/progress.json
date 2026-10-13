@@ -436,6 +436,64 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native",
+      "title": "Complete DAW: native plugins",
+      "note": "Self-contained for merging with docs/daw-mvp-plan: move these modules into its daw front and drop this wrapper. Phases use that branch's stage numbers (4 = DAW 4, 5 = DAW 5).",
+      "modules": [
+        {
+          "id": "daw.native",
+          "title": "Native plugins (ADR-0011)",
+          "owner": "dsp-engineer",
+          "items": [
+            {"id": "native.charter", "title": "dsp-engineer charter and ADR-0011", "size": "S", "phase": 4, "status": "doing", "branch": "docs/adr-native-plugins", "note": "ADR-0011 (proposed) stage N0"},
+            {"id": "native.dsp_core", "title": "common/dsp core: filters, smoothing, oversampling, detectors, delay lines, arch seam", "size": "M", "phase": 4, "status": "todo", "note": "ADR-0011 (proposed) stage N0"},
+            {"id": "native.sdk", "title": "plugins/native/sdk: Processor interface, parameter table, descriptors, presets", "size": "M", "phase": 4, "status": "todo", "note": "ADR-0011 (proposed) stage N0"},
+            {"id": "native.measure", "title": "Measurement harness and golden files; RTSan over process paths", "size": "M", "phase": 4, "status": "todo", "note": "ADR-0011 (proposed) stage N0"},
+            {"id": "native.loudness", "title": "BS.1770 loudness and true-peak in common/dsp, EBU Tech 3341/3342 compliance", "size": "S", "phase": 4, "status": "todo", "note": "ADR-0011 (proposed) stage N0; feeds ui.mixer.loudness on the DAW plan"},
+            {"id": "native.simple", "title": "EQ, gate, compressor, limiter, delay, chorus meeting their quality bars", "size": "L", "phase": 4, "status": "todo", "note": "ADR-0011 (proposed) stage N0"},
+            {"id": "native.format", "title": "LV2 and VST3 builds via DPF behind our interface; lv2lint and validator in CI", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N1; needs feature/plugin-host-lv2"},
+            {"id": "native.editors", "title": "Descriptor-driven Qt editor panels in sonora-ui, telemetry region", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N1; needs M9 contracts/plugin"},
+            {"id": "native.engine_meters", "title": "Engine track and master meters on common/dsp, auditor-gated", "size": "S", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N1; rt-engineer"},
+            {"id": "native.analog", "title": "Physical models: tube, transformer, tape, opto, FET, mix bus, modelled noise and hum (SPICE-referenced)", "size": "L", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N2"},
+            {"id": "native.reverb", "title": "FDN reverb", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N2"},
+            {"id": "native.tuner", "title": "Vocal tuner: classical pitch detection and shifting, snapped to a key", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N2 (DSP), follows the session key in N6"},
+            {"id": "native.mastering", "title": "Mastering console processor and rule-based suggestion pass in sonora-analyze", "size": "L", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N4; needs bounce to disk"},
+            {"id": "native.ai_analysis", "title": "ONNX Runtime in sonora-analyze, model cards; key detection, timbre matching", "size": "L", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N6; DAW 9 once the DAW plan's phases exist"}
+          ]
+        },
+        {
+          "id": "daw.ampcab",
+          "title": "Amp & cab (ADR-0011)",
+          "owner": "dsp-engineer",
+          "items": [
+            {"id": "ampcab.budget", "title": "Measure class-E cost of NAM-class architectures before the first capture", "size": "S", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N3; Unverified 9"},
+            {"id": "ampcab.kernels", "title": "common/dsp/neural kernels, .nam reader, equivalence test against the MIT reference", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N3"},
+            {"id": "ampcab.convolution", "title": "Partitioned convolution and cabinet IR processor", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N3"},
+            {"id": "ampcab.captures", "title": "First captures and IRs of owned or rented hardware, each with a card", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N3; hardware is the owner's call"},
+            {"id": "ampcab.artist_tone", "title": "Artist-tone matching from user-supplied reference audio", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N6"}
+          ]
+        },
+        {
+          "id": "daw.mixassist",
+          "title": "AI mix assistant (ADR-0011)",
+          "owner": "dsp-engineer, ui-engineer",
+          "items": [
+            {"id": "mixassist.plans", "title": "Plans as common/model operations: diff preview, one compound undo", "size": "M", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N5; needs buses, sends and inserts in the model"},
+            {"id": "mixassist.reverb_delay", "title": "Tempo-synced reverb and delay from a reference: decay, pre-delay, wet level, excess check", "size": "L", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N5; first assistant feature (owner example)"},
+            {"id": "mixassist.workflow", "title": "Gain staging, bus structure, parallel compression and saturation, mix-bus chain", "size": "L", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N5"}
+          ]
+        },
+        {
+          "id": "daw.claude",
+          "title": "AI assistant (Claude layer) (ADR-0011)",
+          "owner": "ui-engineer",
+          "items": [
+            {"id": "claude.assistant", "title": "sonora-assistant: intent and whole-mix reasoning over features, never audio; native fallback", "size": "L", "phase": 5, "status": "todo", "note": "ADR-0011 (proposed) stage N7; proposed; waits for the owner's rulings on network, cost and privacy"}
+          ]
+        }
+      ]
     }
   ]
 }
