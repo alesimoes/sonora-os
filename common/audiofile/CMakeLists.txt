@@ -1,7 +1,11 @@
-add_library(sonora_audiofile STATIC src/wav_writer.cpp)
+add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 target_link_libraries(sonora_audiofile PUBLIC sonora_base)
 
 add_executable(test_wav_writer tests/test_wav_writer.cpp)
 target_link_libraries(test_wav_writer PRIVATE sonora_audiofile)
 add_test(NAME wav_writer COMMAND test_wav_writer)
+
+add_executable(test_wav_reader tests/test_wav_reader.cpp)
+target_link_libraries(test_wav_reader PRIVATE sonora_audiofile)
+add_test(NAME wav_reader COMMAND test_wav_reader)

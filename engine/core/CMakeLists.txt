@@ -8,6 +8,7 @@ add_library(sonora_core STATIC
   src/disk_thread.cpp
   src/playback_plan.cpp
   src/plan_exchange.cpp
+  src/disk_reader.cpp
 )
 target_include_directories(sonora_core PUBLIC include)
 target_link_libraries(sonora_core PUBLIC
@@ -28,3 +29,7 @@ add_test(NAME record_fake COMMAND test_record_fake)
 add_executable(test_plan_exchange tests/test_plan_exchange.cpp)
 target_link_libraries(test_plan_exchange PRIVATE sonora_core)
 add_test(NAME plan_exchange COMMAND test_plan_exchange)
+
+add_executable(test_disk_reader tests/test_disk_reader.cpp)
+target_link_libraries(test_disk_reader PRIVATE sonora_core)
+add_test(NAME disk_reader COMMAND test_disk_reader)
