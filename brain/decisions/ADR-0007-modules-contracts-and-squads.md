@@ -1320,3 +1320,11 @@ and the engine has no input device of its own under §3.
 **CODEOWNERS for contract reviews.** Every agent pushes as the same GitHub
 account, so CODEOWNERS cannot distinguish squads. The lock file plus the
 integrator's check is the mechanism that actually works here.
+
+## Update, 2026-10-13: `common/midi`
+
+A new neutral module, `common/midi` (layer 1, links only `common/base`):
+MIDI event model, Standard MIDI File codec and pure edit primitives, owned by
+rt-engineer. Like `common/audiofile` it never runs on the audio thread. The
+real-time `MidiBuffer` lives in `common/base` instead, because §2 lets only
+`common/base` among the `common/` modules put code on the audio thread.
