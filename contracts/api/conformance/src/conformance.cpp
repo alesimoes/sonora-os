@@ -348,6 +348,71 @@ int check_take(Rig& rig) {
     return C(rig, "a take").go();
 }
 
+// A roll (ADR-0009, update "playback on the M4/M7 control server", item 4):
+// play is answered at once and rolls once the window is resident, the
+// playhead advances, stop holds it where it is, return to zero moves it to
+// 0, and none of it uses a take number.
+int check_play(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const auto& impl = s.engine->hello().implemented_commands;
+            for (const char* id :
+                 {"transport.play", "transport.toggle_play", "transport.return_to_zero"}) {
+                EXPECT(std::find(impl.begin(), impl.end(), id) != impl.end(),
+                       std::string(id) + " is not announced");
+            }
+            EXPECT(s.until(rig_, [&]() { return !v.transport().stale; }), "state is stale");
+            const int32_t take = v.transport().take;
+            const uint64_t from = v.transport().playhead;
+            CommandReply r;
+            EXPECT(s.await(rig_, s.command("transport.play"), r), "no reply to play");
+            EXPECT(r.result == DispatchResult::Ok, "play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Rolling && t.playhead > from;
+                   }),
+                   "the state block never showed a roll");
+            const uint64_t rolled = v.transport().playhead;
+            EXPECT(s.until(rig_, [&]() { return v.transport().playhead > rolled; }),
+                   "the playhead did not advance while rolling");
+
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Stopped; }),
+                   "the roll did not stop");
+            EXPECT(s.next_publish(rig_), "nothing published after the stop");
+            const uint64_t held = v.transport().playhead;
+            EXPECT(s.next_publish(rig_), "nothing published while stopped");
+            EXPECT(v.transport().playhead == held, "the playhead moved while stopped");
+            EXPECT(v.transport().take == take, "a roll used a take number");
+
+            EXPECT(s.await(rig_, s.command("transport.return_to_zero"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "return to zero failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().playhead == 0; }),
+                   "return to zero did not move the playhead to 0");
+
+            EXPECT(s.await(rig_, s.command("transport.toggle_play"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Rolling; }),
+                   "toggle_play did not roll");
+            EXPECT(s.await(rig_, s.command("transport.toggle_play"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "the second toggle_play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Stopped; }),
+                   "the second toggle_play did not stop the roll");
+            return ok();
+        }
+    };
+    return C(rig, "a roll").go();
+}
+
 int check_parameters(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -729,6 +794,7 @@ int run(Rig& rig) {
     failures += check_dispatch_results(rig);
     failures += check_arming(rig);
     failures += check_take(rig);
+    failures += check_play(rig);
     failures += check_parameters(rig);
     failures += check_model(rig);
     failures += check_load(rig);

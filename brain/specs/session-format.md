@@ -188,7 +188,12 @@ the same processing graph.
   falls back to 0 and 1 with the warning shown, not hidden.
 - `pan_law_db`: constant-power, −3 dB at centre. It is in the file because it
   changes the mix. A session moved to a machine with a different default must
-  sound the same.
+  sound the same. From −12 to 0; a positive law would be infinite gain at a
+  hard pan.
+- Every `gain_db` in the file (bus, track, region) is from −144 to +24 dB,
+  and a file outside that is refused. The audio thread multiplies by the
+  linear gain without checking it, so the range is what keeps infinity, NaN
+  and subnormal coefficients off it.
 
 Every track feeds this bus. There is no routing key in Phase 2 on purpose: a
 field that can hold only one value is a field the Phase 3 migration has to

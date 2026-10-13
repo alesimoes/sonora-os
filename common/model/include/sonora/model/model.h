@@ -51,6 +51,16 @@ struct Fade {
     }
 };
 
+// Every gain the document holds (track, bus, region), in dB. The audio
+// thread multiplies by 10^(dB/20) with no check of its own, so the range is
+// what keeps inf (and the NaN that inf times silence makes) and subnormals
+// out of it: the ends are about 15.8 and 6.3e-8.
+inline constexpr float kMinGainDb = -144.0f;
+inline constexpr float kMaxGainDb = 24.0f;
+// The monitor bus's pan law at centre, in dB: 0 (balance) down to this. A
+// positive law is a negative exponent, which is inf at a hard pan.
+inline constexpr float kMinPanLawDb = -12.0f;
+
 struct Region {
     Id id = 0;
     std::string name;

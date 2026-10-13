@@ -319,10 +319,10 @@ int main(int argc, char** argv) {
         CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.record");
         r = press(Qt::Key_F12, none);
         CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.record");
-        // Space is Pro Tools' play/stop; with no playback it was repaired to
-        // transport.stop, exactly as at the tty, so it never starts a take.
+        // Space is Pro Tools' play/stop, and the engine plays back: it plays,
+        // and stops a roll or a take, exactly as at the tty.
         r = press(Qt::Key_Space, none);
-        CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.stop");
+        CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.toggle_play");
 
         // A catalogued command nobody implements is said out loud, and never
         // reaches the engine.

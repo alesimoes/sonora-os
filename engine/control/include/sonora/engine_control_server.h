@@ -19,9 +19,19 @@
 // client that frames or encodes wrongly is refused and detached, and nothing
 // it sent reaches the session.
 //
+// Playback (ADR-0009, update "playback on the M4/M7 control server"): the
+// control thread is the document thread. It owns the PlaybackController,
+// shows it the document after every change, adds each closed take to the
+// document and sends the replicas the operations, and pumps the controller
+// every turn of its loop, every 2 ms while something waits on residency.
+// A take asked for by transport.record or transport.toggle_record is
+// answered only once the gate resolves: Ok when it has started, Failed with
+// the reason when it was refused, Failed "cancelled" when it was withdrawn.
+//
 // Nothing here runs on the audio thread. The handlers reach it only
-// through the atomics Track and Transport already have; the publisher
-// reads those atomics on its own thread.
+// through the atomics Track and Transport already have, the plan exchange
+// and the session's command ring; the publisher reads those atomics on its
+// own thread.
 #pragma once
 
 #include <atomic>
@@ -46,12 +56,15 @@
 
 namespace sonora {
 
+class PlaybackController;
 class Session;
 namespace backend {
 class AudioBackend;
 }
 namespace model {
 class Document;
+struct ReplicationUpdate;
+struct Snapshot;
 }
 
 class EngineControlServer {
@@ -92,6 +105,12 @@ public:
         // until one completes, and its reader waits with it.
         std::size_t large_message_bytes = std::size_t{1} << 20;
         std::size_t max_large_in_flight = 2;
+        // The document the server starts from (what --place put on the
+        // timeline). Null: engine_document(session), empty tracks.
+        std::shared_ptr<const model::Snapshot> initial_document;
+        // False: an armed track sends nothing to the monitor bus, whatever
+        // its mode in the document (--no-input-monitoring).
+        bool input_monitoring = true;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -162,6 +181,10 @@ public:
     // Engine-domain commands with a handler, in catalog order.
     const std::vector<std::string>& implemented() const { return implemented_; }
 
+    // After stop() and AudioBackend::deactivate() have both returned: frees
+    // every retired plan (ADR-0009 §4.1: then, and only then).
+    void after_deactivate();
+
 private:
     struct Client {
         Outbound out;
@@ -201,6 +224,16 @@ private:
     void send_to(ClientId id, const std::string& bytes);
     void reply(ClientId to, uint64_t seq, DispatchResult result, const std::string& message);
     void remember(const api::EngineEvent& event, const std::string& bytes);
+    void send_update(const model::ReplicationUpdate& update);
+    // The document changed: its plan to the controller, and its mix to the
+    // Track atomics only when `mix_changed` (see show()).
+    void show_document(bool mix_changed);
+    // A take that has just closed joins the document.
+    void follow_transport();
+    // Held record replies, once the controller no longer waits to start.
+    void resolve_records();
+    void pump_playback();
+    bool playback_busy() const;
 
     Session& session_;
     backend::AudioBackend* audio_;
@@ -213,6 +246,9 @@ private:
     api::StateWriter writer_;
     std::unique_ptr<StatePublisher> publisher_;
     std::unique_ptr<model::Document> document_;
+    // Built after document_ and destroyed before it; touched only by the
+    // control thread, or before start() and after stop().
+    std::unique_ptr<PlaybackController> playback_;
 
     CommandRegistry registry_;
     std::vector<std::string> implemented_;
@@ -251,6 +287,15 @@ private:
     std::atomic<std::size_t> client_count_{0};
     std::atomic<uint64_t> refused_{0};
     std::thread thread_;
+
+    struct HeldReply {
+        ClientId to = 0;
+        uint64_t seq = 0;
+    };
+    // Record requests waiting for the residency gate, answered together.
+    std::vector<HeldReply> held_records_;
+    bool was_recording_ = false;
+    int recording_take_ = 0;
 
     uint64_t next_housekeeping_ns_ = 0;
     bool fatal_said_ = false;

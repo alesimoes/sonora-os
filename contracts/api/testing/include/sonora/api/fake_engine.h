@@ -13,7 +13,10 @@
 //
 // What it does: the Engine-domain commands engine/control installs, with
 // the same refusals in the same words; ParamId::Gain; the model path on a
-// real common/model Document. A synthetic signal per channel feeds the
+// real common/model Document. The transport rolls on a script: play starts
+// the playhead from where it stands at the sample rate, stop holds it,
+// return to zero puts it at 0, and a take starts at the playhead, as the
+// real one's does. There is no residency gate: everything is resident. A synthetic signal per channel feeds the
 // meters (on by default). Scripting hooks let a UI test show engine death,
 // a notice, an xrun or a fatal backend.
 //
@@ -111,6 +114,7 @@ private:
     static void queue(std::deque<std::string>& q, const std::string& message);
     static std::string take_file(int32_t take);
     void check_take();
+    uint64_t playhead() const;
 
     Config cfg_;
     Hello hello_;
@@ -129,7 +133,10 @@ private:
     uint64_t death_ns_ = UINT64_MAX;
 
     TransportState mode_ = TransportState::Stopped;
-    uint64_t record_start_ns_ = 0;
+    // Where the playhead was when the transport last started or stopped,
+    // and when that was.
+    uint64_t position_ = 0;
+    uint64_t moved_ns_ = 0;
     int32_t take_ = 1;
     std::vector<bool> armed_;
     std::vector<float> gain_;

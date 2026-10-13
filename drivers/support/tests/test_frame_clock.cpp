@@ -91,6 +91,57 @@ int test_wrap_is_not_a_discontinuity() {
     return 0;
 }
 
+// PipeWire's dummy driver, woken late, skips a period: jack_last_frame_time
+// steps by two periods and no xrun is reported (measured in the docker
+// test's container, 2026-10-13: 26 of 26 skips, xruns 0). Unseen, the run
+// reported a clean clock while the server had not run for a period. It is a
+// discontinuity, and frame_time keeps the gap.
+int test_unreported_skip_is_a_discontinuity() {
+    FrameClock c;
+    CHECK(c.widen(1000, 128, 0) == 1000);
+    CHECK(c.widen(1128, 128, 0) == 1128);
+    CHECK(c.discontinuities() == 0);
+    CHECK(c.widen(1384, 128, 0) == 1384);
+    CHECK(c.discontinuities() == 1);
+    CHECK(c.widen(1512, 128, 0) == 1512);
+    CHECK(c.discontinuities() == 1);
+    return 0;
+}
+
+// An xrun the server reported is the gap's excuse already.
+int test_reported_xrun_is_not_a_discontinuity() {
+    FrameClock c;
+    c.widen(1000, 128, 0);
+    c.widen(1128, 128, 0);
+    CHECK(c.widen(2128, 128, 1) == 2128);
+    CHECK(c.discontinuities() == 0);
+    return 0;
+}
+
+// The step that follows a period is that period's length, whatever the
+// next one's is.
+int test_step_of_the_previous_period_is_not_a_skip() {
+    FrameClock c;
+    c.widen(0, 256, 0);
+    c.widen(256, 128, 0);
+    c.widen(384, 128, 0);
+    CHECK(c.discontinuities() == 0);
+    return 0;
+}
+
+// The server's clock runs while the client is deactivated; the first step
+// after a reactivation is not a skip.
+int test_step_across_a_reactivation_is_not_a_skip() {
+    FrameClock c;
+    c.widen(1000, 128, 0);
+    c.resume();
+    CHECK(c.widen(480000, 128, 0) == 480000);
+    CHECK(c.discontinuities() == 0);
+    c.widen(480384, 128, 0);
+    CHECK(c.discontinuities() == 1);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -100,6 +151,10 @@ int main() {
     if (test_gap_is_kept() != 0) return 1;
     if (test_backward_step_is_a_discontinuity() != 0) return 1;
     if (test_wrap_is_not_a_discontinuity() != 0) return 1;
+    if (test_unreported_skip_is_a_discontinuity() != 0) return 1;
+    if (test_reported_xrun_is_not_a_discontinuity() != 0) return 1;
+    if (test_step_of_the_previous_period_is_not_a_skip() != 0) return 1;
+    if (test_step_across_a_reactivation_is_not_a_skip() != 0) return 1;
     std::printf("test_frame_clock: ok\n");
     return 0;
 }

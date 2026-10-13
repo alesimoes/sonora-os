@@ -131,6 +131,28 @@ int main() {
         CHECK(read_u32(b, bext + 342) == 1);  // high word
     }
 
+    // --- an origin learnt after open() is the one close() leaves, and the
+    // audio after the header is untouched by the patch
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 5));
+        std::vector<float> frames{0.5f, -0.5f};
+        CHECK(w.write(frames.data(), frames.size()));
+        w.set_time_reference((3ull << 32) | 4ull);
+        CHECK(w.close());
+
+        const auto b = slurp(path);
+        const long bext = find_chunk(b, "bext");
+        CHECK(bext > 0);
+        CHECK(read_u32(b, bext + 338) == 4);
+        CHECK(read_u32(b, bext + 342) == 3);
+        const long data = find_chunk(b, "data");
+        CHECK(read_u32(b, data - 4) == 2 * 3);
+        CHECK(b.size() == static_cast<std::size_t>(data) + 2 * 3);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+    }
+
     // --- a NaN sample becomes silence instead of garbage ---
     {
         std::remove(path.c_str());

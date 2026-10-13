@@ -157,12 +157,27 @@ of fifty nudges costs one residency wait, not fifty.
 - **No lock-free hash table.** Each plan carries a **chunk-slot array**: for
   every segment and channel, one `std::atomic<uint32_t>` per chunk of source
   it can play, holding a buffer index or "empty". The reader fills slots
-  (data written, then the index stored with release). The audio thread loads
-  with acquire and reads. A slot found empty is silence and a counted
-  underrun, never a wait. The plan's structure is immutable; its slot array
-  is its one mutable part, written only by the reader. A chunk shared by the
-  playing and the pending plan is linked from both, and the reader alone
-  keeps its link count.
+  (data written, then the index stored). The audio thread loads the slot
+  and reads. A slot found empty is silence and a counted underrun, never a
+  wait. The plan's structure is immutable; its slot array is its one
+  mutable part, written only by the reader. A chunk shared by the playing
+  and the pending plan is linked from both, and the reader alone keeps its
+  link count.
+- **Slot stores and loads are `seq_cst`, not release and acquire.**
+  Amended 2026-10-13 after the RT audit of PR #31; the first text said
+  release and acquire, which is enough to publish a filled chunk but not to
+  reclaim one. Reclaiming is a store-buffering pattern across two
+  variables: the audio thread stores `blocks_` then loads a slot; the
+  reader stores "empty" into the slot then loads `blocks_` (§4.1). The
+  proof needs at least one of the two to see the other's store: either the
+  block loads "empty", or the reader reads a `blocks_` that already counts
+  the block, and waits for it to end. Release and acquire do not order a
+  store before a later load of a different variable, so both sides could
+  read the old values: the block takes the buffer and the reader reuses it
+  under it. Only `seq_cst` on all four accesses puts them in one total
+  order. The cost is one full fence per slot store on the reader, which is
+  not real-time, and nothing extra for the audio thread's loads on x86 and
+  AArch64. Do not weaken these to release and acquire.
 - **Demand is counted per source channel and per region**, not per track.
   For a window of *W* frames and chunk size *C*, a track's demand is the sum
   over segments overlapping the window of *channels* × (⌈overlap / *C*⌉ + 1).
@@ -204,6 +219,21 @@ of fifty nudges costs one residency wait, not fifty.
   that is not resident.
 - The disk reader and the capture writer are separate threads. A slow read
   never delays a capture drain. When both want the device, the writer wins.
+- **While stopped, a plan is published without the gate** (implementation
+  note, 2026-10-13, PR #31). Nothing is heard while the transport is
+  stopped, so a new plan is exchanged as soon as the reader has adopted it,
+  and the gate moves to whatever starts the transport: play, record and
+  locate each wait for the window at the playhead (and at a locate target)
+  to be resident in the plan that will play, and for every locate asked
+  before them to be applied. That is equivalent to gating the publication
+  and avoids holding an edit back while nothing plays. It holds only
+  because every path that starts the transport goes through that gate: a
+  record started before its window is resident is the hole this section
+  exists to prevent, and the first version of PR #31 had exactly that bug
+  (a take right after another, or after `--place`). A take also drops any
+  locate still waiting when it starts: a take is one contiguous span of the
+  timeline, and its origin is the frame its first sample was recorded at,
+  read on the audio thread.
 
 **4.5 The graph in the plan.**
 
@@ -548,6 +578,38 @@ recording.
 - Plan build time on the control thread at 18 tracks × 2000 regions
   (Unverified 4). This is for rt-engineer, or the researcher if it is
   measured as a proxy on the laptop.
+
+**Measured, 2026-10-13, in the port's PR (proxies).** `measure_playback`
+(engine/control, built with the tests, run by hand), Release build in the
+`sonora-build` container on the owner's Windows laptop (Docker Desktop,
+WSL2). 18 tracks, chunk 16,384 frames, window 4 s, `drivers/fake` at
+real-time pace, quantum 128. "Transport" is the `Session`'s own state, "block"
+the state block, which adds the publisher's 10 ms period. Resident: play
+again after a stop, record again right after a take (which first adds the
+take to the document and replans). Cold: the first request to a server just
+started, nothing resident and the plan not yet published; the files were in
+the page cache.
+
+| Request | Window | n | Transport p50 / p99 / max | Block p50 / p99 / max |
+|---|---|---|---|---|
+| play | resident | 200 | 2.3 / 2.5 / 2.5 ms | 9.3 / 10.1 / 10.1 ms |
+| record | resident | 50 | 3.1 / 24.7 / 24.7 ms | 9.2 / 29.9 / 29.9 ms |
+| play | cold | 30 | 6.6 / 10.7 / 10.7 ms | 10.2 / 20.1 / 20.1 ms |
+| record | cold | 30 | 5.4 / 7.7 / 7.7 ms | 9.1 / 9.3 / 9.3 ms |
+
+The resident play is the 2 ms poll and nothing else. The record p99 is the
+replan after the previous take (36 operations, then the new plan adopted
+before the gate opens). Nothing here exceeds residency plus 5 ms by a
+margin that calls for the reader waking the control thread; to be measured
+again on the stick (Unverified 1), where residency is not the page cache.
+
+Plan build, `build_plan()` with registered sources, 18 tracks × 2,000
+regions (36,000 segments, 88,704 chunk slots), n = 30: **77 ms p50, 96 ms
+max**. That is over the 10 ms above which the Consequences move the builder
+to a worker owned by `engine/control`. Every command queued behind an edit
+of a session that size, `transport.stop` included, waits that long on the
+control thread. Not done in the port; filed in `planning/BACKLOG.md` (DAW 1
+detail) to land before sessions that size are edited.
 
 **Alternatives rejected.**
 
