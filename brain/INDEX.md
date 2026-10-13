@@ -29,6 +29,15 @@ One line per entry. Agents read this before opening anything else.
 - [USB stick layout](research/usb-stick-layout.md) — the ISO's MBR already has the ESP as partition 2, so persistence is 3; parted cannot edit it; the overlay lives in `home/rw`; `systemd.run=` needs `systemd.unit=` on this image.
 - [BWF interop](research/bwf-interop.md) — takes checked with ffprobe, soxi, libsndfile, mediainfo and headless Ardour 8.12 (`tools/test-bwf-interop.sh`, CI job `interop`). All 36 files open as 24-bit 48 kHz at the right length, and Ardour places each at its TimeReference, including a non-zero take 2. Defect: OriginationDate/Time empty. Ardour treats TimeReference 0 as no timestamp. The writer wraps sizes past 4 GB instead of stopping.
 - [Native plugin suite](research/native-plugin-suite.md) — literature, not measurement: published technique, parameters, oversampling, estimated cost class and validation for each first-party plugin (EQ to mastering, opto/FET levellers from public schematics, tube/transformer/tape, amps and cabs); BS.1770-5 true-peak is 4x at 48 kHz; AI parts (mastering analysis, timbre match, tuner, mix assistant, reverb/delay suggestions) are analysis-time except neural amp models and DSP pitch tracking; licence tables for code and datasets (RAVE, DeepAFx-ST, Diff-MST, madmom/Essentia models, MedleyDB, MUSDB18, Open-Unmix weights are non-commercial: excluded; CREPE weights trained on MedleyDB-derived data); legal notes.
+- [Open data and DSP sources](research/open-data-and-dsp-sources.md). A licence survey, read from the sources on 2026-10-13. Nothing was downloaded or run.
+  - **Shippable (CC BY 4.0):** VocalSet, vocadito, GuitarSet, Dagstuhl ChoirSet, EGFxSet, SignalTrain, VCTK, Arni and Motus RIRs.
+  - **Non-commercial:** MUSDB18-HQ, MoisesDB, MedleyDB, MTG-Jamendo, IDMT-SMT-Guitar, MDB-stem-synth, EARS and GTSinger.
+  - **Excluded as unclear:** NUS-48E, MIR-1K, EGDB and the MIT IR Survey.
+  - **Captures and IRs:** TONE3000 captures are not redistributable (T3K licence). No cabinet IR set has a licence we could verify.
+  - **Weights:** Spleeter's are MIT by Deezer's own statement, and it is the least-bad separation model. Demucs, Open-Unmix, CREPE, SwiftF0, PESTO and Basic Pitch weights rest on non-commercial or unclear data.
+  - **Open question:** Slakh and StemGMD are MIDI rendered through commercial instruments; it is open whether ADR-0011 §4.6 excludes them.
+  - **Code:** a licence table for about 40 DSP projects and about 35 neural-DSP repositories.
+  - **Amps, speakers, mics:** a "virtual capture" pipeline (SPICE of published circuits plus maker T/S curves) with its limits and validation plan; mic modelling; vocal-balancing data. Biggest gap: no commercially licensed multitrack corpus.
 
 ## Postmortems
 - [2026-10-11 comment in a line continuation](postmortems/2026-10-11-comment-in-line-continuation.md) — dropped half a QEMU command line; bash -n cannot catch it. Also: an edit that reported success without landing.
