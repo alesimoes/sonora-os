@@ -35,6 +35,9 @@ add_subdirectory(common/midi)
 add_subdirectory(common/platform)
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
+# DRAFT, Phase 4: the engine <-> plugin host shared-memory layout, awaiting
+# rt-engineer review. Nothing in engine/ links it yet.
+add_subdirectory(contracts/plugin)
 add_subdirectory(engine/core)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
@@ -45,3 +48,6 @@ add_subdirectory(engine/app)
 # Optional: skipped, with one status line, where Qt 6 is not installed (the
 # engine's build container and CI). tools/build-ui.sh builds it.
 add_subdirectory(ui/qt)
+# Optional the same way: skipped where lilv is not installed.
+# tools/build-plugins.sh builds and tests it.
+add_subdirectory(plugins/host)

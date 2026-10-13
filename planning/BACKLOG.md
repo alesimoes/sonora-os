@@ -354,6 +354,27 @@ Order and owners are in ADR-0008 §5.
       persistence overlay, 200 killed QEMU saves. researcher; ADR-0009
       Unverified 2.
 
+## Phase 4: plugin hosting (opened early, owner 2026-10-13)
+
+The goal is a working DAW with plugins before any OS packaging; no ISO or
+QEMU work for this. State: `brain/research/plugin-host-lv2-container.md`.
+
+- [ ] rt-engineer review of the draft `contracts/plugin/include/sonora/plugin/protocol.h`
+      (single slot, submit-only-when-idle, `pipeline_depth`, parameter ring,
+      `current_instance`). It stays `kLayoutVersion` 0 until accepted.
+- [ ] Phase 4 plugin ADR (ADR-0007 M9): pipeline depth on the audio thread
+      (the container saw a 2 ms timed wait return 5.9 ms late), host per
+      chain/track/plugin, the wake syscall's auditor ruling, `HostControl`
+      over the control socket (scan via one `--probe` per process, instantiate,
+      remove, editor with the parent-window token).
+- [ ] `engine/plugin_client` (M4+): `HostChannel::submit/collect` on the
+      contract, host death via pidfd on the control thread, removal after N
+      consecutive misses with the plugin named to the operator.
+- [ ] Plugin host: LV2 state save/restore, `worker:schedule`, presets; VST3
+      (native Linux) after LV2 is in the engine.
+- [ ] Plugin editors under labwc (ADR-0010): see the ADR-0007 follow-up
+      above; the host opens parentless X11 toplevels.
+
 ## Known gaps, not yet scheduled
 
 - RT-path data race, documented in `engine/core/src/session.cpp` above the

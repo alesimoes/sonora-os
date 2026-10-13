@@ -1,0 +1,30 @@
+# Build and test the plugin host (plugins/host) against real LV2 plugins.
+#
+# The engine's toolchain (Dockerfile.build) plus lilv and three small,
+# well-known plugin packages from Debian trixie main:
+#   lv2-examples     eg-amp, the LV2 reference gain plugin (ISC)
+#   x42-plugins      x42-dpl, a look-ahead peak limiter that reports latency (GPL-2+)
+#   lsp-plugins-lv2  the LSP limiter, a second latency-reporting plugin (LGPL-3+)
+# lilv-utils is for a person poking at the image (lv2ls, lv2info), not the tests.
+#
+# Nothing here ships in the ISO. Which plugins the appliance carries is a
+# separate decision.
+FROM debian:trixie-slim
+
+LABEL org.sonora=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      pkg-config \
+      libjack-jackd2-dev \
+      ca-certificates \
+      liblilv-dev \
+      lv2-dev \
+      lilv-utils \
+      lv2-examples \
+      x42-plugins \
+      lsp-plugins-lv2 \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]

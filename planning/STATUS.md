@@ -157,6 +157,7 @@ end of its run. Keep it short: what is true now, not a diary.
 | Quantum and rate pin against clients | distro-engineer | passing in container and QEMU; real interface untested |
 | `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
 | ADR-0007 M2, backend contract | rt-engineer + driver-engineer | PR from `contract/backend`; reviewed by both owners, `code-reviewer` and `rt-safety-auditor`; hardware untested |
+| LV2 plugin host (`plugins/host`) and draft `contracts/plugin` | plugin-engineer | `feature/plugin-host-lv2`: 11 ctest cases pass in `tools/build-plugins.sh`; contract awaits rt-engineer review; engine side is M4+ |
 
 ## Blocked
 

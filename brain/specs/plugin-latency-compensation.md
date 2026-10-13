@@ -91,6 +91,15 @@ average — an average hides exactly the spike that causes the xrun.
 
 ## Status
 
+**2026-10-13:** the host side exists (`plugins/host`, draft
+`contracts/plugin`). Reported latency was checked against measured delay
+with real Debian plugins, and the PDC arithmetic above nulled the wet path
+against the delayed dry path to exactly 0, with one sample off leaving
+0.199 (`brain/research/plugin-host-lv2-container.md`). The IPC block in
+pipelined mode is declared as latency and absorbed the same way. The
+engine side (the scheduler, the delay plan, the plan swap) is still not
+implemented. The paragraph below describes 2026-10-11.
+
 Nothing here is implemented. The engine has no playback, no mixing and no
 plugin host. This note exists so the requirement is recorded precisely while
 it is fresh, and so the design is not discovered late — PDC in particular is
