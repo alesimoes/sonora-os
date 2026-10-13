@@ -59,7 +59,8 @@ fi
 }
 # Same rule as test-boot-qemu.sh: a verdict about yesterday's image is worse
 # than none.
-for newer in "$ROOT/iso/config" "$ROOT/iso/auto/config" "$ROOT/engine"; do
+for newer in "$ROOT/iso/config" "$ROOT/iso/auto/config" "$ROOT/CMakeLists.txt" \
+             "$ROOT/common" "$ROOT/contracts" "$ROOT/engine" "$ROOT/drivers" "$ROOT/ui"; do
   if [[ "$newer" -nt "$ISO" ]]; then
     echo "error: $newer is newer than $ISO. Rebuild first: tools/build-iso.sh" >&2
     exit 1
@@ -239,7 +240,7 @@ boot() {
 }
 
 # Called through expect, which shellcheck cannot follow.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 serial_has() { tr -d '\r' < "$WORK/$1.serial.log" 2>/dev/null | grep -a -q -- "$2"; }
 
 inspect() {
