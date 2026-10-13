@@ -63,6 +63,7 @@ target_link_libraries(test_ui_keys PRIVATE sonora_ui_qt)
 target_compile_definitions(test_ui_keys PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_keys COMMAND test_ui_keys)
+set_tests_properties(ui_keys PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)

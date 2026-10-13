@@ -69,6 +69,11 @@ public:
     // Keys typed into `window` go through the router, all of them: the
     // profile, not Qt's focus chain, decides what Space and Tab do.
     void routeKeysFrom(QQuickWindow* window);
+    // Whether key events carry XKB keycodes (qt_keys.h). Read from the
+    // platform; the offscreen platform has no keyboard, so a test that sends
+    // XKB keycodes says so here.
+    void setScanCodesAreXkb(bool xkb) { xkb_scan_codes_ = xkb; }
+    bool scanCodesAreXkb() const { return xkb_scan_codes_; }
     void addNotice(const QString& n);
     // From the render-path probe, on the GUI thread.
     void setRenderPath(const QString& text, bool software, bool meters_available);
@@ -147,6 +152,7 @@ private:
     std::vector<CommandOutcome> replies_;
     TickStats* stats_ = nullptr;
     Clock now_ns_;
+    bool xkb_scan_codes_ = false;
 
     QString transport_text_ = QStringLiteral("STOP");
     bool recording_ = false;

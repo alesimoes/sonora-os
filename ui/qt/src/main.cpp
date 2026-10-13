@@ -164,7 +164,8 @@ int main(int argc, char** argv) {
         QTimer::singleShot(0, qApp, &QCoreApplication::quit);
         return true;
     });
-    const std::vector<std::string> notices = router.prepare(qt_device_chords());
+    const std::vector<std::string> notices =
+        router.prepare(qt_device_chords(qt_scan_codes_are_xkb(QGuiApplication::platformName())));
 
     register_types();
     ShellModel model(engine, router);

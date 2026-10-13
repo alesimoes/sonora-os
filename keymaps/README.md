@@ -161,7 +161,8 @@ What it cannot, and no decoding will change:
 - **Any layout but US.** The shifted digits are decoded from the characters,
   not the keys; on a German or French layout the same keys send something
   else and the chord will be named wrongly. Fixing that needs the console
-  keymap, which is Phase 3 work.
+  keymap, which is Phase 3 work. The Qt window does not have this problem;
+  see below.
 - **Two keys held at once**, which is how Pro Tools engages the Smart Tool.
 
 Known gap: the check assumes xterm's modifier encoding. On the Linux console
@@ -169,6 +170,40 @@ Alt+Fn and Alt+Left/Right switch virtual terminals, Shift+PgUp/PgDn scroll,
 and Ctrl/Shift+arrow arrive without their modifier, yet those chords are still
 counted as sendable. No essential in a shipped profile depends on one; see
 `planning/BACKLOG.md`.
+
+## What the Qt window can send
+
+`sonora-ui` (`ui/qt`) reads key events, not bytes, so it can say more than a
+tty: Ctrl+Shift chords, Cmd/Super, and the keypad as its own keys. The same
+profile, the same `ensure_essentials()` repair and the same footer apply; only
+the device differs. `ui/qt/src/qt_keys.h` is the decoder.
+
+What a chord names in the window:
+
+- **The digit row, by the key.** The physical key is read from the event's
+  XKB keycode (Linux evdev code plus 8), so `shift+3` is Shift held on the key
+  with 3 on it, whatever that key types on the layout in use: `#` on US, `3`
+  on AZERTY, `#` on ABNT2. On AZERTY the unshifted "1/&" key is `1`, not
+  `shift+7`; on ABNT2 Shift+6, a dead key, is still `shift+6`.
+- **Letters, by the letter on the key.** `z` is the key with Z on it, on
+  AZERTY too, which is what the tty sees and how Windows names letter keys. A
+  layout with no Latin letter on the key (Cyrillic, Greek) gets the letter at
+  that key's US position, again as Windows does.
+- **Other punctuation, by its character**, read as a US layout reads it,
+  exactly as at the tty: `+` is `plus`, `{` is `shift+bracketleft`.
+- **Nothing, said out loud** ("that key means nothing here"), for a key the
+  window cannot place rather than a guess: anything with AltGr held, a dead
+  key off the digit row, a shifted-digit character (`!`, `*`, `)`, ...) typed
+  on some other key -- AZERTY types `!` and `*` unshifted -- and every digit
+  on a platform whose key events do not carry XKB keycodes. Qt's xcb and
+  Wayland platforms do; any other platform has no digit row, and
+  `ensure_essentials()` says so at start-up.
+
+The difference that remains: the tty can only see characters, so on a layout
+other than US the same keyboard arms tracks in the window and does not, or
+arms the wrong one, at the tty. On AZERTY, `&` at a tty is still `shift+7`.
+AltGr is a modifier no profile can name; if one ever needs it, that is a new
+modifier in the chord grammar, not a decoder change.
 
 ## Known but unimplemented
 

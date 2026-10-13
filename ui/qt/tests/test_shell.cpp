@@ -33,10 +33,13 @@ using namespace sonora::ui;
 
 namespace {
 
-void key(QQuickView& view, int k, Qt::KeyboardModifiers m, bool repeat = false) {
-    QKeyEvent press(QEvent::KeyPress, k, m, QString(), repeat);
+// As the xcb and Wayland plugins deliver a key: with the physical key's XKB
+// keycode, which is how the digit row is told apart on every layout.
+void key(QQuickView& view, int k, Qt::KeyboardModifiers m, bool repeat = false,
+         quint32 xkb = 0) {
+    QKeyEvent press(QEvent::KeyPress, k, m, xkb, 0, 0, QString(), repeat);
     QCoreApplication::sendEvent(&view, &press);
-    QKeyEvent release(QEvent::KeyRelease, k, m, QString(), repeat);
+    QKeyEvent release(QEvent::KeyRelease, k, m, xkb, 0, 0, QString(), repeat);
     QCoreApplication::sendEvent(&view, &release);
 }
 
@@ -68,7 +71,7 @@ int main(int argc, char** argv) {
                      [&engine](const std::string& c, const CommandContext& ctx) {
                          return engine.send(c, ctx);
                      });
-    router.prepare(qt_device_chords());
+    router.prepare(qt_device_chords(true));
 
     uint64_t now = 1;
     ShellModel model(engine, router);
@@ -80,6 +83,9 @@ int main(int argc, char** argv) {
     for (const auto& e : view.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));
     CHECK(view.status() == QQuickView::Ready);
     model.routeKeysFrom(&view);
+    // Offscreen has no keyboard; the events below carry XKB keycodes.
+    CHECK(!model.scanCodesAreXkb());
+    model.setScanCodesAreXkb(true);
 
     // --- one meter per UMC1820 input, each attached to the one tick ---
     CHECK(meters(view).size() == 18);
@@ -103,9 +109,14 @@ int main(int argc, char** argv) {
     }
 
     // --- keys go through the profile, not through Qt's focus chain ---
-    key(view, Qt::Key_NumberSign, Qt::ShiftModifier);  // shift+3: arm 3
+    key(view, Qt::Key_NumberSign, Qt::ShiftModifier, false, 12);  // shift+3: arm 3
     CHECK(engine.sent.size() == 1);
     CHECK(engine.sent[0].command == "track.toggle_arm" && engine.sent[0].target == 2);
+    // AZERTY's "*" key, next to Return: read the US way it was shift+8, and
+    // armed track 8. A key the decoder cannot place is said to mean nothing.
+    key(view, Qt::Key_Asterisk, Qt::NoModifier, false, 51);
+    CHECK(engine.sent.size() == 1);
+    CHECK(model.statusText() == QStringLiteral("that key means nothing here"));
 
     // Auto-repeat does nothing: holding Space must not start and stop takes.
     key(view, Qt::Key_Space, Qt::ControlModifier, /*repeat=*/true);
@@ -124,7 +135,7 @@ int main(int argc, char** argv) {
     // --- a refusal comes back as the engine's reason, on the status line ---
     engine.next_result = DispatchResult::Failed;
     engine.next_message = "arming cannot change during a take; stop first";
-    key(view, Qt::Key_At, Qt::ShiftModifier);  // shift+2
+    key(view, Qt::Key_At, Qt::ShiftModifier, false, 11);  // shift+2
     model.tick();
     CHECK(model.statusText().contains(QStringLiteral("arming cannot change")));
     engine.next_result = DispatchResult::Ok;

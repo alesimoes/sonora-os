@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "qt_keys.h"
 
+#include <QKeyEvent>
+#include <QString>
 #include <cctype>
+#include <cstring>
 #include <string>
 
 namespace sonora::ui {
@@ -51,8 +54,7 @@ const Named kKeypad[] = {
 
 // Shifted punctuation on a US layout that TerminalInput has no name for,
 // because the tty profiles never needed one. The shifted digits are not
-// here: chord_from_terminal_byte() already decodes those, and using it keeps
-// "!" meaning shift+1 on both devices.
+// here: they are named by the digit row's keycode, never by a character.
 struct Shifted {
     char c;
     const char* base;
@@ -63,6 +65,27 @@ const Shifted kShiftedPunct[] = {
     {'<', "comma"},  {'>', "period"},      {'?', "slash"},
     {'~', "grave"},
 };
+
+// XKB keycodes, which are Linux evdev codes plus 8. The evdev codes are
+// linux/input-event-codes.h's KEY_1 (2) .. KEY_0 (11), KEY_Q (16) ..
+// KEY_P (25), KEY_A (30) .. KEY_L (38) and KEY_Z (44) .. KEY_M (50); the
+// +8 is libxkbcommon's, and xkeyboard-config's keycodes/evdev agrees
+// (<AE01> = 10, <AD01> = 24, <AC01> = 38, <AB01> = 52).
+constexpr quint32 kXkbDigitRow = 2 + 8;  // "1" .. "9", then "0"
+struct LetterRow {
+    quint32 first;
+    const char* letters;
+};
+const LetterRow kXkbLetterRows[] = {
+    {16 + 8, "qwertyuiop"},
+    {30 + 8, "asdfghjkl"},
+    {44 + 8, "zxcvbnm"},
+};
+
+// AltGr is ISO_Level3_Shift, which xkeyboard-config maps to Mod5. Qt's xcb
+// plugin may also report it as GroupSwitchModifier; Qt Wayland reports it
+// only in the native mask. Both are read.
+constexpr quint32 kXkbMod5 = 0x80;
 
 unsigned mods_from_qt(Qt::KeyboardModifiers m) {
     unsigned out = kModNone;
@@ -93,17 +116,73 @@ bool is_modifier_key(int key) {
     }
 }
 
+// The digit on the digit-row key `xkb_keycode`, or -1 for any other key.
+int digit_row(quint32 xkb_keycode) {
+    if (xkb_keycode < kXkbDigitRow || xkb_keycode >= kXkbDigitRow + 10) return -1;
+    return static_cast<int>((xkb_keycode - kXkbDigitRow + 1) % 10);
+}
+
+// The letter a US layout puts on `xkb_keycode`, or 0.
+char us_letter_at(quint32 xkb_keycode) {
+    for (const auto& row : kXkbLetterRows) {
+        const std::size_t n = std::strlen(row.letters);
+        if (xkb_keycode >= row.first && xkb_keycode < row.first + n) {
+            return row.letters[xkb_keycode - row.first];
+        }
+    }
+    return 0;
+}
+
+bool is_shifted_digit(int key) {
+    switch (key) {
+        case Qt::Key_Exclam:
+        case Qt::Key_At:
+        case Qt::Key_NumberSign:
+        case Qt::Key_Dollar:
+        case Qt::Key_Percent:
+        case Qt::Key_AsciiCircum:
+        case Qt::Key_Ampersand:
+        case Qt::Key_Asterisk:
+        case Qt::Key_ParenLeft:
+        case Qt::Key_ParenRight:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool is_dead_key(int key) {
+    return key >= Qt::Key_Dead_Grave && key <= Qt::Key_Dead_Longsolidusoverlay;
+}
+
 }  // namespace
 
-QtKeyDecode chord_from_qt_key(int key, Qt::KeyboardModifiers qmods, bool auto_repeat,
-                              KeyChord& out) {
+bool qt_scan_codes_are_xkb(const QString& platform_name) {
+    return platform_name == QLatin1String("xcb") ||
+           platform_name.startsWith(QLatin1String("wayland"));
+}
+
+QtKeyInput qt_key_input(const QKeyEvent& e, bool scan_codes_are_xkb) {
+    QtKeyInput in;
+    in.key = e.key();
+    in.mods = e.modifiers();
+    in.auto_repeat = e.isAutoRepeat();
+    if (scan_codes_are_xkb) {
+        in.xkb_keycode = e.nativeScanCode();
+        in.xkb_mods = e.nativeModifiers();
+    }
+    return in;
+}
+
+QtKeyDecode chord_from_qt_key(const QtKeyInput& in, KeyChord& out) {
     out = KeyChord{};
+    const int key = in.key;
     if (is_modifier_key(key)) return QtKeyDecode::ModifierOnly;
-    if (auto_repeat) return QtKeyDecode::AutoRepeat;
+    if (in.auto_repeat) return QtKeyDecode::AutoRepeat;
 
-    const unsigned mods = mods_from_qt(qmods);
+    const unsigned mods = mods_from_qt(in.mods);
 
-    if (qmods & Qt::KeypadModifier) {
+    if (in.mods & Qt::KeypadModifier) {
         for (const auto& k : kKeypad) {
             if (k.key == key) {
                 out.key = k.name;
@@ -125,13 +204,38 @@ QtKeyDecode chord_from_qt_key(int key, Qt::KeyboardModifiers qmods, bool auto_re
         }
     }
 
+    // Everything below depends on the layout. AltGr takes a third character
+    // off the key and no profile can name AltGr: on AZERTY, AltGr+3 types
+    // "#", and that is not shift+3.
+    if ((in.mods & Qt::GroupSwitchModifier) || (in.xkb_mods & kXkbMod5)) {
+        return QtKeyDecode::Unrecognised;
+    }
+
+    // The digit row, by the key. Shift is whatever Qt says, whatever the key
+    // typed -- a dead key included, such as ABNT2's Shift+6.
+    const int d = digit_row(in.xkb_keycode);
+    if (d >= 0) {
+        out.key = std::string(1, static_cast<char>('0' + d));
+        out.mods = mods;
+        return QtKeyDecode::Chord;
+    }
+    // A digit or a shifted digit from any other key, or from a key the
+    // platform did not identify, cannot be placed: AZERTY types "!" and "*"
+    // unshifted, on keys far from the digit row. The keypad's were named
+    // above.
+    if ((key >= Qt::Key_0 && key <= Qt::Key_9) || is_shifted_digit(key)) {
+        return QtKeyDecode::Unrecognised;
+    }
+    if (is_dead_key(key)) return QtKeyDecode::Unrecognised;
+
     if (key >= Qt::Key_A && key <= Qt::Key_Z) {
         out.key = std::string(1, static_cast<char>('a' + (key - Qt::Key_A)));
         out.mods = mods;
         return QtKeyDecode::Chord;
     }
-    if (key >= Qt::Key_0 && key <= Qt::Key_9) {
-        out.key = std::string(1, static_cast<char>('0' + (key - Qt::Key_0)));
+    // A letter key on a layout with no Latin letter on it.
+    if (const char l = us_letter_at(in.xkb_keycode); l != 0 && key > 0x7f) {
+        out.key = std::string(1, l);
         out.mods = mods;
         return QtKeyDecode::Chord;
     }
@@ -159,15 +263,23 @@ QtKeyDecode chord_from_qt_key(int key, Qt::KeyboardModifiers qmods, bool auto_re
     return QtKeyDecode::Unrecognised;
 }
 
-std::vector<KeyChord> qt_device_chords() {
-    std::vector<int> keys;
-    for (const auto& k : kNamed) keys.push_back(k.key);
-    keys.push_back(Qt::Key_Backtab);
-    for (int k = Qt::Key_A; k <= Qt::Key_Z; ++k) keys.push_back(k);
-    for (int k = 0x21; k < 0x7f; ++k) {
-        if (!(k >= Qt::Key_A && k <= Qt::Key_Z)) keys.push_back(k);
+std::vector<KeyChord> qt_device_chords(bool scan_codes_are_xkb) {
+    std::vector<QtKeyInput> keys;
+    const auto key = [&keys](int k, quint32 xkb) {
+        QtKeyInput in;
+        in.key = k;
+        in.xkb_keycode = xkb;
+        keys.push_back(in);
+    };
+    for (const auto& k : kNamed) key(k.key, 0);
+    key(Qt::Key_Backtab, 0);
+    key(Qt::Key_Clear, 0);
+    for (int k = 0x21; k < 0x7f; ++k) key(k, 0);
+    if (scan_codes_are_xkb) {
+        for (quint32 i = 0; i < 10; ++i) {
+            key(Qt::Key_0 + static_cast<int>((i + 1) % 10), kXkbDigitRow + i);
+        }
     }
-    keys.push_back(Qt::Key_Clear);
 
     std::vector<KeyChord> chords;
     const auto add = [&chords](const KeyChord& c) {
@@ -176,7 +288,7 @@ std::vector<KeyChord> qt_device_chords() {
         }
         chords.push_back(c);
     };
-    for (int key : keys) {
+    for (QtKeyInput in : keys) {
         for (unsigned bits = 0; bits < 32; ++bits) {
             Qt::KeyboardModifiers m;
             if (bits & 1) m |= Qt::ControlModifier;
@@ -184,8 +296,9 @@ std::vector<KeyChord> qt_device_chords() {
             if (bits & 4) m |= Qt::ShiftModifier;
             if (bits & 8) m |= Qt::MetaModifier;
             if (bits & 16) m |= Qt::KeypadModifier;
+            in.mods = m;
             KeyChord c;
-            if (chord_from_qt_key(key, m, false, c) != QtKeyDecode::Chord) continue;
+            if (chord_from_qt_key(in, c) != QtKeyDecode::Chord) continue;
             // wlroots turns Ctrl+Alt+Fn into a VT switch before any client
             // sees it. The image has no getty to switch to, but the key
             // still never reaches us.

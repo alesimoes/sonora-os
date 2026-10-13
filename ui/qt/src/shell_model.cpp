@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell_model.h"
 
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QQuickWindow>
 #include <algorithm>
@@ -46,6 +47,7 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     clock_.start();
     for (uint32_t i = 0; i < engine_.info().track_count; ++i) armed_.push_back(false);
     replies_.reserve(16);
+    xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
 }
 
 void ShellModel::start(int hz) {
@@ -115,7 +117,7 @@ bool ShellModel::eventFilter(QObject* watched, QEvent* event) {
         case QEvent::KeyPress: {
             auto* k = static_cast<QKeyEvent*>(event);
             KeyChord chord;
-            switch (chord_from_qt_key(k->key(), k->modifiers(), k->isAutoRepeat(), chord)) {
+            switch (chord_from_qt_key(qt_key_input(*k, xkb_scan_codes_), chord)) {
                 case QtKeyDecode::Chord:
                     report(router_.route(chord));
                     break;
