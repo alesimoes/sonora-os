@@ -13,6 +13,8 @@ One line per entry. Agents read this before opening anything else.
 - [ADR-0008](decisions/ADR-0008-portability.md) — portability (owner, 2026-10-12): neutral modules are standard C++17 only, platform code sits in `drivers/*`, `engine/app`, `ui/tui` and `common/platform`; `SONORA_PLATFORM` selects linux/neutral/windows(reserved); a required MSVC `windows-latest` job builds and tests the neutral modules; Windows backend will be ASIO, its licence unverified; Linux first.
 - [ADR-0009](decisions/ADR-0009-timeline-snapshots-and-plan-swap.md) — accepted (engine owner, 2026-10-13): the edit state is an immutable value and undo a pointer, bounded by bytes with an engine-sent undo floor; resolved operations through a pure `apply` are both undo and UI replication; sources append-only and mix outside undo; playlists never overlap; a plan is published only once its audio is resident in per-plan chunk slots, retired by a seq_cst block counter; takes close in-band while rolling; canonical strict JSON through a new `common/json`.
 
+- [ADR-0010](decisions/ADR-0010-kiosk-compositor.md) — **Accepted by the owner 2026-10-13.** labwc as a configured kiosk (no keybinds, UI always-on-bottom, editors floating via lazy Xwayland), Qt on native Wayland, logind via `libpam-systemd`; engine, compositor, UI and tty2 TUI in independent units with an `OnFailure` fallback to tty2. sway is the fallback if labwc fails on real hardware; cage, weston kiosk-shell and EGLFS (not in Debian's Qt) rejected.
+
 ## Specs
 - [Plugin latency compensation](specs/plugin-latency-compensation.md) — real-time plugin playback, PDC, and why the graph must be parallel from the start.
 - [BWF](specs/bwf-broadcast-wave.md) — the `bext` chunk layout we write, field by field.
