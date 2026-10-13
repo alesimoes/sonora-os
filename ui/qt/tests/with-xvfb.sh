@@ -31,3 +31,12 @@ until [ -s "$dir/display" ]; do
 done
 
 DISPLAY=":$(cat "$dir/display")" "$@"
+status=$?
+# A failure to reach the display looks the same from the client side whether
+# the server died or refused; its own log tells them apart.
+if [ "$status" -ne 0 ]; then
+  if kill -0 "$xvfb" 2>/dev/null; then state=running; else state=gone; fi
+  echo "with-xvfb.sh: exit $status, Xvfb $state, display :$(cat "$dir/display"); its log:" >&2
+  cat "$dir/xvfb.log" >&2
+fi
+exit "$status"
