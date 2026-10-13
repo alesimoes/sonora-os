@@ -21,6 +21,7 @@
 #include "sonora/command.h"
 #include "sonora/device_policy.h"
 #include "sonora/exit_watchdog.h"
+#include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
 #include "sonora/keymap.h"
 #include "sonora/memory_lock.h"
@@ -34,9 +35,18 @@ namespace {
 using sonora::backend::AudioBackend;
 
 // The one place that names a concrete backend; everything below speaks
-// AudioBackend. ADR-0007 M3 adds "fake" here.
+// AudioBackend. "fake" is drivers/fake on its own thread at real-time pace,
+// shaped as the UMC1820, so the whole engine runs with no audio server;
+// "fake:onboard" is a laptop's 2-input onboard audio instead.
 std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
     if (name == "jack") return std::make_unique<sonora::JackBackend>();
+    if (name == "fake" || name == "fake:onboard") {
+        sonora::FakeBackend::Config cfg = name == "fake"
+                                              ? sonora::FakeBackend::Config{}
+                                              : sonora::FakeBackend::onboard_config();
+        cfg.mode = sonora::FakeBackend::Mode::Thread;
+        return std::make_unique<sonora::FakeBackend>(cfg);
+    }
     return nullptr;
 }
 
@@ -368,6 +378,7 @@ int main(int argc, char** argv) {
     bool arm_all = false;
     std::string keymap_path;
     std::string capture_device;
+    std::string backend_name = "jack";
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -394,6 +405,8 @@ int main(int argc, char** argv) {
             keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             capture_device = argv[++i];
+        } else if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+            backend_name = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(
                 "usage: sonora-engine [options]\n"
@@ -404,6 +417,9 @@ int main(int argc, char** argv) {
                 "                    /etc/sonora/device; without those, the one USB\n"
                 "                    audio interface or, once the wait is over with\n"
                 "                    none, the one onboard device\n"
+                "  --backend NAME    jack (default), or fake: no audio server, an\n"
+                "                    18-in UMC1820 with a distinct tone per channel\n"
+                "                    (fake:onboard: 2-in onboard audio instead)\n"
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
@@ -417,6 +433,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "sonora: unknown option %s\n", argv[i]);
             return 2;
         }
+    }
+
+    // Before anything else is set up: a misspelled backend is a usage error.
+    if (!make_backend(backend_name)) {
+        std::fprintf(stderr, "sonora: unknown backend %s (jack, fake, fake:onboard)\n",
+                     backend_name.c_str());
+        return 2;
     }
 
     if (record_seconds > 0.0 && !arm_all) {
@@ -445,7 +468,7 @@ int main(int argc, char** argv) {
     std::string onboard_notice;
 
     // First, while this is the only thread: it may set the environment.
-    prepare_backend("jack");
+    prepare_backend(backend_name);
 
     // Before anything that waits: wait_for_inputs() can sit for a minute at
     // boot, and a SIGTERM or hangup in that time must still end in a clean
@@ -492,7 +515,7 @@ int main(int argc, char** argv) {
         // chosen device counts: onboard audio's two ports are not channels
         // of the interface, nor the interface's eighteen of onboard audio.
         // A backend of its own, gone before the session's is opened.
-        const std::unique_ptr<AudioBackend> probe = make_backend("jack");
+        const std::unique_ptr<AudioBackend> probe = make_backend(backend_name);
         std::vector<sonora::backend::PortInfo> all, ports;
         std::string why;
         bool said = false;
@@ -543,7 +566,7 @@ int main(int argc, char** argv) {
 
     // Declared after the session, so it is destroyed first: its destructor
     // deactivates, and the callback never outlives what it calls into.
-    const std::unique_ptr<AudioBackend> audio = make_backend("jack");
+    const std::unique_ptr<AudioBackend> audio = make_backend(backend_name);
     std::string backend_error;
     // Destroyed before `audio`, so every way out from here bounds the
     // backend's teardown; the explicit deactivate() calls below arm it first

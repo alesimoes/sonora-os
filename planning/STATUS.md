@@ -49,6 +49,18 @@ end of its run. Keep it short: what is true now, not a diary.
   attached, so the USB rule (aliases -> `/proc/asound/<card>/usbid`) is
   unproven on hardware, and the onboard fallback is unproven on the
   owner's laptop.
+- **ADR-0007 M3, `drivers/fake` and the conformance suite
+  (`feature/fake-backend`).** `FakeBackend` (platform-neutral) runs
+  `process()` from `run_blocks()` on the caller's thread or on its own
+  thread; UMC1820 (18/20, USB) and onboard (2/2) shapes; tones matching
+  `verify-recording.py`, silence, impulses; captured outputs; injections
+  for port naming without `AUX`, lexicographic listing, ids out of order,
+  late enumeration, xrun, clock step, rate, quantum, unplug, stall, server
+  loss. `contracts/backend/conformance` checks the contract's guarantees;
+  it passes on six fake rigs in ctest and against JackBackend on PipeWire
+  in `tools/test-engine-docker.sh` (xrun and clock step skipped there: not
+  causable on demand). `sonora-engine --backend fake` records 18 verified
+  tracks with no audio server. Container only; no hardware involved.
 - **PR #16 follow-ups (on `contract/backend`).** A take that fails while
   recording (full disk, 4 GB limit) is shown at once in red on the terminal
   UI, from `Session::take_failure()`, until the next take records cleanly;

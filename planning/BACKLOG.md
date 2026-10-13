@@ -21,8 +21,8 @@ playback can follow edits; it is in flight.
 ### Track 1: engine (rt-engineer; driver-engineer for M3; auditor gates)
 
 1. [ ] M2 backend contract, `contract/backend` (in review).
-2. [ ] M3 `drivers/fake` and the conformance suite, with the two port-order
-       injections ("ADR-0007 follow-ups").
+2. [x] M3 `drivers/fake` and the conformance suite, with the two port-order
+       injections ("ADR-0007 follow-ups"). `feature/fake-backend`.
 3. [ ] Playback: disk reader, chunk pool, residency-gated plan swap, output
        through the fixed 2-channel monitor bus (DAW 1 detail, below).
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
@@ -230,7 +230,7 @@ not start or extend those items before the Complete DAW closes (owner,
       ports) through the real ALSA → PipeWire → JACK path, with the engine
       actually recording. The count is per node. driver-engineer with
       distro-engineer.
-- [ ] With M3, `drivers/fake` gains two injections from the measurements:
+- [x] With M3, `drivers/fake` gains two injections from the measurements:
       ports named without `AUX` (`capture_1..N`, what `snd-aloop` gives
       without `audio.position`), and registry ids out of channel order. The
       engine must still connect them in channel order. driver-engineer.
@@ -368,8 +368,8 @@ Order and owners are in ADR-0008 §5.
       of the retirement protocol (§4.1). rt-engineer, gated by
       rt-safety-auditor.
 - [ ] Playback to `AudioBlock::outputs` through the monitor bus. The
-      exit-criterion ctest needs `drivers/fake` with captured outputs, so it
-      waits for ADR-0007 M3. rt-engineer.
+      exit-criterion ctest needs `drivers/fake` with captured outputs
+      (`FakeBackend::read_output()`, from M3). rt-engineer.
 - [ ] Measure, before the reader is written: mixed record+playback
       throughput and worst-case read latency on a physical stick's
       persistence partition (18 in, 18 out, 8 k and 16 k frame chunks,

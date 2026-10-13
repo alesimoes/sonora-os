@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sonora/alsa_card.h"
+#include "sonora/fatal_reason.h"
 #include "sonora/frame_clock.h"
 #include "sonora/period_guard.h"
 #include "sonora/port_devices.h"
@@ -77,10 +78,6 @@ std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) 
     return drivers::describe_ports(std::move(names), [&usb](const std::string& n) {
         return std::find(usb.begin(), usb.end(), n) != usb.end();
     });
-}
-
-std::string device_of(const std::string& port) {
-    return port.substr(0, port.find(':'));
 }
 
 }  // namespace
@@ -465,37 +462,16 @@ bool JackBackend::fatal() const { return impl_->guard.check_stall(now_ns()); }
 
 std::string JackBackend::fatal_reason() const {
     const Impl& d = *impl_;
+    drivers::FatalContext context;
+    context.rate = d.rate;
+    context.admitted_frames = d.guard.frames();
+    context.max_frames = d.scratch.size();
     const drivers::PeriodGuard::State state = d.guard.state();
-    const uint32_t detail = state.detail;
-    switch (state.why) {
-        case Fatal::None:
-            return {};
-        case Fatal::ServerGone:
-            return "the audio server went away";
-        case Fatal::DeviceGone: {
-            std::lock_guard<std::mutex> lock(d.sources_mutex);
-            if (d.gone_port.empty()) return "a capture device went away";
-            return "capture device " + device_of(d.gone_port) +
-                   " went away (" + d.gone_port + " is gone)";
-        }
-        case Fatal::Stalled:
-            return "the audio server ran no period for over a second";
-        case Fatal::RateChanged:
-            return "the audio server changed its sample rate mid-session (" +
-                   std::to_string(d.rate) + " -> " + std::to_string(detail) +
-                   " Hz)";
-        case Fatal::BufferChanged:
-            if (d.guard.frames() == 0) {
-                return "the audio server's period of " + std::to_string(detail) +
-                       " frames is more than the " +
-                       std::to_string(d.scratch.size()) +
-                       " this backend can hold";
-            }
-            return "the audio server changed its buffer size mid-session (" +
-                   std::to_string(d.guard.frames()) + " -> " +
-                   std::to_string(detail) + " frames)";
+    if (state.why == Fatal::DeviceGone) {
+        std::lock_guard<std::mutex> lock(d.sources_mutex);
+        context.gone_port = d.gone_port;
     }
-    return {};
+    return drivers::describe_fatal(state, context);
 }
 
 }  // namespace sonora
