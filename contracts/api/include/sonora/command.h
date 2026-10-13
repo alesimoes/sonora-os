@@ -138,6 +138,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
          "Fade from the insertion point to the region end"},
         {"edit.fade_selection", CommandTarget::None, "Fade or crossfade the selection"},
 
+        // --- windows ---
+        {"window.toggle_mix_edit", CommandTarget::None,
+         "Switch between the Edit and Mix windows"},
+
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},
         {"app.quit", CommandTarget::None, "Leave the engine"},

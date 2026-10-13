@@ -25,6 +25,11 @@
     "cmd+v": "edit.paste",
     "cmd+a": "edit.select_all",
     "cmd+s": "app.save",
+    "x": {
+      "command": "window.toggle_mix_edit",
+      "verified": false,
+      "comment": "Logic's X shows or hides the Mixer inside the main window; here it switches to the Mix window and back. Not yet checked against the 12.3 guide."
+    },
     "cmd+q": "app.quit",
     "cmd+t": "edit.separate_at_selection",
     "cmd+j": "edit.heal_separation",

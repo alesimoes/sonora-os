@@ -69,6 +69,11 @@
     "ctrl+e": "edit.separate_at_selection",
     "ctrl+h": "edit.heal_separation",
     "ctrl+s": "app.save",
+    "ctrl+equal": {
+      "command": "window.toggle_mix_edit",
+      "verified": false,
+      "comment": "Command+= / Control+=, Toggle Mix/Edit windows. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "ctrl+q": {
       "command": "app.quit",
       "verified": false,

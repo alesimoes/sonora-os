@@ -2,7 +2,9 @@
 //
 // sonora-ui: the Qt 6 interface, a separate process from the engine
 // (ADR-0007 §3). Until M4 it draws a synthetic engine through EngineAdapter;
-// see engine_adapter.h for exactly what M4 replaces.
+// see engine_adapter.h for exactly what M4 replaces. The session it edits is
+// a LocalDocument behind TimelineDocument, the model seam; see
+// timeline_document.h for what common/model and M7 replace.
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QImage>
@@ -15,11 +17,15 @@
 
 #include "key_router.h"
 #include "measure.h"
+#include "peak_source.h"
 #include "qt_keys.h"
 #include "register_types.h"
 #include "render_path.h"
+#include "session_model.h"
 #include "shell_model.h"
 #include "synthetic_engine.h"
+#include "theme.h"
+#include "timeline_document.h"
 
 using namespace sonora;
 using namespace sonora::ui;
@@ -39,6 +45,7 @@ struct Options {
     double engine_dies_after_s = -1;
     bool no_meters = false;
     bool demo = false;
+    QString window = QStringLiteral("edit");
 };
 
 bool parse(QGuiApplication& app, Options& o) {
@@ -74,9 +81,14 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption nometers({QStringLiteral("no-meters")},
                                       QStringLiteral("Hide the meters (baseline for --measure)."));
     const QCommandLineOption demo({QStringLiteral("demo")},
-                                  QStringLiteral("Arm tracks 1-8 and start a take, through the "
-                                                 "same commands their keys send."));
-    p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo});
+                                  QStringLiteral("Open a demo session of synthetic regions, arm "
+                                                 "tracks 1-8 and start a take, through the same "
+                                                 "commands their keys send."));
+    const QCommandLineOption window({QStringLiteral("window")},
+                                    QStringLiteral("Window to open on: edit (default) or mix."),
+                                    QStringLiteral("name"));
+    p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
+                  window});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -90,6 +102,11 @@ bool parse(QGuiApplication& app, Options& o) {
     if (p.isSet(dies)) o.engine_dies_after_s = p.value(dies).toDouble();
     o.no_meters = p.isSet(nometers);
     o.demo = p.isSet(demo);
+    if (p.isSet(window)) o.window = p.value(window);
+    if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
+        std::fprintf(stderr, "sonora-ui: --window must be edit or mix\n");
+        return false;
+    }
     if (o.tracks < 1 || o.tracks > 64) {
         std::fprintf(stderr, "sonora-ui: --tracks must be 1..64\n");
         return false;
@@ -137,6 +154,15 @@ int main(int argc, char** argv) {
                       static_cast<uint64_t>(a.opt.engine_dies_after_s * 1e9));
     }
 
+    // The session. With --demo, synthetic regions laid out like a tracking
+    // session, and the Edit window says the audio is synthetic; without it,
+    // empty tracks, one per input.
+    const uint32_t rate = engine.info().sample_rate;
+    LocalDocument document(a.opt.demo ? make_demo_session(engine.info().track_count, rate)
+                                      : make_empty_session(engine.info().track_count, rate));
+    SyntheticPeakSource peaks(rate, document.snapshot().settings.bpm);
+    SessionModel session(document, peaks, a.opt.demo);
+
     KeyRouter router(keymap, engine.info().implemented_commands,
                      [&engine](const std::string& c, const CommandContext& ctx) {
                          return engine.send(c, ctx);
@@ -149,12 +175,18 @@ int main(int argc, char** argv) {
         QTimer::singleShot(0, qApp, &QCoreApplication::quit);
         return true;
     });
+    session.installCommands(router.local());
+    router.setSelection([&session]() { return session.selectedTrackForCommands(); });
     const std::vector<std::string> notices =
         router.prepare(qt_device_chords(qt_scan_codes_are_xkb(QGuiApplication::platformName())));
 
     register_types();
     ShellModel model(engine, router);
     a.model = &model;
+    model.setTransportSink([&session](const TransportSnapshot& t, bool alive) {
+        session.onTransport(t, alive);
+    });
+    session.setWindow(a.opt.window);
     if (!refusal.empty()) model.addNotice(QString::fromStdString(refusal));
     for (const auto& n : notices) {
         std::fprintf(stderr, "sonora-ui: key map \"%s\": %s\n", keymap.name().c_str(), n.c_str());
@@ -163,9 +195,10 @@ int main(int argc, char** argv) {
 
     QQuickView view;
     view.setTitle(QStringLiteral("Sonora"));
-    view.setColor(QColor(0x0f, 0x11, 0x14));
+    view.setColor(QColor::fromRgba(theme::kWindow));
     view.setResizeMode(QQuickView::SizeRootObjectToView);
-    view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)}});
+    view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
+                               {QStringLiteral("session"), QVariant::fromValue(&session)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
@@ -189,6 +222,16 @@ int main(int argc, char** argv) {
     if (a.opt.demo) {
         for (int t = 0; t < 8 && t < a.opt.tracks; ++t) model.invoke(QStringLiteral("track.toggle_arm"), t);
         model.invoke(QStringLiteral("transport.record"), -1);
+        // Once the window has its size: the whole session in view, and the
+        // snare's second region selected, so a screenshot shows what a
+        // selected region looks like.
+        QTimer::singleShot(200, &app, [&session, &model]() {
+            model.invoke(QStringLiteral("zoom.fit_session"), -1);
+            const int track = std::min(1, session.trackCount() - 1);
+            const auto* p = session.controller().snapshot().edit->tracks[track]->active();
+            if (p && p->regions.size() > 1) session.controller().select_region(p->regions[1].id);
+            model.invoke(QStringLiteral("track.select"), track);
+        });
     }
 
     std::unique_ptr<FrameMeter> meter;

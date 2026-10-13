@@ -32,23 +32,28 @@ in_cage() {
 if [[ "$MODE" == screenshot ]]; then
   # Captured by the compositor (grim, over wlr-screencopy), not by the
   # application, so the picture is what the kiosk actually put on the output.
-  # The second shot is the same shell after the engine stops answering.
-  # shellcheck disable=SC2016  # expanded by the inner shell, inside cage
-  in_cage sh -c '
-    "$1" --kiosk --demo & ui=$!
-    sleep 5
-    grim "/out/$2"
-    kill "$ui"; wait "$ui" || true
-  ' sh "$UI" "$SHOT"
+  # Three shots of the demo session: the Edit window, the Mix window, and
+  # the Edit window after the engine stops answering. NAME.png is the Edit
+  # window; the Mix window is NAME-mix.png, with a trailing "-edit" in NAME
+  # dropped, so sonora-ui-edit.png gives sonora-ui-mix.png.
+  shoot() {  # file, then sonora-ui arguments
+    local file="$1"
+    shift
+    # shellcheck disable=SC2016  # expanded by the inner shell, inside cage
+    in_cage sh -c '
+      out="$1"; shift
+      "$@" & ui=$!
+      sleep 5
+      grim "/out/$out"
+      kill "$ui"; wait "$ui" || true
+    ' sh "$file" "$UI" --kiosk --demo --keymap keymaps/protools.json "$@"
+  }
   base="${SHOT%.png}"
-  # shellcheck disable=SC2016
-  in_cage sh -c '
-    "$1" --kiosk --demo --engine-dies-after 2 & ui=$!
-    sleep 5
-    grim "/out/$2"
-    kill "$ui"; wait "$ui" || true
-  ' sh "$UI" "$base-no-engine.png"
-  echo "saved /out/$SHOT and /out/$base-no-engine.png"
+  mix="${base%-edit}-mix.png"
+  shoot "$SHOT" --window edit
+  shoot "$mix" --window mix
+  shoot "$base-no-engine.png" --window edit --engine-dies-after 2
+  echo "saved /out/$SHOT, /out/$mix and /out/$base-no-engine.png"
   exit 0
 fi
 

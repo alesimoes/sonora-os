@@ -15,17 +15,21 @@ if(NOT SONORA_BUILD_UI)
   return()
 endif()
 
-find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Qml Quick Test)
+# 6.7 for QSGTextNode (scene-graph text in the timeline and rulers) and
+# QFont::Tag (tabular figures). Debian trixie ships 6.8.
+find_package(Qt6 6.7 QUIET COMPONENTS Core Gui Qml Quick Test)
 if(NOT Qt6_FOUND)
-  message(STATUS "ui/qt: Qt 6 (Core Gui Qml Quick Test) not found; sonora-ui and its tests are skipped")
+  message(STATUS "ui/qt: Qt 6.7+ (Core Gui Qml Quick Test) not found; sonora-ui and its tests are skipped")
   return()
 endif()
 message(STATUS "ui/qt: building sonora-ui against Qt ${Qt6_VERSION}")
 
 # Everything but main(), so the tests drive the same code the binary runs.
-# The Qt-free parts (meter_model, key_router, synthetic_engine) are kept free
-# of Qt on purpose: they are what M4 touches, and what a test can check
-# without a display.
+# The Qt-free parts (meter_model, key_router, synthetic_engine, and the
+# Edit/Mix logic: timeline_model, timeline_document, edit_controller,
+# timeline_scene, time_format, fader_taper, peak_source, theme) are kept free
+# of Qt on purpose: they are what M4 and common/model touch, and what a test
+# can check without a display.
 add_library(sonora_ui_qt STATIC
   src/engine_adapter.h
   src/synthetic_engine.h src/synthetic_engine.cpp
@@ -37,6 +41,16 @@ add_library(sonora_ui_qt STATIC
   src/render_path.h src/render_path.cpp
   src/measure.h src/measure.cpp
   src/register_types.h
+  src/theme.h src/theme_object.h
+  src/timeline_model.h src/timeline_model.cpp
+  src/timeline_document.h src/timeline_document.cpp
+  src/peak_source.h src/peak_source.cpp
+  src/time_format.h src/time_format.cpp
+  src/fader_taper.h src/fader_taper.cpp
+  src/edit_controller.h src/edit_controller.cpp
+  src/timeline_scene.h src/timeline_scene.cpp
+  src/scene_item.h src/scene_item.cpp
+  src/session_model.h src/session_model.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
@@ -45,7 +59,8 @@ target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap Qt6::Core Qt6::Gui Qt6::
 target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
 qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
-  FILES qml/Main.qml
+  FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/EditWindow.qml
+        qml/MixWindow.qml qml/ChannelStrip.qml
 )
 
 add_executable(sonora-ui src/main.cpp)
@@ -66,6 +81,16 @@ target_compile_definitions(test_ui_keys PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_keys COMMAND test_ui_keys)
 set_tests_properties(ui_keys PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The Edit and Mix logic, without Qt: model operations and undo, gestures
+# and keys into operations, zoom and scroll mapping, the fader taper, time
+# formats, and which rectangle covers which pixel.
+add_executable(test_ui_edit tests/test_edit.cpp)
+target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt)
+target_compile_definitions(test_ui_edit PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_edit COMMAND test_ui_edit)
+set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)

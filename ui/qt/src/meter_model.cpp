@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "theme.h"
+
 namespace sonora::ui {
 
 namespace {
@@ -21,15 +23,16 @@ constexpr ScalePoint kScale[] = {
     {-20.0f, 0.50f}, {-12.0f, 0.68f}, {-6.0f, 0.83f},  {0.0f, 1.00f},
 };
 
-constexpr uint32_t kBackground = 0xff15181c;
-constexpr uint32_t kNoDataBackground = 0xff2a2d31;
-constexpr uint32_t kGreen = 0xff3fbf7f;
-constexpr uint32_t kAmber = 0xffe0b040;
-constexpr uint32_t kRed = 0xffe5484d;
-constexpr uint32_t kHold = 0xffeef1f4;
-constexpr uint32_t kOverOff = 0xff30343a;
-constexpr uint32_t kOverOn = 0xffff2d2d;
-constexpr uint32_t kMark = 0xff5a6068;
+// Every colour is a design token (theme.h, brain/specs/ui-design.md).
+constexpr uint32_t kBackground = theme::kMeterWell;
+constexpr uint32_t kNoDataBackground = theme::kMeterNoData;
+constexpr uint32_t kGreen = theme::kMeterGreen;
+constexpr uint32_t kAmber = theme::kMeterAmber;
+constexpr uint32_t kRed = theme::kMeterRed;
+constexpr uint32_t kHold = theme::kMeterHold;
+constexpr uint32_t kOverOff = theme::kMeterOverOff;
+constexpr uint32_t kOverOn = theme::kMeterOverOn;
+constexpr uint32_t kMark = theme::kMeterMark;
 
 }  // namespace
 

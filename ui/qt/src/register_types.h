@@ -4,16 +4,28 @@
 #include <QtQml>
 
 #include "meter_item.h"
+#include "scene_item.h"
+#include "session_model.h"
 #include "shell_model.h"
+#include "theme_object.h"
 
 namespace sonora::ui {
 
-// The `Sonora` QML module: the meter item, and the shell model as a type QML
-// can name but not create (there is exactly one, made in main()).
+// The `Sonora` QML module: the scene-graph items (meter, timeline, ruler),
+// the two models as types QML can name but not create (there is exactly one
+// of each, made in main()), and the Theme singleton.
 inline void register_types() {
     qmlRegisterType<MeterItem>("Sonora", 1, 0, "Meter");
+    qmlRegisterType<TimelineItem>("Sonora", 1, 0, "Timeline");
+    qmlRegisterType<RulerItem>("Sonora", 1, 0, "Ruler");
     qmlRegisterUncreatableType<ShellModel>("Sonora", 1, 0, "ShellModel",
                                            QStringLiteral("made once, in main()"));
+    qmlRegisterUncreatableType<SessionModel>("Sonora", 1, 0, "SessionModel",
+                                             QStringLiteral("made once, in main()"));
+    qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
+                                          [](QQmlEngine*, QJSEngine*) -> QObject* {
+                                              return new ThemeObject;
+                                          });
 }
 
 }  // namespace sonora::ui

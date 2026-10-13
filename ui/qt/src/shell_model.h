@@ -89,6 +89,11 @@ public:
     using Clock = std::function<uint64_t()>;
     void setClock(Clock c) { now_ns_ = std::move(c); }
 
+    // Called every tick with the engine's transport, after the meters: the
+    // Edit window's playhead. A C++ call, never a signal (ADR-0006).
+    using TransportSink = std::function<void(const TransportSnapshot&, bool alive)>;
+    void setTransportSink(TransportSink s) { transport_sink_ = std::move(s); }
+
     // Measurement hooks; null when not measuring.
     void setTickStats(TickStats* s) { stats_ = s; }
 
@@ -116,6 +121,14 @@ public:
     // The same path as a key, for a click: the arm button sends exactly what
     // the profile's arm key would.
     Q_INVOKABLE void invoke(const QString& command, int target);
+    // Whether this build can run `command`, for drawing a control as
+    // unavailable instead of letting it look live.
+    Q_INVOKABLE bool implemented(const QString& command) const {
+        return router_.implemented(command.toStdString());
+    }
+    // A line for the status line, from anything that is not a key: a
+    // refused mouse gesture, say.
+    Q_INVOKABLE void say(const QString& message);
 
     // Where `db` sits on a meter of height `h`, in the meter's coordinates,
     // so the scale labels beside the meters use the meters' own mapping.
@@ -137,7 +150,6 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    void say(const QString& message);
     void report(const RouteResult& r);
     void refreshState();
 
@@ -149,6 +161,12 @@ private:
     int hz_ = 60;
     unsigned tick_count_ = 0;
     std::vector<MeterItem*> meters_;
+    // One peak per channel per tick, however many meters show the channel:
+    // take_peak() moves this reader's cursor, so a second read in the same
+    // tick would see nothing and draw a meter that lies.
+    std::vector<float> peaks_;
+    std::vector<bool> peak_read_;
+    TransportSink transport_sink_;
     std::vector<CommandOutcome> replies_;
     TickStats* stats_ = nullptr;
     Clock now_ns_;

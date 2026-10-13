@@ -7,9 +7,11 @@
 # with the UI ones included -- headless, on Qt's offscreen platform.
 #
 #   tools/build-ui.sh                       build, then ctest
-#   tools/build-ui.sh --screenshot PATH     ... then the shell under the
-#                                           cage kiosk compositor, captured by
-#                                           the compositor itself (grim)
+#   tools/build-ui.sh --screenshot PATH     ... then the Edit window, the Mix
+#                                           window (PATH-mix.png) and the
+#                                           engine-gone state under the cage
+#                                           kiosk compositor, captured by the
+#                                           compositor itself (grim)
 #   tools/build-ui.sh --measure [SECONDS]   ... then frame time and CPU cost
 #                                           of the shell, meters on and off,
 #                                           under Xvfb and under cage
@@ -55,7 +57,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,21p' "${BASH_SOURCE[0]}"
+      sed -n '2,22p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
