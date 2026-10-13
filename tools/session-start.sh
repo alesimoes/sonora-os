@@ -64,6 +64,10 @@ if [[ -f planning/STATUS.md ]]; then
     | head -n 6 | sed 's/^/Owner decision pending: /;2,$s/^Owner decision pending: /    /'
 fi
 
+# One line from the catalogue, so every session starts knowing where the
+# product stands. Offline and fast; a failure just prints nothing.
+[[ -x tools/progress.sh ]] && tools/progress.sh --summary 2>/dev/null
+
 echo
 echo "This is a starting summary. Before relying on it, run the branch handoff's"
 echo "Verify command. Read more only as the task needs it: the handoff's Pointers,"
