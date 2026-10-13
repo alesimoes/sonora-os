@@ -7,8 +7,10 @@
 // Layout cases are synthetic key events built as Qt's xcb and Wayland
 // plugins deliver them: Qt's key from the layout, the modifiers, the XKB
 // keycode of the physical key, the native modifier mask and the text.
+#include <QFile>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QTemporaryDir>
 #include <cstdio>
 #include <string>
 
@@ -369,6 +371,38 @@ int main(int argc, char** argv) {
         CHECK(quit);
         // "r" is Logic's record.
         CHECK(router.route(chord_of(Qt::Key_R, none)).command == "transport.record");
+    }
+
+    // --- a refused profile: the built-in keys, and a line naming why ---
+    {
+        const std::string builtin = KeyMap::built_in_default().name();
+        std::string refusal = "stale";
+        KeyMap m = keymap_or_built_in("", refusal);
+        CHECK(m.name() == builtin);
+        CHECK(refusal.empty());
+
+        m = keymap_or_built_in(dir + "/protools.json", refusal);
+        CHECK(m.name() != builtin);
+        CHECK(refusal.empty());
+
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString bad = tmp.filePath(QStringLiteral("bad.json"));
+        QFile f(bad);
+        CHECK(f.open(QIODevice::WriteOnly));
+        f.write(R"({"name": "Bad", "bindings": {"space": "transport.no_such_command"}})");
+        f.close();
+        m = keymap_or_built_in(bad.toStdString(), refusal);
+        CHECK(m.name() == builtin);
+        CHECK(refusal.find("refused") != std::string::npos);
+        CHECK(refusal.find(bad.toStdString()) != std::string::npos);
+        CHECK(refusal.find("no_such_command") != std::string::npos);
+        std::printf("  refused: %s\n", refusal.c_str());
+
+        const std::string missing = tmp.filePath(QStringLiteral("absent.json")).toStdString();
+        m = keymap_or_built_in(missing, refusal);
+        CHECK(m.name() == builtin);
+        CHECK(refusal.find(missing) != std::string::npos);
     }
 
     std::printf("ui keys: all checks passed\n");

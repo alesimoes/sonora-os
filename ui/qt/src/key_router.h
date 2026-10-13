@@ -36,6 +36,15 @@ struct RouteResult {
     std::string message;
 };
 
+// The profile the interface runs on: the file at `path`, or the built-in
+// default when `path` is empty. A profile that fails to load is refused
+// whole, as at the tty -- nothing is partially applied. But this process has
+// no shell behind it, and exiting would leave a black screen and a restart
+// loop, so a refused profile gives the built-in default, and `refusal` the
+// line the footer holds for as long as the interface runs, naming the file
+// and the reason. `refusal` is empty when nothing was refused.
+KeyMap keymap_or_built_in(const std::string& path, std::string& refusal);
+
 class KeyRouter {
 public:
     using Send = std::function<uint64_t(const std::string&, const CommandContext&)>;

@@ -118,24 +118,9 @@ int main(int argc, char** argv) {
     App a;
     if (!parse(app, a.opt)) return 2;
 
-    // The key map. A profile that fails to load is refused whole, as at the
-    // tty -- nothing is partially applied. But this process has no shell
-    // behind it: exiting would leave a black screen and a restart loop. So
-    // it runs on the built-in default, and says so on screen in the footer
-    // for as long as it runs, naming the file and the reason.
-    KeyMap keymap = KeyMap::built_in_default();
-    QStringList load_notices;
-    if (!a.opt.keymap.isEmpty()) {
-        std::string err;
-        KeyMap loaded;
-        if (KeyMap::load_file(a.opt.keymap.toStdString(), loaded, err)) {
-            keymap = std::move(loaded);
-        } else {
-            std::fprintf(stderr, "sonora-ui: %s\n", err.c_str());
-            load_notices << QStringLiteral("key map refused, using the built-in keys: %1")
-                                .arg(QString::fromStdString(err));
-        }
-    }
+    std::string refusal;
+    const KeyMap keymap = keymap_or_built_in(a.opt.keymap.toStdString(), refusal);
+    if (!refusal.empty()) std::fprintf(stderr, "sonora-ui: %s\n", refusal.c_str());
 
     SyntheticEngine engine(static_cast<uint32_t>(a.opt.tracks));
     std::string error;
@@ -170,7 +155,7 @@ int main(int argc, char** argv) {
     register_types();
     ShellModel model(engine, router);
     a.model = &model;
-    for (const QString& n : load_notices) model.addNotice(n);
+    if (!refusal.empty()) model.addNotice(QString::fromStdString(refusal));
     for (const auto& n : notices) {
         std::fprintf(stderr, "sonora-ui: key map \"%s\": %s\n", keymap.name().c_str(), n.c_str());
         model.addNotice(QString::fromStdString(n));

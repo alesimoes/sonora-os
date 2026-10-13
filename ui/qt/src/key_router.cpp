@@ -15,6 +15,16 @@ std::string short_name(const std::string& command) {
 
 }  // namespace
 
+KeyMap keymap_or_built_in(const std::string& path, std::string& refusal) {
+    refusal.clear();
+    if (path.empty()) return KeyMap::built_in_default();
+    KeyMap loaded;
+    std::string err;
+    if (KeyMap::load_file(path, loaded, err)) return loaded;
+    refusal = "key map refused, using the built-in keys: " + err;
+    return KeyMap::built_in_default();
+}
+
 KeyRouter::KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send)
     : map_(std::move(map)), engine_(std::move(engine_implemented)), send_(std::move(send)) {}
 
