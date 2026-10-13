@@ -70,6 +70,8 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
     tracks_ = t;
     track_count_ = track_count;
     tick_ = 0;
+    // Value-initialised: zero, as the block's slots are now.
+    inserts_.reset(new InsertFields[std::size_t{capacity_tracks} * kInsertSlots]());
     return true;
 }
 
@@ -104,14 +106,22 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
         t.overruns.store(tracks[i].overruns, rel);
         t.clip_count.store(tracks[i].clip_count, rel);
         t.latency_frames.store(tracks[i].latency_frames, rel);
+        // Fifty fields a track that seldom move (a fault, a latency change,
+        // an edit): stored only when they changed. Every store lengthens the
+        // section a reader retries around, and storing them all on every
+        // publish starved a 60 Hz reader under TSan on a two-core runner.
+        // A slot left alone holds the value it would have been given.
+        InsertFields* published = &inserts_[std::size_t{i} * kInsertSlots];
         for (uint32_t k = 0; k < kInsertSlots; ++k) {
             const InsertFields& from = tracks[i].inserts[k];
+            if (std::memcmp(&from, &published[k], sizeof from) == 0) continue;
             InsertState& to = t.inserts[k];
             to.flags.store(from.flags, rel);
             to.latency_frames.store(from.latency_frames, rel);
             to.misses.store(from.misses, rel);
             to.worst_run_us.store(from.worst_run_us, rel);
             to.nonfinite.store(from.nonfinite, rel);
+            published[k] = from;
         }
     }
     h.seq.store(s + 2, rel);

@@ -37,11 +37,14 @@ namespace {
 constexpr uint32_t kTracks = 64;
 
 // Every field of publish k carries k, so a snapshot mixing two publishes
-// shows as fields that disagree.
+// shows as fields that disagree. With `inserts` false the insert slots stay
+// at 0, as they do between faults and edits; the writer then stores none of
+// them.
 struct Publish {
     TransportFields t;
     std::vector<TrackFields> tracks;
     std::vector<float> peaks;
+    bool inserts = true;
 
     explicit Publish(uint32_t n) : tracks(n), peaks(n, 0.0f) {}
 
@@ -63,6 +66,7 @@ struct Publish {
             tr.overruns = k;
             tr.clip_count = k;
             tr.latency_frames = k;
+            if (!inserts) continue;
             for (InsertFields& in : tr.inserts) {
                 in.flags = k;
                 in.latency_frames = k;
@@ -82,13 +86,19 @@ bool consistent(const TransportSnapshot& s) {
            s.compensation_shortfall_frames == k;
 }
 
-bool consistent(const TrackSnapshot& s) {
-    bool inserts = true;
+bool inserts_carry(const TrackSnapshot& s, uint32_t k) {
     for (const InsertSnapshot& in : s.inserts) {
-        inserts = inserts && in.flags == s.flags && in.latency_frames == s.flags &&
-                  in.misses == s.flags && in.worst_run_us == s.flags && in.nonfinite == s.flags;
+        if (in.flags != k || in.latency_frames != k || in.misses != k || in.worst_run_us != k ||
+            in.nonfinite != k) {
+            return false;
+        }
     }
-    return inserts && s.gain == static_cast<float>(s.flags) && s.overruns == s.flags &&
+    return true;
+}
+
+bool consistent(const TrackSnapshot& s) {
+    return (inserts_carry(s, s.flags) || inserts_carry(s, 0)) &&
+           s.gain == static_cast<float>(s.flags) && s.overruns == s.flags &&
            s.clip_count == s.flags && s.latency_frames == s.flags;
 }
 
@@ -217,11 +227,13 @@ void paced_writer_does_not_starve_a_60hz_reader() {
     StateWriter w;
     CHECK(w.init(mem.data(), mem.bytes(), kTracks, kTracks, 1'000'000));
     Publish first(kTracks);
+    first.inserts = false;
     first.fill(1);
     w.publish(first.t, first.tracks.data(), first.peaks.data());
     std::atomic<bool> stop{false};
     std::thread writer([&]() {
         Publish p(kTracks);
+        p.inserts = false;
         auto next = Clock::now();
         for (uint32_t k = 2; !stop.load(std::memory_order_relaxed); ++k) {
             p.fill(k);
@@ -481,6 +493,23 @@ void insert_slots_by_track() {
             CHECK(a.misses == 1000 * t + k && a.worst_run_us == 7 + k && a.nonfinite == t);
         }
     }
+
+    // The writer stores only slots that changed; none may be missed. One
+    // field of one slot moves, then moves back, then nothing moves.
+    const InsertFields before = p.tracks[1].inserts[3];
+    p.tracks[1].inserts[3].misses += 1;
+    w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK(v.track(1).inserts[3].misses == before.misses + 1);
+    CHECK(v.track(1).inserts[2].misses == 1002 && v.track(2).inserts[3].misses == 2003);
+    p.tracks[1].inserts[3] = before;
+    w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK(v.track(1).inserts[3].misses == before.misses);
+    w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK(v.track(1).inserts[3].misses == before.misses && v.track(1).inserts[3].present());
+    // A slot emptied reads as empty.
+    p.tracks[0].inserts[0] = InsertFields{};
+    w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK(!v.track(0).inserts[0].present() && v.track(0).inserts[0].latency_frames == 0);
 }
 
 }  // namespace

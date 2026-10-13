@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <new>
 
 namespace sonora::api {
@@ -262,6 +263,9 @@ private:
     TrackState* tracks_ = nullptr;
     uint32_t track_count_ = 0;
     uint64_t tick_ = 0;
+    // What the block's insert slots hold, so a publish stores only the
+    // slots that changed (see publish()). Sized by init(), never by publish.
+    std::unique_ptr<InsertFields[]> inserts_;
 };
 
 // Where the TrackState array starts in a block.
