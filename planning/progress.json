@@ -33,8 +33,8 @@
           "id": "engine.playback",
           "title": "Playback and monitoring",
           "items": [
-            {"id": "engine.playback.disk_read", "title": "Playback path: read from disk into a ring per track", "size": "L", "phase": 2, "status": "todo"},
-            {"id": "engine.playback.mix_out", "title": "Mix to output ports (monitor bus)", "size": "M", "phase": 2, "status": "todo", "note": "Owner decision pending: 2-track bus first or full topology"},
+            {"id": "engine.playback.disk_read", "title": "Playback path: disk reader thread and source chunk cache, residency-gated plan swap (ADR-0009)", "size": "L", "phase": 2, "status": "todo"},
+            {"id": "engine.playback.mix_out", "title": "Mix to output ports (monitor bus)", "size": "M", "phase": 2, "status": "todo", "note": "Owner decided 2026-10-12: fixed 2-channel monitor bus first, full mixer later on the same graph"},
             {"id": "engine.playback.input_monitor", "title": "Input monitoring with latency compensation, measured by a loopback test", "size": "M", "phase": 2, "status": "todo"}
           ]
         },
@@ -45,7 +45,7 @@
             {"id": "engine.transport.record_stop", "title": "Record/stop transport with a sample playhead", "size": "S", "phase": 0, "status": "done", "evidence": "ea768b7; playhead drives the BWF time reference, exercised by test-engine-docker.sh"},
             {"id": "engine.transport.locate", "title": "Sample-accurate locate without dropping a block", "size": "M", "phase": 2, "status": "todo"},
             {"id": "engine.transport.loop", "title": "Loop playback", "size": "M", "phase": 2, "status": "todo"},
-            {"id": "engine.transport.punch", "title": "Punch in and out over an existing take", "size": "M", "phase": 2, "status": "todo"},
+            {"id": "engine.transport.punch", "title": "Punch in and out over an existing take, closing the take while rolling", "size": "M", "phase": 2, "status": "todo", "note": "Needs engine.record.take_epoch first (ADR-0009 Consequences)"},
             {"id": "engine.transport.preroll", "title": "Pre-roll and post-roll", "size": "S", "phase": 2, "status": "todo"}
           ]
         },
@@ -53,6 +53,7 @@
           "id": "engine.timeline",
           "title": "Timeline model and undo",
           "items": [
+            {"id": "engine.timeline.spec", "title": "Timeline model spec and ADR-0009 (snapshots, operations, plan swap)", "size": "S", "phase": 2, "status": "doing", "branch": "docs/phase2-session-timeline"},
             {"id": "engine.timeline.model", "title": "common/model: regions over sources (ADR-0007 M8)", "size": "L", "phase": 2, "status": "todo"},
             {"id": "engine.timeline.undo", "title": "Undo/redo stack, doubling as the UI replica's replication format", "size": "M", "phase": 2, "status": "todo"},
             {"id": "engine.timeline.region_ops", "title": "Region operations: move, trim, split, duplicate", "size": "M", "phase": 2, "status": "todo"},
@@ -64,7 +65,8 @@
           "id": "engine.session",
           "title": "Session format",
           "items": [
-            {"id": "engine.session.spec", "title": "Session file format spec in brain/specs/", "size": "S", "phase": 2, "status": "todo"},
+            {"id": "engine.session.spec", "title": "Session file format spec in brain/specs/", "size": "S", "phase": 2, "status": "doing", "branch": "docs/phase2-session-timeline"},
+            {"id": "engine.session.json", "title": "common/json: strict JSON, integer-exact, shared with the key map (ADR-0009)", "size": "S", "phase": 2, "status": "todo"},
             {"id": "engine.session.io", "title": "Session reader and writer", "size": "M", "phase": 2, "status": "todo"}
           ]
         }

@@ -92,6 +92,7 @@ end of its run. Keep it short: what is true now, not a diary.
 | Container recording test | rt-engineer | passing, wired into CI |
 | QEMU boot smoke test | distro-engineer | passing, 19 checks |
 | `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
+| Phase 2 session format and timeline model specs, ADR-0009 | architect | in review, `docs/phase2-session-timeline` |
 
 ## Blocked
 
@@ -101,5 +102,8 @@ end of its run. Keep it short: what is true now, not a diary.
 
 ## Next decision needed from the owner
 
-Whether Phase 2 playback targets a fixed 2-track monitor bus first, or the full
-mixer topology from the start. The former gets audible playback weeks earlier.
+None open. Decided 2026-10-12: Phase 2 playback starts with a fixed
+2-channel monitor bus; the full mixer comes later on the same graph
+(`planning/ROADMAP.md`, Phase 2; `brain/specs/session-format.md`).
+ADR-0009 (timeline snapshots, residency-gated plan swap) is proposed on
+`docs/phase2-session-timeline`, in review.

@@ -162,7 +162,29 @@ Order and owners are in ADR-0008 §5.
 - [ ] Input monitoring with latency compensation measured by a loopback test.
 - [ ] Transport locate without dropping a block.
 - [ ] Timeline data model: regions over sources, with an undo stack.
-- [ ] Session file format spec, then the reader and writer.
+- [ ] Session file format spec, then the reader and writer. Specs written
+      (`brain/specs/session-format.md`, `brain/specs/timeline-model.md`,
+      ADR-0009 proposed); reader and writer not started.
+- [ ] `common/json`: strict JSON with integer-exact numbers, line and key
+      path in errors, size and depth caps (ADR-0009 §5). `common/model`
+      uses it; `ui/keymap` moves onto it in its own PR. rt-engineer, with
+      ui-engineer review.
+- [ ] Take-epoch handshake (see "Known gaps") is now a prerequisite of
+      punch-in, not a follow-up: back-to-back punches hit it at operator
+      speed. Regression test first. rt-engineer.
+- [ ] Close a take while rolling: a per-track capture window inside a
+      rolling transport, punch points as frame-accurate `RtCommand`s.
+      rt-engineer.
+- [ ] Disk reader thread and source chunk cache; plans and locates
+      published only once their window is resident (ADR-0009 §4).
+      rt-engineer, gated by rt-safety-auditor.
+- [ ] Measure, before the reader is written: mixed record+playback
+      throughput and worst-case read latency on a physical stick's
+      persistence partition (18 in, 18 out, 64 k and 256 k frame chunks).
+      researcher; ADR-0009 Unverified 1.
+- [ ] Measure: `rename` plus directory `fsync` durability through the
+      persistence overlay, 200 killed QEMU saves. researcher; ADR-0009
+      Unverified 2.
 
 ## Known gaps, not yet scheduled
 

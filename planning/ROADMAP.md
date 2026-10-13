@@ -37,7 +37,14 @@ another DAW at the right timecode.
   compensation.
 - Sample-accurate transport: locate, loop, punch in and out, pre-roll.
 - Timeline data model with undo. Regions, fades, crossfades.
-- Session file format, documented in `brain/specs/` before it is written.
+- Session file format, documented in `brain/specs/` before it is written:
+  `brain/specs/session-format.md` and `brain/specs/timeline-model.md`, with
+  ADR-0009 (proposed).
+
+Decided by the owner, 2026-10-12: playback starts with a **fixed 2-channel
+monitor bus**. Every track feeds it, panned, with its fader and mute. The
+full mixer topology (inserts, sends, VCA, groups) is Phase 3, built on top of
+the same processing graph rather than in place of it.
 
 Exit criteria: record, play back, punch in over an existing take, and undo it,
 without stopping the transport.
