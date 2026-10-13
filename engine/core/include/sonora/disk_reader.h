@@ -145,6 +145,13 @@ private:
         int64_t to;
     };
 
+    // A (source, chunk, channel) a plan's window needs and the cache lacks.
+    struct Wanted {
+        uint32_t source;
+        uint64_t chunk;
+        uint16_t channel;
+    };
+
     void run();
     void pass(const Request& req);
     void adopt(const Request& req);
@@ -157,8 +164,11 @@ private:
     uint32_t take_buffer(int64_t playhead);
     void evict_behind(int64_t playhead);
     bool protected_chunk(const PlanSegment& seg, uint64_t chunk) const;
+    // Reads chunks [first_chunk, first_chunk + count) of `source` in one call
+    // and keeps the `wanted` pairs, which lie in that span sorted by chunk
+    // then channel.
     void read_run(uint32_t source, uint64_t first_chunk, uint32_t count,
-                  const std::vector<uint16_t>& channels, int64_t playhead);
+                  const Wanted* wanted, std::size_t wanted_count, int64_t playhead);
     void reclaim_aged_after_deactivate();
 
     static uint64_t key_of(uint32_t source, uint16_t channel, uint64_t chunk) {

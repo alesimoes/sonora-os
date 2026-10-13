@@ -204,6 +204,14 @@ not start or extend those items before the Complete DAW closes (owner,
       undo-to-audible latency,
       p99 and max, on a real stick while 18 tracks record. rt-engineer.
 
+- [ ] OS 1, needs a physical USB stick: the capture writer wins the device
+      over the playback reader (ADR-0009 §4.4, last bullet). Today they are
+      separate threads and nothing orders their I/O; measure with 18 tracks
+      recording while 18 play back (Unverified 1), then give the writer
+      priority (I/O priority class, or the reader yielding while a drain is
+      behind) only if the measurement shows a capture overrun or a drain
+      delayed by a read. rt-engineer.
+
 - [ ] On the owner's laptop, no interface: the engine records from the
       onboard card after the 60 s wait, the notice on tty1, `--tracks auto`
       gives its channel count (expected 2). Then with the UMC1820: it is
@@ -222,6 +230,11 @@ not start or extend those items before the Complete DAW closes (owner,
       `[[clang::nonblocking]]`. Most useful after M3 (fake backend). Also
       check whether libjack calls trip RTSan inside the callback.
       distro-engineer with rt-engineer.
+- [ ] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s
+      reader stress test (with its deactivate cycles) at least: they drive
+      `Session::process()` and the chunk-slot loads through every playback
+      path (fades, crossfades, ramps, misses, locates, swaps, delay lines).
+      From the PR #31 RT audit. distro-engineer with rt-engineer.
 - [ ] With M4, the state publisher is paced on a fixed timer. `StateView`
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
@@ -333,6 +346,20 @@ Order and owners are in ADR-0008 §5.
 - [ ] Playback path: read from disk into a ring, mix, feed the output ports.
 - [ ] Input monitoring with latency compensation measured by a loopback test.
 - [ ] Transport locate without dropping a block.
+- [ ] Locate latency as ADR-0009 §4.4 asks: p99 and max per session in
+      diagnostics, and "Locating…" on screen past 100 ms.
+      `PlaybackController` keeps only the last and the max today. rt-engineer
+      with ui-engineer.
+- [ ] Show `PlanReport::over_half_pool` when a plan is built (ADR-0009 §4.3:
+      a plan whose peak demand exceeds half the pool is flagged before it
+      plays), and the "edit not yet audible: playback cache full" counter
+      from `DiskReader::cache_full()`. The builder computes both; nothing
+      shows them yet. ui-engineer.
+- [ ] A short ramp when a track's monitor source changes (input to playback
+      and back, Auto at record start and stop). Today the source switches at
+      a block boundary under a steady gain, which can click. Folds into the
+      sample-accurate auto-monitor switch of the in-band take boundary
+      below. rt-engineer.
 - [ ] Timeline data model: regions over sources, with an undo stack.
 - [ ] Session file format spec, then the reader and writer. Specs written
       (`brain/specs/session-format.md`, `brain/specs/timeline-model.md`,

@@ -222,6 +222,65 @@ int test_locate_window() {
     return 0;
 }
 
+// A coalesced read covers every channel any chunk of the run needs, so
+// some (channel, chunk) pairs it reads are wanted by nobody. Those must not
+// hold a buffer that nothing can ever reclaim: once the plan is gone, the
+// whole pool serves the next one.
+int test_coalesced_read_leaks_nothing() {
+    const std::string stereo = "test_disk_reader_f.wav";
+    const std::string mono = "test_disk_reader_g.wav";
+    CHECK(write_source(stereo, 6, 2, 16 * kChunk));
+    CHECK(write_source(mono, 7, 1, 16 * kChunk));
+    PlanExchange x;
+    Transport t(48000);
+    DiskReader r(config(8, 8 * kChunk), x, t);
+    uint32_t a = 0;
+    uint32_t b = 0;
+    std::string error;
+    CHECK(r.add_source(stereo, a, error));
+    CHECK(r.add_source(mono, b, error));
+
+    // Channel 0 of chunks 0..3 and channel 1 of chunks 2..3: one run of
+    // four chunks over both channels, of which six pairs are wanted.
+    SegmentSpec left;
+    left.end = 4 * kChunk;
+    left.source_slot = a;
+    SegmentSpec right;
+    right.track = 1;
+    right.start = 2 * kChunk;
+    right.end = 4 * kChunk;
+    right.source_offset = 2 * kChunk;
+    right.source_slot = a;
+    right.source_channel0 = 1;
+    PlaybackPlan* p = make_plan(x.next_epoch(), 2, {left, right}, kChunk);
+    const uint64_t gen = r.serve(nullptr, p);
+    r.run_pass();
+    CHECK(r.resident() == gen);
+    CHECK(r.reads() == 1);
+    CHECK(linked_slots(*p) == 6);
+
+    // Dropped, a block passes, and a plan needing all eight buffers comes.
+    r.serve(nullptr, nullptr);
+    r.run_pass();
+    sonora::destroy_plan(p);
+    x.acquire();
+    SegmentSpec whole;
+    whole.end = 16 * kChunk;
+    whole.source_slot = b;
+    PlaybackPlan* q = make_plan(x.next_epoch(), 1, {whole}, kChunk);
+    const uint64_t gen2 = r.serve(nullptr, q);
+    r.run_pass();
+    CHECK(r.resident() == gen2);
+    CHECK(linked_slots(*q) == 8);
+    CHECK(slots_hold_their_chunks(r, *q, 7));
+    r.serve(nullptr, nullptr);
+    r.run_pass();
+    sonora::destroy_plan(q);
+    std::remove(stereo.c_str());
+    std::remove(mono.c_str());
+    return 0;
+}
+
 // ADR-0009 §4.1's stress test, reader half: a reader thread links and
 // unlinks chunks in a small pool while a publisher swaps plans through the
 // residency gate and a callback thread rolls through them, reading every
@@ -239,10 +298,10 @@ int test_stress_with_reader() {
     CHECK(r.add_source(path, slot, error));
     r.start();
 
-    std::atomic<bool> run{true};
+    std::atomic<bool> run{false};
     std::atomic<bool> bad{false};
     std::atomic<uint64_t> blocks{0};
-    std::thread audio([&] {
+    const auto callback = [&] {
         uint64_t n = 0;
         while (run.load(std::memory_order_relaxed)) {
             const PlaybackPlan* p = x.acquire();
@@ -277,7 +336,19 @@ int test_stress_with_reader() {
             t.set_playhead(ph >= static_cast<uint64_t>(kFrames - 8 * kChunk) ? 0 : ph);
             blocks.fetch_add(1, std::memory_order_relaxed);
         }
-    });
+    };
+    // AudioBackend::activate() and deactivate(): when deactivate returns, no
+    // block runs and none will until the next activate.
+    std::thread audio;
+    const auto activate = [&] {
+        run.store(true);
+        audio = std::thread(callback);
+    };
+    const auto deactivate = [&] {
+        run.store(false);
+        audio.join();
+    };
+    activate();
 
     struct Held {
         PlaybackPlan* plan;
@@ -286,6 +357,7 @@ int test_stress_with_reader() {
     std::vector<Held> held;
     PlaybackPlan* playing = nullptr;
     uint64_t swaps = 0;
+    int cycles = 0;
     const auto may_free = [](void* ctx, const PlaybackPlan* plan) {
         auto* h = static_cast<std::pair<std::vector<Held>*, DiskReader*>*>(ctx);
         for (const Held& e : *h->first) {
@@ -294,7 +366,12 @@ int test_stress_with_reader() {
         return true;
     };
     std::pair<std::vector<Held>*, DiskReader*> ctx{&held, &r};
-    for (int i = 0; i < 4000; ++i) {
+    const auto forget_freed = [&] {
+        held.erase(std::remove_if(held.begin(), held.end(),
+                                  [&](const Held& h) { return !x.is_retired(h.plan); }),
+                   held.end());
+    };
+    const auto swap = [&](int i) {
         // Two layouts that read different source offsets, so chunks change.
         SegmentSpec s;
         s.end = kFrames - 8 * kChunk;
@@ -311,21 +388,37 @@ int test_stress_with_reader() {
         playing = next;
         ++swaps;
         x.reclaim(may_free, &ctx);
-        held.erase(std::remove_if(held.begin(), held.end(),
-                                  [&](const Held& h) { return !x.is_retired(h.plan); }),
-                   held.end());
+        forget_freed();
+    };
+    for (int i = 0; i < 4000; ++i) {
+        swap(i);
+        // Deactivate and reactivate, as an xrun recovery or a device change
+        // does: the aged buffers and the retired plans are freed with no
+        // block run, and swaps go on while the callback is gone.
+        if (i % 200 == 199) {
+            deactivate();
+            r.after_deactivate();
+            x.reclaim_after_deactivate(may_free, &ctx);
+            forget_freed();
+            for (int k = 0; k < 3; ++k) swap(i + 1 + k);
+            r.after_deactivate();
+            x.reclaim_after_deactivate(may_free, &ctx);
+            forget_freed();
+            activate();
+            ++cycles;
+        }
     }
-    run.store(false);
-    audio.join();
+    deactivate();
     const uint64_t dropped = r.serve(nullptr, nullptr);
     while (r.adopted() < dropped) std::this_thread::yield();
     r.stop();
     r.after_deactivate();
     CHECK(x.reclaim_after_deactivate() == 0);
     CHECK(!bad.load());
-    std::printf("reader stress: %llu gated swaps, %llu blocks, %llu chunks read, "
-                "%llu cache-full passes\n",
-                static_cast<unsigned long long>(swaps),
+    CHECK(cycles == 20);
+    std::printf("reader stress: %llu gated swaps, %d deactivate cycles, %llu blocks, "
+                "%llu chunks read, %llu cache-full passes\n",
+                static_cast<unsigned long long>(swaps), cycles,
                 static_cast<unsigned long long>(blocks.load()),
                 static_cast<unsigned long long>(r.chunks_read()),
                 static_cast<unsigned long long>(r.cache_full()));
@@ -340,6 +433,7 @@ int main() {
     if (test_pool_too_small_stays_pending()) return 1;
     if (test_eviction_waits_for_a_block()) return 1;
     if (test_locate_window()) return 1;
+    if (test_coalesced_read_leaks_nothing()) return 1;
     if (test_stress_with_reader()) return 1;
     std::printf("disk_reader: ok\n");
     return 0;

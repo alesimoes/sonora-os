@@ -330,18 +330,7 @@ void for_each_window_slot(const PlaybackPlan* plan, int64_t from, int64_t to,
 void DiskReader::fill(PlaybackPlan* plan, int64_t from) {
     if (!plan) return;
     const int64_t to = from + window_frames_;
-    struct Missing {
-        uint32_t source;
-        uint64_t chunk;
-        uint16_t channel;
-        bool operator<(const Missing& o) const {
-            return std::tie(source, chunk, channel) < std::tie(o.source, o.chunk, o.channel);
-        }
-        bool operator==(const Missing& o) const {
-            return source == o.source && chunk == o.chunk && channel == o.channel;
-        }
-    };
-    std::vector<Missing> missing;
+    std::vector<Wanted> missing;
     const auto link_or_note = [&](bool note) {
         for_each_window_slot(plan, from, to, chunk_frames_,
                              [&](const PlanSegment& seg, uint32_t c, uint64_t k, uint32_t slot) {
@@ -356,59 +345,50 @@ void DiskReader::fill(PlaybackPlan* plan, int64_t from) {
     };
     link_or_note(true);
     if (missing.empty()) return;
-    std::sort(missing.begin(), missing.end());
-    missing.erase(std::unique(missing.begin(), missing.end()), missing.end());
+    const auto key = [](const Wanted& w) { return std::tie(w.source, w.chunk, w.channel); };
+    std::sort(missing.begin(), missing.end(),
+              [&](const Wanted& a, const Wanted& b) { return key(a) < key(b); });
+    missing.erase(std::unique(missing.begin(), missing.end(),
+                              [&](const Wanted& a, const Wanted& b) { return key(a) == key(b); }),
+                  missing.end());
 
-    // Runs of adjacent chunks of one source, every channel any of them needs.
-    std::vector<uint16_t> channels;
+    // Runs of adjacent chunks of one source.
     std::size_t i = 0;
     while (i < missing.size()) {
         const uint32_t source = missing[i].source;
         const uint64_t first = missing[i].chunk;
         uint64_t last = first;
-        channels.clear();
         std::size_t j = i;
         while (j < missing.size() && missing[j].source == source &&
                missing[j].chunk <= last + 1 && missing[j].chunk - first < max_coalesce_) {
             last = missing[j].chunk;
-            if (std::find(channels.begin(), channels.end(), missing[j].channel) == channels.end()) {
-                channels.push_back(missing[j].channel);
-            }
             ++j;
         }
-        read_run(source, first, static_cast<uint32_t>(last - first + 1), channels,
-                 transport_.playhead());
+        read_run(source, first, static_cast<uint32_t>(last - first + 1), missing.data() + i,
+                 j - i, transport_.playhead());
         i = j;
     }
     link_or_note(false);
 }
 
 void DiskReader::read_run(uint32_t source, uint64_t first_chunk, uint32_t count,
-                          const std::vector<uint16_t>& channels, int64_t playhead) {
+                          const Wanted* wanted, std::size_t wanted_count, int64_t playhead) {
     if (source >= source_count_.load(std::memory_order_acquire)) return;
     Source& src = sources_[source];
-    // Buffers first: a read with nowhere to put it is wasted I/O. When the
-    // pool runs short the run is cut to the whole chunks it has room for.
+    // Buffers first: a read with nowhere to put it is wasted I/O. Only a
+    // wanted pair gets one. The file is interleaved, so the read brings in
+    // every channel of the span, but a buffer for a pair no plan links would
+    // sit on no list and never be reclaimed. When the pool runs short the
+    // run ends at the last chunk that got a buffer.
     std::vector<uint32_t> got;
-    got.reserve(static_cast<std::size_t>(count) * channels.size());
-    for (uint32_t k = 0; k < count; ++k) {
-        const std::size_t before = got.size();
-        for (std::size_t c = 0; c < channels.size(); ++c) {
-            const uint32_t b = take_buffer(playhead);
-            if (b == kNoChunk) break;
-            got.push_back(b);
-        }
-        if (got.size() - before < channels.size()) {
-            for (std::size_t n = before; n < got.size(); ++n) {
-                buffers_[got[n]].state = State::Free;
-                free_.push_back(got[n]);
-            }
-            got.resize(before);
-            count = k;
-            break;
-        }
+    got.reserve(wanted_count);
+    while (got.size() < wanted_count) {
+        const uint32_t b = take_buffer(playhead);
+        if (b == kNoChunk) break;
+        got.push_back(b);
     }
-    if (count == 0) return;
+    if (got.empty()) return;
+    count = static_cast<uint32_t>(wanted[got.size() - 1].chunk - first_chunk + 1);
 
     const std::size_t frames = static_cast<std::size_t>(count) * chunk_frames_;
     read_scratch_.assign(frames * src.channels, 0.0f);
@@ -431,28 +411,27 @@ void DiskReader::read_run(uint32_t source, uint64_t first_chunk, uint32_t count,
         return;
     }
     // Past the end of the source the scratch is still zero: silence.
-    std::size_t g = 0;
-    for (uint32_t k = 0; k < count; ++k) {
-        for (const uint16_t ch : channels) {
-            const uint32_t b = got[g++];
-            float* dst = pool_.get() + static_cast<std::size_t>(b) * chunk_frames_;
-            const float* in = read_scratch_.data() +
-                              static_cast<std::size_t>(k) * chunk_frames_ * src.channels +
-                              (ch < src.channels ? ch : 0);
-            if (ch < src.channels) {
-                for (uint32_t f = 0; f < chunk_frames_; ++f) dst[f] = in[f * src.channels];
-            } else {
-                std::memset(dst, 0, chunk_frames_ * sizeof(float));
-            }
-            Buffer& buf = buffers_[b];
-            buf.key = key_of(source, ch, first_chunk + k);
-            buf.links = 0;
-            buf.aged = false;
-            // Not on cached_ until something unlinks it: nothing can take it
-            // before fill() links it.
-            buf.state = State::Cached;
-            by_key_[buf.key] = b;
+    for (std::size_t g = 0; g < got.size(); ++g) {
+        const uint32_t b = got[g];
+        const uint16_t ch = wanted[g].channel;
+        const uint64_t k = wanted[g].chunk - first_chunk;
+        float* dst = pool_.get() + static_cast<std::size_t>(b) * chunk_frames_;
+        const float* in = read_scratch_.data() +
+                          static_cast<std::size_t>(k) * chunk_frames_ * src.channels +
+                          (ch < src.channels ? ch : 0);
+        if (ch < src.channels) {
+            for (uint32_t f = 0; f < chunk_frames_; ++f) dst[f] = in[f * src.channels];
+        } else {
+            std::memset(dst, 0, chunk_frames_ * sizeof(float));
         }
+        Buffer& buf = buffers_[b];
+        buf.key = key_of(source, ch, wanted[g].chunk);
+        buf.links = 0;
+        buf.aged = false;
+        // Not on cached_ until something unlinks it: nothing can take it
+        // before fill() links it, and fill() links every wanted pair.
+        buf.state = State::Cached;
+        by_key_[buf.key] = b;
     }
     chunks_read_.fetch_add(count, std::memory_order_relaxed);
 }

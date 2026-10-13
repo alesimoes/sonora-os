@@ -85,7 +85,11 @@ public:
     int next_free_take() const;
 
     // Opens a file per armed track and flips the transport to Recording.
-    // All or nothing: if any armed track's file cannot be created -- above
+    // The take's origin (its files' TimeReference) is the timeline frame of
+    // its first recorded sample, which only the audio thread knows: a locate
+    // queued before the call, or blocks rolled while the files were being
+    // opened, move it. The files are opened with the playhead as it is now,
+    // and stop() writes the real origin. All or nothing: if any armed track's file cannot be created -- above
     // all because it already exists -- nothing is recorded, the files this
     // call created are removed, and `error`, if given, says which file and
     // why.
@@ -122,6 +126,13 @@ public:
     // Spans the audio thread played as silence because their chunk was not
     // resident. Each one is an audible hole.
     uint64_t playback_misses() const { return misses_.load(std::memory_order_relaxed); }
+    // Locates the audio thread dropped because a take had already started.
+    uint64_t locates_dropped() const { return locates_dropped_.load(std::memory_order_relaxed); }
+
+    // The timeline frame of the running or last take's first recorded
+    // sample, or kNoOrigin before the audio thread has recorded one.
+    static constexpr uint64_t kNoOrigin = ~uint64_t{0};
+    uint64_t take_origin() const { return take_origin_.load(std::memory_order_acquire); }
 
     // --- real-time safe: called from the audio callback ---
     // block.inputs[i] feeds track i; a null input, or a track past
@@ -170,6 +181,10 @@ private:
     std::unique_ptr<uint32_t[]> delay_pos_;  // per delay line
     uint32_t delay_len_ = 0;
     std::unique_ptr<uint32_t[]> cursor_;     // per plan track
+    // The frame each plan track's cursor is good for: the end of what it
+    // last rendered. A track that sent its input, or nothing, has not
+    // followed a locate, so it seeks again rather than trust its cursor.
+    std::unique_ptr<uint64_t[]> cursor_frame_;
     std::unique_ptr<float[]> track_gain_;    // per engine track, L and R, end of last block
     std::unique_ptr<float[]> track_target_;  // this block's targets
     float bus_applied_ = 1.0f;
@@ -183,6 +198,10 @@ private:
     std::atomic<float> bus_gain_{1.0f};
     std::atomic<float> bus_peak_[2] = {{0.0f}, {0.0f}};
     std::atomic<uint64_t> misses_{0};
+    std::atomic<uint64_t> locates_dropped_{0};
+    // Reset by start_recording() before it publishes Recording; set by the
+    // audio thread in the take's first block.
+    std::atomic<uint64_t> take_origin_{kNoOrigin};
 };
 
 }  // namespace sonora

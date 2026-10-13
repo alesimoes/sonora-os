@@ -18,6 +18,14 @@ std::string str(std::uint64_t n) { return std::to_string(n); }
 
 bool in_range(std::int64_t n) { return n >= 0 && n <= kMaxInteger; }
 
+// Written so that NaN fails it.
+bool gain_in_range(float db) { return db >= kMinGainDb && db <= kMaxGainDb; }
+
+std::string gain_range() {
+    return "must be from " + str(static_cast<std::int64_t>(kMinGainDb)) + " to " +
+           str(static_cast<std::int64_t>(kMaxGainDb)) + " dB";
+}
+
 // A crossfade or a region needs this much of every source it names; the
 // shortest one decides. -1 when a source is missing.
 Frames shortest_source(const Region& r, const SourcePool& pool) {
@@ -246,7 +254,7 @@ std::string region_problem(const Region& r, const SourcePool& pool,
     if (r.fade_in.length > r.length - r.fade_out.length) {
         return "fade_in.length + fade_out.length is longer than the region";
     }
-    if (!std::isfinite(r.gain_db)) return "gain_db must be a finite number";
+    if (!gain_in_range(r.gain_db)) return "gain_db " + gain_range();
     return {};
 }
 
@@ -377,9 +385,9 @@ std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,
         return "needs one capture channel per track channel (" +
                str(static_cast<std::int64_t>(track_channels)) + ")";
     }
-    if (!std::isfinite(m.gain_db)) {
+    if (!gain_in_range(m.gain_db)) {
         where = "gain_db";
-        return "must be a finite number";
+        return gain_range();
     }
     if (!(m.pan >= -1.0f && m.pan <= 1.0f)) {
         where = "pan";
@@ -390,13 +398,14 @@ std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,
 
 std::string bus_problem(const MonitorBus& b, std::string& where) {
     where.clear();
-    if (!std::isfinite(b.gain_db)) {
+    if (!gain_in_range(b.gain_db)) {
         where = "gain_db";
-        return "must be a finite number";
+        return gain_range();
     }
-    if (!std::isfinite(b.pan_law_db)) {
+    // Written so that NaN fails it.
+    if (!(b.pan_law_db >= kMinPanLawDb && b.pan_law_db <= 0.0f)) {
         where = "pan_law_db";
-        return "must be a finite number";
+        return "must be from " + str(static_cast<std::int64_t>(kMinPanLawDb)) + " to 0";
     }
     return {};
 }

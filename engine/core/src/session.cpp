@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "denormals.h"
+
 namespace sonora {
 namespace {
 
@@ -126,6 +128,8 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
     delay_.reset(new float[static_cast<std::size_t>(edges) * 2 * delay_len_ + 1]());
     delay_pos_.reset(new uint32_t[edges]());
     cursor_.reset(new uint32_t[tracks + 1]());
+    cursor_frame_.reset(new uint64_t[tracks + 1]);
+    for (uint32_t t = 0; t <= tracks; ++t) cursor_frame_[t] = ~uint64_t{0};
     track_gain_.reset(new float[2 * static_cast<std::size_t>(tracks) + 2]());
     track_target_.reset(new float[2 * static_cast<std::size_t>(tracks) + 2]());
 
@@ -194,6 +198,7 @@ int Session::next_free_take() const {
 }
 
 bool Session::start_recording(int take_number, std::string* error) {
+    // Provisional: stop() writes the frame the audio thread recorded first.
     const uint64_t origin = transport_->playhead();
     std::vector<Track*> opened;
 
@@ -255,6 +260,9 @@ bool Session::start_recording(int take_number, std::string* error) {
     // Only now may the disk thread see these writers; until here the
     // rollback above could close them under it. See Track::set_draining().
     for (Track* t : opened) t->set_draining(true);
+    // Ordered before the audio thread can see Recording by the release
+    // store below, so the take's first block finds no origin and sets it.
+    take_origin_.store(kNoOrigin, std::memory_order_relaxed);
     transport_->set_state(TransportState::Recording);
     return true;
 }
@@ -292,10 +300,16 @@ bool Session::stop(std::string* error) {
     // Let the disk thread flush what is still buffered before we close files.
     // stop() joins it, so after this line nothing else uses the writers.
     if (disk_) disk_->stop();
+    // A take stopped before any block recorded keeps the provisional
+    // origin; it holds no audio either.
+    const uint64_t origin = take_origin_.load(std::memory_order_acquire);
     std::string first_failure;
     int more_failures = 0;
     for (auto& t : tracks_) {
         t->set_draining(false);
+        if (origin != kNoOrigin && t->writer().is_open()) {
+            t->writer().set_time_reference(origin);
+        }
         // Only a take this call ends is reported; a writer keeps its last
         // failure after closing, and ~Session() stops again.
         const bool was_open = t->writer().is_open();
@@ -351,6 +365,9 @@ float segment_gain(const PlanSegment& s, int64_t t) noexcept SONORA_RT {
 }  // namespace
 
 void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
+    // Per thread, and a backend may call from a new thread after a
+    // reactivation, so it is checked every block.
+    flush_denormals_on_this_thread();
     // ADR-0009 §4.1: the block count, then the plan, before anything reads
     // either. A new plan is told by its epoch, never its address.
     const PlaybackPlan* plan = plans_->acquire();
@@ -358,19 +375,29 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         seen_epoch_ = plan->epoch;
         reseek_ = true;
     }
-    RtCommand cmd{};
-    while (commands_->read(&cmd, 1) == 1) {
-        if (cmd.kind == RtCommand::Kind::Locate) {
-            transport_->set_playhead(cmd.frame);
-            transport_->note_locate();
-            reseek_ = true;
-        }
-    }
 
     const uint32_t nframes = block.nframes;
     const TransportState state = transport_->state();
     const bool recording = state == TransportState::Recording;
     const bool rolling = state != TransportState::Stopped;
+    // A take is one contiguous span of the timeline. engine/control sends no
+    // locate during one, but one it posted just before the take began can
+    // still be queued. Once the take has its first frame such a locate is
+    // acknowledged, so nothing waits on it, and dropped.
+    const bool take_started =
+        recording && take_origin_.load(std::memory_order_relaxed) != kNoOrigin;
+
+    RtCommand cmd{};
+    while (commands_->read(&cmd, 1) == 1) {
+        if (cmd.kind != RtCommand::Kind::Locate) continue;
+        if (take_started) {
+            locates_dropped_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            transport_->set_playhead(cmd.frame);
+            reseek_ = true;
+        }
+        transport_->note_locate();
+    }
 
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track* t = tracks_[i].get();
@@ -412,6 +439,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     bus_target_ = bus_gain_.load(std::memory_order_relaxed);
 
     const uint64_t playhead = transport_->playhead();
+    if (recording && !take_started) take_origin_.store(playhead, std::memory_order_release);
     if (playhead != expected_playhead_) reseek_ = true;
     block_frames_ = nframes;
     for (uint32_t off = 0; off < nframes;) {
@@ -552,7 +580,7 @@ void Session::render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64
     const auto t0 = static_cast<int64_t>(from);
     const int64_t t1 = t0 + n;
     uint32_t& c = cursor_[plan_track];
-    if (reseek_) {
+    if (reseek_ || cursor_frame_[plan_track] != from) {
         // Segment ends never decrease along a track, crossfades included.
         uint32_t lo = 0;
         uint32_t hi = count;
@@ -571,6 +599,7 @@ void Session::render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64
         render_segment(plan, segs[i], from, n, out);
     }
     while (c < count && segs[c].end <= t1) ++c;
+    cursor_frame_[plan_track] = static_cast<uint64_t>(t1);
 }
 
 void Session::render_segment(const PlaybackPlan& plan, const PlanSegment& seg, uint64_t from,

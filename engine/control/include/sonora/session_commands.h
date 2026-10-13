@@ -32,7 +32,8 @@ using MayRecord = std::function<bool(std::string& why)>;
 // `may_record` and what it refers to. Without it every take may start.
 // With `playback` (which must outlive `reg` too), transport.play,
 // transport.toggle_play and transport.return_to_zero are installed as well,
-// gated on the plan's residency through it.
+// gated on the plan's residency through it, and a take started from a key
+// waits behind the same gate.
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record = nullptr,
                               PlaybackController* playback = nullptr);

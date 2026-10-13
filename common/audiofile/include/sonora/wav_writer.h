@@ -48,6 +48,14 @@ public:
     // to call twice.
     bool close();
 
+    // Replaces the time_reference given to open(); close() writes it. For an
+    // origin known only once the first frame has been recorded, which is
+    // after the file had to be opened. Same thread as write() and close().
+    void set_time_reference(uint64_t time_reference) {
+        time_reference_ = time_reference;
+        patch_time_reference_ = true;
+    }
+
     // Where OriginationDate and OriginationTime come from. The default reads
     // the system's local time. Set before open().
     void set_clock(LocalClock clock) { clock_ = clock; }
@@ -79,6 +87,9 @@ private:
     uint64_t frames_written_ = 0;
     long data_size_offset_ = 0;
     long riff_size_offset_ = 0;
+    long time_reference_offset_ = 0;
+    uint64_t time_reference_ = 0;
+    bool patch_time_reference_ = false;
     LocalClock clock_ = nullptr;
     uint64_t riff_size_limit_ = kRiffSizeLimit;
     std::string failure_;

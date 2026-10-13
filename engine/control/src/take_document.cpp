@@ -47,6 +47,14 @@ bool TakeDocument::place_file(const std::string& relative_path, std::size_t trac
         error = relative_path + ": no audio";
         return false;
     }
+    // Nothing resamples on the way to the bus: a file at another rate would
+    // play at the wrong speed and pitch, and out of place.
+    const uint32_t rate = history_.current().settings.sample_rate;
+    if (file.sample_rate() != rate) {
+        error = relative_path + ": recorded at " + std::to_string(file.sample_rate()) +
+                " Hz, and the session runs at " + std::to_string(rate) + " Hz";
+        return false;
+    }
     const model::TrackEdit& t = *history_.current().edit->tracks[track];
     if (file.channels() < t.channels) {
         error = relative_path + ": " + std::to_string(file.channels()) + " channels for a " +

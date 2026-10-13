@@ -729,11 +729,11 @@ int main(int argc, char** argv) {
         }
         session.tracks()[static_cast<std::size_t>(t)]->set_rec_armed(true);
     }
-    // After show(), which sets every track's mix from the document.
+    // Held by the controller, because every snapshot shown after a take
+    // sets each track's monitor mode from the document again.
     if (no_input_monitoring) {
-        for (const auto& tr : session.tracks()) {
-            if (tr->rec_armed()) tr->set_monitor(sonora::Track::Monitor::Off);
-        }
+        playback.set_input_monitoring(false);
+        playback.apply_mix(document.current());
     }
 
     if (record_seconds > 0.0) {
@@ -930,6 +930,10 @@ int main(int argc, char** argv) {
         }
         was_recording = recording_now;
         playback.pump();
+        // A take asked for from a key starts inside pump(), once its window
+        // is resident; a refusal is reported here.
+        const std::string refused = playback.take_record_error();
+        if (!refused.empty()) say("transport.record: " + refused);
 
         draw(session, *audio, take, status, help, notices, inputs_missing, take_failed);
         if (status_frames > 0 && --status_frames == 0) status.clear();

@@ -24,6 +24,7 @@ public:
 
     // Places `relative_path` (from the session folder) on engine track
     // `track` at the file's TimeReference, overwriting what is beneath it.
+    // Refused, naming both rates, if the file is not at the session's rate.
     bool place_file(const std::string& relative_path, std::size_t track, std::string& error);
     // Every track's file of the take that just closed, one undo step each.
     // Tracks that wrote nothing are skipped.

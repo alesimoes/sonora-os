@@ -56,7 +56,14 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error);
 
-// ((1 -+ pan) / 2) ^ exponent is `pan_law_db` at centre.
+// ((1 -+ pan) / 2) ^ exponent is `pan_law_db` at centre. The law is clamped
+// to the model's range first, as gain_of_db() clamps.
 float pan_exponent_for(float pan_law_db);
+
+// 10 ^ (dB / 20), with dB clamped to [model::kMinGainDb, model::kMaxGainDb]
+// and NaN taken as the quiet end. The model refuses anything outside, but a
+// snapshot that never went through its validator must still put no inf, NaN
+// or subnormal coefficient on the audio thread.
+float gain_of_db(float db);
 
 }  // namespace sonora

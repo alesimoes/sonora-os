@@ -157,12 +157,27 @@ of fifty nudges costs one residency wait, not fifty.
 - **No lock-free hash table.** Each plan carries a **chunk-slot array**: for
   every segment and channel, one `std::atomic<uint32_t>` per chunk of source
   it can play, holding a buffer index or "empty". The reader fills slots
-  (data written, then the index stored with release). The audio thread loads
-  with acquire and reads. A slot found empty is silence and a counted
-  underrun, never a wait. The plan's structure is immutable; its slot array
-  is its one mutable part, written only by the reader. A chunk shared by the
-  playing and the pending plan is linked from both, and the reader alone
-  keeps its link count.
+  (data written, then the index stored). The audio thread loads the slot
+  and reads. A slot found empty is silence and a counted underrun, never a
+  wait. The plan's structure is immutable; its slot array is its one
+  mutable part, written only by the reader. A chunk shared by the playing
+  and the pending plan is linked from both, and the reader alone keeps its
+  link count.
+- **Slot stores and loads are `seq_cst`, not release and acquire.**
+  Amended 2026-10-13 after the RT audit of PR #31; the first text said
+  release and acquire, which is enough to publish a filled chunk but not to
+  reclaim one. Reclaiming is a store-buffering pattern across two
+  variables: the audio thread stores `blocks_` then loads a slot; the
+  reader stores "empty" into the slot then loads `blocks_` (§4.1). The
+  proof needs at least one of the two to see the other's store: either the
+  block loads "empty", or the reader reads a `blocks_` that already counts
+  the block, and waits for it to end. Release and acquire do not order a
+  store before a later load of a different variable, so both sides could
+  read the old values: the block takes the buffer and the reader reuses it
+  under it. Only `seq_cst` on all four accesses puts them in one total
+  order. The cost is one full fence per slot store on the reader, which is
+  not real-time, and nothing extra for the audio thread's loads on x86 and
+  AArch64. Do not weaken these to release and acquire.
 - **Demand is counted per source channel and per region**, not per track.
   For a window of *W* frames and chunk size *C*, a track's demand is the sum
   over segments overlapping the window of *channels* × (⌈overlap / *C*⌉ + 1).
@@ -204,6 +219,21 @@ of fifty nudges costs one residency wait, not fifty.
   that is not resident.
 - The disk reader and the capture writer are separate threads. A slow read
   never delays a capture drain. When both want the device, the writer wins.
+- **While stopped, a plan is published without the gate** (implementation
+  note, 2026-10-13, PR #31). Nothing is heard while the transport is
+  stopped, so a new plan is exchanged as soon as the reader has adopted it,
+  and the gate moves to whatever starts the transport: play, record and
+  locate each wait for the window at the playhead (and at a locate target)
+  to be resident in the plan that will play, and for every locate asked
+  before them to be applied. That is equivalent to gating the publication
+  and avoids holding an edit back while nothing plays. It holds only
+  because every path that starts the transport goes through that gate: a
+  record started before its window is resident is the hole this section
+  exists to prevent, and the first version of PR #31 had exactly that bug
+  (a take right after another, or after `--place`). A take also drops any
+  locate still waiting when it starts: a take is one contiguous span of the
+  timeline, and its origin is the frame its first sample was recorded at,
+  read on the audio thread.
 
 **4.5 The graph in the plan.**
 

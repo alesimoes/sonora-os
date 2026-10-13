@@ -50,8 +50,16 @@ uint64_t demand_at(const std::vector<std::vector<PlanSegment>>& tracks, int64_t 
 }  // namespace
 
 float pan_exponent_for(float pan_law_db) {
+    if (!(pan_law_db >= model::kMinPanLawDb)) pan_law_db = model::kMinPanLawDb;
+    if (pan_law_db > 0.0f) pan_law_db = 0.0f;
     // 0.5 ^ e = 10 ^ (law / 20)
     return static_cast<float>(pan_law_db / (20.0 * std::log10(0.5)));
+}
+
+float gain_of_db(float db) {
+    if (!(db >= model::kMinGainDb)) db = model::kMinGainDb;
+    if (db > model::kMaxGainDb) db = model::kMaxGainDb;
+    return std::pow(10.0f, db / 20.0f);
 }
 
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
@@ -94,7 +102,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             s.end = r.end();
             s.source_offset = r.source_offset;
             s.channels = t.channels;
-            s.gain = std::pow(10.0f, r.gain_db / 20.0f);
+            s.gain = gain_of_db(r.gain_db);
             s.fade_in_end = r.position + r.fade_in.length;
             s.fade_in_shape = curve(r.fade_in.shape);
             s.fade_out_start = r.end() - r.fade_out.length;

@@ -446,6 +446,62 @@ int test_input_monitoring() {
     return 0;
 }
 
+// A track that sends its input does not render, so it does not see a
+// locate. Back on playback it must look for its segment again, not resume
+// from where its cursor stopped before the switch.
+int test_cursor_after_monitor_switch() {
+    Rig rig(1);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(11, 1, 8 * kChunk);
+    SegmentSpec first;
+    first.end = 300;
+    first.source_slot = a;
+    SegmentSpec second = first;
+    second.start = 300;
+    second.end = 1100;
+    second.source_offset = 300;
+    CHECK(rig.publish(rig.plan(1, {first, second})));
+    s.tracks()[0]->set_pan(-1.0f);
+    rig.block(kBlock);
+    s.transport().set_playhead(0);
+    s.play();
+    for (int i = 0; i < 6; ++i) rig.block(kBlock);  // past the first segment
+    s.tracks()[0]->set_monitor(sonora::Track::Monitor::Input);
+    rig.block(kBlock);
+    s.transport().set_playhead(0);
+    rig.block(kBlock);
+    s.tracks()[0]->set_monitor(sonora::Track::Monitor::Auto);
+    const uint64_t at = s.transport().playhead();
+    CHECK(at == kBlock);
+    rig.block(kBlock);
+    // The gain ramp is at unity on both sides of the switch; only the
+    // source changes.
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(rig.out[0][i] == source_value(11, 0, static_cast<int64_t>(at + i)));
+    }
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
+// The audio thread runs with denormals flushed: a level that decays below
+// FLT_MIN comes out as zero, not as a subnormal that costs a hundred cycles
+// per operation on x86.
+int test_denormals_are_flushed() {
+    Rig rig(1);
+    Session& s = *rig.session;
+    s.tracks()[0]->set_monitor(sonora::Track::Monitor::Input);
+    s.tracks()[0]->set_pan(-1.0f);
+    // 1e-20 x 1e-20 is 1e-40, below FLT_MIN (1.2e-38) and above zero.
+    s.tracks()[0]->set_gain(1e-20f);
+    for (uint32_t i = 0; i < kBlock; ++i) rig.in[0][i] = 1e-20f;
+    rig.block(kBlock);
+    rig.block(kBlock);
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == 0.0f);
+#endif
+    return 0;
+}
+
 // A block larger than the session's mixing maximum is mixed in pieces,
 // exactly, and every output the plan does not name is written silent.
 int test_large_block_and_other_outputs() {
@@ -483,6 +539,8 @@ int main() {
     if (test_swap_and_delay_continuity()) return 1;
     if (test_input_monitoring()) return 1;
     if (test_large_block_and_other_outputs()) return 1;
+    if (test_cursor_after_monitor_switch()) return 1;
+    if (test_denormals_are_flushed()) return 1;
     std::printf("playback_mix: ok\n");
     return 0;
 }

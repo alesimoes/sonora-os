@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,6 +21,8 @@
 #include "sonora/playback_controller.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
+#include "sonora/take_document.h"
+#include "sonora/wav_reader.h"
 #include "sonora/wav_writer.h"
 
 #define CHECK(cond)                                                      \
@@ -46,7 +49,9 @@ namespace {
 using namespace sonora::model;
 using sonora::PlaybackController;
 using sonora::PlaybackPlan;
+using sonora::DispatchResult;
 using sonora::Session;
+using sonora::TransportState;
 
 constexpr uint32_t kChunk = 256;
 constexpr uint32_t kBlock = 64;
@@ -125,6 +130,44 @@ void run_block(Session& s, Out& o) {
     b.output_count = 2;
     b.nframes = kBlock;
     s.process(b);
+}
+
+// A block with `in` on every track's input.
+void run_block_in(Session& s, Out& o, const std::vector<float>& in) {
+    const std::vector<const float*> ins(s.tracks().size(), in.data());
+    float* outs[2] = {o.l.data(), o.r.data()};
+    sonora::backend::AudioBlock b{};
+    b.inputs = ins.data();
+    b.input_count = static_cast<uint32_t>(ins.size());
+    b.outputs = outs;
+    b.output_count = 2;
+    b.nframes = kBlock;
+    s.process(b);
+}
+
+bool has_nan(const Out& o) {
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        if (std::isnan(o.l[i]) || std::isnan(o.r[i])) return true;
+    }
+    return false;
+}
+
+// The BWF TimeReference and length of `track`'s last take, or false.
+bool take_on_disk(Session& s, std::size_t track, uint64_t& origin, int64_t& frames) {
+    sonora::WavReader r;
+    std::string error;
+    if (!r.open(s.tracks()[track]->writer().path(), error)) return false;
+    origin = r.time_reference();
+    frames = r.frames();
+    return true;
+}
+
+// Track A plays source 1 from 0 for 40 chunks; track B is empty.
+bool two_tracks(History& h) {
+    std::string e;
+    return h.apply(source_op(1, 40 * kChunk), e) && h.apply(track_op(100, 101, "A"), e) &&
+           h.apply(track_op(102, 103, "B"), e) &&
+           h.apply(PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}, e);
 }
 
 // Track 1: region 210 at 1000 for 3000 frames of source 1 from 500, fade in
@@ -397,9 +440,299 @@ int test_transport_commands() {
     return 0;
 }
 
+
+// The take's origin is the timeline frame its first sample was recorded at,
+// as the audio thread saw it, not the playhead when record was pressed:
+// here a locate already queued is applied by the take's first block.
+int test_take_origin_is_first_recorded_frame() {
+    auto session = make_session(1);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    s.play();
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.transport().playhead() == 3 * kBlock);
+    CHECK(s.post_locate(1000));
+    std::string error;
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    for (int i = 0; i < 4; ++i) run_block_in(s, o, in);
+    CHECK(s.stop(&error));
+    uint64_t origin = 0;
+    int64_t frames = 0;
+    CHECK(take_on_disk(s, 0, origin, frames));
+    CHECK(frames == 4 * kBlock);
+    CHECK(origin == 1000);
+    return 0;
+}
+
+// Return to zero, then record, in one pass of the terminal loop: the take
+// starts at zero once the locate is applied, and the playhead never jumps
+// while it runs.
+int test_return_to_zero_then_record() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, &ctl);
+    s.tracks()[1]->set_rec_armed(true);
+    s.disk().start();
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    for (int i = 0; i < 20; ++i) run_block_in(s, o, in);
+    ctl.stop();
+    CHECK(s.transport().playhead() == 20 * kBlock);
+
+    CHECK(reg.dispatch("transport.return_to_zero") == DispatchResult::Ok);
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    int recorded = 0;
+    for (int i = 0; i < 40; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        const bool rec = s.transport().state() == TransportState::Recording;
+        const uint64_t at = s.transport().playhead();
+        run_block_in(s, o, in);
+        if (rec) {
+            ++recorded;
+            CHECK(s.transport().playhead() == at + kBlock);
+        }
+    }
+    CHECK(recorded > 30);
+    CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
+    uint64_t origin = 1;
+    int64_t frames = 0;
+    CHECK(take_on_disk(s, 1, origin, frames));
+    CHECK(origin == 0);
+    CHECK(frames == recorded * static_cast<int64_t>(kBlock));
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
+// A locate still waiting for its window when a take starts is dropped: a
+// take is one contiguous span of the timeline.
+int test_pending_locate_dropped_by_a_take() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.settle(2.0));
+    s.tracks()[1]->set_rec_armed(true);
+    s.disk().start();
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    s.transport().set_playhead(10 * kBlock);
+    CHECK(ctl.locate(0, error));
+    CHECK(ctl.locating());
+    // Headless runs start a take straight on the session.
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    for (int i = 0; i < 10; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        const uint64_t at = s.transport().playhead();
+        run_block_in(s, o, in);
+        CHECK(s.transport().playhead() == at + kBlock);
+    }
+    CHECK(!ctl.locating());
+    CHECK(s.stop(&error));
+    uint64_t origin = 0;
+    int64_t frames = 0;
+    CHECK(take_on_disk(s, 1, origin, frames));
+    CHECK(origin == 10 * kBlock);
+    // Stopped again, a locate goes through as before.
+    CHECK(ctl.locate(0, error));
+    for (int i = 0; i < 4 && s.transport().playhead() != 0; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        run_block(s, o);
+    }
+    CHECK(s.transport().playhead() == 0);
+    return 0;
+}
+
+// Record right after the document changed (a take just closed, or --place):
+// the transport starts only once the new plan's window is resident, so the
+// playback under the take has no hole.
+int test_record_waits_for_residency() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    CHECK(write_source(300, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, &ctl);
+    s.tracks()[1]->set_rec_armed(true);
+    s.disk().start();
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    run_block_in(s, o, in);
+
+    CHECK_APPLY(h, source_op(300, 40 * kChunk));
+    CHECK_APPLY(h, (PlaceRegion{101, region(301, 300, 0, 40 * kChunk, 0), 0}));
+    CHECK(ctl.show(h.current(), error));
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    // The reader has not run: nothing the new plan plays is resident.
+    ctl.pump();
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() != TransportState::Recording);
+    for (int i = 0; i < 20; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        run_block_in(s, o, in);
+    }
+    CHECK(s.transport().state() == TransportState::Recording);
+    CHECK(s.playback_misses() == 0);
+    // A stop cancels a record still waiting for its window.
+    CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
+    CHECK(ctl.locate(5 * kChunk, error));
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    CHECK(ctl.record_requested());
+    CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
+    CHECK(!ctl.record_requested());
+    CHECK(ctl.settle(2.0));
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() == TransportState::Stopped);
+    // Record pressed twice while rolling, before the take could start: the
+    // request is taken back and the roll goes on.
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(reg.dispatch("transport.toggle_record") == DispatchResult::Ok);
+    CHECK(ctl.record_requested());
+    CHECK(reg.dispatch("transport.toggle_record") == DispatchResult::Ok);
+    CHECK(!ctl.record_requested());
+    CHECK(s.transport().state() == TransportState::Rolling);
+    return 0;
+}
+
+// --no-input-monitoring holds for the whole run: every snapshot shown after
+// a take sets the mix again, and must not put an armed track back on Auto.
+int test_no_input_monitoring_persists() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    ctl.set_input_monitoring(false);
+    s.tracks()[1]->set_rec_armed(true);
+    std::string error;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(s.tracks()[0]->monitor() == sonora::Track::Monitor::Auto);
+    CHECK(s.tracks()[1]->monitor() == sonora::Track::Monitor::Off);
+    CHECK(ctl.show(h.current(), error));
+    CHECK(s.tracks()[1]->monitor() == sonora::Track::Monitor::Off);
+    s.tracks()[1]->set_rec_armed(false);
+    ctl.apply_mix(h.current());
+    CHECK(s.tracks()[1]->monitor() == sonora::Track::Monitor::Auto);
+    return 0;
+}
+
+// A take at another sample rate would play at the wrong speed: refused,
+// with both rates named.
+int test_sample_rate_must_match() {
+    auto session = make_session(1);
+    const std::string rel = "Audio Files/rate_44100.wav";
+    const std::string path = kDir + "/" + rel;
+    std::remove(path.c_str());
+    sonora::WavWriter w;
+    CHECK(w.open(path, 44100, 1, sonora::WavWriter::Format::Float32, 0));
+    const std::vector<float> buf(1000, 0.25f);
+    CHECK(w.write(buf.data(), buf.size()) && w.close());
+    sonora::TakeDocument doc(*session);
+    std::string error;
+    CHECK(!doc.place_file(rel, 0, error));
+    CHECK(error.find("44100") != std::string::npos);
+    CHECK(error.find("48000") != std::string::npos);
+    std::remove(path.c_str());
+    return 0;
+}
+
+// A second locate asked while the first is sent but not applied: play must
+// wait for the second, or it can roll a block from the first target.
+int test_locate_serial_is_monotonic() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    CHECK(ctl.locate(10 * kChunk, error));
+    s.reader().run_pass();
+    ctl.pump();
+    CHECK(!ctl.locating());
+    CHECK(ctl.locate(20 * kChunk, error));
+    s.reader().run_pass();
+    ctl.play();
+    run_block(s, o);  // applies the first locate only
+    CHECK(s.transport().locates_applied() == 1);
+    for (int i = 0; i < 10 && s.transport().state() != TransportState::Rolling; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        CHECK(s.transport().state() != TransportState::Rolling ||
+              s.transport().locates_applied() == 2);
+        if (s.transport().state() != TransportState::Rolling) run_block(s, o);
+    }
+    CHECK(s.transport().state() == TransportState::Rolling);
+    CHECK(s.transport().playhead() == 20 * kChunk);
+    return 0;
+}
+
+// A gain the model would refuse still never reaches the audio thread as
+// inf: a silent input times inf is NaN on the monitor bus.
+int test_huge_gain_is_no_nan() {
+    auto session = make_session(1);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    PlaybackController ctl(s, kDir);
+    Snapshot snap = h.current();
+    snap.mix.tracks[0].gain_db = 1e30f;
+    snap.mix.tracks[0].monitor = MonitorMode::Input;
+    snap.mix.bus.gain_db = 1e30f;
+    ctl.apply_mix(snap);
+    const std::vector<float> silent(kBlock, 0.0f);
+    const std::vector<float> loud(kBlock, 1.0f);
+    Out o;
+    for (int i = 0; i < 3; ++i) {
+        run_block_in(s, o, silent);
+        CHECK(!has_nan(o));
+        run_block_in(s, o, loud);
+        CHECK(!has_nan(o));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    std::filesystem::remove_all(kDir);
     ::mkdir(kDir.c_str(), 0775);
     ::mkdir((kDir + "/Audio Files").c_str(), 0775);
     if (test_build_from_model()) return 1;
@@ -407,8 +740,15 @@ int main() {
     if (test_undo_while_rolling()) return 1;
     if (test_locate_and_cancel()) return 1;
     if (test_transport_commands()) return 1;
-    std::remove((kDir + "/Audio Files/src_1.wav").c_str());
-    std::remove((kDir + "/Audio Files/src_2.wav").c_str());
+    if (test_take_origin_is_first_recorded_frame()) return 1;
+    if (test_return_to_zero_then_record()) return 1;
+    if (test_pending_locate_dropped_by_a_take()) return 1;
+    if (test_record_waits_for_residency()) return 1;
+    if (test_no_input_monitoring_persists()) return 1;
+    if (test_sample_rate_must_match()) return 1;
+    if (test_locate_serial_is_monotonic()) return 1;
+    if (test_huge_gain_is_no_nan()) return 1;
+    std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;
 }
