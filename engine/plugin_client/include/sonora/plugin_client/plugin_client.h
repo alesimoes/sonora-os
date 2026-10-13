@@ -53,6 +53,10 @@ inline constexpr uint32_t kFadeFrames = 64;
 // ADR-0012 §3: this many consecutive counted misses remove the channel.
 inline constexpr uint32_t kMaxConsecutiveMisses = 8;
 inline constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+// InsertChainRef::param_store for a chain with no parameter store, the value
+// PR #48's plan nodes use: only a chain with no table (param_slots 0) runs
+// without one, and its parameter events are dropped, counted.
+inline constexpr uint32_t kNoStore = 0xFFFFFFFFu;
 
 struct ClientConfig {
     uint32_t block_frames = 128;
@@ -74,7 +78,7 @@ struct ClientConfig {
 struct InsertChainRef {
     uint32_t channel_slot = kNoSlot;
     uint32_t channel_generation = 0;  // the slot generation the plan was built against
-    uint32_t param_store = 0;
+    uint32_t param_store = kNoStore;
     uint32_t node_state = 0;
     uint32_t channels = 0;  // the chain's audio channels, in and out
 };
@@ -109,7 +113,6 @@ struct ChannelBinding {
 struct SlotStatus {
     uint32_t generation = 0;
     bool removed = false;
-    int32_t culprit = -1;  // chain index seen running most during the streak that removed it
     uint32_t streak = 0;
     uint64_t submitted = 0;
     uint64_t collected = 0;
@@ -121,7 +124,6 @@ struct SlotStatus {
     uint64_t budget_waits = 0;        // first submits put off by the A2 copy budget
     uint64_t resync_deferred = 0;     // held-change copies put off by it
     uint64_t frame_mismatches = 0;    // callbacks whose frame count was not block_frames
-    uint64_t instance_misses[plugin::kMaxInstances] = {};
     uint32_t latency_frames = 0;
 };
 
@@ -129,6 +131,8 @@ struct NodeStatus {
     uint64_t silent_blocks = 0;      // every block it did not play the chain's output
     uint64_t generation_faults = 0;  // the plan named a slot of another host (H1)
     uint64_t shape_faults = 0;       // channels or table size not those of the slot
+    uint64_t repeat_calls = 0;       // a second process_chain for the node in one callback
+    uint64_t events_dropped = 0;     // parameter events with no store to keep them
 };
 
 class PluginClient {
@@ -143,9 +147,20 @@ public:
 
     // ---- control thread
 
-    // The session clock the audio thread stamps and ticks. Before the
-    // backend is activated; null runs without one (unit tests).
-    void set_clock(plugin::ClockHeader* clock) { clock_ = clock; }
+    // The session clock the audio thread stamps and ticks; without one it
+    // runs unclocked (unit tests). Any time, though normally before the
+    // backend is activated.
+    void attach_clock(plugin::ClockHeader* clock);
+    // Takes the clock away, and returns only once no callback can still be
+    // using it, so the caller may then unmap it (code-reviewer M1, auditor
+    // L3 on PR #49). The audio thread loads the pointer once per callback,
+    // in begin_callback, after flagging itself inside one; this stores null
+    // and then waits for that flag to clear: whichever runs second sees
+    // the other (both sequentially consistent). Normally the backend is
+    // already deactivated and this returns at once. False if a callback
+    // stayed inside for `timeout_ms` (a callback that never reached
+    // end_callback): the caller must then NOT unmap the clock.
+    bool detach_clock(uint64_t timeout_ms = 5000);
 
     // A free slot, or kNoSlot when all are in use or awaiting retire.
     uint32_t acquire_slot();
@@ -184,6 +199,21 @@ public:
     // One InsertChain node (ADR-0012 §7.2 steps 0-2). `in` and `out` have
     // node.channels planes of `frames`; `in[c]` may be null (silence).
     // `out` is engine-private and receives what this node plays.
+    //
+    // Preconditions (code-reviewer M2 on PR #49), each checked:
+    //  - Between begin_callback and end_callback, ONCE per node per
+    //    callback, with the callback's whole block: never per slice of a
+    //    split block. A second call for the same node in one callback plays
+    //    silence, touches no slot and counts repeat_calls; the first call's
+    //    output stands.
+    //  - frames == ClientConfig::block_frames (contracts/plugin, "Frame
+    //    count"). Another count is a miss with nothing submitted and every
+    //    change held (frame_mismatches); never more than block_frames is
+    //    read from `in` or written to `out` beyond `frames`.
+    //  - `in` may alias `out`, even plane for plane (an in-place node): the
+    //    input is copied aside before the output is written.
+    //  - events: at most what the caller holds, with param_store a valid
+    //    store or kNoStore.
     Outcome process_chain(const InsertChainRef& node, const float* const* in, float* const* out,
                           uint32_t frames, const ParamEvent* events, uint32_t event_count) noexcept SONORA_RT;
     // §7.2 step 3: one tick if anything was submitted, and the wake only
@@ -196,15 +226,20 @@ public:
 
 private:
     ClientConfig config_;
-    plugin::ClockHeader* clock_ = nullptr;
+    std::atomic<plugin::ClockHeader*> clock_{nullptr};
+    std::atomic<uint32_t> in_callback_{0};
     std::unique_ptr<Slot[]> slots_;
     std::unique_ptr<Store[]> stores_;
+    std::unique_ptr<Store> empty_store_;  // what a kNoStore node uses: no table, no bypass
     std::unique_ptr<Node[]> nodes_;
     std::vector<float> store_values_;  // max_stores * store_slots
     std::vector<float> node_samples_;  // max_nodes * max_chain_channels * 2
+    std::vector<float> alias_scratch_;  // max_chain_channels * block_frames
+    std::vector<const float*> alias_in_;  // max_chain_channels planes into it
     std::vector<uint32_t> free_slots_;  // control thread only
 
     // Audio thread only.
+    plugin::ClockHeader* cb_clock_ = nullptr;  // clock_ as loaded at begin_callback
     uint64_t callback_ = 0;
     std::size_t budget_left_ = 0;
     bool submitted_any_ = false;

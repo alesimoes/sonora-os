@@ -41,15 +41,14 @@ struct PluginClient::Slot {
     uint64_t submitted_callback = 0;
     LastSubmit last = LastSubmit::None;
     uint32_t streak_count = 0;
-    uint64_t streak_by_instance[plugin::kMaxInstances] = {};
 
-    // --- written by the audio thread, read by the control thread.
+    // --- written by the audio thread, read by the control thread. Which
+    // plugin a streak belongs to is the control thread's to sample
+    // (current_instance is a control-thread word; auditor L1 on PR #49).
     std::atomic<uint32_t> removed{0};
-    std::atomic<int32_t> culprit{-1};
     std::atomic<uint32_t> streak{0};
     RtCounter submitted, collected, misses, busy_skips, nonfinite_samples, nonfinite_blocks,
         params_refused, budget_waits, resync_deferred, frame_mismatches;
-    RtCounter instance_misses[plugin::kMaxInstances];
 
     bool in_use = false;  // control thread only
 };
@@ -67,7 +66,8 @@ struct PluginClient::Node {
     bool playing = false;  // the last block played was the chain's output
     uint32_t bound_slot = kNoSlot;
     uint32_t bound_generation = 0;
-    RtCounter silent_blocks, generation_faults, shape_faults;
+    uint64_t processed_callback = 0;  // the callback it last ran in (once per callback)
+    RtCounter silent_blocks, generation_faults, shape_faults, repeat_calls, events_dropped;
 };
 
 }  // namespace sonora::plugin_client

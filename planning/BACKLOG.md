@@ -111,8 +111,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              runs it plus the plugin_client tests under RTSan, and records
              whether the `syscall` in `wake_all` is reported.
        - [ ] Wire `PluginClient::process_chain` into the InsertChain node
-             (checklist 3, `feature/plan-pdc`) and `SupervisedChain` into
-             the control server (checklist 5); pidfd instead of polling.
+             (checklist 3, `feature/plan-pdc`): once per node per callback
+             with the whole block, `param_store = kNoStore` for a chain
+             without parameters, `begin_callback`/`end_callback` around the
+             plan. Then `SupervisedChain` into the control server
+             (checklist 5); pidfd instead of polling.
+       - [ ] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
+             `HostSupervisor::start` blocks its caller up to 10 s waiting
+             for Ready. Before it runs on the control server's thread it
+             becomes asynchronous: spawn, return, and notice Ready (or the
+             refusal, or the timeout) from `poll()`.
        - [x] rt-eng M5: fade/ramp state per node, keyed by the chain's
              stable id like the delay lines, not per slot, so make-before-
              break does not cut hard; the silent block a channel switch

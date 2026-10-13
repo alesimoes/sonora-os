@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <random>
 
 namespace sonora::plugin_client {
 
@@ -92,6 +93,14 @@ std::string HostProcess::exit_text() {
 HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& client)
     : config_(config), client_(client) {
     std::string error;
+    // The host paces on the clock's quantum and the client submits its own
+    // block_frames; if they differ, every block faults the host (code-reviewer
+    // L4 on PR #49).
+    if (client.config().block_frames != config.block_frames) {
+        why_ = "plugin hosting is disabled: the client's block is " + std::to_string(client.config().block_frames) +
+               " frames and the supervisor's " + std::to_string(config.block_frames);
+        return;
+    }
     clock_region_ = platform::SharedRegion::create("sonora-plugin-clock", sizeof(plugin::ClockHeader), error);
     if (!clock_region_) {
         why_ = "plugin hosting is disabled: cannot create the session clock: " + error;
@@ -110,10 +119,20 @@ HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& cli
         why_ = "plugin hosting is disabled: the session's rate and quantum make no valid clock";
         return;
     }
+    // The audio thread writes it every callback: faulted in by init_clock,
+    // kept in here, a refusal counted (auditor M2 on PR #49).
+    std::string lock_error;
+    if (!clock_region_->lock(lock_error)) {
+        clock_unlocked_ = true;
+        ++lock_failures_;
+    }
 
-    // §5.5: checked at start-up, not first use.
+    // §5.5: checked at start-up, not first use. The capture file's name is
+    // not guessable, so nothing can be planted for the host's O_TRUNC.
     const std::string out = config.scratch_dir + "/sonora-plugin-host-version-" +
-                            std::to_string(platform::current_process_id()) + ".txt";
+                            std::to_string(platform::current_process_id()) + "-" +
+                            std::to_string(std::random_device{}()) + std::to_string(std::random_device{}()) +
+                            ".txt";
     platform::ChildProcess::Options o;
     o.stdout_path = out;
     auto child = platform::ChildProcess::spawn({config.host_path, "--version"}, o, error);
@@ -121,7 +140,13 @@ HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& cli
         why_ = "plugin hosting is disabled: " + error;
         return;
     }
-    if (!child->wait(5000)) child->kill();
+    // A host that prints its line and then hangs is not one we accept: it
+    // is killed, reaped, and the timeout is the failure (code-reviewer L3).
+    const bool exited = child->wait(5000);
+    if (!exited) {
+        child->kill();
+        child->wait(-1);
+    }
     std::string line;
     {
         std::ifstream f(out);
@@ -129,6 +154,10 @@ HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& cli
     }
     std::remove(out.c_str());
     uint32_t layout = 0, clock_version = 0;
+    if (!exited) {
+        why_ = "plugin hosting is disabled: " + config.host_path + " --version did not exit within 5 s";
+        return;
+    }
     if (!child->exited_normally() || child->exit_code() != 0 ||
         !plugin::parse_version_line(line.c_str(), layout, clock_version)) {
         why_ = "plugin hosting is disabled: " + config.host_path + " --version did not answer (" + line + ")";
@@ -140,11 +169,18 @@ HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& cli
                std::to_string(plugin::kLayoutVersion) + " clock " + std::to_string(plugin::kClockLayoutVersion);
         return;
     }
-    client_.set_clock(clock);
+    client_.attach_clock(clock);
     ok_ = true;
 }
 
-HostSupervisor::~HostSupervisor() { client_.set_clock(nullptr); }
+HostSupervisor::~HostSupervisor() {
+    // Teardown order (code-reviewer M1, auditor L3 on PR #49): the backend
+    // is deactivated first, so no callback runs and this returns at once.
+    // If one is still inside, detach_clock waits for it to leave; if it
+    // never does, the clock stays mapped (leaked) rather than unmapped
+    // under the audio thread.
+    if (!client_.detach_clock()) (void)clock_region_.release();
+}
 
 std::unique_ptr<HostProcess> HostSupervisor::start(const ChainSpec& spec, std::string& error) {
     const std::string name = join(spec.plugins, ',');
@@ -251,11 +287,12 @@ SupervisedChain::SupervisedChain(HostSupervisor& supervisor, ChainSpec spec, uin
     : sup_(supervisor), spec_(std::move(spec)), store_(param_store), node_(node_state) {}
 
 SupervisedChain::~SupervisedChain() {
-    // The caller has retired every plan naming either slot.
+    // The caller has retired every plan naming either slot. Each slot is
+    // retired (a new generation) before its region is released.
     retired();
+    if (slot_ != kNoSlot) sup_.client().retire(slot_);
     if (current_) current_->stop();
     current_.reset();
-    if (slot_ != kNoSlot) sup_.client().retire(slot_);
 }
 
 bool SupervisedChain::start(std::string& error) {
@@ -302,19 +339,34 @@ uint32_t SupervisedChain::latency_frames() const { return current_ ? current_->l
 
 SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
     if (down_ || !current_ || retiring_) return Event::None;
+    const SlotStatus st = sup_.client().slot_status(slot_);
+    // The culprit is sampled here, on the control thread, while a streak
+    // runs: current_instance is a control-thread word (auditor L1 on #49).
+    const bool removed = st.removed;
+    if (st.streak > 0 || removed) {
+        const int32_t running = plugin::checked_instance(
+            current_->header().current_instance.load(std::memory_order_relaxed), uint32_t(spec_.plugins.size()));
+        if (running >= 0) ++streak_samples_[running];
+    } else {
+        for (uint64_t& n : streak_samples_) n = 0;
+    }
     std::string reason;
     if (!current_->running()) {
         reason = "the host " + current_->exit_text();
-    } else if (sup_.client().removed(slot_)) {
-        const SlotStatus st = sup_.client().slot_status(slot_);
+    } else if (removed) {
         reason = "removed after " + std::to_string(kMaxConsecutiveMisses) + " missed blocks";
-        if (st.culprit >= 0 && uint32_t(st.culprit) < spec_.plugins.size())
-            reason += ", " + spec_.plugins[uint32_t(st.culprit)] + " running";
     } else if (current_->hung(now_ms)) {
         reason = "the host stopped answering (heartbeat)";
     } else {
         return Event::None;
     }
+    culprit_ = -1;
+    uint64_t most = 0;
+    for (uint32_t i = 0; i < plugin::kMaxInstances; ++i)
+        if (streak_samples_[i] > most) most = streak_samples_[i], culprit_ = int32_t(i);
+    for (uint64_t& n : streak_samples_) n = 0;
+    if (culprit_ >= 0 && uint32_t(culprit_) < spec_.plugins.size())
+        reason += ", " + spec_.plugins[uint32_t(culprit_)] + " running";
     return replace(now_ms, reason) ? Event::Swapped : Event::Down;
 }
 
@@ -358,10 +410,12 @@ bool SupervisedChain::replace(uint64_t now_ms, const std::string& reason) {
 
 void SupervisedChain::retired() {
     if (!retiring_) return;
-    retiring_->stop();
-    retiring_.reset();  // the region is released only now (§5.3)
+    // The slot first: its generation moves, so even a plan retired out of
+    // order cannot reach the region released below (code-reviewer L5).
     sup_.client().retire(retiring_slot_);
     retiring_slot_ = kNoSlot;
+    retiring_->stop();
+    retiring_.reset();  // the region is released only now (§5.3)
 }
 
 }  // namespace sonora::plugin_client

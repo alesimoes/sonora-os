@@ -8,6 +8,7 @@
 
 #include "sonora/platform/wake.h"
 
+#include <cstdint>
 #include <cstring>
 
 namespace sonora::plugin_client {
@@ -61,25 +62,34 @@ void keep(PluginClient::Store& s, const ParamEvent& e) noexcept SONORA_RT {
 }  // namespace
 
 void PluginClient::begin_callback(uint64_t now_ns) noexcept SONORA_RT {
+    // Flag first, then load: with detach_clock's store-then-check, both
+    // sequentially consistent, a callback either sees null or is seen
+    // inside, so the clock is never unmapped under it.
+    in_callback_.store(1, std::memory_order_seq_cst);
+    cb_clock_ = clock_.load(std::memory_order_seq_cst);
     ++callback_;
     callbacks_seen_.store(callback_, std::memory_order_relaxed);
     budget_left_ = plugin::kValueCopyBudgetBytes;
     submitted_any_ = false;
-    if (clock_) plugin::publish_callback_start(*clock_, now_ns);
+    if (cb_clock_) plugin::publish_callback_start(*cb_clock_, now_ns);
 }
 
 void PluginClient::end_callback() noexcept SONORA_RT {
-    if (!submitted_any_ || !clock_) return;
-    plugin::publish_tick(*clock_);
-    // Gated off until ADR-0012 Unverified 1 passes on bare metal (A1).
-    if (plugin::kHostWakeEnabled) platform::wake_all(clock_->tick);
+    if (submitted_any_ && cb_clock_) {
+        plugin::publish_tick(*cb_clock_);
+        // Gated off until ADR-0012 Unverified 1 passes on bare metal (A1).
+        if (plugin::kHostWakeEnabled) platform::wake_all(cb_clock_->tick);
+    }
+    cb_clock_ = nullptr;
+    in_callback_.store(0, std::memory_order_seq_cst);
 }
 
 Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* const* in, float* const* out,
                                     uint32_t frames, const ParamEvent* events,
                                     uint32_t event_count) noexcept SONORA_RT {
     if (frames == 0) return Outcome::Missed;
-    if (ref.node_state >= config_.max_nodes || ref.param_store >= config_.max_stores || ref.channels == 0 ||
+    if (ref.node_state >= config_.max_nodes ||
+        (ref.param_store >= config_.max_stores && ref.param_store != kNoStore) || ref.channels == 0 ||
         ref.channels > config_.max_chain_channels) {
         // Nothing of the node's can be trusted to index with; the plan
         // builder never produces this, so it is counted and nothing else.
@@ -88,7 +98,44 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
         return Outcome::Missed;
     }
     Node& node = nodes_[ref.node_state];
-    Store& store = stores_[ref.param_store];
+    // Once per node per callback (code-reviewer M2 on PR #49): a caller
+    // that runs the plan per slice of a split block would otherwise see its
+    // own submit as a busy host and remove the chain after 8 slices.
+    if (node.processed_callback == callback_) {
+        node.repeat_calls.bump();
+        if (event_count) node.events_dropped.bump(event_count);
+        silence(out, ref.channels, frames);
+        return Outcome::Missed;
+    }
+    node.processed_callback = callback_;
+
+    // In place (in[c] == out[d]): the collect below writes `out` before
+    // the submit reads `in`, so the input is copied aside first.
+    if (frames <= config_.block_frames) {
+        bool aliased = false;
+        for (uint32_t c = 0; c < ref.channels && !aliased; ++c)
+            for (uint32_t d = 0; d < ref.channels && !aliased; ++d) {
+                const auto i0 = reinterpret_cast<std::uintptr_t>(in[c]);
+                const auto o0 = reinterpret_cast<std::uintptr_t>(out[d]);
+                const std::uintptr_t bytes = std::uintptr_t(frames) * sizeof(float);
+                aliased = in[c] && i0 < o0 + bytes && o0 < i0 + bytes;
+            }
+        if (aliased) {
+            for (uint32_t c = 0; c < ref.channels; ++c) {
+                float* copy = alias_scratch_.data() + std::size_t(c) * config_.block_frames;
+                if (in[c]) std::memcpy(copy, in[c], std::size_t(frames) * sizeof(float));
+                else std::memset(copy, 0, std::size_t(frames) * sizeof(float));
+                alias_in_[c] = copy;
+            }
+            in = alias_in_.data();
+        }
+    }
+
+    Store& store = ref.param_store == kNoStore ? *empty_store_ : stores_[ref.param_store];
+    if (ref.param_store == kNoStore) {
+        if (event_count) node.events_dropped.bump(event_count);
+        event_count = 0;
+    }
     for (uint32_t i = 0; i < event_count; ++i) keep(store, events[i]);
 
     // Step 0 (H1): a slot reassigned to another host is never read or
@@ -152,7 +199,6 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
         s.collected.bump();
         s.streak_count = 0;
         s.streak.store(0, std::memory_order_relaxed);
-        for (uint64_t& m : s.streak_by_instance) m = 0;
     } else {
         outcome = Outcome::Missed;
         if (bad) {
@@ -170,22 +216,10 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
             s.misses.bump();
             ++s.streak_count;
             s.streak.store(s.streak_count, std::memory_order_relaxed);
-            // The culprit is named from the streak, not the last read
-            // (PR #26 finding 6). The word is host-written: checked first.
-            const int32_t running = plugin::checked_instance(h.current_instance.load(std::memory_order_relaxed),
-                                                             s.map.instance_count);
-            if (running >= 0) {
-                ++s.streak_by_instance[running];
-                s.instance_misses[running].bump();
-            }
             if (s.streak_count >= kMaxConsecutiveMisses) {
-                int32_t culprit = -1;
-                uint64_t most = 0;
-                for (uint32_t i = 0; i < s.map.instance_count; ++i)
-                    if (s.streak_by_instance[i] > most) most = s.streak_by_instance[i], culprit = int32_t(i);
-                s.culprit.store(culprit, std::memory_order_relaxed);
-                // The control thread kills the host and applies the
-                // restart policy (§5.3); nothing more is submitted.
+                // The control thread names the culprit from what it
+                // sampled during the streak, kills the host and applies
+                // the restart policy (§5.3); nothing more is submitted.
                 s.removed.store(1, std::memory_order_release);
                 return Outcome::Removed;
             }

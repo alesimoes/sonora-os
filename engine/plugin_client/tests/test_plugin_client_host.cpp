@@ -194,6 +194,9 @@ struct Rig {
         : client(client_config()), scfg(sup_config(a)), sup(scfg, client),
           fake(FakeBackend::onboard_config()), session(client, spec.channels, blocks) {
         check(sup.ok(), "the host speaks this engine's versions and the clock is sealed");
+        // The container grants memlock (tools/build-plugins.sh), so a
+        // refusal here is a bug, not the environment (auditor M2, #49).
+        check(sup.clock_locked() && sup.region_lock_failures() == 0, "the clock and channel regions are locked");
         if (!sup.ok()) {
             std::printf("  %s\n", sup.why().c_str());
             return;
@@ -397,12 +400,15 @@ int scenario_miss(const Args& a) {
     check(removed_at == k0 + kMaxConsecutiveMisses, what);
     const SlotStatus st = rig.client.slot_status(first_slot);
     check(st.removed && rig.client.removed(first_slot), "the removal flag the control thread reads is set");
-    check(st.culprit == 0, "the culprit is named from the streak: instance 0");
     check(st.misses == kMaxConsecutiveMisses, "8 misses counted, the late host's second block included");
 
     rig.session.send(0, 0.f);  // into the store: the new host gets it on its first submit
     rig.run_paced(1);
     check(rig.until_event(10000) == SupervisedChain::Event::Swapped, "the supervisor restarted the chain");
+    // Sampled by the control thread from the host's current_instance; the
+    // audio thread never reads it (auditor L1 on PR #49).
+    check(rig.chain->culprit() == 0, "the control thread names the culprit: instance 0, the sleeping plugin");
+    std::printf("  why: %s\n", rig.chain->why().c_str());
     check(rig.session.ref.channel_slot != first_slot, "on a new slot, the old one retired after the swap");
     check(rig.chain->restarts() == 1, "one restart");
     const uint64_t back = rig.session.callback;
@@ -575,9 +581,14 @@ int scenario_native(const Args& a) {
             }
     }
     check(all_collected, "every block came back in time");
-    std::snprintf(what, sizeof what, "%llu blocks one block late against the N0 render: max |diff| %.3g <= %.3g",
-                  (unsigned long long)blocks, worst, tolerance);
-    check(worst <= tolerance, what);
+    // Bit-exact, not the fixture's tolerance (code-reviewer L7 on PR #49):
+    // the LV2 bundle runs the same Processor code the N0 render did, on the
+    // same machine, so every sample must match. The fixture's tolerance
+    // exists for its VST3 cases and is not used.
+    std::snprintf(what, sizeof what, "%llu blocks one block late equal the N0 render bit for bit (max |diff| %.3g)",
+                  (unsigned long long)blocks, worst);
+    (void)tolerance;
+    check(worst == 0.0, what);
     return 0;
 }
 

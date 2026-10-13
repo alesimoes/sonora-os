@@ -1,27 +1,28 @@
 # ADR-0012 Consequences, auditor A3: common/platform contributes exactly
-# wake_all() to the audio thread. Run by ctest (plugin_client_rt_reachability)
-# as `cmake -P`, with:
+# wake_all() to the audio thread. Run by ctest (plugin_client_rt_reachability
+# and its canaries) as `cmake -P`, with:
 #
 #   NM                the toolchain's nm
-#   RT_OBJECTS        the object files of engine/plugin_client's audio-thread
-#                     half (src/rt.cpp alone, the OBJECT library
-#                     sonora_plugin_client_rt)
+#   RT_OBJECTS        the object files of the audio thread's half (src/rt.cpp
+#                     alone, the OBJECT library sonora_plugin_client_rt)
+#   WAKE_OBJECTS      common/platform's objects; the one built from wake.cpp
+#                     is checked as wake_all's body
 #   CORE_LIB          engine/core's archive (Session::process)
 #   PLATFORM_INCLUDE  common/platform/include
 #
-# Three checks, each failing the test:
-#  1. The audio thread's object references no common/platform symbol but
-#     sonora::platform::wake_all, and nothing that allocates, frees, locks,
-#     blocks, sleeps, logs, writes or throws. A symbol it does not reference
-#     cannot be reached from it; what it calls inline is compiled into it and
-#     shows up here as its own undefined references.
-#  2. engine/core references no common/platform symbol at all: when
-#     Session::process gains its InsertChain step it reaches the platform
-#     only through check 1's object. Revisit this check if engine/core ever
-#     links common/platform for its non-RT threads; the rule stays "nothing
-#     but wake_all from Session::process".
-#  3. wake_all is the only SONORA_RT declaration in common/platform's
-#     headers.
+# An ALLOWLIST, not a list of known-bad names (rt-safety-auditor M1 on PR
+# #49): every undefined symbol of the audio thread's object must be one of
+# the few below, so any out-of-line callee at all, whatever its name (a
+# libstdc++ string member, a condition variable, clock_gettime), fails. What
+# the object calls inline is compiled into it, and its own references show
+# up here. One level deeper, wake_all's object may reach only the raw
+# syscall. Checks:
+#  1. rt.cpp's object: only the allowlist.
+#  2. wake.cpp's object: only syscall (and the same instrumentation).
+#  3. engine/core references no common/platform symbol: Session::process
+#     reaches the platform only through check 1's object. Revisit if
+#     engine/core ever links common/platform for its non-RT threads.
+#  4. wake_all is the only SONORA_RT declaration in common/platform.
 
 cmake_minimum_required(VERSION 3.16)
 
@@ -33,6 +34,10 @@ function(undefined_symbols file out)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "${NM} -C -u ${file} failed (${rc}): ${err}")
   endif()
+  # Demangled names can hold ';' and brackets; neither matters here.
+  string(REPLACE ";" "," text "${text}")
+  string(REPLACE "[" "<" text "${text}")
+  string(REPLACE "]" ">" text "${text}")
   string(REPLACE "\n" ";" lines "${text}")
   set(symbols)
   foreach(line IN LISTS lines)
@@ -44,39 +49,56 @@ function(undefined_symbols file out)
   set(${out} "${symbols}" PARENT_SCOPE)
 endfunction()
 
-# Demangled names (nm -C). Sanitizer and stack-protector hooks are not on
-# the list: they are the build's instrumentation, not the code's calls.
-set(denied
-  "operator new" "operator delete"
-  "^malloc$" "^calloc$" "^realloc$" "^free$" "posix_memalign" "aligned_alloc"
-  "pthread_" "^sem_" "mtx_" "cnd_"
-  "__cxa_throw" "__cxa_allocate_exception" "__cxa_guard_acquire" "std::__throw_"
-  "printf" "^puts$" "^fwrite$" "^fputs$" "^write$" "^writev$" "syslog"
-  "sleep" "^syscall$" "futex" "^poll$" "^select$" "^epoll" "^open" "^read$" "^close$"
-  "^mmap" "^munmap$" "^mlock")
+# The build's own instrumentation (sanitizers, stack protector), never the
+# code's calls.
+set(instrumentation "^__(asan|tsan|ubsan|msan|lsan|sanitizer)_" "^__stack_chk_fail$" "^__stack_chk_guard$")
+
+function(check_allowed obj what)
+  set(allowed ${ARGN})
+  undefined_symbols(${obj} symbols)
+  list(LENGTH symbols n)
+  message(STATUS "${obj}: ${n} undefined symbol(s)")
+  foreach(sym IN LISTS symbols)
+    message(STATUS "  ${sym}")
+    set(ok FALSE)
+    foreach(pattern IN LISTS allowed instrumentation)
+      if(sym MATCHES "${pattern}")
+        set(ok TRUE)
+      endif()
+    endforeach()
+    if(NOT ok)
+      if(sym MATCHES "sonora::platform::")
+        message(SEND_ERROR "${what} reaches common/platform beyond wake_all: ${sym}")
+      else()
+        message(SEND_ERROR "${what} references '${sym}', which is not on its allowlist")
+      endif()
+      math(EXPR failures "${failures} + 1")
+      set(failures ${failures} PARENT_SCOPE)
+    endif()
+  endforeach()
+endfunction()
 
 list(LENGTH RT_OBJECTS n_objects)
 if(n_objects EQUAL 0)
   message(FATAL_ERROR "RT_OBJECTS is empty")
 endif()
 foreach(obj IN LISTS RT_OBJECTS)
-  undefined_symbols(${obj} symbols)
-  list(LENGTH symbols n)
-  message(STATUS "${obj}: ${n} undefined symbol(s)")
-  foreach(sym IN LISTS symbols)
-    message(STATUS "  ${sym}")
-    if(sym MATCHES "sonora::platform::" AND NOT sym MATCHES "^sonora::platform::wake_all\\(")
-      message(SEND_ERROR "audio thread reaches common/platform beyond wake_all: ${sym}")
-      math(EXPR failures "${failures} + 1")
-    endif()
-    foreach(pattern IN LISTS denied)
-      if(sym MATCHES "${pattern}")
-        message(SEND_ERROR "audio thread references '${sym}' (matches ${pattern})")
-        math(EXPR failures "${failures} + 1")
-      endif()
-    endforeach()
-  endforeach()
+  check_allowed(${obj} "the audio thread"
+                "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\(")
 endforeach()
+
+set(found_wake FALSE)
+foreach(obj IN LISTS WAKE_OBJECTS)
+  get_filename_component(name ${obj} NAME)
+  if(name MATCHES "^wake\\.cpp\\.o(bj)?$")
+    set(found_wake TRUE)
+    check_allowed(${obj} "wake_all's object" "^syscall$")
+  endif()
+endforeach()
+if(NOT found_wake)
+  message(SEND_ERROR "common/platform's wake.cpp object was not among WAKE_OBJECTS")
+  math(EXPR failures "${failures} + 1")
+endif()
 
 undefined_symbols(${CORE_LIB} core_symbols)
 foreach(sym IN LISTS core_symbols)
@@ -102,7 +124,6 @@ foreach(h IN LISTS headers)
       if(line MATCHES "wake_all\\(")
         math(EXPR n_wake "${n_wake} + 1")
       endif()
-      message(STATUS "SONORA_RT in common/platform: ${line}")
     endif()
   endforeach()
 endforeach()
@@ -114,4 +135,4 @@ endif()
 if(failures GREATER 0)
   message(FATAL_ERROR "${failures} reachability violation(s)")
 endif()
-message(STATUS "rt reachability: ok (wake_all is the only common/platform symbol on the audio thread's path)")
+message(STATUS "rt reachability: ok (allowlist held; wake_all is the only common/platform symbol on the audio thread's path)")

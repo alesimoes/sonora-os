@@ -32,24 +32,34 @@ add_test(NAME plugin_client COMMAND test_plugin_client)
 # thread, checked on the objects with nm, BEFORE any SONORA_RT caller of
 # wake_all lands (ADR-0012 Consequences).
 if(CMAKE_NM AND NOT MSVC)
-  add_test(NAME plugin_client_rt_reachability
-           COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM}
-                   "-DRT_OBJECTS=$<TARGET_OBJECTS:sonora_plugin_client_rt>"
-                   -DCORE_LIB=$<TARGET_FILE:sonora_core>
-                   -DPLATFORM_INCLUDE=${CMAKE_SOURCE_DIR}/common/platform/include
-                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/rt_reachability.cmake)
-  # The check bites: an object that allocates, locks and calls another
-  # common/platform function must fail it.
-  add_library(plugin_client_rt_canary OBJECT tests/rt_reachability_canary.cpp)
-  target_link_libraries(plugin_client_rt_canary PRIVATE sonora_platform)
-  add_test(NAME plugin_client_rt_reachability_canary
-           COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM}
-                   "-DRT_OBJECTS=$<TARGET_OBJECTS:plugin_client_rt_canary>"
-                   -DCORE_LIB=$<TARGET_FILE:sonora_core>
-                   -DPLATFORM_INCLUDE=${CMAKE_SOURCE_DIR}/common/platform/include
-                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/rt_reachability.cmake)
-  set_tests_properties(plugin_client_rt_reachability_canary PROPERTIES PASS_REGULAR_EXPRESSION
-    "beyond wake_all:[ \n]+sonora::platform::executable_dir")
+  function(sonora_rt_reachability name objects)
+    add_test(NAME ${name}
+             COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM}
+                     "-DRT_OBJECTS=${objects}"
+                     "-DWAKE_OBJECTS=$<TARGET_OBJECTS:sonora_platform>"
+                     -DCORE_LIB=$<TARGET_FILE:sonora_core>
+                     -DPLATFORM_INCLUDE=${CMAKE_SOURCE_DIR}/common/platform/include
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/rt_reachability.cmake)
+  endfunction()
+  sonora_rt_reachability(plugin_client_rt_reachability "$<TARGET_OBJECTS:sonora_plugin_client_rt>")
+  # The check bites, one denial per canary. Each canary object must fail it
+  # for its own reason; the test passes only on that reason's message.
+  add_library(plugin_client_rt_canary_platform OBJECT tests/canary_platform.cpp)
+  target_link_libraries(plugin_client_rt_canary_platform PRIVATE sonora_platform)
+  add_library(plugin_client_rt_canary_alloc OBJECT tests/canary_alloc.cpp)
+  # The string canary at -O2 whatever the build type: the case where
+  # libstdc++'s extern template keeps the allocation out of the object.
+  add_library(plugin_client_rt_canary_string OBJECT tests/canary_string.cpp)
+  target_compile_options(plugin_client_rt_canary_string PRIVATE -O2)
+  sonora_rt_reachability(plugin_client_rt_canary_platform "$<TARGET_OBJECTS:plugin_client_rt_canary_platform>")
+  set_tests_properties(plugin_client_rt_canary_platform PROPERTIES PASS_REGULAR_EXPRESSION
+    "beyond wake_all:[ \n]+sonora::platform::current_process_id")
+  sonora_rt_reachability(plugin_client_rt_canary_alloc "$<TARGET_OBJECTS:plugin_client_rt_canary_alloc>")
+  set_tests_properties(plugin_client_rt_canary_alloc PROPERTIES PASS_REGULAR_EXPRESSION
+    "references 'operator new")
+  sonora_rt_reachability(plugin_client_rt_canary_string "$<TARGET_OBJECTS:plugin_client_rt_canary_string>")
+  set_tests_properties(plugin_client_rt_canary_string PROPERTIES PASS_REGULAR_EXPRESSION
+    "which is not on[ \n]+its allowlist")
 else()
   message(STATUS "engine/plugin_client: no nm; the A3 reachability test is skipped")
 endif()

@@ -118,8 +118,12 @@ public:
     // runs `host --version`. ok() is false, with why() saying so, when the
     // seal is not available (auditor L2) or the host does not speak this
     // engine's layout and clock versions (§5.5): plugin hosting is then
-    // disabled for the run, loudly, and recording is untouched.
+    // disabled for the run, loudly, and recording is untouched. Also when
+    // the client's block_frames is not config.block_frames.
     HostSupervisor(const SupervisorConfig& config, PluginClient& client);
+    // Teardown order: deactivate the backend, destroy every SupervisedChain
+    // (after the plans naming their slots are retired), then this. It takes
+    // the clock from the client with detach_clock() before unmapping it.
     ~HostSupervisor();
     HostSupervisor(const HostSupervisor&) = delete;
     HostSupervisor& operator=(const HostSupervisor&) = delete;
@@ -128,10 +132,16 @@ public:
     const std::string& why() const { return why_; }
     const SupervisorConfig& config() const { return config_; }
     PluginClient& client() { return client_; }
-    // Region pages the OS would not lock (auditor L3); reported, not fatal.
+    // Regions the OS would not lock (auditor L3 on PR #45, M2 on PR #49),
+    // the clock's included; reported, not fatal.
     uint64_t region_lock_failures() const { return lock_failures_; }
+    bool clock_locked() const { return ok_ && !clock_unlocked_; }
 
-    // A host for `spec`, brought to Ready within ready_timeout_ms. Null with
+    // A host for `spec`, brought to Ready within ready_timeout_ms. BLOCKS
+    // the calling thread for up to that long (10 s): fine for this stub and
+    // its tests, not for the control server's thread. Checklist 5 makes it
+    // asynchronous (start, then Ready noticed from poll) before it runs
+    // there; BACKLOG Track 4 item 4 (code-reviewer L6 on PR #49). Null with
     // `error` naming the plugin and the reason (refusal, exit code) when it
     // does not get there.
     std::unique_ptr<HostProcess> start(const ChainSpec& spec, std::string& error);
@@ -143,6 +153,7 @@ private:
     bool ok_ = false;
     std::string why_;
     uint64_t lock_failures_ = 0;
+    bool clock_unlocked_ = false;
 };
 
 // One insert chain under supervision: its host, its channel slot, and the
@@ -179,6 +190,11 @@ public:
     void retired();
 
     uint32_t restarts() const { return restarts_total_; }
+    // The chain index named for the last removal or hang: the instance the
+    // host reported running (checked_instance) most often in this thread's
+    // samples while the slot had a miss streak, the removal's own sample
+    // included (PR #26 finding 6). -1 when none was seen.
+    int32_t culprit() const { return culprit_; }
     bool down() const { return down_; }
     const std::string& why() const { return why_; }
 
@@ -196,6 +212,8 @@ private:
     std::unique_ptr<HostProcess> retiring_;
     uint32_t retiring_slot_ = kNoSlot;
     std::deque<uint64_t> restart_times_;
+    uint64_t streak_samples_[plugin::kMaxInstances] = {};
+    int32_t culprit_ = -1;
     uint32_t restarts_total_ = 0;
     bool down_ = false;
     std::string why_;
