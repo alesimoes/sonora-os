@@ -12,6 +12,7 @@
 #include "sonora/plugin/host_control.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -78,21 +79,24 @@ public:
     void touch(uint32_t instance, TouchKind kind, uint32_t dense, float value) noexcept override;
     // The main thread: what came since the last call, in order.
     void drain(std::vector<Event>& out);
-    // Touches dropped so far, Unmapped ones included.
-    uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
+    // Touches dropped so far: lost ones (not queued) and Unmapped ones.
+    uint64_t dropped() const { return lost() + unmapped_.load(std::memory_order_relaxed); }
+    // Touches that could not be queued: one of them may have been an end.
+    uint64_t lost() const { return lost_.load(std::memory_order_acquire); }
 
 private:
     static constexpr uint32_t kCapacity = 1024;
     std::mutex mutex_;
     Event ring_[kCapacity] = {};
     uint32_t head_ = 0, count_ = 0;
-    std::atomic<uint64_t> dropped_{0};
+    std::atomic<uint64_t> lost_{0}, unmapped_{0};
 };
 
 // The main thread's gesture rules (host_control.h, "Parameter touches"):
 // every touch inside a gesture, touches coalesced to kTouchIntervalMs per
-// parameter, the last value in GestureEnd, open gestures ended before the
-// host stops. Calls `send(const std::string&)` with encoded messages.
+// parameter, GestureEnd carrying the plugin's value at the end, open
+// gestures ended before the host stops and whenever a touch was dropped.
+// Calls `send(const std::string&)` with encoded messages.
 class GestureTracker {
 public:
     template <class Send>
@@ -101,9 +105,14 @@ public:
     // earliest time a pending one becomes due, or 0 when none is pending.
     template <class Send>
     uint64_t flush(uint64_t now_ns, Send&& send);
-    // GestureEnd for every gesture still open.
-    template <class Send>
-    void end_all(Send&& send);
+    // GestureEnd for every gesture still open, each with the plugin's
+    // current value where `current(instance, param, float&)` can read it,
+    // else the last touch. Before the host stops, and at once after any
+    // touch was dropped: the dropped one may have been an end (M3 on
+    // PR #51), and no gesture may stay open for want of it.
+    template <class Current, class Send>
+    void end_all(Current&& current, Send&& send);
+    bool any_open() const { return !open_.empty(); }
 
 private:
     struct Open {
@@ -148,16 +157,16 @@ void GestureTracker::apply(const TouchQueue::Event& e, uint64_t now_ns, Send&& s
             it->second.pending = true;
         }
         return;
-    case TouchKind::End: {
+    case TouchKind::End:
+        // Not open: already ended (after a drop), or never begun. Ignored.
         if (it == open_.end()) return;
-        // A gesture with touches ends on the last one; without, on the
-        // value the controller reports now.
-        const bool touched = it->second.sent_ns != 0 || it->second.pending;
-        encode(GestureEnd{e.instance, e.dense, touched ? it->second.last : e.value}, bytes);
+        // The plugin's value at the end (VST3: the controller's, read at
+        // endEdit), not the last touch queued: a touch lost on the way
+        // must not make it stale (M3).
+        encode(GestureEnd{e.instance, e.dense, e.value}, bytes);
         send(bytes);
         open_.erase(it);
         return;
-    }
     case TouchKind::Unmapped:
         return;  // counted by the queue
     }
@@ -183,12 +192,15 @@ uint64_t GestureTracker::flush(uint64_t now_ns, Send&& send) {
     return due;
 }
 
-template <class Send>
-void GestureTracker::end_all(Send&& send) {
+template <class Current, class Send>
+void GestureTracker::end_all(Current&& current, Send&& send) {
     using namespace plugin::control;
     std::string bytes;
     for (auto& [key, g] : open_) {
-        encode(GestureEnd{key.first, key.second, g.last}, bytes);
+        float v = g.last;
+        float now = 0.f;
+        if (current(key.first, key.second, now) && std::isfinite(now)) v = now;
+        encode(GestureEnd{key.first, key.second, v}, bytes);
         send(bytes);
     }
     open_.clear();

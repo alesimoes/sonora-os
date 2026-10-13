@@ -528,8 +528,14 @@ public:
                 inbox_.emplace_back(m);
                 return true;
             },
-            e);
+            e, monotonic_ns());
         if (r == pc::Io::Closed) ctl_closed_ = true;
+        // The engine's checks of M1 (host_control.h, timeouts): a host with
+        // a message half received that stopped growing is pinning memory.
+        if (link_.stalled(monotonic_ns(), uint64_t(pc::kStalledMessageMs) * 1000000ull)) {
+            ctl_closed_ = true;
+            ctl_error_ = "a message half received for " + std::to_string(pc::kStalledMessageMs) + " ms";
+        }
         if (r == pc::Io::Error) {
             ctl_closed_ = true;
             ctl_error_ = e;

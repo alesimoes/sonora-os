@@ -1115,6 +1115,12 @@ public:
         handler_.attach(sink, instance, &by_id_, bypass_dense_, controller_);
     }
 
+    bool current_value(uint32_t dense, float& v) const override {
+        if (!controller_ || dense >= dense_ids_.size()) return false;
+        v = static_cast<float>(std::clamp(controller_->getParamNormalized(dense_ids_[dense]), 0.0, 1.0));
+        return true;
+    }
+
     // Section 0 is the component's state, section 1 a separate controller's
     // (empty for a single-component plugin). Replicas are copies of
     // instance 0, so its state is theirs.

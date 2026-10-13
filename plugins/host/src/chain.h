@@ -94,6 +94,18 @@ public:
         return slots_[i]->describe_value(dense, value, out);
     }
     float bypass_value(std::size_t i, bool bypassed) const { return slots_[i]->bypass_value(bypassed); }
+    // A touch's current value, `param` as touches carry it (a dense index,
+    // or kBypassParam with 1 = bypassed).
+    bool current_touch_value(std::size_t i, uint32_t param, float& v) const {
+        if (i >= slots_.size()) return false;
+        const Processor& p = *slots_[i];
+        if (param != plugin::kBypassParam) return p.current_value(param, v);
+        const int d = p.bypass_param();
+        float raw = 0.f;
+        if (d < 0 || !p.current_value(static_cast<uint32_t>(d), raw)) return false;
+        v = (raw > 0.5f) == (p.bypass_value(true) > 0.5f) ? 1.f : 0.f;
+        return true;
+    }
 
     std::size_t size() const { return slots_.size(); }
     uint32_t instance_latency(std::size_t i) const;

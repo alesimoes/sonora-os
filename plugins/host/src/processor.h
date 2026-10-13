@@ -157,6 +157,10 @@ public:
     // `sink` as chain instance `instance`. A format without a source of
     // touches (LV2 until its UIs are hosted) ignores it.
     virtual void set_touch_sink(TouchSink*, uint32_t) {}
+    // The main thread: a dense parameter's value as the plugin's own side
+    // (its controller) holds it now, for ending a gesture whose end was
+    // lost. False when the format cannot say.
+    virtual bool current_value(uint32_t, float&) const { return false; }
     // The main thread, while run() goes on (the formats allow it: VST3
     // getState is a main-thread call, LV2 save() may run beside run()).
     virtual SaveResult save_state(std::vector<std::string>&, std::string&) { return SaveResult::Empty; }

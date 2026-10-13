@@ -71,6 +71,13 @@ endif()
 
 # --- tests (ADR-0007 §7: a fake engine driver plus in-tree test plugins)
 
+# The gesture rules without a plugin (rt-engineer M3 on PR #51).
+add_executable(test_gestures tests/test_gestures.cpp)
+target_include_directories(test_gestures PRIVATE src)
+target_link_libraries(test_gestures PRIVATE sonora_plugin_host_control sonora_platform)
+add_test(NAME plugin_host_gestures COMMAND test_gestures)
+set_tests_properties(plugin_host_gestures PROPERTIES LABELS plugins)
+
 add_executable(test_urid_map tests/test_urid_map.cpp)
 target_link_libraries(test_urid_map PRIVATE sonora_urid_map Threads::Threads)
 add_test(NAME plugin_host_urid_map COMMAND test_urid_map)

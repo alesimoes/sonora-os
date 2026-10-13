@@ -17,9 +17,9 @@
 // carries no descriptor and no shared memory. The channel and clock regions
 // stay inherited descriptors named on the command line (--shm-fd,
 // --clock-fd), exactly as in layout 1 (the clock as the sealed read-only
-// reopen, auditor M1); ADR-0012 §4's SCM_RIGHTS passing is not used, so no
-// message brings a resource a receiver must remember to close, as with
-// contracts/api's frames.
+// reopen, auditor M1). ADR-0012 §4's SCM_RIGHTS passing is not used, and
+// the engine speaks first: both recorded, with the reasons, in ADR-0012's
+// amendment of 2026-10-13 ("HostControl transport and handshake").
 //
 // Not on any audio thread. Everything here allocates. The engine side is
 // the control thread only, at human or 100 Hz rates, never per block; the
@@ -41,7 +41,8 @@
 // enum value this version does not know, a bool other than 0 or 1, a string
 // or byte block past its cap, a count past its cap, a non-finite value, a
 // plugin id that is not one. A frame out of place (not where the message
-// being reassembled goes on, a length over kMaxMessageBytes, a frame over
+// being reassembled goes on, a length over that direction's cap
+// (kMaxHostMessageBytes host -> engine, kMaxMessageBytes engine -> host), a frame over
 // kMaxFrameBytes, an empty message) is a protocol error, and a peer that
 // frames wrongly cannot be resynchronised: the engine kills the host and
 // follows the crash path (§5.3); the host exits kHostExitUsage.
@@ -49,8 +50,19 @@
 // What the engine checks beyond decoding, on every host message: an
 // `instance` below the chain's count; a `param` that is a dense index of
 // that instance (param_in_chain) or kBypassParam; a `request` that matches
-// one it has outstanding, and a reply type that matches that request. A
-// message that fails any of these is a protocol fault: kill, crash path.
+// one it has outstanding, and a reply type that matches that request. And
+// per message (rt-engineer low on PR #51):
+//  - Hello: the three versions are the engine's, and `pid` is the pid it
+//    forked.
+//  - Loaded: instances.size() is the header's instance_count; each
+//    instance's params.size() is instance_params[i] (the key-to-index map
+//    depends on it); latency_frames passes checked_latency, and so does
+//    each instance's; the region's figures win where they differ.
+//  - State: `instance` is the one requested; with status Ok, the bytes
+//    decode as a StateBlob whose format and id are that instance's.
+//  - Every datagram carries no descriptor: one that does is a protocol
+//    fault (common/platform's receive refuses it when no region is asked).
+// A message that fails any of these is a protocol fault: kill, crash path.
 //
 // ---------------------------------------------------------------------------
 // Handshake and versioning (ADR-0012 §5.5).
@@ -120,10 +132,30 @@
 //    only producer (§5.1), so the engine sends it back tagged, through an
 //    RtCommand, like any other change.
 //  - Every touch is inside a gesture: a touch with none open is wrapped by
-//    the host in its own GestureBegin/GestureEnd. GestureEnd carries the
-//    gesture's last value. Touches are coalesced per (instance, param) to at
-//    most one per kTouchIntervalMs; the last value of a gesture is never
-//    coalesced away (it is in GestureEnd).
+//    the host in its own GestureBegin/GestureEnd. Touches are coalesced per
+//    (instance, param) to at most one per kTouchIntervalMs; the last value
+//    of a gesture is never coalesced away (it is in GestureEnd).
+//  - GestureEnd's value is the plugin's current value when the gesture
+//    ended (VST3: the controller's, read at endEdit), not the last touch
+//    the host happened to queue, so a touch lost on the way never makes it
+//    stale (rt-engineer M3 on PR #51). A format that cannot say uses the
+//    last touch.
+//  - No gesture stays open because an event was lost (M3). A plugin's touch
+//    can be dropped (the host's queue full, or taken by the main thread at
+//    that instant; counted in Fault{EventsDropped}). When the host sees any
+//    drop, it ends every gesture still open at once, each with the plugin's
+//    current value read on its main thread, before it sends that Fault. A
+//    later touch of such a gesture starts a new one; a later end of it is
+//    ignored. So every GestureBegin gets its GestureEnd, and the engine
+//    records SetInsertParams for every parameter that moved.
+//  - The engine does not trust the host to coalesce (M2). It enforces, per
+//    host: at most kMaxTouchesPerSecondPerParam ParamTouched per (instance,
+//    param), and at most kMaxGestureEndsPerSecond GestureEnd in any
+//    one-second window. Past either, the host is a protocol fault (kill,
+//    crash path, PluginFault naming the insert): each GestureEnd costs a
+//    model mutation, a broadcast and an undo entry, and the drain budget
+//    gives fairness between hosts, not a rate limit. Implemented with the
+//    control-server wiring (ADR-0012 checklist 5).
 //  - The control server applies SetInsertParams for an instance at every
 //    GestureEnd and at EditorClosed, so the document, every client and the
 //    saved values follow the editor. Before EditorClosed for an instance,
@@ -175,12 +207,26 @@
 // The host pauses its processing thread at a block boundary (it keeps
 // bumping heartbeat), re-activates every plugin on its main thread,
 // validates the chain again, re-applies bypass, publishes the latency
-// (region first), resumes, and answers Reconfigured. Blocks submitted
-// meanwhile complete late or not at all: between sending Reconfigure and
-// receiving Reconfigured (at most kReconfigureTimeoutMs) the engine plays
-// them as misses (§3: faded, silent) and does not count them toward the
-// 8-miss removal. A plugin that will not re-activate faults the host
-// (Fault{Plugin}, exit kHostExitFaulted): it must not run inactive.
+// (region first), resumes, and answers Reconfigured. A plugin that will not
+// re-activate faults the host (Fault{Plugin}, exit kHostExitFaulted): it
+// must not run inactive.
+//
+// The audio side of it (rt-engineer M4 on PR #51; implemented with
+// ADR-0012 checklist 5). The audio thread never sees the socket, so:
+//  - BEFORE sending Reconfigure, the control thread sets an "excused" flag
+//    on the InsertChain node's channel slot through an RtCommand. While it
+//    is set, blocks the node does not collect are misses all the same
+//    (§3: faded, silent, counted as misses) but do not count toward the
+//    8-miss removal.
+//  - The flag is cleared by the plan built from the latency_generation that
+//    Reconfigured carries (read from the region, §5.4), when that plan is
+//    swapped in, not when the message arrives. A Reconfigured that never
+//    comes (kReconfigureTimeoutMs) clears it with the kill.
+//  - The host resumes processing BEFORE it sends Reconfigured, and its
+//    blocks then carry the new latency. Until the new plan is in, the old
+//    alignment stands (§5.4): that window plays the chain MISALIGNED by the
+//    latency change, not silent. The plan swap realigns it; the delay lines
+//    are kept per (from, to) pair, so the swap restarts none of them.
 //
 // Shutdown. The engine sends Shutdown, or closes its end (the host treats
 // end-of-file as Shutdown), or sets the region's `shutdown` word (the path
@@ -193,8 +239,10 @@
 // kLoadTimeoutMs of Load (ADR-0012 §5.3's 10 s); a GetState, DescribeValue
 // or OpenEditor reply within kReplyTimeoutMs; Reconfigured within
 // kReconfigureTimeoutMs. Past one, the host is hung: SIGKILL, crash path.
-// A host whose queue of unsent frames would pass kMaxQueuedBytes is not
-// reading its socket: the same.
+// The same for a host whose queue of unsent frames would pass
+// kMaxQueuedBytes (it is not reading its socket), and for one with a
+// message half received that has not grown for kStalledMessageMs
+// (Link::stalled: it is pinning engine memory, M1).
 //
 // Non-blocking use. Link (below) holds one side's frames to send and the
 // message being reassembled; it never touches the OS. The engine's control
@@ -229,13 +277,25 @@ inline constexpr std::size_t kMaxStateBytes = std::size_t{16} << 20;  // one ins
 inline constexpr std::size_t kMaxStateSections = 4;
 inline constexpr std::size_t kMaxFrameBytes = std::size_t{64} << 10;  // one datagram
 inline constexpr std::size_t kFrameHeaderBytes = 8;
-// One Load of a whole chain's states, with room for its fixed fields. A
-// chain whose states together pass it cannot be loaded (Link::queue
-// refuses it, and the engine reports the insert faulted).
+// Caps per direction (rt-engineer M1 on PR #51): what one host can make the
+// engine hold is bounded by what the engine's side needs, never by the
+// largest message either side may send.
+//
+// Engine -> host: one Load of a whole chain's states, with room for its
+// fixed fields. A chain whose states together pass it cannot be loaded:
+// Link::queue refuses it, and the engine reports a PluginFault naming the
+// insert ("the chain's plugin states exceed the 64 MiB Load cap").
 inline constexpr std::size_t kMaxMessageBytes = std::size_t{64} << 20;
-// Unsent frames one side may hold for the other before the peer counts as
-// not reading: a Load or a State at its cap, twice.
-inline constexpr std::size_t kMaxQueuedBytes = 2 * kMaxMessageBytes;
+// Host -> engine: a State at its cap, or a Loaded whose key tables fit,
+// with room for the fixed fields. The engine's Reassembler refuses a
+// longer length at the first frame, before anything is held. A host whose
+// Loaded would pass it refuses the chain instead of sending it
+// (Refusal::UnsupportedFeature, "parameter table too large").
+inline constexpr std::size_t kMaxHostMessageBytes = kMaxStateBytes + (std::size_t{1} << 20);
+// Unsent frames the engine holds for one host before the host counts as not
+// reading its socket: one Load at its cap and the small requests behind it.
+// A host sends blocking (it has one peer), so it keeps no queue.
+inline constexpr std::size_t kMaxQueuedBytes = kMaxMessageBytes + (std::size_t{1} << 20);
 inline constexpr uint32_t kMaxDatagramsPerDrain = 64;
 
 // --- timing
@@ -244,6 +304,13 @@ inline constexpr int kLoadTimeoutMs = 10000;
 inline constexpr int kReplyTimeoutMs = 5000;
 inline constexpr int kReconfigureTimeoutMs = 10000;
 inline constexpr int kTouchIntervalMs = 10;  // 100 Hz, ADR-0012 §4
+// A message half received that has not grown for this long: the host is
+// pinning engine memory, and is killed (rt-engineer M1 on PR #51).
+inline constexpr int kStalledMessageMs = kReplyTimeoutMs;
+// The engine's own limits on what a host's touches may cost it (M2): past
+// either, in any one-second window, the host is a protocol fault.
+inline constexpr uint32_t kMaxTouchesPerSecondPerParam = 1000 / kTouchIntervalMs + 10;
+inline constexpr uint32_t kMaxGestureEndsPerSecond = 50;
 
 enum class Type : uint8_t {
     // engine -> host
@@ -570,15 +637,23 @@ class Reassembler {
 public:
     enum class Result { Partial, Complete, Error };
 
+    // `max_message`: the longest message this direction carries
+    // (kMaxHostMessageBytes on the engine's side, kMaxMessageBytes on the
+    // host's). A first frame announcing more is refused before anything is
+    // held.
+    explicit Reassembler(std::size_t max_message = kMaxMessageBytes) : max_(max_message) {}
+
     // Complete: `message` is the whole message. Error: the frame is out of
     // place, `error` says how, and what was held is dropped. The caller then
     // ends the connection.
     Result add(std::string_view frame, std::string& message, std::string& error);
     bool idle() const { return expected_ == 0; }
+    std::size_t held() const { return partial_.size(); }
 
 private:
     Result fail(std::string& error, std::string why);
 
+    std::size_t max_;
     std::string partial_;
     std::size_t expected_ = 0;
 };
@@ -587,9 +662,15 @@ private:
 
 enum class Io { Ok, WouldBlock, Closed, Error };
 
+// The defaults are the engine's side of one host: it receives at most
+// kMaxHostMessageBytes per message and queues at most kMaxQueuedBytes. So
+// one host can make the engine hold at most about 82 MiB, and that only
+// while a Load at its cap is in flight; otherwise about 17 MiB.
 class Link {
 public:
-    explicit Link(std::size_t max_queued_bytes = kMaxQueuedBytes) : max_queued_(max_queued_bytes) {}
+    explicit Link(std::size_t max_receive_message = kMaxHostMessageBytes,
+                  std::size_t max_queued_bytes = kMaxQueuedBytes)
+        : max_queued_(max_queued_bytes), in_(max_receive_message) {}
 
     // Frames `message` and holds them until flush() sends them. False, with
     // nothing held, for a message no receiver would take, or when the frames
@@ -619,14 +700,16 @@ public:
     // waits. Returns WouldBlock when the transport is drained, Ok when the
     // datagram budget ran out first (call again), Closed when the peer is
     // gone, Error on a framing or protocol failure (the caller ends the
-    // connection).
+    // connection). `now_ns` is the caller's monotonic clock: every frame
+    // taken is progress, for stalled().
     template <class Receive, class On>
-    Io drain(Receive&& receive, On&& on, std::string& error,
+    Io drain(Receive&& receive, On&& on, std::string& error, uint64_t now_ns,
              uint32_t max_datagrams = kMaxDatagramsPerDrain) {
         std::string datagram, message;
         for (uint32_t n = 0; n < max_datagrams; ++n) {
             const Io r = receive(datagram);
             if (r != Io::Ok) return r;
+            progress_ns_ = now_ns;
             switch (in_.add(datagram, message, error)) {
             case Reassembler::Result::Partial: break;
             case Reassembler::Result::Error: return Io::Error;
@@ -638,11 +721,21 @@ public:
         return Io::Ok;
     }
 
+    // A message is half received and no frame of it has come for
+    // `timeout_ns` (kStalledMessageMs): the peer is pinning memory. The
+    // engine's control thread checks this with its 50 ms poll and kills
+    // the host (M1).
+    bool stalled(uint64_t now_ns, uint64_t timeout_ns) const {
+        return !in_.idle() && now_ns - progress_ns_ >= timeout_ns;
+    }
+    std::size_t held_bytes() const { return in_.held(); }
+
 private:
     std::size_t max_queued_;
     std::deque<std::string> out_;
     std::size_t queued_bytes_ = 0;
     Reassembler in_;
+    uint64_t progress_ns_ = 0;
 };
 
 // --- state ------------------------------------------------------------------

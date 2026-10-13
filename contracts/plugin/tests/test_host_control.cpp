@@ -408,7 +408,7 @@ void link_over_a_blocking_transport() {
         const Io d = b.drain(receive, [&](std::string_view m) {
             got.emplace_back(m);
             return true;
-        }, e, 3);
+        }, e, 0, 3);
         CHECK(d == Io::Ok || d == Io::WouldBlock);
     }
     CHECK(got == sent);
@@ -416,7 +416,7 @@ void link_over_a_blocking_transport() {
 
     // A peer that never reads: the queue refuses past its cap, and holds
     // nothing of the refused message.
-    Link stuck(200 * 1024);
+    Link stuck(kMaxHostMessageBytes, 200 * 1024);
     const std::string m(100 * 1024, 'x');
     CHECK(stuck.queue(m, e));
     const std::size_t held = stuck.queued_bytes();
@@ -439,9 +439,131 @@ void link_over_a_blocking_transport() {
     CHECK(c.drain(recv_one, [&](std::string_view) {
         e = "refused";
         return false;
-    }, e) == Io::Error);
+    }, e, 0) == Io::Error);
     // Closed is passed through.
-    CHECK(c.drain([](std::string&) { return Io::Closed; }, [](std::string_view) { return true; }, e) == Io::Closed);
+    CHECK(c.drain([](std::string&) { return Io::Closed; }, [](std::string_view) { return true; }, e, 0) ==
+          Io::Closed);
+}
+
+// rt-engineer M1 on PR #51: what one host can make the engine hold. Each
+// direction has its own cap, checked at the first frame, and a message
+// half received that stops growing is reported, so the engine can kill a
+// host that pins memory.
+static_assert(kMaxHostMessageBytes < kMaxMessageBytes, "the engine receives less than it may send");
+static_assert(kMaxHostMessageBytes >= kMaxStateBytes + kMaxFrameBytes, "a State at its cap still fits");
+static_assert(kMaxQueuedBytes < 2 * kMaxMessageBytes, "the engine queues one Load, not two");
+
+std::string frame_header(uint32_t total, uint32_t offset, std::size_t payload) {
+    std::string f;
+    f.append(reinterpret_cast<const char*>(&total), 4);
+    f.append(reinterpret_cast<const char*>(&offset), 4);
+    f.append(payload, 'p');
+    return f;
+}
+
+void per_direction_caps_and_stalls() {
+    std::string e, msg;
+    // The engine's side refuses a host message longer than its cap at the
+    // first frame, holding nothing; the host's side takes a Load that long.
+    Reassembler engine_side(kMaxHostMessageBytes), host_side(kMaxMessageBytes);
+    const std::string over = frame_header(uint32_t(kMaxHostMessageBytes + 1), 0, 100);
+    CHECK(engine_side.add(over, msg, e) == Reassembler::Result::Error && engine_side.idle() &&
+          engine_side.held() == 0);
+    CHECK(engine_side.add(frame_header(uint32_t(kMaxHostMessageBytes), 0, 100), msg, e) ==
+          Reassembler::Result::Partial);
+    CHECK(host_side.add(frame_header(uint32_t(kMaxMessageBytes), 0, 100), msg, e) == Reassembler::Result::Partial);
+    CHECK(host_side.add(frame_header(uint32_t(kMaxMessageBytes + 1), 0, 100), msg, e) == Reassembler::Result::Error);
+    // Link's defaults are the engine's side.
+    {
+        Link link;
+        std::deque<std::string> in = {over};
+        auto recv = [&](std::string& d) {
+            if (in.empty()) return Io::WouldBlock;
+            d = in.front();
+            in.pop_front();
+            return Io::Ok;
+        };
+        CHECK(link.drain(recv, [](std::string_view) { return true; }, e, 1) == Io::Error);
+        CHECK(link.held_bytes() == 0);
+    }
+
+    // A stalled half message: frames stop coming. Reported once
+    // kStalledMessageMs has passed since the last frame, never while idle.
+    const uint64_t ms = 1000000ull, timeout = uint64_t(kStalledMessageMs) * ms;
+    Link link;
+    std::deque<std::string> in;
+    auto recv = [&](std::string& d) {
+        if (in.empty()) return Io::WouldBlock;
+        d = in.front();
+        in.pop_front();
+        return Io::Ok;
+    };
+    auto ignore = [](std::string_view) { return true; };
+    CHECK(!link.stalled(10 * timeout, timeout));  // idle
+    in.push_back(frame_header(3 * 60000, 0, 60000));
+    CHECK(link.drain(recv, ignore, e, 1000 * ms) == Io::WouldBlock);
+    CHECK(!link.stalled(1000 * ms + timeout - 1, timeout));
+    CHECK(link.stalled(1000 * ms + timeout, timeout));
+    // A frame is progress: the clock restarts from it.
+    in.push_back(frame_header(3 * 60000, 60000, 60000));
+    CHECK(link.drain(recv, ignore, e, 1000 * ms + timeout) == Io::WouldBlock);
+    CHECK(!link.stalled(1000 * ms + timeout + 1, timeout));
+    CHECK(link.held_bytes() == 120000);
+    // Complete: idle again, never stalled.
+    in.push_back(frame_header(3 * 60000, 120000, 60000));
+    CHECK(link.drain(recv, ignore, e, 1000 * ms + timeout + 2) == Io::WouldBlock);
+    CHECK(!link.stalled(1000 * ms + 100 * timeout, timeout) && link.held_bytes() == 0);
+}
+
+// Random frame streams through the Reassembler (rt-engineer low on PR #51):
+// valid messages split at random, interleaved with forged frames. Never a
+// crash; never more held than the cap; every refused frame drops what was
+// held; and a whole message comes out only as it went in.
+void fuzz_reassembler() {
+    std::mt19937 rng(51);
+    const std::size_t cap = 300000;
+    Reassembler r(cap);
+    std::string e, msg;
+    uint64_t complete = 0, errors = 0;
+    for (int iter = 0; iter < 8000; ++iter) {
+        std::string f;
+        switch (rng() % 4) {
+        case 0: {  // a whole valid message, framed
+            std::string m(1 + rng() % 150000, char('a' + rng() % 26));
+            std::vector<std::string> frames;
+            split_frames(m, frames, e);
+            bool ok = true;
+            for (std::size_t k = 0; k < frames.size(); ++k) {
+                const auto res = r.add(frames[k], msg, e);
+                if (res == Reassembler::Result::Error) {
+                    ok = false;  // a forged frame earlier left a partial
+                    ++errors;
+                    break;
+                }
+                if (res == Reassembler::Result::Complete) {
+                    CHECK(k + 1 == frames.size() && msg == m);
+                    ++complete;
+                }
+            }
+            (void)ok;
+            continue;
+        }
+        case 1:  // random bytes
+            for (std::size_t n = rng() % 64; n > 0; --n) f.push_back(char(rng()));
+            break;
+        default:  // a header with random numbers and some payload
+            f = frame_header(uint32_t(rng() % (cap * 2)), uint32_t(rng() % (cap * 2)), rng() % 70000);
+        }
+        const auto res = r.add(f, msg, e);
+        if (res == Reassembler::Result::Error) {
+            ++errors;
+            CHECK(r.idle() && r.held() == 0);
+        }
+        CHECK(r.held() <= cap);
+    }
+    std::printf("  reassembler fuzz: 8000 streams, %llu messages whole, %llu frames refused\n",
+                (unsigned long long)complete, (unsigned long long)errors);
+    CHECK(complete > 400);
 }
 
 // --- state, files, version line
@@ -521,6 +643,8 @@ int main() {
     fuzz_decoders();
     frames_reassemble_and_refuse();
     link_over_a_blocking_transport();
+    per_direction_caps_and_stalls();
+    fuzz_reassembler();
     state_blob_and_files();
     version_line();
     param_checks();

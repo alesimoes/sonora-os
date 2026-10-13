@@ -670,8 +670,9 @@ Reassembler::Result Reassembler::add(std::string_view frame, std::string& messag
     const uint32_t total = read_u32(frame, 0);
     const uint32_t offset = read_u32(frame, 4);
     const std::string_view body = frame.substr(kFrameHeaderBytes);
-    if (total == 0 || total > kMaxMessageBytes)
-        return fail(error, "a message length of " + std::to_string(total) + " bytes");
+    if (total == 0 || total > max_)
+        return fail(error, "a message length of " + std::to_string(total) + " bytes, over this direction's cap of " +
+                               std::to_string(max_));
     if (expected_ == 0) {
         if (offset != 0) return fail(error, "a message that does not start at offset 0");
         expected_ = total;

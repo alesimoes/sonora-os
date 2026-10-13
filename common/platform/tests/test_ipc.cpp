@@ -456,6 +456,22 @@ void a_pair_crosses_exec_to_a_child() {
     adopted.reset();
     CHECK(parent->receive(got, 1000, nullptr, 1000, error) == IoStatus::Closed);
 
+    // A descriptor nobody asked for is refused, not silently closed
+    // (HostControl wire 1 carries none; rt-engineer low on PR #51).
+    {
+        std::unique_ptr<ControlChannel> a;
+        int b_fd = -1;
+        CHECK(ControlChannel::pair(a, b_fd, error));
+        auto b = ControlChannel::adopt(b_fd, error);
+        auto region = SharedRegion::create("unasked", 4096, error);
+        CHECK(b && region);
+        if (b && region) {
+            CHECK(b->send_with_region("sneaky", *region, 0, error) == IoStatus::Ok);
+            error.clear();
+            CHECK(a->receive(got, 1000, nullptr, 1000, error) == IoStatus::Error && !error.empty());
+        }
+    }
+
     // A descriptor that is not a message-mode socket is refused.
     int fds[2];
     CHECK(::pipe(fds) == 0);

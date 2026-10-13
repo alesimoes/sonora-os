@@ -36,7 +36,7 @@ std::string ControlLink::error() const {
 // Blocks in receive; every whole message goes to the inbox and wakes the
 // main thread. Ends on the engine's close, a framing error, or close().
 void ControlLink::read_loop() {
-    pc::Reassembler reassembler;
+    pc::Reassembler reassembler(pc::kMaxMessageBytes);  // engine -> host
     std::string datagram, message, why;
     for (;;) {
         const platform::IoStatus s = channel_->receive(datagram, pc::kMaxFrameBytes, nullptr, -1, why);
@@ -109,22 +109,24 @@ bool ControlLink::send(const std::string& message) {
 
 void TouchQueue::touch(uint32_t instance, TouchKind kind, uint32_t dense, float value) noexcept {
     if (kind == TouchKind::Unmapped) {
-        dropped_.fetch_add(1, std::memory_order_relaxed);
+        unmapped_.fetch_add(1, std::memory_order_relaxed);
         notify_control();
         return;
     }
-    // Bounded try_lock, never lock: a plugin may call its handler from
-    // process(), and nothing there may wait on the main thread for long.
-    // The main thread holds the lock only to copy the ring out.
-    bool locked = false;
-    for (int i = 0; i < 64 && !(locked = mutex_.try_lock()); ++i) std::this_thread::yield();
-    if (!locked) {
-        dropped_.fetch_add(1, std::memory_order_relaxed);
+    // One try_lock, never a wait: a plugin may call its handler from
+    // process() on the SCHED_FIFO thread. Losing the race to the main
+    // thread's copy-out loses the touch, which is counted, and the main
+    // thread then ends every open gesture with the plugin's current value
+    // (host_control.h, M3), so a lost end never leaves one open.
+    if (!mutex_.try_lock()) {
+        lost_.fetch_add(1, std::memory_order_release);
+        notify_control();
         return;
     }
     if (count_ == kCapacity) {
         mutex_.unlock();
-        dropped_.fetch_add(1, std::memory_order_relaxed);
+        lost_.fetch_add(1, std::memory_order_release);
+        notify_control();
         return;
     }
     ring_[(head_ + count_) % kCapacity] = Event{instance, kind, dense, value};

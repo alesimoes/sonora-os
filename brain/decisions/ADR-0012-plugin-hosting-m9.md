@@ -245,8 +245,9 @@ without its inserts (a DAW 4/5 mixer feature, not a protocol mode).
   control socket → engine control thread → host.
 - **Engine ↔ host:** one `AF_UNIX` `SOCK_SEQPACKET` socketpair per host,
   created by the engine's control thread when it forks the host, inherited
-  as fd 3. The region memfd and the clock memfd cross on it with
-  `SCM_RIGHTS`. Messages are framed and strictly decoded by the same rules
+  as fd 3. ~~The region memfd and the clock memfd cross on it with
+  `SCM_RIGHTS`.~~ (Amended 2026-10-13, below: they stay inherited
+  descriptors.) Messages are framed and strictly decoded by the same rules
   as `contracts/api/wire.h` (type byte, little-endian fields, capped
   strings, refuse truncation and trailing bytes). The message set lives in
   `contracts/plugin/include/sonora/plugin/host_control.h`:
@@ -254,7 +255,7 @@ without its inserts (a DAW 4/5 mixer feature, not a protocol mode).
 | Direction | Message | Purpose |
 |---|---|---|
 | engine → host | `Load` | chain: per instance format, identity (LV2 URI or VST3 class id), state bytes, dense parameter count |
-| host → engine | `Hello` | layout version, wire version, pid; sent before anything else |
+| host → engine | `Hello` | layout version, wire version, pid; the host's first message, sent after the engine's `EngineHello` (amended 2026-10-13, below) |
 | host → engine | `Loaded` / `Refused` | mirrors `HostState`, with the `Refusal` and its text |
 | engine → host | `GetState` (instance) → `State` (bytes) | save, and make-before-break (§5.3) |
 | engine → host | `DescribeValue` (instance, param, value) → `ValueText` | display text; for VST3 a controller call, so it runs on the host's main thread |
@@ -274,6 +275,48 @@ without its inserts (a DAW 4/5 mixer feature, not a protocol mode).
   The heartbeat is checked every 50 ms; one older than 500 ms while `Ready`
   is a hang outside a plugin, and the host is killed (`SIGKILL`), which
   then follows the crash path.
+
+**Amendment, 2026-10-13: HostControl transport and handshake** (PR #51,
+`host_control.h` wire version 1). Proposed by plugin-engineer. The
+rt-engineer co-review on PR #51 found it acceptable on the merits. It
+binds once the PR merges.
+
+1. **The regions stay inherited descriptors; no `SCM_RIGHTS`.** The
+   channel region and the clock's read-only reopen are placed by the
+   spawner at fixed descriptors and named on the command line
+   (`--shm-fd`, `--clock-fd`), as layout 1 already does. The socket
+   carries messages only. Reasons:
+   - The guarantee of §1.1 and auditor M1 does not depend on how the
+     descriptor travels. The clock is still the `O_RDONLY` reopen of a
+     memfd sealed with `F_SEAL_FUTURE_WRITE`, so a `PROT_WRITE` mapping
+     fails either way.
+   - Leakage is no worse. Both ends of the pair, and both regions, are
+     close-on-exec from birth (`ControlChannel::pair`). Only the child
+     gets them, through `dup2` between fork and exec. No other host forked
+     meanwhile can inherit them.
+   - The host carries no descriptor-receiving code at all. A host that
+     receives no descriptors cannot be handed the wrong one, and no
+     message brings a resource a receiver must remember to close (the
+     reason `contracts/api` frames large payloads instead of passing
+     memfds). Under wire 1, a descriptor arriving on the socket is a
+     protocol fault (`ControlChannel::receive` refuses it when no region
+     is asked for).
+   - It is one mechanism instead of two. The regions exist before the
+     fork in either design, so passing them after it would add a round
+     trip and a failure mode, and gain nothing.
+   - What it costs: the spawner must place three descriptors (3 socket,
+     then the regions), and a later protocol that wants a region created
+     after start-up (the telemetry memfd of §8) needs `SCM_RIGHTS` then.
+     That is a wire-version bump when it comes.
+2. **The engine speaks first.** The first datagram on the pair is the
+   engine's `EngineHello` (wire, layout and clock versions). The host's
+   `Hello` is the first thing *the host* sends, after it has read
+   `EngineHello` and checked the regions. Reason: §5.5 requires a host
+   that does not speak the engine's versions to exit 3 "before sending
+   anything on the socket". It can only do that if it learns the engine's
+   wire version before it sends. The first bytes of both hellos (frame
+   header, type byte, u32 wire version) never move, so either side can
+   name a mismatch whatever else changed.
 
 ### 5. The contract items, resolved
 

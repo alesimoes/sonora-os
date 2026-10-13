@@ -131,8 +131,9 @@ public:
 
     // One datagram. A datagram longer than `max_bytes` is an Error, not a
     // truncated message. A region attached to it is mapped read-only into
-    // `*region` when `region` is not null, and released otherwise. One
-    // receiver at a time.
+    // `*region` when `region` is not null; when it is null, an attached
+    // descriptor is closed and the datagram is an Error (the peer sent what
+    // nobody asked for). One receiver at a time.
     IoStatus receive(std::string& datagram, std::size_t max_bytes,
                      std::unique_ptr<SharedRegion>* region, int timeout_ms,
                      std::string& error);

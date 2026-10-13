@@ -934,6 +934,22 @@ int serve(const Options& o) {
         h.instances[i].replicas.store(chain.replicas(i), std::memory_order_relaxed);
     publish_latency(h, chain, ipc_frames);
 
+    // The engine receives at most kMaxHostMessageBytes per message (M1 on
+    // PR #51). Key tables that would not fit refuse the chain here, before
+    // Ready, rather than make the engine refuse a Loaded.
+    if (link) {
+        std::string bytes;
+        pc::encode(loaded_message(h, chain, spec), bytes);
+        if (bytes.size() > pc::kMaxHostMessageBytes) {
+            cerr.reason = plugin::Refusal::UnsupportedFeature;
+            cerr.instance = -1;
+            cerr.message = "the chain's parameter tables (" + std::to_string(bytes.size()) +
+                           " bytes) are too large for HostControl's " +
+                           std::to_string(pc::kMaxHostMessageBytes) + "-byte cap";
+            return refused(cerr);
+        }
+    }
+
     // Touches from here on; held until Loaded is sent.
     TouchQueue touches;
     if (link) chain.set_touch_sink(&touches);
@@ -1001,7 +1017,12 @@ int serve(const Options& o) {
     }
     bool engine_gone = !link->send_message(loaded_message(h, chain, spec));
     uint32_t latency_sent = h.latency_generation.load(std::memory_order_acquire);
-    uint64_t dropped_sent = 0;
+    uint64_t dropped_sent = 0, lost_seen = 0;
+    // The plugin's value now, on this (its main) thread, for a gesture
+    // ended without its own end.
+    auto current = [&](uint32_t instance, uint32_t param, float& v) {
+        return chain.current_touch_value(instance, param, v);
+    };
     GestureTracker gestures;
     std::vector<TouchQueue::Event> events;
     int protocol_exit = -1;
@@ -1159,9 +1180,17 @@ int serve(const Options& o) {
             engine_gone = true;
         }
         const uint64_t now = monotonic_ns();
+        // Read before the drain: a touch lost from here on is seen next pass.
+        const uint64_t lost = touches.lost();
         events.clear();
         touches.drain(events);
         for (const auto& e : events) gestures.apply(e, now, send);
+        // A lost touch may have been an end: end every open gesture now,
+        // with the plugin's current value (host_control.h, M3).
+        if (lost != lost_seen) {
+            gestures.end_all(current, send);
+            lost_seen = lost;
+        }
         const uint64_t touch_due = gestures.flush(now, send);
         if (const uint64_t d = touches.dropped(); d != dropped_sent) {
             send_fault(pc::FaultKind::EventsDropped, -1, d - dropped_sent,
@@ -1185,7 +1214,7 @@ int serve(const Options& o) {
     events.clear();
     touches.drain(events);
     for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
-    gestures.end_all(send);
+    gestures.end_all(current, send);
     stop_processing();
     join_thread(processing);
     if (exit_code == plugin::kHostExitFaulted) send_fault(pc::FaultKind::Plugin, s.fault.instance, 0, s.fault.message);
