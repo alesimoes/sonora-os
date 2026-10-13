@@ -4,12 +4,14 @@
 #include <cstddef>
 #include <string>
 
+#include "sonora/playback_controller.h"
 #include "sonora/session.h"
 
 namespace sonora {
 
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
-                              bool& quit, MayRecord may_record) {
+                              bool& quit, MayRecord may_record,
+                              PlaybackController* playback) {
     // The counter is a hint, never trusted on its own: the folder may hold
     // takes from before a restart, and start_recording() refuses a name that
     // is taken, so the number is re-read from disk before every take.
@@ -50,13 +52,44 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return start(why);
     });
 
+    // A roll is not a take: stopping it closes no file and uses no take
+    // number.
     reg.install("transport.stop",
-                [&session, finish](const CommandContext&, std::string& why) {
-        if (session.transport().state() == TransportState::Stopped) {
-            return true;
+                [&session, finish, playback](const CommandContext&, std::string& why) {
+        const TransportState state = session.transport().state();
+        if (state == TransportState::Recording) return finish(why);
+        if (playback) {
+            playback->stop();
+        } else {
+            session.stop_playback();
         }
-        return finish(why);
+        return true;
     });
+
+    if (playback) {
+        // Rolls once the window at the playhead is resident (ADR-0009 §4.4).
+        reg.install("transport.play", [&session, playback](const CommandContext&) {
+            if (session.transport().state() == TransportState::Stopped) playback->play();
+            return true;
+        });
+        // Space in Pro Tools: plays, or stops whatever is running, a take
+        // included.
+        reg.install("transport.toggle_play",
+                    [&session, finish, playback](const CommandContext&, std::string& why) {
+            const TransportState state = session.transport().state();
+            if (state == TransportState::Recording) return finish(why);
+            if (state == TransportState::Rolling || playback->play_requested()) {
+                playback->stop();
+            } else {
+                playback->play();
+            }
+            return true;
+        });
+        reg.install("transport.return_to_zero",
+                    [playback](const CommandContext&, std::string& why) {
+            return playback->locate(0, why);
+        });
+    }
 
     // Arming is fixed for the length of a take. process() writes a track
     // only while it is armed but leaves its file open, so a track disarmed

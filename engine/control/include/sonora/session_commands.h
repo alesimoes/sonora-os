@@ -19,6 +19,7 @@
 
 namespace sonora {
 
+class PlaybackController;
 class Session;
 
 // Asked before every take; false refuses it, with `why` shown to the
@@ -29,7 +30,11 @@ using MayRecord = std::function<bool(std::string& why)>;
 // `take` is the number the next take will be written under; `quit` is set by
 // app.quit. Both are owned by the caller and must outlive `reg`, as must
 // `may_record` and what it refers to. Without it every take may start.
+// With `playback` (which must outlive `reg` too), transport.play,
+// transport.toggle_play and transport.return_to_zero are installed as well,
+// gated on the plan's residency through it.
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
-                              bool& quit, MayRecord may_record = nullptr);
+                              bool& quit, MayRecord may_record = nullptr,
+                              PlaybackController* playback = nullptr);
 
 }  // namespace sonora

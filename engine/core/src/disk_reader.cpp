@@ -487,7 +487,7 @@ void DiskReader::pass(const Request& req) {
     fill(pending_, playhead);
     if (locating) fill(pending_, req.locate_target);
 
-    bool ok = window_resident(pending_, playhead);
+    bool ok = window_resident(playing_, playhead) && window_resident(pending_, playhead);
     if (locating) {
         ok = ok && window_resident(playing_, req.locate_target) &&
              window_resident(pending_, req.locate_target);

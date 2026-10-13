@@ -62,6 +62,7 @@ public:
 
     void start();
     void stop();
+    bool running() const { return running_.load(); }
     // One pass of the thread's loop on the caller's thread, for tests. Only
     // while the thread is not running.
     void run_pass();
@@ -84,9 +85,9 @@ public:
     uint64_t serve(PlaybackPlan* playing, PlaybackPlan* pending,
                    int64_t locate_target = 0, uint64_t locate_serial = 0);
     uint64_t adopted() const { return adopted_.load(std::memory_order_acquire); }
-    // The newest generation whose pending plan and locate window were found
-    // resident: every chunk from the playhead (and the locate target)
-    // through the window linked.
+    // The newest generation whose plans were found resident: every chunk
+    // the playing and the pending plan play from the playhead (and from the
+    // locate target) through the window linked.
     uint64_t resident() const { return resident_.load(std::memory_order_acquire); }
     // Wakes the thread now rather than at its next tick.
     void wake();
