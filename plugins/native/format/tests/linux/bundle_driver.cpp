@@ -16,6 +16,18 @@
 //                        process() runs, as Steinberg's validator and a UI
 //                        thread do: no data race (the TSan job), and the
 //                        last value set is what the plugin holds.
+//   --scenario nokey     (VST3, a bundle with a key input) the external
+//                        key switched on and the key bus left inactive, or
+//                        not handed over at all: no key, so the processor
+//                        keys from its own input and sounds as with the
+//                        external key off. An active key bus carrying
+//                        silence is a silent key, and sounds different.
+//   --scenario wide      (VST3) a host that hands over one channel more
+//                        than the bundle declares, on the key bus if it has
+//                        one, else on the main bus: DPF's channel check
+//                        fires inside process() and must print nothing
+//                        (SONORA_DPF_QUIET, third_party/dpf/SONORA.md
+//                        patch 6), since that is the audio thread.
 //   --scenario late      (VST3) when a parameter change at a nonzero
 //                        sample offset is heard: with DPF, at the start of
 //                        the next block (ADR-0011 Amendment 2). Held as a
@@ -30,6 +42,7 @@
 // comes from DPF's own travesty headers and LV2 from the vendored LV2
 // headers, so this needs nothing the sanitizer jobs do not have.
 #include <dlfcn.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cmath>
@@ -460,6 +473,223 @@ int vst3_late(const char* path) {
     return 1;
 }
 
+// Any number of buses per direction, each with its own channel count: what
+// Block cannot express (a key bus, a bus wider than declared).
+struct Buses {
+    std::vector<std::vector<std::vector<float>>> data[2];  // [dir][bus][channel]
+    std::vector<std::vector<float*>> ptrs[2];
+    std::vector<v3_audio_bus_buffers> bufs[2];
+
+    Buses(int32_t frames, const std::vector<int32_t>& ins, const std::vector<int32_t>& outs) {
+        const std::vector<int32_t>* widths[2] = {&ins, &outs};
+        for (int d = 0; d < 2; ++d) {
+            const std::size_t n = widths[d]->size();
+            data[d].resize(n);
+            ptrs[d].resize(n);
+            bufs[d].resize(n);
+            for (std::size_t b = 0; b < n; ++b) {
+                const auto ch = static_cast<std::size_t>((*widths[d])[b]);
+                data[d][b].assign(ch, std::vector<float>(static_cast<std::size_t>(frames), 0.0f));
+                for (auto& c : data[d][b]) ptrs[d][b].push_back(c.data());
+                bufs[d][b].num_channels = (*widths[d])[b];
+                bufs[d][b].channel_buffers_32 = ptrs[d][b].data();
+            }
+        }
+    }
+
+    v3_result run(Vst3& p, int32_t frames, Changes* params, int32_t in_buses) {
+        Changes out_changes{&kChangesVt, nullptr, 0};
+        v3_process_data d{};
+        d.process_mode = V3_REALTIME;
+        d.symbolic_sample_size = V3_SAMPLE_32;
+        d.nframes = frames;
+        d.num_input_buses = in_buses;
+        d.num_output_buses = static_cast<int32_t>(bufs[1].size());
+        d.inputs = bufs[0].data();
+        d.outputs = bufs[1].data();
+        d.input_params = reinterpret_cast<v3_param_changes**>(params);
+        d.output_params = reinterpret_cast<v3_param_changes**>(&out_changes);
+        return v3_cpp_obj(p.proc)->process(p.proc, &d);
+    }
+};
+
+bool title_is(const v3_param_info& pi, const char* want) {
+    std::size_t i = 0;
+    for (; want[i] != '\0'; ++i) {
+        if (i >= 127 || pi.title[i] != static_cast<int16_t>(want[i])) return false;
+    }
+    return pi.title[i] == 0;
+}
+
+// How a host hands over the key, for vst3_nokey.
+enum class KeyBus { Inactive, Absent, ActiveSilent };
+
+constexpr v3_param_id kNoParam = ~0u;
+
+// kBlocks blocks of 128 at 48 kHz through a fresh instance, with the
+// external key (`external`, a ParamID) switched on in the first block
+// unless it is kNoParam. Returns the main outputs, end to end; empty on
+// any failure.
+std::vector<float> vst3_render_keyed(const char* path, v3_param_id external, KeyBus how) {
+    Vst3 p;
+    std::vector<float> all;
+    v3_bus_info key{};
+    if (!p.open(path) || !p.setup(48000.0, 128) ||
+        v3_cpp_obj(p.comp)->get_bus_info(p.comp, V3_AUDIO, V3_INPUT, 1, &key) != V3_OK) {
+        p.close();
+        return all;
+    }
+    if (how == KeyBus::ActiveSilent) v3_cpp_obj(p.comp)->activate_bus(p.comp, V3_AUDIO, V3_INPUT, 1, true);
+    if (v3_cpp_obj(p.comp)->set_active(p.comp, true) != V3_OK ||
+        v3_cpp_obj(p.proc)->set_processing(p.proc, true) != V3_OK) {
+        p.close();
+        return all;
+    }
+    Buses b(128, {p.channels, key.channel_count}, {p.channels});
+    Queue q{&kQueueVt, external, 0, 1.0};
+    Changes params{&kChangesVt, &q, 1};
+    for (int k = 0; k < kBlocks; ++k) {
+        for (std::size_t c = 0; c < b.data[0][0].size(); ++c) {
+            for (int i = 0; i < 128; ++i)
+                b.data[0][0][c][static_cast<std::size_t>(i)] =
+                    (c & 1 ? -0.25f : 0.25f) * std::sin(0.01f * static_cast<float>(128 * k + i));
+        }
+        // An inactive bus still gets buffers from most hosts; whatever is in
+        // them must not be heard. A silent active bus is zeros.
+        for (auto& c : b.data[0][1]) std::fill(c.begin(), c.end(), how == KeyBus::ActiveSilent ? 0.0f : 0.5f);
+        const bool first = k == 0 && external != kNoParam;
+        if (b.run(p, 128, first ? &params : nullptr, how == KeyBus::Absent ? 1 : 2) != V3_OK) {
+            all.clear();
+            break;
+        }
+        for (const auto& o : b.data[1][0]) all.insert(all.end(), o.begin(), o.end());
+    }
+    p.close();
+    return all;
+}
+
+int vst3_nokey(const char* path) {
+    v3_param_id external = kNoParam;
+    {
+        Vst3 p;
+        CHECK(p.open(path));
+        CHECK(v3_cpp_obj(p.comp)->get_bus_count(p.comp, V3_AUDIO, V3_INPUT) == 2);
+        for (int32_t i = 0, n = v3_cpp_obj(p.ctrl)->get_parameter_count(p.ctrl); i < n; ++i) {
+            v3_param_info pi{};
+            if (v3_cpp_obj(p.ctrl)->get_parameter_info(p.ctrl, i, &pi) == V3_OK && title_is(pi, "External key"))
+                external = pi.param_id;
+        }
+        p.close();
+    }
+    CHECK(external != kNoParam);
+    const std::vector<float> off = vst3_render_keyed(path, kNoParam, KeyBus::Inactive);
+    const std::vector<float> inactive = vst3_render_keyed(path, external, KeyBus::Inactive);
+    const std::vector<float> absent = vst3_render_keyed(path, external, KeyBus::Absent);
+    const std::vector<float> silent = vst3_render_keyed(path, external, KeyBus::ActiveSilent);
+    CHECK(!off.empty());
+    CHECK(inactive.size() == off.size());
+    CHECK(absent.size() == off.size());
+    CHECK(silent.size() == off.size());
+    float apart = 0.0f;
+    std::size_t differ_inactive = 0, differ_absent = 0;
+    for (std::size_t i = 0; i < off.size(); ++i) {
+        differ_inactive += inactive[i] != off[i];
+        differ_absent += absent[i] != off[i];
+        apart = std::fmax(apart, std::fabs(silent[i] - off[i]));
+    }
+    std::printf("against the external key off: inactive key bus %zu sample(s) differ, no key bus %zu; "
+                "an active silent key: max |difference| %g\n",
+                differ_inactive, differ_absent, static_cast<double>(apart));
+    CHECK(differ_inactive == 0);
+    CHECK(differ_absent == 0);
+    CHECK(apart > 1e-3f);
+    return 0;
+}
+
+// Points fds 1 and 2 at a fresh temporary file until restore(), which says
+// how many bytes were written there.
+struct Capture {
+    std::FILE* file = nullptr;
+    int saved[2] = {-1, -1};
+
+    bool start() {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        file = std::tmpfile();
+        if (file == nullptr) return false;
+        for (int fd = 1; fd <= 2; ++fd) {
+            saved[fd - 1] = dup(fd);
+            if (saved[fd - 1] < 0 || dup2(fileno(file), fd) < 0) return false;
+        }
+        return true;
+    }
+    long restore() {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        for (int fd = 1; fd <= 2; ++fd) {
+            if (saved[fd - 1] >= 0) {
+                dup2(saved[fd - 1], fd);
+                ::close(saved[fd - 1]);
+                saved[fd - 1] = -1;
+            }
+        }
+        if (file == nullptr) return -1;
+        const long n = static_cast<long>(lseek(fileno(file), 0, SEEK_END));
+        std::fclose(file);
+        file = nullptr;
+        return n;
+    }
+};
+
+int vst3_wide(const char* path) {
+    // The capture itself must see a write, or "nothing printed" proves
+    // nothing.
+    {
+        Capture probe;
+        CHECK(probe.start());
+        std::fprintf(stderr, "x");
+        CHECK(probe.restore() == 1);
+    }
+    Vst3 p;
+    CHECK(p.open(path));
+    CHECK(p.setup(48000.0, 128));
+    const int32_t declared = p.channels;
+    const int32_t buses = v3_cpp_obj(p.comp)->get_bus_count(p.comp, V3_AUDIO, V3_INPUT);
+    std::vector<int32_t> ins = {declared};
+    if (buses > 1) {
+        v3_bus_info key{};
+        CHECK(v3_cpp_obj(p.comp)->get_bus_info(p.comp, V3_AUDIO, V3_INPUT, 1, &key) == V3_OK);
+        v3_cpp_obj(p.comp)->activate_bus(p.comp, V3_AUDIO, V3_INPUT, 1, true);
+        ins.push_back(key.channel_count + 1);
+    } else {
+        ins[0] += 1;
+    }
+    CHECK(v3_cpp_obj(p.comp)->set_active(p.comp, true) == V3_OK);
+    CHECK(v3_cpp_obj(p.proc)->set_processing(p.proc, true) == V3_OK);
+    Buses b(128, ins, {declared + 1});
+    for (auto& bus : b.data[0]) {
+        for (auto& c : bus) {
+            for (std::size_t i = 0; i < c.size(); ++i) c[i] = 0.25f * std::sin(0.01f * static_cast<float>(i));
+        }
+    }
+    Capture cap;
+    CHECK(cap.start());
+    bool ok = true;
+    for (int k = 0; k < 4; ++k) ok = ok && b.run(p, 128, nullptr, static_cast<int32_t>(ins.size())) == V3_OK;
+    const long printed = cap.restore();
+    p.close();
+    std::printf("input buses of %d%s channel(s) and an output of %d, the bundle declaring %d: "
+                "%ld byte(s) printed\n",
+                ins[0], ins.size() > 1 ? (" and " + std::to_string(ins[1])).c_str() : "", declared + 1,
+                declared, printed);
+    CHECK(ok);
+    CHECK(printed == 0);
+    for (const auto& c : b.data[1][0]) {
+        for (float v : c) CHECK(std::isfinite(v));
+    }
+    return 0;
+}
+
 // --- LV2 --------------------------------------------------------------------
 
 // The only feature run() might use is the map, and only at instantiate.
@@ -553,9 +783,11 @@ int main(int argc, char** argv) {
     else if (vst3 != nullptr && scenario == "oversize") r = vst3_oversize(vst3);
     else if (vst3 != nullptr && scenario == "threads") r = vst3_threads(vst3);
     else if (vst3 != nullptr && scenario == "late") r = vst3_late(vst3);
+    else if (vst3 != nullptr && scenario == "nokey") r = vst3_nokey(vst3);
+    else if (vst3 != nullptr && scenario == "wide") r = vst3_wide(vst3);
     else if (lv2 != nullptr && bundle != nullptr && scenario == "lazy") r = lv2_lazy(lv2, bundle, inputs, outputs);
     else
-        std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late |"
+        std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late|nokey|wide |"
                              " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy)\n",
                      argv[0]);
     if (r == 0) std::printf("bundle_driver %s: pass\n", scenario.c_str());

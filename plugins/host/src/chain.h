@@ -48,8 +48,9 @@ public:
     // every plugin.
     void control();
     // The main thread, while process() is not running: re-activates every
-    // plugin (Processor::reactivate).
-    void reactivate();
+    // plugin (Processor::reactivate). False, with `error` set, when one
+    // refused; the chain must then not run.
+    bool reactivate(ChainError& error);
 
     bool set_control(uint32_t instance, uint32_t id, float value) noexcept;
     bool set_control(uint32_t instance, const std::string& symbol, float value);
@@ -62,6 +63,7 @@ public:
 
 private:
     float* buffer(std::size_t stage, uint32_t channel);
+    void copy_key(const float* const* in, uint32_t frames) noexcept;
     void fill_canaries(uint32_t frames);
     bool canaries_intact(uint32_t from_frame, uint32_t words) const noexcept;
     uint64_t sanitise_stage(std::size_t stage, uint32_t frames) noexcept;
@@ -73,8 +75,11 @@ private:
     // max_frames samples followed by guard_frames_ canary words. The inner
     // vectors never resize, so the pointers processors hold stay valid.
     std::vector<std::vector<float>> stages_;
-    // The key channels, sidechain_channels * stride_, copied in per block.
+    // The key: key_channels_ buffers of stride_, laid out like a stage, the
+    // canaries included. Copied in again before every plugin, so what one
+    // plugin writes into its key input is never another's key.
     std::vector<float> key_;
+    uint32_t key_channels_;
     uint32_t guard_frames_;
     uint32_t stride_;
 };

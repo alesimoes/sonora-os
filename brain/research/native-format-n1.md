@@ -115,12 +115,13 @@ adapter; the render against the preroll-aware reference is exact.
   inactive until a host activates it. Adding the ports moved
   the stereo compressor's and gate's LV2 control port indices up by two;
   the symbols are unchanged and nothing saved refers to the indices yet.
-  An unconnected key port (a null from LV2) is no key; a connected silent
-  one is a silent key (`format/bridge.h`).
+  An unconnected key port (a null from LV2) or an inactive key bus
+  (VST3, through DPF patch 7) is no key; a connected or active silent one
+  is a silent key (`format/bridge.h`, ADR-0011 Amendment 2 item 3).
 - The plugin host routes a key: `--sidechain N` takes the last N of the
   region's channels as the key; LV2 side-chain ports and the first VST3
-  aux input bus read it, and without one they read silence (LV2) or stay
-  inactive (VST3). `--reactivate` re-activates every plugin after the
+  aux input bus read it, and without one they read the plugin's own input
+  (LV2) or stay inactive (VST3), which both key from the input. `--reactivate` re-activates every plugin after the
   first validation, so a latency-changing value given at load takes
   effect. `--probe` now lists each writable control's id, which the
   driver uses to put a named change on the parameter ring.
@@ -144,6 +145,20 @@ both formats smooth the change from the first sample of the block it was
 sent for, and the reference with the event at that block's first frame is
 matched exactly. A nonzero offset only comes from another VST3 host, and
 there it lands a block late (Amendment 2), which the `late` scenario pins.
+
+**Review fixes (PR #43, RT audit and code review).** Same container, GCC
+14, Release unless stated; equality results, no timing figure.
+
+| Finding | Fix | Test, before the fix, after it |
+|---|---|---|
+| High: External key on, nothing routed, keyed from silence (compressor never acted, gate stayed shut) | DPF patch 7: an inactive or missing VST3 side-chain input is null; Sonora's host connects an LV2 key port with no key to the plugin's own input (ADR-0011 Amendment 2 item 3) | `native_{lv2,vst3}_{compressor,gate}_nokey{,-mono}-48000`, 8 renders: failed (max difference 0.464 compressor, 0.496 gate), now bit-exact. The fixture fails unless a silent key moves the reference (0.464, 0.496). `native_format_nokey_vst3_*`, 4 bundles: 8163 to 16374 samples differed from the switch off, now 0; an active silent key still differs (0.113 compressor, 0.250 gate) |
+| Medium: the chain's key buffers shared and unguarded | Copied again before every plugin; canaries behind them, checked like the stages; at least one key buffer per signal channel, so each replica of a mono plugin has its own | `plugin_host_key`: two plugins that overwrite their key input, the second's output 8192 of 8192 samples wrong, now 0; with no key the key input reads the input (8192 wrong, now 0). `plugin_host_refusals`: a plugin that writes 64 samples past its key input ran, now refused (WroteOutsideBuffers), with and without a key routed |
+| Low: VST3 re-activation ignored a failed `setActive(true)` | `Processor::reactivate()` returns bool; `serve` refuses the chain (InstantiateFailed) | `plugin_host_vst3_refusals`, a test class that activates once: was Ready, now Refused |
+| Low: DPF's channel assertion printing from `process()` | None needed: `SONORA_DPF_QUIET` already silences it | `native_format_wide_vst3_*`, 12 bundles, one channel too many with fds 1 and 2 captured: 0 bytes. The same bundles built with `-USONORA_DPF_QUIET`: 1300 bytes, and the test fails |
+
+Totals: `tools/build-plugins.sh` 296 of 296 (lv2lint 12 of 12, validator
+12 of 12 bundles, 92 renders); `tools/build-engine.sh` 137 of 137;
+`native_format_*` under TSan and under ASan with UBSan, 77 of 77 each.
 
 **Not done.** Re-activation while running, for a latency-changing value
 moved during playback: the host pauses nothing today, and pausing the

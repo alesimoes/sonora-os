@@ -521,8 +521,8 @@ int serve(const Options& o) {
                          s.instance, s.symbol.c_str());
     if (!chain.validate(cerr)) return refuse(h, cerr, plugin::HostState::Refused);
     if (o.reactivate) {
-        chain.reactivate();
-        if (!chain.validate(cerr)) return refuse(h, cerr, plugin::HostState::Refused);
+        if (!chain.reactivate(cerr) || !chain.validate(cerr))
+            return refuse(h, cerr, plugin::HostState::Refused);
     }
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].replicas.store(chain.replicas(i), std::memory_order_relaxed);

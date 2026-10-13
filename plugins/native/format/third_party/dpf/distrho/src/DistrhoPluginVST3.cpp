@@ -901,6 +901,22 @@ public:
         return V3_NOT_IMPLEMENTED;
     }
 
+    // SONORA LOCAL PATCH (third_party/dpf/SONORA.md, patch 7): what an
+    // input the host left inactive, or did not hand over, reads. A
+    // side-chain input gets null, which our glue takes as "no key", so a
+    // processor with its external key on keys from its own input instead
+    // of from these zeros (ADR-0011 Amendment 2 item 3). Other inputs keep
+    // upstream's zeroed dummy buffer. The audio thread: an array lookup.
+    const float* sonoraInactiveInput(const int32_t i) const noexcept
+    {
+       #if DISTRHO_PLUGIN_NUM_INPUTS > 0
+        if (i < DISTRHO_PLUGIN_NUM_INPUTS &&
+            (fPlugin.getAudioPort(true, static_cast<uint32_t>(i)).hints & kAudioPortIsSidechain) != 0)
+            return nullptr;
+       #endif
+        return fDummyAudioBuffer;
+    }
+
     v3_result activateBus(const int32_t mediaType,
                           const int32_t busDirection,
                           const int32_t busIndex,
@@ -1520,7 +1536,8 @@ public:
                     {
                         DISTRHO_SAFE_ASSERT_INT_BREAK(i < DISTRHO_PLUGIN_NUM_INPUTS, i);
                         if (!fEnabledInputs[i] && i < DISTRHO_PLUGIN_NUM_INPUTS) {
-                            inputs[i++] = fDummyAudioBuffer;
+                            inputs[i] = sonoraInactiveInput(i);
+                            ++i;
                             continue;
                         }
 
@@ -1530,7 +1547,7 @@ public:
             }
            #endif
             for (; i < std::max(1, DISTRHO_PLUGIN_NUM_INPUTS); ++i)
-                inputs[i] = fDummyAudioBuffer;
+                inputs[i] = sonoraInactiveInput(i);
         }
 
         {

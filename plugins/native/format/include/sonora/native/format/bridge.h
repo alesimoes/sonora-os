@@ -29,12 +29,17 @@
 //   actually does until then.
 //
 // - The key input. A bundle of a processor that takes one (compressor, gate)
-//   has side-chain ports after its main inputs. A format may leave them
-//   unconnected (an LV2 host that routes no key, a VST3 aux bus left
-//   inactive): a null pointer is no key, and the processor keys from its
-//   own input, as with no side-chain at all. A connected port carrying
-//   silence is a silent key, which is what a host with nothing routed to an
-//   active key bus means.
+//   has side-chain ports after its main inputs. A key the host routes
+//   nothing to is no key, and the processor keys from its own input, as
+//   with no side-chain at all, in both formats (ADR-0011 Amendment 2
+//   item 3): an LV2 port left unconnected is a null pointer, and so is a
+//   VST3 key bus left inactive or not handed over (DPF patch 7,
+//   third_party/dpf/SONORA.md; upstream DPF hands over zeros). Only a
+//   connected port or an active bus carrying silence is a silent key: the
+//   host routed something, and it is quiet. So an "External key" switch
+//   left on with nothing routed never silences the compressor or shuts the
+//   gate. Sonora's own host connects an LV2 key port with no key routed to
+//   the plugin's own input, which keys the same way.
 #pragma once
 
 #include <atomic>

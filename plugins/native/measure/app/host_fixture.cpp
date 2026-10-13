@@ -33,6 +33,12 @@
 // - key, key-mono: the compressor's and gate's key input. The external key
 //   is switched on and a key signal unlike the input is routed to it
 //   (host --sidechain), so the output follows the key, not the input.
+// - nokey, nokey-mono: the external key switched on and nothing routed to
+//   it. A key input the host leaves unconnected (LV2) or inactive (VST3)
+//   is no key, and the processor keys from its own input (format/bridge.h,
+//   ADR-0011 Amendment 2 item 3), so the reference is rendered with no
+//   side-chain at all. The fixture fails unless a silent key would change
+//   that reference: the case must tell "no key" from "a silent key".
 // - automation: one parameter moved after the first block, on the
 //   parameter ring, as the engine's automation will (the driver's
 //   --change). The plugin smooths it from the block it arrives in: through
@@ -134,6 +140,7 @@ struct Case {
     double fs;
     std::uint32_t channels;  // 2: the stereo bundle; 1: the mono one
     bool key;                // external key on, a key signal routed to it
+    bool unrouted_key;       // external key on, nothing routed to it
     bool automation;         // Target::automation, before kChangeBlock
     bool reactivate;         // Target::reconfigure, host --reactivate
     Config extra;            // on top of the golden configuration
@@ -248,7 +255,7 @@ int write_case(const Target& t, const std::string& dir, const std::string& golde
     const native::Descriptor& d = p->descriptor();
     Config cfg = t.golden();
     cfg.insert(cfg.end(), k.extra.begin(), k.extra.end());
-    if (k.key) cfg.push_back({"external_sc", 1.0f});
+    if (k.key || k.unrouted_key) cfg.push_back({"external_sc", 1.0f});
     if (k.reactivate) cfg.insert(cfg.end(), t.reconfigure.begin(), t.reconfigure.end());
     std::vector<Set> sets;
     for (const auto& kv : cfg) {
@@ -270,9 +277,13 @@ int write_case(const Target& t, const std::string& dir, const std::string& golde
     // value is set before prepare(): through a host the reconfiguring ones
     // are taken at the re-activation, the others are where the instance
     // starts either way.
-    for (const Set& s : sets) p->set_param(s.index, s.value);
-    if (!p->prepare(k.fs, 1024, k.channels)) return 1;
-    for (const Set& s : sets) p->set_param(s.index, s.value);
+    const auto configure = [&](native::Processor& q) {
+        for (const Set& s : sets) q.set_param(s.index, s.value);
+        if (!q.prepare(k.fs, 1024, k.channels)) return false;
+        for (const Set& s : sets) q.set_param(s.index, s.value);
+        return true;
+    };
+    if (!configure(*p)) return 1;
     const std::uint32_t latency = p->latency();
 
     // The host validates twice when it re-activates (host --reactivate).
@@ -302,6 +313,28 @@ int write_case(const Target& t, const std::string& dir, const std::string& golde
     }
     if (k.key) opt.sidechain = &padded_key;
     const Chans out = render(*p, padded, events, opt);
+
+    if (k.unrouted_key) {
+        // What a host that fed the key input zeros would get: if it equals
+        // the reference, this case cannot catch a silent key.
+        auto q = t.make();
+        if (!configure(*q)) return 1;
+        Chans silent(k.channels, std::vector<float>(padded[0].size(), 0.0f));
+        RenderOptions sopt = opt;
+        sopt.sidechain = &silent;
+        const Chans keyed = render(*q, padded, events, sopt);
+        double apart = 0.0;
+        for (std::size_t c = 0; c < out.size(); ++c) {
+            for (std::size_t i = pre; i < out[c].size(); ++i)
+                apart = std::fmax(apart, std::fabs(static_cast<double>(out[c][i]) - keyed[c][i]));
+        }
+        std::printf("  %s %s: no key against a silent key: max |difference| %.3g\n", t.name, k.name, apart);
+        if (!(apart > 1e-3)) {
+            std::fprintf(stderr, "host fixture %s %s: a silent key renders the same as no key; the case "
+                         "proves nothing\n", t.name, k.name);
+            return 1;
+        }
+    }
 
     if (!write_f32(in_path, input, 0) || !write_f32(out_path, out, pre) ||
         (k.key && !write_f32(key_path, key, 0))) {
@@ -367,18 +400,20 @@ int host_fixture(const std::string& which, const std::string& dir, const std::st
     for (const Target& t : kTargets) {
         if (which != t.name) continue;
         std::vector<Case> cases;
-        for (double fs : kRates) cases.push_back({"golden", fs, 2, false, false, false, {}});
+        for (double fs : kRates) cases.push_back({"golden", fs, 2, false, false, false, false, {}});
         // Bypass delays by the reported latency through the format as
         // well (ADR-0011 §1.5); one rate is enough, latency per rate is
         // covered by the golden cases.
-        cases.push_back({"bypass", 48000.0, 2, false, false, false, {{"bypass", 1.0f}}});
-        cases.push_back({"mono", 48000.0, 1, false, false, false, {}});
-        cases.push_back({"automation", 48000.0, 2, false, true, false, {}});
+        cases.push_back({"bypass", 48000.0, 2, false, false, false, false, {{"bypass", 1.0f}}});
+        cases.push_back({"mono", 48000.0, 1, false, false, false, false, {}});
+        cases.push_back({"automation", 48000.0, 2, false, false, true, false, {}});
         if (t.make()->descriptor().sidechain) {
-            cases.push_back({"key", 48000.0, 2, true, false, false, {}});
-            cases.push_back({"key-mono", 48000.0, 1, true, false, false, {}});
+            cases.push_back({"key", 48000.0, 2, true, false, false, false, {}});
+            cases.push_back({"key-mono", 48000.0, 1, true, false, false, false, {}});
+            cases.push_back({"nokey", 48000.0, 2, false, true, false, false, {}});
+            cases.push_back({"nokey-mono", 48000.0, 1, false, true, false, false, {}});
         }
-        if (!t.reconfigure.empty()) cases.push_back({"reconfigure", 48000.0, 2, false, false, true, {}});
+        if (!t.reconfigure.empty()) cases.push_back({"reconfigure", 48000.0, 2, false, false, false, true, {}});
         int bad = 0;
         for (const bool vst3 : {false, true}) {
             for (const Case& k : cases) bad += write_case(t, dir, golden_dir, k, vst3, preroll, vst3_tempo);

@@ -121,8 +121,11 @@ set(_plugin_tests
   plugin_host_nonfinite
   plugin_host_gain_mono plugin_host_gain_stereo plugin_host_gain_poll
   plugin_host_latency_pipelined plugin_host_latency_poll plugin_host_latency_chain
-  plugin_host_rtt)
+  plugin_host_rtt plugin_host_key)
 add_test(NAME plugin_host_refusals COMMAND ${_drive} --scenario refusals)
+# The key channels: re-copied for every plugin, and a key input with no key
+# routed reads the plugin's own input.
+add_test(NAME plugin_host_key COMMAND ${_drive} --scenario key)
 # pipeline_depth 1 is the default mode; poll is depth 0, poll-only.
 add_test(NAME plugin_host_crash COMMAND ${_drive} --scenario crash)
 add_test(NAME plugin_host_crash_poll COMMAND ${_drive} --scenario crash --mode poll)
@@ -277,12 +280,14 @@ if(_native)
                          LABELS plugins)
     # The cases host_fixture.cpp writes for this processor: the stereo
     # bundle's golden, bypass and automation renders; the mono bundle's; the
-    # key input's, stereo and mono, for a processor that takes one; and the
-    # re-activation for a latency-changing value, for the two that have one.
+    # key input's, stereo and mono, for a processor that takes one, routed
+    # (key) and not (nokey: the external key on and no --sidechain, which
+    # must key from the input, not from silence); and the re-activation for
+    # a latency-changing value, for the two that have one.
     set(_cases golden-44100 golden-48000 golden-96000 bypass-48000 automation-48000 mono-48000)
     get_property(_sidechain GLOBAL PROPERTY SONORA_NATIVE_${n}_SIDECHAIN)
     if(_sidechain)
-      list(APPEND _cases key-48000 key-mono-48000)
+      list(APPEND _cases key-48000 key-mono-48000 nokey-48000 nokey-mono-48000)
     endif()
     if(n STREQUAL "eq" OR n STREQUAL "limiter")
       list(APPEND _cases reconfigure-48000)

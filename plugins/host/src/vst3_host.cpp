@@ -886,8 +886,9 @@ public:
         const auto n = static_cast<int32>(std::min(frames, max_frames_));
         for (Instance& i : inst_) {
             for (std::size_t b = 1; b < i.in_bus.size(); ++b) {
-                // The key bus reads the chain's key; any other aux input is
-                // silence again whatever a plugin left in it.
+                // The key bus reads the chain's key, which the chain copies
+                // in again before every plugin (Chain::process); any other
+                // aux input is silence again whatever a plugin left in it.
                 if (keyed_ && static_cast<int32>(b) == key_bus_) continue;
                 for (int32 k = 0; k < i.in_bus[b].numChannels; ++k)
                     std::memset(i.in_ptrs[b][static_cast<std::size_t>(k)], 0, std::size_t(n) * sizeof(float));
@@ -922,18 +923,23 @@ public:
     }
 
     // VST3's order: processing off, inactive, active, processing on. The
-    // latency is a main-thread read, here.
-    void reactivate() override {
+    // latency is a main-thread read, here. An instance that will not
+    // activate again is left off and the chain is refused: processing an
+    // inactive component is outside the VST3 workflow.
+    bool reactivate() override {
         for (Instance& i : inst_) {
             if (i.processing) i.processor->setProcessing(false);
+            i.processing = false;
             if (i.active) i.component->setActive(false);
             i.active = i.component->setActive(true) == Steinberg::kResultOk;
+            if (!i.active) return false;
             i.processing = true;
             i.processor->setProcessing(true);
         }
         latency_dirty_.store(false, std::memory_order_relaxed);
         latency_.store(inst_[0].processor->getLatencySamples(), std::memory_order_release);
         info_.latency_frames = latency();
+        return true;
     }
 
     bool intact() const noexcept override {

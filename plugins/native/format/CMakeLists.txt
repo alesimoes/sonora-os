@@ -224,7 +224,13 @@ function(_sonora_native_bundle name suffix channels uid display)
   add_test(NAME native_format_lazy_lv2_${b}
            COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${b}-lv2> --bundle ${lv2_bundle}/
                    --inputs ${inputs} --outputs ${SONORA_CHANNELS} --scenario lazy)
-  foreach(scenario lazy oversize threads late)
+  # "nokey": an inactive or missing key bus is no key, not a silent one
+  # (bridge.h). "wide": an over-wide bus prints nothing from process().
+  set(scenarios lazy oversize threads late wide)
+  if(P_SIDECHAIN)
+    list(APPEND scenarios nokey)
+  endif()
+  foreach(scenario ${scenarios})
     add_test(NAME native_format_${scenario}_vst3_${b}
              COMMAND ${drive} --vst3 $<TARGET_FILE:sonora-${b}-vst3> --scenario ${scenario})
   endforeach()

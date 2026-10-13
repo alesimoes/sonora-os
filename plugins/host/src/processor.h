@@ -27,7 +27,8 @@ struct PortInfo {
     bool input = false;
     bool optional = false;  // lv2:connectionOptional
     // A key (side-chain) input: LV2 lv2:isSideChain, VST3 an aux input bus.
-    // Fed from the chain's key channels, never from the signal path.
+    // Fed from the chain's key channels; with none routed, from the
+    // plugin's own input (a key input on silence would key from silence).
     bool sidechain = false;
     float min = 0.f, max = 0.f, def = 0.f;
     bool reports_latency = false;
@@ -56,7 +57,8 @@ struct ChainConfig {
     uint32_t channels = 1;
     // Key channels beside the signal (host --sidechain): every plugin with a
     // key input reads them, channel k of its key from channel k, a mono key
-    // feeding every channel. 0: key inputs are connected to silence.
+    // feeding every channel. 0: no key; a key input reads the plugin's own
+    // input, which keys like no key at all (ADR-0011 Amendment 2 item 3).
     uint32_t sidechain_channels = 0;
 };
 
@@ -97,7 +99,8 @@ public:
     // re-activates every instance, so a value that only takes effect at
     // activation (the latency-changing ones of ADR-0011 §1.5: an EQ's
     // phase mode, a limiter's look-ahead) does, and re-reads the latency.
-    virtual void reactivate() = 0;
+    // False when an instance refused to activate again: it must not run.
+    virtual bool reactivate() = 0;
     // A parameter change from the ring, applied to the next run(). `id` is
     // the LV2 port index or the VST3 ParamID. False when the id is not a
     // writable parameter of this plugin.
@@ -110,9 +113,11 @@ protected:
 };
 
 // Where processors come from. `in` and `out` are config.channels buffers of
-// config.max_frames samples each, `key` config.sidechain_channels of them,
-// all owned by the chain and stable for the processor's life. Returns null
-// with `error` set on refusal.
+// config.max_frames samples each, all owned by the chain and stable for the
+// processor's life. `key` is empty without a key, and otherwise at least
+// config.channels buffers (a narrower key repeated across them), so a
+// replica r reads a buffer of its own, key[r]. Returns null with `error`
+// set on refusal.
 class PluginSource {
 public:
     virtual ~PluginSource() = default;

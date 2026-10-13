@@ -215,7 +215,7 @@ public:
 
     bool init(const LilvPlugin* p, PluginInfo info, uint32_t sample_rate, uint32_t channels,
               const std::vector<float*>& in, const std::vector<float*>& out,
-              const std::vector<float*>& key, uint32_t max_frames, ChainError& error) {
+              const std::vector<float*>& key, ChainError& error) {
         info_ = std::move(info);
         const std::string who = info_.name + " <" + info_.uri + ">";
         if (!info_.missing_features.empty()) {
@@ -243,10 +243,6 @@ public:
             return false;
         }
 
-        // A key input with no key channel in the chain reads silence: an
-        // LV2 port must be connected, and silence keys nothing.
-        if (info_.sidechain_in > 0 && key.empty()) silence_.assign(max_frames, 0.f);
-
         controls_.resize(info_.ports.size(), 0.f);
         for (const PortInfo& port : info_.ports)
             if (port.kind == PortKind::Control) controls_[port.index] = port.def;
@@ -267,9 +263,14 @@ public:
                     // Replicated: replica r is channel r. Otherwise port order
                     // is channel order.
                     if (port.sidechain) {
+                        // With no key in the chain, the plugin's own input:
+                        // an LV2 port must be connected, and silence would
+                        // be a silent key, which no key is not (ADR-0011
+                        // Amendment 2 item 3). In and out are different
+                        // stages, so this input is never being written.
                         const uint32_t k = replicas > 1 ? r : key_in++;
-                        where = key.empty() ? silence_.data()
-                                            : key[std::min<std::size_t>(k, key.size() - 1)];
+                        const std::vector<float*>& from = key.empty() ? in : key;
+                        where = from[std::min<std::size_t>(k, from.size() - 1)];
                         break;
                     }
                     const uint32_t ch = replicas > 1 ? r : (port.input ? audio_in++ : audio_out++);
@@ -311,9 +312,11 @@ public:
     // The latency port is an output written in run(), so the new latency is
     // read from the next block, which the caller runs (host --reactivate
     // validates the chain again).
-    void reactivate() override {
+    // LV2's activate() cannot fail.
+    bool reactivate() override {
         for (LilvInstance* inst : instances_) lilv_instance_deactivate(inst);
         for (LilvInstance* inst : instances_) lilv_instance_activate(inst);
+        return true;
     }
 
     bool set_param(uint32_t port, float value) noexcept override {
@@ -357,7 +360,6 @@ private:
         std::vector<uint64_t> words;  // 8-byte aligned, as atoms require
     };
     std::vector<AtomBuffer> atoms_;  // replica-major, one per atom port
-    std::vector<float> silence_;     // the key of a chain without one
     uint32_t latency_ = 0;
     // An instance that failed half way through init was never activated,
     // and LV2 forbids deactivating it.
@@ -387,9 +389,7 @@ std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const C
         return nullptr;
     }
     auto proc = std::make_unique<Lv2Processor>(*this, config);
-    if (!proc->init(p, describe(p), config.sample_rate, config.channels, in, out, key,
-                    config.max_frames, error))
-        return nullptr;
+    if (!proc->init(p, describe(p), config.sample_rate, config.channels, in, out, key, error)) return nullptr;
     return proc;
 }
 
