@@ -6,6 +6,7 @@
 #include <string>
 
 #include "sonora/ringbuffer.h"
+#include "sonora/rt.h"
 #include "sonora/wav_writer.h"
 
 namespace sonora {
@@ -32,7 +33,7 @@ public:
 
     // Peak since the last read, for the meters. Reading clears it.
     float take_peak() { return peak_.exchange(0.0f, std::memory_order_relaxed); }
-    void report_peak(float p);
+    void report_peak(float p) noexcept SONORA_RT;
 
     // Incremented by the callback when the ring buffer had no room, which
     // means the disk thread fell behind and samples were lost.

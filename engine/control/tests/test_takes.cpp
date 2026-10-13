@@ -51,6 +51,15 @@ std::string slurp(const std::string& path) {
     return out;
 }
 
+// One block of one input per track, as a backend delivers it.
+void feed(sonora::Session& s, const float* const* inputs, uint32_t nframes) {
+    sonora::backend::AudioBlock block{};
+    block.inputs = inputs;
+    block.input_count = static_cast<uint32_t>(s.tracks().size());
+    block.nframes = nframes;
+    s.process(block);
+}
+
 // A failed earlier run leaves its files behind, and a leftover take is
 // exactly what these tests are about, so every test starts from nothing.
 void wipe(const std::string& dir) {
@@ -219,7 +228,7 @@ int test_restart_never_overwrites() {
         CHECK(s.start_recording(1));
         const float block[64] = {0.25f};
         const float* inputs[2] = {block, block};
-        s.process(inputs, 64);
+        feed(s, inputs, 64);
         s.stop();
         CHECK(s.tracks()[0]->writer().frames_written() == 64);
     }
@@ -308,7 +317,7 @@ int test_take_starts_with_its_own_samples() {
         for (float& f : old_block) f = 0.25f;
         const float* old_inputs[1] = {old_block};
         CHECK(s.start_recording(1));
-        s.process(old_inputs, 64);
+        feed(s, old_inputs, 64);
         s.stop();  // no disk thread ran: 64 frames are still in the ring
 
         float new_block[64];
@@ -316,7 +325,7 @@ int test_take_starts_with_its_own_samples() {
         const float* new_inputs[1] = {new_block};
         s.disk().start();
         CHECK(s.start_recording(2));
-        s.process(new_inputs, 64);
+        feed(s, new_inputs, 64);
         s.stop();
         CHECK(s.tracks()[0]->writer().frames_written() == 64);
     }

@@ -2,9 +2,10 @@
 //
 // What Session::process() does with one block: which track each input lands
 // on, what is metered, what is captured, when an overrun is counted and when
-// the playhead moves. ADR-0007 M2 changes how the backend reaches this
-// function; these checks were written against the call as it stood before,
-// so that change cannot alter any of it unnoticed.
+// the playhead moves. ADR-0007 M2 changed how the backend reaches this
+// function. Every check not marked "added with ProcessCallback" was written
+// against the call as it stood before and passed on it, so the change could
+// not alter any of that unnoticed.
 #include <cstdio>
 #include <vector>
 
@@ -33,9 +34,15 @@ sonora::SessionConfig config(int tracks, double ring_seconds = 1.0) {
     return cfg;
 }
 
-// The one place that knows how a block reaches the session.
+// The one place that knows how a block reaches the session. Called through
+// the interface, as a backend calls it, with one input per track.
 void feed(Session& s, const float* const* inputs, uint32_t nframes) {
-    s.process(inputs, nframes);
+    sonora::backend::AudioBlock block{};
+    block.inputs = inputs;
+    block.input_count = static_cast<uint32_t>(s.tracks().size());
+    block.nframes = nframes;
+    sonora::backend::ProcessCallback& cb = s;
+    cb.process(block);
 }
 
 std::vector<float> drain(sonora::Track& t) {
@@ -173,6 +180,52 @@ int test_playhead_moves_unless_stopped() {
     return 0;
 }
 
+// Added with ProcessCallback: a backend may offer fewer inputs than the
+// session has tracks, and the tracks past the end are unconnected.
+int test_fewer_inputs_than_tracks() {
+    Session s(config(4));
+    for (const auto& t : s.tracks()) t->set_rec_armed(true);
+    s.transport().set_state(TransportState::Recording);
+    const float a[8] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    const float* inputs[2] = {a, a};
+    sonora::backend::AudioBlock block{};
+    block.inputs = inputs;
+    block.input_count = 2;
+    block.nframes = 8;
+    s.process(block);
+
+    CHECK(s.tracks()[1]->capture_ring().read_space() == 8);
+    CHECK(s.tracks()[2]->capture_ring().read_space() == 0);
+    CHECK(s.tracks()[3]->take_peak() == 0.0f);
+    CHECK(s.transport().playhead() == 8);
+    return 0;
+}
+
+// Added with ProcessCallback: nothing is played back yet, and a backend
+// buffer holds whatever its last cycle left in it, so every output comes
+// back silent.
+int test_outputs_are_silenced() {
+    Session s(config(1));
+    float out_a[16], out_b[16];
+    for (int i = 0; i < 16; ++i) out_a[i] = out_b[i] = 0.9f;
+    float* outputs[2] = {out_a, out_b};
+    const float in[16] = {};
+    const float* inputs[1] = {in};
+    sonora::backend::AudioBlock block{};
+    block.inputs = inputs;
+    block.input_count = 1;
+    block.outputs = outputs;
+    block.output_count = 2;
+    block.nframes = 16;
+    s.process(block);
+
+    for (int i = 0; i < 16; ++i) {
+        CHECK(out_a[i] == 0.0f);
+        CHECK(out_b[i] == 0.0f);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -182,6 +235,8 @@ int main() {
     if (test_unconnected_input_is_skipped() != 0) return 1;
     if (test_overrun_counts_short_blocks() != 0) return 1;
     if (test_playhead_moves_unless_stopped() != 0) return 1;
+    if (test_fewer_inputs_than_tracks() != 0) return 1;
+    if (test_outputs_are_silenced() != 0) return 1;
     std::printf("test_session_process: ok\n");
     return 0;
 }

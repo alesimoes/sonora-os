@@ -29,9 +29,8 @@ add_subdirectory(common/audiofile)
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
 add_subdirectory(contracts/api)
+add_subdirectory(contracts/backend)
 add_subdirectory(engine/core)
-# Temporarily illegal until M2: drivers/jack links engine/core, because
-# JackBackend::process_cb still calls Session::process. Do not copy it.
 add_subdirectory(drivers/jack)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)

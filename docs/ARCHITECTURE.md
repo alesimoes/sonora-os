@@ -7,8 +7,8 @@ Three, and the boundary between them is the whole design.
     ┌─────────────────────────────────────────────────────────────┐
     │ audio thread            (PipeWire, RT priority 88)          │
     │                                                             │
-    │  JackBackend::process_cb                                    │
-    │    └── Session::process                                     │
+    │  JackBackend::Impl::process_cb                              │
+    │    └── Session::process        (via ProcessCallback)        │
     │          ├── peak metering          → atomic per track      │
     │          └── RingBuffer::write      → lock-free handoff     │
     │                                                             │

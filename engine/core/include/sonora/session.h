@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "sonora/disk_thread.h"
+#include "sonora/process_callback.h"
+#include "sonora/rt.h"
 #include "sonora/track.h"
 #include "sonora/transport.h"
 
@@ -23,8 +25,9 @@ struct SessionConfig {
 };
 
 // Owns the tracks, the transport and the disk thread. The audio backend calls
-// process() from its own real-time thread.
-class Session {
+// process() from its own real-time thread, through ProcessCallback; it never
+// sees Session itself. Final because the base has no virtual destructor.
+class Session final : public backend::ProcessCallback {
 public:
     // The highest take number a session writes. Four digits is far more
     // takes than a session holds, and a bound is what lets the folder scan
@@ -60,8 +63,10 @@ public:
     bool stop(std::string* error = nullptr);
 
     // --- real-time safe: called from the audio callback ---
-    // inputs[i] is a block of nframes for track i (nullptr if unconnected).
-    void process(const float* const* inputs, uint32_t nframes);
+    // block.inputs[i] feeds track i; a null input, or a track past
+    // block.input_count, is unconnected. Every output is written silent:
+    // nothing is played back yet.
+    void process(const backend::AudioBlock& block) noexcept SONORA_RT override;
 
     Transport& transport() { return *transport_; }
     const std::vector<std::unique_ptr<Track>>& tracks() const { return tracks_; }

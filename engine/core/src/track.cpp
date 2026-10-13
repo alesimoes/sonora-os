@@ -13,7 +13,7 @@ Track::Track(int id, std::string name, uint16_t channels,
       capture_ring_(
           std::make_unique<RingBuffer<float>>(ring_frames * channels)) {}
 
-void Track::report_peak(float p) {
+void Track::report_peak(float p) noexcept SONORA_RT {
     p = std::fabs(p);
     float prev = peak_.load(std::memory_order_relaxed);
     while (p > prev &&

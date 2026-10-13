@@ -1,79 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <jack/jack.h>
-
-#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "sonora/audio_backend.h"
+
 namespace sonora {
 
-class Session;
-
-// Audio backend speaking the JACK API. On the target system this binds to
-// PipeWire's JACK implementation, so no jackd is involved.
-// Counts the physical capture channels the server is offering, using a
-// throwaway client. The session has to be sized before the real backend can
-// register its ports, so this cannot be a member: it answers the question that
-// decides how many tracks to create.
-//
-// Returns 0 if the server is unreachable or offering nothing.
-int probe_capture_channels(const std::string& client_name);
-
-class JackBackend {
+// AudioBackend over the JACK API. On the target system this binds to
+// PipeWire's JACK implementation, so no jackd is involved. <jack/jack.h> is
+// included by the implementation only, so nothing that links this target
+// compiles against JACK (ADR-0007 §1).
+class JackBackend final : public backend::AudioBackend {
 public:
-    JackBackend() = default;
-    ~JackBackend();
+    JackBackend();
+    ~JackBackend() override;
+    JackBackend(const JackBackend&) = delete;
+    JackBackend& operator=(const JackBackend&) = delete;
 
-    // Returns false and fills error() if the server is unreachable.
-    bool open(const std::string& client_name, Session* session);
+    // Before open() these ask the server through a throwaway client: the
+    // session has to be sized before this backend can register its ports.
+    std::vector<backend::PortInfo> physical_capture_ports() override;
+    std::vector<backend::PortInfo> physical_playback_ports() override;
 
-    // Physical capture ports the server is offering, in channel order.
-    // Used to size a session to the interface instead of guessing.
-    std::vector<std::string> capture_ports() const;
+    bool open(const backend::BackendConfig& config,
+              backend::ProcessCallback& callback, std::string& error) override;
+    bool activate(std::string& error) override;
+    int connect_inputs_in_order() override;
+    int connected_input_count() const override;
+    void deactivate() noexcept override;
 
-    // Connects each input port to the matching hardware capture port.
-    // Returns how many connections were made. Zero means every track will
-    // record silence, and fewer than the track count means some tracks will,
-    // so callers must not ignore it.
-    int auto_connect_inputs();
-
-    // How many of our input ports have something connected to them right now.
-    // Asked at record time rather than trusting the connect-time count, since
-    // a port can be unpatched after we connected it.
-    int connected_input_count() const;
-
-    bool activate();
-    void close();
-
-    uint32_t sample_rate() const;
-    uint32_t buffer_size() const;
-    // Count of JACK xruns since open: the headline stability number.
-    uint32_t xruns() const { return xruns_; }
-
-    // True once the server has gone away. The callback stops being
-    // called at that point, so a recording in progress would sit there
-    // looking healthy while receiving nothing. Callers must poll this.
-    bool server_gone() const {
-        return server_gone_.load(std::memory_order_acquire);
-    }
-
-    const std::string& error() const { return error_; }
+    uint32_t sample_rate() const override;
+    uint32_t buffer_frames() const override;
+    uint32_t xruns() const override;
+    bool fatal() const override;
+    const std::string& fatal_reason() const override;
 
 private:
-    static int process_cb(jack_nframes_t nframes, void* arg);
-    static int xrun_cb(void* arg);
-    static void shutdown_cb(void* arg);
-
-    jack_client_t* client_ = nullptr;
-    std::vector<jack_port_t*> in_ports_;
-    std::vector<const float*> in_bufs_;  // reused each block, never allocated
-    Session* session_ = nullptr;
-    uint32_t xruns_ = 0;
-    // Written from the JACK shutdown thread, read from main.
-    std::atomic<bool> server_gone_{false};
-    std::string error_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace sonora

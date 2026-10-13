@@ -216,12 +216,13 @@ bool Session::stop(std::string* error) {
     return false;
 }
 
-void Session::process(const float* const* inputs, uint32_t nframes) {
+void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
+    const uint32_t nframes = block.nframes;
     const bool recording = transport_->state() == TransportState::Recording;
 
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track* t = tracks_[i].get();
-        const float* in = inputs[i];
+        const float* in = i < block.input_count ? block.inputs[i] : nullptr;
         if (!in) continue;
 
         // Meter every input, armed or not, so the UI shows signal before
@@ -239,6 +240,10 @@ void Session::process(const float* const* inputs, uint32_t nframes) {
         // and must not be baked into the recorded file.
         const std::size_t wrote = t->capture_ring().write(in, nframes);
         if (wrote < nframes) t->note_overrun();
+    }
+
+    for (uint32_t o = 0; o < block.output_count; ++o) {
+        std::memset(block.outputs[o], 0, nframes * sizeof(float));
     }
 
     if (transport_->state() != TransportState::Stopped) {
