@@ -27,6 +27,14 @@
 //   at activate(); one set while running is held by the Processor until the
 //   host next activates the instance, and latency() reports what the audio
 //   actually does until then.
+//
+// - The key input. A bundle of a processor that takes one (compressor, gate)
+//   has side-chain ports after its main inputs. A format may leave them
+//   unconnected (an LV2 host that routes no key, a VST3 aux bus left
+//   inactive): a null pointer is no key, and the processor keys from its
+//   own input, as with no side-chain at all. A connected port carrying
+//   silence is a silent key, which is what a host with nothing routed to an
+//   active key bus means.
 #pragma once
 
 #include <atomic>
@@ -40,9 +48,11 @@ namespace sonora::native::format {
 
 class Bridge {
 public:
-    // `channels` is the bundle's fixed audio layout (DPF fixes it at compile
-    // time). Not RT.
-    Bridge(std::unique_ptr<Processor> processor, std::uint32_t channels);
+    // `channels` is the bundle's fixed audio layout and `sidechain_channels`
+    // its key input's (DPF fixes both at compile time: 1 or 2, and 0 for a
+    // processor whose descriptor takes no key). Not RT.
+    Bridge(std::unique_ptr<Processor> processor, std::uint32_t channels,
+           std::uint32_t sidechain_channels = 0);
     Bridge(const Bridge&) = delete;
     Bridge& operator=(const Bridge&) = delete;
 
@@ -73,12 +83,19 @@ public:
     std::uint32_t latency() const noexcept { return latency_; }
 
     // The audio thread. `in` and `out` are channels() buffers of `frames`
-    // samples; they may alias. Any number of frames: the Processor splits
-    // blocks longer than the prepared maximum.
+    // samples; they may alias. `sidechain` is sidechain_channels() buffers,
+    // or null; a null among them (a port the host left unconnected) means
+    // no key for the whole block. Any number of frames: the Processor
+    // splits blocks longer than the prepared maximum.
+    void run(const float* const* in, float* const* out, const float* const* sidechain,
+             std::uint32_t frames, const Transport& transport) noexcept SONORA_RT;
     void run(const float* const* in, float* const* out, std::uint32_t frames,
-             const Transport& transport) noexcept SONORA_RT;
+             const Transport& transport) noexcept SONORA_RT {
+        run(in, out, nullptr, frames, transport);
+    }
 
     std::uint32_t channels() const noexcept { return channels_; }
+    std::uint32_t sidechain_channels() const noexcept { return sidechain_channels_; }
     // For tests and the measurement harness. Not to be touched while run()
     // may be running.
     Processor& processor() noexcept { return *processor_; }
@@ -86,6 +103,7 @@ public:
 private:
     std::unique_ptr<Processor> processor_;
     const std::uint32_t channels_;
+    const std::uint32_t sidechain_channels_;
     const std::uint32_t count_;
     std::unique_ptr<std::atomic<float>[]> values_;
     std::unique_ptr<std::atomic<bool>[]> dirty_;

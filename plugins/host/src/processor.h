@@ -26,6 +26,9 @@ struct PortInfo {
     PortKind kind = PortKind::Other;
     bool input = false;
     bool optional = false;  // lv2:connectionOptional
+    // A key (side-chain) input: LV2 lv2:isSideChain, VST3 an aux input bus.
+    // Fed from the chain's key channels, never from the signal path.
+    bool sidechain = false;
     float min = 0.f, max = 0.f, def = 0.f;
     bool reports_latency = false;
     uint32_t channels = 0;  // VST3 audio buses only
@@ -36,7 +39,10 @@ struct PluginInfo {
     std::string format;  // "lv2" or "vst3"
     std::string uri, name, class_label;
     std::vector<PortInfo> ports;
+    // Main audio only. A key input is counted apart: it does not decide
+    // whether the plugin fits the chain's channels.
     uint32_t audio_in = 0, audio_out = 0;
+    uint32_t sidechain_in = 0;
     int latency_port = -1;         // LV2: the port that reports it
     int64_t latency_frames = -1;   // VST3 --list: getLatencySamples at 48 kHz / 128
     std::vector<std::string> required_features;
@@ -48,6 +54,10 @@ struct ChainConfig {
     uint32_t max_frames = 1024;
     uint32_t block_frames = 128;
     uint32_t channels = 1;
+    // Key channels beside the signal (host --sidechain): every plugin with a
+    // key input reads them, channel k of its key from channel k, a mono key
+    // feeding every channel. 0: key inputs are connected to silence.
+    uint32_t sidechain_channels = 0;
 };
 
 struct ChainError {
@@ -83,6 +93,11 @@ public:
     // must not ask on the processing thread (VST3: the latency of a plugin
     // that only knows it once it has processed).
     virtual void validated() {}
+    // The main thread, never while run() may be running. Deactivates and
+    // re-activates every instance, so a value that only takes effect at
+    // activation (the latency-changing ones of ADR-0011 §1.5: an EQ's
+    // phase mode, a limiter's look-ahead) does, and re-reads the latency.
+    virtual void reactivate() = 0;
     // A parameter change from the ring, applied to the next run(). `id` is
     // the LV2 port index or the VST3 ParamID. False when the id is not a
     // writable parameter of this plugin.
@@ -95,14 +110,16 @@ protected:
 };
 
 // Where processors come from. `in` and `out` are config.channels buffers of
-// config.max_frames samples each, owned by the chain and stable for the
-// processor's life. Returns null with `error` set on refusal.
+// config.max_frames samples each, `key` config.sidechain_channels of them,
+// all owned by the chain and stable for the processor's life. Returns null
+// with `error` set on refusal.
 class PluginSource {
 public:
     virtual ~PluginSource() = default;
     virtual std::unique_ptr<Processor> instantiate(const std::string& id, const ChainConfig& config,
                                                    const std::vector<float*>& in,
                                                    const std::vector<float*>& out,
+                                                   const std::vector<float*>& key,
                                                    ChainError& error) = 0;
 };
 

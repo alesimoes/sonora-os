@@ -20,6 +20,11 @@
 //   descriptor.json carries that mapping (bundle_files.cpp), so a
 //   descriptor-driven editor finds the port.
 // - Latency is reported from activate(), the only place it changes.
+// - Audio: the main ports first (one group, stereo or mono), then the key
+//   input's ports when the bundle has one, flagged as side-chain and in no
+//   group. DPF turns that into lv2:isSideChain ports in LV2, and in VST3
+//   into a second, auxiliary input bus that is inactive until the host
+//   activates it (DistrhoPluginVST3.cpp, fillInBusInfoDetails).
 #include <cstring>
 #include <memory>
 
@@ -64,7 +69,8 @@ class SonoraPlugin final : public Plugin {
 public:
     SonoraPlugin()
         : Plugin(bundle_descriptor().param_count, 0, 0),
-          bridge_(sonora::native::format::make_bundle_processor(), DISTRHO_PLUGIN_NUM_INPUTS) {
+          bridge_(sonora::native::format::make_bundle_processor(), SONORA_CHANNELS,
+                  SONORA_SIDECHAIN_CHANNELS) {
         // Prepared once here so the latency is known before the host
         // activates (a VST3 host may ask getLatencySamples() first); the
         // host's own rate and block size arrive with activate().
@@ -84,7 +90,18 @@ protected:
     int64_t getUniqueId() const override { return d_cconst(SONORA_PLUGIN_UNIQUE_ID); }
 
     void initAudioPort(bool input, uint32_t index, AudioPort& port) override {
-        port.groupId = kPortGroupStereo;
+        if (input && index >= SONORA_CHANNELS) {
+            // Ours, and stable like a parameter id: an LV2 host connects
+            // the port by its symbol ("lv2_" + this).
+            const uint32_t k = index - SONORA_CHANNELS;
+            port.hints = kAudioPortIsSidechain;
+            port.groupId = kPortGroupNone;
+            port.name = SONORA_SIDECHAIN_CHANNELS == 1 ? "Key" : (k == 0 ? "Key L" : "Key R");
+            port.symbol = "key_in_";
+            port.symbol += String(k + 1);
+            return;
+        }
+        port.groupId = SONORA_CHANNELS == 1 ? kPortGroupMono : kPortGroupStereo;
         Plugin::initAudioPort(input, index, port);
     }
 
@@ -163,7 +180,11 @@ protected:
             transport.tempo_valid = true;
         }
 #endif
-        bridge_.run(inputs, outputs, frames, transport);
+#if SONORA_SIDECHAIN_CHANNELS > 0
+        bridge_.run(inputs, outputs, inputs + SONORA_CHANNELS, frames, transport);
+#else
+        bridge_.run(inputs, outputs, nullptr, frames, transport);
+#endif
     }
 
 private:

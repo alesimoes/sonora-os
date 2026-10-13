@@ -492,13 +492,24 @@ ADR-0011 "For the owner".
       on DPF, LV2 and VST3; `lv2lint` and Steinberg `validator` in CI; the
       DPF-VST3 checkpoint on the EQ (Unverified 2). dsp-engineer,
       plugin-engineer reviews.
-- [ ] N1 follow-up (PR #40 review, code L2): render through a bundle the
-      paths the host fixture never reaches. Parameter changes after the
-      first block (smoothed, and VST3's one-block-late delivery,
-      ADR-0011 Amendment 2), and reconfiguring values (the EQ's zero-latency
-      mode, a non-default limiter look-ahead) through a host that
-      re-activates the instance. Needs a driver scenario that sets values
-      mid-render and re-activates. dsp-engineer, plugin-engineer reviews.
+- [x] N1 follow-up (PR #40 review, code L2): render through a bundle the
+      paths the host fixture never reaches. Done in `feature/dsp-n1-io`:
+      a parameter moved on the ring mid-render (`automation-48000`, every
+      processor, both formats, bit-exact), VST3's one-block-late delivery
+      at a nonzero offset (`native_format_late_vst3_*`), and the EQ's mode
+      and the limiter's look-ahead set at load through a host that
+      re-activates (`reconfigure-48000`, host `--reactivate`).
+- [ ] N1, with M9: re-activating a plugin while it runs, for a
+      latency-changing value moved during playback, then re-planning PDC.
+      Needs the HostControl channel: the host pauses its processing
+      thread, re-activates on its main thread (`Processor::reactivate`
+      exists), publishes the new latency. Only the load-time case
+      (`--reactivate`) is tested now. plugin-engineer + rt-engineer.
+- [ ] N1, with M9: how the engine routes a key to a plugin's side-chain.
+      The host takes it today as the last N channels of the region
+      (`sonora-plugin-host --sidechain N`, the header unchanged);
+      `contracts/plugin` should say so, or carry key planes of its own,
+      before the engine writes against it. plugin-engineer + rt-engineer.
 - [ ] N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
       `setBufferSize(..., true)`, which deactivates and re-activates, and so
       re-prepares and allocates, on whatever thread the host calls

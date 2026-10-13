@@ -45,6 +45,7 @@ Chain::Chain(PluginSource& source, const ChainConfig& config)
       guard_frames_(config.max_frames),
       stride_(config.max_frames + config.max_frames) {
     stages_.emplace_back(std::size_t(config_.channels) * stride_, 0.f);
+    key_.assign(std::size_t(config_.sidechain_channels) * stride_, 0.f);
 }
 
 // Processors go before the buffers they point into.
@@ -65,12 +66,14 @@ bool Chain::add(const std::string& id, ChainError& error) {
     }
     stages_.emplace_back(std::size_t(config_.channels) * stride_, 0.f);
     const std::size_t in_stage = slots_.size(), out_stage = in_stage + 1;
-    std::vector<float*> in, out;
+    std::vector<float*> in, out, key;
     for (uint32_t c = 0; c < config_.channels; ++c) {
         in.push_back(buffer(in_stage, c));
         out.push_back(buffer(out_stage, c));
     }
-    std::unique_ptr<Processor> p = source_.instantiate(id, config_, in, out, error);
+    for (uint32_t c = 0; c < config_.sidechain_channels; ++c)
+        key.push_back(key_.data() + std::size_t(c) * stride_);
+    std::unique_ptr<Processor> p = source_.instantiate(id, config_, in, out, key, error);
     if (!p) {
         error.instance = index;
         stages_.pop_back();
@@ -118,6 +121,10 @@ bool Chain::process(const float* const* in, float* const* out, uint32_t frames,
     frames = std::min(frames, config_.max_frames);
     for (uint32_t c = 0; c < config_.channels; ++c)
         std::memcpy(buffer(0, c), in[c], frames * sizeof(float));
+    // Copied, not pointed to: no plugin ever sees the engine's planes.
+    for (uint32_t c = 0; c < config_.sidechain_channels; ++c)
+        std::memcpy(key_.data() + std::size_t(c) * stride_, in[config_.channels + c],
+                    frames * sizeof(float));
 
     for (std::size_t k = 0; k < slots_.size(); ++k) {
         Processor& p = *slots_[k];
@@ -160,6 +167,7 @@ bool Chain::validate(ChainError& error) {
         fill_canaries(frames);
         for (uint32_t c = 0; c < config_.channels; ++c)
             std::fill(buffer(0, c), buffer(0, c) + frames, 0.f);
+        std::fill(key_.begin(), key_.end(), 0.f);
         for (std::size_t k = 0; k < slots_.size(); ++k) {
             Processor& p = *slots_[k];
             const PluginInfo& info = p.info();
@@ -217,6 +225,10 @@ const PluginInfo& Chain::info(std::size_t i) const { return slots_[i]->info(); }
 
 void Chain::control() {
     for (auto& s : slots_) s->control();
+}
+
+void Chain::reactivate() {
+    for (auto& s : slots_) s->reactivate();
 }
 
 // ---------------------------------------------------------------------------

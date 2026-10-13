@@ -11,5 +11,5 @@ sonora_native_quality_test(limiter)
 set_tests_properties(native_limiter PROPERTIES LABELS slow)
 
 # The LV2 and VST3 bundles (ADR-0011 N1).
-sonora_native_plugin(limiter FACTORY make_limiter DISPLAY "Sonora Limiter" UID SNlm
+sonora_native_plugin(limiter FACTORY make_limiter DISPLAY "Sonora Limiter" UID SNlm MONO_UID SMlm
   LV2_CATEGORY "lv2:LimiterPlugin" VST3_CATEGORIES "Fx|Dynamics")

@@ -695,6 +695,13 @@ public:
                 p.optional = bi.busType != V::kMain;
                 p.channels = channels_of(a);
                 if (b == 0) (dir == 0 ? info_.audio_in : info_.audio_out) = p.channels;
+                // The first aux input is the key: VST3 names no other
+                // convention, and every side-chain plugin we know uses it.
+                if (dir == 0 && b > 0 && bi.busType == V::kAux && key_bus_ < 0) {
+                    p.sidechain = true;
+                    key_bus_ = b;
+                    info_.sidechain_in = p.channels;
+                }
                 info_.ports.push_back(std::move(p));
             }
         }
@@ -753,14 +760,17 @@ public:
     }
 
     // Buffers, bus activation, setup, activation. `in` and `out` are null
-    // for a describe-only open, which keeps the default arrangement.
+    // for a describe-only open, which keeps the default arrangement. With
+    // `key` channels, the key bus is activated and reads them; without, it
+    // stays inactive, and the plugin reads its own silence there.
     //
     // Channel pointers are laid out from the arrangement agreed in
     // negotiate(), never from a fresh answer: a plugin that now says 8 on a
     // 2-channel chain would have the host index past the chain's buffers.
     // A fresh answer that differs is refused.
     bool start(const ChainConfig& config, const std::vector<float*>* in,
-               const std::vector<float*>* out, ChainError& error) {
+               const std::vector<float*>* out, const std::vector<float*>* key, ChainError& error) {
+        keyed_ = key != nullptr && !key->empty() && key_bus_ > 0;
         max_frames_ = config.max_frames;
         trap_.assign(config.max_frames, 0.f);
         float canary;
@@ -778,9 +788,11 @@ public:
         for (std::size_t r = 0; r < inst_.size(); ++r) {
             Instance& i = inst_[r];
             V::IComponent* c = i.component;
-            // Only the main buses carry audio here. Aux buses stay inactive
-            // and still get silent buffers: some plugins read them anyway.
-            for (int32 b = 0; b < n_in_; ++b) c->activateBus(V::kAudio, V::kInput, b, b == 0);
+            // Only the main buses, and the key bus when the chain has a key,
+            // carry audio here. Other aux buses stay inactive and still get
+            // silent buffers: some plugins read them anyway.
+            for (int32 b = 0; b < n_in_; ++b)
+                c->activateBus(V::kAudio, V::kInput, b, b == 0 || (keyed_ && b == key_bus_));
             for (int32 b = 0; b < n_out_; ++b) c->activateBus(V::kAudio, V::kOutput, b, b == 0);
             for (int dir = 0; dir < 2; ++dir) {
                 const auto d = dir == 0 ? V::kInput : V::kOutput;
@@ -813,6 +825,9 @@ public:
                     for (uint32_t k = 0; k < ch; ++k) {
                         if (b == 0 && chain) {
                             p.push_back((*chain)[replicas_ > 1 ? r : k]);
+                        } else if (dir == 0 && keyed_ && b == key_bus_) {
+                            const std::size_t kc = replicas_ > 1 ? r : k;
+                            p.push_back((*key)[std::min(kc, key->size() - 1)]);
                         } else {
                             auto& pool = dir == 0 ? aux_in_ : aux_out_;
                             pool.emplace_back(config.max_frames, 0.f);
@@ -870,9 +885,13 @@ public:
     void run(uint32_t frames) noexcept override {
         const auto n = static_cast<int32>(std::min(frames, max_frames_));
         for (Instance& i : inst_) {
-            for (std::size_t b = 1; b < i.in_bus.size(); ++b)
+            for (std::size_t b = 1; b < i.in_bus.size(); ++b) {
+                // The key bus reads the chain's key; any other aux input is
+                // silence again whatever a plugin left in it.
+                if (keyed_ && static_cast<int32>(b) == key_bus_) continue;
                 for (int32 k = 0; k < i.in_bus[b].numChannels; ++k)
                     std::memset(i.in_ptrs[b][static_cast<std::size_t>(k)], 0, std::size_t(n) * sizeof(float));
+            }
             for (auto& b : i.in_bus) b.silenceFlags = 0;
             for (auto& b : i.out_bus) b.silenceFlags = 0;
             i.data.numSamples = n;
@@ -900,6 +919,21 @@ public:
     void control() override {
         if (latency_dirty_.exchange(false, std::memory_order_acq_rel))
             latency_.store(inst_[0].processor->getLatencySamples(), std::memory_order_release);
+    }
+
+    // VST3's order: processing off, inactive, active, processing on. The
+    // latency is a main-thread read, here.
+    void reactivate() override {
+        for (Instance& i : inst_) {
+            if (i.processing) i.processor->setProcessing(false);
+            if (i.active) i.component->setActive(false);
+            i.active = i.component->setActive(true) == Steinberg::kResultOk;
+            i.processing = true;
+            i.processor->setProcessing(true);
+        }
+        latency_dirty_.store(false, std::memory_order_relaxed);
+        latency_.store(inst_[0].processor->getLatencySamples(), std::memory_order_release);
+        info_.latency_frames = latency();
     }
 
     bool intact() const noexcept override {
@@ -1076,6 +1110,8 @@ private:
     double rate_ = 48000.0;
     int32 n_in_ = 0, n_out_ = 0;
     uint32_t replicas_ = 1, max_frames_ = 0;
+    int32 key_bus_ = -1;  // the first aux input bus, if any
+    bool keyed_ = false;  // it reads the chain's key channels
     std::vector<std::vector<float>> aux_in_, aux_out_;
     std::vector<float> trap_;
     std::vector<uint32_t> writable_;  // sorted ParamIDs the engine may set
@@ -1087,12 +1123,14 @@ private:
 std::unique_ptr<Processor> Vst3World::instantiate(const std::string& id, const ChainConfig& config,
                                                   const std::vector<float*>& in,
                                                   const std::vector<float*>& out,
+                                                  const std::vector<float*>& key,
                                                   ChainError& error) {
     int ci = -1;
     Vst3Module* m = module_for(id, ci, error);
     if (!m) return nullptr;
     auto p = std::make_unique<Vst3Processor>(*context_, *m, m->classes[std::size_t(ci)]);
-    if (!p->open(error) || !p->negotiate(config.channels, error) || !p->start(config, &in, &out, error))
+    if (!p->open(error) || !p->negotiate(config.channels, error) ||
+        !p->start(config, &in, &out, &key, error))
         return nullptr;
     p->begin_processing();
     return p;
@@ -1104,7 +1142,7 @@ bool Vst3World::describe(const std::string& id, PluginInfo& out, ChainError& err
     if (!m) return false;
     Vst3Processor p(*context_, *m, m->classes[std::size_t(ci)]);
     ChainConfig cfg;
-    if (!p.open(error) || !p.start(cfg, nullptr, nullptr, error)) return false;
+    if (!p.open(error) || !p.start(cfg, nullptr, nullptr, nullptr, error)) return false;
     p.settle(cfg.block_frames);
     out = p.info();
     return true;
@@ -1121,7 +1159,7 @@ bool Vst3World::describe_bundle(const std::string& bundle,
             Vst3Processor p(*context_, *m, c);
             ChainError err;
             ChainConfig cfg;
-            if (p.open(err) && p.start(cfg, nullptr, nullptr, err)) {
+            if (p.open(err) && p.start(cfg, nullptr, nullptr, nullptr, err)) {
                 p.settle(cfg.block_frames);
                 info = p.info();
             } else {

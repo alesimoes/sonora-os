@@ -10,5 +10,5 @@ sonora_native_quality_test(compressor)
 
 # The LV2 and VST3 bundles (ADR-0011 N1). No side-chain input yet: the
 # host does not route one (brain/research/native-format-n1.md).
-sonora_native_plugin(compressor FACTORY make_compressor DISPLAY "Sonora Compressor" UID SNcp
-  LV2_CATEGORY "lv2:CompressorPlugin" VST3_CATEGORIES "Fx|Dynamics")
+sonora_native_plugin(compressor FACTORY make_compressor DISPLAY "Sonora Compressor" UID SNcp MONO_UID SMcp
+  LV2_CATEGORY "lv2:CompressorPlugin" VST3_CATEGORIES "Fx|Dynamics" SIDECHAIN)

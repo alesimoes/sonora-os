@@ -54,6 +54,7 @@ public:
     std::unique_ptr<Processor> instantiate(const std::string& id, const ChainConfig& config,
                                            const std::vector<float*>& in,
                                            const std::vector<float*>& out,
+                                           const std::vector<float*>& key,
                                            ChainError& error) override;
 
 private:

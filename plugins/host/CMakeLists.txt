@@ -259,8 +259,10 @@ if(_native)
   add_dependencies(plugin_driver sonora_native_bundles)
   set(_fixtures ${CMAKE_BINARY_DIR}/native-host-fixtures)
   file(MAKE_DIRECTORY ${_fixtures})
+  # The channel count, the key, the moves and the re-activation are in each
+  # case's args file (sonora-dsp-measure --host-fixture writes them).
   set(_render $<TARGET_FILE:plugin_driver> --host $<TARGET_FILE:sonora-plugin-host>
-              --scenario render --channels 2)
+              --scenario render)
   set(_native_tests)
   foreach(n ${_native})
     # --preroll 512: Chain::validate runs 4 blocks of 128 frames of silence
@@ -273,17 +275,34 @@ if(_native)
                      --golden ${CMAKE_SOURCE_DIR}/plugins/native/${n}/tests/golden)
     set_tests_properties(native_host_fixture_${n} PROPERTIES FIXTURES_SETUP native_fixture_${n}
                          LABELS plugins)
-    get_property(_uri GLOBAL PROPERTY SONORA_NATIVE_${n}_LV2_URI)
-    get_property(_cid GLOBAL PROPERTY SONORA_NATIVE_${n}_VST3_ID)
-    foreach(_case golden-44100 golden-48000 golden-96000 bypass-48000)
+    # The cases host_fixture.cpp writes for this processor: the stereo
+    # bundle's golden, bypass and automation renders; the mono bundle's; the
+    # key input's, stereo and mono, for a processor that takes one; and the
+    # re-activation for a latency-changing value, for the two that have one.
+    set(_cases golden-44100 golden-48000 golden-96000 bypass-48000 automation-48000 mono-48000)
+    get_property(_sidechain GLOBAL PROPERTY SONORA_NATIVE_${n}_SIDECHAIN)
+    if(_sidechain)
+      list(APPEND _cases key-48000 key-mono-48000)
+    endif()
+    if(n STREQUAL "eq" OR n STREQUAL "limiter")
+      list(APPEND _cases reconfigure-48000)
+    endif()
+    foreach(_case ${_cases})
+      # Which bundle: the mono one for the mono cases.
+      set(_b ${n})
+      if(_case MATCHES "mono")
+        set(_b ${n}-mono)
+      endif()
+      get_property(_uri GLOBAL PROPERTY SONORA_NATIVE_${_b}_LV2_URI)
+      get_property(_cid GLOBAL PROPERTY SONORA_NATIVE_${_b}_VST3_ID)
       add_test(NAME native_lv2_${n}_${_case}
-               COMMAND ${_render} --bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${n}.lv2 --chain ${_uri}
+               COMMAND ${_render} --bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${_b}.lv2 --chain ${_uri}
                        --args-file ${_fixtures}/${n}-${_case}-lv2.args)
       list(APPEND _native_tests native_lv2_${n}_${_case})
       set_tests_properties(native_lv2_${n}_${_case} PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
       if(VST3SDK_INCLUDE_DIR)
         add_test(NAME native_vst3_${n}_${_case}
-                 COMMAND ${_render} --bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${n}.vst3 --chain ${_cid}
+                 COMMAND ${_render} --bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${_b}.vst3 --chain ${_cid}
                          --args-file ${_fixtures}/${n}-${_case}-vst3.args)
         list(APPEND _native_tests native_vst3_${n}_${_case})
         set_tests_properties(native_vst3_${n}_${_case} PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
