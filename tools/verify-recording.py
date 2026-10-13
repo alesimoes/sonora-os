@@ -236,10 +236,104 @@ def check(directory, tracks, rate, seconds):
     return 0
 
 
+def check_playback(played_path, recorded_path, buffer_frames, pan_law_db=-3.0):
+    """The take recorded from the monitor bus's left output must be the take
+    that was played, at the pan law's centre gain, starting where the region
+    starts on the timeline, late only by whole periods of loop latency.
+    Both files start at timeline frame 0 (their TimeReference)."""
+    for path in (played_path, recorded_path):
+        if read_bext_time_reference(path) != 0:
+            print(f"FAIL: {path} does not start at timeline frame 0")
+            return 1
+    played = read_int24_mono(played_path, 10**9)
+    recorded = read_int24_mono(recorded_path, 10**9)
+    if not played or not recorded:
+        print("FAIL: could not read the played or the recorded take")
+        return 1
+    gain = 10.0 ** (pan_law_db / 20.0)
+    signal_db = rms_dbfs(recorded)
+    if signal_db < -40.0:
+        print(f"FAIL: the recorded bus is silent ({signal_db:.1f} dBFS)")
+        return 1
+
+    # The lag that nulls the stretch holding the onset, over up to eight
+    # periods. A stretch in the middle cannot tell: the test tones are
+    # periodic, and track 1's period is shorter than the lags searched.
+    stretch = range(0, min(4096, len(recorded)))
+    best_lag, best_err = None, None
+    for lag in range(0, 8 * buffer_frames + 1):
+        err = 0.0
+        for j in stretch:
+            if j - lag >= len(played):
+                break
+            # Before the lag nothing was played yet; a negative index would
+            # wrap to the end of the take.
+            want = gain * played[j - lag] if j >= lag else 0.0
+            d = recorded[j] - want
+            err += d * d
+        if best_err is None or err < best_err:
+            best_lag, best_err = lag, err
+    lag = best_lag
+    onset_r = next((j for j, x in enumerate(recorded) if abs(x) > 1e-4), None)
+    onset_p = next((j for j, x in enumerate(played) if abs(x) > 1e-4), None)
+    if onset_r is None or onset_p is None or onset_r - onset_p != lag:
+        print(f"FAIL: the recorded bus starts at frame {onset_r} and the played take"
+              f" at {onset_p}, which a lag of {lag} does not explain")
+        return 1
+
+    end = min(len(recorded), len(played) + lag)
+    worst = 0.0
+    worst_at = 0
+    total = 0.0
+    for j in range(0, end):
+        want = gain * played[j - lag] if j >= lag else 0.0
+        d = abs(recorded[j] - want)
+        if d > worst:
+            worst, worst_at = d, j
+        total += d * d
+    resid_db = 20.0 * math.log10(math.sqrt(total / end)) if total > 0 else -999.0
+    periods = lag / buffer_frames if buffer_frames else float("nan")
+    print(f"PLAYBACK lag={lag} frames ({periods:g} periods of {buffer_frames}) "
+          f"compared={end} signal={signal_db:.1f} dBFS "
+          f"residual max={worst:.2e} at frame {worst_at} rms={resid_db:.1f} dBFS")
+    if worst > 1e-5:
+        for j in range(max(0, worst_at - 4), min(end, worst_at + 4)):
+            want = gain * played[j - lag] if j >= lag else 0.0
+            print(f"  frame {j}: recorded {recorded[j]:.9f} want {want:.9f}")
+    if worst > 1e-5 or (buffer_frames and lag % buffer_frames != 0):
+        # Where it goes wrong: the best lag and residual per stretch.
+        for w0 in range(0, end - 2400, 12000):
+            best = None
+            for l2 in range(0, 8 * buffer_frames + 1):
+                e = sum((recorded[j] - (gain * played[j - l2] if j >= l2 else 0.0)) ** 2
+                        for j in range(w0, w0 + 2400))
+                if best is None or e < best[1]:
+                    best = (l2, e)
+            print(f"  frames {w0}..{w0 + 2400}: best lag {best[0]}, "
+                  f"residual {best[1]:.2e}, recorded peak "
+                  f"{max(abs(x) for x in recorded[w0:w0 + 2400]):.3f}")
+    if buffer_frames and lag % buffer_frames != 0:
+        print("FAIL: the playback is late by a part of a period: it is not where"
+              " the region is on the timeline")
+        return 1
+    if lag > 2 * buffer_frames:
+        print("FAIL: the playback is later than the loop latency explains")
+        return 1
+    # Two 24-bit quantisations sit between the played and the recorded
+    # sample: about 1.2e-7. 1e-5 is -100 dBFS.
+    if worst > 1e-5:
+        print("FAIL: the recorded bus does not null against the played take")
+        return 1
+    print("PLAYBACK PASS")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--generate", metavar="PATH")
     ap.add_argument("--check", metavar="DIR")
+    ap.add_argument("--check-playback", nargs=2, metavar=("PLAYED", "RECORDED"))
+    ap.add_argument("--buffer", type=int, default=128)
     ap.add_argument("--tracks", type=int, default=4)
     ap.add_argument("--rate", type=int, default=48000)
     ap.add_argument("--seconds", type=float, default=3.0)
@@ -250,7 +344,9 @@ def main():
         return 0
     if args.check:
         return check(args.check, args.tracks, args.rate, args.seconds)
-    ap.error("pass --generate or --check")
+    if args.check_playback:
+        return check_playback(args.check_playback[0], args.check_playback[1], args.buffer)
+    ap.error("pass --generate, --check or --check-playback")
 
 
 if __name__ == "__main__":

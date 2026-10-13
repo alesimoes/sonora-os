@@ -209,6 +209,46 @@ echo "--- verifying the files ---"
 python3 /usr/local/bin/verify-recording.py --check "$SESSION_DIR/Audio Files" \
   --tracks "$TRACKS" --rate "$RATE" --seconds "$SECONDS_TO_RECORD"
 
+echo "--- playback: a take played through the monitor bus, looped back, recorded ---"
+# The engine plays track 1's take from above on its stereo monitor bus while
+# track 2 records sonora:out_1, patched back into sonora:in_2. The second
+# take must be the first at the pan law's centre gain, from timeline frame 0,
+# late only by whole periods of loop latency: the playback path end to end,
+# through the disk reader's residency gate, against the real server. Armed
+# tracks monitor nothing here, or the loop would feed back.
+PB_DIR=/home/sonora/Sessions/playback
+rm -rf "$PB_DIR"
+mkdir -p "$PB_DIR/Audio Files"
+cp "$SESSION_DIR/Audio Files/Audio 1_01.wav" "$PB_DIR/Audio Files/"
+"$ENGINE_BIN" --dir "$PB_DIR" --tracks 2 --rate "$RATE" \
+  --place "Audio Files/Audio 1_01.wav" --arm 2 --no-input-monitoring \
+  --wait-for-inputs 20 --record "$SECONDS_TO_RECORD" >/tmp/playback.out 2>/tmp/playback.err &
+ENGINE_PID=$!
+for _ in $(seq 1 50); do
+  pw-link -i 2>/dev/null | grep -q "sonora:in_2" &&
+    pw-link -o 2>/dev/null | grep -q "sonora:out_1" && break
+  sleep 0.2
+done
+pw-link "sonora:out_1" "sonora:in_2" >/dev/null 2>&1 || {
+  echo "FAIL: could not loop sonora:out_1 back into sonora:in_2." >&2
+  exit 1
+}
+set +e
+wait "$ENGINE_PID"
+ENGINE_RC=$?
+set -e
+ENGINE_PID=""
+if [[ "$ENGINE_RC" != "0" ]]; then
+  echo "FAIL: the playback run exited $ENGINE_RC." >&2
+  cat /tmp/playback.out /tmp/playback.err >&2
+  exit 1
+fi
+grep "^RESULT" /tmp/playback.out
+BUFFER=$(sed -n 's/^RESULT .* buffer=\([0-9]*\) .*/\1/p' /tmp/playback.out)
+python3 /usr/local/bin/verify-recording.py --check-playback \
+  "$PB_DIR/Audio Files/Audio 1_01.wav" "$PB_DIR/Audio Files/Audio 2_02.wav" \
+  --buffer "$BUFFER"
+
 # The device policy, with the fake onboard device as the laptop's own audio
 # (revised by the owner 2026-10-13; ADR-0007 M2 note, item 8). Each engine
 # run below is short; its stderr is kept and shown when a check fails.

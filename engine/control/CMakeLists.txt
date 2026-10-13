@@ -5,6 +5,7 @@ add_library(sonora_control STATIC
   src/session_commands.cpp
   src/plan_builder.cpp
   src/playback_controller.cpp
+  src/take_document.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_model)

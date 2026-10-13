@@ -138,6 +138,8 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
     PlaybackPlan* empty = create_plan(sizes);
     empty->epoch = plans_->next_epoch();
     empty->chunk_frames = pb.chunk_frames;
+    // 0.5 ^ e = 10 ^ (law / 20)
+    empty->pan_exponent = static_cast<float>(pb.pan_law_db / (20.0 * std::log10(0.5)));
     for (uint32_t t = 0; t < tracks; ++t) {
         empty->tracks[t].engine_track = t;
         empty->tracks[t].channels = cfg_.channels_per_track;

@@ -33,6 +33,10 @@ struct PlaybackConfig {
     // Per-edge delay (PDC, Phase 4). 0 allocates no delay line.
     uint32_t max_delay_frames = 0;
     uint32_t command_capacity = 64;
+    // The pan law of the plan the session starts with, before engine/control
+    // publishes one: session-format.md's default. A different law in the
+    // first published plan would be heard as a ramp in its first block.
+    float pan_law_db = -3.0f;
 };
 
 // A sample-accurate event for the audio thread, drained at block start

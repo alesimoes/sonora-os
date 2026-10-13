@@ -27,7 +27,9 @@
 #include "sonora/memory_lock.h"
 #include "sonora/quit_signals.h"
 #include "sonora/session.h"
+#include "sonora/playback_controller.h"
 #include "sonora/session_commands.h"
+#include "sonora/take_document.h"
 #include "sonora/tty_mode.h"
 
 namespace {
@@ -184,6 +186,20 @@ void draw(sonora::Session& s, const AudioBackend& audio, int take,
                     peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak))
                                 : -99.9);
     }
+    // The monitor bus, and the holes in it: a miss is a chunk that was not
+    // resident when played.
+    for (int side = 0; side < 2; ++side) {
+        const float peak = s.take_bus_peak(side);
+        const int bars = static_cast<int>(peak * 40.0f);
+        std::printf("  %-10s %s      ", side ? "Bus R" : "Bus L", "   ");
+        for (int i = 0; i < 40; ++i) std::putchar(i < bars ? '=' : '.');
+        std::printf(" %5.1f dB\n",
+                    peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak)) : -99.9);
+    }
+    if (s.playback_misses() > 0) {
+        std::printf("  \033[31m!\033[0m playback misses %llu\n",
+                    static_cast<unsigned long long>(s.playback_misses()));
+    }
     std::putchar('\n');
     for (const std::string& l : help) std::printf("  %s\n", l.c_str());
     // Redrawn every frame on purpose: these say the profile cannot do
@@ -337,15 +353,24 @@ int run_headless(sonora::Session& session, AudioBackend& audio,
 
     // A clock step puts no hole in the audio, so it is reported rather than
     // failed: the take's timestamps after it do not follow on from before.
+    // A playback miss is a hole in what was heard during the take.
+    const uint64_t misses = session.playback_misses();
     std::printf("RESULT files=%d connected=%d frames=%llu requested=%llu"
-                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u\n",
+                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u misses=%llu\n",
                 files, connected,
                 static_cast<unsigned long long>(frames_on_disk),
                 static_cast<unsigned long long>(target),
-                audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns);
+                audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns,
+                static_cast<unsigned long long>(misses));
 
     if (files == 0) {
         std::fprintf(stderr, "sonora: no audio was written.\n");
+        return 1;
+    }
+    if (misses > 0) {
+        std::fprintf(stderr,
+                     "sonora: %llu playback chunks were not resident when played.\n",
+                     static_cast<unsigned long long>(misses));
         return 1;
     }
     if (xruns > 0 || overruns > 0) {
@@ -376,6 +401,10 @@ int main(int argc, char** argv) {
     double record_seconds = 0.0;  // 0 means interactive
     double wait_for_inputs_seconds = 0.0;
     bool arm_all = false;
+    // Tracks armed one by one, 0-based; and what --place puts on track 1.
+    std::vector<int> arm_tracks;
+    std::vector<std::string> place_files;
+    bool no_input_monitoring = false;
     std::string keymap_path;
     std::string capture_device;
     std::string backend_name = "jack";
@@ -401,6 +430,17 @@ int main(int argc, char** argv) {
             wait_for_inputs_seconds = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--arm-all") == 0) {
             arm_all = true;
+        } else if (std::strcmp(argv[i], "--arm") == 0 && i + 1 < argc) {
+            const int n = std::atoi(argv[++i]);
+            if (n < 1) {
+                std::fprintf(stderr, "sonora: --arm takes a track number from 1\n");
+                return 2;
+            }
+            arm_tracks.push_back(n - 1);
+        } else if (std::strcmp(argv[i], "--place") == 0 && i + 1 < argc) {
+            place_files.emplace_back(argv[++i]);
+        } else if (std::strcmp(argv[i], "--no-input-monitoring") == 0) {
+            no_input_monitoring = true;
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
@@ -423,6 +463,11 @@ int main(int argc, char** argv) {
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
+                "  --arm N           arm track N at startup (repeatable)\n"
+                "  --place FILE      play FILE (relative to --dir) on track 1, at\n"
+                "                    its BWF time reference (repeatable: tracks 2, 3...)\n"
+                "  --no-input-monitoring\n"
+                "                    armed tracks send nothing to the monitor bus\n"
                 "  --keymap PATH     key map to use instead of the built-in one\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
@@ -442,12 +487,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    if (record_seconds > 0.0 && !arm_all) {
+    if (record_seconds > 0.0 && !arm_all && arm_tracks.empty()) {
         // Recording nothing for ten seconds and exiting 0 is a test that
         // passes while proving nothing. Refuse it.
         std::fprintf(stderr,
                      "sonora: --record needs at least one armed track;"
-                     " pass --arm-all.\n");
+                     " pass --arm-all or --arm N.\n");
         return 2;
     }
 
@@ -577,7 +622,8 @@ int main(int argc, char** argv) {
     // open() refuses a server at any rate but the session's, since a
     // mismatch would write wrong-pitch files, and refuses to guess between
     // two USB interfaces.
-    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 0,
+    // Two outputs: the fixed stereo monitor bus (ADR-0009 §4.6).
+    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 2,
                       cfg.sample_rate, capture_device},
                      session, backend_error) ||
         !audio->activate(backend_error)) {
@@ -627,6 +673,32 @@ int main(int argc, char** argv) {
         }
     }
     session.disk().start();
+    // Separate from the capture writer: a slow read never delays a drain.
+    session.reader().start();
+    // What plays back: every closed take, where it was recorded. Destroyed
+    // before the session, after the backend has stopped calling it.
+    sonora::TakeDocument document(session);
+    sonora::PlaybackController playback(session, cfg.dir);
+    {
+        std::string why;
+        for (std::size_t i = 0; i < place_files.size(); ++i) {
+            if (!document.place_file(place_files[i], i, why)) {
+                std::fprintf(stderr, "sonora: --place: %s\n", why.c_str());
+                return 2;
+            }
+        }
+        if (!playback.show(document.current(), why)) {
+            std::fprintf(stderr, "sonora: cannot play the session: %s\n", why.c_str());
+            return 1;
+        }
+        // Before a take starts: what it plays must be resident, or the
+        // first blocks of the take are heard with holes.
+        if (!playback.settle(10.0)) {
+            std::fprintf(stderr, "sonora: the playback window did not become resident"
+                                 " within 10 s\n");
+            return 1;
+        }
+    }
 
     // Before every take, headless or from a key: when no armed track has
     // anything connected, every file would be silence.
@@ -649,6 +721,20 @@ int main(int argc, char** argv) {
     if (arm_all) {
         for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
     }
+    for (const int t : arm_tracks) {
+        if (static_cast<std::size_t>(t) >= session.tracks().size()) {
+            std::fprintf(stderr, "sonora: --arm %d: there are %zu tracks\n", t + 1,
+                         session.tracks().size());
+            return 2;
+        }
+        session.tracks()[static_cast<std::size_t>(t)]->set_rec_armed(true);
+    }
+    // After show(), which sets every track's mix from the document.
+    if (no_input_monitoring) {
+        for (const auto& tr : session.tracks()) {
+            if (tr->rec_armed()) tr->set_monitor(sonora::Track::Monitor::Off);
+        }
+    }
 
     if (record_seconds > 0.0) {
         const int rc = run_headless(session, *audio, record_seconds, connected,
@@ -667,7 +753,7 @@ int main(int argc, char** argv) {
     std::string status;
 
     sonora::CommandRegistry commands;
-    sonora::install_session_commands(commands, session, take, quit, may_record);
+    sonora::install_session_commands(commands, session, take, quit, may_record, &playback);
 
     // The terminal mode is set before anything is measured against it: which
     // control bytes reach us depends on it, and a check made against the
@@ -738,6 +824,7 @@ int main(int argc, char** argv) {
     int frames_to_input_check = 0;
     std::string take_failed;
     int failed_take = 0;
+    bool was_recording = false;
 
     while (!sonora::quit_requested() && !quit) {
         // The server dying, or changing rate or buffer size, stops the
@@ -828,6 +915,21 @@ int main(int argc, char** argv) {
                 take_failed.clear();
             }
         }
+
+        // A take that has just closed joins what plays back. Its files are
+        // closed and their lengths on disk final by now: stop() joined the
+        // disk thread.
+        const bool recording_now =
+            session.transport().state() == sonora::TransportState::Recording;
+        if (was_recording && !recording_now) {
+            std::string why;
+            if (!document.add_closed_take(session, why) ||
+                !playback.show(document.current(), why)) {
+                say("playback: " + why);
+            }
+        }
+        was_recording = recording_now;
+        playback.pump();
 
         draw(session, *audio, take, status, help, notices, inputs_missing, take_failed);
         if (status_frames > 0 && --status_frames == 0) status.clear();
