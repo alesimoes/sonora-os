@@ -37,11 +37,13 @@ public:
     int connect_inputs_in_order() override;
     int connected_input_count() const override;
     bool input_connected(uint32_t index) const override;
+    bool choose_capture_device(const std::string& device) override;
     void deactivate() noexcept override;
 
     uint32_t sample_rate() const override;
     uint32_t buffer_frames() const override;
     uint32_t xruns() const override;
+    uint32_t clock_discontinuities() const override;
     bool fatal() const override;
     std::string fatal_reason() const override;
 

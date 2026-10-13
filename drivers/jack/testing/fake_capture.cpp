@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-fake-capture N: a JACK client that registers N physical capture
-// ports and holds them until killed. tools/test-engine-entrypoint.sh starts
-// it with PIPEWIRE_PROPS setting an onboard card's object.path, so the
-// container has the second, non-USB device the appliance has, and the test
-// can show the engine leaves it alone without --device. Not shipped.
+// sonora-fake-capture N [CLIENT]: a JACK client that registers N physical
+// capture ports and holds them until killed. tools/test-engine-entrypoint.sh
+// starts it with PIPEWIRE_PROPS setting an onboard card's object.path, so the
+// container has the non-USB device a laptop has: left alone while something
+// is connected, recorded from after the wait when it is the only device, and
+// killed mid-take to stand in for an unplug. A second one, under another
+// CLIENT name, makes the device ambiguous. Not shipped.
 #include <jack/jack.h>
 
 #include <unistd.h>
@@ -36,19 +38,20 @@ void on_signal(int) { g_stop = 1; }
 int main(int argc, char** argv) {
     const int count = argc > 1 ? std::atoi(argv[1]) : 2;
     jack_status_t status{};
-    jack_client_t* client = jack_client_open("fake-capture", JackNoStartServer, &status);
+    const char* name = argc > 2 ? argv[2] : "fake-capture";
+    jack_client_t* client = jack_client_open(name, JackNoStartServer, &status);
     if (!client) {
         std::fprintf(stderr, "sonora-fake-capture: no server\n");
         return 1;
     }
     for (int i = 0; i < count; ++i) {
-        char name[32];
-        std::snprintf(name, sizeof name, "capture_AUX%d", i);
+        char port[32];
+        std::snprintf(port, sizeof port, "capture_AUX%d", i);
         jack_port_t* p = jack_port_register(
-            client, name, JACK_DEFAULT_AUDIO_TYPE,
+            client, port, JACK_DEFAULT_AUDIO_TYPE,
             JackPortIsOutput | JackPortIsPhysical | JackPortIsTerminal, 0);
         if (!p) {
-            std::fprintf(stderr, "sonora-fake-capture: cannot register %s\n", name);
+            std::fprintf(stderr, "sonora-fake-capture: cannot register %s\n", port);
             return 1;
         }
         g_ports.push_back(p);

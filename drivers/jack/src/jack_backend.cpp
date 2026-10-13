@@ -88,8 +88,9 @@ std::string device_of(const std::string& port) {
 struct JackBackend::Impl {
     jack_client_t* client = nullptr;
     bool active = false;
-    // Empty until a device is chosen: by name in open(), or by the default
-    // policy at open() or at the first connection after it.
+    // Empty until a device is chosen: by name in open(), by the default
+    // policy at open() or at the first connection after it, or by the
+    // caller's fallback (choose_capture_device()). Never changed once set.
     std::string capture_device;
     // What connect_inputs_in_order() last said, so a caller that polls it
     // while waiting for an interface does not repeat it every time.
@@ -431,6 +432,13 @@ bool JackBackend::input_connected(uint32_t index) const {
            jack_port_connected(impl_->in_ports[index]) > 0;
 }
 
+bool JackBackend::choose_capture_device(const std::string& device) {
+    Impl& d = *impl_;
+    if (!d.client || !d.capture_device.empty() || device.empty()) return false;
+    d.capture_device = device;
+    return true;
+}
+
 void JackBackend::deactivate() noexcept {
     Impl& d = *impl_;
     if (!d.client || !d.active) return;
@@ -447,6 +455,10 @@ uint32_t JackBackend::buffer_frames() const { return impl_->guard.frames(); }
 
 uint32_t JackBackend::xruns() const {
     return impl_->xruns.load(std::memory_order_relaxed);
+}
+
+uint32_t JackBackend::clock_discontinuities() const {
+    return impl_->clock.discontinuities();
 }
 
 bool JackBackend::fatal() const { return impl_->guard.check_stall(now_ns()); }

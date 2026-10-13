@@ -28,7 +28,7 @@ struct PortInfo {
     uint32_t channel;
     // True only when the backend established that the device is on USB.
     // A backend that cannot tell leaves it false, and the device is then
-    // used only when named; see select_device().
+    // treated as onboard; see select_device().
     bool usb = false;
 };
 
@@ -41,7 +41,8 @@ struct BackendConfig {
     uint32_t required_rate;
     // The device whose capture ports feed the inputs, by PortInfo::device.
     // Empty means the one USB device; open() fails, naming them, if there
-    // are several. See select_device().
+    // are several. With none yet, the caller decides after its startup wait
+    // (choose_capture_device()). See select_device().
     std::string capture_device;
 };
 
@@ -82,6 +83,14 @@ public:
     // so a take can be refused when no armed track would hear anything.
     virtual bool input_connected(uint32_t index) const = 0;
 
+    // Makes `device` the capture device, as if open() had been given it, if
+    // none is chosen yet: open() got no name and no USB interface has been
+    // connected from since. Otherwise returns false and changes nothing, so
+    // the inputs never move to another device mid-session -- that would
+    // change the channels under the tracks. For the default policy's
+    // fallback after the startup wait.
+    virtual bool choose_capture_device(const std::string& device) = 0;
+
     // After return, process() will not be called again and no call is still
     // running; safe to tear down. Idempotent. The destructor calls it.
     virtual void deactivate() noexcept = 0;
@@ -92,6 +101,10 @@ public:
     virtual uint32_t buffer_frames() const = 0;
     // Server-reported xruns since open(). Any thread.
     virtual uint32_t xruns() const = 0;
+    // How many times since open() the server's frame clock stepped back.
+    // frame_time held still across each, so takes' timestamps after one are
+    // not continuous with those before it. Any thread.
+    virtual uint32_t clock_discontinuities() const = 0;
 
     // Server loss, loss of a physical capture port an input was connected
     // from (the interface unplugged), no period for one second while
@@ -109,37 +122,49 @@ public:
 };
 
 // The ports of `all` that BackendConfig::capture_device selects, in channel
-// order. Default policy, 2026-10-12 (ADR-0007, M2 note):
+// order. Default policy, revised by the owner 2026-10-13 (ADR-0007, M2
+// note, item 8):
 //  - a named device is used whatever its bus;
-//  - an empty name means the USB device. Non-USB capture (onboard, PCI,
-//    HDMI) is never chosen unless named: on the appliance it is the
-//    laptop's microphone, recorded while the operator believes the
-//    interface is armed;
-//  - several USB devices and no name: false, with `error` naming them.
-// A device not present yet -- a USB interface enumerates after boot --
-// selects nothing and is not an error: the caller waits, and when the wait
-// is over says why with describe_absent().
+//  - an empty name means the USB device;
+//  - several USB devices and no name: false, with `error` naming them;
+//  - no USB device while the startup wait runs (`wait_over` false): nothing
+//    yet, since an interface enumerates after boot;
+//  - no USB device once it is over: the one non-USB device (onboard, PCI,
+//    HDMI), which until the interface is connected is the laptop's own
+//    audio; several of those and no name: false, with `error` naming them.
+// A device not present selects nothing and is not an error: the caller
+// waits, or keeps looking, and says why with describe_absent().
 inline bool select_device(const std::vector<PortInfo>& all,
                           const std::string& device,
-                          std::vector<PortInfo>& selected, std::string& error) {
+                          std::vector<PortInfo>& selected, std::string& error,
+                          bool wait_over = false) {
     selected.clear();
     std::string wanted = device;
     if (wanted.empty()) {
-        std::vector<std::string> usb;
+        std::vector<std::string> usb, other;
         for (const PortInfo& p : all) {
-            if (p.usb && std::find(usb.begin(), usb.end(), p.device) == usb.end()) {
-                usb.push_back(p.device);
+            std::vector<std::string>& bus = p.usb ? usb : other;
+            if (std::find(bus.begin(), bus.end(), p.device) == bus.end()) {
+                bus.push_back(p.device);
             }
         }
-        if (usb.size() > 1) {
-            error = std::to_string(usb.size()) +
-                    " USB audio interfaces; name the one to record from"
-                    " with --device:";
-            for (const std::string& d : usb) error += " \"" + d + "\"";
+        const auto ambiguous = [&error](const std::vector<std::string>& devices,
+                                        const char* what) {
+            error = std::to_string(devices.size()) + what +
+                    "; name the one to record from with --device:";
+            for (const std::string& d : devices) error += " \"" + d + "\"";
             return false;
+        };
+        if (usb.size() > 1) return ambiguous(usb, " USB audio interfaces");
+        if (usb.size() == 1) {
+            wanted = usb.front();
+        } else if (!wait_over || other.empty()) {
+            return true;
+        } else if (other.size() > 1) {
+            return ambiguous(other, " capture devices and no USB interface");
+        } else {
+            wanted = other.front();
         }
-        if (usb.empty()) return true;
-        wanted = usb.front();
     }
     for (const PortInfo& p : all) {
         if (p.device == wanted) selected.push_back(p);
