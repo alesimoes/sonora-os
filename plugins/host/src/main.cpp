@@ -4,7 +4,7 @@
 // their own (ADR-0007 §3), so a plugin that crashes ends this process and not
 // the engine's session.
 //
-//   sonora-plugin-host --list [--json] [--format lv2|vst3] [--bundle DIR]...
+//   sonora-plugin-host --list [--json] [--format lv2|vst3] [--scan-timeout S] [--bundle DIR]...
 //   sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...
 //   sonora-plugin-host --shm-fd FD --chain ID[,ID...] [--bundle DIR]...
 //                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
@@ -37,10 +37,12 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace sonora;
@@ -94,12 +96,16 @@ struct Options {
     };
     std::vector<Set> sets;
     uint32_t channels = 0;
+    // LSP's bundle, 184 classes each instantiated and run, took 19.9 s in
+    // the container (brain/research/plugin-host-vst3.md).
+    uint32_t scan_timeout_s = 120;
 };
 
 [[noreturn]] void usage(const char* why) {
     std::fprintf(stderr,
                  "sonora-plugin-host: %s\n"
-                 "usage: sonora-plugin-host --list [--json] [--format lv2|vst3] [--bundle DIR]...\n"
+                 "usage: sonora-plugin-host --list [--json] [--format lv2|vst3] [--scan-timeout S]\n"
+                 "                          [--bundle DIR]...\n"
                  "       sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...\n"
                  "       sonora-plugin-host --shm-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
                  "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n",
@@ -140,6 +146,11 @@ Options parse(int argc, char** argv) {
         else if (a == "--chain") o.chain = split(next(), ',');
         else if (a == "--bundle") o.bundles.push_back(next());
         else if (a == "--channels") o.channels = static_cast<uint32_t>(std::atoi(next().c_str()));
+        else if (a == "--scan-timeout") {
+            const int s = std::atoi(next().c_str());
+            if (s < 1) usage("--scan-timeout wants a number of seconds, 1 or more");
+            o.scan_timeout_s = static_cast<uint32_t>(s);
+        }
         else if (a == "--set") {
             const std::string v = next();
             const auto colon = v.find(':'), eq = v.find('=');
@@ -252,36 +263,41 @@ int list(const Options& o) {
     }
 #ifdef SONORA_HAVE_VST3
     if (o.format.empty() || o.format == "vst3") {
-        // LSP's bundle, 184 classes each instantiated and run, took 19.9 s
-        // in the container (brain/research/plugin-host-vst3.md).
-        constexpr uint64_t kScanTimeoutNs = 120'000'000'000ull;
+        const uint64_t scan_timeout_ns = uint64_t(o.scan_timeout_s) * 1'000'000'000ull;
         for (const std::string& bundle : catalog.vst3.bundles()) {
+            // Each record is flushed as soon as it is written (run_isolated:
+            // the parent keeps whole lines only), so a class that hangs or
+            // crashes costs itself and the classes after it, not those before.
             const IsolatedResult r = run_isolated(
                 [&](std::FILE* out) {
                     Vst3World world;
-                    std::vector<PluginInfo> infos;
                     std::string err;
-                    if (!world.describe_bundle(bundle, infos, err)) {
+                    const bool ok = world.describe_bundle(
+                        bundle,
+                        [&](const PluginInfo& info) {
+                            print_info(out, info, o.json);
+                            std::fflush(out);
+                        },
+                        err);
+                    if (!ok) {
                         print_failed_bundle(out, bundle, err, o.json);
+                        std::fflush(out);
                         return 1;
                     }
-                    for (const PluginInfo& info : infos) print_info(out, info, o.json);
-                    std::fflush(out);
                     return 0;
                 },
-                kScanTimeoutNs);
+                scan_timeout_ns);
             std::fwrite(r.output.data(), 1, r.output.size(), stdout);
+            const char* const key = o.json ? "{\"uri\":" : "\n  uri:";
+            for (std::size_t at = r.output.find(key); at != std::string::npos; at = r.output.find(key, at + 1))
+                ++vst3_count;
             const bool printed_failure = r.exited && r.exit_code == 1;
-            if (r.exited && r.exit_code == 0) {
-                const char* const key = o.json ? "{\"uri\":" : "\n  uri:";
-                for (std::size_t at = r.output.find(key); at != std::string::npos;
-                     at = r.output.find(key, at + 1))
-                    ++vst3_count;
-            } else {
+            if (!r.exited || r.exit_code != 0) {
                 ++vst3_failed;
                 if (!printed_failure) {
                     std::string why;
-                    if (r.timed_out) why = "the scan hung (killed after 120 s)";
+                    if (r.timed_out)
+                        why = "the scan hung (killed after " + std::to_string(o.scan_timeout_s) + " s)";
                     else if (!r.exited) why = "the scan crashed (signal " + std::to_string(r.signal) + ", " +
                                               strsignal(r.signal) + ")";
                     else why = "the scan exited with code " + std::to_string(r.exit_code);
@@ -362,6 +378,62 @@ void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_
     }
 }
 
+// Idle wake period: bounds how stale the heartbeat can be.
+constexpr uint64_t kIdleWaitNs = 100'000'000;
+
+// The processing thread's loop, at SCHED_FIFO when allowed. Returns the exit
+// code: 0 on shutdown or a gone engine, 4 when a plugin faulted.
+int process_blocks(plugin::ChannelHeader& h, Chain& chain, const plugin::Layout& layout,
+                   const std::vector<const float*>& in, const std::vector<float*>& out,
+                   uint32_t ipc_frames, int64_t engine_pid) {
+    ChainError cerr;
+    uint64_t last = h.completed_block.load(std::memory_order_relaxed);
+    for (;;) {
+        // The word is read before the condition, so a submit that lands
+        // between the check and the wait changes the word and the futex
+        // returns at once: no lost wake-up.
+        const uint32_t seen = h.request_word.load(std::memory_order_acquire);
+        if (h.shutdown.load(std::memory_order_acquire)) break;
+        const uint64_t block = h.submitted_block.load(std::memory_order_acquire);
+        if (block == last) {
+            wait_for_change(h.request_word, seen, kIdleWaitNs);
+            h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+            // Checked when idle only, never between a submit and its
+            // completion: the backstop for a death signal that cannot fire.
+            if (!parent_is(engine_pid)) break;
+            continue;
+        }
+        // Clamped, so a forged frame count cannot run past the planes.
+        const uint32_t frames =
+            std::min(h.submitted_frames.load(std::memory_order_relaxed), layout.max_frames);
+        // At most what the ring holds, which is what a plugin's change list
+        // for one block holds; changes pushed during the drain wait in the
+        // ring for the next block. One the plugin cannot take is counted.
+        plugin::ParamChange pc;
+        for (uint32_t n = 0; n < plugin::kParamRingCapacity && plugin::pop_param(h, pc); ++n)
+            if (!chain.set_control(pc.instance, pc.port, pc.value))
+                h.params_rejected.fetch_add(1, std::memory_order_relaxed);
+
+        const uint64_t t0 = monotonic_ns();
+        if (!chain.process(in.data(), out.data(), frames, &h, cerr)) {
+            cerr.message = "wrote outside its declared buffers while running";
+            return refuse(h, cerr, plugin::HostState::Faulted);
+        }
+        const uint64_t took = monotonic_ns() - t0;
+        if (took > h.worst_block_ns.load(std::memory_order_relaxed))
+            h.worst_block_ns.store(took, std::memory_order_relaxed);
+        publish_latency(h, chain, ipc_frames);
+
+        last = block;
+        h.completed_block.store(block, std::memory_order_release);
+        signal(h.done_word);
+        h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+    }
+    h.state.store(static_cast<uint32_t>(plugin::HostState::Stopped), std::memory_order_release);
+    signal(h.done_word);
+    return 0;
+}
+
 int serve(const Options& o) {
     if (!die_with_parent(o.engine_pid)) {
         std::fprintf(stderr, "sonora-plugin-host: the engine (pid %lld) is not this host's parent; "
@@ -411,12 +483,8 @@ int serve(const Options& o) {
     publish_latency(h, chain, ipc_frames);
 
     uint32_t flags = 0;
+    // Process-wide, so it covers the processing thread's stack too.
     if (lock_memory()) flags |= plugin::kHostMemoryLocked;
-    if (make_current_thread_realtime(rt_priority)) flags |= plugin::kHostRealtime;
-    // Every plugin runs on this thread from here on. Validation ran without
-    // the flags, so what a plugin did with denormals there was its worst case.
-    if (flush_denormals_on_this_thread()) flags |= plugin::kHostFlushDenormals;
-    h.host_flags.store(flags, std::memory_order_relaxed);
 
     std::vector<const float*> in(layout.channels);
     std::vector<float*> out(layout.channels);
@@ -424,51 +492,35 @@ int serve(const Options& o) {
         in[c] = plugin::input_plane(region.base, layout, c);
         out[c] = plugin::output_plane(region.base, layout, c);
     }
-    h.state.store(static_cast<uint32_t>(plugin::HostState::Ready), std::memory_order_release);
-    signal(h.done_word);
 
-    // Idle wake period: bounds how stale the heartbeat can be.
-    constexpr uint64_t kIdleWaitNs = 100'000'000;
-    uint64_t last = h.completed_block.load(std::memory_order_relaxed);
-    for (;;) {
-        // The word is read before the condition, so a submit that lands
-        // between the check and the wait changes the word and the futex
-        // returns at once: no lost wake-up.
-        const uint32_t seen = h.request_word.load(std::memory_order_acquire);
-        if (h.shutdown.load(std::memory_order_acquire)) break;
-        const uint64_t block = h.submitted_block.load(std::memory_order_acquire);
-        if (block == last) {
-            wait_for_change(h.request_word, seen, kIdleWaitNs);
-            h.heartbeat.fetch_add(1, std::memory_order_relaxed);
-            // Checked when idle only, never between a submit and its
-            // completion: the backstop for a death signal that cannot fire.
-            if (!parent_is(o.engine_pid)) break;
-            continue;
-        }
-        // Clamped, so a forged frame count cannot run past the planes.
-        const uint32_t frames =
-            std::min(h.submitted_frames.load(std::memory_order_relaxed), layout.max_frames);
-        plugin::ParamChange pc;
-        while (plugin::pop_param(h, pc)) chain.set_control(pc.instance, pc.port, pc.value);
-
-        const uint64_t t0 = monotonic_ns();
-        if (!chain.process(in.data(), out.data(), frames, &h, cerr)) {
-            cerr.message = "wrote outside its declared buffers while running";
-            return refuse(h, cerr, plugin::HostState::Faulted);
-        }
-        const uint64_t took = monotonic_ns() - t0;
-        if (took > h.worst_block_ns.load(std::memory_order_relaxed))
-            h.worst_block_ns.store(took, std::memory_order_relaxed);
-        publish_latency(h, chain, ipc_frames);
-
-        last = block;
-        h.completed_block.store(block, std::memory_order_release);
+    // Every plugin runs on a thread of its own from here on. This thread,
+    // which created them, stays their main thread: VST3 allows some calls
+    // (getLatencySamples) only there, never on the thread running process().
+    int exit_code = 0;
+    std::atomic<bool> finished{false};
+    std::thread processing([&] {
+        uint32_t f = flags;
+        if (make_current_thread_realtime(rt_priority)) f |= plugin::kHostRealtime;
+        // Validation ran without the flags, so what a plugin did with
+        // denormals there was its worst case.
+        if (flush_denormals_on_this_thread()) f |= plugin::kHostFlushDenormals;
+        h.host_flags.store(f, std::memory_order_relaxed);
+        h.state.store(static_cast<uint32_t>(plugin::HostState::Ready), std::memory_order_release);
         signal(h.done_word);
-        h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+        exit_code = process_blocks(h, chain, layout, in, out, ipc_frames, o.engine_pid);
+        finished.store(true, std::memory_order_release);
+        notify_control();
+    });
+    // The control loop. Read the word before the work, so a notice that
+    // lands during the work changes it and the wait returns at once.
+    for (;;) {
+        const uint32_t seen = control_word().load(std::memory_order_acquire);
+        if (finished.load(std::memory_order_acquire)) break;
+        chain.control();
+        wait_for_change(control_word(), seen, kIdleWaitNs);
     }
-    h.state.store(static_cast<uint32_t>(plugin::HostState::Stopped), std::memory_order_release);
-    signal(h.done_word);
-    return 0;
+    processing.join();
+    return exit_code;
 }
 
 }  // namespace

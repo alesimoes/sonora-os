@@ -84,6 +84,9 @@ IsolatedResult run_isolated(const std::function<int(std::FILE* out)>& body, uint
         dup2(STDERR_FILENO, STDOUT_FILENO);
         std::FILE* out = fdopen(fds[1], "w");
         if (!out) _exit(127);
+        // Fully buffered and large, so a record reaches the pipe in one
+        // piece when the body flushes after it, not in BUFSIZ fragments.
+        setvbuf(out, nullptr, _IOFBF, 1u << 20);
         const int code = body(out);
         std::fflush(out);
         std::fflush(stdout);
@@ -115,9 +118,29 @@ IsolatedResult run_isolated(const std::function<int(std::FILE* out)>& body, uint
         break;  // EOF: the child closed stdout, normally by exiting
     }
     close(fds[0]);
+    // EOF is not exit: a child that closed the pipe (or handed it to a
+    // grandchild and stopped writing) can still hang, so the wait has the
+    // same deadline as the reads.
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    for (;;) {
+        const pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) break;
+        if (w < 0 && errno != EINTR) break;
+        if (monotonic_ns() >= end) {
+            r.timed_out = true;
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            }
+            break;
+        }
+        usleep(2000);
     }
+    // A child killed in the middle of a record leaves part of a line behind;
+    // the caller appends its own record after this, so only whole lines stay.
+    if (const std::size_t nl = r.output.rfind('\n'); nl == std::string::npos)
+        r.output.clear();
+    else
+        r.output.resize(nl + 1);
     if (WIFEXITED(status)) {
         r.exited = !r.timed_out;
         r.exit_code = WEXITSTATUS(status);

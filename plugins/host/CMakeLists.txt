@@ -58,8 +58,10 @@ target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_L
 
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h
                src/lv2_host.cpp src/lv2_host.h)
+# The processing thread runs the plugins; the main thread stays theirs.
+find_package(Threads REQUIRED)
 target_link_libraries(sonora-plugin-host PRIVATE sonora_plugin_ipc sonora_plugin_loader
-                      sonora_urid_map PkgConfig::LILV)
+                      sonora_urid_map PkgConfig::LILV Threads::Threads)
 if(VST3SDK_INCLUDE_DIR)
   target_sources(sonora-plugin-host PRIVATE src/vst3_host.cpp src/vst3_host.h)
   target_include_directories(sonora-plugin-host SYSTEM PRIVATE ${VST3SDK_INCLUDE_DIR})
@@ -68,7 +70,6 @@ endif()
 
 # --- tests (ADR-0007 §7: a fake engine driver plus in-tree test plugins)
 
-find_package(Threads REQUIRED)
 add_executable(test_urid_map tests/test_urid_map.cpp)
 target_link_libraries(test_urid_map PRIVATE sonora_urid_map Threads::Threads)
 add_test(NAME plugin_host_urid_map COMMAND test_urid_map)
@@ -151,6 +152,7 @@ if(VST3SDK_INCLUDE_DIR)
   set(SONORA_TEST_VST3 ${CMAKE_BINARY_DIR}/vst3/sonora-test.vst3)
   add_library(sonora_test_vst3 MODULE tests/vst3/sonora_test_vst3.cpp)
   target_include_directories(sonora_test_vst3 SYSTEM PRIVATE ${VST3SDK_INCLUDE_DIR})
+  target_link_libraries(sonora_test_vst3 PRIVATE Threads::Threads)
   set_target_properties(sonora_test_vst3 PROPERTIES
     PREFIX ""
     OUTPUT_NAME sonora-test
@@ -218,6 +220,17 @@ if(VST3SDK_INCLUDE_DIR)
   # and restartComponent(kLatencyChanged).
   add_test(NAME plugin_host_vst3_latency_change COMMAND ${_vst3_drive} --scenario latency_change
            --chain ${_lsp_limiter} --change-param 467309611 --change-value 0.5)
+  # The same through the in-tree latency class, which segfaults if the host
+  # asks getLatencySamples() on the thread that runs process(): the re-read
+  # after kLatencyChanged belongs on the host's main thread.
+  add_test(NAME plugin_host_vst3_latency_change_main_thread COMMAND ${_vst3_drive}
+           --scenario latency_change --chain "vst3:534F4E4F524156535433544553540007"
+           --change-param 0 --change-value 1)
+  # More distinct ParamIDs in one block than the 128 a block once carried.
+  add_test(NAME plugin_host_vst3_params COMMAND ${_vst3_drive} --scenario params)
+  # A scan that hangs after writing a record longer than a pipe buffer.
+  add_test(NAME plugin_host_vst3_list_hang COMMAND ${_vst3_drive} --scenario list_json)
+  set_tests_properties(plugin_host_vst3_list_hang PROPERTIES ENVIRONMENT SONORA_TEST_VST3_HANG_ON_SCAN=1)
   add_test(NAME plugin_host_vst3_crash COMMAND ${_vst3_drive} --scenario crash
            --chain "${_again},${_vst3_crash}")
   add_test(NAME plugin_host_vst3_crash_poll COMMAND ${_vst3_drive} --scenario crash
@@ -226,7 +239,9 @@ if(VST3SDK_INCLUDE_DIR)
     plugin_host_vst3_refusals
     plugin_host_vst3_gain_mono plugin_host_vst3_gain_stereo plugin_host_vst3_gain_poll
     plugin_host_vst3_latency plugin_host_vst3_latency_poll plugin_host_vst3_latency_mixed
-    plugin_host_vst3_latency_change plugin_host_vst3_crash plugin_host_vst3_crash_poll)
+    plugin_host_vst3_latency_change plugin_host_vst3_latency_change_main_thread
+    plugin_host_vst3_params plugin_host_vst3_list_hang
+    plugin_host_vst3_crash plugin_host_vst3_crash_poll)
 endif()
 
 set_tests_properties(${_plugin_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)

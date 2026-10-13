@@ -8,6 +8,7 @@
 
 #include "sonora/plugin/protocol.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -70,8 +71,14 @@ public:
     // the chain's own buffer canaries see (VST3: a channel past the bus's
     // declared count). Checked by the chain after every run().
     virtual bool intact() const noexcept { return true; }
-    // The plugin's own latency, as last reported. Valid after run().
+    // The plugin's own latency, as last reported. Any thread; it can change
+    // under run() when control() re-reads it.
     virtual uint32_t latency() const noexcept = 0;
+    // The main thread: the one that created the plugin, while run() goes on
+    // on the processing thread. Not RT. Re-reads what the plugin announced
+    // from another thread (VST3: restartComponent(kLatencyChanged)), with
+    // the calls a format allows only there. Woken through notify_control().
+    virtual void control() {}
     // Validation passed. Not RT: a format may ask the plugin things here it
     // must not ask on the processing thread (VST3: the latency of a plugin
     // that only knows it once it has processed).
@@ -98,6 +105,12 @@ public:
                                                    const std::vector<float*>& out,
                                                    ChainError& error) = 0;
 };
+
+// A plugin announced something the main thread must act on (Processor::
+// control). Any thread, the processing one included: bumps control_word()
+// and wakes it, no lock, no allocation.
+void notify_control() noexcept;
+std::atomic<uint32_t>& control_word() noexcept;
 
 std::string json_escape(const std::string& s);
 std::string port_kind_name(PortKind k);

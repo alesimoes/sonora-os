@@ -291,8 +291,13 @@ public:
     tresult PLUGIN_API beginEdit(V::ParamID) override { return Steinberg::kResultOk; }
     tresult PLUGIN_API performEdit(V::ParamID, V::ParamValue) override { return Steinberg::kResultOk; }
     tresult PLUGIN_API endEdit(V::ParamID) override { return Steinberg::kResultOk; }
+    // Only flags and wakes: the re-read happens on the host's main thread
+    // (Processor::control), never here and never on the processing thread.
     tresult PLUGIN_API restartComponent(int32 flags) override {
-        if (flags & V::kLatencyChanged) latency_dirty_.store(true, std::memory_order_release);
+        if (flags & V::kLatencyChanged) {
+            latency_dirty_.store(true, std::memory_order_release);
+            notify_control();
+        }
         return Steinberg::kResultOk;
     }
 
@@ -401,7 +406,10 @@ private:
 
 class ParamChanges final : public V::IParameterChanges {
 public:
-    static constexpr int32 kMaxQueues = 128;
+    // As many distinct ParamIDs as the ring can deliver in one block (the
+    // host drains at most that many per block), so set() from the ring
+    // never runs out of room.
+    static constexpr int32 kMaxQueues = static_cast<int32>(plugin::kParamRingCapacity);
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
         if (iid_is(iid, Steinberg::FUnknown_iid) || iid_is(iid, V::IParameterChanges_iid)) {
             *obj = this;
@@ -714,6 +722,9 @@ public:
             }
             std::sort(writable_.begin(), writable_.end());
         }
+        // The default arrangement, for a describe-only start(); negotiate()
+        // replaces it with the one agreed.
+        read_arrangements(inst_[0]);
         return true;
     }
 
@@ -743,6 +754,11 @@ public:
 
     // Buffers, bus activation, setup, activation. `in` and `out` are null
     // for a describe-only open, which keeps the default arrangement.
+    //
+    // Channel pointers are laid out from the arrangement agreed in
+    // negotiate(), never from a fresh answer: a plugin that now says 8 on a
+    // 2-channel chain would have the host index past the chain's buffers.
+    // A fresh answer that differs is refused.
     bool start(const ChainConfig& config, const std::vector<float*>* in,
                const std::vector<float*>* out, ChainError& error) {
         max_frames_ = config.max_frames;
@@ -778,13 +794,23 @@ public:
                 auto& ptrs = dir == 0 ? i.in_ptrs : i.out_ptrs;
                 buses.assign(static_cast<std::size_t>(n), V::AudioBusBuffers{});
                 ptrs.assign(static_cast<std::size_t>(n), {});
+                const auto& agreed = dir == 0 ? i.in_arr : i.out_arr;
+                const std::vector<float*>* chain = dir == 0 ? in : out;
                 for (int32 b = 0; b < n; ++b) {
-                    V::SpeakerArrangement a = 0;
-                    i.processor->getBusArrangement(d, b, a);
+                    V::SpeakerArrangement now = 0;
+                    i.processor->getBusArrangement(d, b, now);
+                    const V::SpeakerArrangement a = agreed[static_cast<std::size_t>(b)];
                     const uint32_t ch = channels_of(a);
+                    const uint32_t want = !chain ? ch : replicas_ > 1 ? 1u : uint32_t(chain->size());
+                    if (now != a || (b == 0 && ch != want)) {
+                        error.reason = Refusal::ChannelMismatch;
+                        error.message = who_ + " agreed to " + std::to_string(ch) + " channel(s) on its " +
+                                        (dir == 0 ? "input" : "output") + " bus " + std::to_string(b) +
+                                        " and now answers " + std::to_string(channels_of(now));
+                        return false;
+                    }
                     auto& p = ptrs[static_cast<std::size_t>(b)];
                     for (uint32_t k = 0; k < ch; ++k) {
-                        const std::vector<float*>* chain = dir == 0 ? in : out;
                         if (b == 0 && chain) {
                             p.push_back((*chain)[replicas_ > 1 ? r : k]);
                         } else {
@@ -825,8 +851,8 @@ public:
             d.outputEvents = &out_events_;
             d.processContext = &ctx_;
         }
-        latency_ = inst_[0].processor->getLatencySamples();
-        info_.latency_frames = latency_;
+        latency_.store(inst_[0].processor->getLatencySamples(), std::memory_order_release);
+        info_.latency_frames = latency();
         return true;
     }
 
@@ -863,12 +889,17 @@ public:
         ctx_.projectTimeSamples += n;
         ctx_.continousTimeSamples += n;
         ctx_.projectTimeMusic = double(ctx_.projectTimeSamples) / rate_ * (ctx_.tempo / 60.0);
-        // restartComponent(kLatencyChanged) came in. The VST3 workflow wants
-        // a deactivate/activate around the read; here it is a plain read on
-        // the processing thread, so the engine sees the new value one block
-        // later rather than after a reload (brain/research/plugin-host-vst3.md).
+    }
+
+    // restartComponent(kLatencyChanged) came in, from whatever thread the
+    // plugin chose. getLatencySamples() is a main-thread call in VST3, so it
+    // is read here, on the thread that created the plugin, while process()
+    // keeps running on its own thread; the value reaches the engine through
+    // the next block's publish. The workflow's deactivate/reactivate around
+    // the read is not done (brain/research/plugin-host-vst3.md, Finding 4).
+    void control() override {
         if (latency_dirty_.exchange(false, std::memory_order_acq_rel))
-            latency_ = inst_[0].processor->getLatencySamples();
+            latency_.store(inst_[0].processor->getLatencySamples(), std::memory_order_release);
     }
 
     bool intact() const noexcept override {
@@ -881,15 +912,15 @@ public:
         return true;
     }
 
-    uint32_t latency() const noexcept override { return latency_; }
+    uint32_t latency() const noexcept override { return latency_.load(std::memory_order_acquire); }
 
     // Some plugins only know their latency once they have processed (LSP's
     // getLatencySamples() is 0 after setActive and 240 after one block), so
     // the value read at activation is not the one the engine plans with.
     void validated() override {
         latency_dirty_.store(false, std::memory_order_relaxed);
-        latency_ = inst_[0].processor->getLatencySamples();
-        info_.latency_frames = latency_;
+        latency_.store(inst_[0].processor->getLatencySamples(), std::memory_order_release);
+        info_.latency_frames = latency();
     }
 
     // --list: a few blocks of silence through the default arrangement, so
@@ -927,6 +958,8 @@ private:
         std::vector<V::AudioBusBuffers> in_bus, out_bus;
         // Per bus: the declared channels, then kSpareChannels trap pointers.
         std::vector<std::vector<float*>> in_ptrs, out_ptrs;
+        // Per bus: the arrangement read back after negotiation.
+        std::vector<V::SpeakerArrangement> in_arr, out_arr;
         V::ProcessData data{};
     };
 
@@ -1014,10 +1047,16 @@ private:
         ins[0] = want;
         outs[0] = want;
         i.processor->setBusArrangements(ins.data(), n_in_, outs.data(), n_out_);
-        V::SpeakerArrangement got_in = 0, got_out = 0;
-        i.processor->getBusArrangement(V::kInput, 0, got_in);
-        i.processor->getBusArrangement(V::kOutput, 0, got_out);
-        return got_in == want && got_out == want;
+        read_arrangements(i);
+        return i.in_arr[0] == want && i.out_arr[0] == want;
+    }
+
+    void read_arrangements(Instance& i) {
+        i.in_arr.assign(static_cast<std::size_t>(n_in_), 0);
+        i.out_arr.assign(static_cast<std::size_t>(n_out_), 0);
+        for (int32 b = 0; b < n_in_; ++b) i.processor->getBusArrangement(V::kInput, b, i.in_arr[std::size_t(b)]);
+        for (int32 b = 0; b < n_out_; ++b)
+            i.processor->getBusArrangement(V::kOutput, b, i.out_arr[std::size_t(b)]);
     }
 
     Vst3HostContext& context_;
@@ -1040,7 +1079,7 @@ private:
     std::vector<std::vector<float>> aux_in_, aux_out_;
     std::vector<float> trap_;
     std::vector<uint32_t> writable_;  // sorted ParamIDs the engine may set
-    uint32_t latency_ = 0;
+    std::atomic<uint32_t> latency_{0};  // written by the main thread, read by the processing one
 };
 
 }  // namespace
@@ -1071,26 +1110,29 @@ bool Vst3World::describe(const std::string& id, PluginInfo& out, ChainError& err
     return true;
 }
 
-bool Vst3World::describe_bundle(const std::string& bundle, std::vector<PluginInfo>& out,
-                                std::string& error) {
+bool Vst3World::describe_bundle(const std::string& bundle,
+                                const std::function<void(const PluginInfo&)>& each, std::string& error) {
     Vst3Module* m = load(bundle, error);
     if (!m) return false;
     for (const Vst3Module::Class& c : m->classes) {
         if (c.category != kVstAudioEffectClass) continue;
-        Vst3Processor p(*context_, *m, c);
-        ChainError err;
-        ChainConfig cfg;
-        if (p.open(err) && p.start(cfg, nullptr, nullptr, err)) {
-            p.settle(cfg.block_frames);
-            out.push_back(p.info());
-        } else {
-            PluginInfo info = p.info();
-            info.format = "vst3";
-            info.uri = c.id;
-            info.name = c.name;
-            info.missing_features.push_back(err.message);
-            out.push_back(std::move(info));
+        PluginInfo info;
+        {
+            Vst3Processor p(*context_, *m, c);
+            ChainError err;
+            ChainConfig cfg;
+            if (p.open(err) && p.start(cfg, nullptr, nullptr, err)) {
+                p.settle(cfg.block_frames);
+                info = p.info();
+            } else {
+                info = p.info();
+                info.format = "vst3";
+                info.uri = c.id;
+                info.name = c.name;
+                info.missing_features.push_back(err.message);
+            }
         }
+        each(info);
     }
     return true;
 }

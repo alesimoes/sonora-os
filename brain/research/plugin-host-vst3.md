@@ -31,14 +31,14 @@ descriptively that the host "loads VST3 plugins" and nothing more
 |---|---|---|---|---|
 | `vst3sdk-plugins` 3.7.10 | AGain VST3 (Steinberg sample) | `vst3:84E8DE5F92554F5396FAE4133C935A18` | 0 | BSD-3-clause (`public.sdk`, per `debian/copyright`) |
 | `lsp-plugins-vst3` 1.2.21 | LSP Limiter Mono | `vst3:6473702062316D20202020206A7A357A` | 240 at defaults | LGPL-3+ |
-| in tree, `plugins/host/tests/vst3` | crash, stereo-only, yes-man, liar | `vst3:534F4E4F5241565354335445535400{01..04}` | 0 | GPL-3.0-or-later (ours) |
+| in tree, `plugins/host/tests/vst3` | crash, stereo-only, yes-man, liar, turncoat, params, latency | `vst3:534F4E4F5241565354335445535400{01..07}` | 0 (latency: 0, then 64) | GPL-3.0-or-later (ours) |
 
 The task suggested Surge XT and Airwindows Consolidated. Neither is in
 Debian trixie main, and building them in the image costs minutes per CI run.
 Also packaged and unused: `dpf-plugins-vst3`, `zam-plugins`,
 `dragonfly-reverb-vst3`.
 
-## Results [measured, `tools/build-plugins.sh`: 64/64 ctest, 16 of them VST3]
+## Results [measured, `tools/build-plugins.sh`: 72/72 ctest, 19 of them VST3]
 
 - **Gain.** AGain's ParamID 0 is a linear factor, normalised 0..1. Set
   through the parameter ring to 1, 0.501 and 0.251, it measured +0.0000,
@@ -53,8 +53,11 @@ Also packaged and unused: `dpf-plugins-vst3`, `zam-plugins`,
   reported 64 + 240 + 0 + 128 = 432 and measured 432.
 - **Latency changing while running.** The LSP look-ahead was moved from
   normalised 0.738 to 0.5 in block 300. The report went from 368 to 195
-  frames with a new `latency_generation`, 13 blocks (35 ms) after the push.
-  The measured delay after it settled was 195, nulling exactly.
+  frames with a new `latency_generation`, 13 blocks (35 ms) after the push
+  when the processing thread read it; 10 to 12 blocks (27 to 32 ms) in five
+  runs once the main thread read it (Finding 4). The measured delay after it
+  settled was 195, nulling exactly. The in-tree latency plugin, which tells
+  the host 5 ms after its change, was reported 4 blocks after the push.
 - **Crash.** In a chain of AGain then the in-tree crash plugin, the host
   died of SIGSEGV 11 blocks after the trigger. The driver named chain
   index 1, and no callback overran the period, at depth 1 and depth 0.
@@ -63,6 +66,10 @@ Also packaged and unused: `dpf-plugins-vst3`, `zam-plugins`,
   - plugin that answers `kResultTrue` to mono but keeps stereo:
     `ChannelMismatch`;
   - plugin that declares 2 channels and writes 8: `WroteOutsideBuffers`;
+  - plugin that takes stereo and answers 8 channels once its bus is
+    activated: `ChannelMismatch`. It used to segfault the host, which laid
+    out channel pointers from the fresh answer and indexed past the
+    2-entry chain buffers;
   - unknown class id: `NotFound`, naming instance 1.
 - **Mono replication.** `--probe` of the LSP Limiter Mono on 2 channels
   gives 2 replicas and latency 240.
@@ -102,33 +109,52 @@ Also packaged and unused: `dpf-plugins-vst3`, `zam-plugins`,
    LSP's sync thread. PDC is wrong by the difference for that long. The
    contract's TODO(accept) on `latency_generation` re-planning covers the
    engine side. Nothing in the host can make the plugin report sooner.
-4. **The VST3 workflow wants deactivate, read, reactivate on
-   `kLatencyChanged`.** The host instead reads `getLatencySamples()` on the
-   processing thread, one block later. This is a known deviation. The
-   conforming path is the contract's restart: a new host, then Ready, then
-   a latency re-read.
+4. **`getLatencySamples()` is a main-thread call.** The serving host runs
+   process() on a thread of its own and keeps the thread that created the
+   plugins as their main thread. `restartComponent(kLatencyChanged)`, from
+   any thread, only sets a flag and wakes the main thread, which reads the
+   latency and stores it in an atomic. The processing thread publishes it
+   with the next block. An earlier version read it on the processing
+   thread, which VST3 does not allow; the in-tree latency plugin segfaults
+   if asked there (ctest `plugin_host_vst3_latency_change_main_thread`).
+   Still a deviation: the VST3 workflow wants deactivate, read, reactivate,
+   and the host reads without stopping. The conforming path is the
+   contract's restart: a new host, then Ready, then a latency re-read.
 5. **`setBusArrangements`' answer is not trusted.** The arrangement is read
    back with `getBusArrangement`, and a "yes" that kept stereo is refused.
+   Buffers are laid out from that read-back, never from a later answer, and
+   a later answer that differs is refused.
 6. **"Declares 2, writes 8" looks different in VST3.** The plugin indexes
    past the channel-pointer array rather than past a buffer. Each bus's
    array carries 8 extra pointers into a canary-filled trap. The trap is
    checked after every `process` (64 words) and refused like an LV2
    overrun.
-7. **Parameters are normalised.** `ParamChange::value` is a VST3 normalised
+7. **One block carries as many parameter changes as the ring holds.** The
+   host drains at most 256 ring entries per block into a change list of 256
+   ParamIDs; the rest wait in the ring. It once held 128 and dropped the
+   rest without a word. A change the plugin cannot take (unknown ParamID,
+   non-finite value) is counted in the header's `params_rejected`.
+8. **Parameters are normalised.** `ParamChange::value` is a VST3 normalised
    value but an LV2 port value. Recorded as a TODO(accept) in the contract:
    format-neutral values need a plain-to-normalised conversion, which is a
    controller call and must run off the processing thread.
-8. **Resolving a class loads only bundles that can have it.** A bundle
+9. **Resolving a class loads only bundles that can have it.** A bundle
    whose `moduleinfo.json` (VST 3.7.5+) names the class loads first. Bundles
    without a `moduleinfo.json` load next. A bundle whose `moduleinfo.json`
    does not name the class is never loaded. AGain's and LSP's bundles carry
-   one.
-9. **A scan runs plugin code, so each bundle is scanned in a child.** The
-   child has a 120 s limit; 20 s would have killed LSP's 19.9 s scan. A
-   segfaulting factory costs one entry (ctest
-   `plugin_host_vst3_list_crash_entry`, `..._after_crash`). The child's
-   stdout goes to stderr, so plugin chatter cannot corrupt the list (AGain
-   prints on every `setActive`).
+   one. A bundle without one is loaded into the serving host itself, so its
+   static constructors run there (BACKLOG Track 4).
+10. **A scan runs plugin code, so each bundle is scanned in a child.** The
+    child has a 120 s limit (`--scan-timeout`); 20 s would have killed LSP's
+    19.9 s scan. A segfaulting factory costs one entry (ctest
+    `plugin_host_vst3_list_crash_entry`, `..._after_crash`). The child's
+    stdout goes to stderr, so plugin chatter cannot corrupt the list (AGain
+    prints on every `setActive`). Each class is written and flushed as soon
+    as it is described, and the parent keeps whole lines only, so a class
+    that hangs costs itself and the rest of its bundle, and a kill in the
+    middle of a record leaves no fragment for the failure record to join.
+    The wait for the child's exit has the same deadline as its output (ctest
+    `plugin_host_vst3_list_hang`: a 30 KB record, then a hang).
 
 ## Open
 

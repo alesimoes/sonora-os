@@ -16,6 +16,7 @@
 
 #include "processor.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,9 +42,11 @@ public:
     std::vector<std::string> bundles() const;
 
     // Load one bundle in this process and describe each of its effect
-    // classes as instantiated at 48 kHz / 128, latency included. Runs plugin
-    // code: --list calls it through run_isolated, one bundle per child.
-    bool describe_bundle(const std::string& bundle, std::vector<PluginInfo>& out,
+    // classes as instantiated at 48 kHz / 128, latency included, handing
+    // each to `each` as soon as it is known, so a class that hangs or crashes
+    // later does not take the earlier ones with it. Runs plugin code: --list
+    // calls it through run_isolated, one bundle per child.
+    bool describe_bundle(const std::string& bundle, const std::function<void(const PluginInfo&)>& each,
                          std::string& error);
     // One class by id: what --probe needs to pick a channel count.
     bool describe(const std::string& id, PluginInfo& out, ChainError& error);

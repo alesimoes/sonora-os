@@ -215,7 +215,18 @@ uint32_t Chain::replicas(std::size_t i) const { return slots_[i]->replicas(); }
 
 const PluginInfo& Chain::info(std::size_t i) const { return slots_[i]->info(); }
 
+void Chain::control() {
+    for (auto& s : slots_) s->control();
+}
+
 // ---------------------------------------------------------------------------
+
+std::atomic<uint32_t>& control_word() noexcept {
+    static std::atomic<uint32_t> word{0};
+    return word;
+}
+
+void notify_control() noexcept { signal(control_word()); }
 
 std::string json_escape(const std::string& s) {
     std::string out;

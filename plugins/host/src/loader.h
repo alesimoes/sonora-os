@@ -28,7 +28,10 @@ const char* vst3_architecture();
 // runs plugin code (a VST3 module's static constructors, its factory), so it
 // runs where a crash or a hang costs one entry of the list, not the list.
 // The child's stdout goes to stderr: whatever a plugin prints there cannot
-// end up inside the list.
+// end up inside the list. `body` flushes `out` after each record (a line, or
+// a block of lines); `output` keeps only whole lines, so a child killed in
+// the middle of one leaves no fragment for the caller to append to. The
+// timeout covers the wait for the child's exit as well as its output.
 struct IsolatedResult {
     std::string output;
     bool exited = false;   // false: killed by a signal or by the timeout

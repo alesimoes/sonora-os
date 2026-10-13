@@ -13,7 +13,7 @@
 //   plugin_driver --host EXE --bundle DIR... --scenario NAME [options]
 //
 // Scenarios: gain, latency, latency_change, crash, deadline, nonfinite,
-// refusals (--format lv2|vst3), rtt.
+// refusals (--format lv2|vst3), rtt, params and list_json (VST3).
 // --mode pipelined (pipeline_depth 1, the default) or poll (depth 0,
 // poll-only). Neither waits on the host; rtt is a measurement and does.
 // Exit: 0 pass, 1 fail, 77 a required plugin is not installed (a failure in
@@ -65,6 +65,8 @@ const char* const kVst3Crash = "vst3:534F4E4F524156535433544553540001";
 const char* const kVst3StereoOnly = "vst3:534F4E4F524156535433544553540002";
 const char* const kVst3YesMan = "vst3:534F4E4F524156535433544553540003";
 const char* const kVst3Liar = "vst3:534F4E4F524156535433544553540004";
+const char* const kVst3Turncoat = "vst3:534F4E4F524156535433544553540005";
+const char* const kVst3Params = "vst3:534F4E4F524156535433544553540006";
 
 struct Args {
     std::string host, scenario, mode = "pipelined", format = "lv2";
@@ -665,6 +667,7 @@ int scenario_latency_change(const Args& a) {
         return true;
     });
     report_loop(st);
+    check(host.alive(), "the host is still running");
     const uint32_t L1 = reported.back();
     check(L0 != plugin::kLatencyInvalid && L1 != plugin::kLatencyInvalid, "both reported latencies are plausible");
     if (L0 == plugin::kLatencyInvalid || L1 == plugin::kLatencyInvalid) return 0;
@@ -870,6 +873,9 @@ int scenario_refusals(const Args& a) {
          plugin::Refusal::ChannelMismatch, 0},
         {"VST3 plugin that declares 2 channels and writes 8: refused", {kVst3Liar}, 2,
          plugin::Refusal::WroteOutsideBuffers, 0},
+        // Once read 8 channels for a 2-channel chain and indexed past it.
+        {"VST3 plugin that takes stereo, then answers 8 channels: refused", {kVst3Turncoat}, 2,
+         plugin::Refusal::ChannelMismatch, 0},
         {"unknown VST3 class: refused, and named", {kVst3Crash, "vst3:00000000000000000000000000000000"},
          1, plugin::Refusal::NotFound, 1},
     };
@@ -889,6 +895,156 @@ int scenario_refusals(const Args& a) {
         check(host.reaped() && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 3,
               "  ...and the host exited with code 3");
     }
+    return 0;
+}
+
+// As many distinct parameter changes in one block as the ring holds all reach
+// the plugin in that block, and one the host cannot apply is counted, not
+// lost silently. The params test plugin writes how many changes it saw into
+// sample 0 and their sum into sample 1.
+int scenario_params(const Args& a) {
+    const std::vector<std::string> chain = {kVst3Params};
+    std::printf("params: %s, %s\n", join(chain, ',').c_str(), a.mode.c_str());
+    Host host;
+    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
+    // One slot of the ring is left for the change the host must reject.
+    const uint32_t distinct = plugin::kParamRingCapacity - 1;
+    const float value = 0.25f;
+    const uint64_t total = 300, at = 100;
+    uint32_t pushed = 0;
+    int64_t seen_from = -1;
+    float seen_count = -1, seen_sum = -1;
+    Signal sig(1);
+    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
+        if (i == at) {
+            for (uint32_t id = 0; id < distinct; ++id)
+                pushed += plugin::push_param(*host.h, {0, id, value, 0}) ? 1 : 0;
+            pushed += plugin::push_param(*host.h, {0, 9999, value, 0}) ? 1 : 0;  // no such ParamID
+        }
+        sig.sine(i, 440.0, 0.1f);
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
+        if (from >= int64_t(at) && seen_from < 0 && sig.obuf[0][0] > 0.f) {
+            seen_from = from;
+            seen_count = sig.obuf[0][0];
+            seen_sum = sig.obuf[0][1];
+        }
+        return true;
+    });
+    report_loop(st);
+    std::printf("  pushed %u changes in callback %llu; the plugin saw %.0f distinct (sum %.2f) in the "
+                "block from callback %lld; host rejected %llu\n",
+                pushed, (unsigned long long)at, double(seen_count), double(seen_sum), (long long)seen_from,
+                (unsigned long long)host.h->params_rejected.load());
+    check(pushed == distinct + 1, "the ring took every change");
+    check(seen_count == float(distinct), "every distinct change reached the plugin in one block");
+    check(std::fabs(seen_sum - float(distinct) * value) < 1e-3f, "with the value pushed");
+    check(host.h->params_rejected.load() == 1, "the change for an unknown ParamID was counted as rejected");
+    return 0;
+}
+
+// --list --json is one JSON object per line, whatever a scan does: a bundle
+// whose scan hangs is killed and reported on a line of its own, and every
+// record written before that is whole.
+namespace json {
+bool value(const std::string& s, std::size_t& i, int depth);
+void ws(const std::string& s, std::size_t& i) {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+}
+bool string(const std::string& s, std::size_t& i) {
+    if (i >= s.size() || s[i] != '"') return false;
+    for (++i; i < s.size(); ++i) {
+        if (s[i] == '\\') {
+            ++i;
+            continue;
+        }
+        if (s[i] == '"') {
+            ++i;
+            return true;
+        }
+        if (static_cast<unsigned char>(s[i]) < 0x20) return false;
+    }
+    return false;
+}
+bool container(const std::string& s, std::size_t& i, int depth, char open, char close, bool keyed) {
+    if (i >= s.size() || s[i] != open || depth > 32) return false;
+    ++i;
+    ws(s, i);
+    if (i < s.size() && s[i] == close) return ++i, true;
+    for (;;) {
+        ws(s, i);
+        if (keyed) {
+            if (!string(s, i)) return false;
+            ws(s, i);
+            if (i >= s.size() || s[i++] != ':') return false;
+        }
+        if (!value(s, i, depth + 1)) return false;
+        ws(s, i);
+        if (i < s.size() && s[i] == ',') {
+            ++i;
+            continue;
+        }
+        return i < s.size() && s[i++] == close;
+    }
+}
+bool value(const std::string& s, std::size_t& i, int depth) {
+    ws(s, i);
+    if (i >= s.size()) return false;
+    const char c = s[i];
+    if (c == '{') return container(s, i, depth, '{', '}', true);
+    if (c == '[') return container(s, i, depth, '[', ']', false);
+    if (c == '"') return string(s, i);
+    for (const char* lit : {"true", "false", "null"})
+        if (s.compare(i, std::strlen(lit), lit) == 0) return i += std::strlen(lit), true;
+    const std::size_t from = i;
+    while (i < s.size() && std::strchr("+-0123456789.eE", s[i])) ++i;
+    return i > from;
+}
+bool object_line(const std::string& line) {
+    std::size_t i = 0;
+    if (line.empty() || line[0] != '{' || !value(line, i, 0)) return false;
+    ws(line, i);
+    return i == line.size();
+}
+}  // namespace json
+
+int scenario_list_json(const Args& a) {
+    // Under SONORA_TEST_VST3_HANG_ON_SCAN=1 the in-tree bundle hangs on its
+    // last class, after a params class whose record is longer than a pipe
+    // buffer.
+    std::string cmd = "'" + a.host + "' --list --json --format vst3 --scan-timeout 3";
+    for (const std::string& b : a.bundles)
+        if (b.size() > 5 && b.compare(b.size() - 5, 5, ".vst3") == 0) cmd += " --bundle '" + b + "'";
+    std::printf("list_json: %s\n", cmd.c_str());
+    std::FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return 1;
+    std::string all;
+    char buf[65536];
+    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;) all.append(buf, n);
+    const int status = pclose(p);
+    std::size_t lines = 0, bad = 0;
+    bool hung_entry = false, params_entry = false;
+    std::size_t start = 0;
+    while (start < all.size()) {
+        std::size_t end = all.find('\n', start);
+        if (end == std::string::npos) end = all.size();
+        const std::string line = all.substr(start, end - start);
+        start = end + 1;
+        ++lines;
+        if (!json::object_line(line)) {
+            ++bad;
+            std::printf("  not a JSON object: %.200s%s\n", line.c_str(), line.size() > 200 ? "..." : "");
+            continue;
+        }
+        if (line.find("\"bundle\":") != std::string::npos && line.find("sonora-test.vst3") != std::string::npos &&
+            line.find("the scan hung") != std::string::npos)
+            hung_entry = true;
+        if (line.find(std::string("\"uri\":\"") + kVst3Params + "\"") != std::string::npos) params_entry = true;
+    }
+    std::printf("  %zu line(s), %zu malformed, %zu bytes; exit status %d\n", lines, bad, all.size(), status);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "--list exited 0");
+    check(lines > 0 && bad == 0, "every line of --list --json is one whole JSON object");
+    check(hung_entry, "the hanging bundle has an entry saying the scan hung");
+    check(params_entry, "the classes described before the hang are listed");
     return 0;
 }
 
@@ -986,6 +1142,8 @@ int main(int argc, char** argv) {
     else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "rtt") r = scenario_rtt(a);
+    else if (a.scenario == "params") r = scenario_params(a);
+    else if (a.scenario == "list_json") r = scenario_list_json(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
 
     if (r != 0) return r;

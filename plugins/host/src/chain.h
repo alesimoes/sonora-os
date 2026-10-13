@@ -40,6 +40,10 @@ public:
     bool process(const float* const* in, float* const* out, uint32_t frames,
                  plugin::ChannelHeader* report, ChainError& error) noexcept;
 
+    // The main thread, concurrently with process(): Processor::control for
+    // every plugin.
+    void control();
+
     bool set_control(uint32_t instance, uint32_t id, float value) noexcept;
     bool set_control(uint32_t instance, const std::string& symbol, float value);
 

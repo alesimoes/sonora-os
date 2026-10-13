@@ -100,6 +100,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        hosting is done (this PR, `brain/research/plugin-host-vst3.md`);
        VST3 state (`getState`/`setState`), instruments (event input, no
        audio input) and `hostchecker.vst3` against the host remain.
+       - Legacy VST3 bundles without a `moduleinfo.json` (before VST 3.7.5)
+         are loaded into the serving host itself to find a class, so their
+         static constructors and factories run beside the chain's plugins
+         (`brain/research/plugin-host-vst3.md`, Finding 9). Isolate them:
+         resolve the class in a child, as `--list` does, and load only the
+         bundle that has it.
 6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the

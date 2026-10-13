@@ -59,8 +59,9 @@
 //
 //  - Every word the host can write is untrusted: completed_block,
 //    latency_frames, latency_generation, current_instance, refusal,
-//    refusal_instance, state, host_flags, heartbeat, param_read, the
-//    instance reports, the output planes' contents, and the fixed part.
+//    refusal_instance, state, host_flags, heartbeat, param_read,
+//    params_rejected, the instance reports, the output planes' contents,
+//    and the fixed part.
 //  - Such a word is bounds-checked before use (checked_instance,
 //    checked_latency, checked_state below) and is NEVER turned into a
 //    pointer, an offset or an index without that check.
@@ -106,7 +107,9 @@
 //    a. Read request_word, then submitted_block (acquire). If it is ahead of
 //       the last block processed, process it; else sleep on request_word
 //       with a timeout and bump heartbeat on every pass, idle or not.
-//    b. Drain the parameter ring, run the chain, write output planes.
+//    b. Drain the parameter ring (at most kParamRingCapacity entries; one it
+//       cannot apply is counted in params_rejected), run the chain, write
+//       output planes.
 //    c. completed_block.store(N, release); done_word.fetch_add(1, release);
 //       wake done_word. Only the control thread (waiting for Ready) and
 //       measurement harnesses sleep on done_word, never the audio thread.
@@ -234,6 +237,9 @@ struct ChannelHeader {
     std::atomic<int32_t> refusal_instance;     // which chain index, -1 if none
     std::atomic<uint32_t> host_flags;          // HostFlag bits
     std::atomic<uint64_t> worst_block_ns;      // host-side, whole chain
+    // Ring entries the host could not apply: no such instance or writable
+    // parameter, or a non-finite value. Counted, never silently dropped.
+    std::atomic<uint64_t> params_rejected;
 
     InstanceReport instances[kMaxInstances];
 };
