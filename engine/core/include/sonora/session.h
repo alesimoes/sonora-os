@@ -7,6 +7,7 @@
 
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
+#include "sonora/insert_chain_runner.h"
 #include "sonora/plan_exchange.h"
 #include "sonora/process_callback.h"
 #include "sonora/ringbuffer.h"
@@ -30,8 +31,12 @@ struct PlaybackConfig {
     uint32_t max_chunk_slots = 1u << 20;    // per plan
     // A larger block is mixed in pieces of this size.
     uint32_t max_block_frames = 1024;
-    // Per-edge delay (PDC, Phase 4). 0 allocates no delay line.
-    uint32_t max_delay_frames = 0;
+    // Plugin delay compensation (ADR-0012 §7.3): the most one edge is
+    // delayed, and the most edges one plan delays (auditor L3). 0 frames
+    // allocates no delay line. The pool is never larger than the most edges
+    // a plan of this graph can delay, one per track into the bus.
+    uint32_t max_delay_frames = 16384;
+    uint32_t max_delayed_edges = 128;
     uint32_t command_capacity = 64;
     // The pan law of the plan the session starts with, before engine/control
     // publishes one: session-format.md's default. A different law in the
@@ -149,6 +154,15 @@ public:
     PlanExchange& plans() { return *plans_; }
     DiskReader& reader() { return *reader_; }
     int64_t window_frames() const { return window_frames_; }
+    // The delay-line pool the builder assigns from, and the longest delay
+    // one line holds.
+    uint32_t delay_lines() const { return delay_lines_; }
+    uint32_t max_delay_frames() const { return delay_len_ ? delay_len_ - 1 : 0; }
+
+    // What InsertChain nodes run; null passes every chain through. Not
+    // owned. Set before the backend is activated, or after it is
+    // deactivated: the audio thread reads it unsynchronised.
+    void set_insert_chains(InsertChainRunner* runner) { chains_ = runner; }
 
 private:
     void mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
@@ -157,6 +171,17 @@ private:
                       uint32_t n, float* const out[2]) noexcept SONORA_RT;
     void render_segment(const PlaybackPlan& plan, const PlanSegment& seg, uint64_t from,
                         uint32_t n, float* const out[2]) noexcept SONORA_RT;
+    // Steps 1-2 of the monitor-bus plan into `out`; true when it is stereo.
+    bool render_source(const PlaybackPlan& plan, const PlanNode& node,
+                       const backend::AudioBlock& block, uint32_t offset, uint32_t n,
+                       bool rolling, bool recording, uint64_t from,
+                       float* const out[2]) noexcept SONORA_RT;
+    // Step 3: the track's ramped gain and pan, from `in` into stereo `out`.
+    void apply_fader(uint32_t engine_track, bool stereo, const float* const in[2],
+                     float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // Adds `in` to `out`, `edge.delay_frames` late through its line.
+    void sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
+                  float* const out[2], uint32_t n) noexcept SONORA_RT;
     float* scratch(uint32_t buffer, uint32_t side) noexcept SONORA_RT {
         return scratch_.get() + (static_cast<std::size_t>(buffer) * 2 + side) * max_block_;
     }
@@ -175,11 +200,20 @@ private:
 
     // Audio-thread state, sized here and never resized.
     uint32_t max_block_ = 0;
-    std::unique_ptr<float[]> scratch_;       // (nodes) x 2 x max_block
+    uint32_t scratch_buffers_ = 0;           // the most nodes a plan has
+    std::unique_ptr<float[]> scratch_;       // scratch_buffers x 2 x max_block
     std::unique_ptr<float[]> track_buf_;     // 2 x max_block
-    std::unique_ptr<float[]> delay_;         // edges x 2 x (max_delay + 1)
-    std::unique_ptr<uint32_t[]> delay_pos_;  // per delay line
+    // The delay-line pool: channel state outside the plan, so a swap keeps
+    // it. Each line remembers the edge it serves and how many frames of it
+    // it holds, so a line handed to another edge restarts from silence
+    // without being cleared on the audio thread.
+    uint32_t delay_lines_ = 0;
     uint32_t delay_len_ = 0;
+    std::unique_ptr<float[]> delay_;         // lines x 2 x (max_delay + 1)
+    std::unique_ptr<uint32_t[]> delay_pos_;
+    std::unique_ptr<uint64_t[]> line_owner_; // edge_pair(); 0 is none
+    std::unique_ptr<uint32_t[]> line_filled_;
+    InsertChainRunner* chains_ = nullptr;
     std::unique_ptr<uint32_t[]> cursor_;     // per plan track
     // The frame each plan track's cursor is good for: the end of what it
     // last rendered. A track that sent its input, or nothing, has not

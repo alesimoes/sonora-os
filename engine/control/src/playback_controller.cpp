@@ -39,6 +39,9 @@ PlaybackController::PlaybackController(Session& session, std::string session_dir
     limits_.chunk_frames = pb.chunk_frames;
     limits_.window_frames = session.window_frames();
     limits_.pool_chunks = session.reader().pool_chunks();
+    limits_.max_delay_frames = session.max_delay_frames();
+    limits_.delay_lines = session.delay_lines();
+    pool_ = DelayLinePool(session.delay_lines());
 }
 
 PlaybackController::~PlaybackController() {
@@ -112,7 +115,8 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
     const SourceSlot slot = [this](const model::Source& s, uint32_t& out, std::string& e) {
         return registered(s, out, e);
     };
-    if (!build_plan(snapshot, limits_, slot, session_.plans().next_epoch(), plan, report, error)) {
+    if (!build_plan(snapshot, limits_, slot, resolver_, pool_, session_.plans().next_epoch(), plan,
+                    report, error)) {
         return false;
     }
     // The slots are laid out in the builder's chunk size and read in the
@@ -205,6 +209,7 @@ void PlaybackController::pump() {
             PlaybackPlan* const old = plans.current();
             plans.publish(pending_);
             pending_ = nullptr;
+            playing_report_ = report_;
             ++published_;
             const uint64_t gen = serve();
             if (old) retired_.push_back({old, gen});

@@ -282,6 +282,14 @@ void EngineControlServer::pump_playback() {
     // pass runs here, off the audio thread, as settle() does.
     if (!session_.reader().running()) session_.reader().run_pass();
     playback_->pump();
+    if (playback_->plans_published() != compensation_shown_for_) {
+        compensation_shown_for_ = playback_->plans_published();
+        const PlanReport& r = playback_->playing_report();
+        publisher_->set_compensation(r.compensation_frames, r.compensation_shortfall_frames);
+        for (std::size_t t = 0; t < r.track_latency.size(); ++t) {
+            publisher_->set_track_latency(static_cast<uint32_t>(t), r.track_latency[t]);
+        }
+    }
     // A take asked for behind the gate starts inside pump().
     publisher_->set_take(take_);
     follow_transport();

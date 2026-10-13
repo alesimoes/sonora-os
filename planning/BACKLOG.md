@@ -129,7 +129,9 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [x] A2.2: the caller charges `value_copy_bytes` against
              `kValueCopyBudgetBytes` per callback (first submits wait,
              held-change resyncs submit without the copy and stay set).
-       - [x] A2.5: the plan node carries the store's index, not a pointer.
+       - [x] A2.5: the plan node carries the store's index, not a pointer
+             (`PlanNode::param_store`, filled through the builder's
+             ChainResolver; PDC PR, ADR-0012 checklist 3).
        - [x] A3: the reachability test (nm); the RTSan test is written, its job is the item above (no `common/platform` symbol but
              `wake_all` reachable from `Session::process`) and the RTSan
              test for `wake_all` (Unverified 10) land BEFORE the first
@@ -151,6 +153,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
          bring an insert into the chain (rt-engineer review of #46, low 4).
        - Key an instance on (insert id, channel layout) in the plan builder.
+       - Implement `InsertChainRunner` (engine/core, PDC PR) over
+         HostChannel. Session calls `run()` once per mix piece of at most
+         `max_block_frames`, not once per callback; the depth-1 protocol
+         submits once per block, so either refuse a period above
+         `max_block_frames` with plugins on or carry the collect/submit
+         across pieces. The tick after `last_insert_node` (§7.2 step 3)
+         needs a hook in Session::mix(); the plan already records the index.
        - Wire Qt File > Save to send `FlushPluginState` and wait for its
          reply before serialising (ADR-0012 §8), once a host can hold state.
          Done in the UI insert-slots PR (ADR-0012 checklist 6); Alt-drag
@@ -460,6 +469,12 @@ Order and owners are in ADR-0008 §5.
       queued behind an edit, transport.stop included, waits that long. Move
       the builder to a worker owned by engine/control, as ADR-0009 §4
       allows, before sessions that size are edited. rt-engineer.
+      Left out of the PDC PR (ADR-0012 checklist 3) to keep it reviewable:
+      `show()` reports a refused plan synchronously today, and the worker
+      changes that contract. The worker takes the PlaybackController's
+      DelayLinePool and ChainResolver with it (both control-thread state,
+      read only by the builder), and one build at a time keeps the pool's
+      per-build bookkeeping sound.
 - [ ] The stop reply waits on the closed take's plan rebuild:
       `follow_transport()` runs before `reply()` in
       `EngineControlServer::handle()`, so Space's Ok comes after every

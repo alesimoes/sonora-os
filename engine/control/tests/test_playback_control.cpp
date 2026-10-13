@@ -800,6 +800,137 @@ int test_huge_gain_is_no_nan() {
     return 0;
 }
 
+AddInsert insert_op(Id track, Id insert, std::uint8_t slot) {
+    AddInsert op;
+    op.track = track;
+    op.insert = insert;
+    op.slot = slot;
+    op.plugin = PluginRef{PluginFormat::Lv2, "http://gareus.org/oss/lv2/dpl#mono",
+                          "x42-dpl Digital Peak Limiter Mono", "0.9.2"};
+    return op;
+}
+
+// Tracks A and B have active inserts, C an inactive one. The builder makes
+// A and B TrackSource -> InsertChain -> TrackFader, keeps C a TrackOut,
+// carries what the resolver bound (slot, generation, store index by A2.5,
+// latency) in the chain node, and delays every edge into the bus so all
+// three arrive on the slowest: 2048 frames.
+int test_build_with_chains() {
+    auto session = make_session(3);
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, track_op(102, 103, "B"));
+    CHECK_APPLY(h, track_op(104, 105, "C"));
+    CHECK_APPLY(h, insert_op(100, 500, 0));
+    CHECK_APPLY(h, insert_op(100, 501, 3));
+    CHECK_APPLY(h, insert_op(102, 502, 1));
+    CHECK_APPLY(h, insert_op(104, 503, 0));
+    CHECK_APPLY(h, (SetInsertActive{503, false}));
+
+    sonora::BuildLimits limits;
+    limits.engine_tracks = 3;
+    limits.max_segments = 64;
+    limits.max_chunk_slots = 1024;
+    limits.chunk_frames = kChunk;
+    limits.window_frames = 1024;
+    limits.pool_chunks = 128;
+    limits.max_delay_frames = 16384;
+    limits.delay_lines = 3;
+    const sonora::ChainResolver resolve = [](const TrackEdit& t, uint32_t engine_track,
+                                             sonora::ChainBinding& b) {
+        b.channel_slot = 10 + engine_track;
+        b.channel_generation = 3;
+        b.param_store = 20 + engine_track;
+        b.latency_frames = t.id == 100 ? 2048 : 100;
+    };
+    sonora::DelayLinePool pool(limits.delay_lines);
+    const sonora::SourceSlot no_sources = [](const Source&, uint32_t&, std::string& e) {
+        e = "no source expected";
+        return false;
+    };
+    PlaybackPlan* plan = nullptr;
+    sonora::PlanReport report;
+    std::string error;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, pool, 1, plan, report,
+                             error));
+    const PlaybackPlan& p = *plan;
+    CHECK(p.node_count == 9);
+    CHECK(p.nodes[0].kind == sonora::NodeKind::TrackSource);
+    const sonora::PlanNode& a = p.nodes[1];
+    CHECK(a.kind == sonora::NodeKind::InsertChain);
+    CHECK(a.chain_id == 100 && a.channel_slot == 10 && a.channel_generation == 3);
+    CHECK(a.param_store == 20 && a.latency_frames == 2048 && a.channels == 1);
+    CHECK(p.nodes[2].kind == sonora::NodeKind::TrackFader);
+    CHECK(p.nodes[4].kind == sonora::NodeKind::InsertChain && p.nodes[4].chain_id == 102);
+    CHECK(p.nodes[6].kind == sonora::NodeKind::TrackOut);   // C: inactive insert
+    CHECK(p.last_insert_node == 4);
+    const sonora::PlanNode& bus = p.nodes[7];
+    CHECK(bus.kind == sonora::NodeKind::BusSum && bus.input_edge_count == 3);
+    CHECK(p.edges[bus.first_input_edge].delay_frames == 0);
+    CHECK(p.edges[bus.first_input_edge + 1].delay_frames == 1948);
+    CHECK(p.edges[bus.first_input_edge + 2].delay_frames == 2048);
+    CHECK(p.compensation_frames == 2048 && p.compensation_shortfall_frames == 0);
+    CHECK(report.compensation_frames == 2048);
+    CHECK(report.track_latency == (std::vector<uint32_t>{2048, 100, 0}));
+    sonora::destroy_plan(plan);
+
+    // Over a 1000-frame maximum: built anyway, clamped, and the shortfall
+    // reported against the tracks it leaves early.
+    limits.max_delay_frames = 1000;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, pool, 2, plan, report,
+                             error));
+    CHECK(report.clamped_edges == 2);
+    CHECK(report.compensation_shortfall_frames == 1048);
+    CHECK(report.track_shortfall == (std::vector<uint32_t>{0, 948, 1048}));
+    CHECK(plan->edges[plan->nodes[7].first_input_edge + 2].delay_frames == 1000);
+    sonora::destroy_plan(plan);
+
+    // No resolver: every chain passes through, and nothing is delayed.
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, 3, plan, report, error));
+    CHECK(plan->node_count == 9 && plan->nodes[1].channel_slot == sonora::kNoChannelSlot);
+    CHECK(plan->compensation_frames == 0);
+    for (uint32_t e = 0; e < plan->edge_count; ++e) CHECK(plan->edges[e].delay_frames == 0);
+    sonora::destroy_plan(plan);
+    return 0;
+}
+
+// A host reports a new latency: the controller builds a new plan with it,
+// which plays once published, keeping the dry track's delay line; the
+// playing report, which the state block shows, follows the swap and not
+// the build.
+int test_latency_change_is_a_new_plan() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, track_op(102, 103, "B"));
+    CHECK_APPLY(h, insert_op(100, 500, 0));
+    PlaybackController ctl(s, kDir);
+    uint32_t latency = 256;
+    ctl.set_chain_resolver([&latency](const TrackEdit&, uint32_t, sonora::ChainBinding& b) {
+        b.latency_frames = latency;
+    });
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    CHECK(ctl.playing_report().compensation_frames == 256);
+    const PlaybackPlan* first = s.plans().current();
+    const uint32_t line = first->edges[first->nodes[4].first_input_edge + 1].delay_line;
+    CHECK(line != sonora::kNoDelayLine);
+
+    latency = 512;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.last_report().compensation_frames == 512);
+    CHECK(ctl.settle(2.0));
+    CHECK(ctl.playing_report().compensation_frames == 512);
+    CHECK(ctl.playing_report().track_latency[0] == 512);
+    const PlaybackPlan* second = s.plans().current();
+    CHECK(ctl.plans_published() == 2);
+    const sonora::PlanEdge& dry = second->edges[second->nodes[4].first_input_edge + 1];
+    CHECK(dry.delay_frames == 512 && dry.delay_line == line);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -821,6 +952,8 @@ int main() {
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;
     if (test_huge_gain_is_no_nan()) return 1;
+    if (test_build_with_chains()) return 1;
+    if (test_latency_change_is_a_new_plan()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;
