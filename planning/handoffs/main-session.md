@@ -4,33 +4,38 @@ The coordinating session's handoff: what is in flight across branches. It
 lives as long as the project does; overwrite it at every stopping point.
 Each branch keeps its own detail in its own handoff file.
 
-- **State:** 2026-10-12, written to be true once the harness PR (#7) has
-  merged. `main` before it was `1031fa1`.
+- **State:** 2026-10-12, written to be true once the ADR-0008 PR has merged.
 
 ## Verify
-    git log --oneline -8 origin/main   # expected: the harness squash on top of 1031fa1
-    git branch --list                  # expected: the in-flight branches below (local; pushed only at PR time)
+    git log --oneline -6 origin/main   # expected: ADR-0008 squash on top of e4f309a (#8)
+    tools/progress.sh --summary        # expected: one "Progress: N% overall" line
 
 ## Recently landed
-- #2–#6, up to `1031fa1`: key maps and take safety; ADR-0007 with its
-  measurements and M1 notes; M1 module layout; `tools/write-usb.sh`.
-- #7: handoffs, `handoff` and `test-loop` skills, SessionStart hook
-  (`.claude/settings.json` → `tools/session-start.sh`). Not yet seen firing
-  in a fresh `claude` session; the first one should start with the data line.
+- #2–#6: key maps and take safety; ADR-0007 + measurements + M1 notes; M1
+  module layout; `tools/write-usb.sh`.
+- #7: handoffs, `handoff`/`test-loop` skills, SessionStart hook.
+- #8: progress catalogue, `tools/progress.sh`, `planning/PROGRESS.md`.
+- ADR-0008: portability — platform code at the edges; ASIO is the future
+  Windows backend; Linux appliance first (owner, 2026-10-12).
 
 ## In flight
-- `contract/backend` — ADR-0007 M2, `rt-engineer`. Reviewed: RT gate passed;
-  the driver co-owner asked for contract changes, being applied.
-- `feature/qt-shell` — `ui-engineer`, Qt 6 shell and meters. Not yet reviewed.
-- `feature/usb-and-quantum-followups` — `distro-engineer`: pin the PipeWire
-  quantum to 128; `write-usb.sh` follow-ups.
+- `contract/backend` — ADR-0007 M2, `rt-engineer`: device-selection policy
+  (prefer USB, ignore onboard unless named) and final review fixes, then PR.
+- `feature/qt-shell` — `ui-engineer`: non-US keyboard fix, then PR.
+- `feature/usb-and-quantum-followups` — `distro-engineer`: pin quantum 128;
+  `write-usb.sh` follow-ups.
+- `docs/phase2-session-timeline` — `architect`: session format + timeline spec.
+- `docs/adr-compositor` — `architect`: kiosk compositor ADR (Proposed).
+- `test/bwf-interop` — `researcher`: WAVs open in other tools at the right
+  timecode.
+
+## Decided by the owner (2026-10-12)
+- Phase 2 playback starts with a fixed 2-channel monitor bus.
+- Portability rule (ADR-0008); Windows via ASIO later, not now.
 
 ## Waiting on the owner
-- Phase 2 playback: 2-track monitor bus first, or the full mixer
-  (`planning/STATUS.md`).
-- `CLAUDE.md` layout table still shows the pre-M1 layout: the owner's edit,
-  per ADR-0007 M6.
+- `CLAUDE.md` layout table still pre-M1 (owner's edit, ADR-0007 M6).
+- First boot on real hardware with the UMC1820 (only the owner can do it).
 
 ## Next
-- M2 PR → M3 fake backend → M4 control API (the UI hooks onto it).
-- Fresh agent per task and per review round, each starting from a handoff.
+- M2 merge → M3 fake backend + ADR-0008 P1–P3 → playback (Phase 2) → M4.
