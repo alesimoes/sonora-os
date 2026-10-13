@@ -1,12 +1,16 @@
 #!/bin/sh
 # Runs a command against a private Xvfb, then stops it.
 #
-# Not xvfb-run: its readiness handshake is a SIGUSR1 from Xvfb, caught by a
-# trap and a `wait` in the script, and that races. In CI the test started
-# before the server listened ("could not connect to display :99"), and as
-# PID 1 of a container xvfb-run waited forever for a signal already handled.
-# -displayfd is the server's own answer: it writes the display number once
-# it accepts connections, and picks a free one.
+# -noreset: an X server regenerates when its last client disconnects, and a
+# client connecting during that is refused. In CI's fresh containers the
+# render test failed about half its runs with "could not connect to display"
+# while Xvfb was up and logged nothing; with -noreset it passed 6 of 6, the
+# same build in the same job. Something connects and leaves before Qt does;
+# with nothing to regenerate, it no longer matters what.
+#
+# Not xvfb-run: as PID 1 of a container it waited forever in its SIGUSR1
+# readiness handshake. -displayfd is the server's own: it writes the display
+# number once it accepts connections, and picks a free one.
 #
 #   with-xvfb.sh WIDTHxHEIGHTxDEPTH command [args...]
 set -u
@@ -15,7 +19,7 @@ screen="$1"
 shift
 
 dir="$(mktemp -d)"
-Xvfb -displayfd 3 -screen 0 "$screen" -nolisten tcp 3>"$dir/display" 2>"$dir/xvfb.log" &
+Xvfb -displayfd 3 -screen 0 "$screen" -nolisten tcp -noreset 3>"$dir/display" 2>"$dir/xvfb.log" &
 xvfb=$!
 trap 'kill "$xvfb" 2>/dev/null; wait "$xvfb" 2>/dev/null; rm -rf "$dir"' EXIT
 
