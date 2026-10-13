@@ -23,6 +23,7 @@ change gets from an idea to a commit.
 | `driver-engineer` | Hardware: USB interfaces, ALSA, control surfaces, clock and sync | The system has to talk to a physical device |
 | `ui-engineer` | The operator-facing interface, `keymaps/`, the workflow layer | Anything the engineer in the room sees or touches |
 | `plugin-engineer` | LV2 and VST3 hosting, AAF and `.ptx` interchange | Loading third-party code, or reading another DAW's files |
+| `dsp-engineer` | `common/dsp`, `plugins/native/*`, `plugins/analyze`, the measurement harness (ADR-0011) | Our own processors, analysis passes and the mix assistant's planner |
 | `researcher` | `brain/research/`, `brain/specs/` | A task depends on a fact nobody has established |
 | `code-reviewer` | The review gate | Every diff, before commit |
 | `rt-safety-auditor` | The audio thread call graph | Callback graph changed, or xruns appeared |
