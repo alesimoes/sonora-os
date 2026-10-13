@@ -22,12 +22,12 @@ const ParamInfo kParams[kParamCount] = {
     kBypassParam,
     {"sync", "Tempo sync", Unit::Toggle, Taper::Stepped, 0.0f, 1.0f, 1.0f, 0.0f, true, false, false, "%.0f", kOffOn, 2},
     // Times are not ramped: a change crossfades taps (see delay.h).
-    {"time_l", "Time left", Unit::Milliseconds, Taper::Log, 1.0f, 4000.0f, 375.0f, 0.0f, true, false, false, "%.1f ms", nullptr, 0},
+    {"time_l", "Time left", Unit::Milliseconds, Taper::Log, 1.0f, static_cast<float>(kMaxTimeSeconds * 1e3), 375.0f, 0.0f, true, false, false, "%.1f ms", nullptr, 0},
     {"note_l", "Note left", Unit::Choice, Taper::Stepped, 0.0f, 17.0f, 11.0f, 0.0f, true, false, false, "%.0f", kNotes, kNoteCount},
     {"link", "Link right to left", Unit::Toggle, Taper::Stepped, 0.0f, 1.0f, 0.0f, 0.0f, true, false, false, "%.0f", kOffOn, 2},
-    {"time_r", "Time right", Unit::Milliseconds, Taper::Log, 1.0f, 4000.0f, 500.0f, 0.0f, true, false, false, "%.1f ms", nullptr, 0},
+    {"time_r", "Time right", Unit::Milliseconds, Taper::Log, 1.0f, static_cast<float>(kMaxTimeSeconds * 1e3), 500.0f, 0.0f, true, false, false, "%.1f ms", nullptr, 0},
     {"note_r", "Note right", Unit::Choice, Taper::Stepped, 0.0f, 17.0f, 10.0f, 0.0f, true, false, false, "%.0f", kNotes, kNoteCount},
-    {"tempo", "Tempo (without host tempo)", Unit::Bpm, Taper::Linear, 20.0f, 300.0f, 120.0f, 0.0f, true, false, false, "%.1f BPM", nullptr, 0},
+    {"tempo", "Tempo (without host tempo)", Unit::Bpm, Taper::Linear, static_cast<float>(kMinTempoBpm), 300.0f, 120.0f, 0.0f, true, false, false, "%.1f BPM", nullptr, 0},
     {"feedback", "Feedback", Unit::Percent, Taper::Linear, 0.0f, 95.0f, 35.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
     {"pingpong", "Ping-pong", Unit::Toggle, Taper::Stepped, 0.0f, 1.0f, 0.0f, 0.0f, false, false, true, "%.0f", kOffOn, 2},
     {"hpf", "Feedback high-pass", Unit::Hertz, Taper::Log, 20.0f, 2000.0f, 20.0f, 20.0f, true, false, false, "%.0f Hz", nullptr, 0},
@@ -137,13 +137,19 @@ protected:
 
 private:
     // The wanted delay of channel c in whole samples.
-    std::uint32_t target(int c) const noexcept {
+    std::uint32_t target(int c) noexcept {
         const bool right = c == 1 && value(kLink) < 0.5f;
         double sec;
         if (value(kSync) >= 0.5f) {
-            const double bpm = transport().tempo_valid && transport().tempo_bpm > 0.0
-                                   ? transport().tempo_bpm
-                                   : static_cast<double>(value(kTempo));
+            double bpm = transport().tempo_valid && transport().tempo_bpm > 0.0
+                             ? transport().tempo_bpm
+                             : static_cast<double>(value(kTempo));
+            // Below the floor the longest notes would not fit the line
+            // (delay.h). Bounded, and reported for this block.
+            if (bpm < kMinTempoBpm) {
+                bpm = kMinTempoBpm;
+                note_bounded();
+            }
             const auto idx = static_cast<std::uint32_t>(value(right ? kNoteR : kNoteL));
             sec = kNoteBeats[idx < kNoteCount ? idx : kNoteCount - 1] * 60.0 / bpm;
         } else {
@@ -151,7 +157,11 @@ private:
         }
         double n = std::round(sec * sample_rate());
         if (n < 1.0) n = 1.0;
-        if (n > max_ - 1) n = max_ - 1;
+        // Unreachable within the parameters' ranges; reported if it ever is.
+        if (n > max_ - 1) {
+            n = max_ - 1;
+            note_bounded();
+        }
         return static_cast<std::uint32_t>(n);
     }
 

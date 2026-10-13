@@ -64,7 +64,17 @@ constexpr double kNoteBeats[] = {
     4.0,       // 1/1
 };
 constexpr std::uint32_t kNoteCount = sizeof(kNoteBeats) / sizeof(kNoteBeats[0]);
-constexpr double kMaxSeconds = 4.0;
+// The tempo parameter's floor, and the floor a host tempo is bounded at.
+constexpr double kMinTempoBpm = 20.0;
+constexpr double kMaxTimeSeconds = 4.0;  // the time parameters' top
+// The line holds the longest note at the slowest tempo (1/1 at 20 BPM,
+// 12 s), so no setting the parameters allow is ever cut short. A host
+// tempo below the floor is bounded at it and reported, never clamped
+// silently (ProcessorBase::bounded_blocks()). At 96 kHz that is 1.15 M
+// samples a channel, rounded up to 2^21 floats (8 MiB) by the line.
+constexpr double kMaxSeconds = kNoteBeats[kNoteCount - 1] * 60.0 / kMinTempoBpm > kMaxTimeSeconds
+                                   ? kNoteBeats[kNoteCount - 1] * 60.0 / kMinTempoBpm
+                                   : kMaxTimeSeconds;
 }  // namespace delay
 
 }  // namespace sonora::native

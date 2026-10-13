@@ -10,7 +10,7 @@
 #include "sonora/dsp/math.h"
 #include "sonora/measure/measure.h"
 #include "sonora/native/delay.h"
-#include "sonora/native/param.h"
+#include "sonora/native/processor_base.h"
 
 namespace sonora::native::suites {
 
@@ -44,6 +44,10 @@ void exact_times(Suite& s) {
         {"1/8 triplet at 120 BPM", {{"note_l", 6.0f}}, 0.5 / 3.0, 0.0},
         {"1/16 at 96 BPM", {{"note_l", 5.0f}, {"tempo", 96.0f}}, 0.25 * 60.0 / 96.0, 0.0},
         {"1/4 at host tempo 100 BPM (parameter says 120)", {{"note_l", 11.0f}}, 0.6, 100.0},
+        // The longest note at the slowest tempo the parameter allows: the
+        // line is sized for it, not for the 4 s of the time parameter.
+        {"1/1 at 20 BPM (the longest)", {{"note_l", 17.0f}, {"tempo", 20.0f}}, 12.0, 0.0},
+        {"1/2 dotted at host tempo 20 BPM", {{"note_l", 16.0f}}, 9.0, 20.0},
     };
     for (const Case& c : cases) {
         for (double fs : measure::kRates) {
@@ -65,6 +69,39 @@ void exact_times(Suite& s) {
                     static_cast<double>(got - want), 0.0, got == want, "samples", "expected " + std::to_string(want));
         }
     }
+}
+
+// A host tempo below the range the line is sized for (20 BPM) cannot be
+// followed. It is bounded at 20 BPM, never silently: every block that does
+// so is counted where the host and the editor can read it.
+void host_tempo_out_of_range(Suite& s) {
+    const double fs = 48000.0;
+    auto p = s.make();
+    measure::apply(*p, {{"mix", 100.0f}, {"feedback", 0.0f}, {"link", 1.0f}, {"note_l", 17.0f}});
+    p->prepare(fs, 128, 2);
+    Chans x = measure::silence(fs, 12.2);
+    x[0][100] = x[1][100] = 1.0f;
+    measure::RenderOptions opt;
+    opt.transport.tempo_bpm = 10.0;
+    opt.transport.tempo_valid = true;
+    const Chans y = measure::render(*p, x, {}, opt);
+    const long want = std::lround(12.0 * fs);
+    const long got = first_nonzero(y[0], 0) - 100;
+    s.check("host tempo 10 BPM, 1/1: echo bounded at 20 BPM (12 s), error", static_cast<double>(got - want), 0.0,
+            got == want, "samples", "expected " + std::to_string(want));
+    const auto* base = dynamic_cast<const ProcessorBase*>(p.get());
+    const double counted = base != nullptr ? static_cast<double>(base->bounded_blocks()) : 0.0;
+    const double blocks = static_cast<double>((x[0].size() + 127) / 128);
+    s.check("host tempo 10 BPM: every block reports the bound", counted, blocks, counted == blocks, "blocks");
+    // In range, nothing is reported.
+    auto q = s.make();
+    measure::apply(*q, {{"note_l", 17.0f}});
+    q->prepare(fs, 128, 2);
+    opt.transport.tempo_bpm = 20.0;
+    measure::render(*q, measure::silence(fs, 0.5), {}, opt);
+    const auto* qb = dynamic_cast<const ProcessorBase*>(q.get());
+    const double none = qb != nullptr ? static_cast<double>(qb->bounded_blocks()) : -1.0;
+    s.check("host tempo 20 BPM: nothing reported", none, 0.0, none == 0.0, "blocks");
 }
 
 void feedback_and_pingpong(Suite& s) {
@@ -129,38 +166,18 @@ void feedback_and_pingpong(Suite& s) {
     }
 }
 
-// Tempo and note changes with sync on, swept as automation: each change of
-// time is a crossfade, never a click.
-void synced_sweeps(Suite& s) {
-    const double fs = 48000.0;
-    const Chans in = measure::zipper_tone(fs, 3.0);
-    for (const char* id : {"tempo", "note_l"}) {
-        auto p = s.make();
-        measure::apply(*p, {{"mix", 50.0f}, {"feedback", 50.0f}});
-        p->prepare(fs, 128, 2);
-        const std::uint32_t idx = measure::param_index(*p, id);
-        const ParamInfo& info = p->descriptor().params[idx];
-        std::vector<measure::Event> ev;
-        for (std::uint64_t f = 12000; f < in[0].size(); f += 128) {
-            const double t = (f - 12000) / fs;
-            const double n = t < 1.0 ? t : (t < 2.0 ? 2.0 - t : 0.0);
-            ev.push_back({f, idx, static_cast<float>(from_normalized(info, n))});
-        }
-        const Chans y = measure::render(*p, in, ev);
-        double worst = 0.0;
-        for (const auto& c : y) worst = std::fmax(worst, measure::hf_residue_peak(c, fs, 12000));
-        s.check_le(std::string("zipper, synced: full-range sweep of '") + id + "', HF residue peak", measure::to_db(worst),
-                   s.bar("zipper_dbfs"), "dBFS");
-    }
-}
-
 }  // namespace
 
 int delay(const measure::Args& args) {
     Suite s("delay", [] { return make_delay(); }, args);
     exact_times(s);
+    host_tempo_out_of_range(s);
     feedback_and_pingpong(s);
-    synced_sweeps(s);
+    // Every automatable parameter is swept twice (quality.json "zipper"):
+    // with sync off below, where the times are heard, and here with sync
+    // on, where the note values and the tempo are. Each change of time is
+    // a crossfade, never a click.
+    measure::check_zipper(s, {{"mix", 50.0f}, {"feedback", 50.0f}}, ", synced");
     const Config golden = {{"note_l", 8.0f}, {"note_r", 7.0f}, {"tempo", 140.0f}, {"feedback", 40.0f},
                            {"hpf", 150.0f}, {"lpf", 6000.0f}, {"mix", 40.0f}};
     const Config zipper = {{"sync", 0.0f}, {"mix", 50.0f}, {"feedback", 50.0f}};
