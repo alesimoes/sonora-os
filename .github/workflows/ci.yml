@@ -144,6 +144,19 @@ jobs:
       - name: Record two takes and read them back
         run: tools/test-bwf-interop.sh
 
+  quantum:
+    name: Quantum and rate stay pinned
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Under ADR-0007 M2 a block-size or rate change mid-take ends the take.
+      # This tries every client-side route we know of to move the graph off
+      # 128 frames at 48 kHz, against the drop-in the image ships. No engine
+      # build is needed, so it costs one container image and about a minute.
+      - name: Try to move the graph
+        run: tools/test-quantum-pin.sh
+
   modes:
     name: Executable bits
     runs-on: ubuntu-latest

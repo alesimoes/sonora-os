@@ -56,9 +56,12 @@ done
 [[ -n "$ENGINE" ]] || { echo "error: no engine binary to test." >&2; exit 1; }
 
 echo "=== building the runtime image ==="
-docker build -q -t "$IMAGE" --label org.sonora=1 \
+# Run by image ID, not by tag: the tag is shared by every worktree on this
+# Docker host, and a rebuild from another checkout in between would put its
+# audio-stack/ under our name.
+IMAGE_ID="$(docker build -q -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
-  "$(host_path "$ROOT")" >/dev/null
+  "$(host_path "$ROOT")")"
 
 echo "=== running the engine against PipeWire ==="
 # The binary is mounted rather than baked in, so a rebuild does not rebuild the
@@ -66,4 +69,4 @@ echo "=== running the engine against PipeWire ==="
 # container before running it.
 # Unlimited memlock as sonora-session.service grants it: the engine refuses
 # to start without it.
-docker run --rm --ulimit memlock=-1:-1   -e RECORD_SECONDS="${RECORD_SECONDS:-3}"   -e TRACKS="${TRACKS:-18}"   -e RATE="${RATE:-48000}"   -e QUANTUM="${QUANTUM:-128}"   -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro"   "$IMAGE"
+docker run --rm --ulimit memlock=-1:-1   -e RECORD_SECONDS="${RECORD_SECONDS:-3}"   -e TRACKS="${TRACKS:-18}"   -e RATE="${RATE:-48000}"   -e QUANTUM="${QUANTUM:-128}"   -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro"   "$IMAGE_ID"
