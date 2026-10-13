@@ -511,8 +511,7 @@ int serve(const Options& o) {
         notify_control();
     };
     // 1 MiB, not the default 8: the stack is locked and populated whole
-    // (start_thread), and with 8 MiB a crashing host's core dump delayed its
-    // exit past the 50-block detection test in CI (55 and 86 blocks).
+    // (start_thread), so its size is resident RAM in every host process.
     constexpr std::size_t kProcessingStack = std::size_t(1) << 20;
     void* processing = start_thread([](void* b) { (*static_cast<decltype(body)*>(b))(); }, &body,
                                     kProcessingStack);
@@ -536,6 +535,8 @@ int serve(const Options& o) {
 
 int main(int argc, char** argv) {
     const Options o = parse(argc, argv);
+    // Before any plugin code loads, and inherited by the --list scan children.
+    no_core_dumps();
     if (o.list) return list(o);
     if (!o.probe.empty()) return probe(o);
     return serve(o);

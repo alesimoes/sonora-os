@@ -66,6 +66,14 @@ void join_thread(void* thread) noexcept;
 // up to two orders of magnitude per sample on x86 without them.
 bool flush_denormals_on_this_thread() noexcept;
 
+// A host that a plugin crashes must be seen gone at once, and its memory
+// holds the session's audio. With a core_pattern pipe and core_pipe_limit
+// set (systemd-coredump, apport), the kernel keeps the dying process until
+// the helper has read and processed the whole core: CI saw a crashed host
+// exit 55 to 137 blocks late. A plugin's core is not ours to collect, so
+// the host is made undumpable; a person debugging one runs it under gdb.
+bool no_core_dumps() noexcept;
+
 // Ask to be killed when the engine dies, then check the engine is still the
 // parent: if it died before the request was made, the request never fires.
 // Returns false when the engine is already gone. `engine_pid` <= 0 skips the

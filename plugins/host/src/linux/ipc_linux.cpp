@@ -171,6 +171,12 @@ bool flush_denormals_on_this_thread() noexcept {
 #endif
 }
 
+bool no_core_dumps() noexcept {
+    // Not RLIMIT_CORE: a core_pattern pipe ignores a zero limit. A process
+    // that is not dumpable is skipped by the kernel before any helper runs.
+    return prctl(PR_SET_DUMPABLE, 0) == 0;
+}
+
 bool die_with_parent(int64_t engine_pid) noexcept {
     // A host outliving its engine would hold the plugins' resources and the
     // region forever. The engine is the only parent a host ever has.
