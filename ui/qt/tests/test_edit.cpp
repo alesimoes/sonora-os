@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The Edit and Mix windows' logic, without a window: the stand-in model's
-// operations and undo, mouse gestures and keys turned into operations, the
-// zoom and scroll mapping, the fader taper, the time formats and the ruler,
-// and which rectangle the timeline draws where. Pure C++ apart from the
-// SessionModel QObject in the routing test; nothing is rendered.
+// The Edit and Mix windows' logic, without a window: common/model's
+// operations and History behind the TimelineDocument seam, mouse gestures
+// and keys turned into operations, the zoom and scroll mapping, the fader
+// taper, the time formats and the ruler, which rectangle the timeline draws
+// where, and File > Save / Open through SessionModel. Nothing is rendered.
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
+#include <QTemporaryDir>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -15,6 +19,7 @@
 #include "key_router.h"
 #include "peak_source.h"
 #include "qt_keys.h"
+#include "session_files.h"
 #include "session_model.h"
 #include "sonora/api/fake_engine.h"
 #include "theme.h"
@@ -58,12 +63,18 @@ public:
 };
 
 // Two tracks. Track 1 has regions A [1 bar, 3 bars) and B [4, 5) over one
-// 20-bar source; track 2 is empty.
+// 20-bar source; track 2 is empty. Built by hand, with fixed ids the tests
+// name, and checked against common/model's invariants by test_model.
 Snapshot two_tracks() {
     Snapshot s = make_empty_session(2, kRate);
     auto pool = std::make_shared<SourcePool>();
-    pool->sources.push_back({100, "Take 1", 1, 20 * kBar});
+    Source take;
+    take.id = 100;
+    take.path = "Audio Files/Take 1.wav";
+    take.length = 20 * kBar;
+    pool->sources.push_back(take);
     s.sources = pool;
+    s.next_id = 101;  // every id above is taken; a new one is 101 or more
     auto edit = std::make_shared<EditState>(*s.edit);
     auto t = std::make_shared<TrackEdit>(*edit->tracks[0]);
     auto p = std::make_shared<Playlist>(*t->playlists[0]);
@@ -89,21 +100,37 @@ Snapshot two_tracks() {
 
 Id playlist_of(const Snapshot& s, int track) { return s.edit->tracks[track]->active_playlist; }
 
-const Region* region(const Snapshot& s, Id id) { return s.find_region(id); }
+const Region* region(const Snapshot& s, Id id) { return find_region(s, id); }
 
-// --- the model ---------------------------------------------------------------
+bool valid(const Snapshot& s) {
+    std::string error;
+    const bool ok = check_invariants(s, error);
+    if (!ok) std::fprintf(stderr, "  invariant: %s\n", error.c_str());
+    return ok;
+}
+
+// --- the model, through the seam ------------------------------------------------
+//
+// common/model has its own tests of apply() and History; these check what
+// the interface relies on through ModelDocument, and the session builders.
 
 int test_model() {
     {
         const Snapshot demo = make_demo_session(18, kRate);
-        OK(check_invariants(demo).empty());
+        OK(valid(demo));
         OK(demo.edit->tracks.size() == 18);
-        OK(demo.settings.timecode_origin == 3600LL * kRate);  // 01:00:00:00
+        OK(demo.settings.timecode.origin == 3600LL * kRate);  // 01:00:00:00
+        OK(demo.revision == 0);
+        OK(demo.mix.tracks.size() == 18 && demo.mix.find(demo.edit->tracks[17]->id)->mute);
+        const Snapshot empty = make_empty_session(4, 44100);
+        OK(valid(empty));
+        OK(empty.edit->tracks[3]->name == "Audio 4");
+        OK(empty.mix.find(empty.edit->tracks[3]->id)->input == std::vector<uint16_t>{3});
     }
 
-    LocalDocument doc(two_tracks());
+    OK(valid(two_tracks()));
+    ModelDocument doc(two_tracks());
     const Snapshot s0 = doc.snapshot();
-    OK(check_invariants(s0).empty());
     const Id pl = playlist_of(s0, 0);
     std::string why;
 
@@ -112,7 +139,7 @@ int test_model() {
     OK(region(doc.snapshot(), 10)->position == 8 * kBar);
     OK(doc.snapshot().edit->tracks[1] == s0.edit->tracks[1]);
     OK(doc.snapshot().revision == s0.revision + 1);
-    OK(check_invariants(doc.snapshot()).empty());
+    OK(valid(doc.snapshot()));
 
     // Undo is a pointer: the EditState from before, not a reconstruction.
     OK(doc.undo(why));
@@ -122,23 +149,26 @@ int test_model() {
     OK(doc.undo(why));
 
     // Moving B (1 bar) into the middle of A ([1, 3) bars) splits A; the
-    // right half takes the id the operation carries, and without one the
-    // move is refused rather than an id invented.
+    // right half takes the id the operation carries. Without one, or with
+    // one below next_id, the move is refused rather than an id invented.
     Snapshot out;
     OK(!apply(doc.snapshot(), MoveRegion{pl, 11, kBar + kBar / 2, kNoId}, out, why));
     OK(!why.empty());
-    OK(!doc.submit(MoveRegion{pl, 11, kBar + kBar / 2, 10}, why));  // id in use
-    OK(doc.submit(MoveRegion{pl, 11, kBar + kBar / 2, 60}, why));
+    OK(!doc.submit(MoveRegion{pl, 11, kBar + kBar / 2, 10}, why));  // taken
+    OK(!doc.submit(MoveRegion{pl, 11, kBar + kBar / 2, 60}, why));  // below next_id
+    const Id spare = doc.reserve_id();
+    OK(spare >= 101);
+    OK(doc.submit(MoveRegion{pl, 11, kBar + kBar / 2, spare}, why));
     OK(region(doc.snapshot(), 10)->end() == kBar + kBar / 2);
-    OK(region(doc.snapshot(), 60)->position == 2 * kBar + kBar / 2);
-    OK(region(doc.snapshot(), 60)->source_offset == 2 * kBar + kBar / 2);
-    OK(region(doc.snapshot(), 60)->end() == 3 * kBar);
-    OK(check_invariants(doc.snapshot()).empty());
+    OK(region(doc.snapshot(), spare)->position == 2 * kBar + kBar / 2);
+    OK(region(doc.snapshot(), spare)->source_offset == 2 * kBar + kBar / 2);
+    OK(region(doc.snapshot(), spare)->end() == 3 * kBar);
+    OK(valid(doc.snapshot()));
     OK(doc.undo(why));
     // Over A's tail only, A is trimmed and nothing is split.
     OK(doc.submit(MoveRegion{pl, 11, 2 * kBar + kBar / 2, kNoId}, why));
     OK(region(doc.snapshot(), 10)->end() == 2 * kBar + kBar / 2);
-    OK(check_invariants(doc.snapshot()).empty());
+    OK(valid(doc.snapshot()));
     OK(doc.undo(why));
     OK(doc.snapshot().edit == s0.edit);
 
@@ -147,25 +177,44 @@ int test_model() {
     OK(region(doc.snapshot(), 10)->source_offset == kBar + kBeat);
     OK(region(doc.snapshot(), 10)->end() == 3 * kBar);
     OK(!doc.submit(TrimRegion{pl, 10, Edge::Start, -1}, why));
-    OK(!doc.submit(TrimRegion{pl, 10, Edge::End, 5 * kBar}, why));  // over B
     OK(!doc.submit(TrimRegion{pl, 11, Edge::End, 30 * kBar}, why));  // past the source
     OK(doc.undo(why));
 
+    // Trimming over a neighbour overwrites it (timeline-model.md,
+    // "Overwrite"). The stand-in refused this; common/model, like Pro Tools
+    // in Slip, trims what is beneath.
+    OK(doc.submit(TrimRegion{pl, 10, Edge::End, 4 * kBar + kBeat}, why));  // into B
+    OK(region(doc.snapshot(), 10)->end() == 4 * kBar + kBeat);
+    OK(region(doc.snapshot(), 11)->position == 4 * kBar + kBeat);
+    OK(region(doc.snapshot(), 11)->source_offset == 4 * kBar + kBeat);  // B's audio stays put
+    OK(region(doc.snapshot(), 11)->end() == 5 * kBar);
+    OK(valid(doc.snapshot()));
+    OK(doc.undo(why));
+    OK(doc.submit(TrimRegion{pl, 10, Edge::End, 6 * kBar}, why));  // over all of B
+    OK(region(doc.snapshot(), 11) == nullptr);
+    OK(doc.undo(why));
+    OK(region(doc.snapshot(), 11)->position == 4 * kBar);  // undo brings B back whole
+    OK(doc.snapshot().edit == s0.edit);
+
     // Split: the left keeps the id, the right gets the new one.
     OK(!doc.submit(SplitRegion{pl, 10, 2 * kBar, 11}, why));
-    OK(!doc.submit(SplitRegion{pl, 10, 5 * kBar, 50}, why));  // outside
-    OK(doc.submit(SplitRegion{pl, 10, 2 * kBar, 50}, why));
+    const Id right = doc.reserve_id();
+    OK(right != spare && right > spare);  // an id is never handed out twice
+    OK(!doc.submit(SplitRegion{pl, 10, 5 * kBar, right}, why));  // outside
+    OK(doc.submit(SplitRegion{pl, 10, 2 * kBar, right}, why));
     OK(region(doc.snapshot(), 10)->end() == 2 * kBar);
-    OK(region(doc.snapshot(), 50)->position == 2 * kBar);
-    OK(region(doc.snapshot(), 50)->source_offset == 2 * kBar);
-    OK(check_invariants(doc.snapshot()).empty());
+    OK(region(doc.snapshot(), right)->position == 2 * kBar);
+    OK(region(doc.snapshot(), right)->source_offset == 2 * kBar);
+    OK(valid(doc.snapshot()));
+    OK(doc.snapshot().next_id == right + 1);
+    OK(doc.reserve_id() == doc.snapshot().next_id);  // honours what apply() raised
 
     // Remove, then undo twice is back to the start.
-    OK(doc.submit(RemoveRegion{pl, 50}, why));
-    OK(region(doc.snapshot(), 50) == nullptr);
+    OK(doc.submit(RemoveRegion{pl, right}, why));
+    OK(region(doc.snapshot(), right) == nullptr);
     OK(doc.undo(why) && doc.undo(why));
     OK(doc.snapshot().edit == s0.edit);
-    OK(!doc.undo(why));
+    OK(!doc.undo(why) && why == "nothing to undo");
 
     // A new edit after an undo drops the redo branch.
     OK(doc.submit(RemoveRegion{pl, 11}, why));
@@ -173,23 +222,72 @@ int test_model() {
     OK(doc.can_redo());
     OK(doc.submit(RemoveRegion{pl, 10}, why));
     OK(!doc.can_redo());
+    OK(!doc.redo(why) && why == "nothing to redo");
     OK(doc.undo(why));
 
-    // Mix is not an edit: undo does not move a fader.
+    // Mix is not an edit: undo does not move a fader. SetMix replaces the
+    // whole TrackMix; the controller's clamping is in test_controller.
     const Id t1 = s0.edit->tracks[0]->id;
-    OK(doc.submit(SetMix{t1, MixField::GainDb, -6.0f}, why));
-    OK(doc.submit(SetMix{t1, MixField::GainDb, 40.0f}, why));
-    OK(doc.snapshot().mix.find(t1)->gain_db == kMaxGainDb);  // clamped to +12
+    TrackMix m = *doc.snapshot().mix.find(t1);
+    m.gain_db = -6.0f;
+    OK(doc.submit(SetMix{m}, why));
+    OK(doc.snapshot().mix.find(t1)->gain_db == -6.0f);
     OK(!doc.can_undo());
-    OK(!doc.submit(SetMix{999, MixField::Mute, 1}, why));
-    OK(!doc.submit(SetMix{t1, MixField::Pan, NAN}, why));
+    m.track = 999;
+    OK(!doc.submit(SetMix{m}, why));
+    m.track = t1;
+    m.pan = NAN;
+    OK(!doc.submit(SetMix{m}, why));
     return 0;
 }
+
+// Undo through common/model's History: bounded by bytes, with a floor, and
+// a new history when another session is opened.
+int test_history() {
+    std::string why;
+    // A budget too small for any step: the newest state and the one before
+    // it are always kept, so exactly one undo remains however many edits.
+    ModelDocument tight(two_tracks(), 1);
+    const Id pl = playlist_of(tight.snapshot(), 0);
+    for (int i = 1; i <= 4; ++i) {
+        OK(tight.submit(MoveRegion{pl, 11, (5 + i) * kBar, kNoId}, why));
+    }
+    OK(tight.history().step_count() == 2);
+    OK(tight.history().floor() > 0);  // the steps below it were evicted
+    OK(tight.undo(why));
+    OK(region(tight.snapshot(), 11)->position == 8 * kBar);
+    OK(!tight.undo(why));  // at the floor
+    OK(tight.redo(why));
+    OK(region(tight.snapshot(), 11)->position == 9 * kBar);
+
+    // The default budget keeps every step of an editing session this size.
+    ModelDocument roomy(two_tracks());
+    for (int i = 1; i <= 50; ++i) {
+        OK(roomy.submit(MoveRegion{pl, 11, (5 + i % 10) * kBar, kNoId}, why));
+    }
+    OK(roomy.history().undo_depth() == 50);
+    OK(roomy.history().charged_bytes() > 0);
+    OK(roomy.history().charged_bytes() <= roomy.history().budget());
+    for (int i = 0; i < 50; ++i) OK(roomy.undo(why));
+    OK(roomy.snapshot().edit->tracks[0]->playlists[0]->regions == two_tracks().edit->tracks[0]->playlists[0]->regions);
+
+    // Each undo and redo bumps the revision, so the windows redraw.
+    const uint64_t r = roomy.revision();
+    OK(roomy.redo(why) && roomy.revision() == r + 1);
+
+    // reset: another session, and no undo into the old one.
+    roomy.reset(make_empty_session(3, kRate));
+    OK(roomy.snapshot().edit->tracks.size() == 3);
+    OK(!roomy.can_undo() && !roomy.can_redo());
+    OK(roomy.reserve_id() == roomy.snapshot().next_id);
+    return 0;
+}
+
 
 // --- gestures and commands -----------------------------------------------------
 
 int test_controller() {
-    LocalDocument doc(two_tracks());
+    ModelDocument doc(two_tracks());
     std::string why;
     {
     // --- the mapping ---
@@ -274,12 +372,38 @@ int test_controller() {
     c.move(a_end - 40, lower);  // one second earlier
     OK(c.release(a_end - 40, lower, why));
     OK(region(doc.snapshot(), 10)->end() == 3 * kBar - kRate);
-    // ...and dragging it past B stops at B, as the resolver clamps.
+    // ...and dragging it into B overwrites B, as a Slip-mode trim does in
+    // Pro Tools. (On the stand-in the drag stopped at B, because its model
+    // refused the overlap; common/model overwrites, and the resolver no
+    // longer clamps at a neighbour.) 140 px is 168000 frames: one beat in.
     const double a_end2 = c.view().x_of(3 * kBar - kRate) - 2;
+    OK(c.press(a_end2, lower, why));
+    c.move(a_end2 + 140, lower);
+    // While the edge is in the hand, the preview shows B cut back and the
+    // document still has B whole: only the drop is an operation.
+    OK(c.drag().preview != nullptr);
+    OK(c.drag().end == 4 * kBar + kBeat);
+    OK(c.drag().preview->regions.back().id == 11 &&
+       c.drag().preview->regions.back().position == 4 * kBar + kBeat);
+    OK(region(doc.snapshot(), 11)->position == 4 * kBar);
+    OK(c.release(a_end2 + 140, lower, why));
+    OK(region(doc.snapshot(), 10)->end() == 4 * kBar + kBeat);
+    OK(region(doc.snapshot(), 11)->position == 4 * kBar + kBeat);
+    OK(region(doc.snapshot(), 11)->source_offset == 4 * kBar + kBeat);
+    OK(c.undo(why));
+    // Far past B: B is covered, so it goes; the source's end is the limit.
     OK(c.press(a_end2, lower, why));
     c.move(a_end2 + 400, lower);
     OK(c.release(a_end2 + 400, lower, why));
-    OK(region(doc.snapshot(), 10)->end() == 4 * kBar);
+    OK(region(doc.snapshot(), 10)->end() == 8 * kBar - kRate);
+    OK(region(doc.snapshot(), 11) == nullptr);
+    OK(c.selection().region == 10);
+    OK(c.undo(why));
+    OK(region(doc.snapshot(), 11) != nullptr);  // undo restores it whole
+    OK(c.press(a_end2, lower, why));
+    c.move(a_end2 + 40000, lower);
+    OK(c.release(a_end2 + 40000, lower, why));
+    OK(region(doc.snapshot(), 10)->end() == 20 * kBar);  // where Take 1 runs out
     OK(c.undo(why) && c.undo(why));
 
     // --- upper half: the insertion point, then separate there ---
@@ -287,9 +411,9 @@ int test_controller() {
     OK(c.selection().region == kNoId);
     OK(c.selection().insertion == c.view().frame_at(a_mid));
     OK(c.separate(why));
-    OK(doc.snapshot().edit->tracks[0]->active()->regions.size() == 3);
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 3);
     OK(c.undo(why));
-    OK(doc.snapshot().edit->tracks[0]->active()->regions.size() == 2);
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 2);
 
     // A range separates at both ends.
     OK(c.press(c.view().x_of(kBar + kBeat), upper, why));
@@ -297,7 +421,7 @@ int test_controller() {
     OK(c.release(c.view().x_of(2 * kBar), upper, why));
     OK(c.selection().has_range());
     OK(c.separate(why));
-    OK(doc.snapshot().edit->tracks[0]->active()->regions.size() == 4);
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 4);
     OK(c.undo(why) && c.undo(why));
 
     // Trim to the insertion point (Pro Tools' A and S).
@@ -349,6 +473,44 @@ int test_controller() {
     OK(c.follow(static_cast<Frames>(1000 * c.view().fpp)));
     OK(c.view().x_of(static_cast<Frames>(1000 * c.view().fpp)) < 150);
 
+    // --- mix: each one a whole-TrackMix operation, never an undo step ---
+    // The fader's travel bounds a gain (the stand-in's model clamped it;
+    // common/model accepts any finite number, so the controller does).
+    const bool could_undo = doc.can_undo();
+    const Id t1 = doc.snapshot().edit->tracks[0]->id;
+    OK(c.set_gain(0, 40.0f, why));
+    OK(doc.snapshot().mix.find(t1)->gain_db == kFaderMaxDb);
+    OK(c.set_gain(0, -500.0f, why));
+    OK(doc.snapshot().mix.find(t1)->gain_db == kFaderSilenceDb);
+    OK(!c.set_gain(0, NAN, why) && !why.empty());
+    OK(c.set_pan(0, 3.0f, why) && doc.snapshot().mix.find(t1)->pan == 1.0f);
+    OK(c.toggle_mute(0, why) && doc.snapshot().mix.find(t1)->mute);
+    OK(doc.snapshot().mix.find(t1)->gain_db == kFaderSilenceDb);  // the rest kept
+    OK(c.toggle_mute(0, why) && !doc.snapshot().mix.find(t1)->mute);
+    OK(c.set_bus_gain(-3.0f, why) && doc.snapshot().mix.bus.gain_db == -3.0f);
+    OK(!c.set_gain(5, 0.0f, why) && why == "there is no track 6");
+
+    // A gain beyond the fader's travel (a loaded file at +18 dB) is not
+    // pulled to +12 by a touch: it stays until the operator drags it down.
+    {
+        TrackMix hot = *doc.snapshot().mix.find(t1);
+        hot.gain_db = 18.0f;
+        OK(doc.submit(SetMix{hot}, why));
+        const auto gain = [&] { return doc.snapshot().mix.find(t1)->gain_db; };
+        OK(fader_drag(18.0f, 0.0f, 200.0f, false) == 18.0f);
+        OK(fader_drag(18.0f, -30.0f, 200.0f, false) == 18.0f);   // up: already past the top
+        OK(fader_drag(-200.0f, 30.0f, 200.0f, false) == -200.0f);  // down: already past the bottom
+        OK(c.set_gain(0, fader_drag(gain(), -30.0f, 200.0f, false), why) && gain() == 18.0f);
+        OK(c.set_gain(0, 18.0f, why) && gain() == 18.0f);
+        OK(c.set_gain(0, 40.0f, why) && gain() == 18.0f);  // never further out than it was
+        OK(c.set_gain(0, fader_drag(gain(), 20.0f, 200.0f, false), why));
+        OK(gain() < kFaderMaxDb && gain() > 0.0f);  // dragged down: back on the travel
+        OK(c.set_gain(0, 40.0f, why) && gain() == kFaderMaxDb);
+        hot.gain_db = 18.0f;
+        OK(doc.submit(SetMix{hot}, why));
+        OK(c.set_gain(0, 3.0f, why) && gain() == 3.0f);  // a deliberate value is taken
+    }
+    OK(doc.can_undo() == could_undo);
     return 0;
 }
 
@@ -406,8 +568,8 @@ int test_time() {
     OK(format_min_sec(83 * kRate + kRate / 2, kRate) == "1:23.500");
     OK(format_min_sec(3723LL * kRate, kRate) == "1:02:03.000");
     SessionSettings df = s;
-    df.fps = "29.97df";
-    df.timecode_origin = 0;
+    df.timecode.fps = Fps::F29_97df;
+    df.timecode.origin = 0;
     // One minute of 29.97 is 1798.2 frames; drop-frame labels skip ;00 and
     // ;01 at the minute, so frame 1800 reads 00:01:00;02.
     OK(format_timecode(static_cast<Frames>(1800.0 * 1001 / 30000 * kRate) + 1, df) == "00:01:00;02");
@@ -441,7 +603,7 @@ int test_time() {
 // --- what is drawn where --------------------------------------------------------
 
 int test_scene() {
-    LocalDocument doc(two_tracks());
+    ModelDocument doc(two_tracks());
     EditController c(doc);
     c.set_viewport(1000, 200);
     FlatPeaks peaks;
@@ -509,7 +671,7 @@ int route(const char* profile, const std::vector<std::pair<std::string, std::str
     KeyMap map;
     std::string err;
     CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/" + profile, map, err));
-    LocalDocument doc(two_tracks());
+    ModelDocument doc(two_tracks());
     FlatPeaks peaks;
     SessionModel session(doc, peaks, false);
     std::vector<std::string> sent;
@@ -586,7 +748,7 @@ int test_routing() {
     KeyMap map;
     std::string err;
     CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
-    LocalDocument doc(two_tracks());
+    ModelDocument doc(two_tracks());
     FlatPeaks peaks;
     SessionModel session(doc, peaks, false);
     std::vector<std::string> sent;
@@ -622,11 +784,11 @@ int test_routing() {
     session.controller().set_insertion(2 * kBar);
     const RouteResult sep = key("b");
     OK(sep.result == DispatchResult::Ok);
-    OK(doc.snapshot().edit->tracks[0]->active()->regions.size() == 3);
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 3);
     key("ctrl+z");
-    OK(doc.snapshot().edit->tracks[0]->active()->regions.size() == 2);
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 2);
     key("ctrl+shift+z");
-    OK(doc.snapshot().edit->tracks[0]->active()->regions.size() == 3);
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 3);
 
     // Shift+S solos the selected track (track 1 by default), Shift+M mutes.
     key("shift+s");
@@ -645,12 +807,275 @@ int test_routing() {
     return 0;
 }
 
+// --- File > Save and Open, through SessionModel and common/model's codec ------
+
+bool contains(const std::string& s, const char* what) { return s.find(what) != std::string::npos; }
+
+QByteArray file_bytes(const QString& path) {
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+int test_files() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why;
+
+    ModelDocument doc(make_demo_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    QStringList notices;
+    QObject::connect(&session, &SessionModel::notice, [&notices](const QString& t) { notices << t; });
+    OK(session.sessionName() == QStringLiteral("Demo session · synthetic audio"));
+    OK(!session.dirty());
+
+    // Ctrl+S is app.save, which the window runs itself until the engine has
+    // session commands.
+    KeyMap map;
+    std::string err;
+    CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
+    KeyRouter router(map, api::testing::FakeEngine::engine_commands(),
+                     [](const std::string&, const CommandContext&) { return uint64_t{1}; });
+    session.installCommands(router.local());
+    router.prepare(qt_device_chords(true));
+    KeyChord ctrl_s;
+    CHECK(KeyMap::parse_chord("ctrl+s", ctrl_s, err));
+    const RouteResult saved = router.route(ctrl_s);
+    OK(saved.kind == RouteResult::Kind::Local && saved.result == DispatchResult::Ok);
+    const QString file = dir.filePath(QStringLiteral("Demo session/Demo session.sonora"));
+    OK(QFileInfo(file).isFile());
+    OK(session.sessionFile() == file);
+    OK(!session.dirty());
+    OK(notices.size() == 1 && notices.back().startsWith(QStringLiteral("Saved ")));
+
+    // Nothing changed: nothing written, and the generation stays.
+    const QByteArray first = file_bytes(file);
+    OK(session.saveSession(why));
+    OK(notices.back().startsWith(QStringLiteral("Nothing to save")));
+    OK(file_bytes(file) == first);
+
+    // An edit and a fader move, then save: both are in the file.
+    session.selectTrack(0);
+    session.controller().set_insertion(2 * kBar);
+    OK(session.controller().separate(why));
+    OK(session.dirty());
+    OK(session.sessionName().contains(QStringLiteral("edited")));
+    OK(session.controller().set_gain(1, -12.5f, why));
+    OK(session.saveSession(why));
+    OK(!session.dirty() && file_bytes(file) != first);
+    {
+        std::string bytes;
+        Loaded loaded;
+        OK(read_session_file(file, bytes, loaded, why));
+        OK(loaded.save_generation == 2);
+        OK(loaded.written_by == "sonora-ui");
+    }
+
+    // Open it in another window's document: the same session, no undo
+    // into the one that was there before, the selection back at track 1.
+    ModelDocument other(make_empty_session(2, kRate));
+    SessionModel opener(other, peaks, true);
+    opener.setSessionsDir(dir.path());
+    const QVariantList listed = opener.sessionList();
+    OK(listed.size() == 1);
+    OK(listed[0].toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Demo session"));
+    std::string edit_why;
+    OK(opener.controller().set_gain(0, -3.0f, edit_why));  // the empty session's own edit
+    OK(opener.dirty());
+    OK(!opener.openSessionFile(file, false, why) && contains(why, "unsaved"));
+    OK(other.snapshot().edit->tracks.size() == 2);  // refused: untouched
+    OK(opener.openSessionFile(file, true, why));
+    OK(same_document(other.snapshot(), doc.snapshot()));
+    OK(!other.can_undo() && !other.can_redo());
+    OK(!opener.dirty());
+    OK(opener.sessionFile() == file);
+    OK(opener.controller().selection().track == 0);
+    OK(opener.sessionList()[0].toMap().value(QStringLiteral("current")).toBool());
+    OK(other.snapshot().mix.find(other.snapshot().edit->tracks[1]->id)->gain_db == -12.5f);
+    // Editing the opened session allocates ids past every one in the file.
+    opener.controller().set_insertion(kBar / 2);
+    OK(opener.controller().separate(why));
+    OK(valid(other.snapshot()));
+    OK(opener.controller().undo(why));
+
+    // A file that does not parse is refused with where, and changes nothing.
+    QDir(dir.path()).mkpath(QStringLiteral("Broken"));
+    {
+        QFile broken(dir.filePath(QStringLiteral("Broken/Broken.sonora")));
+        CHECK(broken.open(QIODevice::WriteOnly));
+        broken.write("{ \"format\": ");
+    }
+    const uint64_t before = other.revision();
+    OK(!opener.openSessionFile(dir.filePath(QStringLiteral("Broken/Broken.sonora")), true, why));
+    OK(contains(why, "Broken.sonora") && contains(why, "line"));
+    OK(other.revision() == before);
+    OK(opener.sessionList().size() == 2);
+
+    // A session at another rate cannot play here, and says so.
+    ModelDocument slow(make_empty_session(1, 44100));
+    SessionModel slow_session(slow, peaks, true);
+    slow_session.setSessionsDir(dir.path());
+    OK(slow_session.saveSession(why));  // no name: "Untitled"
+    OK(slow.snapshot().settings.name == "Untitled");
+    OK(slow_session.sessionName() == QStringLiteral("Untitled"));  // no regions: nothing synthetic
+    const QString untitled = dir.filePath(QStringLiteral("Untitled/Untitled.sonora"));
+    OK(!opener.openSessionFile(untitled, true, why) && contains(why, "44100"));
+    ModelDocument slow2(make_empty_session(1, 44100));
+    SessionModel slow_session2(slow2, peaks, true);
+    slow_session2.setSessionsDir(dir.path());
+    OK(slow_session2.saveSession(why));
+    OK(slow2.snapshot().settings.name == "Untitled 2");  // never over another session
+
+    // Not while a take is open.
+    TransportSnapshot rec;
+    rec.state = TransportMode::Recording;
+    opener.onTransport(rec, true);
+    OK(!opener.openSessionFile(file, true, why) && contains(why, "take is open"));
+
+    // A name that cannot be a folder is refused, not rewritten.
+    SessionSettings bad = slow.snapshot().settings;
+    bad.name = "Verse/Chorus";
+    ModelDocument named(make_empty_session(1, kRate));
+    bad.sample_rate = kRate;
+    bad.timecode = named.snapshot().settings.timecode;
+    OK(named.submit(SetSettings{bad}, why));
+    SessionModel named_session(named, peaks, true);
+    named_session.setSessionsDir(dir.path());
+    OK(!named_session.saveSession(why) && contains(why, "cannot save"));
+    return 0;
+}
+
+// A session named `name`, at the test rate.
+Snapshot named_session(const char* name) {
+    Snapshot s = make_empty_session(1, kRate);
+    s.settings.name = name;
+    return s;
+}
+
+// What a disk that fills up after the folder is made looks like: the real
+// writer, with the folder created and the file refused by the file system
+// (a name past NAME_MAX).
+bool failing_writer(const QString& file, const std::string& bytes, std::string& why,
+                    std::string& caution) {
+    const QString doomed = QFileInfo(file).absolutePath() + QLatin1Char('/') + QString(300, QLatin1Char('x'));
+    return write_session_file(doomed, bytes, why, caution);
+}
+
+int test_save_failures() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why, caution;
+    const QDir d(dir.path());
+
+    // The writer itself: a folder it made for a write that failed is removed,
+    // one that was there before is left alone.
+    OK(!failing_writer(session_file_path(dir.path(), QStringLiteral("Lost")), "{}", why, caution));
+    OK(!why.empty() && !d.exists(QStringLiteral("Lost")));
+    CHECK(d.mkpath(QStringLiteral("Kept")));
+    OK(!failing_writer(session_file_path(dir.path(), QStringLiteral("Kept")), "{}", why, caution));
+    OK(d.exists(QStringLiteral("Kept")));
+    caution = "stale";
+    OK(write_session_file(session_file_path(dir.path(), QStringLiteral("Kept")), "{}", why, caution));
+    OK(caution.empty());
+
+    // A first save that fails leaves no folder and does not rename the
+    // session, so the retry is "Foo", not "Foo 2" (nor "Foo 2 2").
+    ModelDocument doc(named_session("Foo"));
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    session.setSessionWriter(failing_writer);
+    QStringList notices;
+    QObject::connect(&session, &SessionModel::notice, [&notices](const QString& t) { notices << t; });
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        OK(!session.saveSession(why) && !why.empty());
+        OK(doc.snapshot().settings.name == "Foo");
+        OK(!d.exists(QStringLiteral("Foo")));
+        OK(session.sessionFile().isEmpty());
+    }
+    session.setSessionWriter(write_session_file);
+    OK(session.saveSession(why));
+    OK(doc.snapshot().settings.name == "Foo");
+    OK(session.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo")));
+
+    // Taken by another session: a failed save still renames nothing.
+    ModelDocument doc2(named_session("Foo"));
+    SessionModel session2(doc2, peaks, true);
+    session2.setSessionsDir(dir.path());
+    session2.setSessionWriter(failing_writer);
+    OK(!session2.saveSession(why));
+    OK(doc2.snapshot().settings.name == "Foo");
+    OK(!d.exists(QStringLiteral("Foo 2")));
+
+    // A save whose rename landed but whose folder sync did not is a save,
+    // said with its caveat; the next save goes to the same file.
+    session2.setSessionWriter([](const QString& file, const std::string& bytes, std::string& w,
+                                 std::string& c) {
+        const bool ok = write_session_file(file, bytes, w, c);
+        c = "the folder could not be synced";
+        return ok;
+    });
+    OK(session2.saveSession(why));
+    OK(doc2.snapshot().settings.name == "Foo 2");
+    OK(session2.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo 2")));
+    OK(!session2.dirty());
+    session2.selectTrack(0);
+    OK(session2.controller().set_gain(0, -1.0f, why));
+    OK(session2.saveSession(why));
+    OK(session2.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo 2")));
+    OK(!d.exists(QStringLiteral("Foo 3")));
+
+    // The name limit is bytes of the UTF-8 file name, not characters: 120
+    // CJK characters are 360 bytes, past what a file name can hold.
+    const QString cjk120(120, QChar(0x97F3));  // 音
+    const std::string long_name = session_name_problem(cjk120);
+    OK(contains(long_name, "bytes"));
+    OK(session_name_problem(QString(80, QChar(0x97F3))).empty());
+    OK(!session_name_problem(QString(81, QChar(0x97F3))).empty());
+    OK(session_name_problem(QString(241, QLatin1Char('a'))).empty());
+    OK(!session_name_problem(QString(242, QLatin1Char('a'))).empty());
+    ModelDocument wide(named_session(""));
+    {
+        SessionSettings s = wide.snapshot().settings;
+        s.name = cjk120.toStdString();
+        OK(wide.submit(SetSettings{s}, why));
+    }
+    SessionModel wide_session(wide, peaks, true);
+    wide_session.setSessionsDir(dir.path());
+    OK(!wide_session.saveSession(why) && contains(why, "bytes"));
+    // The longest name the rule allows saves, temporary file and all.
+    for (const QString& longest : {QString(80, QChar(0x97F3)), QString(241, QLatin1Char('a'))}) {
+        ModelDocument ok_doc(named_session(""));
+        SessionSettings s = ok_doc.snapshot().settings;
+        s.name = longest.toStdString();
+        OK(ok_doc.submit(SetSettings{s}, why));
+        SessionModel ok_session(ok_doc, peaks, true);
+        ok_session.setSessionsDir(dir.path());
+        OK(ok_session.saveSession(why));
+        OK(QFileInfo(session_file_path(dir.path(), longest)).isFile());
+    }
+    // A name the rule allows that "<name> 2" would push past it is refused,
+    // not written under a name the folder cannot hold.
+    {
+        ModelDocument dup(named_session(""));
+        SessionSettings s = dup.snapshot().settings;
+        s.name = std::string(241, 'a');
+        OK(dup.submit(SetSettings{s}, why));
+        SessionModel dup_session(dup, peaks, true);
+        dup_session.setSessionsDir(dir.path());
+        OK(!dup_session.saveSession(why) && contains(why, "bytes"));
+        OK(dup.snapshot().settings.name == std::string(241, 'a'));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    if (test_model() || test_controller() || test_taper() || test_time() || test_scene() ||
-        test_routing()) {
+    if (test_model() || test_history() || test_controller() || test_taper() || test_time() ||
+        test_scene() || test_routing() || test_files() || test_save_failures()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

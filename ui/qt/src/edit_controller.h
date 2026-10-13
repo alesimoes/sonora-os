@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -51,7 +52,7 @@ struct ViewState {
 
 struct Selection {
     int track = -1;              // display index; -1 is none
-    model::Id region = model::kNoId;
+    model::Id region = kNoId;
     model::Frames insertion = 0;   // the edit cursor
     model::Frames start = 0, end = 0;  // a time range on `track`; empty when equal
 
@@ -62,7 +63,7 @@ enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd };
 
 struct Hit {
     int track = -1;
-    model::Id region = model::kNoId;
+    model::Id region = kNoId;
     HitZone zone = HitZone::None;
 };
 
@@ -72,12 +73,15 @@ struct Drag {
     enum class Kind { None, Move, TrimStart, TrimEnd, Range };
     Kind kind = Kind::None;
     int track = -1;
-    model::Id region = model::kNoId;
+    model::Id region = kNoId;
     model::Frames press_frame = 0;
     double press_x = 0;
     model::Frames orig_start = 0, orig_end = 0;
     model::Frames start = 0, end = 0;  // the preview
     bool moved = false;
+    // A trim's playlist as the drop would leave it, neighbours overwritten;
+    // null when there is nothing to show beyond start and end.
+    std::shared_ptr<const model::Playlist> preview;
 };
 
 class EditController {
@@ -85,6 +89,10 @@ public:
     explicit EditController(TimelineDocument& doc);
 
     TimelineDocument& document() { return doc_; }
+    // After TimelineDocument::reset (a session was opened): the selection,
+    // the drag and the scroll belonged to the old session and are dropped.
+    // Zoom, mode, tool and grid are how the operator works and are kept.
+    void document_replaced();
     const model::Snapshot& snapshot() const { return doc_.snapshot(); }
 
     // --- view ---
@@ -181,7 +189,8 @@ private:
 // These are what engine/control will run when it resolves a command
 // (timeline-model.md, "Operations"). They clamp to what the model allows,
 // so a gesture that went too far becomes the nearest valid edit instead of
-// an error. Ids come from the caller (`spare_id`, used only when the move
+// an error: a trim stops where the source's audio runs out, and a trim or a
+// move into a neighbour overwrites it, as Slip and Grid do. Ids come from the caller (`spare_id`, used only when the move
 // lands inside another region and must split it); a resolver never invents
 // one.
 bool resolve_move(const model::Snapshot& s, model::Id region, model::Frames to,

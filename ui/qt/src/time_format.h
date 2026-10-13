@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "timeline_model.h"
+#include "model_access.h"
 
 namespace sonora::ui {
 

@@ -4,27 +4,41 @@
 // session's timeline and mix passes through `TimelineDocument`, the way
 // everything they know about the engine passes through EngineAdapter.
 //
-// What it stands for (timeline-model.md, "What the UI replica gets"): the
-// ui/client replica of the engine's Document. Today the replica *is* the
-// document -- `LocalDocument` applies operations itself, keeps the undo
-// pointer and allocates ids -- because the operation stream (M7) does not
-// exist yet. common/model (M8) is on main; this branch still runs on its
-// local stand-in (timeline_model.h says what differs). The swap:
+// The model is common/model's (ADR-0007 M8): its Snapshot, its pure
+// apply(), its byte-bounded History. What is still local is *where* the
+// document lives: `ModelDocument` holds the History in this process,
+// because the operation stream (M7) does not carry edits from the engine
+// yet. The swap when it does:
 //
-//   here                              when common/model and M7 land
-//   -------------------------------   ---------------------------------------
-//   ui::model::*  (timeline_model.h)  sonora::model::*  (common/model)
-//   ui::model::apply                  sonora::model::apply, same signature
-//   TimelineDocument::snapshot        the replica's Snapshot
-//   TimelineDocument::submit(op)      EngineControl::send(the command); the
-//                                     engine resolves and applies, and the
-//                                     replica changes when the op comes back
-//   TimelineDocument::undo / redo     the edit.undo / edit.redo commands; the
-//                                     replica moves its pointer on Undo{} /
-//                                     Redo{} from the engine
-//   TimelineDocument::reserve_id      gone: engine/control allocates ids when
-//                                     it resolves a command into an operation
-//   TimelineDocument::revision        Snapshot::revision, checked for gaps
+//   here                               at M7
+//   --------------------------------   --------------------------------------
+//   ModelDocument (a History here)     a model::Replica fed by the engine's
+//                                      model::Document (replication.h)
+//   TimelineDocument::submit(op)       EngineControl::send(the command); the
+//                                      engine resolves and applies, and the
+//                                      replica changes when the update comes
+//                                      back (ReplicationUpdate::Kind::Op)
+//   TimelineDocument::undo / redo      the edit.undo / edit.redo commands;
+//                                      the replica moves on Kind::Undo/Redo
+//   TimelineDocument::reset            Kind::Snapshot: a session was opened
+//   TimelineDocument::reserve_id       gone: engine/control allocates ids when
+//                                      it resolves a command into an operation
+//
+// TODO(M7): a ReplicaDocument in place of ModelDocument. #33 put the wire
+// in place (ModelRequest / ModelUpdate, FakeEngine's model::Document) but
+// not yet what this seam needs to sit on it, so it is not routed there now:
+//   - ControlAdapter::poll() drops Inbox::model; the updates must reach a
+//     model::Replica, and a reply from a ModelRequest must not be taken by
+//     the command path that shares the inbox.
+//   - submit() answers at once and EditController reads the snapshot right
+//     after it; over a socket the answer is a later reply, so submit()
+//     becomes "sent", and a refusal arrives as a CommandReply.
+//   - reset() has no ModelAction: File > Open needs the engine to load a
+//     session file and send Kind::Snapshot (session-format.md, "Saving").
+//   - reserve_id() goes: engine/control allocates ids when it resolves.
+// Doing it against FakeEngine alone would leave the demo session (built
+// here, with regions and sources) on one side and the engine's empty
+// document on the other.
 //
 // Rules that keep the swap mechanical:
 //
@@ -37,11 +51,12 @@
 //     outside the model, as the spec says; only the drop is an operation.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
-#include <vector>
 
-#include "timeline_model.h"
+#include "model_access.h"
+#include "sonora/model/history.h"
 
 namespace sonora::ui {
 
@@ -57,45 +72,52 @@ public:
     virtual bool redo(std::string& why) = 0;
     virtual bool can_undo() const = 0;
     virtual bool can_redo() const = 0;
-    // An id nothing in the session uses, for an operation being resolved.
+    // An id no operation has introduced and none will be given twice, for an
+    // operation being resolved: at least the snapshot's next_id, which is
+    // what apply() checks.
     virtual model::Id reserve_id() = 0;
+    // A different session (one was opened): the snapshot replaced, and a new
+    // history, because undo never crosses into another session.
+    virtual void reset(model::Snapshot s) = 0;
     uint64_t revision() const { return snapshot().revision; }
 };
 
-// The stand-in. Undo is a pointer into a list of EditStates (spec, "Undo is
-// a pointer"), so there is no inverse operation to get wrong. Mix operations
-// change the current snapshot and push no step. Bounded by step count, not
-// bytes: the byte budget and its eviction are the engine's (ADR-0009 §1),
-// and a stand-in that imitated them would be a second implementation.
-class LocalDocument final : public TimelineDocument {
+// The document, held here. Undo is common/model's History: a pointer over
+// immutable EditStates, bounded by bytes, with a floor below which steps
+// are evicted (ADR-0009 §1). Mix and settings operations change the
+// snapshot and push no step.
+class ModelDocument final : public TimelineDocument {
 public:
-    explicit LocalDocument(model::Snapshot initial, std::size_t max_steps = 1000);
+    explicit ModelDocument(model::Snapshot initial,
+                           std::size_t budget_bytes = model::History::kDefaultBudget);
 
-    const model::Snapshot& snapshot() const override { return current_; }
+    const model::Snapshot& snapshot() const override { return history_.current(); }
     bool submit(const model::Operation& op, std::string& why) override;
     bool undo(std::string& why) override;
     bool redo(std::string& why) override;
-    bool can_undo() const override { return at_ > 0; }
-    bool can_redo() const override { return at_ + 1 < history_.size(); }
-    model::Id reserve_id() override { return ++last_id_; }
+    bool can_undo() const override { return history_.can_undo(); }
+    bool can_redo() const override { return history_.can_redo(); }
+    model::Id reserve_id() override;
+    void reset(model::Snapshot s) override;
 
-    std::size_t steps() const { return history_.size(); }
+    const model::History& history() const { return history_; }
 
 private:
-    model::Snapshot current_;
-    std::vector<std::shared_ptr<const model::EditState>> history_;
-    std::size_t at_ = 0;
-    std::size_t max_steps_;
-    model::Id last_id_ = 0;
+    std::size_t budget_;
+    model::History history_;
+    model::Id next_unreserved_ = 0;
 };
 
 // An empty session with `tracks` mono tracks named "Audio 1".., each with one
-// empty playlist, the default settings (48 kHz, 01:00:00:00, 120 bpm 4/4).
+// empty playlist and its input on the capture channel of the same index,
+// at 01:00:00:00, 120 bpm 4/4. Built through apply(), so it is valid by the
+// same checks a loaded file passes.
 model::Snapshot make_empty_session(uint32_t tracks, uint32_t sample_rate);
 
-// The same, with named tracks and synthetic sources and regions laid out the
-// way a tracking session looks, for the demo and the screenshots. Every
-// source is synthetic; the window says so.
+// The same, with named tracks and sources and regions laid out the way a
+// tracking session looks, for the demo and the screenshots. The sources
+// name files that do not exist: their audio is synthetic, and the window
+// says so.
 model::Snapshot make_demo_session(uint32_t tracks, uint32_t sample_rate);
 
 }  // namespace sonora::ui

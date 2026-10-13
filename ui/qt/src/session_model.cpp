@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "session_model.h"
 
+#include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 
 #include "fader_taper.h"
 #include "scene_item.h"
+#include "session_files.h"
 #include "sonora/command.h"
+#include "sonora/model/session_file.h"
 
 namespace sonora::ui {
 
@@ -39,9 +42,16 @@ bool same(const Drag& a, const Drag& b) {
 
 }  // namespace
 
-SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool synthetic,
+SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool synthetic_peaks,
                            QObject* parent)
-    : QObject(parent), doc_(doc), peaks_(peaks), synthetic_(synthetic), ctl_(doc) {
+    : QObject(parent),
+      doc_(doc),
+      peaks_(peaks),
+      synthetic_peaks_(synthetic_peaks),
+      sessions_dir_(default_sessions_dir()),
+      writer_(write_session_file),
+      saved_revision_(doc.revision()),
+      ctl_(doc) {
     updateCounters(true);
 }
 
@@ -137,6 +147,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return ctl_.toggle_solo(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
     });
 
+    // Saving is the engine's once it has session commands (session_files.h);
+    // until then the interface writes the file itself.
+    simple("app.save", [this](const CommandContext&, Why& why) { return saveSession(why); });
+
     simple("window.toggle_mix_edit", [this](const CommandContext&, Why&) {
         setWindow(window_ == QStringLiteral("edit") ? QStringLiteral("mix") : QStringLiteral("edit"));
         return true;
@@ -159,6 +173,10 @@ void SessionModel::sync() {
         content = true;
         emit contentChanged();
         emit mixChanged();
+        if (dirty() != seen_dirty_) {
+            seen_dirty_ = dirty();
+            emit sessionChanged();
+        }
     }
     const int m = static_cast<int>(ctl_.mode()), t = static_cast<int>(ctl_.tool()),
               g = static_cast<int>(ctl_.grid());
@@ -228,8 +246,15 @@ void SessionModel::updateCounters(bool force) {
 // --- properties ---
 
 QString SessionModel::sessionName() const {
-    return synthetic_ ? QStringLiteral("Demo session · synthetic audio")
-                      : QStringLiteral("Untitled session");
+    const std::string& n = ctl_.snapshot().settings.name;
+    QString name = n.empty() ? QStringLiteral("Untitled session") : q(n);
+    if (dirty()) name += QStringLiteral(" · edited");
+    if (synthetic()) name += QStringLiteral(" · synthetic audio");
+    return name;
+}
+
+bool SessionModel::synthetic() const {
+    return synthetic_peaks_ && !ctl_.snapshot().sources->sources.empty();
 }
 
 int SessionModel::trackCount() const {
@@ -293,18 +318,23 @@ bool SessionModel::anySolo() const {
 }
 
 bool SessionModel::loopOn() const {
-    const auto& l = ctl_.snapshot().settings.loop;
+    const auto& l = ctl_.snapshot().settings.transport.loop;
     return l[1] > l[0];
 }
 
 bool SessionModel::punchOn() const {
-    const auto& p = ctl_.snapshot().settings.punch;
+    const auto& p = ctl_.snapshot().settings.transport.punch;
     return p[1] > p[0];
 }
 
 QString SessionModel::tempoText() const {
-    const auto& s = ctl_.snapshot().settings;
-    return QStringLiteral("%1 bpm  %2/%3").arg(s.bpm, 0, 'f', 0).arg(s.meter_num).arg(s.meter_den);
+    const auto& tempo = ctl_.snapshot().settings.tempo;
+    if (tempo.empty()) return {};
+    const auto& t = tempo.front();
+    return QStringLiteral("%1 bpm  %2/%3")
+        .arg(static_cast<double>(t.bpm), 0, 'f', 0)
+        .arg(t.meter[0])
+        .arg(t.meter[1]);
 }
 
 // --- Edit window ---
@@ -375,6 +405,139 @@ void SessionModel::setWindow(const QString& w) {
     if (w == window_ || (w != QStringLiteral("edit") && w != QStringLiteral("mix"))) return;
     window_ = w;
     emit windowChanged();
+}
+
+// --- File ---
+
+bool SessionModel::saveSession(std::string& why) {
+    QString file = file_;
+    // What is written: the session as it is, or, the first time, renamed to
+    // its folder's name. The rename reaches the document only once the file
+    // is written, so a failed save leaves the name and the disk as they were
+    // and a retry is not pushed to "<Name> 2".
+    Snapshot to_write = ctl_.snapshot();
+    bool rename = false;
+    if (file.isEmpty()) {
+        const std::string& n = to_write.settings.name;
+        const QString wanted = n.empty() ? QStringLiteral("Untitled") : q(n);
+        std::string bad = session_name_problem(wanted);
+        if (!bad.empty()) {
+            why = "cannot save as \"" + n + "\": " + bad;
+            return false;
+        }
+        const QString name = unused_session_name(sessions_dir_, wanted);
+        bad = session_name_problem(name);
+        if (!bad.empty()) {
+            why = "cannot save as \"" + name.toStdString() + "\", the first free name: " + bad;
+            return false;
+        }
+        // The session is called what its folder is called, so the name the
+        // window shows is the one the Open list shows.
+        if (name.toStdString() != n) {
+            to_write.settings.name = name.toStdString();
+            rename = true;
+        }
+        file = session_file_path(sessions_dir_, name);
+    }
+
+    // Canonical bytes (session_file.h): the same content is the same bytes,
+    // so a save that would write what the file already holds writes nothing
+    // and keeps the generation, as session-format.md asks.
+    model::WriteInfo info;
+    info.written_by = "sonora-ui";
+    info.save_generation = save_generation_;
+    std::string bytes, error, caution;
+    if (!model::serialize(to_write, info, bytes, error)) {
+        why = "the session could not be saved: " + error;
+        sync();
+        return false;
+    }
+    const bool nothing_new = file == file_ && bytes == saved_bytes_;
+    if (!nothing_new) {
+        info.save_generation = save_generation_ + 1;
+        if (!model::serialize(to_write, info, bytes, error)) {
+            why = "the session could not be saved: " + error;
+            sync();
+            return false;
+        }
+        if (!writer_(file, bytes, why, caution)) {
+            sync();
+            return false;
+        }
+        save_generation_ = info.save_generation;
+        saved_bytes_ = std::move(bytes);
+    }
+    file_ = file;
+    // The file is on disk under the new name; the document follows it. A
+    // refusal here would be a model bug, and the file already says the name.
+    std::string rename_why;
+    if (rename && !doc_.submit(model::SetSettings{to_write.settings}, rename_why)) {
+        caution = caution.empty() ? "the window keeps the old name: " + rename_why
+                                  : caution + "; the window keeps the old name: " + rename_why;
+    }
+    saved_revision_ = doc_.revision();
+    seen_dirty_ = false;
+    sync();
+    emit sessionChanged();
+    QString said = nothing_new ? QStringLiteral("Nothing to save: ") + file_ +
+                                     QStringLiteral(" is current")
+                               : QStringLiteral("Saved ") + file_;
+    if (!caution.empty()) said += QStringLiteral(", but ") + q(caution);
+    emit notice(said);
+    return true;
+}
+
+bool SessionModel::openSessionFile(const QString& file, bool discard, std::string& why) {
+    if (overlay_.recording) {
+        why = "a take is open; stop recording before opening another session";
+        return false;
+    }
+    if (dirty() && !discard) {
+        why = "this session has unsaved edits; save it first, or open with \"Discard edits\"";
+        return false;
+    }
+    std::string bytes;
+    model::Loaded loaded;
+    if (!read_session_file(file, bytes, loaded, why)) return false;
+    const uint32_t rate = ctl_.snapshot().settings.sample_rate;
+    if (loaded.snapshot.settings.sample_rate != rate) {
+        why = "the session is at " + std::to_string(loaded.snapshot.settings.sample_rate) +
+              " Hz and this system runs at " + std::to_string(rate) +
+              " Hz; it cannot play here until sample-rate conversion exists";
+        return false;
+    }
+    doc_.reset(std::move(loaded.snapshot));
+    ctl_.document_replaced();
+    file_ = file;
+    saved_revision_ = doc_.revision();
+    save_generation_ = loaded.save_generation;
+    saved_bytes_ = std::move(bytes);
+    seen_dirty_ = false;
+    // Everything the windows show came from the old session.
+    seen_revision_ = UINT64_MAX;
+    seen_sel_valid_ = seen_view_valid_ = false;
+    updateCounters(true);
+    sync();
+    emit sessionChanged();
+    emit notice(QStringLiteral("Opened ") + file_);
+    return true;
+}
+
+QVariantList SessionModel::sessionList() const {
+    QVariantList out;
+    for (const SessionEntry& e : list_sessions(sessions_dir_)) {
+        QVariantMap m;
+        m.insert(QStringLiteral("name"), e.name);
+        m.insert(QStringLiteral("file"), e.file);
+        m.insert(QStringLiteral("current"), e.file == file_);
+        out << m;
+    }
+    return out;
+}
+
+bool SessionModel::openSession(const QString& file, bool discard) {
+    std::string why;
+    return run(openSessionFile(file, discard, why), why);
 }
 
 // --- Mix window ---

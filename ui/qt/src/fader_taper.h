@@ -21,6 +21,8 @@ float fader_db_from_position(float position);
 
 // Gain at or below this is silence and is written "-inf".
 constexpr float kFaderSilenceDb = -144.0f;
+// The top of the travel.
+constexpr float kFaderMaxDb = 12.0f;
 
 // "+3.5", "0.0", "-12.0", "-inf". One decimal, always signed except 0.0.
 std::string gain_text(float db);
@@ -29,7 +31,8 @@ std::string pan_text(float pan);
 
 // One step of a fader drag: `dy` pixels (positive is down) on a fader whose
 // travel is `travel` pixels. `fine` divides the motion by ten, for the
-// last half-dB of a vocal ride.
+// last half-dB of a vocal ride. A gain past an end of the travel is kept
+// until the drag moves back onto it.
 float fader_drag(float db, float dy, float travel, bool fine);
 
 }  // namespace sonora::ui

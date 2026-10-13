@@ -2,89 +2,119 @@
 #include "timeline_document.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <utility>
 
 namespace sonora::ui {
 
 using namespace model;
 
-namespace {
+// --- queries ----------------------------------------------------------------
 
-Id max_id(const Snapshot& s) {
-    Id m = 0;
+const Playlist* active_playlist(const TrackEdit* t) {
+    if (t == nullptr) return nullptr;
+    for (const auto& p : t->playlists) {
+        if (p->id == t->active_playlist) return p.get();
+    }
+    return nullptr;
+}
+
+const TrackEdit* find_track(const Snapshot& s, Id track) {
+    const int i = track_index(s, track);
+    return i < 0 ? nullptr : s.edit->tracks[static_cast<std::size_t>(i)].get();
+}
+
+int track_index(const Snapshot& s, Id track) {
+    const auto& ts = s.edit->tracks;
+    for (std::size_t i = 0; i < ts.size(); ++i) {
+        if (ts[i]->id == track) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+const Region* find_region(const Snapshot& s, Id region, const TrackEdit** track) {
+    if (region == kNoId) return nullptr;
     for (const auto& t : s.edit->tracks) {
-        m = std::max(m, t->id);
-        for (const auto& p : t->playlists) {
-            m = std::max(m, p->id);
-            for (const auto& r : p->regions) m = std::max(m, r.id);
+        const Playlist* p = active_playlist(t.get());
+        if (p == nullptr) continue;
+        for (const Region& r : p->regions) {
+            if (r.id != region) continue;
+            if (track) *track = t.get();
+            return &r;
         }
     }
-    for (const auto& src : s.sources->sources) m = std::max(m, src.id);
-    return m;
+    return nullptr;
+}
+
+// --- the document -------------------------------------------------------------
+
+ModelDocument::ModelDocument(Snapshot initial, std::size_t budget_bytes)
+    : budget_(budget_bytes), history_(std::move(initial), budget_bytes) {}
+
+bool ModelDocument::submit(const Operation& op, std::string& why) {
+    return history_.apply(op, why);
+}
+
+bool ModelDocument::undo(std::string& why) {
+    if (history_.undo()) return true;
+    why = "nothing to undo";
+    return false;
+}
+
+bool ModelDocument::redo(std::string& why) {
+    if (history_.redo()) return true;
+    why = "nothing to redo";
+    return false;
+}
+
+Id ModelDocument::reserve_id() {
+    // An id reserved and then not used (a move that split nothing) is never
+    // handed out again; apply() raising next_id past it is harmless.
+    next_unreserved_ = std::max(next_unreserved_, history_.current().next_id);
+    return next_unreserved_++;
+}
+
+void ModelDocument::reset(Snapshot s) {
+    history_ = History(std::move(s), budget_);
+    next_unreserved_ = 0;
+}
+
+// --- sessions built from operations -------------------------------------------
+
+namespace {
+
+// Applies `op` to a session under construction. These builders feed fixed,
+// valid operations; one refused is a defect in this file, and a session
+// quietly missing its tracks would be worse than stopping.
+void build(Snapshot& s, const Operation& op) {
+    std::string why;
+    Snapshot next;
+    if (!apply(s, op, next, why)) {
+        std::fprintf(stderr, "sonora-ui: building a session: %s\n", why.c_str());
+        std::abort();
+    }
+    s = std::move(next);
 }
 
 }  // namespace
 
-LocalDocument::LocalDocument(Snapshot initial, std::size_t max_steps)
-    : current_(std::move(initial)), max_steps_(std::max<std::size_t>(2, max_steps)) {
-    history_.push_back(current_.edit);
-    last_id_ = max_id(current_);
-}
-
-bool LocalDocument::submit(const Operation& op, std::string& why) {
-    Snapshot next;
-    if (!apply(current_, op, next, why)) return false;
-    current_ = std::move(next);
-    if (!undoable(op)) return true;
-    // A new edit after an undo discards the redo branch, as every DAW does.
-    history_.resize(at_ + 1);
-    history_.push_back(current_.edit);
-    if (history_.size() > max_steps_) history_.erase(history_.begin());
-    at_ = history_.size() - 1;
-    return true;
-}
-
-bool LocalDocument::undo(std::string& why) {
-    if (!can_undo()) {
-        why = "nothing to undo";
-        return false;
-    }
-    current_.edit = history_[--at_];
-    ++current_.revision;
-    return true;
-}
-
-bool LocalDocument::redo(std::string& why) {
-    if (!can_redo()) {
-        why = "nothing to redo";
-        return false;
-    }
-    current_.edit = history_[++at_];
-    ++current_.revision;
-    return true;
-}
-
 Snapshot make_empty_session(uint32_t tracks, uint32_t sample_rate) {
-    Snapshot s;
-    s.settings.sample_rate = sample_rate;
-    s.settings.timecode_origin = 3600LL * sample_rate;
-    auto edit = std::make_shared<EditState>();
-    Id next = 0;
+    SessionSettings settings;
+    settings.sample_rate = sample_rate;
+    settings.timecode.origin = 3600LL * sample_rate;  // 01:00:00:00
+    Snapshot s = new_session(settings);
     for (uint32_t i = 0; i < tracks; ++i) {
-        auto t = std::make_shared<TrackEdit>();
-        t->id = ++next;
-        t->name = "Audio " + std::to_string(i + 1);
-        auto p = std::make_shared<Playlist>();
-        p->id = ++next;
-        p->name = t->name + ".01";
-        t->active_playlist = p->id;
-        t->playlists.push_back(std::move(p));
-        TrackMix m;
-        m.track = t->id;
-        s.mix.tracks.push_back(m);
-        edit->tracks.push_back(std::move(t));
+        AddTrack t;
+        t.track = s.next_id;
+        t.playlist = s.next_id + 1;
+        t.name = "Audio " + std::to_string(i + 1);
+        t.playlist_name = t.name + ".01";
+        t.mix.input = {static_cast<uint16_t>(i)};
+        build(s, t);
     }
-    s.edit = std::move(edit);
-    s.sources = std::make_shared<SourcePool>();
+    // A starting point, as a loaded file is: nothing to undo, revision 0.
+    s.revision = 0;
     return s;
 }
 
@@ -94,36 +124,53 @@ Snapshot make_demo_session(uint32_t tracks, uint32_t sample_rate) {
         "Bass DI", "Bass Amp", "Gtr L",  "Gtr R",  "Keys L", "Keys R",   "Lead Vox", "BV 1",
         "BV 2",  "Talkback",
     };
-    Snapshot s = make_empty_session(tracks, sample_rate);
-    auto edit = std::make_shared<EditState>(*s.edit);
-    auto pool = std::make_shared<SourcePool>();
-    Id next = 0;
-    for (const auto& t : edit->tracks) next = std::max({next, t->id, t->active_playlist});
+    static const float kPan[] = {0.0f, 0.0f, 0.3f, -0.4f, 0.4f, -0.8f, 0.8f, 0.0f, 0.0f,
+                                 0.0f, -0.7f, 0.7f, -0.5f, 0.5f, 0.0f, -0.3f, 0.3f, 0.0f};
+    constexpr std::size_t kNamed = sizeof kNames / sizeof kNames[0];
 
+    SessionSettings settings;
+    settings.name = "Demo session";
+    settings.sample_rate = sample_rate;
+    settings.timecode.origin = 3600LL * sample_rate;
+    Snapshot s = new_session(settings);
     const Frames bar = static_cast<Frames>(sample_rate) * 2;  // 120 bpm, 4/4
-    for (std::size_t i = 0; i < edit->tracks.size(); ++i) {
-        auto t = std::make_shared<TrackEdit>(*edit->tracks[i]);
-        if (i < sizeof kNames / sizeof kNames[0]) t->name = kNames[i];
-        auto p = std::make_shared<Playlist>(*t->playlists[0]);
-        p->name = t->name + ".01";
+
+    for (uint32_t i = 0; i < tracks; ++i) {
+        const std::string name = i < kNamed ? kNames[i] : "Audio " + std::to_string(i + 1);
+        AddTrack t;
+        t.track = s.next_id;
+        t.playlist = s.next_id + 1;
+        t.name = name;
+        t.playlist_name = name + ".01";
+        t.mix.input = {static_cast<uint16_t>(i)};
+        // A rough balance, so the mixer looks like a mix rather than a reset.
+        t.mix.gain_db = -2.0f - static_cast<float>((i * 7) % 9);
+        t.mix.pan = kPan[i % 18];
+        t.mix.mute = i == 17;  // talkback
+        build(s, t);
 
         // One take per track, 40 bars long, from which the regions are cut
         // the way a tracking session's first edit pass leaves them.
-        Source src;
-        src.id = ++next;
-        src.name = t->name + "_01";
-        src.length = bar * 40;
-        pool->sources.push_back(src);
+        AddSource src;
+        src.source.id = s.next_id;
+        src.source.path = "Audio Files/" + name + "_01.wav";
+        src.source.length = bar * 40;
+        src.source.take = 1;
+        src.source.recorded_on_track = t.track;
+        build(s, src);
 
+        int cut = 0;
         const auto region = [&](Frames from_bar, Frames bars, Frames offset_bars) {
-            Region r;
-            r.id = ++next;
-            r.name = src.name + (p->regions.empty() ? "" : "-0" + std::to_string(p->regions.size()));
-            r.position = from_bar * bar;
-            r.length = bars * bar;
-            r.source_offset = offset_bars * bar;
-            r.channels.push_back({src.id, 0});
-            p->regions.push_back(r);
+            PlaceRegion p;
+            p.playlist = t.playlist;
+            p.region.id = s.next_id;
+            p.region.name = name + "_01" + (cut == 0 ? "" : "-0" + std::to_string(cut));
+            p.region.position = from_bar * bar;
+            p.region.length = bars * bar;
+            p.region.source_offset = offset_bars * bar;
+            p.region.channels = {{src.source.id, 0}};
+            build(s, p);
+            ++cut;
         };
         const Frames k = static_cast<Frames>(i);
         if (i == 14) {          // lead vocal: verse and chorus phrases
@@ -140,22 +187,8 @@ Snapshot make_demo_session(uint32_t tracks, uint32_t sample_rate) {
             region(9 + (k % 3), 7, 9 + (k % 3));
             region(19 + (k % 2), 6, 19 + (k % 2));
         }
-        t->playlists[0] = std::move(p);
-        edit->tracks[i] = std::move(t);
     }
-    s.edit = std::move(edit);
-    s.sources = std::move(pool);
-
-    // A rough balance, so the mixer looks like a mix rather than a reset.
-    for (std::size_t i = 0; i < s.mix.tracks.size(); ++i) {
-        TrackMix& m = s.mix.tracks[i];
-        m.gain_db = -2.0f - static_cast<float>((i * 7) % 9);
-        static const float kPan[] = {0.0f, 0.0f, 0.3f, -0.4f, 0.4f, -0.8f, 0.8f, 0.0f,
-                                     0.0f, 0.0f, -0.7f, 0.7f, -0.5f, 0.5f, 0.0f, -0.3f,
-                                     0.3f, 0.0f};
-        m.pan = kPan[i % 18];
-    }
-    if (s.mix.tracks.size() > 17) s.mix.tracks[17].mute = true;  // talkback
+    s.revision = 0;
     return s;
 }
 
