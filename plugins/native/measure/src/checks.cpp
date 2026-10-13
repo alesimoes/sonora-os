@@ -185,10 +185,10 @@ void check_denormals(Suite& s, const Config& c) {
                dsp::flush_to_zero_supported() ? "FTZ/DAZ on" : "no FTZ on this architecture");
 }
 
-Chans zipper_tone(double fs, double seconds) {
-    // A 100 Hz tone at -6 dBFS, faded in over 10 ms so its own start is not
-    // a click (a delay would echo one into the measured window).
-    Chans x = sine(fs, 100.0, -6.0, seconds);
+Chans zipper_tone(double fs, double seconds, double dbfs) {
+    // A 100 Hz tone, faded in over 10 ms so its own start is not a click
+    // (a delay would echo one into the measured window).
+    Chans x = sine(fs, 100.0, dbfs, seconds);
     const auto f = static_cast<std::size_t>(0.01 * fs);
     for (auto& ch : x) {
         for (std::size_t i = 0; i < f; ++i) ch[i] *= static_cast<float>(0.5 - 0.5 * std::cos(3.14159265358979 * i / f));
@@ -202,7 +202,14 @@ void check_zipper(Suite& s, const Config& c, const std::string& label) {
         s.fail("quality.json has no 'zipper' list");
         return;
     }
-    const double bar = s.bar("zipper_dbfs");
+    // A processor whose sound is distortion (the tube) turns a loud 100 Hz
+    // tone at full drive into harmonics far above 5 kHz, which is the
+    // effect and not a step. Its quality.json sets a quieter tone
+    // ("zipper_tone_dbfs"), and the bar moves down with it, so a step
+    // must still stay as far under the tone as under the -6 dBFS one.
+    double tone_db = -6.0;
+    if (const json::Value* t = s.quality("zipper_tone_dbfs")) t->to_double(tone_db);
+    const double bar = s.bar("zipper_dbfs") + (tone_db + 6.0);
     const double fs = 48000.0;
     // ADR-0011 §3.2: every automatable parameter. A list that leaves one
     // out is a bar that silently does not apply, so it fails here. Bypass
@@ -221,7 +228,7 @@ void check_zipper(Suite& s, const Config& c, const std::string& label) {
     }
     // A 100 Hz tone at -6 dBFS. Smoothly moving any parameter keeps its
     // energy near 100 Hz; a step or a click puts energy above 5 kHz.
-    const Chans in = zipper_tone(fs, 3.25);
+    const Chans in = zipper_tone(fs, 3.25, tone_db);
     for (const json::Value& item : list->items()) {
         const std::string id = item.text();
         auto p = prepared(s, fs, c);
@@ -293,7 +300,7 @@ void check_golden(Suite& s, const Config& c) {
     }
 }
 
-void check_cpu(Suite& s, const Config& c, const std::string& label) {
+void check_cpu(Suite& s, const Config& c, const std::string& label, bool assert_bar) {
     if (!s.args().cpu) return;
     const double fs = 48000.0;
     // Programme-like load: noise with a sweep under it.
@@ -328,8 +335,16 @@ void check_cpu(Suite& s, const Config& c, const std::string& label) {
     }
     const std::string what = "CPU per block, q128 48 kHz stereo" + label + ": ";
     s.info(what + "p50", percentile(best, 0.5), "us", "per-block minimum of 5 runs");
-    s.check_le(what + "p99.9", percentile(best, 0.999), s.bar("cpu.p999_us"), "us", "per-block minimum of 5 runs");
-    s.check_le(what + "max", percentile(best, 1.0), s.bar("cpu.max_us"), "us", "per-block minimum of 5 runs");
+    if (assert_bar) {
+        s.check_le(what + "p99.9", percentile(best, 0.999), s.bar("cpu.p999_us"), "us", "per-block minimum of 5 runs");
+        s.check_le(what + "max", percentile(best, 1.0), s.bar("cpu.max_us"), "us", "per-block minimum of 5 runs");
+    } else {
+        const std::string over = "per-block minimum of 5 runs; not held to the class bar (" +
+                                 std::to_string(static_cast<int>(s.bar("cpu.p999_us"))) +
+                                 " us): its eco mode meets it, ADR-0011 §3.5";
+        s.info(what + "p99.9", percentile(best, 0.999), "us", over);
+        s.info(what + "max", percentile(best, 1.0), "us", over);
+    }
     s.info(what + "p99.9, single run", percentile(raw, 0.999), "us", "includes the host's scheduling");
     s.info(what + "max, single run", percentile(raw, 1.0), "us", "includes the host's scheduling");
 }

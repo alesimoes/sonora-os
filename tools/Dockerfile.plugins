@@ -20,6 +20,14 @@
 #   validator (VST3)     Steinberg's VST3 SDK v3.8.1_build_84, MIT since 3.8
 #                        (ADR-0011, Unverified 1, settled 2026-10-13)
 #
+# The SPICE references of the analog models (ADR-0011 §3.3, N2), also
+# Debian trixie main:
+#   ngspice            the circuit simulator (BSD-3-Clause, parts under other
+#                      free licences: /usr/share/doc/ngspice/copyright).
+#                      sonora-dsp-measure --spice drives it in batch mode to
+#                      re-derive the committed references from their netlists
+#                      (ctest spice_*). A test tool, like the validators.
+#
 # Nothing here ships in the ISO. Which plugins the appliance carries is a
 # separate decision.
 FROM debian:trixie-slim AS validators
@@ -72,6 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       liblilv-dev \
       lv2-dev \
       lilv-utils \
+      ngspice \
       lv2-examples \
       x42-plugins \
       lsp-plugins-lv2 \

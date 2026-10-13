@@ -310,13 +310,13 @@ if(_native)
     # key input's, stereo and mono, for a processor that takes one, routed
     # (key) and not (nokey: the external key on and no --sidechain, which
     # must key from the input, not from silence); and the re-activation for
-    # a latency-changing value, for the two that have one.
+    # a latency-changing value, for the three that have one.
     set(_cases golden-44100 golden-48000 golden-96000 bypass-48000 automation-48000 mono-48000)
     get_property(_sidechain GLOBAL PROPERTY SONORA_NATIVE_${n}_SIDECHAIN)
     if(_sidechain)
       list(APPEND _cases key-48000 key-mono-48000 nokey-48000 nokey-mono-48000)
     endif()
-    if(n STREQUAL "eq" OR n STREQUAL "limiter")
+    if(n STREQUAL "eq" OR n STREQUAL "limiter" OR n STREQUAL "tube")
       list(APPEND _cases reconfigure-48000)
     endif()
     foreach(_case ${_cases})

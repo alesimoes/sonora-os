@@ -9,6 +9,7 @@ add_library(sonora_dsp_measure STATIC
   src/checks.cpp
   src/render.cpp
   src/signals.cpp
+  src/spice.cpp
   src/suite.cpp
   src/wav.cpp
 )

@@ -35,7 +35,7 @@ fi
 mkdir -p "$OUT"
 
 status=0
-for p in eq compressor gate limiter delay chorus reverb; do
+for p in eq compressor gate limiter delay chorus reverb tube; do
   if ! "$MEASURE" --processor "$p" \
       --quality "$ROOT/plugins/native/$p/quality.json" \
       --golden "$ROOT/plugins/native/$p/tests/golden" \

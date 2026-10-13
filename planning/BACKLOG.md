@@ -636,14 +636,29 @@ ADR-0011 "For the owner".
       5 % of the set decay; onset on the pre-delay to the sample), LV2 and
       VST3 bundles, stereo and mono, through N1's format layer.
       Measurements: `brain/research/native-reverb-n2.md`. dsp-engineer.
-- [ ] N2 slice 2: ngspice in the build container and the SPICE reference
-      harness (netlists of published schematics, rendered offline at 8x,
-      compared in `sonora-dsp-measure`); the triode stage (Koren and
-      Dempwolf models, grid current, supply sag) as the first model held to
-      it, with oversampling or ADAA and measured aliasing (Unverified 8).
-      dsp-engineer.
+- [x] N2 slice 2, `feature/dsp-n2-tube`: ngspice in the plugins image and
+      the SPICE reference harness (`measure/spice.h`: netlists generated
+      from the model's own values, committed, re-run by `spice_triode_*`);
+      the triode stage in `common/dsp` (`triode.h`: Dempwolf and Koren laws,
+      grid current, interelectrode capacitances, MNA/DK Newton solve); the
+      tube drive processor on it (2x/4x/8x, LV2 and VST3, stereo and mono).
+      Measurements: `brain/research/native-tube-n2.md`. dsp-engineer.
 - [ ] N2 slice 3: transformer (core saturation and hysteresis, LF first)
-      and the tube drive processor built on slices 2 and 3. dsp-engineer.
+      as an output stage of the tube drive, with the supply sag an output
+      stage draws (slice 2 has one preamp stage, which draws too little
+      for sag to matter). dsp-engineer.
+- [ ] N2 tube follow-ups (slice 2): (a) CPU: standard (4x) is 95-104 us
+      p99.9 per q128 stereo block and eco (2x) 47-64 us against class B's
+      60 (Docker Desktop, i7-11800H); candidates are SIMD for the lockstep
+      solve in `common/dsp/src/arch/`, a chord Newton step, the DK method's
+      precomputed solution table, or leaving out Cgk and Cpk (poles above
+      3 MHz; <= 0.01 dB in band in ngspice); measure on the reference
+      machine first. (b) The triode laws against published 12AX7 plate
+      curves or the owner's tubes (slice 2 checks the solver against SPICE
+      on the same laws, not the laws against a tube). (c) The bias
+      (cathode resistor) and a second stage as parameters, each with its
+      SPICE cases. (d) Golden files under Clang and MSVC once those jobs
+      exist. dsp-engineer.
 - [ ] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
       NAB and IEC record and playback EQ, wow and flutter). dsp-engineer.
 - [ ] N2 slice 5: modelled noise and hum in `common/dsp` (seeded, published
