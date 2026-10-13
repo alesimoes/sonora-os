@@ -14,7 +14,6 @@ end of its run. Keep it short: what is true now, not a diary.
   under WSL2 with onboard audio; no ISO, QEMU, USB or installer work until
   the product exists; the UMC1820 is connected at the end. The image work
   below is done and parked, not abandoned.
-- **Current phase:** 1 — Bootable appliance
 - **Build state:** the engine compiles clean under GCC 14 with `-Wall
   -Wextra` and all 17 ctests pass in the Debian trixie container built by
   `tools/build-engine.sh`. Verified 2026-10-13 on `contract/backend`, and
