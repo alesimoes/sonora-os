@@ -9,7 +9,7 @@
   },
   "denormal_ratio": 1.2,
   "zipper_dbfs": -60.0,
-  "zipper": ["output", "hpf_on", "hpf_freq", "lpf_on", "lpf_freq", "low_shelf_on", "low_shelf_freq", "low_shelf_gain", "low_shelf_q", "high_shelf_on", "high_shelf_freq", "high_shelf_gain", "high_shelf_q", "bell1_on", "bell1_freq", "bell1_gain", "bell1_q", "bell4_freq", "bell4_gain", "bell4_q"],
+  "zipper": ["output", "hpf_on", "hpf_freq", "lpf_on", "lpf_freq", "low_shelf_on", "low_shelf_freq", "low_shelf_gain", "low_shelf_q", "high_shelf_on", "high_shelf_freq", "high_shelf_gain", "high_shelf_q", "bell1_on", "bell1_freq", "bell1_gain", "bell1_q", "bell2_on", "bell2_freq", "bell2_gain", "bell2_q", "bell3_on", "bell3_freq", "bell3_gain", "bell3_q", "bell4_on", "bell4_freq", "bell4_gain", "bell4_q"],
   "golden_abs": 1e-6,
   "cpu": {
     "p999_us": 20.0,

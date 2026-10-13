@@ -168,9 +168,15 @@ int test_nonfinite_input_recovers() {
     auto in = ramp(1024, 1);
     in[0][100] = std::nanf("");
     in[0][200] = INFINITY;
+    // Past +120 dBFS is a fault, not a signal: silenced like NaN. At the
+    // limit it is still a sample.
+    in[0][300] = 1e30f;
+    in[0][310] = -1.0e6f;
     const auto out = render(t, in, 128, {});
     for (float v : out[0]) CHECK(std::isfinite(v));
     CHECK(out[0][105] == 0.0f);
+    CHECK(out[0][305] == 0.0f);
+    CHECK(out[0][315] == -1.0e6f);
     CHECK(out[0][600] == in[0][595]);
     return 0;
 }

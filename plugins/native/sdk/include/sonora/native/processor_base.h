@@ -6,9 +6,10 @@
 // - latency-compensated bypass with a crossfade (§1.5);
 // - declicked structural switches (ParamInfo::declick);
 // - flush-to-zero for the whole of process() (§3.2, "Denormals");
-// - non-finite input replaced by silence, and a non-finite output resets
-//   the processor and outputs silence for that block, so output is always
-//   finite and recovers on the next valid block (§3.2, "Non-finite input");
+// - non-finite input, and input beyond +120 dBFS, replaced by silence, and
+//   a non-finite output resets the processor and outputs silence for that
+//   block, so output is always finite and recovers on the next valid block
+//   (§3.2, "Non-finite input");
 // - in-place hosts (out aliasing in), via internal buffers sized in
 //   prepare().
 //
@@ -59,6 +60,11 @@ public:
 
     // How many blocks were silenced because the output went non-finite.
     std::uint64_t nonfinite_blocks() const noexcept { return nonfinite_blocks_; }
+    // How many blocks had an input the processor could not follow and
+    // bounded instead (the delay's host tempo below its 20 BPM floor).
+    // Never a silent clamp: the M9 telemetry region publishes this to the
+    // editor, and the measurement harness asserts it.
+    std::uint64_t bounded_blocks() const noexcept { return bounded_blocks_; }
 
 protected:
     // Allocate and configure; read `reconfigures` parameters with value().
@@ -82,6 +88,9 @@ protected:
     ParamSmoother& smoother(std::uint32_t index) noexcept { return smoothers_[index]; }
     const Transport& transport() const noexcept { return transport_; }
     void set_latency(std::uint32_t samples) noexcept { latency_ = samples; }
+    // Call from render() when an input had to be bounded; counted once per
+    // block in bounded_blocks().
+    void note_bounded() noexcept { bounded_ = true; }
 
 private:
     void apply_event(const ParamEvent& e) noexcept;
@@ -116,6 +125,8 @@ private:
     std::vector<std::uint8_t> has_pending_;
 
     std::uint64_t nonfinite_blocks_ = 0;
+    std::uint64_t bounded_blocks_ = 0;
+    bool bounded_ = false;
 };
 
 }  // namespace sonora::native

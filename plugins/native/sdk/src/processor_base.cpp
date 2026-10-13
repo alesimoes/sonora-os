@@ -10,6 +10,16 @@ namespace sonora::native {
 namespace {
 constexpr double kBypassFadeSeconds = 0.010;
 constexpr double kDeclickSeconds = 0.003;  // each way
+
+// Input beyond +120 dBFS is a fault upstream (a blown-up filter, a buffer
+// of garbage), not a signal: no converter or mix bus produces it. It is
+// treated as NaN is, replaced by silence, because a finite 1e30 does as
+// much harm: a limiter sits 600 dB down for its release, a resonant EQ
+// rings at 1e30 for seconds, a delay repeats it (the "1e30 in" check).
+constexpr float kInputLimit = 1.0e6f;
+
+// False for NaN, the infinities and anything past the limit.
+inline bool valid_sample(float x) noexcept { return std::fabs(x) <= kInputLimit; }
 }  // namespace
 
 void ParamSmoother::configure(const ParamInfo& p, double sample_rate) noexcept {
@@ -185,12 +195,12 @@ void ProcessorBase::process(const AudioBuffers& io, const ParamEvent* events,
             const float* src = io.in[c] + done;
             for (std::uint32_t i = 0; i < chunk; ++i) {
                 const float x = src[i];
-                dst[i] = std::isfinite(x) ? x : 0.0f;
+                dst[i] = valid_sample(x) ? x : 0.0f;
             }
             float* sdst = &sc_buf_[static_cast<std::size_t>(c) * max_frames_];
             if (io.sidechain != nullptr && io.sidechain_channels > 0) {
                 const float* s = io.sidechain[c < io.sidechain_channels ? c : io.sidechain_channels - 1] + done;
-                for (std::uint32_t i = 0; i < chunk; ++i) sdst[i] = std::isfinite(s[i]) ? s[i] : 0.0f;
+                for (std::uint32_t i = 0; i < chunk; ++i) sdst[i] = valid_sample(s[i]) ? s[i] : 0.0f;
             } else {
                 for (std::uint32_t i = 0; i < chunk; ++i) sdst[i] = dst[i];
             }
@@ -236,6 +246,10 @@ void ProcessorBase::process(const AudioBuffers& io, const ParamEvent* events,
     }
     // Events past the block's end (a host error) still take effect.
     while (ev < event_count) apply_event(events[ev++]);
+    if (bounded_) {
+        ++bounded_blocks_;
+        bounded_ = false;
+    }
 }
 
 }  // namespace sonora::native
