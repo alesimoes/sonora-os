@@ -42,9 +42,14 @@ bool is_canary(const float* p) {
 Chain::Chain(PluginSource& source, const ChainConfig& config)
     : source_(source),
       config_(config),
+      // One buffer per signal channel at least, so every replica of a mono
+      // plugin reads a key buffer of its own.
+      key_channels_(config.sidechain_channels > 0 ? std::max(config.sidechain_channels, config.channels)
+                                                  : 0),
       guard_frames_(config.max_frames),
       stride_(config.max_frames + config.max_frames) {
     stages_.emplace_back(std::size_t(config_.channels) * stride_, 0.f);
+    key_.assign(std::size_t(key_channels_) * stride_, 0.f);
 }
 
 // Processors go before the buffers they point into.
@@ -65,12 +70,13 @@ bool Chain::add(const std::string& id, ChainError& error) {
     }
     stages_.emplace_back(std::size_t(config_.channels) * stride_, 0.f);
     const std::size_t in_stage = slots_.size(), out_stage = in_stage + 1;
-    std::vector<float*> in, out;
+    std::vector<float*> in, out, key;
     for (uint32_t c = 0; c < config_.channels; ++c) {
         in.push_back(buffer(in_stage, c));
         out.push_back(buffer(out_stage, c));
     }
-    std::unique_ptr<Processor> p = source_.instantiate(id, config_, in, out, error);
+    for (uint32_t c = 0; c < key_channels_; ++c) key.push_back(key_.data() + std::size_t(c) * stride_);
+    std::unique_ptr<Processor> p = source_.instantiate(id, config_, in, out, key, error);
     if (!p) {
         error.instance = index;
         stages_.pop_back();
@@ -81,23 +87,38 @@ bool Chain::add(const std::string& id, ChainError& error) {
     return true;
 }
 
+// Key buffer k holds the region's key channel min(k, sidechain - 1), so a
+// mono key feeds every buffer. Every plugin gets this fresh copy.
+void Chain::copy_key(const float* const* in, uint32_t frames) noexcept {
+    for (uint32_t k = 0; k < key_channels_; ++k)
+        std::memcpy(key_.data() + std::size_t(k) * stride_,
+                    in[config_.channels + std::min(k, config_.sidechain_channels - 1)], frames * sizeof(float));
+}
+
 void Chain::fill_canaries(uint32_t frames) {
     float canary;
     std::memcpy(&canary, &kCanary, sizeof canary);
-    for (auto& stage : stages_)
-        for (uint32_t c = 0; c < config_.channels; ++c)
-            std::fill(stage.begin() + std::ptrdiff_t(c) * stride_ + frames,
-                      stage.begin() + std::ptrdiff_t(c + 1) * stride_, canary);
+    const auto fill = [&](std::vector<float>& planes, uint32_t channels) {
+        for (uint32_t c = 0; c < channels; ++c)
+            std::fill(planes.begin() + std::ptrdiff_t(c) * stride_ + frames,
+                      planes.begin() + std::ptrdiff_t(c + 1) * stride_, canary);
+    };
+    for (auto& stage : stages_) fill(stage, config_.channels);
+    fill(key_, key_channels_);
 }
 
 bool Chain::canaries_intact(uint32_t from_frame, uint32_t words) const noexcept {
-    for (const auto& stage : stages_)
-        for (uint32_t c = 0; c < config_.channels; ++c) {
-            const float* p = stage.data() + std::size_t(c) * stride_ + from_frame;
+    const auto intact = [&](const std::vector<float>& planes, uint32_t channels) {
+        for (uint32_t c = 0; c < channels; ++c) {
+            const float* p = planes.data() + std::size_t(c) * stride_ + from_frame;
             for (uint32_t i = 0; i < words; ++i)
                 if (!is_canary(p + i)) return false;
         }
-    return true;
+        return true;
+    };
+    for (const auto& stage : stages_)
+        if (!intact(stage, config_.channels)) return false;
+    return intact(key_, key_channels_);
 }
 
 uint64_t Chain::sanitise_stage(std::size_t stage, uint32_t frames) noexcept {
@@ -121,6 +142,10 @@ bool Chain::process(const float* const* in, float* const* out, uint32_t frames,
 
     for (std::size_t k = 0; k < slots_.size(); ++k) {
         Processor& p = *slots_[k];
+        // Copied, not pointed to: no plugin ever sees the engine's planes.
+        // Again for every plugin, so a key one plugin wrote into is not the
+        // next one's key (a bounded copy: key channels x frames).
+        copy_key(in, frames);
         if (report) report->current_instance.store(static_cast<int32_t>(k), std::memory_order_relaxed);
         const uint64_t t0 = monotonic_ns();
         p.run(frames);
@@ -165,6 +190,11 @@ bool Chain::validate(ChainError& error) {
             Processor& p = *slots_[k];
             const PluginInfo& info = p.info();
             const std::string who = info.name + " <" + info.uri + ">";
+            // Silence again for every plugin, as process() copies the key
+            // again: the canaries behind it stay as fill_canaries left them.
+            for (uint32_t c = 0; c < key_channels_; ++c)
+                std::fill(key_.begin() + std::ptrdiff_t(c) * stride_,
+                          key_.begin() + std::ptrdiff_t(c) * stride_ + frames, 0.f);
             p.run(frames);
             if (!p.intact() || !canaries_intact(frames, stride_ - frames)) {
                 error.reason = Refusal::WroteOutsideBuffers;
@@ -211,6 +241,7 @@ bool Chain::set_control(uint32_t instance, const std::string& symbol, float valu
 
 uint32_t Chain::param_count(std::size_t i) const { return slots_[i]->param_count(); }
 std::string Chain::param_key(std::size_t i, uint32_t dense) const { return slots_[i]->param_key(dense); }
+std::string Chain::param_symbol(std::size_t i, uint32_t dense) const { return slots_[i]->param_symbol(dense); }
 float Chain::param_default(std::size_t i, uint32_t dense) const { return slots_[i]->param_default(dense); }
 
 bool Chain::designated_bypass(std::size_t i) const { return slots_[i]->bypass_param() >= 0; }
@@ -286,6 +317,19 @@ const PluginInfo& Chain::info(std::size_t i) const { return slots_[i]->info(); }
 
 void Chain::control() {
     for (auto& s : slots_) s->control();
+}
+
+bool Chain::reactivate(ChainError& error) {
+    for (std::size_t k = 0; k < slots_.size(); ++k) {
+        if (slots_[k]->reactivate()) continue;
+        const PluginInfo& info = slots_[k]->info();
+        error.reason = Refusal::InstantiateFailed;
+        error.instance = static_cast<int>(k);
+        error.message = info.name + " <" + info.uri + "> failed to re-activate";
+        return false;
+    }
+    error = ChainError{};
+    return true;
 }
 
 // ---------------------------------------------------------------------------

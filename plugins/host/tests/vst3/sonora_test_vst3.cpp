@@ -17,12 +17,15 @@
 //                                                       from another thread; segfaults if
 //                                                       asked its latency on the thread
 //                                                       that runs process()
+//   vst3:534F4E4F524156535433544553540008  once         mono pass-through; activates
+//                                                       once, and refuses setActive(true)
+//                                                       after a setActive(false)
 //
 // SONORA_TEST_VST3_CRASH_ON_SCAN=1 makes GetPluginFactory segfault, for the
 // test that a crashing scan costs one --list entry and not the list.
-// SONORA_TEST_VST3_HANG_ON_SCAN=1 makes the latency class, the last one,
-// hang when it is instantiated: the scan is killed after the other classes
-// were described and written.
+// SONORA_TEST_VST3_HANG_ON_SCAN=1 makes the latency class hang when it is
+// instantiated: the scan is killed after the classes before it (params
+// among them) were described and written.
 
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ipluginbase.h"
@@ -43,8 +46,8 @@ using namespace Steinberg::Vst;
 
 namespace {
 
-enum class Kind { Crash = 1, StereoOnly = 2, YesMan = 3, Liar = 4, Turncoat = 5, Params = 6, Latency = 7 };
-constexpr int kKinds = 7;
+enum class Kind { Crash = 1, StereoOnly = 2, YesMan = 3, Liar = 4, Turncoat = 5, Params = 6, Latency = 7, Once = 8 };
+constexpr int kKinds = 8;
 // More than the 128 one block once carried; the host's ring holds 256.
 constexpr int32 kParamsCount = 256;
 constexpr uint32 kLatencyAfter = 64;
@@ -67,7 +70,8 @@ void copy16(String128 dst, const char* src) {
 class TestEffect final : public IComponent, public IAudioProcessor, public IEditController {
 public:
     explicit TestEffect(Kind kind) : kind_(kind) {
-        const bool stereo = kind != Kind::Crash && kind != Kind::Params && kind != Kind::Latency;
+        const bool stereo =
+            kind != Kind::Crash && kind != Kind::Params && kind != Kind::Latency && kind != Kind::Once;
         arrangement_ = stereo ? SpeakerArr::kStereo : SpeakerArr::kMono;
     }
 
@@ -118,7 +122,10 @@ public:
             arrangement_ = SpeakerArr::k71Cine;
         return kResultOk;
     }
-    tresult PLUGIN_API setActive(TBool) override { return kResultOk; }
+    tresult PLUGIN_API setActive(TBool state) override {
+        if (kind_ != Kind::Once || !state) return kResultOk;
+        return activations_++ == 0 ? kResultOk : kResultFalse;
+    }
     tresult PLUGIN_API setState(IBStream*) override { return kResultOk; }
     tresult PLUGIN_API getState(IBStream*) override { return kResultOk; }
 
@@ -130,6 +137,7 @@ public:
         case Kind::Crash:
         case Kind::Params:
         case Kind::Latency:
+        case Kind::Once:
             if (ins[0] != outs[0] || SpeakerArr::getChannelCount(ins[0]) > 2) return kResultFalse;
             arrangement_ = ins[0];
             return kResultTrue;
@@ -302,6 +310,7 @@ private:
     std::thread notifier_;
     float delay_[2][kDelayRing]{};
     int32 write_ = 0;
+    int activations_ = 0;  // the once class
 };
 
 class Factory final : public IPluginFactory {
@@ -327,7 +336,8 @@ public:
     tresult PLUGIN_API getClassInfo(int32 index, PClassInfo* info) override {
         static const char* const names[kKinds] = {
             "Sonora Test Crash",    "Sonora Test Stereo Only", "Sonora Test Yes-Man", "Sonora Test Liar",
-            "Sonora Test Turncoat", "Sonora Test Params",      "Sonora Test Latency"};
+            "Sonora Test Turncoat", "Sonora Test Params",      "Sonora Test Latency",
+            "Sonora Test Once"};
         if (index < 0 || index >= kKinds) return kInvalidArgument;
         *info = PClassInfo();
         make_cid(static_cast<Kind>(index + 1), info->cid);

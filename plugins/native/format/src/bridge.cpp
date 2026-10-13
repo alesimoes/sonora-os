@@ -16,9 +16,12 @@ void silence(float* const* out, std::uint32_t channels, std::uint32_t frames) no
 }
 }  // namespace
 
-Bridge::Bridge(std::unique_ptr<Processor> processor, std::uint32_t channels)
+Bridge::Bridge(std::unique_ptr<Processor> processor, std::uint32_t channels,
+               std::uint32_t sidechain_channels)
     : processor_(std::move(processor)),
       channels_(channels),
+      // A key input on a processor that takes none is never handed over.
+      sidechain_channels_(processor_->descriptor().sidechain ? sidechain_channels : 0),
       count_(processor_->descriptor().param_count),
       values_(new std::atomic<float>[count_]),
       dirty_(new std::atomic<bool>[count_]),
@@ -83,8 +86,8 @@ bool Bridge::activate(double sample_rate, std::uint32_t max_frames) {
     return prepared_;
 }
 
-void Bridge::run(const float* const* in, float* const* out, std::uint32_t frames,
-                 const Transport& transport) noexcept {
+void Bridge::run(const float* const* in, float* const* out, const float* const* sidechain,
+                 std::uint32_t frames, const Transport& transport) noexcept {
     if (frames == 0) return;
     if (!prepared_) {
         silence(out, channels_, frames);
@@ -102,7 +105,11 @@ void Bridge::run(const float* const* in, float* const* out, std::uint32_t frames
         }
     }
     first_block_ = false;
-    const AudioBuffers io{in, out, nullptr, channels_, 0, frames};
+    std::uint32_t keys = sidechain != nullptr ? sidechain_channels_ : 0;
+    for (std::uint32_t c = 0; c < keys; ++c) {
+        if (sidechain[c] == nullptr) keys = 0;
+    }
+    const AudioBuffers io{in, out, keys > 0 ? sidechain : nullptr, channels_, keys, frames};
     processor_->process(io, events_.get(), n, transport);
 }
 

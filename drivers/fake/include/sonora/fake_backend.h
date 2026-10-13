@@ -134,6 +134,9 @@ public:
     // control thread, in either mode. ---
     // The server loses `frames`: one xrun reported, and frame_time jumps.
     void inject_xrun(uint32_t frames);
+    // The same, with the xrun reported only after that period's callback
+    // has run, as JACK's notification thread can.
+    void inject_late_xrun(uint32_t frames);
     // The server dies: no period runs again and the ports are gone.
     void inject_server_loss();
     // The server runs its next period at `rate`. With `notify` the server
@@ -146,6 +149,10 @@ public:
     // The server's frame counter steps back by `frames` (a clock source
     // change). Not fatal: counted, and frame_time holds still.
     void inject_clock_step_back(uint32_t frames);
+    // The server's frame counter jumps `frames` ahead with no xrun reported,
+    // as PipeWire's dummy driver does when woken late. Counted as a clock
+    // step; frame_time keeps the gap.
+    void inject_unreported_skip(uint32_t frames);
     // While set, no period runs although time passes.
     void set_stalled(bool stalled);
     // The device's ports go away: unlinked first, then unregistered, in the

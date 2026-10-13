@@ -263,6 +263,14 @@ not start or extend those items before the Complete DAW closes (owner,
       undo-to-audible latency,
       p99 and max, on a real stick while 18 tracks record. rt-engineer.
 
+- [ ] OS 1, needs a physical USB stick: the capture writer wins the device
+      over the playback reader (ADR-0009 §4.4, last bullet). Today they are
+      separate threads and nothing orders their I/O; measure with 18 tracks
+      recording while 18 play back (Unverified 1), then give the writer
+      priority (I/O priority class, or the reader yielding while a drain is
+      behind) only if the measurement shows a capture overrun or a drain
+      delayed by a read. rt-engineer.
+
 - [ ] On the owner's laptop, no interface: the engine records from the
       onboard card after the 60 s wait, the notice on tty1, `--tracks auto`
       gives its channel count (expected 2). Then with the UMC1820: it is
@@ -281,6 +289,15 @@ not start or extend those items before the Complete DAW closes (owner,
       `[[clang::nonblocking]]`. Most useful after M3 (fake backend). Also
       check whether libjack calls trip RTSan inside the callback.
       distro-engineer with rt-engineer.
+- [ ] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s
+      reader stress test (with its deactivate cycles) at least: they drive
+      `Session::process()` and the chunk-slot loads through every playback
+      path (fades, crossfades, ramps, misses, locates, swaps, delay lines).
+      From the PR #31 RT audit. distro-engineer with rt-engineer.
+      PR #41's RT audit adds about ten audio-thread functions checked by
+      reading only (FrameClock, PlanExchange::acquire, render_segment,
+      FlushDenormals): the job should cover `test_playback_fake` and
+      `test_frame_clock` too.
 - [x] With M4, the state publisher is paced on a fixed timer. `StateView`
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
@@ -389,9 +406,66 @@ Order and owners are in ADR-0008 §5.
 
 ## DAW 1 detail (formerly Phase 2)
 
-- [ ] Playback path: read from disk into a ring, mix, feed the output ports.
+- [x] Playback path: read from disk into a ring, mix, feed the output ports.
+      Ported onto the M4/M7 control server (ADR-0009 update, 2026-10-13):
+      one document, the server's; closed takes replicated as AddSource and
+      RecordTake.
+- [ ] Plan builds off the control thread. Measured at 18 tracks x 2000
+      regions: build_plan() 77 ms p50, 96 ms max (measure_playback, Docker
+      on the dev laptop), against the ADR's 10 ms trigger. Every command
+      queued behind an edit, transport.stop included, waits that long. Move
+      the builder to a worker owned by engine/control, as ADR-0009 §4
+      allows, before sessions that size are edited. rt-engineer.
+- [ ] The stop reply waits on the closed take's plan rebuild:
+      `follow_transport()` runs before `reply()` in
+      `EngineControlServer::handle()`, so Space's Ok comes after every
+      closed WAV header is read, 2xN operations are applied and the plan
+      is rebuilt (77-96 ms at 18x2000). Audio is unaffected; the
+      acknowledgement is late. Reply first, or fold it into the builder
+      worker above. From the PR #41 review (L1). rt-engineer.
+- [ ] Prove FrameClock's late-xrun deferral on real servers: under pw-jack
+      and jackd2, record `gettid()` in `xrun_cb` and `process_cb`, force
+      50 xruns (SIGSTOP the engine for over a period) and check
+      `clock_discontinuities()` stays 0. The deferral covers an xrun that
+      lands by the next period; one later still would be counted twice.
+      From the PR #41 RT audit. rt-engineer.
+- [ ] A take on N tracks is one undo step: a multi-track `RecordTake` (one
+      operation carrying every track's region), as Pro Tools' one undo
+      removes the whole take. Today `add_closed_take()` applies one
+      `RecordTake` per track, N undo steps. A `common/model` contract
+      change (op codec, replication). rt-engineer with ui-engineer.
+- [ ] The end of a fader gesture written into the document as `SetMix`.
+      Today a `ParameterChange` moves the Track atomic only, so the session
+      file and every replica keep the old gain, and the next mix-changing
+      update (another track's `SetMix`, a load) snaps the fader back.
+      ui-engineer with rt-engineer.
+- [ ] `transport.locate` with the frame in `argument` (a click on the ruler),
+      and state block layout v2 carrying "Locating...", the monitor bus
+      peaks and the playback miss count. Contract PRs of their own (ADR-0009
+      update, item 4, "Not in this port"); the bus meters return in
+      sonora-tui and sonora-ui with them. rt-engineer with ui-engineer.
 - [ ] Input monitoring with latency compensation measured by a loopback test.
 - [ ] Transport locate without dropping a block.
+- [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
+      period PipeWire's dummy driver skipped without an xrun, which the
+      self-linked input reads as two blocks swapped; the engine's output was
+      continuous. The skip is now a clock step, and only then may a block
+      null a period early or late. Postmortem
+      2026-10-13-loopback-swap-skipped-period.
+- [ ] Locate latency as ADR-0009 §4.4 asks: p99 and max per session in
+      diagnostics, and "Locating…" on screen past 100 ms.
+      `PlaybackController` keeps only the last and the max today. rt-engineer
+      with ui-engineer.
+- [ ] Show `PlanReport::over_half_pool` when a plan is built (ADR-0009 §4.3:
+      a plan whose peak demand exceeds half the pool is flagged before it
+      plays), and the "edit not yet audible: playback cache full" counter
+      from `DiskReader::cache_full()`. The builder computes both; nothing
+      shows them yet. ui-engineer.
+- [ ] A short ramp when a track's monitor source changes (input to playback
+      and back, Auto at record start and stop). Today the source switches at
+      a block boundary under a steady gain, which can click. Folds into the
+      sample-accurate auto-monitor switch of the in-band take boundary
+      below. rt-engineer.
 - [ ] Timeline data model: regions over sources, with an undo stack.
 - [ ] Session file format spec, then the reader and writer. Specs written
       (`brain/specs/session-format.md`, `brain/specs/timeline-model.md`,
@@ -516,13 +590,24 @@ ADR-0011 "For the owner".
       on DPF, LV2 and VST3; `lv2lint` and Steinberg `validator` in CI; the
       DPF-VST3 checkpoint on the EQ (Unverified 2). dsp-engineer,
       plugin-engineer reviews.
-- [ ] N1 follow-up (PR #40 review, code L2): render through a bundle the
-      paths the host fixture never reaches. Parameter changes after the
-      first block (smoothed, and VST3's one-block-late delivery,
-      ADR-0011 Amendment 2), and reconfiguring values (the EQ's zero-latency
-      mode, a non-default limiter look-ahead) through a host that
-      re-activates the instance. Needs a driver scenario that sets values
-      mid-render and re-activates. dsp-engineer, plugin-engineer reviews.
+- [x] N1 follow-up (PR #40 review, code L2): render through a bundle the
+      paths the host fixture never reaches. Done in `feature/dsp-n1-io`:
+      a parameter moved on the ring mid-render (`automation-48000`, every
+      processor, both formats, bit-exact), VST3's one-block-late delivery
+      at a nonzero offset (`native_format_late_vst3_*`), and the EQ's mode
+      and the limiter's look-ahead set at load through a host that
+      re-activates (`reconfigure-48000`, host `--reactivate`).
+- [ ] N1, with M9: re-activating a plugin while it runs, for a
+      latency-changing value moved during playback, then re-planning PDC.
+      Needs the HostControl channel: the host pauses its processing
+      thread, re-activates on its main thread (`Processor::reactivate`
+      exists), publishes the new latency. Only the load-time case
+      (`--reactivate`) is tested now. plugin-engineer + rt-engineer.
+- [ ] N1, with M9: how the engine routes a key to a plugin's side-chain.
+      The host takes it today as the last N channels of the region
+      (`sonora-plugin-host --sidechain N`, the header unchanged);
+      `contracts/plugin` should say so, or carry key planes of its own,
+      before the engine writes against it. plugin-engineer + rt-engineer.
 - [ ] N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
       `setBufferSize(..., true)`, which deactivates and re-activates, and so
       re-prepares and allocates, on whatever thread the host calls

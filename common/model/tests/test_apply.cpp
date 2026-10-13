@@ -345,6 +345,41 @@ int test_mix_and_settings_are_not_edits() {
     st.sample_rate = 44100;
     CHECK(!b.h.apply(SetSettings{st}, err));
     CHECK(mentions(err, "sample rate"));
+
+    // These reach the audio thread as coefficients: a finite but huge
+    // gain is inf there, and inf times a silent sample is NaN.
+    m.pan = 0.0f;
+    m.gain_db = kMaxGainDb;
+    CHECK_APPLY(b.h, SetMix{m});
+    m.gain_db = kMinGainDb;
+    CHECK_APPLY(b.h, SetMix{m});
+    for (const float g : {kMaxGainDb + 0.5f, kMinGainDb - 0.5f, 1e30f, -1e30f}) {
+        m.gain_db = g;
+        CHECK(!b.h.apply(SetMix{m}, err));
+        CHECK(mentions(err, "gain_db"));
+        bus.gain_db = g;
+        CHECK(!b.h.apply(SetMonitorBus{bus}, err));
+        CHECK(mentions(err, "gain_db"));
+    }
+    bus.gain_db = 0.0f;
+    // A positive law is a negative exponent: inf at a hard pan.
+    for (const float law : {0.5f, kMinPanLawDb - 0.5f, 1e30f}) {
+        bus.pan_law_db = law;
+        CHECK(!b.h.apply(SetMonitorBus{bus}, err));
+        CHECK(mentions(err, "pan_law_db"));
+    }
+    bus.pan_law_db = 0.0f;
+    CHECK_APPLY(b.h, SetMonitorBus{bus});
+    bus.pan_law_db = kMinPanLawDb;
+    CHECK_APPLY(b.h, SetMonitorBus{bus});
+
+    Ids ids(b.h.current());
+    Region loud = region(ids(), b.source, 600000, 1000, 0);
+    loud.gain_db = 1e30f;
+    CHECK(!b.h.apply(PlaceRegion{b.playlist, loud}, err));
+    CHECK(mentions(err, "gain_db"));
+    loud.gain_db = kMaxGainDb;
+    CHECK_APPLY(b.h, (PlaceRegion{b.playlist, loud}));
     return 0;
 }
 

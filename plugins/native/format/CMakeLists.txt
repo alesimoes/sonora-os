@@ -84,33 +84,30 @@ set_target_properties(sonora_native_bundle_driver PROPERTIES ENABLE_EXPORTS ON)
 target_compile_options(sonora_native_bundle_driver PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>)
 
 # sonora_native_plugin(<name> FACTORY <fn> DISPLAY <name> UID <4 chars>
-#                      LV2_CATEGORY <uri> VST3_CATEGORIES <list> [TIMEPOS])
+#                      MONO_UID <4 chars> LV2_CATEGORY <uri>
+#                      VST3_CATEGORIES <list> [TIMEPOS] [SIDECHAIN])
 #
-# Builds sonora-<name>.lv2 (binary plus the TTL DPF generates from the
-# parameter table) and sonora-<name>.vst3 from sonora_native_<name>.
+# Builds, from sonora_native_<name>, two layouts in each format (ADR-0011
+# N1): sonora-<name>.lv2 and .vst3, stereo (2 in, 2 out), and
+# sonora-<name>-mono.lv2 and .vst3 (1 in, 1 out), each with the TTL DPF
+# generates from the parameter table and the JSON descriptor. A host puts
+# the mono build on a mono track; nothing is replicated or summed for it.
 # <fn> is the processor's factory in namespace sonora::native, declared in
-# sonora/native/<name>.h. <uid> is the VST3 class ID's plugin word: never
-# change it, saved sessions find the plugin by it.
+# sonora/native/<name>.h. <uid> and <mono uid> are the VST3 class IDs'
+# plugin words: never change one, saved sessions find the plugin by it.
+# SIDECHAIN: the processor takes a key (Descriptor::sidechain), and each
+# layout gets a key input with as many channels as its main input.
 function(sonora_native_plugin name)
-  cmake_parse_arguments(P "TIMEPOS" "FACTORY;DISPLAY;UID;LV2_CATEGORY;VST3_CATEGORIES" "" ${ARGN})
-  string(LENGTH "${P_UID}" uid_len)
-  if(NOT uid_len EQUAL 4)
-    message(FATAL_ERROR "sonora_native_plugin(${name}): UID must be 4 characters")
+  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "" ${ARGN})
+  foreach(uid "${P_UID}" "${P_MONO_UID}")
+    string(LENGTH "${uid}" uid_len)
+    if(NOT uid_len EQUAL 4)
+      message(FATAL_ERROR "sonora_native_plugin(${name}): UID and MONO_UID must be 4 characters")
+    endif()
+  endforeach()
+  if(P_UID STREQUAL P_MONO_UID)
+    message(FATAL_ERROR "sonora_native_plugin(${name}): UID and MONO_UID must differ")
   endif()
-  set(gen ${CMAKE_CURRENT_BINARY_DIR}/dpf)
-  set(SONORA_NAME ${name})
-  set(SONORA_FACTORY ${P_FACTORY})
-  set(SONORA_DISPLAY_NAME "${P_DISPLAY}")
-  set(SONORA_UID ${P_UID})
-  set(SONORA_LV2_CATEGORY ${P_LV2_CATEGORY})
-  set(SONORA_VST3_CATEGORIES ${P_VST3_CATEGORIES})
-  if(P_TIMEPOS)
-    set(SONORA_TIMEPOS 1)
-  else()
-    set(SONORA_TIMEPOS 0)
-  endif()
-  configure_file(${SONORA_FORMAT_DIR}/src/dpf/DistrhoPluginInfo.h.in ${gen}/DistrhoPluginInfo.h @ONLY)
-  configure_file(${SONORA_FORMAT_DIR}/src/dpf/entry.cpp.in ${gen}/entry.cpp @ONLY)
 
   # A plugin is a shared object: everything linked into it is
   # position-independent. Code generation for the arithmetic is unchanged,
@@ -120,13 +117,49 @@ function(sonora_native_plugin name)
     set_property(TARGET ${dep} PROPERTY POSITION_INDEPENDENT_CODE ON)
   endforeach()
 
+  set_property(GLOBAL APPEND PROPERTY SONORA_NATIVE_PLUGINS ${name})
+  if(P_SIDECHAIN)
+    set_property(GLOBAL PROPERTY SONORA_NATIVE_${name}_SIDECHAIN 1)
+  endif()
+  # The stereo layout keeps the names, URI and class ID it shipped with in
+  # PR #40; the mono one is "-mono" beside it.
+  _sonora_native_bundle(${name} "" 2 "${P_UID}" "${P_DISPLAY}")
+  _sonora_native_bundle(${name} "-mono" 1 "${P_MONO_UID}" "${P_DISPLAY} (mono)")
+endfunction()
+
+# One layout, as an LV2 and a VST3 bundle. Reads the caller's P_* values.
+function(_sonora_native_bundle name suffix channels uid display)
+  set(b ${name}${suffix})  # the bundle's own name: eq, eq-mono
+  set(gen ${CMAKE_CURRENT_BINARY_DIR}/dpf${suffix})
+  set(SONORA_NAME ${name})
+  set(SONORA_VARIANT "${channels} channel(s)")
+  set(SONORA_LV2_URI "urn:sonora:native:${b}")
+  set(SONORA_FACTORY ${P_FACTORY})
+  set(SONORA_DISPLAY_NAME "${display}")
+  set(SONORA_UID ${uid})
+  set(SONORA_LV2_CATEGORY ${P_LV2_CATEGORY})
+  set(SONORA_VST3_CATEGORIES ${P_VST3_CATEGORIES})
+  set(SONORA_CHANNELS ${channels})
+  if(P_SIDECHAIN)
+    set(SONORA_SIDECHAIN_CHANNELS ${channels})
+  else()
+    set(SONORA_SIDECHAIN_CHANNELS 0)
+  endif()
+  if(P_TIMEPOS)
+    set(SONORA_TIMEPOS 1)
+  else()
+    set(SONORA_TIMEPOS 0)
+  endif()
+  configure_file(${SONORA_FORMAT_DIR}/src/dpf/DistrhoPluginInfo.h.in ${gen}/DistrhoPluginInfo.h @ONLY)
+  configure_file(${SONORA_FORMAT_DIR}/src/dpf/entry.cpp.in ${gen}/entry.cpp @ONLY)
+
   set(dpf_sources ${SONORA_DPF_DIR}/distrho/DistrhoPluginMain.cpp)
   # DPF's own code is third-party: its warnings are not ours to fix.
   set_source_files_properties(${dpf_sources} PROPERTIES COMPILE_OPTIONS "-w")
 
   foreach(fmt lv2 vst3)
     string(TOUPPER ${fmt} FMT)
-    set(t sonora-${name}-${fmt})
+    set(t sonora-${b}-${fmt})
     add_library(${t} MODULE ${dpf_sources} ${SONORA_FORMAT_DIR}/src/dpf/plugin.cpp ${gen}/entry.cpp)
     # SONORA_DPF_QUIET: no fprintf from DPF's wrappers on the audio thread
     # (third_party/dpf/SONORA.md, patch 6). The bundle-files generator
@@ -142,18 +175,18 @@ function(sonora_native_plugin name)
     add_dependencies(sonora_native_bundles ${t})
   endforeach()
 
-  set(lv2_bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${name}.lv2)
-  set_target_properties(sonora-${name}-lv2 PROPERTIES
-    OUTPUT_NAME sonora-${name}_dsp
+  set(lv2_bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${b}.lv2)
+  set_target_properties(sonora-${b}-lv2 PROPERTIES
+    OUTPUT_NAME sonora-${b}_dsp
     LIBRARY_OUTPUT_DIRECTORY ${lv2_bundle})
-  target_link_options(sonora-${name}-lv2 PRIVATE
+  target_link_options(sonora-${b}-lv2 PRIVATE
     -Wl,--version-script=${SONORA_FORMAT_DIR}/src/dpf/lv2.version -Wl,--no-undefined)
 
-  set(vst3_bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${name}.vst3)
-  set_target_properties(sonora-${name}-vst3 PROPERTIES
-    OUTPUT_NAME sonora-${name}
+  set(vst3_bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${b}.vst3)
+  set_target_properties(sonora-${b}-vst3 PROPERTIES
+    OUTPUT_NAME sonora-${b}
     LIBRARY_OUTPUT_DIRECTORY ${vst3_bundle}/Contents/${SONORA_VST3_ARCH})
-  target_link_options(sonora-${name}-vst3 PRIVATE
+  target_link_options(sonora-${b}-vst3 PRIVATE
     -Wl,--version-script=${SONORA_DPF_DIR}/utils/symbols/vst3.version -Wl,--no-undefined)
 
   # The generated files (ADR-0011 §2.4, one table): the LV2 TTL, by DPF's
@@ -161,7 +194,7 @@ function(sonora_native_plugin name)
   # (§2.6), in both bundles. Built into a small executable from the same
   # sources rather than dlopen()ing the bundle: no platform loader in the
   # build, and it runs under the sanitizers like everything else.
-  set(gen_t sonora-${name}-bundle-files)
+  set(gen_t sonora-${b}-bundle-files)
   add_executable(${gen_t} ${dpf_sources} ${SONORA_FORMAT_DIR}/src/dpf/plugin.cpp ${gen}/entry.cpp
                  ${SONORA_FORMAT_DIR}/src/dpf/bundle_files.cpp)
   target_compile_definitions(${gen_t} PRIVATE DISTRHO_PLUGIN_TARGET_LV2)
@@ -169,37 +202,47 @@ function(sonora_native_plugin name)
   target_include_directories(${gen_t} SYSTEM PRIVATE ${SONORA_DPF_DIR}/distrho)
   target_link_libraries(${gen_t} PRIVATE sonora_native_${name} sonora_native_format)
   set_target_properties(${gen_t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-  add_custom_command(TARGET sonora-${name}-lv2 POST_BUILD
-    COMMAND $<TARGET_FILE:${gen_t}> --lv2 sonora-${name}_dsp --descriptor ${lv2_bundle}/descriptor.json
+  add_custom_command(TARGET sonora-${b}-lv2 POST_BUILD
+    COMMAND $<TARGET_FILE:${gen_t}> --lv2 sonora-${b}_dsp --descriptor ${lv2_bundle}/descriptor.json
     WORKING_DIRECTORY ${lv2_bundle}
-    COMMENT "Generating the TTL and descriptor of sonora-${name}.lv2"
+    COMMENT "Generating the TTL and descriptor of sonora-${b}.lv2"
     VERBATIM)
-  add_dependencies(sonora-${name}-lv2 ${gen_t})
-  add_custom_command(TARGET sonora-${name}-vst3 POST_BUILD
+  add_dependencies(sonora-${b}-lv2 ${gen_t})
+  add_custom_command(TARGET sonora-${b}-vst3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${vst3_bundle}/Contents/Resources
     COMMAND $<TARGET_FILE:${gen_t}> --descriptor ${vst3_bundle}/Contents/Resources/descriptor.json
-    COMMENT "Generating the descriptor of sonora-${name}.vst3"
+    COMMENT "Generating the descriptor of sonora-${b}.vst3"
     VERBATIM)
-  add_dependencies(sonora-${name}-vst3 ${gen_t})
+  add_dependencies(sonora-${b}-vst3 ${gen_t})
 
   # The bundle binaries under the driver above. Named native_format_* so the
   # TSan job, which skips the single-threaded native_* tests, runs these.
+  # "late" is the VST3 automation timing DPF gives (ADR-0011 Amendment 2),
+  # held as a test so a change in it is seen.
   set(drive $<TARGET_FILE:sonora_native_bundle_driver>)
-  add_test(NAME native_format_lazy_lv2_${name}
-           COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${name}-lv2> --bundle ${lv2_bundle}/ --scenario lazy)
-  foreach(scenario lazy oversize threads)
-    add_test(NAME native_format_${scenario}_vst3_${name}
-             COMMAND ${drive} --vst3 $<TARGET_FILE:sonora-${name}-vst3> --scenario ${scenario})
+  math(EXPR inputs "${SONORA_CHANNELS} + ${SONORA_SIDECHAIN_CHANNELS}")
+  add_test(NAME native_format_lazy_lv2_${b}
+           COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${b}-lv2> --bundle ${lv2_bundle}/
+                   --inputs ${inputs} --outputs ${SONORA_CHANNELS} --scenario lazy)
+  # "nokey": an inactive or missing key bus is no key, not a silent one
+  # (bridge.h). "wide": an over-wide bus prints nothing from process().
+  set(scenarios lazy oversize threads late wide)
+  if(P_SIDECHAIN)
+    list(APPEND scenarios nokey)
+  endif()
+  foreach(scenario ${scenarios})
+    add_test(NAME native_format_${scenario}_vst3_${b}
+             COMMAND ${drive} --vst3 $<TARGET_FILE:sonora-${b}-vst3> --scenario ${scenario})
   endforeach()
 
   if(SONORA_LV2LINT)
-    add_test(NAME native_lv2lint_${name}
-             COMMAND ${SONORA_LV2LINT} -I ${lv2_bundle}/ urn:sonora:native:${name})
-    set_tests_properties(native_lv2lint_${name} PROPERTIES LABELS plugins)
+    add_test(NAME native_lv2lint_${b}
+             COMMAND ${SONORA_LV2LINT} -I ${lv2_bundle}/ ${SONORA_LV2_URI})
+    set_tests_properties(native_lv2lint_${b} PROPERTIES LABELS plugins)
   endif()
   if(SONORA_VST3_VALIDATOR)
-    add_test(NAME native_vst3_validator_${name} COMMAND ${SONORA_VST3_VALIDATOR} ${vst3_bundle})
-    set_tests_properties(native_vst3_validator_${name} PROPERTIES LABELS plugins)
+    add_test(NAME native_vst3_validator_${b} COMMAND ${SONORA_VST3_VALIDATOR} ${vst3_bundle})
+    set_tests_properties(native_vst3_validator_${b} PROPERTIES LABELS plugins)
   endif()
 
   install(DIRECTORY ${lv2_bundle} DESTINATION lib/lv2)
@@ -210,13 +253,12 @@ function(sonora_native_plugin name)
   # DPF builds the 16-byte ID from four 32-bit words, "DPF " "clas" <uid>
   # <brand>, stored in host byte order: on little-endian Linux each word's
   # characters come out reversed.
-  string(SUBSTRING "${P_UID}" 0 1 c0)
-  string(SUBSTRING "${P_UID}" 1 1 c1)
-  string(SUBSTRING "${P_UID}" 2 1 c2)
-  string(SUBSTRING "${P_UID}" 3 1 c3)
+  string(SUBSTRING "${uid}" 0 1 c0)
+  string(SUBSTRING "${uid}" 1 1 c1)
+  string(SUBSTRING "${uid}" 2 1 c2)
+  string(SUBSTRING "${uid}" 3 1 c3)
   string(HEX "${c3}${c2}${c1}${c0}" uid_hex)
   string(TOUPPER "2046504473616C63${uid_hex}61726E53" cid)
-  set_property(GLOBAL APPEND PROPERTY SONORA_NATIVE_PLUGINS ${name})
-  set_property(GLOBAL PROPERTY SONORA_NATIVE_${name}_VST3_ID "vst3:${cid}")
-  set_property(GLOBAL PROPERTY SONORA_NATIVE_${name}_LV2_URI "urn:sonora:native:${name}")
+  set_property(GLOBAL PROPERTY SONORA_NATIVE_${b}_VST3_ID "vst3:${cid}")
+  set_property(GLOBAL PROPERTY SONORA_NATIVE_${b}_LV2_URI "${SONORA_LV2_URI}")
 endfunction()

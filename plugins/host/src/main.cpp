@@ -9,6 +9,22 @@
 //   sonora-plugin-host --version
 //   sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...
 //                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
+//                      [--sidechain N] [--reactivate]
+//
+// --sidechain N: the last N of the region's channels are a key, not signal.
+// Every plugin with a key input (LV2 lv2:isSideChain ports, a VST3 aux input
+// bus) reads them; the chain processes the others, and the key channels'
+// output planes stay silent. The channel header is unchanged: how the engine
+// asks for a key belongs to the M9 contract, which this anticipates.
+//
+// --reactivate: after validation, which hands the --set values to every
+// plugin in its first block, deactivate and re-activate every plugin, then
+// validate again. A value that only takes effect at activation (ADR-0011
+// §1.5: a latency-changing one, such as an EQ's phase mode or a limiter's
+// look-ahead) then does, and the latency published is the new one. LV2
+// delivers control values only inside run(), so a host that loads a session
+// with such a value has to do this; changing one while running is the M9
+// control channel's (re-activate and re-plan PDC).
 //
 // An ID is an LV2 plugin URI, or "vst3:" and a VST3 class ID in hex
 // (vst3_host.h). A chain may mix the two. A --bundle ending in ".vst3" is a
@@ -76,17 +92,18 @@ public:
     std::unique_ptr<Processor> instantiate(const std::string& id, const ChainConfig& config,
                                            const std::vector<float*>& in,
                                            const std::vector<float*>& out,
+                                           const std::vector<float*>& key,
                                            ChainError& error) override {
         if (is_vst3_id(id)) {
 #ifdef SONORA_HAVE_VST3
-            return vst3.instantiate(id, config, in, out, error);
+            return vst3.instantiate(id, config, in, out, key, error);
 #else
             error.reason = plugin::Refusal::UnsupportedFeature;
             error.message = "this sonora-plugin-host was built without VST3: " + id;
             return nullptr;
 #endif
         }
-        return lv2.instantiate(id, config, in, out, error);
+        return lv2.instantiate(id, config, in, out, key, error);
     }
 };
 
@@ -103,6 +120,8 @@ struct Options {
     };
     std::vector<Set> sets;
     uint32_t channels = 0;
+    uint32_t sidechain = 0;
+    bool reactivate = false;
     // LSP's bundle, 184 classes each instantiated and run, took 19.9 s in
     // the container (brain/research/plugin-host-vst3.md).
     uint32_t scan_timeout_s = 120;
@@ -116,7 +135,8 @@ struct Options {
                  "       sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...\n"
                  "       sonora-plugin-host --version\n"
                  "       sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
-                 "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n",
+                 "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n"
+                 "                          [--sidechain N] [--reactivate]\n",
                  why);
     std::exit(plugin::kHostExitUsage);
 }
@@ -156,6 +176,8 @@ Options parse(int argc, char** argv) {
         else if (a == "--chain") o.chain = split(next(), ',');
         else if (a == "--bundle") o.bundles.push_back(next());
         else if (a == "--channels") o.channels = static_cast<uint32_t>(std::atoi(next().c_str()));
+        else if (a == "--sidechain") o.sidechain = static_cast<uint32_t>(std::atoi(next().c_str()));
+        else if (a == "--reactivate") o.reactivate = true;
         else if (a == "--scan-timeout") {
             const int s = std::atoi(next().c_str());
             if (s < 1) usage("--scan-timeout wants a number of seconds, 1 or more");
@@ -222,10 +244,11 @@ void print_info(std::FILE* f, const PluginInfo& info, bool json) {
         return;
     }
     std::fprintf(f, "{\"uri\":\"%s\",\"format\":\"%s\",\"name\":\"%s\",\"class\":\"%s\",\"audio_in\":%u,"
-                "\"audio_out\":%u,\"latency_port\":%d,\"latency_frames\":%lld,\"usable\":%s",
+                "\"audio_out\":%u,\"sidechain_in\":%u,\"latency_port\":%d,\"latency_frames\":%lld,"
+                "\"usable\":%s",
                 json_escape(info.uri).c_str(), json_escape(info.format).c_str(),
                 json_escape(info.name).c_str(), json_escape(info.class_label).c_str(), info.audio_in,
-                info.audio_out, info.latency_port, static_cast<long long>(info.latency_frames),
+                info.audio_out, info.sidechain_in, info.latency_port, static_cast<long long>(info.latency_frames),
                 info.missing_features.empty() ? "true" : "false");
     if (!info.missing_features.empty())
         std::fprintf(f, ",\"reason\":\"%s\"", json_escape(info.missing_features.front()).c_str());
@@ -241,6 +264,7 @@ void print_info(std::FILE* f, const PluginInfo& info, bool json) {
         // The dense index the engine sends (contracts/plugin, "Parameters").
         if (port.kind == PortKind::Control && port.input) std::fprintf(f, ",\"param\":%u", dense++);
         if (port.kind == PortKind::Audio && vst3) std::fprintf(f, ",\"channels\":%u", port.channels);
+        if (port.sidechain) std::fprintf(f, ",\"sidechain\":true");
         if (port.kind == PortKind::Control)
             std::fprintf(f, ",\"min\":%g,\"max\":%g,\"default\":%g", port.min, port.max, port.def);
         if (!port.units.empty()) std::fprintf(f, ",\"units\":\"%s\"", json_escape(port.units).c_str());
@@ -368,8 +392,9 @@ int probe(const Options& o) {
         for (uint32_t d = 0; d < chain.param_count(0); ++d) {
             char def[48];
             std::snprintf(def, sizeof def, "%.9g", double(chain.param_default(0, d)));
+            // key: what the session stores. symbol: what --set takes.
             s += (d ? ",{\"key\":\"" : "{\"key\":\"") + json_escape(chain.param_key(0, d)) +
-                 "\",\"default\":" + def + "}";
+                 "\",\"symbol\":\"" + json_escape(chain.param_symbol(0, d)) + "\",\"default\":" + def + "}";
         }
         return s + "]";
     };
@@ -379,10 +404,10 @@ int probe(const Options& o) {
         return plugin::kHostExitRefused;
     }
     std::printf("{\"uri\":\"%s\",\"name\":\"%s\",\"format\":\"%s\",\"ok\":true,\"channels\":%u,"
-                "\"replicas\":%u,\"latency_frames\":%u,\"sample_rate\":%u%s}\n",
+                "\"replicas\":%u,\"latency_frames\":%u,\"sample_rate\":%u,\"sidechain_in\":%u%s}\n",
                 json_escape(info.uri).c_str(), json_escape(info.name).c_str(), info.format.c_str(),
                 cfg.channels, chain.replicas(0), chain.instance_latency(0), cfg.sample_rate,
-                params().c_str());
+                info.sidechain_in, params().c_str());
     return 0;
 }
 
@@ -618,7 +643,13 @@ int serve(const Options& o) {
     cfg.sample_rate = h.sample_rate;
     cfg.max_frames = layout.max_frames;
     cfg.block_frames = h.block_frames;
-    cfg.channels = layout.channels;
+    if (o.sidechain >= layout.channels) {
+        std::fprintf(stderr, "sonora-plugin-host: --sidechain %u leaves no signal channel of %u\n",
+                     o.sidechain, layout.channels);
+        return plugin::kHostExitUsage;
+    }
+    cfg.channels = layout.channels - o.sidechain;
+    cfg.sidechain_channels = o.sidechain;
     const int rt_priority = h.host_rt_priority;
     Chain chain(catalog, cfg);
     ChainError cerr;
@@ -657,6 +688,12 @@ int serve(const Options& o) {
             std::fprintf(stderr, "sonora-plugin-host: --set %u:%s: no such input control\n", set.instance,
                          set.symbol.c_str());
     if (!chain.validate(cerr)) return refuse(h, cerr, plugin::HostState::Refused);
+    if (o.reactivate) {
+        if (!chain.reactivate(cerr) || !chain.validate(cerr))
+            return refuse(h, cerr, plugin::HostState::Refused);
+    }
+    // After any re-activation: the delay lines are sized from the latency
+    // the plugins report now.
     chain.prepare_bypass();
     for (uint32_t i = 0; i < map.instance_count; ++i) {
         const float b = h.bypass[i].load(std::memory_order_relaxed);
@@ -671,12 +708,12 @@ int serve(const Options& o) {
     // Process-wide, so it covers the processing thread's stack too.
     if (lock_memory()) flags |= plugin::kHostMemoryLocked;
 
+    // Signal and key in, signal out. The key channels' output planes are
+    // never written: the engine zeroed the region.
     s.in.resize(layout.channels);
-    s.out.resize(layout.channels);
-    for (uint32_t c = 0; c < layout.channels; ++c) {
-        s.in[c] = plugin::input_plane(region.base, layout, c);
-        s.out[c] = plugin::output_plane(region.base, layout, c);
-    }
+    s.out.resize(cfg.channels);
+    for (uint32_t c = 0; c < layout.channels; ++c) s.in[c] = plugin::input_plane(region.base, layout, c);
+    for (uint32_t c = 0; c < cfg.channels; ++c) s.out[c] = plugin::output_plane(region.base, layout, c);
 
     // Every plugin runs on a thread of its own from here on. This thread,
     // which created them, stays their main thread: VST3 allows some calls

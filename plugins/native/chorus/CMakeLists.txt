@@ -9,5 +9,5 @@ target_link_libraries(sonora_native_chorus_suite PUBLIC sonora_native_chorus son
 sonora_native_quality_test(chorus)
 
 # The LV2 and VST3 bundles (ADR-0011 N1).
-sonora_native_plugin(chorus FACTORY make_chorus DISPLAY "Sonora Chorus" UID SNch
+sonora_native_plugin(chorus FACTORY make_chorus DISPLAY "Sonora Chorus" UID SNch MONO_UID SMch
   LV2_CATEGORY "lv2:ChorusPlugin" VST3_CATEGORIES "Fx|Modulation")

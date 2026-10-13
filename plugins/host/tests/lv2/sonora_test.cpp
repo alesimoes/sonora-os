@@ -11,6 +11,9 @@
 //   urn:sonora:test#lookahead  mono, 100 frames of reported latency and a
 //                          `gain` in dB, with no bypass port: what the host
 //                          bypasses with its own delay line (ADR-0012 §5.1)
+//   urn:sonora:test#key    mono, with a key input: outputs its key, then
+//                          scribbles over the key's `n` samples
+//   urn:sonora:test#keyliar  the same, and writes 64 samples past its key
 
 #include <lv2/core/lv2.h>
 
@@ -23,7 +26,7 @@
 
 namespace {
 
-enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead };
+enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar };
 
 constexpr uint32_t kLookaheadFrames = 100;
 constexpr uint32_t kLookaheadRing = 256;  // a power of two above the delay
@@ -36,6 +39,9 @@ struct Plugin {
     float* latency = nullptr;
     float ring[kLookaheadRing] = {};
     uint32_t write = 0;
+    // Written through on purpose: what a plugin that uses its inputs as
+    // scratch space does.
+    float* key = nullptr;
 };
 
 // Read through a volatile so the compiler cannot prove the address is null
@@ -55,6 +61,13 @@ void connect(LV2_Handle h, uint32_t port, void* data) {
         // 0, 1: in L/R. 2, 3: out L/R.
         if (port < 2) p->in[port] = static_cast<const float*>(data);
         else if (port < 4) p->out[port - 2] = static_cast<float*>(data);
+        return;
+    }
+    if (p->kind == kKey || p->kind == kKeyLiar) {
+        // 0: in. 1: key (lv2:isSideChain). 2: out.
+        if (port == 0) p->in[0] = static_cast<const float*>(data);
+        else if (port == 1) p->key = static_cast<float*>(data);
+        else if (port == 2) p->out[0] = static_cast<float*>(data);
         return;
     }
     // 0: control. 1: in. 2: out. 3: latency (lookahead only).
@@ -99,6 +112,13 @@ void run(LV2_Handle h, uint32_t n) {
         if (p->latency) *p->latency = float(kLookaheadFrames);
         break;
     }
+    case kKey:
+    case kKeyLiar:
+        std::memcpy(p->out[0], p->key, n * sizeof(float));
+        for (uint32_t i = 0; i < n; ++i) p->key[i] = 7.0f;
+        if (p->kind == kKeyLiar)
+            for (uint32_t i = n; i < n + 64; ++i) p->key[i] = 7.0f;
+        break;
     case kLiar:
         // Treats output 0 as eight interleaved-by-block channels. Real
         // plugins do this when their channel count is a compile-time
@@ -117,6 +137,8 @@ const LV2_Descriptor kDescriptors[] = {
     {"urn:sonora:test#liar", instantiate<kLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#nan", instantiate<kNan>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#lookahead", instantiate<kLookahead>, connect, nullptr, run, nullptr, cleanup, nullptr},
+    {"urn:sonora:test#key", instantiate<kKey>, connect, nullptr, run, nullptr, cleanup, nullptr},
+    {"urn:sonora:test#keyliar", instantiate<kKeyLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
 };
 
 }  // namespace

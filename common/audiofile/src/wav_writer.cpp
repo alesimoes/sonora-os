@@ -141,6 +141,7 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     format_ = format;
     channels_ = channels;
     frames_written_ = 0;
+    patch_time_reference_ = false;
     failure_.clear();
     failed_.store(false, std::memory_order_release);
     if (!write_header(sample_rate, channels, time_reference)) {
@@ -172,6 +173,7 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
     // --- bext ---
     put_tag(file_, "bext");
     put_u32(file_, kBextSize);
+    time_reference_offset_ = std::ftell(file_) + 338;
     std::vector<char> bext(kBextSize, 0);
     const char* originator = "Sonora Engine";
     std::memcpy(bext.data() + 256, originator, std::strlen(originator));
@@ -258,6 +260,11 @@ bool WavWriter::close() {
     put_u32(file_, static_cast<uint32_t>(data_bytes));
     std::fseek(file_, riff_size_offset_, SEEK_SET);
     put_u32(file_, static_cast<uint32_t>(riff_bytes));
+    if (patch_time_reference_) {
+        std::fseek(file_, time_reference_offset_, SEEK_SET);
+        put_u32(file_, static_cast<uint32_t>(time_reference_ & 0xFFFFFFFFu));
+        put_u32(file_, static_cast<uint32_t>(time_reference_ >> 32));
+    }
 
     bool ok = std::ferror(file_) == 0;
     ok = std::fclose(file_) == 0 && ok;

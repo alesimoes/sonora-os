@@ -45,11 +45,14 @@ Lv2World::Lv2World() : world_(lilv_world_new()) {
     n.reports_latency = lilv_new_uri(world_, LV2_CORE__reportsLatency);
     n.latency_designation = lilv_new_uri(world_, LV2_CORE__latency);
     n.enabled_designation = lilv_new_uri(world_, LV2_CORE__enabled);
+    // lv2:isSideChain is defined in lv2core.ttl, but lv2/core/lv2.h (1.18.10
+    // on trixie) has no macro for it, so the URI is spelled out.
+    n.sidechain = lilv_new_uri(world_, LV2_CORE_PREFIX "isSideChain");
 }
 
 Lv2World::~Lv2World() {
     for (LilvNode* node : {n.audio, n.control, n.atom, n.cv, n.input, n.output, n.optional,
-                           n.reports_latency, n.latency_designation, n.enabled_designation})
+                           n.reports_latency, n.latency_designation, n.enabled_designation, n.sidechain})
         lilv_node_free(node);
     lilv_world_free(world_);
 }
@@ -150,7 +153,9 @@ PluginInfo Lv2World::describe(const LilvPlugin* p) const {
         pi.max = std::isnan(maxs[i]) ? 0.f : maxs[i];
         pi.def = std::isnan(defs[i]) ? pi.min : defs[i];
         pi.reports_latency = static_cast<int>(i) == info.latency_port;
-        if (pi.kind == PortKind::Audio) (pi.input ? info.audio_in : info.audio_out)++;
+        pi.sidechain = pi.kind == PortKind::Audio && pi.input && lilv_port_has_property(p, port, n.sidechain);
+        if (pi.sidechain) ++info.sidechain_in;
+        else if (pi.kind == PortKind::Audio) (pi.input ? info.audio_in : info.audio_out)++;
         info.ports.push_back(std::move(pi));
     }
 
@@ -212,7 +217,8 @@ public:
     }
 
     bool init(const LilvPlugin* p, PluginInfo info, uint32_t sample_rate, uint32_t channels,
-              const std::vector<float*>& in, const std::vector<float*>& out, ChainError& error) {
+              const std::vector<float*>& in, const std::vector<float*>& out,
+              const std::vector<float*>& key, ChainError& error) {
         info_ = std::move(info);
         const std::string who = info_.name + " <" + info_.uri + ">";
         if (!info_.missing_features.empty()) {
@@ -259,13 +265,24 @@ public:
                 return false;
             }
             instances_.push_back(inst);
-            uint32_t audio_in = 0, audio_out = 0;
+            uint32_t audio_in = 0, audio_out = 0, key_in = 0;
             for (const PortInfo& port : info_.ports) {
                 void* where = nullptr;
                 switch (port.kind) {
                 case PortKind::Audio: {
                     // Replicated: replica r is channel r. Otherwise port order
                     // is channel order.
+                    if (port.sidechain) {
+                        // With no key in the chain, the plugin's own input:
+                        // an LV2 port must be connected, and silence would
+                        // be a silent key, which no key is not (ADR-0011
+                        // Amendment 2 item 3). In and out are different
+                        // stages, so this input is never being written.
+                        const uint32_t k = replicas > 1 ? r : key_in++;
+                        const std::vector<float*>& from = key.empty() ? in : key;
+                        where = from[std::min<std::size_t>(k, from.size() - 1)];
+                        break;
+                    }
                     const uint32_t ch = replicas > 1 ? r : (port.input ? audio_in++ : audio_out++);
                     where = port.input ? in[ch] : out[ch];
                     break;
@@ -302,6 +319,16 @@ public:
 
     uint32_t latency() const noexcept override { return latency_; }
 
+    // The latency port is an output written in run(), so the new latency is
+    // read from the next block, which the caller runs (host --reactivate
+    // validates the chain again).
+    // LV2's activate() cannot fail.
+    bool reactivate() override {
+        for (LilvInstance* inst : instances_) lilv_instance_deactivate(inst);
+        for (LilvInstance* inst : instances_) lilv_instance_activate(inst);
+        return true;
+    }
+
     uint32_t param_count() const noexcept override { return static_cast<uint32_t>(dense_.size()); }
 
     // LV2 control ports are read once per run(), so a change lands at the
@@ -325,6 +352,7 @@ public:
     }
 
     std::string param_key(uint32_t dense) const override { return info_.ports[dense_[dense]].symbol; }
+    std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_[dense]].symbol; }
     float param_default(uint32_t dense) const override { return info_.ports[dense_[dense]].def; }
     int bypass_param() const noexcept override { return bypass_dense_; }
     // lv2:enabled is 1 while processing.
@@ -376,6 +404,7 @@ private:
 std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const ChainConfig& config,
                                                  const std::vector<float*>& in,
                                                  const std::vector<float*>& out,
+                                                 const std::vector<float*>& key,
                                                  ChainError& error) {
     const LilvPlugin* p = find(uri);
     if (!p) {
@@ -384,8 +413,7 @@ std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const C
         return nullptr;
     }
     auto proc = std::make_unique<Lv2Processor>(*this, config);
-    if (!proc->init(p, describe(p), config.sample_rate, config.channels, in, out, error))
-        return nullptr;
+    if (!proc->init(p, describe(p), config.sample_rate, config.channels, in, out, key, error)) return nullptr;
     return proc;
 }
 

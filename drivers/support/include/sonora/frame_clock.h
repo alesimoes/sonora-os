@@ -13,7 +13,14 @@ namespace sonora::drivers {
 // is called once per period.
 class FrameClock {
 public:
-    uint64_t widen(uint32_t now) noexcept SONORA_RT {
+    // `nframes` is this period's length and `xruns` the server's xrun count
+    // so far; with them a skipped period is told from a reported xrun.
+    // nframes 0 judges no step.
+    uint64_t widen(uint32_t now, uint32_t nframes = 0, uint32_t xruns = 0) noexcept SONORA_RT {
+        // JACK reports an xrun on its notification thread, which may run
+        // only after the next period has started: a skip with no xrun yet
+        // is judged a period later.
+        if (skip_pending_) settle(xruns);
         if (!started_) {
             started_ = true;
             wide_ = now;
@@ -24,19 +31,40 @@ public:
             // counter going backwards, which no number of frames explains,
             // so the clock holds still rather than inventing a day.
             const uint32_t step = now - last_;
+            const bool resumed = resumed_.exchange(false, std::memory_order_acquire);
             if (step > kMaxForward) {
-                discontinuities_.store(
-                    discontinuities_.load(std::memory_order_relaxed) + 1,
-                    std::memory_order_relaxed);
+                count_discontinuity();
             } else {
+                // Longer than the last period with no xrun to excuse it:
+                // the server did not run a period and did not say so.
+                // PipeWire's dummy driver does this when woken late. The gap
+                // stays in frame_time; only the excuse was missing.
+                if (!resumed && last_nframes_ != 0 && step > last_nframes_ &&
+                    xruns == last_xruns_) {
+                    skip_pending_ = true;
+                }
                 wide_ += step;
             }
         }
         last_ = now;
+        last_nframes_ = nframes;
+        last_xruns_ = xruns;
         return wide_;
     }
 
-    // Backward steps seen so far. Any thread.
+    // The periods have stopped (the server's deactivate has returned): a
+    // skip still waiting for its xrun is judged on the count reported by
+    // now. Never concurrently with widen().
+    void finish(uint32_t xruns) noexcept {
+        if (skip_pending_) settle(xruns);
+    }
+
+    // The server's clock ran on while no period reached us (a deactivation),
+    // so the next step is not judged a skip. Before the periods resume.
+    void resume() noexcept { resumed_.store(true, std::memory_order_release); }
+
+    // Backward steps, and forward skips no xrun explains, seen so far. Any
+    // thread.
     uint32_t discontinuities() const noexcept {
         return discontinuities_.load(std::memory_order_relaxed);
     }
@@ -44,9 +72,29 @@ public:
 private:
     static constexpr uint32_t kMaxForward = 0x7FFFFFFFu;
 
+    // A late xrun excuses the pending skip and no other: it leaves the count
+    // the current period is judged against.
+    void settle(uint32_t xruns) noexcept SONORA_RT {
+        skip_pending_ = false;
+        if (xruns == last_xruns_) {
+            count_discontinuity();
+        } else {
+            ++last_xruns_;
+        }
+    }
+
+    void count_discontinuity() noexcept SONORA_RT {
+        discontinuities_.store(discontinuities_.load(std::memory_order_relaxed) + 1,
+                               std::memory_order_relaxed);
+    }
+
     bool started_ = false;
     uint32_t last_ = 0;
+    uint32_t last_nframes_ = 0;
+    uint32_t last_xruns_ = 0;
+    bool skip_pending_ = false;
     uint64_t wide_ = 0;
+    std::atomic<bool> resumed_{false};
     // The audio thread is the only writer.
     std::atomic<uint32_t> discontinuities_{0};
 };

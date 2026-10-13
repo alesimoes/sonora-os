@@ -5,11 +5,15 @@
 #include <chrono>
 #include <cmath>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "sonora/api/wire.h"
 #include "sonora/audio_backend.h"
+#include "sonora/closed_take.h"
+#include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/playback_controller.h"
 #include "sonora/session.h"
 
 namespace sonora {
@@ -42,6 +46,28 @@ api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
 // How long the control thread sleeps when nothing arrives: the period of
 // the take-failure and fatal checks, as the terminal loop's frame was.
 constexpr auto kIdle = std::chrono::milliseconds(50);
+// While the controller waits on the disk reader (a plan, a locate, a roll
+// or a take): a roll asked for starts within this of its window becoming
+// resident.
+constexpr auto kBusy = std::chrono::milliseconds(2);
+
+// The commands whose reply waits for the residency gate (ADR-0009, update
+// "playback on the M4/M7 control server", item 4): an Ok for a take that
+// never started is a lost take the operator was told is recording.
+bool starts_a_take(const std::string& id) {
+    return id == "transport.record" || id == "transport.toggle_record";
+}
+
+bool changes_arming(const std::string& id) {
+    return id == "track.toggle_arm" || id == "track.arm_all" || id == "track.disarm_all";
+}
+
+std::vector<model::Id> track_order(const model::Snapshot& s) {
+    std::vector<model::Id> ids;
+    ids.reserve(s.edit->tracks.size());
+    for (const auto& t : s.edit->tracks) ids.push_back(t->id);
+    return ids;
+}
 
 // Notices replayed to a client that attaches later. A device notice comes
 // first and matters most; a flood after it is not worth a restarted
@@ -79,25 +105,108 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     // last session's first one.
     take_ = session_.next_free_take();
     publisher_->set_take(take_);
-    install_session_commands(registry_, session_, take_, quit_, opts_.may_record);
+    document_ = std::make_unique<model::Document>(
+        opts_.initial_document ? *opts_.initial_document : engine_document(session_));
+    playback_ = std::make_unique<PlaybackController>(session_, session_.config().dir);
+    playback_->set_input_monitoring(opts_.input_monitoring);
+    install_session_commands(registry_, session_, take_, quit_, opts_.may_record,
+                             playback_.get());
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
             implemented_.push_back(spec.id);
         }
     }
-
-    model::SessionSettings settings;
-    settings.name = session_.config().name;
-    settings.sample_rate = session_.config().sample_rate;
-    settings.audio_format = session_.config().format == WavWriter::Format::Float32
-                                ? model::AudioFormat::Float32
-                                : model::AudioFormat::Int24;
-    std::vector<std::string> names;
-    for (const auto& t : session_.tracks()) names.push_back(t->name());
-    document_ = std::make_unique<model::Document>(model::new_session_with_tracks(settings, names));
+    // The plan is published once the reader has its window, in the
+    // control thread's first turns.
+    show_document(true);
 }
 
-EngineControlServer::~EngineControlServer() { stop(); }
+EngineControlServer::~EngineControlServer() {
+    stop();
+    // Its destructor waits for the reader to let go of the plans this side
+    // still owns, so it goes while the session's reader is certainly there.
+    playback_.reset();
+}
+
+void EngineControlServer::after_deactivate() {
+    if (running()) return;
+    playback_->after_deactivate();
+}
+
+void EngineControlServer::send_update(const model::ReplicationUpdate& update) {
+    std::string out;
+    api::wire::encode(to_wire(update), out);
+    send(out);
+}
+
+void EngineControlServer::show_document(bool mix_changed) {
+    const model::Snapshot& doc = document_->current();
+    if (mix_changed) playback_->apply_mix(doc);
+    std::string why;
+    if (!playback_->show(doc, why)) {
+        // What plays does not change; the operator must know the edit is
+        // not what is heard.
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "playback: the session as edited cannot be played: " + why;
+        post_event(e);
+    }
+}
+
+void EngineControlServer::follow_transport() {
+    const bool recording = session_.transport().state() == TransportState::Recording;
+    // take_ is the running take's number here: open_take() set it just
+    // before start_recording(), and finish() moves it on only after stop().
+    if (recording && !was_recording_) recording_take_ = take_;
+    if (!recording && was_recording_) {
+        // stop() joined the disk thread: the files are closed and their
+        // lengths final.
+        std::vector<model::ReplicationUpdate> updates;
+        std::string why;
+        const bool ok = add_closed_take(*document_, session_, recording_take_, updates, why);
+        for (const auto& u : updates) send_update(u);
+        if (!ok) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = "take " + std::to_string(recording_take_) +
+                     " is on disk but not in the session: " + why;
+            post_event(e);
+        }
+        if (!updates.empty()) show_document(false);
+    }
+    was_recording_ = recording;
+}
+
+void EngineControlServer::resolve_records() {
+    if (held_records_.empty() || playback_->record_requested()) return;
+    DispatchResult result = DispatchResult::Ok;
+    std::string message = playback_->take_record_error();
+    if (!message.empty()) {
+        result = DispatchResult::Failed;
+    } else if (session_.transport().state() != TransportState::Recording) {
+        // Withdrawn by a second press or a stop before the gate opened.
+        result = DispatchResult::Failed;
+        message = "cancelled";
+    }
+    for (const HeldReply& h : held_records_) reply(h.to, h.seq, result, message);
+    held_records_.clear();
+}
+
+void EngineControlServer::pump_playback() {
+    // A session whose reader has no thread (tests, tools) still plays: its
+    // pass runs here, off the audio thread, as settle() does.
+    if (!session_.reader().running()) session_.reader().run_pass();
+    playback_->pump();
+    // A take asked for behind the gate starts inside pump().
+    publisher_->set_take(take_);
+    follow_transport();
+    resolve_records();
+}
+
+bool EngineControlServer::playback_busy() const {
+    return playback_->pending() || playback_->locating() || playback_->play_requested() ||
+           playback_->record_requested() || !held_records_.empty();
+}
 
 void EngineControlServer::remember(const api::EngineEvent& event, const std::string& bytes) {
     switch (event.kind) {
@@ -216,6 +325,13 @@ void EngineControlServer::stop() {
     if (thread_.joinable()) thread_.join();
     publisher_->stop();
     running_.store(false, std::memory_order_release);
+    // No pump will open the gate now. Withdrawn, so a server started again
+    // does not start a take nobody is waiting for.
+    playback_->cancel_record();
+    for (const HeldReply& h : held_records_) {
+        reply(h.to, h.seq, DispatchResult::Failed, "cancelled");
+    }
+    held_records_.clear();
     clients_.clear();
     client_count_.store(0, std::memory_order_release);
 }
@@ -425,7 +541,8 @@ void EngineControlServer::run() {
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            wake_.wait_for(lock, kIdle, [this]() { return stopping_ || !inbound_.empty(); });
+            wake_.wait_for(lock, playback_busy() ? kBusy : kIdle,
+                           [this]() { return stopping_ || !inbound_.empty(); });
             if (stopping_) return;
             batch.swap(inbound_);
         }
@@ -498,7 +615,20 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
-        reply(from, r.seq, d, why);
+        // Before anything else can change arming: the closed take's tracks
+        // are the armed ones.
+        follow_transport();
+        if (d == DispatchResult::Ok && changes_arming(r.command)) {
+            playback_->apply_monitoring(document_->current());
+        }
+        if (d == DispatchResult::Ok && starts_a_take(r.command) &&
+            playback_->record_requested()) {
+            held_records_.push_back({from, r.seq});
+        } else {
+            reply(from, r.seq, d, why);
+        }
+        // A second press or a stop may have withdrawn a take still waiting.
+        resolve_records();
         return;
     }
 
@@ -533,8 +663,25 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         model::ReplicationUpdate u;
         std::string why;
         bool ok = false;
+        // Faders are written from the document only when it changed what
+        // they hold, whichever request changed it: a fader ride sent as a
+        // ParameterChange must not snap back on an unrelated edit. A change
+        // of track order or of the track set counts too: engine track i
+        // plays the document's track i in display order.
+        bool mix_changed = false;
+        const std::vector<model::Id> order_before = track_order(document_->current());
+        const model::MixState mix_before = document_->current().mix;
         switch (m.action) {
-            case api::ModelAction::Apply: ok = document_->apply(m.op, u, why); break;
+            case api::ModelAction::Apply: {
+                model::Operation op;
+                if (!model::decode_operation(m.op, op, why)) break;
+                // Even one that leaves the document as it was: it ends a
+                // ride whose last ParameterChange need not be its value.
+                mix_changed = std::holds_alternative<model::SetMix>(op) ||
+                              std::holds_alternative<model::SetMonitorBus>(op);
+                ok = document_->apply(op, u, why);
+                break;
+            }
             case api::ModelAction::Undo: ok = document_->undo(u, why); break;
             case api::ModelAction::Redo: ok = document_->redo(u, why); break;
             case api::ModelAction::Resync:
@@ -543,6 +690,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Load:
                 ok = document_->load(m.op, session_.config().sample_rate, u, why,
                                      api::wire::kMaxModelBytes);
+                mix_changed = true;
                 break;
         }
         reply(from, m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
@@ -554,6 +702,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 send_to(from, out);
             } else {
                 send(out);
+                mix_changed = mix_changed || !(document_->current().mix == mix_before) ||
+                              track_order(document_->current()) != order_before;
+                show_document(mix_changed);
             }
         }
         return;
@@ -566,6 +717,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
 }
 
 void EngineControlServer::tick() {
+    pump_playback();
+
     // The backend stopped calling the session. Said once; the interface
     // says why and leaves, and the wiring layer closes the take.
     if (audio_ != nullptr && !fatal_said_ && audio_->fatal()) {

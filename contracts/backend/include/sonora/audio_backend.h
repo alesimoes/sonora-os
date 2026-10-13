@@ -101,9 +101,11 @@ public:
     virtual uint32_t buffer_frames() const = 0;
     // Server-reported xruns since open(). Any thread.
     virtual uint32_t xruns() const = 0;
-    // How many times since open() the server's frame clock stepped back.
-    // frame_time held still across each, so takes' timestamps after one are
-    // not continuous with those before it. Any thread.
+    // How many times since open() the server's frame clock stepped back, or
+    // jumped ahead over periods it ran for no one and reported no xrun for
+    // (PipeWire's dummy driver woken late). frame_time holds still across a
+    // step back and keeps a jump's gap; either way the server's frames after
+    // one do not follow on from those before it. Any thread.
     virtual uint32_t clock_discontinuities() const = 0;
 
     // Server loss, loss of a physical capture port an input was connected

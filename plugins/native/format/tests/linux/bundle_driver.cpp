@@ -16,11 +16,33 @@
 //                        process() runs, as Steinberg's validator and a UI
 //                        thread do: no data race (the TSan job), and the
 //                        last value set is what the plugin holds.
+//   --scenario nokey     (VST3, a bundle with a key input) the external
+//                        key switched on and the key bus left inactive, or
+//                        not handed over at all: no key, so the processor
+//                        keys from its own input and sounds as with the
+//                        external key off. An active key bus carrying
+//                        silence is a silent key, and sounds different.
+//   --scenario wide      (VST3) a host that hands over one channel more
+//                        than the bundle declares, on the key bus if it has
+//                        one, else on the main bus: DPF's channel check
+//                        fires inside process() and must print nothing
+//                        (SONORA_DPF_QUIET, third_party/dpf/SONORA.md
+//                        patch 6), since that is the audio thread.
+//   --scenario late      (VST3) when a parameter change at a nonzero
+//                        sample offset is heard: with DPF, at the start of
+//                        the next block (ADR-0011 Amendment 2). Held as a
+//                        test so that a DPF update that changes it, for
+//                        better or worse, is seen and the ADR follows.
+//
+// Every scenario reads the bundle's layout (stereo or mono, with or without
+// a key input) from the bundle itself: VST3 from its main bus, LV2 from
+// --inputs and --outputs, the audio port counts CMake built it with.
 //
 // Linux only (dlopen); the bundles are built on Linux only. The VST3 ABI
 // comes from DPF's own travesty headers and LV2 from the vendored LV2
 // headers, so this needs nothing the sanitizer jobs do not have.
 #include <dlfcn.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cmath>
@@ -147,6 +169,7 @@ struct Vst3 {
     v3_component** comp = nullptr;
     v3_audio_processor** proc = nullptr;
     v3_edit_controller** ctrl = nullptr;
+    int32_t channels = 2;  // of the main buses, read in open()
 
     bool open(const char* path) {
         lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -168,6 +191,9 @@ struct Vst3 {
         if (v3_cpp_obj_initialize(comp, nullptr) != V3_OK) return false;
         if (v3_cpp_obj_query_interface(comp, v3_audio_processor_iid, &proc) != V3_OK) return false;
         if (v3_cpp_obj_query_interface(comp, v3_edit_controller_iid, &ctrl) != V3_OK) return false;
+        v3_bus_info bi{};
+        if (v3_cpp_obj(comp)->get_bus_info(comp, V3_AUDIO, V3_INPUT, 0, &bi) != V3_OK) return false;
+        channels = bi.channel_count;
         v3_cpp_obj(comp)->activate_bus(comp, V3_AUDIO, V3_INPUT, 0, true);
         v3_cpp_obj(comp)->activate_bus(comp, V3_AUDIO, V3_OUTPUT, 0, true);
         return true;
@@ -217,29 +243,32 @@ struct Vst3 {
     }
 };
 
-// Stereo in and out, `frames` long, and a process call over them.
+// `inputs` input and `outputs` output buffers, `frames` long, and a VST3
+// process call over the first `vst3_channels` of each (the main buses).
 struct Block {
-    std::vector<float> in0, in1, out0, out1;
-    float* ins[2];
-    float* outs[2];
+    std::vector<std::vector<float>> in, out;
+    std::vector<float*> ins, outs;
     v3_audio_bus_buffers in_bus{};
     v3_audio_bus_buffers out_bus{};
     Changes out_changes{&kChangesVt, nullptr, 0};
 
-    explicit Block(int32_t frames) : in0(frames), in1(frames), out0(frames, 7.0f), out1(frames, 7.0f) {
-        for (int32_t i = 0; i < frames; ++i) {
-            in0[i] = 0.25f * std::sin(0.01f * static_cast<float>(i));
-            in1[i] = -in0[i];
+    Block(int32_t frames, int32_t inputs, int32_t outputs)
+        : in(static_cast<std::size_t>(inputs), std::vector<float>(static_cast<std::size_t>(frames))),
+          out(static_cast<std::size_t>(outputs), std::vector<float>(static_cast<std::size_t>(frames), 7.0f)) {
+        for (std::size_t c = 0; c < in.size(); ++c) {
+            for (int32_t i = 0; i < frames; ++i)
+                in[c][static_cast<std::size_t>(i)] =
+                    (c & 1 ? -0.25f : 0.25f) * std::sin(0.01f * static_cast<float>(i));
+            ins.push_back(in[c].data());
         }
-        ins[0] = in0.data();
-        ins[1] = in1.data();
-        outs[0] = out0.data();
-        outs[1] = out1.data();
-        in_bus.num_channels = 2;
-        in_bus.channel_buffers_32 = ins;
-        out_bus.num_channels = 2;
-        out_bus.channel_buffers_32 = outs;
+        for (auto& o : out) outs.push_back(o.data());
+        in_bus.num_channels = outputs;
+        in_bus.channel_buffers_32 = ins.data();
+        out_bus.num_channels = outputs;
+        out_bus.channel_buffers_32 = outs.data();
     }
+    // A VST3 block: main buses only, as wide as the plugin's.
+    Block(int32_t frames, const struct Vst3& p);
 
     v3_result run(Vst3& p, int32_t frames, Changes* params) {
         v3_process_data d{};
@@ -256,12 +285,16 @@ struct Block {
     }
 
     bool finite() const {
-        for (std::size_t i = 0; i < out0.size(); ++i) {
-            if (!std::isfinite(out0[i]) || !std::isfinite(out1[i])) return false;
+        for (const auto& o : out) {
+            for (float v : o) {
+                if (!std::isfinite(v)) return false;
+            }
         }
         return true;
     }
 };
+
+Block::Block(int32_t frames, const Vst3& p) : Block(frames, p.channels, p.channels) {}
 
 int vst3_lazy(const char* path) {
     Vst3 p;
@@ -271,7 +304,7 @@ int vst3_lazy(const char* path) {
     CHECK(p.setup(48000.0, 256));
     v3_param_id bypass = 0, cont = 0;
     CHECK(p.find_params(bypass, cont));
-    Block b(256);
+    Block b(256, p);
     Queue q{&kQueueVt, cont, 0, 0.3};
     Changes params{&kChangesVt, &q, 1};
     bool ok = true;
@@ -296,16 +329,19 @@ int vst3_oversize(const char* path) {
     CHECK(p.open(path));
     CHECK(p.setup(48000.0, 128));
     CHECK(v3_cpp_obj(p.comp)->set_active(p.comp, true) == V3_OK);
-    Block b(512);
+    Block b(512, p);
     CHECK(b.run(p, 128, nullptr) == V3_OK);
     // Four times the promised block: refused, and the host's buffers are
     // silent rather than stale.
-    for (float& v : b.out0) v = 7.0f;
-    for (float& v : b.out1) v = 7.0f;
+    for (auto& o : b.out) {
+        for (float& v : o) v = 7.0f;
+    }
     const v3_result r = b.run(p, 512, nullptr);
     p.close();
     CHECK(r != V3_OK);
-    for (std::size_t i = 0; i < b.out0.size(); ++i) CHECK(b.out0[i] == 0.0f && b.out1[i] == 0.0f);
+    for (const auto& o : b.out) {
+        for (float v : o) CHECK(v == 0.0f);
+    }
     return 0;
 }
 
@@ -329,7 +365,7 @@ int vst3_threads(const char* path) {
             (void)v3_cpp_obj(p.ctrl)->get_parameter_normalised(p.ctrl, bypass);
         }
     });
-    Block b(128);
+    Block b(128, p);
     // The same parameters automated from the audio thread: a point at
     // offset 0 (applied before run()) and one later (applied after it).
     Queue qs[2] = {{&kQueueVt, cont, 0, 0.0}, {&kQueueVt, bypass, 64, 0.0}};
@@ -358,6 +394,302 @@ int vst3_threads(const char* path) {
     return 0;
 }
 
+// Renders `blocks` blocks of 128 through a fresh instance at 48 kHz, with
+// `q` (if any) in block `at`; returns every output channel, end to end.
+std::vector<float> vst3_render(const char* path, int blocks, const Queue* q, int at) {
+    Vst3 p;
+    std::vector<float> all;
+    if (!p.open(path) || !p.setup(48000.0, 128) ||
+        v3_cpp_obj(p.comp)->set_active(p.comp, true) != V3_OK ||
+        v3_cpp_obj(p.proc)->set_processing(p.proc, true) != V3_OK) {
+        p.close();
+        return all;
+    }
+    Block b(128 * blocks, p);
+    Block one(128, p);
+    Queue copy{};
+    if (q != nullptr) copy = *q;
+    Changes params{&kChangesVt, &copy, 1};
+    for (int k = 0; k < blocks; ++k) {
+        for (std::size_t c = 0; c < one.in.size(); ++c)
+            std::memcpy(one.in[c].data(), b.in[c].data() + 128 * k, 128 * sizeof(float));
+        one.run(p, 128, q != nullptr && k == at ? &params : nullptr);
+        for (const auto& o : one.out) all.insert(all.end(), o.begin(), o.end());
+    }
+    p.close();
+    return all;
+}
+
+// ADR-0011 Amendment 2: DPF applies a queue's point at offset 0 before
+// run() and its last point after run(), so a change at offset 64 of block k
+// is not heard in block k and is heard from the first sample of block k+1,
+// exactly as if it had been sent at offset 0 of block k+1. Shown on the
+// first parameter whose change this bundle makes audible at the default
+// settings (the bypass, else a continuous one), so it holds for every
+// bundle without knowing its parameters.
+int vst3_late(const char* path) {
+    // Long enough for the slowest default to show a change: the gate's
+    // 20 ms hold keeps it open for 960 samples after its threshold moves.
+    constexpr int kBlocksLate = 40, kAt = 4;
+    Vst3 p;
+    CHECK(p.open(path));
+    const int32_t chans = p.channels;
+    std::vector<Queue> candidates;
+    for (int32_t i = 0, n = v3_cpp_obj(p.ctrl)->get_parameter_count(p.ctrl); i < n; ++i) {
+        v3_param_info pi{};
+        if (v3_cpp_obj(p.ctrl)->get_parameter_info(p.ctrl, i, &pi) != V3_OK) continue;
+        if (pi.flags & V3_PARAM_READ_ONLY) continue;
+        if (!(pi.flags & V3_PARAM_IS_BYPASS) && (!(pi.flags & V3_PARAM_CAN_AUTOMATE) || pi.step_count != 0))
+            continue;
+        // The far end of the range from the default (the top from the
+        // middle: the gate's -40 dB threshold moved to 0 dB closes it).
+        const double to = pi.default_normalised_value <= 0.5 ? 1.0 : 0.0;
+        candidates.push_back({&kQueueVt, pi.param_id, 64, to});
+    }
+    p.close();
+
+    const std::vector<float> plain = vst3_render(path, kBlocksLate, nullptr, 0);
+    CHECK(!plain.empty());
+    const std::size_t block = 128 * static_cast<std::size_t>(chans);
+    for (const Queue& q : candidates) {
+        const std::vector<float> late = vst3_render(path, kBlocksLate, &q, kAt);
+        CHECK(late.size() == plain.size());
+        bool audible = false;
+        for (std::size_t i = block * (kAt + 1); i < late.size(); ++i) audible |= late[i] != plain[i];
+        if (!audible) continue;
+        Queue at_zero = q;
+        at_zero.offset = 0;
+        const std::vector<float> next = vst3_render(path, kBlocksLate, &at_zero, kAt + 1);
+        CHECK(next.size() == plain.size());
+        // Block kAt: as if nothing had been sent.
+        for (std::size_t i = 0; i < block * (kAt + 1); ++i) CHECK(late[i] == plain[i]);
+        // From block kAt + 1: the same as the change sent at its offset 0.
+        for (std::size_t i = block * (kAt + 1); i < late.size(); ++i) CHECK(late[i] == next[i]);
+        std::printf("ParamID %u at offset 64 of block %d: heard from offset 0 of block %d\n",
+                    static_cast<unsigned>(q.id), kAt, kAt + 1);
+        return 0;
+    }
+    std::fprintf(stderr, "no parameter of this bundle changes its output at the defaults\n");
+    return 1;
+}
+
+// Any number of buses per direction, each with its own channel count: what
+// Block cannot express (a key bus, a bus wider than declared).
+struct Buses {
+    std::vector<std::vector<std::vector<float>>> data[2];  // [dir][bus][channel]
+    std::vector<std::vector<float*>> ptrs[2];
+    std::vector<v3_audio_bus_buffers> bufs[2];
+
+    Buses(int32_t frames, const std::vector<int32_t>& ins, const std::vector<int32_t>& outs) {
+        const std::vector<int32_t>* widths[2] = {&ins, &outs};
+        for (int d = 0; d < 2; ++d) {
+            const std::size_t n = widths[d]->size();
+            data[d].resize(n);
+            ptrs[d].resize(n);
+            bufs[d].resize(n);
+            for (std::size_t b = 0; b < n; ++b) {
+                const auto ch = static_cast<std::size_t>((*widths[d])[b]);
+                data[d][b].assign(ch, std::vector<float>(static_cast<std::size_t>(frames), 0.0f));
+                for (auto& c : data[d][b]) ptrs[d][b].push_back(c.data());
+                bufs[d][b].num_channels = (*widths[d])[b];
+                bufs[d][b].channel_buffers_32 = ptrs[d][b].data();
+            }
+        }
+    }
+
+    v3_result run(Vst3& p, int32_t frames, Changes* params, int32_t in_buses) {
+        Changes out_changes{&kChangesVt, nullptr, 0};
+        v3_process_data d{};
+        d.process_mode = V3_REALTIME;
+        d.symbolic_sample_size = V3_SAMPLE_32;
+        d.nframes = frames;
+        d.num_input_buses = in_buses;
+        d.num_output_buses = static_cast<int32_t>(bufs[1].size());
+        d.inputs = bufs[0].data();
+        d.outputs = bufs[1].data();
+        d.input_params = reinterpret_cast<v3_param_changes**>(params);
+        d.output_params = reinterpret_cast<v3_param_changes**>(&out_changes);
+        return v3_cpp_obj(p.proc)->process(p.proc, &d);
+    }
+};
+
+bool title_is(const v3_param_info& pi, const char* want) {
+    std::size_t i = 0;
+    for (; want[i] != '\0'; ++i) {
+        if (i >= 127 || pi.title[i] != static_cast<int16_t>(want[i])) return false;
+    }
+    return pi.title[i] == 0;
+}
+
+// How a host hands over the key, for vst3_nokey.
+enum class KeyBus { Inactive, Absent, ActiveSilent };
+
+constexpr v3_param_id kNoParam = ~0u;
+
+// kBlocks blocks of 128 at 48 kHz through a fresh instance, with the
+// external key (`external`, a ParamID) switched on in the first block
+// unless it is kNoParam. Returns the main outputs, end to end; empty on
+// any failure.
+std::vector<float> vst3_render_keyed(const char* path, v3_param_id external, KeyBus how) {
+    Vst3 p;
+    std::vector<float> all;
+    v3_bus_info key{};
+    if (!p.open(path) || !p.setup(48000.0, 128) ||
+        v3_cpp_obj(p.comp)->get_bus_info(p.comp, V3_AUDIO, V3_INPUT, 1, &key) != V3_OK) {
+        p.close();
+        return all;
+    }
+    if (how == KeyBus::ActiveSilent) v3_cpp_obj(p.comp)->activate_bus(p.comp, V3_AUDIO, V3_INPUT, 1, true);
+    if (v3_cpp_obj(p.comp)->set_active(p.comp, true) != V3_OK ||
+        v3_cpp_obj(p.proc)->set_processing(p.proc, true) != V3_OK) {
+        p.close();
+        return all;
+    }
+    Buses b(128, {p.channels, key.channel_count}, {p.channels});
+    Queue q{&kQueueVt, external, 0, 1.0};
+    Changes params{&kChangesVt, &q, 1};
+    for (int k = 0; k < kBlocks; ++k) {
+        for (std::size_t c = 0; c < b.data[0][0].size(); ++c) {
+            for (int i = 0; i < 128; ++i)
+                b.data[0][0][c][static_cast<std::size_t>(i)] =
+                    (c & 1 ? -0.25f : 0.25f) * std::sin(0.01f * static_cast<float>(128 * k + i));
+        }
+        // An inactive bus still gets buffers from most hosts; whatever is in
+        // them must not be heard. A silent active bus is zeros.
+        for (auto& c : b.data[0][1]) std::fill(c.begin(), c.end(), how == KeyBus::ActiveSilent ? 0.0f : 0.5f);
+        const bool first = k == 0 && external != kNoParam;
+        if (b.run(p, 128, first ? &params : nullptr, how == KeyBus::Absent ? 1 : 2) != V3_OK) {
+            all.clear();
+            break;
+        }
+        for (const auto& o : b.data[1][0]) all.insert(all.end(), o.begin(), o.end());
+    }
+    p.close();
+    return all;
+}
+
+int vst3_nokey(const char* path) {
+    v3_param_id external = kNoParam;
+    {
+        Vst3 p;
+        CHECK(p.open(path));
+        CHECK(v3_cpp_obj(p.comp)->get_bus_count(p.comp, V3_AUDIO, V3_INPUT) == 2);
+        for (int32_t i = 0, n = v3_cpp_obj(p.ctrl)->get_parameter_count(p.ctrl); i < n; ++i) {
+            v3_param_info pi{};
+            if (v3_cpp_obj(p.ctrl)->get_parameter_info(p.ctrl, i, &pi) == V3_OK && title_is(pi, "External key"))
+                external = pi.param_id;
+        }
+        p.close();
+    }
+    CHECK(external != kNoParam);
+    const std::vector<float> off = vst3_render_keyed(path, kNoParam, KeyBus::Inactive);
+    const std::vector<float> inactive = vst3_render_keyed(path, external, KeyBus::Inactive);
+    const std::vector<float> absent = vst3_render_keyed(path, external, KeyBus::Absent);
+    const std::vector<float> silent = vst3_render_keyed(path, external, KeyBus::ActiveSilent);
+    CHECK(!off.empty());
+    CHECK(inactive.size() == off.size());
+    CHECK(absent.size() == off.size());
+    CHECK(silent.size() == off.size());
+    float apart = 0.0f;
+    std::size_t differ_inactive = 0, differ_absent = 0;
+    for (std::size_t i = 0; i < off.size(); ++i) {
+        differ_inactive += inactive[i] != off[i];
+        differ_absent += absent[i] != off[i];
+        apart = std::fmax(apart, std::fabs(silent[i] - off[i]));
+    }
+    std::printf("against the external key off: inactive key bus %zu sample(s) differ, no key bus %zu; "
+                "an active silent key: max |difference| %g\n",
+                differ_inactive, differ_absent, static_cast<double>(apart));
+    CHECK(differ_inactive == 0);
+    CHECK(differ_absent == 0);
+    CHECK(apart > 1e-3f);
+    return 0;
+}
+
+// Points fds 1 and 2 at a fresh temporary file until restore(), which says
+// how many bytes were written there.
+struct Capture {
+    std::FILE* file = nullptr;
+    int saved[2] = {-1, -1};
+
+    bool start() {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        file = std::tmpfile();
+        if (file == nullptr) return false;
+        for (int fd = 1; fd <= 2; ++fd) {
+            saved[fd - 1] = dup(fd);
+            if (saved[fd - 1] < 0 || dup2(fileno(file), fd) < 0) return false;
+        }
+        return true;
+    }
+    long restore() {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        for (int fd = 1; fd <= 2; ++fd) {
+            if (saved[fd - 1] >= 0) {
+                dup2(saved[fd - 1], fd);
+                ::close(saved[fd - 1]);
+                saved[fd - 1] = -1;
+            }
+        }
+        if (file == nullptr) return -1;
+        const long n = static_cast<long>(lseek(fileno(file), 0, SEEK_END));
+        std::fclose(file);
+        file = nullptr;
+        return n;
+    }
+};
+
+int vst3_wide(const char* path) {
+    // The capture itself must see a write, or "nothing printed" proves
+    // nothing.
+    {
+        Capture probe;
+        CHECK(probe.start());
+        std::fprintf(stderr, "x");
+        CHECK(probe.restore() == 1);
+    }
+    Vst3 p;
+    CHECK(p.open(path));
+    CHECK(p.setup(48000.0, 128));
+    const int32_t declared = p.channels;
+    const int32_t buses = v3_cpp_obj(p.comp)->get_bus_count(p.comp, V3_AUDIO, V3_INPUT);
+    std::vector<int32_t> ins = {declared};
+    if (buses > 1) {
+        v3_bus_info key{};
+        CHECK(v3_cpp_obj(p.comp)->get_bus_info(p.comp, V3_AUDIO, V3_INPUT, 1, &key) == V3_OK);
+        v3_cpp_obj(p.comp)->activate_bus(p.comp, V3_AUDIO, V3_INPUT, 1, true);
+        ins.push_back(key.channel_count + 1);
+    } else {
+        ins[0] += 1;
+    }
+    CHECK(v3_cpp_obj(p.comp)->set_active(p.comp, true) == V3_OK);
+    CHECK(v3_cpp_obj(p.proc)->set_processing(p.proc, true) == V3_OK);
+    Buses b(128, ins, {declared + 1});
+    for (auto& bus : b.data[0]) {
+        for (auto& c : bus) {
+            for (std::size_t i = 0; i < c.size(); ++i) c[i] = 0.25f * std::sin(0.01f * static_cast<float>(i));
+        }
+    }
+    Capture cap;
+    CHECK(cap.start());
+    bool ok = true;
+    for (int k = 0; k < 4; ++k) ok = ok && b.run(p, 128, nullptr, static_cast<int32_t>(ins.size())) == V3_OK;
+    const long printed = cap.restore();
+    p.close();
+    std::printf("input buses of %d%s channel(s) and an output of %d, the bundle declaring %d: "
+                "%ld byte(s) printed\n",
+                ins[0], ins.size() > 1 ? (" and " + std::to_string(ins[1])).c_str() : "", declared + 1,
+                declared, printed);
+    CHECK(ok);
+    CHECK(printed == 0);
+    for (const auto& c : b.data[1][0]) {
+        for (float v : c) CHECK(std::isfinite(v));
+    }
+    return 0;
+}
+
 // --- LV2 --------------------------------------------------------------------
 
 // The only feature run() might use is the map, and only at instantiate.
@@ -373,7 +705,7 @@ struct UridMap {
     }
 };
 
-int lv2_lazy(const char* path, const char* bundle) {
+int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t outputs) {
     void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (lib == nullptr) {
         std::fprintf(stderr, "dlopen %s: %s\n", path, dlerror());
@@ -402,20 +734,20 @@ int lv2_lazy(const char* path, const char* bundle) {
 
     LV2_Handle h = desc->instantiate(desc, 48000.0, bundle, features);
     CHECK(h != nullptr);
-    Block b(max_block);
-    // Ports 0-3 are the audio ports. Port 4 is the transport input in a
-    // bundle that follows the host tempo and the latency output otherwise:
-    // an empty atom sequence serves as either. Control ports stay
+    Block b(max_block, static_cast<int32_t>(inputs), static_cast<int32_t>(outputs));
+    // DPF's LV2 port order: the audio inputs (the key input's last), the
+    // audio outputs, then one port that is the transport input in a bundle
+    // that follows the host tempo and the latency output otherwise: an
+    // empty atom sequence serves as either. Control ports stay
     // unconnected, which DPF reads as "unchanged".
-    alignas(8) std::uint8_t port4[64] = {};
-    LV2_Atom_Sequence* seq = reinterpret_cast<LV2_Atom_Sequence*>(port4);
+    alignas(8) std::uint8_t extra[64] = {};
+    LV2_Atom_Sequence* seq = reinterpret_cast<LV2_Atom_Sequence*>(extra);
     seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
     seq->atom.type = UridMap::map(&urids, LV2_ATOM__Sequence);
-    desc->connect_port(h, 0, b.in0.data());
-    desc->connect_port(h, 1, b.in1.data());
-    desc->connect_port(h, 2, b.out0.data());
-    desc->connect_port(h, 3, b.out1.data());
-    desc->connect_port(h, 4, port4);
+    uint32_t port = 0;
+    for (float* in : b.ins) desc->connect_port(h, port++, in);
+    for (float* out : b.outs) desc->connect_port(h, port++, out);
+    desc->connect_port(h, port, extra);
 
     g_allocations.store(0);
     g_counting.store(true);
@@ -437,20 +769,27 @@ int main(int argc, char** argv) {
     const char* lv2 = nullptr;
     const char* bundle = nullptr;
     std::string scenario;
+    uint32_t inputs = 2, outputs = 2;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--vst3") == 0) vst3 = argv[i + 1];
         else if (std::strcmp(argv[i], "--lv2") == 0) lv2 = argv[i + 1];
         else if (std::strcmp(argv[i], "--bundle") == 0) bundle = argv[i + 1];
         else if (std::strcmp(argv[i], "--scenario") == 0) scenario = argv[i + 1];
+        else if (std::strcmp(argv[i], "--inputs") == 0) inputs = static_cast<uint32_t>(std::atoi(argv[i + 1]));
+        else if (std::strcmp(argv[i], "--outputs") == 0) outputs = static_cast<uint32_t>(std::atoi(argv[i + 1]));
     }
     int r = 2;
     if (vst3 != nullptr && scenario == "lazy") r = vst3_lazy(vst3);
     else if (vst3 != nullptr && scenario == "oversize") r = vst3_oversize(vst3);
     else if (vst3 != nullptr && scenario == "threads") r = vst3_threads(vst3);
-    else if (lv2 != nullptr && bundle != nullptr && scenario == "lazy") r = lv2_lazy(lv2, bundle);
+    else if (vst3 != nullptr && scenario == "late") r = vst3_late(vst3);
+    else if (vst3 != nullptr && scenario == "nokey") r = vst3_nokey(vst3);
+    else if (vst3 != nullptr && scenario == "wide") r = vst3_wide(vst3);
+    else if (lv2 != nullptr && bundle != nullptr && scenario == "lazy") r = lv2_lazy(lv2, bundle, inputs, outputs);
     else
-        std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads |"
-                             " --lv2 BINARY --bundle DIR --scenario lazy)\n", argv[0]);
+        std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late|nokey|wide |"
+                             " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy)\n",
+                     argv[0]);
     if (r == 0) std::printf("bundle_driver %s: pass\n", scenario.c_str());
     return r;
 }
