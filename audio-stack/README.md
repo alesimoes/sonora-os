@@ -23,8 +23,14 @@ no-blocking rule hold in practice rather than on paper.
 interrupt handlers into threads that the scheduler can prioritise. Without it a
 busy USB or network interrupt runs ahead of the audio thread.
 
-**Pinned quantum** — the quantum is our block size. If PipeWire renegotiates it
-mid-session, latency compensation shifts under a take in progress.
+**Pinned quantum and rate** — the quantum is our block size. If PipeWire
+renegotiates it mid-session, latency compensation shifts under a take in
+progress, and since ADR-0007 M2 the engine ends the take. min, max and default
+are all 128 and the only allowed rate is 48000; `node.rules` and
+`settings.check-*` stop clients from forcing anything else. Every route tried,
+and the two that still get through, are in `brain/research/quantum-pin.md`;
+`tools/test-quantum-pin.sh` re-runs them. After editing any file here, run
+`tools/sync-audio-stack.sh` so the image gets the same copy.
 
 **Pro Audio profile** — the one that decides whether a multichannel interface
 exists. In the default profile a card is a stereo pair, so a Behringer UMC1820

@@ -51,7 +51,10 @@ RUN useradd --create-home --uid 1000 sonora && usermod -aG audio sonora
 
 COPY tools/test-engine-entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY tools/verify-recording.py /usr/local/bin/verify-recording.py
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/verify-recording.py
+# For tools/test-quantum-pin.sh, which runs this image with its own entrypoint.
+COPY tools/test-quantum-entrypoint.sh /usr/local/bin/test-quantum-entrypoint.sh
+COPY tools/jack-quantum-probe.py /usr/local/bin/jack-quantum-probe.py
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/verify-recording.py       /usr/local/bin/test-quantum-entrypoint.sh /usr/local/bin/jack-quantum-probe.py
 
 USER sonora
 WORKDIR /home/sonora

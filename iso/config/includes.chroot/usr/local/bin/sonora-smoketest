@@ -111,7 +111,16 @@ check "operator account exists" id sonora
 check "operator is in audio group" sh -c 'id -nG sonora | grep -qw audio'
 check "operator is NOT in disk group" sh -c '! id -nG sonora | grep -qw disk'
 check "rt limits installed" test -f /etc/security/limits.d/95-audio.conf
-check "pipewire quantum pinned" sh -c 'grep -q "default.clock.quantum" /etc/pipewire/pipewire.conf.d/99-sonora.conf'
+# Asked of the running server, not grepped from the file: a drop-in that fails
+# to parse, or a stock rule that outranks it (pipewire.conf raises min-quantum
+# to 1024 under a hypervisor), would leave a file that looks right.
+SETTINGS="$(su - sonora -c 'XDG_RUNTIME_DIR=/run/user/1000 pw-metadata -n settings 0' 2>/dev/null)"
+setting() { printf '%s\n' "$SETTINGS" | sed -n "s/.*key:'$1' value:'\([^']*\)'.*/\1/p"; }
+PW_QUANTUM="$(setting clock.quantum)/$(setting clock.min-quantum)/$(setting clock.max-quantum)"
+PW_RATE="$(setting clock.rate)|$(setting clock.allowed-rates)"
+echo "SMOKETEST info  pipewire quantum/min/max $PW_QUANTUM, rate|allowed $PW_RATE"
+check "pipewire quantum pinned at 128" test "$PW_QUANTUM" = "128/128/128"
+check "pipewire rate pinned at 48000" test "$PW_RATE" = "48000|[ 48000 ]"
 check "wireplumber pro-audio rule" sh -c 'grep -q "pro-audio" /etc/wireplumber/wireplumber.conf.d/99-sonora.conf'
 check "pipewire running" pgrep -x pipewire
 check "no serial login prompt" sh -c '! systemctl is-active --quiet "serial-getty@ttyS0.service"'

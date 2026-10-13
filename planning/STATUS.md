@@ -78,7 +78,7 @@ end of its run. Keep it short: what is true now, not a diary.
 - **The image boots.** `tools/test-boot-qemu.sh`, 2026-10-11, rerun on the
   rebuilt ISO 2026-10-12: up in about 13
   seconds on `6.12.111+deb13-rt-amd64`, `sonora-engine` running, no failed
-  units, 19 of 19 checks passing. Among them: `libjack.so.0` resolves to
+  units, 19 of 19 checks passing (20 of 20 on 2026-10-13, see below). Among them: `libjack.so.0` resolves to
   PipeWire's rather than jackd2's; the Pro Audio profile is applied, so ports
   arrive as `...pro-input-0:capture_AUX0`; the engine holds the same PID across
   ten seconds with `NRestarts` at zero; there is no serial login prompt; and
@@ -114,6 +114,28 @@ end of its run. Keep it short: what is true now, not a diary.
   Open: no compositor or systemd unit for it in the ISO (a compositor ADR is
   architect's); no CI job builds it; whether `app.quit` closes only the UI;
   at M4 `EngineAdapter`/`SyntheticEngine` give way to the control API.
+- **The quantum and rate are pinned against clients (2026-10-13).** Under
+  ADR-0007 M2 a block-size or rate change ends a take. The old drop-in let 11
+  of 16 client routes move the graph (`jack_set_buffer_size`,
+  `PIPEWIRE_QUANTUM`, `clock.force-*` metadata, `jack_set_sample_rate`). Now
+  min = max = default = 128, `allowed-rates [ 48000 ]`, `quantum-floor`,
+  `settings.check-*` and server-side `node.rules`; all 16 hold, measured in
+  the runtime container by `tools/test-quantum-pin.sh` (new CI job). Two
+  deliberate two-step `pw-metadata` edits still get through and are reported
+  as gaps. Rebuilt ISO boots in QEMU with the running server reporting
+  128/128/128 and `[ 48000 ]`: 20 of 20 smoke checks. Dummy driver only; no
+  ALSA device has been the driver. `brain/research/quantum-pin.md`.
+- **The USB writer writes only through descriptors, rechecked (2026-10-13).**
+  No path-based write to the whole disk any more: the wipe (first and last
+  MiB, perl, O_EXCL), dd, sfdisk and, for the partition, mkfs and mount all
+  go through descriptors checked against sysfs and diskseq. Reopens through
+  `/proc/self/fd/N` go by major:minor, so a device swapped mid-run is caught
+  by the diskseq recheck after the step, not prevented; sfdisk runs with
+  `--lock=no` so it cannot deadlock on our own flock. No O_CREAT open
+  of the device; `flock -x` held during the write; a write-protected device
+  is refused before the prompt; a missing or empty device is not reported as
+  "in use". Each asserted in `tools/test-write-usb.sh` (strace and seeded
+  patterns). Loop devices and QEMU only, as before.
 - **Still unverified:** no real audio interface has ever been attached, so
   there is still no latency or xrun figure from hardware. Nothing has run on a
   physical machine or a physical USB stick: every claim above is a loop
@@ -131,7 +153,8 @@ end of its run. Keep it short: what is true now, not a diary.
 | `live-build` configuration | distro-engineer | builds; contents verified |
 | Autostart into the engine | distro-engineer | boots and starts the engine in QEMU |
 | Container recording test | rt-engineer | passing, wired into CI |
-| QEMU boot smoke test | distro-engineer | passing, 19 checks |
+| QEMU boot smoke test | distro-engineer | passing, 20 checks |
+| Quantum and rate pin against clients | distro-engineer | passing in container and QEMU; real interface untested |
 | `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
 | ADR-0007 M2, backend contract | rt-engineer + driver-engineer | PR from `contract/backend`; reviewed by both owners, `code-reviewer` and `rt-safety-auditor`; hardware untested |
 

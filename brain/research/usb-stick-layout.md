@@ -91,6 +91,13 @@ below). Every one of those disks reports `TRAN=''` and `RM=0`.
 New partition nodes also never appear in the container's static `/dev`. The
 test mounts `devtmpfs` over it, which is what a real system has.
 
+Two harness traps, measured 2026-10-13. Image tags are shared by every
+worktree on the Docker host, and another checkout rebuilt
+`sonora-runtime:trixie` mid-run, so the tests run containers by image ID.
+And under `pipefail`, `yes | head` and `dd | grep -q` report failure when
+the left side dies of SIGPIPE; the harness uses process substitution or
+`grep -c` instead.
+
 ## Telling a stick from a disk you must not touch
 
 Added after review, 2026-10-12. Each point below was measured in the same
@@ -131,17 +138,100 @@ container unless marked.
   before and after the same reattach. A same-size card swapped in a USB
   reader would look the same to it, which is why the writer refuses without
   diskseq unless given `--weak-identity`.
-- **Proving the write lands on the confirmed device.** diskseq is never
-  reused. The writer opens its descriptors, checks that they are the device
-  the name refers to, and checks that the name still has the confirmed
-  diskseq. `wipefs`, which can only take a path, runs between two such
-  checks; equal values on both sides mean the name pointed at that medium
-  the whole time. `dd` and the read-back write and read through the
-  descriptors. `wipefs --all` still re-reads the table successfully while
-  those descriptors are open (measured).
+- **Checking that the write landed on the confirmed device.** diskseq is
+  never reused. The writer opens its descriptors, checks that they are the
+  device the name refers to, and checks that the name still has the confirmed
+  diskseq; after each write step it checks the diskseq again. Nothing that
+  writes the whole disk looks up its name in `/dev` (third review,
+  2026-10-13; was: `wipefs` by path between two identity checks). That is
+  detection after each step, not prevention: see "Writing through
+  descriptors, and what the rechecks prove" below.
 - **Never re-resolve the argument.** `/dev/disk/by-label/<label>` is made
-  from content and disappears when `wipefs` erases that content. The writer
+  from content and disappears when the wipe erases that content. The writer
   resolves its argument once, at the start.
+
+## Writing through descriptors, and what the rechecks prove
+
+Third review, 2026-10-13. Measured with strace in the same container
+(util-linux 2.41.5, e2fsprogs 1.47.2, perl-base 5.40), by
+`tools/test-write-usb.sh`.
+
+- **bash's `<>` adds O_CREAT.** strace of the old `exec 3<>"$DEV"`:
+  `openat(..., "/dev/loopN", O_RDWR|O_CREAT, 0666)`. Had the node vanished
+  in the window, that would have made a regular file in `/dev` and written
+  the image into RAM. The writer now opens fd 4 by path with `<` (O_RDONLY,
+  no O_CREAT), checks it, and opens fd 3 as `/proc/self/fd/4`. The trace
+  shows `"/proc/self/fd/4", O_RDWR|O_CREAT` -- harmless, the magic link
+  always exists while fd 4 is open -- and no open of `/dev/loopN` with
+  O_CREAT or for writing at all.
+- **`/proc/self/fd/N` avoids `/dev`, not a fresh open.** A child inherits
+  fd 3; opening `/proc/self/fd/3` follows the magic link to the device inode
+  and opens it again. For a block device that open goes through
+  `blkdev_open`, which looks the disk up by the inode's `i_rdev`: it reaches
+  whatever disk holds that major:minor *at that moment*, not necessarily the
+  one fd 3 is on. (Code review, 2026-10-13: the earlier wording here, "reopens
+  that inode, whatever `/dev` says now", overstated it.) Used for `sfdisk
+  --append` (opens it `O_RDWR|O_EXCL`), `mkfs.ext4` (`O_RDONLY|O_EXCL`, then
+  plain opens), `mount -t ext4` (source shown as the real partition),
+  `blkid`, `blockdev --flushbufs`, the wipe, and fd 3 itself (opened as
+  `/proc/self/fd/4`).
+- **What the rechecks prove.** diskseq is assigned once per disk, bumped on
+  a media change, and never reused, and a disk keeps its major:minor while it
+  exists. So a fresh open of that major:minor that happens between two
+  identity checks which both find the confirmed diskseq reached the confirmed
+  medium. The writer rechecks after opening fds 3 and 4, after the wipe,
+  after dd and before sfdisk, and before formatting the partition.
+- **What they do not prove.** A recheck that fails says only that the device
+  changed since the last one passed. The step in between may already have
+  written to whatever took the number; the run stops after the fact, with a
+  message saying what was done. Held descriptors narrow the window but do not
+  close it: `dd` and `cmp` use fds 3 and 4 directly, and a held descriptor
+  stays on its disk (writes fail if the stick is unplugged rather than follow
+  the number to a newcomer), but a card swapped in a reader is a new medium
+  behind the same disk, and the descriptor reaches it. That is why the writer
+  also reads the diskseq right after `dd`: if the read-back then fails, the
+  message says "the device changed or the stick is faulty" instead of
+  blaming the stick. Not tested: a container cannot swap a medium under a
+  loop device between `dd` and `cmp`.
+- **sfdisk runs with `--lock=no`.** Its open of `/proc/self/fd/3` is a new
+  open file description, so had it taken its own `flock` (it does when
+  `LOCK_BLOCK_DEVICE=1` is in the environment, which `sudo -E` keeps) it
+  would wait forever on the lock fd 3 holds. Measured with util-linux 2.41.5
+  on a file held with `flock -x`: `LOCK_BLOCK_DEVICE=1 sfdisk ...` prints
+  "device already locked, waiting to get lock" and is killed by `timeout 5`;
+  with `--lock=no` it exits 0. The test now writes once with
+  `LOCK_BLOCK_DEVICE=1` exported.
+- **The wipe is perl on `/proc/self/fd/3` with O_RDWR|O_EXCL.** It zeroes the
+  first and last MiB (the reasons for each region are in `wipe_signatures`).
+  The exclusive open keeps the property `wipefs` had: refused if anything
+  claimed the device since the in-use check. The test seeds a pattern into
+  the last MiB of a used GPT stick and finds it gone, along with the backup
+  GPT header, after the write and after a rewrite.
+- **flock.** The writer holds `flock -x` on fd 3 from before the wipe until
+  the partition table is written (trace: `flock(3, LOCK_EX)` before the
+  wipe's open, `LOCK_UN` after sfdisk), so udev does not re-probe or
+  automount mid-write. It is released before the partition step, because
+  `udevadm settle` would otherwise wait on events udev defers while the lock
+  is held. With another process holding `flock -x` on the device during the
+  prompt, the writer gives up after 10 s and writes nothing (tested). That
+  udev honours the lock is systemd's documented behaviour, not observed
+  here: the container runs no udev.
+- **The partition is treated like the disk.** After `find_partition`, fd 5 is
+  opened on the partition node, checked against the major:minor sysfs lists
+  for that partition under the confirmed disk, the disk's diskseq is
+  rechecked, and `mkfs.ext4` and `mount` go through `/proc/self/fd/5`.
+- **errno, not "in use".** The probe, and the wipe's exclusive open after the
+  prompt, report EBUSY as in use and everything else by its errno text (the
+  wipe's open used to call any failure "claimed by something after the
+  checks"). Measured: a missing path gives "No such file or directory";
+  a node for sd major 8 minor 255 with no disk behind it gives "No such
+  device or address". ENOMEDIUM (a reader with no card) cannot be produced
+  in a container.
+- **Write-protected.** A read-only loop (`losetup -r`) shows `ro` = 1 in
+  sysfs, like an SD card with its lock switch on; the writer now refuses it
+  before the prompt by saying so. The check runs after the transport check,
+  because Docker Desktop's own VM disks `sda` and `sdb` also report `ro` = 1
+  and should be refused as what they are.
 
 ## Re-reading the table while the fresh image is mounted
 

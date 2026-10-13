@@ -144,6 +144,19 @@ jobs:
       - name: Record two takes and read them back
         run: tools/test-bwf-interop.sh
 
+  quantum:
+    name: Quantum and rate stay pinned
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Under ADR-0007 M2 a block-size or rate change mid-take ends the take.
+      # This tries every client-side route we know of to move the graph off
+      # 128 frames at 48 kHz, against the drop-in the image ships. No engine
+      # build is needed, so it costs one container image and about a minute.
+      - name: Try to move the graph
+        run: tools/test-quantum-pin.sh
+
   modes:
     name: Executable bits
     runs-on: ubuntu-latest
@@ -243,3 +256,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
+
+      # The image installs the copies under iso/, not audio-stack/ itself, so
+      # an edit that skipped tools/sync-audio-stack.sh would ship the old
+      # tuning while every container test (which reads audio-stack/) passed.
+      - name: The image's audio-stack copies match audio-stack/
+        run: |
+          dest=iso/config/includes.chroot/usr/share/sonora
+          drift=0
+          for f in audio-stack/*; do
+            name=$(basename "$f")
+            [ "$name" = README.md ] && continue
+            if ! cmp -s "$f" "$dest/$name"; then
+              echo "::error file=$dest/$name::not byte-identical to $f."
+              echo "  fix with: tools/sync-audio-stack.sh"
+              drift=1
+            fi
+          done
+          exit "$drift"
