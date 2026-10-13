@@ -52,6 +52,10 @@ public:
     // `engine_implemented` is api::Hello::implemented_commands.
     KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send);
 
+    // Who a track command given no track acts on: the selected track, or -1
+    // when nothing is selected (and the command then fails, as before).
+    void setSelection(std::function<int()> selected) { selected_ = std::move(selected); }
+
     // The interface's own commands. Installed before prepare().
     CommandRegistry& local() { return local_; }
 
@@ -77,6 +81,7 @@ private:
     Send send_;
     CommandRegistry local_;
     std::vector<std::string> help_;
+    std::function<int()> selected_;
 };
 
 }  // namespace sonora::ui

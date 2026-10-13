@@ -205,6 +205,17 @@ arms the wrong one, at the tty. On AZERTY, `&` at a tty is still `shift+7`.
 AltGr is a modifier no profile can name; if one ever needs it, that is a new
 modifier in the chord grammar, not a decoder change.
 
+### What the Qt window implements
+
+The Edit and Mix windows install handlers, in the window's own registry,
+for the edit modes, the Smart/Trim/Select/Grab tools, zoom, undo and redo,
+separate, trim to the insertion point, clear, nudge, track selection, mute,
+solo and `window.toggle_mix_edit` (`ctrl+equal` in `protools.json`, `x` in
+`logic.json`, both `"verified": false` until checked against the guides).
+A track command bound without a target acts on the selected track there, so
+`shift+r`, `shift+s` and `shift+m` work in the window and still report that
+they failed at a tty, which has no selection.
+
 ## Known but unimplemented
 
 A command in the catalog with no handler in this build is a different thing

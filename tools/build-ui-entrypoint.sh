@@ -13,6 +13,15 @@ BUILD=build-ui-container
 UI="$BUILD/sonora-ui"
 
 cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
+
+# ui/qt skips itself when Qt or Xvfb is missing, which is right for
+# tools/build-engine.sh and wrong here: this image exists to run the UI tests,
+# and a green run that registered none would say the interface was tested.
+listed=$(ctest --test-dir "$BUILD" -N)
+for t in ui_meter_model ui_keys ui_edit ui_shell ui_render; do
+  grep -q " $t\$" <<<"$listed" || { echo "error: $t is not registered; is Qt too old?" >&2; exit 1; }
+done
+
 cmake --build "$BUILD" -j"$(nproc)"
 QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
 
@@ -32,23 +41,28 @@ in_cage() {
 if [[ "$MODE" == screenshot ]]; then
   # Captured by the compositor (grim, over wlr-screencopy), not by the
   # application, so the picture is what the kiosk actually put on the output.
-  # The second shot is the same shell after the engine stops answering.
-  # shellcheck disable=SC2016  # expanded by the inner shell, inside cage
-  in_cage sh -c '
-    "$1" --kiosk --demo & ui=$!
-    sleep 5
-    grim "/out/$2"
-    kill "$ui"; wait "$ui" || true
-  ' sh "$UI" "$SHOT"
+  # Three shots of the demo session: the Edit window, the Mix window, and
+  # the Edit window after the engine stops answering. NAME.png is the Edit
+  # window; the Mix window is NAME-mix.png, with a trailing "-edit" in NAME
+  # dropped, so sonora-ui-edit.png gives sonora-ui-mix.png.
+  shoot() {  # file, then sonora-ui arguments
+    local file="$1"
+    shift
+    # shellcheck disable=SC2016  # expanded by the inner shell, inside cage
+    in_cage sh -c '
+      out="$1"; shift
+      "$@" & ui=$!
+      sleep 5
+      grim "/out/$out"
+      kill "$ui"; wait "$ui" || true
+    ' sh "$file" "$UI" --kiosk --demo --keymap keymaps/protools.json "$@"
+  }
   base="${SHOT%.png}"
-  # shellcheck disable=SC2016
-  in_cage sh -c '
-    "$1" --kiosk --demo --engine-dies-after 2 & ui=$!
-    sleep 5
-    grim "/out/$2"
-    kill "$ui"; wait "$ui" || true
-  ' sh "$UI" "$base-no-engine.png"
-  echo "saved /out/$SHOT and /out/$base-no-engine.png"
+  mix="${base%-edit}-mix.png"
+  shoot "$SHOT" --window edit
+  shoot "$mix" --window mix
+  shoot "$base-no-engine.png" --window edit --engine-dies-after 2
+  echo "saved /out/$SHOT, /out/$mix and /out/$base-no-engine.png"
   exit 0
 fi
 

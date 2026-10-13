@@ -62,7 +62,12 @@ RouteResult KeyRouter::route(const KeyChord& chord) {
     return invoke(b->command, b->ctx);
 }
 
-RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& ctx) {
+RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& given) {
+    CommandContext ctx = given;
+    const CommandSpec* spec = find_command(command);
+    if (spec && spec->target == CommandTarget::Track && !ctx.has_target() && selected_) {
+        ctx.target = selected_();
+    }
     RouteResult r;
     r.command = command;
     r.ctx = ctx;
@@ -81,7 +86,7 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
         return r;
     }
     r.kind = RouteResult::Kind::NotImplemented;
-    r.result = find_command(command) ? DispatchResult::NotImplemented
+    r.result = spec ? DispatchResult::NotImplemented
                                      : DispatchResult::UnknownCommand;
     r.message = command + ": " + dispatch_result_text(r.result);
     return r;

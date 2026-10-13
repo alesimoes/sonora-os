@@ -125,7 +125,7 @@ end of its run. Keep it short: what is true now, not a diary.
   AZERTY and ABNT2 arm the right track (`keymaps/README.md`). Measured with
   llvmpipe only (`brain/research/qt-shell-render-cost.md`): no GPU figure.
   Open: no compositor or systemd unit for it in the ISO (a compositor ADR is
-  architect's); no CI job builds it; whether `app.quit` closes only the UI;
+  architect's); whether `app.quit` closes only the UI;
   at M4 `EngineAdapter`/`SyntheticEngine` give way to the control API.
 - **The quantum and rate are pinned against clients (2026-10-13).** Under
   ADR-0007 M2 a block-size or rate change ends a take. The old drop-in let 11
@@ -149,6 +149,17 @@ end of its run. Keep it short: what is true now, not a diary.
   is refused before the prompt; a missing or empty device is not reported as
   "in use". Each asserted in `tools/test-write-usb.sh` (strace and seeded
   patterns). Loop devices and QEMU only, as before.
+- **Edit and Mix windows (`ui/qt`, branch `feature/ui-arrange-mixer`).**
+  Pro Tools workflow over the synthetic engine: rulers (timecode from
+  01:00:00:00, bars|beats, min:secs), scene-graph timeline with waveform
+  overviews, Smart/Trim/Select/Grab, Slip and Grid, move/trim/separate/clear/
+  nudge with undo, one strip per track plus the monitor bus. Edits go through
+  `TimelineDocument` (`ui/qt/src/timeline_document.h`), a local stand-in
+  shaped to `brain/specs/timeline-model.md`, swapped for `common/model` (on
+  main) at M7.
+  Every colour and size is a token from `brain/specs/ui-design.md`. Open:
+  the audio is synthetic (no peak files), mix changes nothing audible (no
+  playback path), Shuffle and Spot refuse edits, Inter is not yet in the ISO.
 - **Still unverified:** no real audio interface has ever been attached, so
   there is still no latency or xrun figure from hardware. Nothing has run on a
   physical machine or a physical USB stick: every claim above is a loop

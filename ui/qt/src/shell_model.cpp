@@ -46,6 +46,8 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     connect(&timer_, &QTimer::timeout, this, &ShellModel::tick);
     clock_.start();
     for (uint32_t i = 0; i < engine_.info().track_count; ++i) armed_.push_back(false);
+    peaks_.assign(engine_.info().track_count, 0.0f);
+    peak_read_.assign(engine_.info().track_count, false);
     replies_.reserve(16);
     xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
 }
@@ -194,13 +196,23 @@ void ShellModel::tick() {
         alive_ = alive;
         emit engineAliveChanged();
     }
+    std::fill(peak_read_.begin(), peak_read_.end(), false);
     for (MeterItem* m : meters_) {
         if (!alive) {
             m->setNoData();
             continue;
         }
         if (!m->isVisible()) continue;
-        m->feed(engine_.take_peak(static_cast<uint32_t>(m->channel())), dt);
+        const auto ch = static_cast<std::size_t>(m->channel());
+        if (ch >= peaks_.size()) continue;
+        if (!peak_read_[ch]) {
+            peaks_[ch] = engine_.take_peak(static_cast<uint32_t>(ch));
+            peak_read_[ch] = true;
+        }
+        m->feed(peaks_[ch], dt);
+    }
+    if (transport_sink_) {
+        transport_sink_(alive ? engine_.transport() : TransportSnapshot{}, alive);
     }
 
     if (++tick_count_ % kStateEvery == 0) refreshState();
