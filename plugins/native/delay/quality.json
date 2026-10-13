@@ -1,0 +1,16 @@
+{
+  "processor": "org.sonora.delay",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. Echo times exact to the sample, up to the longest note at the slowest tempo (1/1 at 20 BPM, 12 s); a host tempo under 20 BPM is bounded and reported. A time change is a 30 ms tap crossfade, so every automatable parameter is swept: times with sync off, note values and tempo with sync on.",
+  "delay": {
+    "thdn_db": -110.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["time_l", "note_l", "time_r", "note_r", "link", "sync", "tempo", "feedback", "hpf", "lpf", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}

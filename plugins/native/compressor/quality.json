@@ -1,0 +1,18 @@
+{
+  "processor": "org.sonora.compressor",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. Static curve against the Giannoulis et al. gain computer with DC levels; attack and release are the 63 % times of the gain change in dB from step tests.",
+  "compressor": {
+    "static_db": 0.1,
+    "time_tolerance": 0.1,
+    "thdn_db": -110.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["threshold", "ratio", "knee", "attack", "release", "makeup", "auto_makeup", "sc_hpf_on", "sc_hpf_freq", "link", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}

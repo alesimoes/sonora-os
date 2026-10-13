@@ -1,0 +1,17 @@
+{
+  "processor": "org.sonora.gate",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. Attack and release are 63 % times of the gain change in dB from DC step tests; hold is measured less the 10 ms envelope's fall to the close threshold. Zipper sweeps run with a 10 ms attack so the gate's own opening is not counted as a parameter step.",
+  "gate": {
+    "time_tolerance": 0.1,
+    "static_db": 0.1
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["threshold", "range", "ratio", "knee", "attack", "hold", "release", "hysteresis", "key_hpf_on", "key_hpf_freq", "key_lpf_on", "key_lpf_freq", "link"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}
