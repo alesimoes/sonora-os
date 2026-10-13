@@ -403,6 +403,172 @@ tracks and playlists across steps as the engine's history does. It is still
 opaque bytes to `contracts/api`. ADR-0007's M4 update, item 2, has the
 detail and the rule for a window over the wire's cap.
 
+## Update, 2026-10-13: playback on the M4/M7 control server
+
+Decided by: architect. Binds the playback branch (PR #31, head f7df34e) to
+the architecture that landed after it was written: M4 (#33), the Qt UI on
+`common/model` (#35) and M7's process split (#38, main 3684c54). §4 and
+`timeline-model.md` are unchanged. This decides who runs them.
+
+**Context.** #31 was written against the old interactive loop in
+`engine/app`. It keeps its own document (`TakeDocument`, a private
+`model::History` it adds closed takes to) and drives `PlaybackController`
+from that loop. Since then `EngineControlServer` owns the engine's
+`model::Document`, which every interface replicates, and `sonora-engine` has
+no interactive loop: `sonora-tui` and `sonora-ui` are separate processes on
+the socket. Two consequences if #31 were merged as written: two documents,
+one of them heard and the other shown and edited; and no thread left to
+call `pump()`. Also, on main today the server's document never learns of a
+take: closed takes are on disk and absent from every replica.
+
+**Decision.**
+
+1. **One document: the server's `model::Document`.** `TakeDocument` is
+   removed. Its job becomes a function in `engine/control`
+   (`closed_take.h`) that, when a take has closed, applies per armed track
+   that wrote frames `AddSource` (`SourceKind::Recorded`, length and
+   `time_reference` read from the closed file, as `place_file` did) and then
+   `RecordTake` through `Document::apply(const Operation&)`, and returns the
+   `ReplicationUpdate`s. The server sends each one to every client like any
+   other update. `timeline-model.md`, "At punch-out", already said this.
+   `PlaceRegion` with `SourceKind::Imported` is kept only for files
+   `--place` puts on the timeline.
+2. **The server's control thread is this ADR's document thread.**
+   `EngineControlServer` owns the `PlaybackController` (a member, built
+   in its constructor) and calls it only from the control thread. After
+   every change to the document (`Apply`, `Undo`, `Redo`, `Load`, or a
+   take added under item 1), it calls `show(document.current())`. In every
+   loop iteration it detects the Recording to not-Recording edge (item 1)
+   and then calls `pump()`. While the controller has anything waiting (a
+   pending plan, a locate, a requested roll or take), the control thread's
+   idle wait drops from 50 ms to 2 ms. No second thread touches the
+   document or the controller, so neither needs a lock.
+3. **`show()` stops writing the mix on every edit.** A fader moved through
+   `ParameterChange` is a `Track` atomic that the document's mix does not
+   hold yet. If `show()` applied the document's mix after every edit, it
+   would snap every fader back on the next nudge. The plan is published on
+   every change; `apply_mix()` runs only at start and after an update that
+   changed mix state (`SetMix`, `SetMonitorBus`, `AddTrack`, `Load`, a
+   `Snapshot`). Writing the end of a fader gesture into the document as
+   `SetMix` is a separate item.
+4. **`transport.play` uses the existing control API.** `transport.play`,
+   `transport.toggle_play` and `transport.return_to_zero` are already
+   `Engine` ids in `command_catalog()`. They arrive as `CommandRequest`,
+   handled by `install_session_commands(..., &controller)` as in #31.
+   There is no new message and no protocol bump. The state block's
+   `TransportState::Rolling` and playhead already report the roll.
+   - **Replies.** `transport.play` replies `Ok` when the request is
+     accepted, because a roll that waits for residency loses nothing.
+     `transport.record` and `transport.toggle_record` reply only when the
+     gate resolves: `Ok` once the take has started, `Failed` with
+     `take_record_error()`'s reason if it was refused, and `Failed`
+     "cancelled" if a second press withdrew it. An `Ok` for a take that
+     never started is a lost take the operator was told is recording.
+   - **`FakeEngine`.** `engine_commands()` gains the three ids, with a
+     scripted roll, so the `control` test's parity check holds. The
+     conformance suite gains a play check: roll, playhead advancing, stop.
+     The test files are under `contracts/api`, so ui-engineer and
+     rt-engineer review the PR (ADR-0007 §6), but no wire format changes.
+   - **Not in this port.** A locate to an arbitrary frame (a click on the
+     ruler) needs a new catalog id (`transport.locate`, frame in
+     `argument`), and "Locating…", bus peaks and playback misses in the
+     state block need layout version 2. Both are contract PRs of their own
+     after the port, not part of it.
+5. **The headless `--record` path uses the same server.** With `--place`,
+   or whenever the session has playback, `run_headless` builds the
+   `EngineControlServer` without a socket and drives it through
+   `InProcessEngine` (arm, `transport.record`, wait for Recording, stop).
+   `--place` files go into the server's initial document (an
+   `Options::initial_document` snapshot built before `start()`). The
+   `RESULT` line keeps `misses=`, read from the `Session`.
+6. **Teardown.** After `AudioBackend::deactivate()` returns, `engine/app`
+   calls `EngineControlServer::after_deactivate()`, which forwards to the
+   controller (§4.1: everything retired is freed then, and only then). The
+   server is destroyed before the `Session`, as now.
+
+**What #31 keeps, moves and drops.**
+
+- **Kept as written:** all of `engine/core` (plan layout, `PlanExchange`,
+  `DiskReader`, `Session::process()` mixing, `RtCommand` locate,
+  `Transport::locates_applied`, denormals); the `drivers/fake`,
+  `drivers/jack` and `drivers/support/FrameClock` changes and the
+  `audio_backend.h` comment; `WavReader`; the gain and pan-law ranges in
+  `common/model` and `session-format.md`; `plan_builder`; `PlaybackController`;
+  all of #31's tests; its amendments to §4.3 and §4.4 of this ADR; its
+  ADR-0007 update on skipped periods; the postmortem; `verify-recording.py`;
+  its backlog items.
+- **Moved:** `TakeDocument::place_file` and `add_closed_take` to
+  `engine/control/closed_take.{h,cpp}`, operating on `model::Document`
+  (item 1). `--place`, `--arm N` and `--no-input-monitoring` stay as
+  `engine/app` flags, wired through the server (item 5). Two outputs at
+  `open()` (§4.6) stay.
+- **Dropped:** the `TakeDocument` class, and everything #31 added to the
+  interactive loop in `main.cpp` (bus meter drawing, the `was_recording`
+  edge, `pump()` per frame), since the loop no longer exists. The bus
+  meters return in `sonora-tui` and `sonora-ui` once the state block
+  carries them.
+
+**Rationale.** One document is the whole point of §2: what is heard, what is
+shown and what undo removes must be the same state. Two would agree only
+until the first edit made in the UI. The control thread already serialises
+every request and owns the document. If the controller had its own thread,
+that thread and the control thread would both need to read the document
+and the controller, so a lock would be needed. A lock between the
+controller and the thread that handles `transport.stop` puts a wait on a
+take's stop path. Holding the record reply until the gate resolves follows
+the product's first rule: an operator who sees "recording" must be
+recording.
+
+**Consequences.**
+
+- A plan build on the control thread delays every command queued behind it
+  for as long as the build takes, `transport.stop` included. This is
+  Unverified 4 with a sharper cost. If a build is measured above 10 ms, the
+  builder moves to a worker that `engine/control` owns, as §4 already
+  allows.
+- A take on N tracks is N undo steps, one `RecordTake` each, as in #31. In
+  Pro Tools, one undo removes the whole take. A multi-track `RecordTake` is
+  a `common/model` contract change and is filed as its own item.
+- The engine now allocates ids in the document (the take's source and
+  region). A replica that resolved an edit against the same `next_id` has
+  that edit refused and taken back, loudly, by #38's existing path. Moving
+  `resolve_*` into the engine (M7 note, item 6) removes the race.
+- `PROCESS SPLIT PASS` in `tools/test-engine-entrypoint.sh` expects
+  playback to be refused as `NotImplemented`. The port changes that step so
+  playback is expected to roll.
+
+**Unverified.**
+
+- How long play and record take to start when the control thread polls
+  every 2 ms. To measure: p50, p99 and max from the `transport.play` request
+  to `Rolling` in the state block, against `drivers/fake`, with the window
+  already resident and with a cold window. If p99 exceeds residency plus
+  5 ms, the `DiskReader` wakes the control thread when a window becomes
+  resident, instead of the thread polling.
+- Plan build time on the control thread at 18 tracks × 2000 regions
+  (Unverified 4). This is for rt-engineer, or the researcher if it is
+  measured as a proxy on the laptop.
+
+**Alternatives rejected.**
+
+- **Keep `TakeDocument` beside the server's document.** This merges #31
+  with the least work. It was rejected because what plays would not be
+  what the UI shows or undoes: an edit made in `sonora-ui` would never be
+  heard.
+- **`PlaybackController` on its own thread.** It would keep the control
+  thread's latency free of plan builds. It was rejected because two
+  threads would then write the controller and read the document, which
+  needs a lock in the stop path, and the worker that §4 allows already
+  addresses the build cost without one.
+- **A new `TransportRequest` message (play, locate with a frame).** It
+  would give typed arguments. It was rejected for this port because the
+  catalog ids already exist and a new message type means a protocol bump.
+  Locate-to-frame gets its own contract PR.
+- **Reply `Ok` to `transport.record` on acceptance, report a refusal as a
+  `Notice`.** This gives the same reply timing for every command. It was
+  rejected because the UI would show a take as started and give the
+  refusal only as a side line.
+
 ## Alternatives rejected
 
 **Command pattern with hand-written inverses, over a mutable model.** It is
