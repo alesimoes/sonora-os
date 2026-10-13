@@ -346,6 +346,13 @@ Order and owners are in ADR-0008 §5.
 - [ ] Playback path: read from disk into a ring, mix, feed the output ports.
 - [ ] Input monitoring with latency compensation measured by a loopback test.
 - [ ] Transport locate without dropping a block.
+- [ ] Flake to explain: the loopback PLAYBACK check in
+      `tools/test-engine-entrypoint.sh` failed 2 times in 9 runs at 477e3fe
+      (one CI, one local; 0 in 5 at 8412b5e). Both times one block-aligned
+      discontinuity (recorded frame 108416, and 10880), the rest nulling at
+      2 periods; misses, xruns and overruns 0. Keep the two takes on failure
+      and find whether the bus or the loop (a self-link inside the client)
+      moved by a period. rt-engineer.
 - [ ] Locate latency as ADR-0009 §4.4 asks: p99 and max per session in
       diagnostics, and "Locating…" on screen past 100 ms.
       `PlaybackController` keeps only the last and the max today. rt-engineer
