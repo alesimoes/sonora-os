@@ -10,6 +10,7 @@ One line per entry. Agents read this before opening anything else.
 - [ADR-0005](decisions/ADR-0005-usb-boot-persistence.md) — hybrid ISO plus a persistence partition for projects.
 - [ADR-0006](decisions/ADR-0006-qt6-ui-toolkit.md) — Qt 6 for the shell, custom GPU scene-graph items for meters and timeline; the UI pulls at 60 Hz, the audio thread never pushes.
 - [ADR-0007](decisions/ADR-0007-modules-contracts-and-squads.md) — modules by owner (`contracts/`, `common/`, `engine/`, `drivers/`, `ui/`, `plugins/`, `interchange/`), a dependency DAG enforced in CI, the RT boundary by module, contract change rules, squad mechanics and a six-step migration; engine and UI as separate processes, and Phase 3/4 work opened early under a fixed scope (both owner decisions, 2026-10-12). Updated with lessons from M1: three illegal edges until M4, so M4 merges before M5; tests live with their subject module; ctest labels go in M5; M2 is a `contract/backend` PR with `noexcept SONORA_RT`.
+- [ADR-0008](decisions/ADR-0008-portability.md) — portability (owner, 2026-10-12): neutral modules are standard C++17 only, platform code sits in `drivers/*`, `engine/app`, `ui/tui` and `common/platform`; `SONORA_PLATFORM` selects linux/neutral/windows(reserved); a required MSVC `windows-latest` job builds and tests the neutral modules; Windows backend will be ASIO, its licence unverified; Linux first.
 
 ## Specs
 - [Plugin latency compensation](specs/plugin-latency-compensation.md) — real-time plugin playback, PDC, and why the graph must be parallel from the start.

@@ -100,6 +100,53 @@ without asking a question.
       charters in M6. (`keymaps/README.md` is already done on the M1 branch.) ADRs
       and postmortems keep the paths they were written with.
 
+## ADR-0008 portability
+
+None of these may delay a Phase 1 or Phase 2 item (owner, 2026-10-12).
+Order and owners are in ADR-0008 §5.
+
+- [ ] P1, after M2 merges and before M5: `engine/core/src/session.cpp` to
+      `std::filesystem`, using only the non-throwing overloads. Add a test:
+      a session path that is a file makes `start_recording` refuse.
+      rt-engineer.
+- [ ] P2, with P1: `test_takes` to `std::filesystem`. Move the full-disk
+      case of `test_wav_writer` to `common/audiofile/tests/posix/`,
+      registered `if(UNIX)`. rt-engineer.
+- [ ] P3, after M2: an `engine/app/include/sonora/process_setup.h` seam,
+      covering `lock_memory()`, `install_quit_handlers()` and
+      `default_session_root()`, with the implementations under
+      `engine/app/src/posix/`. rt-engineer.
+- [ ] P4, inside M4: `test_keymap` loses termios (those checks move to a
+      `ui/tui` test). It removes directories with `std::filesystem`.
+      ui-engineer.
+- [ ] P5, before or right after `feature/qt-shell` merges:
+      `ui/qt/src/measure.cpp` uses `std::chrono` and `std::clock`.
+      Per-thread CPU goes through a new `common/platform`
+      `thread_cpu_times()`, with posix and unsupported implementations.
+      ui-engineer and rt-engineer.
+- [ ] P6, with M5: `SONORA_PLATFORM` (linux, neutral, and windows, which
+      fails at configure for now) and `SONORA_BACKENDS`. Compiler flags go
+      under generator expressions. Add the neutral-module include allowlist,
+      a platform-macro check and an OS-path check to M5's script.
+      distro-engineer.
+- [ ] P7, right after M5 and before M6: a required `portable` CI job on
+      `windows-latest` with MSVC, building `SONORA_PLATFORM=neutral` and
+      running `ctest`. Record the first 10 run durations in `brain/research/`.
+      distro-engineer.
+- [ ] P8, inside M6: put the ADR-0008 §1 table into OPERATIONS.md and the
+      charters, and propose the rule for CLAUDE.md. The CLAUDE.md edit is
+      the owner's.
+- [ ] P9, inside M7: socket and shared memory behind `common/platform`
+      (`ControlChannel`, `SharedRegion`). No socket or mapping code in
+      `engine/control` or `ui/client`. rt-engineer and ui-engineer.
+- [ ] P10, once `ui/qt` is on main: Qt in the `portable` job, from a cached
+      install. distro-engineer.
+- [ ] Only when the owner opens a Windows ADR: read the ASIO SDK licence
+      from Steinberg's current distribution (it is reported as dual
+      proprietary/GPLv3 since 2025-10-15, and that is unverified), and
+      record it in `brain/research/` with the GPL-3.0-or-later analysis.
+      researcher.
+
 ## Phase 2
 
 - [ ] Playback path: read from disk into a ring, mix, feed the output ports.

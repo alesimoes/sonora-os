@@ -1079,6 +1079,14 @@ they were written. `keymaps/default.json`'s `"comment"` field is data, and a
 copy of the same profile is embedded in `ui/keymap/src/keymap.cpp`. Both are
 fixed together in M4, when `main.cpp` stops being where commands are handled.
 
+## Update, 2026-10-12: portability (ADR-0008)
+
+ADR-0008, accepted by the owner, adds `common/platform` to §1's graph at
+layer 0, beside `common/base`. Any module may link it except `common/base`
+and `contracts/*`. It also extends M5's check with an include allowlist for
+the platform-neutral modules, and adds a required Windows (MSVC) CI job after
+M5. §1's dependency rules are otherwise unchanged.
+
 ## Alternatives rejected
 
 **Keep one library and rely on discipline.** It costs nothing today. It costs
