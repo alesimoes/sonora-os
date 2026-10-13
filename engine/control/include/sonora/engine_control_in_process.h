@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// InProcessEngine: EngineControl over the real Session, in this process
-// (ADR-0007 §3, until M7).
+// InProcessEngine: EngineControl over the real Session, in this process.
 //
 // The client half of the seam. Requests are encoded and handed to an
 // EngineControlServer running its control thread here; what comes back is
 // decoded from the server's bytes; the state block is anonymous memory the
 // server owns, read through a StateView. So every message crosses the wire
-// codec exactly as it will across a socket, and M7 replaces this class with
-// SocketEngineClient and changes no interface code.
+// codec exactly as it does across the socket. Since M7 no interface uses
+// it (they are separate processes, on ui/client's SocketEngine); it stays
+// as the conformance suite's real engine with no transport in the way.
 #pragma once
 
 #include <cstdint>

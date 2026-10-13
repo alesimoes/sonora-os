@@ -47,6 +47,9 @@ add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
 add_subdirectory(engine/app)
+# The interfaces' side of the socket (M7). After engine/app: its test runs
+# sonora-engine as a process, a build-order dependency, never a link.
+add_subdirectory(ui/client)
 # Optional: skipped, with one status line, where Qt 6 is not installed (the
 # engine's build container and CI). tools/build-ui.sh builds it.
 add_subdirectory(ui/qt)

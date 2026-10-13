@@ -2,14 +2,13 @@ add_executable(sonora-engine
   src/main.cpp src/quit_signals.cpp src/memory_lock.cpp src/exit_watchdog.cpp
   src/device_policy.cpp)
 target_include_directories(sonora-engine PRIVATE include)
-# The terminal interface is a client of InProcessEngine since M4: main.cpp
-# includes one ui/ header, terminal_ui.h, to start it, and nothing in ui/
-# includes engine/. This link is the composition of the two in one process
-# until M7, when sonora-tui becomes its own executable on a socket and this
-# line goes (ADR-0007, "Update, 2026-10-13: the control API as landed").
+# Headless since M7: interfaces connect on the control socket. Nothing of
+# ui/ is linked. On a terminal the engine starts sonora-tui, a separate
+# executable, from beside itself; the dependency below only builds it there.
 target_link_libraries(sonora-engine PRIVATE
-  sonora_control sonora_core sonora_backend_jack sonora_backend_fake sonora_tui
+  sonora_control sonora_core sonora_backend_jack sonora_backend_fake sonora_platform
   Threads::Threads)
+add_dependencies(sonora-engine sonora-tui)
 
 install(TARGETS sonora-engine RUNTIME DESTINATION bin)
 

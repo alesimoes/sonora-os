@@ -4,9 +4,13 @@ add_library(sonora_control STATIC
   src/state_publisher.cpp
   src/engine_control_server.cpp
   src/engine_control_in_process.cpp
+  src/control_socket_server.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
-target_link_libraries(sonora_control PUBLIC sonora_core sonora_api PRIVATE sonora_model)
+# common/platform for the control socket and the memfd (ADR-0008 P9): no
+# socket or mapping code in this module itself.
+target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_platform
+  PRIVATE sonora_model)
 
 # Here rather than in engine/core because it also drives the session through
 # the installed commands, and control may link core but not the reverse.
@@ -27,3 +31,13 @@ add_executable(test_control tests/test_control.cpp)
 target_link_libraries(test_control PRIVATE
   sonora_control sonora_backend_fake sonora_api_conformance sonora_api_fake sonora_model)
 add_test(NAME control COMMAND test_control)
+
+# The server on a socket (M7), driven by raw platform channels rather than
+# ui/client, so this module's test needs nothing above it: several
+# clients, a client gone mid-take, malformed frames refused, the state
+# block arriving read-only.
+if(UNIX)
+  add_executable(test_control_socket tests/test_control_socket.cpp)
+  target_link_libraries(test_control_socket PRIVATE sonora_control sonora_backend_fake)
+  add_test(NAME control_socket COMMAND test_control_socket)
+endif()

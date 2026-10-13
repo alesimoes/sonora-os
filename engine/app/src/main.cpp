@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-engine: the recording core. Phase 1 drives it from a terminal UI so
-// the audio path can be proven before any graphical shell exists. Since M4
-// that interface is a client of the control API (ADR-0007 §4.1): it reaches
-// the session only through InProcessEngine, as it will through a socket
-// once M7 makes it a process of its own. This file is the wiring between
-// the two and nothing else of the interface.
+// sonora-engine: the recording core, a headless process (ADR-0007 §3, M7).
+// Every interface is a client on its control socket: the Qt UI, sonora-tui,
+// tools. On a terminal it starts sonora-tui beside itself as a child
+// process, so the appliance's tty still shows an interface; the engine and
+// the take do not depend on that child, which is restarted if it dies.
 
 #include <algorithm>
 #include <cmath>
@@ -20,17 +19,20 @@
 
 #include <unistd.h>
 
+#include "sonora/api/state_block.h"
 #include "sonora/audio_backend.h"
+#include "sonora/control_socket_server.h"
 #include "sonora/device_policy.h"
-#include "sonora/engine_control_in_process.h"
+#include "sonora/engine_control_server.h"
 #include "sonora/exit_watchdog.h"
 #include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
 #include "sonora/memory_lock.h"
+#include "sonora/platform/ipc.h"
+#include "sonora/platform/process.h"
 #include "sonora/quit_signals.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
-#include "sonora/terminal_ui.h"
 
 namespace {
 
@@ -239,6 +241,11 @@ int main(int argc, char** argv) {
     std::string keymap_path;
     std::string capture_device;
     std::string backend_name = "jack";
+    std::string control_socket;
+    std::string tui_path;
+    bool headless = false;
+    bool lock = true;
+    sonora::EngineControlServer::Options control;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -267,6 +274,17 @@ int main(int argc, char** argv) {
             capture_device = argv[++i];
         } else if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
             backend_name = argv[++i];
+        } else if (std::strcmp(argv[i], "--control-socket") == 0 && i + 1 < argc) {
+            control_socket = argv[++i];
+        } else if (std::strcmp(argv[i], "--headless") == 0) {
+            headless = true;
+        } else if (std::strcmp(argv[i], "--tui") == 0 && i + 1 < argc) {
+            tui_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--no-memlock") == 0) {
+            lock = false;
+        } else if (std::strcmp(argv[i], "--announce-versions") == 0 && i + 2 < argc) {
+            control.protocol_version = static_cast<uint32_t>(std::atoi(argv[++i]));
+            control.state_layout_version = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(
                 "usage: sonora-engine [options]\n"
@@ -283,11 +301,22 @@ int main(int argc, char** argv) {
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
-                "  --keymap PATH     key map to use instead of the built-in one\n"
+                "  --keymap PATH     key map for the terminal interface\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
                 "                    wait for a capture connection, or a USB\n"
-                "                    interface, before recording\n");
+                "                    interface, before recording\n"
+                "  --control-socket PATH\n"
+                "                    where interfaces connect (default\n"
+                "                    $XDG_RUNTIME_DIR/sonora/engine.sock)\n"
+                "  --headless        start no terminal interface, even on a tty\n"
+                "  --tui PATH        the terminal interface to start (default:\n"
+                "                    sonora-tui beside this program)\n"
+                "  --no-memlock      development only: run without locked memory;\n"
+                "                    the audio thread may page-fault (xruns)\n"
+                "  --announce-versions PROTOCOL LAYOUT\n"
+                "                    announce other versions in Hello, for the\n"
+                "                    conformance suite's mismatch check\n");
             return 0;
         } else {
             std::fprintf(stderr, "sonora: unknown option %s\n", argv[i]);
@@ -337,25 +366,31 @@ int main(int argc, char** argv) {
     // profile cannot quit; see keep_interrupt_key().
     sonora::install_quit_signals();
 
-    // Loaded before anything touches hardware: a bad key map is a startup
-    // error, not something to discover halfway into a session.
-    sonora::KeyMap keymap = sonora::KeyMap::built_in_default();
-    if (!keymap_path.empty()) {
+    // Before anything touches hardware: a second engine on the same socket
+    // is refused while it can still leave without having opened a device.
+    // The headless --record mode has no interface and no socket.
+    std::unique_ptr<sonora::platform::ControlListener> listener;
+    if (record_seconds <= 0.0) {
+        if (control_socket.empty()) control_socket = sonora::platform::default_control_endpoint();
         std::string err;
-        if (!sonora::KeyMap::load_file(keymap_path, keymap, err)) {
-            std::fprintf(stderr, "sonora: %s\n", err.c_str());
-            return 2;
+        listener = sonora::platform::ControlListener::listen(control_socket, err);
+        if (!listener) {
+            std::fprintf(stderr, "sonora: cannot open the control socket: %s\n", err.c_str());
+            return 1;
         }
-        std::printf("sonora: key map \"%s\", %zu bindings\n",
-                    keymap.name().c_str(), keymap.bindings().size());
     }
 
     // Before the session's rings and before any JACK client and its threads
     // exist, so all of them are locked as they are mapped. Refused rather
     // than warned about: on the appliance the unit grants unlimited memlock,
     // so a failure means the image is wrong, and a page fault on the audio
-    // thread shows up only as xruns nobody can explain.
-    {
+    // thread shows up only as xruns nobody can explain. --no-memlock is for
+    // a developer's machine (WSL's default limit is 64 KiB), and says so.
+    if (!lock) {
+        std::fprintf(stderr,
+                     "sonora: --no-memlock: memory is not locked; the audio thread may"
+                     " page-fault and drop out. Never on the appliance.\n");
+    } else {
         std::string why;
         if (!sonora::lock_memory(why)) {
             std::fprintf(stderr,
@@ -524,7 +559,6 @@ int main(int argc, char** argv) {
     // and the interface is told what is missing for as long as it is.
     std::string inputs_missing_said = "(unset)";
     bool late_usb_said = false;
-    sonora::EngineControlServer::Options control;
     control.may_record = may_record;
     control.housekeeping = [&](sonora::EngineControlServer& server) {
         const auto notice = [&server](sonora::api::EventKind kind, const std::string& text) {
@@ -578,35 +612,107 @@ int main(int argc, char** argv) {
         }
     };
 
-    sonora::InProcessEngine engine(session, audio.get(), std::move(control));
-    // Kept on screen for the whole session: the operator must not take the
-    // laptop's microphone for the interface.
+    // The state block in shared memory that every interface maps read-only.
+    // Sized here, once, for the session's tracks.
+    std::string region_error;
+    const std::unique_ptr<sonora::platform::SharedRegion> state =
+        sonora::platform::SharedRegion::create(
+            "sonora-state",
+            sonora::api::state_block_bytes(static_cast<uint32_t>(session.tracks().size())),
+            region_error);
+    if (!state) {
+        std::fprintf(stderr, "sonora: cannot create the shared state block: %s\n",
+                     region_error.c_str());
+        session.stop();
+        sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
+        audio->deactivate();
+        return 1;
+    }
+    control.state_memory = state->writable_data();
+    control.state_memory_bytes = state->bytes();
+
+    sonora::EngineControlServer server(session, audio.get(), std::move(control));
+    // Kept on screen for the whole session, by every interface that ever
+    // connects: the operator must not take the laptop's microphone for the
+    // interface.
     if (!onboard_notice.empty()) {
         sonora::api::EngineEvent e;
         e.kind = sonora::api::EventKind::Notice;
         e.text = onboard_notice;
-        engine.server().post_event(e);
+        server.post_event(e);
     }
-    {
-        std::string error;
-        if (!engine.connect(error)) {
-            std::fprintf(stderr, "sonora: the terminal interface cannot reach the engine: %s\n",
-                         error.c_str());
-            session.stop();
-            sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
-            audio->deactivate();
-            return 1;
+    server.start();
+    sonora::ControlSocketServer sockets(server, *state, std::move(listener));
+    sockets.start();
+    std::printf("sonora: engine listening on %s\n", sockets.endpoint().c_str());
+    std::fflush(stdout);
+
+    // On a terminal, and unless told otherwise, the terminal interface: a
+    // child process on the same tty, so the appliance's console still has
+    // one. Its quit key ends the session; its crash does not, and it is
+    // started again while the take goes on.
+    if (tui_path.empty()) {
+        const std::string dir = sonora::platform::executable_dir();
+        if (!dir.empty()) tui_path = dir + "/sonora-tui";
+    }
+    const bool want_tui = !headless && ::isatty(STDIN_FILENO) == 1;
+    const bool have_tui = !tui_path.empty() && ::access(tui_path.c_str(), X_OK) == 0;
+    if (want_tui && !have_tui) {
+        std::fprintf(stderr,
+                     "sonora: no terminal interface at %s; running headless. Interfaces"
+                     " connect to %s.\n",
+                     tui_path.c_str(), sockets.endpoint().c_str());
+    }
+    std::vector<std::string> tui_argv = {tui_path, "--control-socket", sockets.endpoint()};
+    if (!keymap_path.empty()) {
+        tui_argv.push_back("--keymap");
+        tui_argv.push_back(keymap_path);
+    }
+    std::unique_ptr<sonora::platform::ChildProcess> tui;
+    const auto start_tui = [&]() {
+        std::string err;
+        tui = sonora::platform::ChildProcess::spawn(tui_argv, {}, err);
+        if (!tui) std::fprintf(stderr, "sonora: %s\n", err.c_str());
+    };
+    if (want_tui && have_tui) start_tui();
+
+    int tui_starts = tui ? 1 : 0;
+    while (!sonora::quit_requested()) {
+        // The backend stopped calling the session. The interface shows why
+        // and leaves; the take is closed below and the unit restarts us.
+        if (audio->fatal()) {
+            if (tui) tui->wait(3000);
+            break;
         }
+        if (tui && !tui->running()) {
+            // Its quit key: the session ends, as it always has on the tty.
+            if (tui->exited_normally() && tui->exit_code() == 0) break;
+            // A key map it refuses at once is a startup error, as it was
+            // when the engine loaded the map itself; restarting cannot fix it.
+            if (tui->exited_normally() && tui->exit_code() == 2 && tui_starts == 1) {
+                std::fprintf(stderr, "sonora: the terminal interface refused its options\n");
+                break;
+            }
+            std::fprintf(stderr,
+                         "sonora: the terminal interface stopped (%s %d); the engine and"
+                         " any take carry on, and it is started again\n",
+                         tui->exited_normally() ? "exit" : "signal",
+                         tui->exited_normally() ? tui->exit_code() : tui->signal_number());
+            ::usleep(1000000);
+            start_tui();
+            ++tui_starts;
+        }
+        ::usleep(50000);
+    }
+    if (tui) {
+        tui->terminate();
+        if (!tui->wait(2000)) tui->kill();
+        tui->wait(-1);
     }
 
-    sonora::tui::TerminalView view(engine, keymap);
-    sonora::tui::TerminalOptions terminal;
-    // A SIGTERM or hangup ends the session as cleanly as a quit key.
-    terminal.stop_requested = []() { return sonora::quit_requested(); };
-    const sonora::tui::TerminalExit exit = sonora::tui::run_terminal(view, terminal);
-
-    // No command runs while the take closes.
-    engine.shutdown();
+    // No command runs while the take closes, and no interface is attached.
+    sockets.stop();
+    server.stop();
     // stop() says on stderr why a take failed, and the terminal is already
     // the operator's again.
     const bool take_ok = session.stop();
@@ -617,10 +723,11 @@ int main(int argc, char** argv) {
     // The server dying, or changing rate or buffer size, stops the callback
     // without stopping us. The take is closed, so what was captured is a
     // valid file; the service unit restarts us against a fresh server.
-    if (exit == sonora::tui::TerminalExit::EngineFailed || audio->fatal()) {
+    if (audio->fatal()) {
         std::fprintf(stderr, "sonora: %s.\n", audio->fatal_reason().c_str());
         return 1;
     }
     // A quit or SIGTERM in the middle of a failed take is not a clean exit.
     return take_ok ? 0 : 1;
 }
+

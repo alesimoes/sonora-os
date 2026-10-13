@@ -41,16 +41,34 @@ api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
 // the take-failure and fatal checks, as the terminal loop's frame was.
 constexpr auto kIdle = std::chrono::milliseconds(50);
 
+// Notices replayed to a client that attaches later. A device notice comes
+// first and matters most; a flood after it is not worth a restarted
+// interface's screen.
+constexpr std::size_t kMaxStandingNotices = 32;
+
 }  // namespace
 
 EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend* audio,
                                          Options options)
-    : session_(session),
-      audio_(audio),
-      opts_(std::move(options)),
-      block_(static_cast<uint32_t>(session.tracks().size())) {
+    : session_(session), audio_(audio), opts_(std::move(options)) {
     const auto n = static_cast<uint32_t>(session.tracks().size());
-    writer_.init(block_.data(), block_.bytes(), n, n, opts_.publish_period_ns);
+    if (opts_.state_memory != nullptr) {
+        block_ = opts_.state_memory;
+        block_bytes_ = opts_.state_memory_bytes;
+    } else {
+        own_block_ = api::StateBlockMemory(n);
+        block_ = own_block_.data();
+        block_bytes_ = own_block_.bytes();
+    }
+    state_ready_ = writer_.init(block_, block_bytes_, n, n, opts_.publish_period_ns);
+    if (!state_ready_) {
+        // Memory the caller got wrong: the server still runs, on a block of
+        // its own, rather than writing past the end of theirs.
+        own_block_ = api::StateBlockMemory(n);
+        block_ = own_block_.data();
+        block_bytes_ = own_block_.bytes();
+        writer_.init(block_, block_bytes_, n, n, opts_.publish_period_ns);
+    }
     publisher_ = std::make_unique<StatePublisher>(session_, audio_, writer_,
                                                   opts_.publish_period_ns);
 
@@ -79,13 +97,25 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
 
 EngineControlServer::~EngineControlServer() { stop(); }
 
+void EngineControlServer::remember(const api::EngineEvent& event, const std::string& bytes) {
+    switch (event.kind) {
+        case api::EventKind::Notice:
+            if (notices_.size() < kMaxStandingNotices) notices_.push_back(bytes);
+            break;
+        case api::EventKind::InputsMissing:
+            inputs_missing_ = event.text.empty() ? std::string() : bytes;
+            break;
+        case api::EventKind::TakeFailed:
+            take_failed_ = event.text.empty() ? std::string() : bytes;
+            break;
+        case api::EventKind::Fatal: fatal_ = bytes; break;
+    }
+}
+
 void EngineControlServer::post_event(const api::EngineEvent& event) {
     std::string bytes;
     api::wire::encode(event, bytes);
-    if (!out_) {
-        early_.push_back(std::move(bytes));
-        return;
-    }
+    remember(event, bytes);
     send(bytes);
 }
 
@@ -94,20 +124,26 @@ void EngineControlServer::set_inputs_connected(uint32_t count, bool none_is_a_pr
     publisher_->set_health(api::kHealthNoInputs, count == 0 && none_is_a_problem);
 }
 
-void EngineControlServer::send(const std::string& bytes) {
-    if (!out_) return;
+void EngineControlServer::send_to(Client& client, const std::string& bytes) {
+    if (!client.out) return;
     // Cannot fail for what the server sends: a Snapshot is trimmed to
     // kMaxModelBytes, under kMaxMessageBytes.
     std::vector<std::string> frames;
     std::string error;
     if (!api::wire::split_frames(bytes, frames, error)) return;
-    for (std::string& f : frames) out_(std::move(f));
+    for (std::string& f : frames) client.out(std::move(f));
 }
 
-void EngineControlServer::start(Outbound out) {
-    if (running()) return;
-    out_ = std::move(out);
+void EngineControlServer::send_to(ClientId id, const std::string& bytes) {
+    const auto it = clients_.find(id);
+    if (it != clients_.end()) send_to(it->second, bytes);
+}
 
+void EngineControlServer::send(const std::string& bytes) {
+    for (auto& [id, client] : clients_) send_to(client, bytes);
+}
+
+void EngineControlServer::greet(Client& client) {
     api::Hello hello;
     hello.protocol_version = opts_.protocol_version;
     hello.state_layout_version = opts_.state_layout_version;
@@ -118,18 +154,23 @@ void EngineControlServer::start(Outbound out) {
     hello.implemented_commands = implemented_;
     std::string bytes;
     api::wire::encode(hello, bytes);
-    send(bytes);
+    send_to(client, bytes);
 
-    // A replica starts from the whole document.
+    // A replica starts from the whole document and its undo window, so a
+    // reconnecting interface undoes and redoes in step with the engine.
     model::ReplicationUpdate snap;
     std::string why;
     if (document_->snapshot(snap, why, api::wire::kMaxModelBytes)) {
         api::wire::encode(to_wire(snap), bytes);
-        send(bytes);
+        send_to(client, bytes);
     }
-    for (const std::string& e : early_) send(e);
-    early_.clear();
+    for (const std::string& e : notices_) send_to(client, e);
+    for (const std::string* e : {&inputs_missing_, &take_failed_, &fatal_}) {
+        if (!e->empty()) send_to(client, *e);
+    }
+}
 
+void EngineControlServer::start_threads() {
     // Something on the block before anyone reads it, so the first look at
     // the heartbeat is not "never published".
     publisher_->publish_once();
@@ -143,6 +184,20 @@ void EngineControlServer::start(Outbound out) {
     thread_ = std::thread([this]() { run(); });
 }
 
+void EngineControlServer::start() {
+    if (running()) return;
+    start_threads();
+}
+
+void EngineControlServer::start(Outbound out) {
+    if (running()) return;
+    Client& c = clients_[kFirstClient];
+    c.out = std::move(out);
+    client_count_.store(clients_.size(), std::memory_order_release);
+    greet(c);
+    start_threads();
+}
+
 void EngineControlServer::stop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -153,20 +208,99 @@ void EngineControlServer::stop() {
     if (thread_.joinable()) thread_.join();
     publisher_->stop();
     running_.store(false, std::memory_order_release);
+    clients_.clear();
+    client_count_.store(0, std::memory_order_release);
 }
 
-void EngineControlServer::deliver(std::string frame) {
+EngineControlServer::ClientId EngineControlServer::attach(Outbound out, Refuse refuse) {
+    Inbound in;
+    in.kind = Inbound::Kind::Attach;
+    in.out = std::move(out);
+    in.refuse = std::move(refuse);
+    ClientId id = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        id = next_client_++;
+        in.client = id;
+        if (stopping_ || !running()) return id;
+        inbound_.push_back(std::move(in));
+    }
+    wake_.notify_one();
+    return id;
+}
+
+void EngineControlServer::detach(ClientId client) {
+    Inbound in;
+    in.kind = Inbound::Kind::Detach;
+    in.client = client;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopping_ || !running()) return;
-        inbound_.push_back(std::move(frame));
+        inbound_.push_back(std::move(in));
     }
     wake_.notify_one();
 }
 
+void EngineControlServer::deliver(ClientId client, std::string frame) {
+    Inbound in;
+    in.kind = Inbound::Kind::Frame;
+    in.client = client;
+    in.bytes = std::move(frame);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_ || !running()) return;
+        inbound_.push_back(std::move(in));
+    }
+    wake_.notify_one();
+}
+
+void EngineControlServer::refuse(ClientId id, const std::string& why) {
+    const auto it = clients_.find(id);
+    if (it == clients_.end()) return;
+    refused_.fetch_add(1, std::memory_order_acq_rel);
+    // A client with no transport to close (InProcessEngine) loses the
+    // message and stays; one on a socket is dropped, since a peer that
+    // frames wrongly cannot be resynchronised.
+    if (!it->second.refuse) return;
+    const Refuse r = std::move(it->second.refuse);
+    clients_.erase(it);
+    client_count_.store(clients_.size(), std::memory_order_release);
+    r(why);
+}
+
+void EngineControlServer::take(Inbound& in) {
+    switch (in.kind) {
+        case Inbound::Kind::Attach: {
+            Client& c = clients_[in.client];
+            c.out = std::move(in.out);
+            c.refuse = std::move(in.refuse);
+            client_count_.store(clients_.size(), std::memory_order_release);
+            greet(c);
+            return;
+        }
+        case Inbound::Kind::Detach:
+            clients_.erase(in.client);
+            client_count_.store(clients_.size(), std::memory_order_release);
+            return;
+        case Inbound::Kind::Frame: {
+            const auto it = clients_.find(in.client);
+            if (it == clients_.end()) return;
+            std::string message, error;
+            switch (it->second.reassembler.add(in.bytes, message, error)) {
+                case api::wire::Reassembler::Result::Partial: return;
+                case api::wire::Reassembler::Result::Error:
+                    refuse(in.client, "a frame out of place: " + error);
+                    return;
+                case api::wire::Reassembler::Result::Complete:
+                    handle(in.client, message);
+                    return;
+            }
+        }
+    }
+}
+
 void EngineControlServer::run() {
-    std::deque<std::string> batch;
-    std::string message, error;
+    std::deque<Inbound> batch;
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -175,19 +309,14 @@ void EngineControlServer::run() {
             batch.swap(inbound_);
         }
         while (!batch.empty()) {
-            // A frame out of place drops what was held for that message;
-            // after M7 the connection is closed instead.
-            if (reassembler_.add(batch.front(), message, error) ==
-                api::wire::Reassembler::Result::Complete) {
-                handle(message);
-            }
+            take(batch.front());
             batch.pop_front();
         }
         tick();
     }
 }
 
-void EngineControlServer::reply(uint64_t seq, DispatchResult result,
+void EngineControlServer::reply(ClientId to, uint64_t seq, DispatchResult result,
                                 const std::string& message) {
     api::CommandReply r;
     r.seq = seq;
@@ -195,26 +324,32 @@ void EngineControlServer::reply(uint64_t seq, DispatchResult result,
     r.message = message;
     std::string bytes;
     api::wire::encode(r, bytes);
-    send(bytes);
+    send_to(to, bytes);
 }
 
-void EngineControlServer::handle(const std::string& bytes) {
+void EngineControlServer::handle(ClientId from, const std::string& bytes) {
     api::wire::Type type{};
     std::string error;
-    // A message the codec refuses has no trustworthy seq to answer; it is
-    // dropped. After M7 that is a client bug or a hostile peer, and the
-    // engine must not fall over either way.
-    if (!api::wire::peek_type(bytes, type)) return;
+    // A message the codec refuses has no trustworthy seq to answer. It is a
+    // client bug or a hostile peer, and the engine must not fall over
+    // either way: the client is refused, the session never sees it.
+    if (!api::wire::peek_type(bytes, type)) {
+        refuse(from, "an empty message");
+        return;
+    }
 
     if (type == api::wire::Type::CommandRequest) {
         api::CommandRequest r;
-        if (!api::wire::decode(bytes, r, error)) return;
+        if (!api::wire::decode(bytes, r, error)) {
+            refuse(from, "a command request that does not decode: " + error);
+            return;
+        }
         if (find_command(r.command) == nullptr) {
-            reply(r.seq, DispatchResult::UnknownCommand, "");
+            reply(from, r.seq, DispatchResult::UnknownCommand, "");
             return;
         }
         if (!is_engine_command(r.command)) {
-            reply(r.seq, DispatchResult::NotImplemented,
+            reply(from, r.seq, DispatchResult::NotImplemented,
                   r.command + " is the interface's own command; the engine does not run it");
             return;
         }
@@ -224,32 +359,38 @@ void EngineControlServer::handle(const std::string& bytes) {
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
-        reply(r.seq, d, why);
+        reply(from, r.seq, d, why);
         return;
     }
 
     if (type == api::wire::Type::ParameterChange) {
         api::ParameterChange c;
-        if (!api::wire::decode(bytes, c, error)) return;
+        if (!api::wire::decode(bytes, c, error)) {
+            refuse(from, "a parameter change that does not decode: " + error);
+            return;
+        }
         if (c.track >= session_.tracks().size()) {
-            reply(c.seq, DispatchResult::Failed,
+            reply(from, c.seq, DispatchResult::Failed,
                   "there is no track " + std::to_string(c.track + 1));
             return;
         }
         // Written as an atomic the audio thread already reads; a NaN would
         // reach every sample of the track, so it is refused here.
         if (!(c.value >= 0.0f && c.value <= 4.0f)) {
-            reply(c.seq, DispatchResult::Failed, "gain must be from 0 to 4 (linear)");
+            reply(from, c.seq, DispatchResult::Failed, "gain must be from 0 to 4 (linear)");
             return;
         }
         session_.tracks()[c.track]->set_gain(c.value);
-        reply(c.seq, DispatchResult::Ok, "");
+        reply(from, c.seq, DispatchResult::Ok, "");
         return;
     }
 
     if (type == api::wire::Type::ModelRequest) {
         api::ModelRequest m;
-        if (!api::wire::decode(bytes, m, error)) return;
+        if (!api::wire::decode(bytes, m, error)) {
+            refuse(from, "a model request that does not decode: " + error);
+            return;
+        }
         model::ReplicationUpdate u;
         std::string why;
         bool ok = false;
@@ -261,13 +402,24 @@ void EngineControlServer::handle(const std::string& bytes) {
                 ok = document_->snapshot(u, why, api::wire::kMaxModelBytes);
                 break;
         }
-        reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+        reply(from, m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (ok) {
             std::string out;
             api::wire::encode(to_wire(u), out);
-            send(out);
+            // A resync is the asker's alone; every other replica is in step.
+            if (m.action == api::ModelAction::Resync) {
+                send_to(from, out);
+            } else {
+                send(out);
+            }
         }
+        return;
     }
+
+    // Hello, a reply, an event or an update: the engine's own messages,
+    // which no client sends.
+    refuse(from, "a message only the engine sends (type " +
+                     std::to_string(static_cast<unsigned>(type)) + ")");
 }
 
 void EngineControlServer::tick() {
