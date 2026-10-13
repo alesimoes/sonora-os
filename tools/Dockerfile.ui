@@ -67,5 +67,10 @@ COPY audio-stack/pipewire-sonora.conf /etc/pipewire/pipewire.conf.d/99-sonora.co
 
 RUN useradd --create-home --uid 1000 sonora && usermod -aG audio,video sonora
 
+# Xvfb, run as anyone but root, cannot create its socket directory, and
+# refuses one a non-root user created. tools/build-ui.sh runs the container
+# as the caller on Linux (CI's uid 1001), so the directory is made here.
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
 USER sonora
 WORKDIR /home/sonora
