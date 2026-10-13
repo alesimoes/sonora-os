@@ -35,7 +35,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="$ROOT/iso/sonora.iso"
 WORK="$ROOT/build-usb"
 IMAGE=sonora-usbtest:trixie
-VOLUME=sonora-usbtest-work
+# One volume per run, removed when the run ends: a shared one outlived every
+# run and once held 350 GB of disk images. Per run, so that one run's cleanup
+# cannot pull the volume from under another.
+VOLUME="sonora-usbtest-work-$(date +%s)-$$"
 MEMORY="${QEMU_MEMORY:-4096}"
 KERNEL_BOOT_TIMEOUT="${KERNEL_BOOT_TIMEOUT:-240}"
 BOOTLOADER_SECONDS="${BOOTLOADER_SECONDS:-120}"
@@ -107,10 +110,11 @@ in_container() {
 }
 
 echo "=== building the test image ==="
-docker build -q -t "$IMAGE" \
+docker build -q -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.usbtest" \
   "$(host_path "$ROOT/tools")" >/dev/null
-docker volume create "$VOLUME" >/dev/null
+trap 'docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true' EXIT
+docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
 echo "=== write-usb.sh against a loop device ==="
 # The disk image lives in the volume, which is ext4 inside the Linux VM:
@@ -128,6 +132,7 @@ if [[ "$DO_BOOT" != 1 ]]; then
     echo "WRITE-USB TEST FAIL" >&2
     exit 1
   fi
+  rm -f "$WORK"/*.qcow2
   echo "WRITE-USB TEST PASS (container half only; WRITE_USB_BOOT=0, nothing booted)"
   exit 0
 fi
@@ -304,6 +309,9 @@ check_loop_leaks
 
 echo
 if [[ "$FAILED" == 0 ]]; then
+  # The written image and its overlays are a few GB on the host. A failure
+  # keeps them to look at; a pass has no use for them.
+  rm -f "$WORK"/*.qcow2 "$WORK"/*.vars.fd
   echo "WRITE-USB TEST PASS"
   exit 0
 fi

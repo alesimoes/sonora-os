@@ -47,6 +47,19 @@ QEMU/WHPX (2026-10-12). Use them to choose; do not quote them as results.
   edits, then run.
 - Read big files by line range. `grep -n` first to find the range.
 
+## Leave no disk behind
+
+The owner's laptop runs these tests next to their other projects' Docker.
+
+- A test that creates images or volumes cleans them up, pass or fail: a
+  `trap ... EXIT` removes per-run volumes and per-run images, and sparse
+  disk images are capped (`tools/test-write-usb-entrypoint.sh`, `sparse`).
+- Label everything ours: `docker build --label org.sonora=1`,
+  `docker volume create --label org.sonora=1`, names starting `sonora-`,
+  `docker run --rm` unless the container must persist. `tools/clean.sh`
+  only ever removes what carries the label or the prefix.
+- After merging a PR, the coordinator runs the `janitor` agent.
+
 ## A result you can report
 
 The verdict line, the count, and the log path, for example

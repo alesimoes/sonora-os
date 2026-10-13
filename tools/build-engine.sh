@@ -53,7 +53,7 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
-docker build -t "$IMAGE" -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")"
+docker build -t "$IMAGE" --label org.sonora=1 -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")"
 # The build directory is container-specific; keep it out of the host tree.
 docker run --rm -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
   set -euo pipefail

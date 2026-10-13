@@ -27,6 +27,7 @@ change gets from an idea to a commit.
 | `code-reviewer` | The review gate | Every diff, before commit |
 | `rt-safety-auditor` | The audio thread call graph | Callback graph changed, or xruns appeared |
 | `integrator` | The merge gate | A feature branch is ready to land on `main` |
+| `janitor` | Disk: Docker objects of ours, merged worktrees, stale `build-*/` (`tools/clean.sh`) | After every merge, and when the disk fills |
 
 The three implementer roles do not overlap by accident. A plugin crash must
 not take the session down, a device that enumerates is not a device that
@@ -65,6 +66,23 @@ implementer fixes; the reviewer re-reads the fix.
 10. `integrator` gates the merge: CI green, every claim in the description
     reproduced, nothing unwanted in the diff, brain current. It merges, or it
     says what is wrong and stops.
+11. After merging a PR, the coordinator runs `janitor`.
+
+## Disk
+
+Measured on 2026-10-13: the USB writer test's work volume had reached
+350.7 GB, about 20 untagged images from rebuilds held 5 GB, experiment
+images and finished worktrees with ISOs (2.3 GB each) the rest. The owner's
+other projects share the same Docker. The rules:
+
+- A test that creates images or volumes cleans them up, pass or fail (a
+  `trap ... EXIT`), and a test that creates sparse disk images caps them.
+- Label everything ours: `docker build --label org.sonora=1`,
+  `docker volume create --label org.sonora=1`, a `sonora-` name prefix,
+  and `docker run --rm` unless the container must persist.
+- After merging a PR, the coordinator runs the `janitor`, which removes
+  only what is ours (`tools/clean.sh`). Compacting Docker Desktop's disk
+  file is an owner step, described in `.claude/agents/janitor.md`.
 
 Between steps, work moves by handoff: the agent that stops writes
 `planning/handoffs/<branch>.md`, the branch name with `/` replaced by `-`

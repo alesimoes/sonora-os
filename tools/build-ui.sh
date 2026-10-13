@@ -81,7 +81,7 @@ trap 'rm -rf "$CONTEXT"' EXIT
 mkdir -p "$CONTEXT/audio-stack"
 cp "$ROOT/tools/Dockerfile.ui" "$CONTEXT/Dockerfile"
 cp "$ROOT/audio-stack/pipewire-sonora.conf" "$CONTEXT/audio-stack/"
-docker build -t "$IMAGE" "$(host_path "$CONTEXT")"
+docker build -t "$IMAGE" --label org.sonora=1 "$(host_path "$CONTEXT")"
 
 OUT_MOUNT=()
 SHOT_NAME=""

@@ -51,7 +51,7 @@ done
 [[ -n "$ENGINE" ]] || { echo "error: no engine binary to test." >&2; exit 1; }
 
 echo "=== building the runtime image ==="
-docker build -q -t "$IMAGE" \
+docker build -q -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
   "$(host_path "$ROOT")" >/dev/null
 
