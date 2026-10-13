@@ -8,3 +8,8 @@ target_include_directories(sonora_backend_jack PUBLIC include)
 target_link_libraries(sonora_backend_jack
   PUBLIC sonora_backend_api sonora_base
   PRIVATE sonora_driver_support PkgConfig::JACK)
+
+# A stand-in for onboard audio in the container test; see the file. Built
+# with the engine so the test can mount it alongside; never installed.
+add_executable(sonora-fake-capture testing/fake_capture.cpp)
+target_link_libraries(sonora-fake-capture PRIVATE PkgConfig::JACK)

@@ -5,7 +5,8 @@
 # What this proves: the engine connects to PipeWire through the JACK API,
 # registers and connects its ports, captures a known signal, and writes
 # well-formed BWF files of the right length with the timecode origin set, with
-# no xruns and no overruns.
+# no xruns and no overruns. Also that a physical capture device that is not
+# USB, standing in for onboard audio, is left unconnected without --device.
 #
 # Defaults to 18 channels, matching the Behringer UMC1820 this is built for.
 # The count matters: verify-recording.py checks that track N carries tone N,

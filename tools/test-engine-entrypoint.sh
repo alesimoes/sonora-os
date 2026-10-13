@@ -28,7 +28,7 @@ chmod 0700 "$XDG_RUNTIME_DIR"
 eval "$(dbus-launch --sh-syntax)"
 
 cleanup() {
-  for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
+  for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${ONBOARD_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -96,8 +96,34 @@ CHANNEL_MAP=$(python3 -c "print(','.join('AUX%d' % i for i in range($TRACKS)))")
 pw-play --target test-source --channel-map "$CHANNEL_MAP" /tmp/test-tone.wav >/tmp/pw-play.log 2>&1 &
 PLAY_PID=$!
 
+echo "--- adding a physical capture device that is not USB ---"
+# The appliance has onboard audio beside the interface, and without --device
+# the engine must never record from it. A JACK client with physical ports and
+# an onboard card's object.path stands in for it; no /proc/asound/PCH/usbid
+# exists here, so it reads as not USB, as onboard audio does.
+ONBOARD_NAME="Built-in Audio Pro"
+# What pw-link calls it: the node.name, where JACK clients see the description.
+ONBOARD_NODE=fake-capture
+if [[ -f /engine-build/sonora-fake-capture ]]; then
+  cp /engine-build/sonora-fake-capture /tmp/sonora-fake-capture
+  chmod 0755 /tmp/sonora-fake-capture
+  PIPEWIRE_PROPS="{ object.path = \"alsa:acp:PCH:0:capture\" node.description = \"$ONBOARD_NAME\" }" \
+    /tmp/sonora-fake-capture 2 >/tmp/onboard.log 2>&1 &
+  ONBOARD_PID=$!
+  for _ in $(seq 1 25); do
+    pw-link -o 2>/dev/null | grep -q "^$ONBOARD_NODE:capture_AUX0" && break
+    sleep 0.2
+  done
+  pw-link -o 2>/dev/null | grep -q "^$ONBOARD_NODE:capture_AUX0" || {
+    echo "FAIL: the stand-in onboard device never exposed its ports." >&2
+    exit 1
+  }
+else
+  echo "note: no sonora-fake-capture beside the engine; onboard check skipped" >&2
+fi
+
 echo "--- starting the engine ---"
-# The engine auto-connects to physical capture ports; a container has none, so
+# The engine auto-connects only to a USB interface; a container has none, so
 # the patching happens below. --wait-for-inputs is what makes that possible,
 # and it is the same flag the appliance uses for a USB interface that is
 # enumerated after boot.
@@ -126,6 +152,17 @@ for i in $(seq 1 "$TRACKS"); do
   fi
 done
 echo "patched $CONNECTED of $TRACKS inputs"
+
+if [[ -n "${ONBOARD_PID:-}" ]]; then
+  # By now the engine has had more than one of its half-second retries.
+  sleep 1
+  if pw-link -l 2>/dev/null | grep -A2 "^$ONBOARD_NODE:capture_" | grep -q "sonora:in_"; then
+    echo "FAIL: the engine connected the onboard device without --device." >&2
+    pw-link -l >&2 2>/dev/null
+    exit 1
+  fi
+  echo "onboard device left unconnected"
+fi
 
 if [[ "$CONNECTED" == "0" ]]; then
   echo "FAIL: nothing could be patched into the engine." >&2
