@@ -14,13 +14,10 @@ build-qemu/
 build-usb/
 # Session, logs and reader output from the BWF interop test.
 build-interop/
-<<<<<<< HEAD
 # The janitor's dry-run and run logs (tools/clean.sh).
 build-clean/
-=======
 # Logs from the quantum pin test.
 build-quantum/
->>>>>>> 6bd477a (Pin the quantum and rate against clients, and test it)
 *.o
 *.a
 compile_commands.json
