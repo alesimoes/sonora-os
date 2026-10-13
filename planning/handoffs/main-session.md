@@ -9,7 +9,7 @@ Each branch keeps its own detail in its own handoff file.
 
 ## Verify
     git log --oneline -8 origin/main   # expected: the harness squash on top of 1031fa1
-    git branch -r                      # expected: the three in-flight branches below
+    git branch --list                  # expected: the in-flight branches below (local; pushed only at PR time)
 
 ## Recently landed
 - #2–#6, up to `1031fa1`: key maps and take safety; ADR-0007 with its

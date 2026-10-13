@@ -10,7 +10,7 @@ change gets from an idea to a commit.
 | Where is what we know? | `brain/` — ADRs, specs, research, postmortems. Indexed in `brain/INDEX.md`. |
 | Where is what we intend? | `planning/` — `ROADMAP.md` (phases), `BACKLOG.md` (ready work), `STATUS.md` (what is true now). |
 | Where are the skills? | `.claude/skills/` — the repeatable procedures: build, audit, write to the brain, choose a test loop, hand off. |
-| Where is work in progress? | `planning/handoffs/` — one short file per open branch, deleted at merge. |
+| Where is work in progress? | `planning/handoffs/` — one short file per open branch, deleted on the branch before merge. |
 | Where are the agents? | `.claude/agents/` — the roles, each with its own scope and standards. |
 
 ## The agents
@@ -35,7 +35,7 @@ those is a different kind of care, and each charter says so.
 
 ## Who reviews the code
 
-`code-reviewer` reviews every diff touching `engine/` or `iso/`, after the
+`code-reviewer` reviews every diff touching a C++ module (`common/`, `contracts/`, `engine/`, `drivers/`, `ui/`), `iso/` or the session hook (`.claude/settings.json`, `tools/session-start.sh`), after the
 implementer reports done and before anything is committed. Its priority order
 is real-time safety, then correctness on the data path, then concurrency, then
 failure behaviour, then simplification.
