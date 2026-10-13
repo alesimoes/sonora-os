@@ -37,5 +37,4 @@ per-period rate, fatal_reason by value, frame_time widening, NULL buffers, xrun_
 - ASan and TSan make `mlockall` a no-op, which is why that test skips its VmLck half there.
 
 **Pointers.** Contract: `contracts/backend/include/sonora/{process_callback,audio_backend}.h`. Helpers: `drivers/support/`.
-Decisions: ADR-0007 "Update, 2026-10-12: the backend contract as landed (M2)". Measurements: `brain/research/adr-0007-measurements.md` §1.
-Scratch harness (not in repo): `fatal.sh` with MODE=quantum|rate|unplug|freeze, in the agent's scratchpad.
+Decisions: ADR-0007 "Update, 2026-10-12: the backend contract as landed (M2)". Measurements: `brain/research/adr-0007-measurements.md` §1. Scratch harness (not in repo): `fatal.sh`, MODE=quantum|rate|unplug|freeze.
