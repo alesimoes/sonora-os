@@ -22,7 +22,8 @@ Bridge::Bridge(std::unique_ptr<Processor> processor, std::uint32_t channels)
       count_(processor_->descriptor().param_count),
       values_(new std::atomic<float>[count_]),
       dirty_(new std::atomic<bool>[count_]),
-      events_(new ParamEvent[count_]) {
+      events_(new ParamEvent[count_]),
+      prepared_values_(new float[count_]()) {
     for (std::uint32_t i = 0; i < count_; ++i) {
         values_[i].store(processor_->param(i), std::memory_order_relaxed);
         dirty_[i].store(false, std::memory_order_relaxed);
@@ -55,8 +56,29 @@ bool Bridge::activate(double sample_rate, std::uint32_t max_frames) {
     // working instance: the Processor splits longer blocks itself, so this
     // only sets the size of its internal chunks.
     if (max_frames == 0) max_frames = 1024;
+
+    bool same = prepared_ && sample_rate == prepared_rate_ && max_frames == prepared_max_frames_;
+    const Descriptor& d = descriptor();
+    for (std::uint32_t i = 0; same && i < count_; ++i) {
+        if (d.params[i].reconfigures && processor_->param(i) != prepared_values_[i]) same = false;
+    }
+    if (same) {
+        // What prepare() would have done, without its allocations: every
+        // value where it is headed (a jump; a value held for a declick
+        // lands now), and no signal state carried over. One difference: a
+        // declick fade under way finishes its remaining few milliseconds,
+        // where prepare() would have cut it.
+        for (std::uint32_t i = 0; i < count_; ++i) processor_->set_param(i, processor_->param(i));
+        processor_->reset();
+        first_block_ = true;
+        return true;
+    }
+
     prepared_ = processor_->prepare(sample_rate, max_frames, channels_);
     latency_ = prepared_ ? processor_->latency() : 0;
+    prepared_rate_ = sample_rate;
+    prepared_max_frames_ = max_frames;
+    for (std::uint32_t i = 0; i < count_; ++i) prepared_values_[i] = processor_->param(i);
     first_block_ = true;
     return prepared_;
 }

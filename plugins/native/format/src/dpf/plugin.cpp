@@ -9,13 +9,16 @@
 //
 // What maps to what:
 // - Parameter table (ParamInfo) -> DPF Parameter: the id is the LV2 symbol
-//   and the VST3 state key, the index is the VST3 ParamID (plus DPF's
-//   internal offset), so ids and indices stay append-only (§2.4) in every
-//   format.
+//   and the VST3 state key of every parameter but index 0, the index is the
+//   VST3 ParamID (plus DPF's internal offset), so ids and indices stay
+//   append-only (§2.4) in every format.
 // - Index 0, our latency-compensated bypass (§1.5), carries DPF's bypass
 //   designation, so a host's own bypass button drives it instead of
 //   cutting the plugin out with no delay. In LV2 that port is the standard
-//   lv2:enabled (inverted: 1 = processing, DPF converts).
+//   lv2:enabled: DPF's exporter forces the symbol "lv2_enabled", not our
+//   id "bypass", and inverts the value (1 = processing). The bundle's
+//   descriptor.json carries that mapping (bundle_files.cpp), so a
+//   descriptor-driven editor finds the port.
 // - Latency is reported from activate(), the only place it changes.
 #include <cstring>
 #include <memory>
@@ -92,6 +95,8 @@ protected:
         if (index == 0) {
             // ParamInfo index 0 is always kBypassParam (param.h).
             p.initDesignation(kParameterDesignationBypass);
+            // The VST3 state key. The LV2 exporter writes "lv2_enabled"
+            // whatever this says (see the top of the file).
             p.symbol = info.id;
             return;
         }
@@ -124,9 +129,27 @@ protected:
     float getParameterValue(uint32_t index) const override { return bridge_.value(index); }
     void setParameterValue(uint32_t index, float value) override { bridge_.set_value(index, value); }
 
-    // DPF calls this around every rate or block-size change too, never
-    // while run() is running.
+    // From the host's activate (LV2 activate, VST3 setActive), from DPF
+    // around a rate or block-size change, and from DPF's own lazy
+    // activation inside run() when a host processes an instance it never
+    // activated: that last one is on the audio thread. Never while run()
+    // is running. The rate and block size were prepared for in the
+    // constructor or in the two callbacks below, so unless a reconfiguring
+    // value is pending this does not allocate (Bridge::activate).
     void activate() override {
+        bridge_.activate(getSampleRate(), getBufferSize());
+        setLatency(bridge_.latency());
+    }
+
+    // DPF calls these on the host's main thread (VST3 setupProcessing, LV2
+    // instantiate and options), whether or not the instance is active.
+    // Preparing here, rather than at the next activate(), keeps a lazy
+    // activation on the audio thread free.
+    void bufferSizeChanged(uint32_t) override {
+        bridge_.activate(getSampleRate(), getBufferSize());
+        setLatency(bridge_.latency());
+    }
+    void sampleRateChanged(double) override {
         bridge_.activate(getSampleRate(), getBufferSize());
         setLatency(bridge_.latency());
     }

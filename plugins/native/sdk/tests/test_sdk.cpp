@@ -217,6 +217,15 @@ int test_state_round_trip() {
     const std::string d = descriptor_json(kDesc);
     CHECK(d.find("\"id\": \"gain\"") != std::string::npos);
     CHECK(d.find("\"reconfigures\": true") != std::string::npos);
+    CHECK(d.find("\"formats\"") == std::string::npos);
+    // A format's own name for a parameter travels with it, and only with it.
+    const FormatSymbol lv2_bypass{0, "lv2", "lv2_enabled", true};
+    const std::string f = descriptor_json(kDesc, &lv2_bypass, 1);
+    const std::size_t first = f.find("\"formats\"");
+    CHECK(first != std::string::npos && f.find("\"formats\"", first + 1) == std::string::npos);
+    CHECK(first < f.find("\"id\": \"gain\""));
+    CHECK(f.find("\"symbol\": \"lv2_enabled\"") != std::string::npos);
+    CHECK(f.find("\"inverted\": true") != std::string::npos);
     return 0;
 }
 

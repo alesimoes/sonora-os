@@ -58,6 +58,19 @@
 #include <string>
 #include <vector>
 
+// SONORA LOCAL PATCH (third_party/dpf/SONORA.md, patch 1): in a build
+// where one object is both component and controller and there is no UI,
+// the plain fCachedParameterValues[] array is not used for input
+// parameters. A host may set a value from its main thread while process()
+// runs on the audio thread, so both sides read and write the plugin's own
+// value instead (Plugin::getParameterValue and setParameterValue, which
+// Sonora's glue keeps in atomics).
+#if !DPF_VST3_USES_SEPARATE_CONTROLLER && !DISTRHO_PLUGIN_HAS_UI
+# define SONORA_DPF_VST3_VALUES_FROM_PLUGIN 1
+#else
+# define SONORA_DPF_VST3_VALUES_FROM_PLUGIN 0
+#endif
+
 START_NAMESPACE_DISTRHO
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -596,6 +609,7 @@ public:
           fVst3ParameterCount(fParameterCount + kVst3InternalParameterCount),
           fCachedParameterValues(nullptr),
           fDummyAudioBuffer(nullptr),
+          fDummyAudioBufferSize(0), // SONORA LOCAL PATCH (patch 5)
           fParameterValuesChangedDuringProcessing(nullptr)
        #if DPF_VST3_USES_SEPARATE_CONTROLLER
         , fIsComponent(isComponent)
@@ -713,13 +727,20 @@ public:
         const uint32_t hints = fPlugin.getParameterHints(index);
         float value = ranges.getUnnormalizedValue(normalized);
 
+       #if SONORA_DPF_VST3_VALUES_FROM_PLUGIN
+        // SONORA LOCAL PATCH (patch 1): the value held is the plugin's own.
+        const float held = fPlugin.getParameterValue(index);
+       #else
+        const float held = fCachedParameterValues[kVst3InternalParameterBaseCount + index];
+       #endif
+
         // convert as needed as check for changes
         if (hints & kParameterIsBoolean)
         {
             const float midRange = ranges.min + (ranges.max - ranges.min) / 2.f;
             const bool isHigh = value > midRange;
 
-            if (isHigh == (fCachedParameterValues[kVst3InternalParameterBaseCount + index] > midRange))
+            if (isHigh == (held > midRange))
                 return;
 
             value = isHigh ? ranges.max : ranges.min;
@@ -728,7 +749,7 @@ public:
         {
             const int ivalue = d_roundToInt(value);
 
-            if (d_roundToInt(fCachedParameterValues[kVst3InternalParameterBaseCount + index]) == ivalue)
+            if (d_roundToInt(held) == ivalue)
                 return;
 
             value = ivalue;
@@ -736,11 +757,13 @@ public:
         else
         {
             // deal with low resolution of some hosts, which convert double to float internally and lose precision
-            if (std::abs(ranges.getNormalizedValue(static_cast<double>(fCachedParameterValues[kVst3InternalParameterBaseCount + index])) - normalized) < 0.0000001)
+            if (std::abs(ranges.getNormalizedValue(static_cast<double>(held)) - normalized) < 0.0000001)
                 return;
         }
 
+       #if !SONORA_DPF_VST3_VALUES_FROM_PLUGIN
         fCachedParameterValues[kVst3InternalParameterBaseCount + index] = value;
+       #endif
 
       #if DISTRHO_PLUGIN_HAS_UI
        #if DPF_VST3_USES_SEPARATE_CONTROLLER
@@ -1370,6 +1393,7 @@ public:
 
         delete[] fDummyAudioBuffer;
         fDummyAudioBuffer = new float[setup->max_block_size];
+        fDummyAudioBufferSize = setup->max_block_size; // SONORA LOCAL PATCH (patch 5)
 
         return V3_OK;
     }
@@ -1463,6 +1487,26 @@ public:
 
         const float* inputs[DISTRHO_PLUGIN_NUM_INPUTS != 0 ? DISTRHO_PLUGIN_NUM_INPUTS : 1];
         /* */ float* outputs[DISTRHO_PLUGIN_NUM_OUTPUTS != 0 ? DISTRHO_PLUGIN_NUM_OUTPUTS : 1];
+
+        // SONORA LOCAL PATCH (third_party/dpf/SONORA.md, patch 5): the
+        // dummy buffer holds the max_block_size the host promised in
+        // setupProcessing(), and none before it. A host that breaks that
+        // promise gets silence and an error, not a write past the buffer.
+        if (fDummyAudioBuffer == nullptr || data->nframes > fDummyAudioBufferSize)
+        {
+            if (data->outputs != nullptr)
+            {
+                for (int32_t b = 0; b < data->num_output_buses; ++b)
+                {
+                    if (data->outputs[b].channel_buffers_32 == nullptr)
+                        continue;
+                    for (int32_t j = 0; j < data->outputs[b].num_channels; ++j)
+                        if (data->outputs[b].channel_buffers_32[j] != nullptr)
+                            std::memset(data->outputs[b].channel_buffers_32[j], 0, sizeof(float)*data->nframes);
+                }
+            }
+            return V3_INVALID_ARG;
+        }
 
         std::memset(fDummyAudioBuffer, 0, sizeof(float)*data->nframes);
 
@@ -2038,6 +2082,12 @@ public:
         const uint32_t index = static_cast<uint32_t>(rindex - kVst3InternalParameterCount);
         DISTRHO_SAFE_ASSERT_UINT2_RETURN(index < fParameterCount, index, fParameterCount, 0.0);
 
+       #if SONORA_DPF_VST3_VALUES_FROM_PLUGIN
+        // SONORA LOCAL PATCH (patch 1): the plugin's own value, which the
+        // host may have set from any thread.
+        if (! fPlugin.isParameterOutputOrTrigger(index))
+            return _getNormalizedParameterValue(index, fPlugin.getParameterValue(index));
+       #endif
         return _getNormalizedParameterValue(index, fCachedParameterValues[kVst3InternalParameterBaseCount + index]);
     }
 
@@ -2115,11 +2165,13 @@ public:
 
         _setNormalizedPluginParameterValue(index, normalized);
        #else
-        // SONORA LOCAL PATCH (third_party/dpf/SONORA.md): without a UI the
-        // component is also the controller, and upstream drops a value the
-        // host sets on it, so getParamNormalized() never reflects it and
-        // Steinberg's validator fails "Parameter Bypass persistence". The
-        // value is taken as the separate controller would take it.
+        // SONORA LOCAL PATCH (third_party/dpf/SONORA.md, patch 1): without
+        // a UI the component is also the controller, and upstream drops a
+        // value the host sets on it, so getParamNormalized() never reflects
+        // it and Steinberg's validator fails "Parameter Bypass persistence".
+        // The value goes to the plugin; with
+        // SONORA_DPF_VST3_VALUES_FROM_PLUGIN nothing here touches the
+        // cache process() uses, so this may run on any thread.
         const uint32_t index = static_cast<uint32_t>(rindex - kVst3InternalParameterCount);
         DISTRHO_SAFE_ASSERT_UINT2_RETURN(index < fParameterCount, index, fParameterCount, V3_INVALID_ARG);
         DISTRHO_SAFE_ASSERT_RETURN(!fPlugin.isParameterOutputOrTrigger(index), V3_INVALID_ARG);
@@ -2471,6 +2523,7 @@ private:
     const uint32_t fVst3ParameterCount; // full offset + real
     float* fCachedParameterValues; // basic offset + real
     float* fDummyAudioBuffer;
+    int32_t fDummyAudioBufferSize; // SONORA LOCAL PATCH (patch 5): frames in fDummyAudioBuffer
     bool* fParameterValuesChangedDuringProcessing; // basic offset + real
    #if DISTRHO_PLUGIN_NUM_INPUTS > 0
     bool fEnabledInputs[DISTRHO_PLUGIN_NUM_INPUTS];

@@ -54,9 +54,19 @@ public:
     // The last value set, sanitised. Any thread.
     float value(std::uint32_t index) const noexcept;
 
-    // Not RT. Applies every pending value as a jump, then prepares the
-    // Processor for `sample_rate` and blocks of up to `max_frames`. The next
-    // run() is a first block again. False when the Processor refuses.
+    // Applies every pending value as a jump, then prepares the Processor for
+    // `sample_rate` and blocks of up to `max_frames`. The next run() is a
+    // first block again. False when the Processor refuses.
+    //
+    // Not RT when anything prepare() depends on has changed: the rate, the
+    // block size, a reconfiguring value, or a refused last prepare. With
+    // none of them changed it does not prepare: it settles every value
+    // (smoothers at their targets, as prepare() leaves them) and resets the
+    // signal state, which allocates nothing. DPF calls activate() from the
+    // audio thread when a host processes an instance it never activated
+    // (PluginExporter::run, the VST3 process()), so that case must be free;
+    // the DPF glue prepares on every rate and block-size change on the
+    // host's main thread to keep it so (src/dpf/plugin.cpp).
     bool activate(double sample_rate, std::uint32_t max_frames);
     // The prepared configuration's latency, in samples. Changes only in
     // activate().
@@ -84,6 +94,12 @@ private:
     std::atomic<bool> any_dirty_{false};
     // One event per parameter at most per block: sized here, never grown.
     std::unique_ptr<ParamEvent[]> events_;
+    // What the last successful prepare() saw, so activate() can tell
+    // whether another one is needed: the values of reconfiguring
+    // parameters (one slot per parameter, the others unused).
+    std::unique_ptr<float[]> prepared_values_;
+    double prepared_rate_ = 0.0;
+    std::uint32_t prepared_max_frames_ = 0;
     std::uint32_t latency_ = 0;
     bool prepared_ = false;
     bool first_block_ = true;

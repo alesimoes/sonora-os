@@ -5,8 +5,10 @@
 // (third_party/dpf/distrho/DistrhoPluginInfo.h.template documents them).
 #pragma once
 
-// Our names only (ADR-0011 §5).
-#define DISTRHO_PLUGIN_BRAND "Sonora"
+// Our names only (ADR-0011 §5). No DISTRHO_PLUGIN_BRAND: DPF uses it only
+// to write MOD Devices' mod:brand and mod:label into the TTL, a hardware
+// maker's vocabulary we keep out of our metadata (third_party/dpf/SONORA.md,
+// patch 4). The maker shown to hosts is getMaker() (plugin.cpp).
 #define DISTRHO_PLUGIN_NAME "@SONORA_DISPLAY_NAME@"
 #define DISTRHO_PLUGIN_URI "urn:sonora:native:@SONORA_NAME@"
 // The VST3 class ID is "DPF " "clas" <unique id> <brand id>: these two are

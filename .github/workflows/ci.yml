@@ -109,6 +109,12 @@ jobs:
         # out (ASan and UBSan below run them).
         run: ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -E '^(dsp|native)_'
 
+      # Except the format adapter, which is concurrent: a VST3 host sets
+      # parameters from its main thread while process() runs. These drive
+      # the Bridge and every bundle binary from two threads.
+      - name: Run the native format tests under TSan
+        run: ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R '^native_format'
+
       - name: Build with ASan and UBSan
         run: |
           cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \

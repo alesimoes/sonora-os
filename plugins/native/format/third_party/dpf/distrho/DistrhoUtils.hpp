@@ -180,6 +180,19 @@ void d_debug(const char* const fmt, ...) noexcept
 }
 #endif
 
+#ifdef SONORA_DPF_QUIET
+/*
+   SONORA LOCAL PATCH (../SONORA.md, patch 6): Sonora's bundles print
+   nothing. The wrappers report malformed host input (a bad parameter id, an
+   unknown atom type, every DISTRHO_SAFE_ASSERT) from inside run() and
+   process(), and fprintf takes the stream lock and writes on the audio
+   thread. The checks still return or break as before; only the message is
+   gone.
+ */
+static inline void d_stdout(const char* const, ...) noexcept {}
+static inline void d_stderr(const char* const, ...) noexcept {}
+static inline void d_stderr2(const char* const, ...) noexcept {}
+#else
 /**
    Print a string to stdout with newline.
  */
@@ -253,6 +266,7 @@ void d_stderr2(const char* const fmt, ...) noexcept
         va_end(args);
     } catch (...) {}
 }
+#endif // SONORA_DPF_QUIET
 
 /**
    Print a safe assertion error message.

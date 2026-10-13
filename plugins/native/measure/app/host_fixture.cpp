@@ -26,8 +26,12 @@
 //   it); the LV2 host sends none, so the delay uses its own tempo
 //   parameter.
 //
-// A difference from the committed golden WAV is printed for information:
-// with no preroll and no host tempo, the two are the same render.
+// With --golden, the LV2 golden reference is also compared with the
+// committed golden WAV at the golden bar (1e-6), and a difference, an
+// unreadable file or a length mismatch fails the fixture, so a bundle that
+// matches its reference also matches its golden file. Only a processor
+// whose state moves during the preroll (Target::preroll_free) is exempt,
+// and its difference is printed.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -69,15 +73,21 @@ struct Target {
     const char* name;
     std::function<std::unique_ptr<native::Processor>()> make;
     std::function<Config()> golden;
+    // Whether silence before the input leaves the processor exactly where
+    // it starts. Then the reference after the host's preroll must equal the
+    // committed golden file, and the fixture fails when it does not. The
+    // chorus's LFO runs through the preroll, so its reference is a
+    // different render and the difference is only printed.
+    bool preroll_free;
 };
 
 const Target kTargets[] = {
-    {"eq", [] { return native::make_eq(); }, native::suites::eq_golden_config},
-    {"compressor", [] { return native::make_compressor(); }, native::suites::compressor_golden_config},
-    {"gate", [] { return native::make_gate(); }, native::suites::gate_golden_config},
-    {"limiter", [] { return native::make_limiter(); }, native::suites::limiter_golden_config},
-    {"delay", [] { return native::make_delay(); }, native::suites::delay_golden_config},
-    {"chorus", [] { return native::make_chorus(); }, native::suites::chorus_golden_config},
+    {"eq", [] { return native::make_eq(); }, native::suites::eq_golden_config, true},
+    {"compressor", [] { return native::make_compressor(); }, native::suites::compressor_golden_config, true},
+    {"gate", [] { return native::make_gate(); }, native::suites::gate_golden_config, true},
+    {"limiter", [] { return native::make_limiter(); }, native::suites::limiter_golden_config, true},
+    {"delay", [] { return native::make_delay(); }, native::suites::delay_golden_config, true},
+    {"chorus", [] { return native::make_chorus(); }, native::suites::chorus_golden_config, false},
 };
 
 // What DPF's VST3 wrapper makes of a normalised value
@@ -206,22 +216,40 @@ int write_case(const Target& t, const std::string& dir, const std::string& golde
     for (const Set& s : sets) std::fprintf(a, "--set\n%s\n", s.arg.c_str());
     std::fclose(a);
 
+    // The LV2 golden case has no host tempo, so it is the golden render
+    // again, after the preroll: the expected output is tied to the
+    // committed golden file, not only to whatever the Processor does today.
     if (!golden_dir.empty() && !vst3 && std::strcmp(case_name, "golden") == 0) {
         char file[64];
         std::snprintf(file, sizeof file, "/%s-%d.wav", t.name, static_cast<int>(fs));
         Chans ref;
         double rfs = 0.0;
         std::string err;
-        if (read_wav_f32(golden_dir + file, ref, rfs, err) && ref.size() == 2 &&
-            ref[0].size() + preroll == out[0].size()) {
-            double worst = 0.0;
-            for (std::size_t c = 0; c < 2; ++c) {
-                for (std::size_t i = 0; i < ref[c].size(); ++i)
-                    worst = std::fmax(worst, std::fabs(static_cast<double>(out[c][i + preroll]) - ref[c][i]));
-            }
-            std::printf("  %s %d Hz: reference after %u samples of preroll vs the N0 golden file: "
-                        "max |difference| %.3g\n",
-                        t.name, static_cast<int>(fs), preroll, worst);
+        if (!read_wav_f32(golden_dir + file, ref, rfs, err)) {
+            std::fprintf(stderr, "host fixture %s: cannot read golden file %s%s: %s\n", t.name,
+                         golden_dir.c_str(), file, err.c_str());
+            return 1;
+        }
+        if (ref.size() != 2 || ref[0].size() + preroll != out[0].size() || rfs != fs) {
+            std::fprintf(stderr, "host fixture %s: golden file %s%s is %zu channels of %zu frames at %g Hz; "
+                         "the reference is 2 of %zu at %g Hz\n",
+                         t.name, golden_dir.c_str(), file, ref.size(), ref.empty() ? 0 : ref[0].size(), rfs,
+                         out[0].size() - preroll, fs);
+            return 1;
+        }
+        double worst = 0.0;
+        for (std::size_t c = 0; c < 2; ++c) {
+            for (std::size_t i = 0; i < ref[c].size(); ++i)
+                worst = std::fmax(worst, std::fabs(static_cast<double>(out[c][i + preroll]) - ref[c][i]));
+        }
+        std::printf("  %s %d Hz: reference after %u samples of preroll vs the N0 golden file: "
+                    "max |difference| %.3g%s\n",
+                    t.name, static_cast<int>(fs), preroll, worst,
+                    t.preroll_free ? "" : " (preroll-dependent, not asserted)");
+        if (t.preroll_free && !(worst <= kTolerance)) {
+            std::fprintf(stderr, "host fixture %s %d Hz: reference differs from the golden file by %.3g "
+                         "(bar %.3g)\n", t.name, static_cast<int>(fs), worst, kTolerance);
+            return 1;
         }
     }
     std::printf("  %s\n", args_path.c_str());

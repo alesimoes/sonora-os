@@ -1,7 +1,9 @@
 # ADR-0011 — The native plugin suite
 
 - Status: **Proposed**, 2026-10-13. Amendment 1 (coordinator, 2026-10-13):
-  §2.2 edges and the N0 decisions, at the end.
+  §2.2 edges and the N0 decisions, at the end. Amendment 2 (2026-10-13):
+  the DPF patch instead of the §1.2 fallback, and block-accurate VST3
+  automation under §2.4, at the end.
 - Date: 2026-10-13
 - Decided by: architect, for the owner. The points that are the owner's to
   settle are listed at the end, under "For the owner".
@@ -161,7 +163,8 @@ expensive after fifteen.
 
   If DPF's VST3 fails `validator`, the VST3 adapter moves to the MIT SDK.
   Because no processor sees DPF, that is one adapter rewritten, not fifteen
-  processors.
+  processors. (Amended 2026-10-13, Amendment 2 item 1: for the one failure
+  N1 found, a local DPF patch was accepted instead.)
 
 **1.3 Nothing of ours runs in the engine's audio path, except meters.**
 - The engine's mixer stays what ADR-0007 and ADR-0009 say it is: gain, pan,
@@ -349,7 +352,10 @@ The same review settled four more points for N0; they are recorded under
 - **Automation.**
   - `Processor` receives parameter events with a sample offset inside the
     block.
-  - The VST3 adapter passes VST3's offsets through.
+  - The VST3 adapter passes VST3's offsets through. (Amended 2026-10-13,
+    Amendment 2 item 2: through DPF it cannot. A change at a nonzero
+    offset lands one block late and intermediate points are dropped,
+    accepted as block-rate delivery like LV2's.)
   - LV2 control ports are per `run()` call, so the LV2 adapter delivers at
     block start. Sonora's host may split a block at automation points if
     the M9 ADR wants sample accuracy for LV2.
@@ -1011,9 +1017,11 @@ unless stated otherwise. Several are expected in the forthcoming
    settled by the N1 checkpoint (§1.2), run by the dsp-engineer.
    **Measured 2026-10-13** (`brain/research/native-format-n1.md`): DPF at
    `4238e1c` passed 46 of validator 3.8.1's 47 tests; "Parameter Bypass
-   persistence" failed on a DPF bug in UI-less plugins. With a 9-line
-   local patch, 47 of 47 for all six bundles. The §1.2 fallback (the MIT
-   SDK) was therefore not taken; that call is the coordinator's to confirm.
+   persistence" failed on a DPF bug in UI-less plugins. With a local
+   patch, 47 of 47 for all six bundles. The §1.2 fallback (the MIT SDK)
+   was not taken: the coordinator accepted the patch on 2026-10-13
+   (Amendment 2 item 1), on condition that it does not race, which the
+   TSan job checks against every bundle. **Settled.**
 3. **ONNX Runtime on Debian trixie.** Whether it is packaged, at which
    version, and its installed size. If it is not packaged, the build cost
    of vendoring it. Also its Windows availability under MSVC, for
@@ -1279,3 +1287,47 @@ N0). The measurements behind each are in
    release in PR CI and under the sanitizers (`SONORA_DSP_QUICK=1`), and in
    full in the nightly workflow, in Release and under ASan and UBSan. TSan
    leaves out the single-threaded `dsp_*` and `native_*` tests.
+
+## Amendment 2, 2026-10-13: the N1 format stage with DPF
+
+Made on the review of PR #40 (`feature/dsp-n1`, stage N1). The
+measurements are in `brain/research/native-format-n1.md`, the DPF patches
+in `plugins/native/format/third_party/dpf/SONORA.md`.
+
+1. **§1.2: the local DPF patch is accepted instead of the MIT-SDK
+   fallback (coordinator, 2026-10-13).** DPF at `4238e1c` failed one of
+   validator 3.8.1's 47 tests ("Parameter Bypass persistence"): in a
+   plugin without a UI one object is both component and controller, and
+   DPF dropped a value the host set on the controller. §1.2 said a
+   validator failure moves VST3 to the MIT SDK. The failure was one DPF
+   bug with a small fix, so the coordinator accepts the local patch
+   (SONORA.md, patch 1), and the VST3 adapter stays on DPF. With the
+   patch, 47 of 47 pass for all six bundles. Conditions:
+   - The patch must not race. A host may set a value from its main thread
+     while `process()` runs, so in our build neither thread uses DPF's
+     plain parameter cache for input parameters: both read and write the
+     plugin's own value, which the Bridge keeps in atomics. The TSan job
+     runs that case against every bundle (`native_format_threads_vst3_*`).
+   - The fallback is not withdrawn. If a later validator or DPF update
+     fails in a way a small local patch does not fix, §1.2 applies as
+     written: the VST3 adapter moves to the MIT SDK, behind the same
+     `Bridge` (`plugins/native/format/include/sonora/native/format/bridge.h`).
+   - Every local patch is listed in SONORA.md and offered upstream.
+2. **§2.4, "Automation": with DPF, VST3 automation is block-accurate, not
+   sample-accurate.** §2.4 said the VST3 adapter passes VST3's sample
+   offsets through. DPF's VST3 wrapper does not (`DistrhoPluginVST3.cpp`,
+   `process()`, the two loops over `input_params` either side of `run()`):
+   - a queue's first point is applied before `run()`, and only when its
+     offset is 0;
+   - the queue's last point is applied after `run()`;
+   - so a change at an offset other than 0 takes effect in the **next**
+     block, one block late, and every point between the first and the
+     last is dropped.
+
+   At quantum 128 that is 2.67 ms late at 48 kHz, then smoothed: the
+   block-rate delivery §2.4 already accepts for LV2, accepted for VST3 on
+   the same terms. Sonora loads the LV2 build (§1.1), so this touches
+   other hosts and a future Windows Sonora only. Sample-accurate VST3
+   needs a DPF change or the MIT-SDK adapter. Either is a later amendment
+   and no processor change, because `Processor` already takes timestamped
+   events.

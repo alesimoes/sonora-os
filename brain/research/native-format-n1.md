@@ -54,17 +54,20 @@ adapter; the render against the preroll-aware reference is exact.
    separate-controller build does; 47 of 47 then pass. ADR-0011 §1.2 says a
    validator failure moves the VST3 adapter to the MIT SDK. Since the
    failure was one DPF bug with a small fix, the patch was taken instead;
-   the coordinator confirms or overrules that. Two more DPF patches are
-   metadata only (`pprops:notAutomatic` for lv2lint, and no third-party
-   namespace prefix in our TTL). All three are listed in
-   `plugins/native/format/third_party/dpf/SONORA.md`.
+   the coordinator accepted it on 2026-10-13 (ADR-0011 Amendment 2). On the
+   review of PR #40 the patch was narrowed so that it does not race with
+   `process()` (SONORA.md, patch 1). Three more DPF patches are metadata
+   only (`pprops:notAutomatic` for lv2lint, and no `dg:` or `mod:`
+   namespace in our TTL), and two harden the audio thread (a VST3 block
+   longer than promised is refused, and the bundles print nothing). All
+   six are listed in `plugins/native/format/third_party/dpf/SONORA.md`.
 2. **DPF's VST3 is not sample-accurate.** It applies the first point of a
    parameter queue at offset 0 before `run()` and the last point after it,
    so a change lands at a block boundary. ADR-0011 §2.4 says the VST3
    adapter passes VST3's offsets through; with DPF it cannot. At quantum 128
    with the processors' smoothing this is the same block-rate delivery
    LV2 has. Sample accuracy for VST3 needs either a DPF change or the MIT
-   SDK adapter.
+   SDK adapter. Accepted as block-rate delivery in ADR-0011 Amendment 2.
 3. **Parameters that reconfigure** (the EQ's mode, the limiter's
    look-ahead) take effect at the plugin's next activation, because their
    latency may only change off the audio thread (§1.5). A host that never

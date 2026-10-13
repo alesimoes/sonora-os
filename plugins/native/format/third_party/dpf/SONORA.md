@@ -4,9 +4,11 @@
 - Commit: `4238e1c7f0351bbe488d79f0899c540543ac7583` (branch `main`,
   2025-10-23, "Merge branch 'develop'")
 - Licence: ISC (`LICENSE`), Filipe Coelho. The LV2 headers under
-  `distrho/src/lv2/` are ISC (Steve Harris, David Robillard and others), the
-  VST3 interface definitions under `distrho/src/travesty/` are DPF's own,
-  ISC. `LICENSING.md` is upstream's per-format table.
+  `distrho/src/lv2/` are ISC (Steve Harris, David Robillard and others),
+  except `lv2_external_ui.h` and `lv2_rtmempool.h`, which their headers
+  place in the public domain. The VST3 interface definitions under
+  `distrho/src/travesty/` are DPF's own, ISC. `LICENSING.md` is upstream's
+  per-format table.
 - Why: ADR-0011 §1.2 (LV2 and VST3 from one source, behind
   `sonora::native::Processor`); `brain/research/open-data-and-dsp-sources.md`
   lists it as "copy now".
@@ -18,7 +20,8 @@ Only what an LV2 or VST3 plugin without a UI compiles:
 - `distrho/`: `DistrhoPlugin.hpp`, `DistrhoPluginMain.cpp`,
   `DistrhoDetails.hpp`, `DistrhoInfo.hpp`, `DistrhoPluginUtils.hpp`,
   `DistrhoStandaloneUtils.hpp`, `DistrhoUtils.hpp`, and `extra/*.hpp`
-  without the web view and file browser headers;
+  without the web view and file browser headers (`WebView*.hpp`,
+  `FileBrowserDialog*.hpp`; nothing we build includes them);
 - `distrho/src/`: the plugin core, the LV2 wrapper and TTL exporter, the VST3
   wrapper, `lv2/` and `travesty/`;
 - `utils/symbols/vst3.version`: the VST3 export list. The LV2 one is ours
@@ -39,20 +42,26 @@ Only what an LV2 or VST3 plugin without a UI compiles:
 
 ## Local changes
 
-Three, each marked `SONORA LOCAL PATCH` in the source. All three are worth
-offering upstream.
+Six, each marked `SONORA LOCAL PATCH` in the source. Patches 1 to 5 are
+worth offering upstream; 6 is ours.
 
-1. `distrho/src/DistrhoPluginVST3.cpp`, `setParameterNormalized()`: a
+1. `distrho/src/DistrhoPluginVST3.cpp`, `setParameterNormalized()`,
+   `getParamNormalized()` and `_setNormalizedPluginParameterValue()`: a
    plugin without a UI is one object that is both component and
    controller, and upstream drops a value the host sets on the controller.
    `getParamNormalized()` then never reflects it, and Steinberg's
    validator (3.8.1) fails "Parameter Bypass persistence" (1 of 47 tests;
-   the other 46 passed unpatched). The value is now taken the way the
-   separate-controller build takes it. With the patch, 47 of 47 pass for
-   every bundle. It means a host's main thread can reach
-   `Plugin::setParameterValue()` while `process()` runs on the audio
-   thread, as `setState()` already could upstream; our glue takes values
-   from any thread (`format/bridge.h`).
+   the other 46 passed unpatched). The value now goes to the plugin. A
+   host's main thread then reaches `Plugin::setParameterValue()` while
+   `process()` runs on the audio thread, so in this build
+   (`SONORA_DPF_VST3_VALUES_FROM_PLUGIN`: no UI, no separate controller)
+   neither side uses the plain `fCachedParameterValues[]` array for input
+   parameters any more: both read and write the plugin's own value, which
+   our glue keeps in atomics (`format/bridge.h`). Without that, the two
+   threads raced on the array, and a stale cached value could drop a later
+   automation point as "unchanged" (RT audit of PR #40). The TSan job runs
+   `native_format_threads_vst3_*` (`format/tests/linux/bundle_driver.cpp`)
+   over it. With the patch, 47 of 47 validator tests pass for every bundle.
 2. `distrho/src/DistrhoPluginLV2export.cpp`, non-automatable ports: the
    standard `pprops:notAutomatic` instead of KXStudio's private
    `NonAutomatable`, which lv2lint fails as an invalid port property.
@@ -60,8 +69,27 @@ offering upstream.
    maker's namespace prefix (`dg:`) is written only when a bundle uses its
    terms. Ours never do, and ADR-0011 §5 keeps third-party names out of
    bundle metadata.
+4. `distrho/src/DistrhoPluginLV2export.cpp`, the TTL header: the same for
+   MOD Devices' `mod:` prefix, written only when a bundle defines
+   `DISTRHO_PLUGIN_BRAND`, is a MOD build, or has a scaled CV port. Our
+   `DistrhoPluginInfo.h` defines no `DISTRHO_PLUGIN_BRAND`, which DPF uses
+   for nothing but `mod:brand` and `mod:label`, so our TTLs carry none of
+   MOD's vocabulary.
+5. `distrho/src/DistrhoPluginVST3.cpp`, `process()`: upstream clears its
+   dummy buffer for `nframes` samples whatever the `max_block_size` the
+   host promised in `setupProcessing()`, and before that call the buffer
+   does not exist. A block longer than promised, or one before setup, now
+   gets silence on the host's outputs and `V3_INVALID_ARG`, not a write
+   past the buffer (`native_format_oversize_vst3_*`, under ASan).
+6. `distrho/DistrhoUtils.hpp`: with `SONORA_DPF_QUIET`, which the bundle
+   targets define, `d_stdout`, `d_stderr` and `d_stderr2` print nothing.
+   The wrappers report malformed host input (a bad parameter id, an
+   unknown atom type, every `DISTRHO_SAFE_ASSERT`) from inside `run()` and
+   `process()`, and `fprintf` locks the stream and writes on the audio
+   thread. The checks still return or skip as upstream; the TTL generator
+   is built without the define and keeps DPF's messages.
 
-Updating is: copy the same file list from a newer commit, reapply the three
+Updating is: copy the same file list from a newer commit, reapply the six
 patches (or drop the ones upstream has taken), update the commit above,
 rebuild, and rerun the format tests, lv2lint and the VST3 validator
 (`tools/build-plugins.sh`).

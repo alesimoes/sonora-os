@@ -379,7 +379,28 @@ void lv2_generate_ttl(const char* const basename)
         pluginString += "@prefix foaf:  <http://xmlns.com/foaf/0.1/> .\n";
         pluginString += "@prefix lv2:   <" LV2_CORE_PREFIX "> .\n";
         pluginString += "@prefix midi:  <" LV2_MIDI_PREFIX "> .\n";
-        pluginString += "@prefix mod:   <http://moddevices.com/ns/mod#> .\n";
+        // SONORA LOCAL PATCH (third_party/dpf/SONORA.md, patch 4): MOD
+        // Devices' namespace only in bundles that write its terms (a brand,
+        // scaled CV ports, a MOD build's file types), as patch 3 does for
+        // dg:. Ours write none of them (ADR-0011 §5).
+        {
+            bool usesModNamespace = false;
+           #if defined(DISTRHO_PLUGIN_BRAND) || defined(__MOD_DEVICES__)
+            usesModNamespace = true;
+           #endif
+           #if DISTRHO_PLUGIN_NUM_INPUTS > 0
+            for (uint32_t i=0; i < DISTRHO_PLUGIN_NUM_INPUTS; ++i)
+                if (plugin.getAudioPort(true, i).hints & kCVPortHasScaledRange)
+                    usesModNamespace = true;
+           #endif
+           #if DISTRHO_PLUGIN_NUM_OUTPUTS > 0
+            for (uint32_t i=0; i < DISTRHO_PLUGIN_NUM_OUTPUTS; ++i)
+                if (plugin.getAudioPort(false, i).hints & kCVPortHasScaledRange)
+                    usesModNamespace = true;
+           #endif
+            if (usesModNamespace)
+                pluginString += "@prefix mod:   <http://moddevices.com/ns/mod#> .\n";
+        }
         pluginString += "@prefix opts:  <" LV2_OPTIONS_PREFIX "> .\n";
         pluginString += "@prefix pg:    <" LV2_PORT_GROUPS_PREFIX "> .\n";
         pluginString += "@prefix patch: <" LV2_PATCH_PREFIX "> .\n";

@@ -10,7 +10,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <new>
 #include <thread>
 #include <vector>
 
@@ -25,6 +27,21 @@
             return 1;                                                    \
         }                                                                \
     } while (0)
+
+// Every operator new in this test counts while `g_counting` is set: the
+// re-activation test below asserts that nothing allocates.
+namespace {
+std::atomic<bool> g_counting{false};
+std::atomic<long> g_allocations{0};
+}  // namespace
+
+void* operator new(std::size_t n) {
+    if (g_counting.load(std::memory_order_relaxed)) g_allocations.fetch_add(1, std::memory_order_relaxed);
+    if (void* p = std::malloc(n == 0 ? 1 : n)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -266,6 +283,76 @@ int test_bypass_keeps_latency() {
     return 0;
 }
 
+// DPF activates an instance lazily from inside the host's process call when
+// the host never did (DistrhoPluginInternal.hpp, PluginExporter::run;
+// DistrhoPluginVST3.cpp, process()), so activate() can run on the audio
+// thread. With nothing changed since the last prepare() it must not
+// allocate: it applies pending values as jumps and clears the signal
+// state, and the instance starts again as a first block (RT audit of
+// PR #40, "lazy activate"). The bundles are held to the same through DPF
+// by tests/linux/bundle_driver.cpp.
+int test_unchanged_activate_does_not_allocate() {
+    Bridge b(std::make_unique<Toy>(), 2);
+    b.set_value(kDelay, 8.0f);
+    CHECK(b.activate(48000.0, 128));
+    // An impulse still inside the delay line when the host re-activates: a
+    // reset clears it.
+    Chans imp(2, std::vector<float>(4, 0.0f));
+    imp[0][0] = 1.0f;
+    run_bridge(b, imp, 4);
+    b.set_value(kGain, 0.5f);
+
+    const Chans in = ramp_input(256);
+    Chans out(2, std::vector<float>(256, 7.0f));
+    const float* ip[2] = {in[0].data(), in[1].data()};
+    float* op[2] = {out[0].data(), out[1].data()};
+    g_allocations.store(0);
+    g_counting.store(true);
+    const bool ok = b.activate(48000.0, 128);
+    b.run(ip, op, 128, Transport{});
+    const float* ip2[2] = {in[0].data() + 128, in[1].data() + 128};
+    float* op2[2] = {out[0].data() + 128, out[1].data() + 128};
+    b.run(ip2, op2, 128, Transport{});
+    g_counting.store(false);
+    CHECK(ok);
+    CHECK(g_allocations.load() == 0);
+    CHECK(b.latency() == 8);
+    // Cleared (nothing of the impulse comes out), and the gain set while
+    // inactive is where the instance starts, not a ramp from 1.0.
+    for (std::uint32_t i = 0; i < 8; ++i) CHECK(out[0][i] == 0.0f);
+    for (std::uint32_t i = 8; i < 256; ++i) CHECK(out[0][i] == 0.5f * in[0][i - 8]);
+
+    // A host that never says how long its blocks are gets the same default
+    // every time, so its lazy activation is free as well.
+    CHECK(b.activate(48000.0, 0));
+    g_allocations.store(0);
+    g_counting.store(true);
+    const bool again = b.activate(48000.0, 0);
+    g_counting.store(false);
+    CHECK(again);
+    CHECK(g_allocations.load() == 0);
+    return 0;
+}
+
+// Anything prepare() depends on still prepares again: the rate, the block
+// size, and (test_reconfiguring_values_wait_for_activate) a reconfiguring
+// value.
+int test_changed_activate_prepares() {
+    Bridge b(std::make_unique<Toy>(), 2);
+    CHECK(b.activate(48000.0, 128));
+    g_allocations.store(0);
+    g_counting.store(true);
+    const bool rate = b.activate(96000.0, 128);
+    const long after_rate = g_allocations.load();
+    const bool block = b.activate(96000.0, 256);
+    const long after_block = g_allocations.load();
+    g_counting.store(false);
+    CHECK(rate && block);
+    CHECK(after_rate > 0);
+    CHECK(after_block > after_rate);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -278,6 +365,8 @@ int main() {
     failures += test_values_from_another_thread();
     failures += test_bridged_render_equals_direct_render();
     failures += test_bypass_keeps_latency();
+    failures += test_unchanged_activate_does_not_allocate();
+    failures += test_changed_activate_prepares();
     if (failures == 0) std::printf("native_format: all cases pass\n");
     return failures == 0 ? 0 : 1;
 }

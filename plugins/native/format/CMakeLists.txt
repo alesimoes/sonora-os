@@ -24,6 +24,10 @@ target_link_libraries(sonora_native_format PUBLIC sonora_native_sdk)
 # real processor (format must not depend on plugins/native/<name>).
 add_executable(test_native_format tests/test_bridge.cpp)
 target_link_libraries(test_native_format PRIVATE sonora_native_format Threads::Threads)
+# The test replaces operator new and delete with malloc and free to count
+# allocations; GCC flags the free() inside the replaced delete as a
+# mismatch, which it is not.
+target_compile_options(test_native_format PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>)
 add_test(NAME native_format COMMAND test_native_format)
 
 # Bundles are Linux-only for now, like the host that loads them. DPF itself
@@ -66,6 +70,18 @@ endif()
 
 # Every bundle target, so tests can depend on all of them at once.
 add_custom_target(sonora_native_bundles ALL)
+
+# Drives a bundle binary as a host would, where DPF's wrappers meet the
+# audio thread (the RT audit of PR #40): processing without activation must
+# not allocate, an oversized VST3 block is refused, and parameters set from
+# another thread do not race. Run per bundle below, and by the sanitizer
+# jobs. ENABLE_EXPORTS: the bundle must bind to the driver's counting
+# operator new.
+add_executable(sonora_native_bundle_driver tests/linux/bundle_driver.cpp)
+target_include_directories(sonora_native_bundle_driver SYSTEM PRIVATE ${SONORA_DPF_DIR}/distrho/src)
+target_link_libraries(sonora_native_bundle_driver PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+set_target_properties(sonora_native_bundle_driver PROPERTIES ENABLE_EXPORTS ON)
+target_compile_options(sonora_native_bundle_driver PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>)
 
 # sonora_native_plugin(<name> FACTORY <fn> DISPLAY <name> UID <4 chars>
 #                      LV2_CATEGORY <uri> VST3_CATEGORIES <list> [TIMEPOS])
@@ -112,7 +128,10 @@ function(sonora_native_plugin name)
     string(TOUPPER ${fmt} FMT)
     set(t sonora-${name}-${fmt})
     add_library(${t} MODULE ${dpf_sources} ${SONORA_FORMAT_DIR}/src/dpf/plugin.cpp ${gen}/entry.cpp)
-    target_compile_definitions(${t} PRIVATE DISTRHO_PLUGIN_TARGET_${FMT})
+    # SONORA_DPF_QUIET: no fprintf from DPF's wrappers on the audio thread
+    # (third_party/dpf/SONORA.md, patch 6). The bundle-files generator
+    # below keeps DPF's messages.
+    target_compile_definitions(${t} PRIVATE DISTRHO_PLUGIN_TARGET_${FMT} SONORA_DPF_QUIET)
     target_include_directories(${t} PRIVATE ${gen})
     target_include_directories(${t} SYSTEM PRIVATE ${SONORA_DPF_DIR}/distrho)
     target_link_libraries(${t} PRIVATE sonora_native_${name} sonora_native_format)
@@ -162,6 +181,16 @@ function(sonora_native_plugin name)
     COMMENT "Generating the descriptor of sonora-${name}.vst3"
     VERBATIM)
   add_dependencies(sonora-${name}-vst3 ${gen_t})
+
+  # The bundle binaries under the driver above. Named native_format_* so the
+  # TSan job, which skips the single-threaded native_* tests, runs these.
+  set(drive $<TARGET_FILE:sonora_native_bundle_driver>)
+  add_test(NAME native_format_lazy_lv2_${name}
+           COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${name}-lv2> --bundle ${lv2_bundle}/ --scenario lazy)
+  foreach(scenario lazy oversize threads)
+    add_test(NAME native_format_${scenario}_vst3_${name}
+             COMMAND ${drive} --vst3 $<TARGET_FILE:sonora-${name}-vst3> --scenario ${scenario})
+  endforeach()
 
   if(SONORA_LV2LINT)
     add_test(NAME native_lv2lint_${name}
