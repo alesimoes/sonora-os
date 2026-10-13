@@ -19,9 +19,12 @@ One line per entry. Agents read this before opening anything else.
 - [Multichannel USB interfaces](research/multichannel-usb-interfaces.md) — Pro Audio profile, WirePlumber state hooks, port ordering; what is verified and what is not.
 - [ADR-0007 measurements](research/adr-0007-measurements.md): the six "Unverified" items. RTSan is available (`clang-22` in trixie main; the default clang 19 lacks it). 8-byte atomics are lock-free on amd64 and arm64. Container IPC figures: socket and seqlock costs are fine, but a seqlock publisher must be paced and spinning at FIFO hits RT throttling. `snd-dummy model=rme9652` gives 26 ordered AUX ports in QEMU. cage maximizes parentless X11 editors.
 - [Pro Tools and Logic key bindings](research/protools-logic-key-bindings.md) — every binding in both profiles checked against Avid's and Apple's own guides; corrections, collisions, the Commands Keyboard Focus problem, and what the schema cannot express.
+- [USB stick layout](research/usb-stick-layout.md) — the ISO's MBR already has the ESP as partition 2, so persistence is 3; parted cannot edit it; the overlay lives in `home/rw`; `systemd.run=` needs `systemd.unit=` on this image.
 
 ## Postmortems
 - [2026-10-11 comment in a line continuation](postmortems/2026-10-11-comment-in-line-continuation.md) — dropped half a QEMU command line; bash -n cannot catch it. Also: an edit that reported success without landing.
 - [2026-10-11 ring buffer data race](postmortems/2026-10-11-ringbuffer-data-race.md) — producer used the consumer's memory ordering; every test passed, TSan did not.
 - [2026-10-11 RT kernel not default](postmortems/2026-10-11-rt-kernel-not-default.md) — the image installed the RT kernel but booted the generic one; no symptom except unexplained xruns.
+- [2026-10-12 write-usb.sh never run](postmortems/2026-10-12-write-usb-never-run.md) — would have erased the stick and stopped, or formatted the EFI partition; its guard offered to erase a Docker VM disk.
+- [2026-10-12 boot menu waits forever](postmortems/2026-10-12-boot-menu-waits-forever.md) — live-build's isolinux and GRUB templates have no timeout; no test ran a bootloader unattended.
 - [2026-10-11 debootstrap tar failure](postmortems/2026-10-11-livebuild-tar-failure.md) — live-build cannot build a chroot on a Windows bind mount; also caught a masked exit code and a missing engine install.

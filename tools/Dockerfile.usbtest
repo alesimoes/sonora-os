@@ -1,0 +1,20 @@
+# Environment for tools/test-write-usb.sh. Must run privileged: the test
+# attaches a disk image file as a loop device and partitions it.
+#
+# It carries exactly what tools/write-usb.sh calls, plus qemu-img to hand the
+# written image to QEMU and strace to check which syscalls the writer issues
+# on the device. A dependency the script grows without this file growing then
+# fails the test rather than a user.
+FROM debian:trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      util-linux \
+      fdisk \
+      e2fsprogs \
+      coreutils \
+      qemu-utils \
+      perl-base \
+      strace \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]

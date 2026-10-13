@@ -55,18 +55,33 @@ FIRMWARE=()
 if [[ "$MODE" == "uefi" ]]; then
   # The two boot paths are built from different configs in the ISO, so a
   # machine that boots one can fail on the other. Worth being able to try both.
+  #
+  # pflash, not -bios: -bios needs a size that is a multiple of 64 KiB, and
+  # edk2-x86_64-code.fd from QEMU for Windows is 0x37C000 bytes, so -bios made
+  # QEMU exit at once with "could not load PC BIOS". QEMU's own x86_64
+  # firmware descriptor pairs that code with edk2-i386-vars.fd.
   OVMF=""
-  for f in \
-    "/c/Program Files/qemu/share/edk2-x86_64-code.fd" \
-    "/usr/share/OVMF/OVMF_CODE.fd" \
-    "/usr/share/ovmf/OVMF.fd"; do
-    [[ -f "$f" ]] && OVMF="$f" && break
+  OVMF_VARS=""
+  for pair in \
+    "/c/Program Files/qemu/share/edk2-x86_64-code.fd:/c/Program Files/qemu/share/edk2-i386-vars.fd" \
+    "/usr/share/qemu/edk2-x86_64-code.fd:/usr/share/qemu/edk2-i386-vars.fd" \
+    "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd" \
+    "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd"; do
+    code="${pair%%:*}"
+    vars="${pair#*:}"
+    if [[ -f "$code" && -f "$vars" ]]; then OVMF="$code"; OVMF_VARS="$vars"; break; fi
   done
   if [[ -z "$OVMF" ]]; then
     echo "error: no OVMF firmware found; cannot test the UEFI path." >&2
     exit 1
   fi
-  FIRMWARE=(-bios "$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")")
+  # The vars store is written by the firmware, so it gets a private copy.
+  mkdir -p "$ROOT/build-qemu"
+  cp "$OVMF_VARS" "$ROOT/build-qemu/uefi-vars.fd"
+  FIRMWARE=(
+    -drive "if=pflash,format=raw,readonly=on,file=$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")"
+    -drive "if=pflash,format=raw,file=$(host_path "$ROOT/build-qemu")/uefi-vars.fd"
+  )
   echo "firmware: UEFI ($OVMF)"
 else
   echo "firmware: legacy BIOS (pass 'uefi' as the first argument for the other path)"
