@@ -18,6 +18,7 @@
 
 #include "sonora/audio_backend.h"
 #include "sonora/command.h"
+#include "sonora/exit_watchdog.h"
 #include "sonora/jack_backend.h"
 #include "sonora/keymap.h"
 #include "sonora/memory_lock.h"
@@ -41,6 +42,13 @@ std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
 void prepare_backend(const std::string& name) {
     if (name == "jack") sonora::JackBackend::prepare_process();
 }
+
+// How long leaving may take once the take is closed. jack_deactivate() and
+// jack_client_close() wait on the server, and a stalled one never answers.
+constexpr unsigned kTeardownSeconds = 5;
+constexpr const char* kTeardownHung =
+    "sonora: the audio server did not let go within 5 seconds; exiting"
+    " without it. The take was already closed.\n";
 
 struct TermiosGuard {
     termios saved{};
@@ -482,9 +490,15 @@ int main(int argc, char** argv) {
     // deactivates, and the callback never outlives what it calls into.
     const std::unique_ptr<AudioBackend> audio = make_backend("jack");
     std::string backend_error;
+    // Destroyed before `audio`, so every way out from here bounds the
+    // backend's teardown; the explicit deactivate() calls below arm it first
+    // themselves.
+    struct BoundedTeardown {
+        ~BoundedTeardown() { sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung); }
+    } const bounded_teardown;
     // open() refuses a server at any rate but the session's, since a
     // mismatch would write wrong-pitch files, and refuses to guess between
-    // two capture devices.
+    // two USB interfaces.
     if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 0,
                       cfg.sample_rate, capture_device},
                      session, backend_error) ||
@@ -541,6 +555,7 @@ int main(int argc, char** argv) {
     if (record_seconds > 0.0) {
         const int rc = run_headless(session, *audio, record_seconds, connected,
                                     capture_device, may_record);
+        sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
         audio->deactivate();
         return rc;
     }
@@ -672,6 +687,7 @@ int main(int argc, char** argv) {
     }
 
     session.stop();
+    sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
     audio->deactivate();
     std::printf("\nsonora: session written to %s\n", cfg.dir.c_str());
 
