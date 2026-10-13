@@ -7,6 +7,8 @@
   settled personally are §3 and opening Phase 3/4 work early (§10); both
   were answered 2026-10-12, put to the owner directly by the coordinating
   agent in that session.
+- Amended by the owner 2026-10-13: the §10 early-scope limit is lifted for
+  the Complete DAW milestone (dated note at the end of §10).
 
 ## Context
 
@@ -757,6 +759,29 @@ says so. The risks that set the scope:
 **The minimum contracts that keep that risk low:** `contracts/api` (M4),
 `contracts/backend` (M2) and a *written*, not coded, draft of the §4.3
 invariants. Nothing for interchange until the session format spec exists.
+
+**Owner amendment, 2026-10-13.** Given directly to the coordinating agent:
+"I want to see the product — the DAW running, recording, including plugins,
+like Logic and Pro Tools; then comes the OS to install", corrected the same
+day to "a complete product" with "all the features we have in Pro Tools and
+Logic". **The early Phase 3/4 scope limit above is lifted entirely for the
+Complete DAW milestone** (`planning/ROADMAP.md`). Concretely:
+
+- The UI squad may build timeline editing, playlists, comping, the mixer
+  and automation against `common/model` and `FakeEngine`. The mitigation
+  for "the UI invents a data model" still holds by other means: the UI
+  holds no model of its own, only `common/model` snapshots replicated by
+  ADR-0009's operations.
+- Plugin work may go into `engine/plugin_client` once M4 exists. §4.3's
+  invariants, the auditor's gate on anything the callback calls, and the
+  M9 plugin ADR after the IPC measurement all still apply.
+- "Phase 1 loses focus" no longer applies as written: the owner has put the
+  appliance (image, kiosk, USB stick, hardware exit) after the Complete DAW.
+  The hardware measurement rule above stands: when the UMC1820 is attached,
+  it outranks everything on the driver squad's list.
+
+The rest of this ADR is unchanged. Phase numbers cited here map to the
+roadmap's stages through its "Phase numbers before 2026-10-13" table.
 
 ## Rationale
 
