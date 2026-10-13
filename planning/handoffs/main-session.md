@@ -4,10 +4,10 @@ The coordinating session's handoff: what is in flight across branches. It
 lives as long as the project does; overwrite it at every stopping point.
 Each branch keeps its own detail in its own handoff file.
 
-- **State:** 2026-10-12, written to be true once the ADR-0008 PR has merged.
+- **State:** 2026-10-12, written to be true once the Qt shell PR (#10) has merged.
 
 ## Verify
-    git log --oneline -6 origin/main   # expected: ADR-0008 squash on top of e4f309a (#8)
+    git log --oneline -6 origin/main   # expected: the Qt shell squash on top of 0cedb56 (#9)
     tools/progress.sh --summary        # expected: one "Progress: N% overall" line
 
 ## Recently landed
@@ -17,11 +17,13 @@ Each branch keeps its own detail in its own handoff file.
 - #8: progress catalogue, `tools/progress.sh`, `planning/PROGRESS.md`.
 - ADR-0008: portability — platform code at the edges; ASIO is the future
   Windows backend; Linux appliance first (owner, 2026-10-12).
+- #10: Qt 6 shell — 18 scene-graph meters, transport status, key routing by
+  physical digit keys (US/AZERTY/ABNT2 synthetic tests); llvmpipe-only cost
+  figures, no GPU measurement yet; no compositor in the image yet.
 
 ## In flight
 - `contract/backend` — ADR-0007 M2, `rt-engineer`: device-selection policy
   (prefer USB, ignore onboard unless named) and final review fixes, then PR.
-- `feature/qt-shell` — `ui-engineer`: non-US keyboard fix, then PR.
 - `feature/usb-and-quantum-followups` — `distro-engineer`: pin quantum 128;
   `write-usb.sh` follow-ups.
 - `docs/phase2-session-timeline` — `architect`: session format + timeline spec.
