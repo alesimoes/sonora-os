@@ -53,12 +53,18 @@ public:
             std::memory_order_acq_rel);
     }
 
-    Fatal fatal() const noexcept {
-        return static_cast<Fatal>(state_.load(std::memory_order_acquire) >> 32);
+    struct State {
+        Fatal why;
+        uint32_t detail;
+    };
+    // A reader that wants both must take them from one load: fatal() then
+    // detail() can pair "none yet" with a raise that landed in between.
+    State state() const noexcept {
+        const uint64_t s = state_.load(std::memory_order_acquire);
+        return {static_cast<Fatal>(s >> 32), static_cast<uint32_t>(s)};
     }
-    uint32_t detail() const noexcept {
-        return static_cast<uint32_t>(state_.load(std::memory_order_acquire));
-    }
+    Fatal fatal() const noexcept { return state().why; }
+    uint32_t detail() const noexcept { return state().detail; }
 
     // The size the first admitted period set; 0 before it. Any thread.
     uint32_t frames() const noexcept {

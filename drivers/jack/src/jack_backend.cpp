@@ -398,8 +398,9 @@ bool JackBackend::fatal() const { return impl_->guard.check_stall(now_ns()); }
 
 std::string JackBackend::fatal_reason() const {
     const Impl& d = *impl_;
-    const uint32_t detail = d.guard.detail();
-    switch (d.guard.fatal()) {
+    const drivers::PeriodGuard::State state = d.guard.state();
+    const uint32_t detail = state.detail;
+    switch (state.why) {
         case Fatal::None:
             return {};
         case Fatal::ServerGone:

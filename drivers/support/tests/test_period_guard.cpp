@@ -188,6 +188,32 @@ int test_raise_from_another_thread() {
     return 0;
 }
 
+// fatal_reason() runs on the control thread while the audio thread or a
+// JACK callback raises. Reading the reason and the detail with two loads
+// could pair "none yet" with the raise that landed between them and print
+// "48000 -> 0 Hz"; state() reads both from one word.
+int test_state_is_one_reading() {
+    for (int round = 0; round < 200; ++round) {
+        PeriodGuard g;
+        g.expect_rate(kRate);
+        std::atomic<bool> go{false};
+        std::thread raiser([&] {
+            while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+            g.rate_reported(96000);
+        });
+        go.store(true, std::memory_order_release);
+        PeriodGuard::State s{};
+        do {
+            s = g.state();
+            CHECK(s.why != Fatal::None || s.detail == 0);
+        } while (s.why == Fatal::None);
+        raiser.join();
+        CHECK(s.why == Fatal::RateChanged);
+        CHECK(s.detail == 96000);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -202,6 +228,7 @@ int main() {
     if (test_stall_is_fatal() != 0) return 1;
     if (test_no_stall_unless_watched() != 0) return 1;
     if (test_raise_from_another_thread() != 0) return 1;
+    if (test_state_is_one_reading() != 0) return 1;
     std::printf("test_period_guard: ok\n");
     return 0;
 }
