@@ -30,6 +30,7 @@ add_subdirectory(common/json)
 add_subdirectory(common/audiofile)
 # The session document (ADR-0009), layer 1 beside common/audiofile.
 add_subdirectory(common/model)
+add_subdirectory(common/midi)
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
 add_subdirectory(contracts/api)
