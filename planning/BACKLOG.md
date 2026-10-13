@@ -3,7 +3,100 @@
 Ordered within each phase. An item is ready when someone could start it
 without asking a question.
 
-## Phase 1
+## Complete DAW (owner, 2026-10-13): critical path and parallel tracks
+
+The product first, the OS after (`planning/ROADMAP.md`). Stages are DAW 1 to
+DAW 11; the full feature list, with the Avid or Apple document each item's
+behaviour comes from, is the "Complete DAW" front of `planning/progress.json`.
+This section is the order. The older sections below keep their detail and
+are cross-referenced, not repeated.
+
+**Critical path:** M2 (`contract/backend`) → M3 fake backend → playback
+through the monitor bus → record while rolling with in-band take boundaries
+→ M4 control API with the §3 state block → Qt UI wired to M4 (DAW 2) →
+parallel graph and full mixer (DAW 4) → `engine/plugin_client` with PDC
+(DAW 5). The model (`common/json`, `common/model`) must land before
+playback can follow edits; it is in flight.
+
+### Track 1: engine (rt-engineer; driver-engineer for M3; auditor gates)
+
+1. [ ] M2 backend contract, `contract/backend` (in review).
+2. [ ] M3 `drivers/fake` and the conformance suite, with the two port-order
+       injections ("ADR-0007 follow-ups").
+3. [ ] Playback: disk reader, chunk pool, residency-gated plan swap, output
+       through the fixed 2-channel monitor bus (DAW 1 detail, below).
+4. [ ] Record while rolling with in-band take boundaries; punch, loop,
+       locate, pre-roll; input monitoring.
+5. [ ] M4: control API, wire codec, state block and `StateView` per
+       ADR-0007 §3, `InProcessEngine`, `FakeEngine`; removes the illegal
+       edges; then M5, M6.
+6. [ ] Take safety in DAW 1: 4 GB limit refused, periodic `fdatasync`, a
+       take that survives `kill -9`, bext date.
+7. [ ] M7 process split, during DAW 2.
+8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
+       (DAW 4).
+
+### Track 2: model (rt-engineer, ui-engineer review)
+
+1. [ ] `common/json` and `common/model`, in flight on
+       `feature/timeline-model`: snapshots, operations, undo, region
+       operations.
+2. [ ] ADR-0009 proxies before M8 merges: Unverified 3, 4, 6 as written; 5
+       and 7 on the laptop, labelled proxies (ADR-0009 update 2026-10-13).
+3. [ ] Session reader and writer; fades and crossfades; track types;
+       templates, autosave and backups.
+4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
+
+### Track 3: UI (ui-engineer)
+
+Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
+
+1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
+       edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
+       zoom; fades; clip gain; markers.
+2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
+3. [ ] Transport window and counters; tempo map and click display.
+4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
+       Focus; fix the `keymaps/default.json` comment and its embedded copy.
+5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
+
+### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
+
+1. [ ] Out-of-process LV2 host: scanning, validation, crash/hang/liar test
+       plugins, the host loop, and the shared-memory round-trip measurement
+       on the laptop (open now; nothing in `engine/` before M4).
+2. [ ] Plugin ADR (M9) from that measurement; `contracts/plugin`.
+3. [ ] `engine/plugin_client` and PDC, once M4 exists; a 2048-sample track
+       lands aligned (ctest).
+4. [ ] VST3, then yabridge; plugin manager, presets, editors under WSLg.
+5. [ ] Freeze, bounce in place, offline processing; the curated stock set.
+
+### Track 5: dev environment (distro-engineer, researcher)
+
+1. [ ] Measure WSLg audio from WSL2 Debian trixie: can PipeWire bridge to
+       WSLg's PulseAudio server for playback **and** capture, what quantum
+       holds with zero xruns over 10 minutes, round-trip latency. Assumption
+       until measured. researcher.
+2. [ ] `tools/dev-wsl.sh` when engine and UI are first connected: builds
+       engine and UI, starts PipeWire on onboard audio, runs both. Not
+       before.
+
+### Later stages, in order (detail in `progress.json`)
+
+DAW 6 MIDI and instruments, DAW 7 tempo/time/pitch, DAW 8 interchange,
+DAW 9 Logic creative tools and content, DAW 10 surfaces/sync/video, DAW 11
+surround. Researcher, before DAW 6: pin the Pro Tools Reference Guide
+edition (PT-RG) and check every `ref` in `progress.json` against it and
+LP-UG 12.3; flag any feature that is content rather than behaviour.
+
+## OS packaging (after the Complete DAW)
+
+Every section from here to "ADR-0010 display stack" that touches the image,
+the USB stick, QEMU or hardware is OS packaging (ROADMAP, Milestone 2). Do
+not start or extend those items before the Complete DAW closes (owner,
+2026-10-13). Engine items inside them (the bext date) are pulled into DAW 1.
+
+## Phase 1 (OS 1, after the Complete DAW)
 
 - [ ] Compile the engine on Debian trixie and fix what the compiler finds.
 - [ ] Run `ctest`; make the ring buffer and BWF tests pass.
@@ -53,7 +146,7 @@ without asking a question.
       minutes, so it belongs in a separate workflow on a schedule or manual
       dispatch rather than on every push.
 
-## Blocked on hardware the project does not have
+## Blocked on hardware the project does not have (OS 1; the UMC1820 is connected at the end)
 
 - [ ] Confirm the Pro Audio profile actually exposes every channel on the
       owner's Behringer UMC, and record the model and channel count in
@@ -65,10 +158,12 @@ without asking a question.
       read, futex versus eventfd wake. Include the cost of the wake syscall
       on the audio thread, and whether any xrun is attributable to a reader.
       Feeds the Phase 4 plugin ADR. See `brain/research/adr-0007-measurements.md`.
-- [ ] Measure before M8 (ADR-0009 Unverified 5): worst-case `process()` on
+- [ ] OS 1, proxy on the laptop before M8 merges (ADR-0009 update
+      2026-10-13). ADR-0009 Unverified 5: worst-case `process()` on
       the target machine with the UMC1820, 18 tracks × 2 voices plus 18
       inputs at quantum 128, pool and plans pre-faulted. rt-engineer.
-- [ ] Measure before M8 (ADR-0009 Unverified 7): undo-to-audible latency,
+- [ ] OS 1, proxy on the laptop before M8 merges. ADR-0009 Unverified 7:
+      undo-to-audible latency,
       p99 and max, on a real stick while 18 tracks record. rt-engineer.
 
 ## ADR-0007 follow-ups
@@ -98,7 +193,10 @@ without asking a question.
       popups, focus back to the UI, Xwayland lazy-start latency). Needed
       before the Phase 4 plugin ADR. researcher.
 
-## ADR-0010 display stack (accepted by the owner 2026-10-13)
+## ADR-0010 display stack (accepted by the owner 2026-10-13; OS 1, after the Complete DAW)
+
+The M4, M5 and doc items at the end of this section are DAW 1 work and are
+not deferred.
 
 - [ ] Stage 1, shipped boot unchanged: package block (`libpam-systemd labwc
       xwayland qt6-wayland` + Qt runtime), `/usr/share/sonora/labwc/`,
@@ -182,7 +280,7 @@ Order and owners are in ADR-0008 §5.
       record it in `brain/research/` with the GPL-3.0-or-later analysis.
       researcher.
 
-## Phase 2
+## DAW 1 detail (formerly Phase 2)
 
 - [ ] Playback path: read from disk into a ring, mix, feed the output ports.
 - [ ] Input monitoring with latency compensation measured by a loopback test.

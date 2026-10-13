@@ -369,6 +369,28 @@ Each names the measurement that settles it.
    lone clip through `SourceClip`'s fade properties, and what other DAWs
    emit. Researcher, before Phase 4.
 
+## Update, 2026-10-13: hardware measurements move after the Complete DAW
+
+The owner put the appliance and the UMC1820 at the end (`planning/ROADMAP.md`,
+2026-10-13), while `common/model` (M8) is already being written. Items 5 and
+7 say "before M8; needs hardware", and items 1, 2 and 8 need a physical
+stick. That order can no longer hold. The decision above is unchanged; only
+when its assumptions are checked moves:
+
+- **Before M8 merges, as labelled proxies:** items 3, 4 and 6 as written
+  (no hardware). Items 5 and 7 measured on the owner's laptop, under the
+  fake backend and under WSL2 with onboard audio, reported as proxies.
+- **In OS 1, on the UMC1820 and a physical stick:** items 1, 2, 5, 7 and 8
+  for real.
+
+What this costs if the late figures disagree: chunk size, residency window
+and fdatasync interval are parameters, so a bad item 1 or 8 is retuning. A
+bad item 5 (worst-case `process()` over budget at 18 tracks × 2 voices on
+the target machine) would mean the voice model or plan shape changes, after
+DAW 2 to 5 are built on it. That is the risk accepted by doing the product
+first. The proxy figure for item 5 is the early warning: if it uses more
+than half the block on the laptop, raise it before building on the plan.
+
 ## Alternatives rejected
 
 **Command pattern with hand-written inverses, over a mutable model.** It is

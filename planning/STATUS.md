@@ -3,8 +3,17 @@
 The single place to learn where the work stands. Any agent updates this at the
 end of its run. Keep it short: what is true now, not a diary.
 
-- **Updated:** 2026-10-12
-- **Current phase:** 1 — Bootable appliance
+- **Updated:** 2026-10-13
+- **Current focus:** the **Complete DAW** milestone, stage DAW 1 (engine
+  core, contracts, model). Owner, 2026-10-13: the whole product first, at
+  parity with the workflow Avid and Apple document for Pro Tools and Logic,
+  then OS packaging (`planning/ROADMAP.md`). Critical path: M2 → M3 fake
+  backend → playback through the monitor bus → record while rolling with
+  in-band take boundaries → M4 control API → Qt UI wired to M4. Model in
+  flight on `feature/timeline-model`. Development on the owner's laptop
+  under WSL2 with onboard audio; no ISO, QEMU, USB or installer work until
+  the product exists; the UMC1820 is connected at the end. The image work
+  below is done and parked, not abandoned.
 - **Build state:** the engine compiles clean under GCC 14 with `-Wall
   -Wextra` and all six unit tests pass (ringbuffer, wav_writer, takes,
   quit_signals, port_order, keymap), in the Debian trixie container built by
@@ -101,7 +110,9 @@ end of its run. Keep it short: what is true now, not a diary.
 
 ## Next decision needed from the owner
 
-None open. Decided 2026-10-12: Phase 2 playback starts with a fixed
+None open. Decided 2026-10-13: the Complete DAW comes before OS packaging,
+and ADR-0007 §10's early-scope limit is lifted for it (dated amendment in
+that ADR). Decided 2026-10-12: Phase 2 playback starts with a fixed
 2-channel monitor bus; the full mixer comes later on the same graph
 (`planning/ROADMAP.md`, Phase 2; `brain/specs/session-format.md`).
 ADR-0009 (timeline snapshots, residency-gated plan swap) accepted by the
