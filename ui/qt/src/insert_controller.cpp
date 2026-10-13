@@ -62,6 +62,39 @@ std::string slot_letter(int slot) {
     return std::string(1, static_cast<char>('A' + slot));
 }
 
+std::string short_plugin_name(const std::string& name, std::size_t max_chars) {
+    if (name.size() <= max_chars || max_chars == 0) return name.substr(0, max_chars);
+    // Words run together; remember where each starts, whose letter stays.
+    std::string s;
+    std::vector<bool> starts;
+    bool at_start = true;
+    for (const char c : name) {
+        if (c == ' ' || c == '-' || c == '_') {
+            at_start = true;
+            continue;
+        }
+        s.push_back(c);
+        starts.push_back(at_start);
+        at_start = false;
+    }
+    const auto vowel = [](char c) {
+        return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u';
+    };
+    for (std::size_t i = s.size(); i-- > 0 && s.size() > max_chars;) {
+        if (!starts[i] && vowel(s[i])) {
+            s.erase(i, 1);
+            starts.erase(starts.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
+    if (s.size() > max_chars) {
+        std::size_t cut = max_chars;
+        // Never through the middle of a UTF-8 sequence.
+        while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+        s.resize(cut);
+    }
+    return s;
+}
+
 // --- parameter values ------------------------------------------------------
 
 int param_step(const api::PluginParam& p, float value) {
@@ -406,10 +439,17 @@ void InsertController::copy(int ft, int fs, int tt, int ts, Done done) {
     }
     const Id source = in->id;
     const Id to_track = track(tt)->id;
-    doc_.flush_plugin_state(source, [this, source, to_track, ts, done](bool flushed,
-                                                                        const std::string& fw) {
-        // The document may have moved on while the engine answered: find
-        // both ends again by id.
+    const uint64_t generation = doc_.session_generation();
+    doc_.flush_plugin_state(source, [this, source, to_track, ts, done, generation](
+                                        bool flushed, const std::string& fw) {
+        // Another session arrived while the engine answered: its ids name
+        // other inserts and tracks, so nothing is copied.
+        if (doc_.session_generation() != generation) {
+            done(false, "the session was replaced while the copy waited for the plugin's "
+                        "state; nothing was copied");
+            return;
+        }
+        // The same session may have moved on: find both ends again by id.
         int from_index = -1;
         const Insert* src = find(source, &from_index);
         const int to_index = track_index(snapshot(), to_track);
@@ -441,13 +481,26 @@ void InsertController::copy(int ft, int fs, int tt, int ts, Done done) {
             return;
         }
         // The copy is the insert as it was, inactive or bypassed included.
-        // Not one undo step with the add (the model has no compound
-        // operation yet); undo takes the add back and leaves nothing behind.
-        if (!was_active) doc_.submit(SetInsertActive{op.insert, false}, why);
-        if (was_bypassed) doc_.submit(SetInsertBypass{op.insert, true}, why);
-        done(true, flushed ? std::string()
-                           : "copied with its last saved state, as the plugin's own could not "
-                             "be had: " + fw);
+        // Bypass is mix state, no undo step. Inactive is not: AddInsert has
+        // no `active` field (BACKLOG), so an inactive copy is two undo
+        // steps, the add (active) then SetInsertActive(false). The first
+        // Undo therefore leaves the copy in place and *active*, its plugin
+        // started; a second removes it. test_inserts pins this down until
+        // the contract carries `active`.
+        std::string caution;
+        if (!was_active && !doc_.submit(SetInsertActive{op.insert, false}, why)) {
+            caution = "the copy is active although the original is not (" + why + ")";
+        }
+        if (was_bypassed && !doc_.submit(SetInsertBypass{op.insert, true}, why)) {
+            caution += (caution.empty() ? "" : "; ") +
+                       std::string("the copy is not bypassed although the original is (") + why + ")";
+        }
+        if (!flushed) {
+            caution += (caution.empty() ? "" : "; ") +
+                       std::string("copied with its last saved state, as the plugin's own could "
+                                   "not be had: ") + fw;
+        }
+        done(true, caution);
     });
 }
 

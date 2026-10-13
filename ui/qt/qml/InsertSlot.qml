@@ -50,8 +50,12 @@ Rectangle {
         verticalAlignment: Text.AlignVCenter
         horizontalAlignment: s.present ? Text.AlignLeft : Text.AlignHCenter
         elide: Text.ElideRight
+        // A DemiBold caption letter is up to about 6.5 px wide: the name, or
+        // its short form (short_plugin_name) where the strip is too narrow.
+        readonly property int chars: Math.floor(width / 6.5) - (s.present && s.info.faulted ? 2 : 0)
         text: !s.present ? s.info.letter
-              : (s.info.faulted ? "! " : "") + s.info.name
+              : (s.info.faulted ? "! " : "")
+                + (s.inserts !== null ? s.inserts.shortName(s.info.name, chars) : s.info.name)
         color: !s.present ? Theme.textTertiary
                : s.info.faulted ? Theme.alarm
                : !s.info.active ? Theme.textSecondary
@@ -72,6 +76,19 @@ Rectangle {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         property point pressAt
         property bool dragged: false
+        // The whole name, and what is wrong, under the pointer.
+        onContainsMouseChanged: {
+            if (s.dragHost === null) return
+            if (!containsMouse || !s.present) {
+                s.dragHost.hideHint(s.track, s.slot)
+                return
+            }
+            const p = mapToItem(s.dragHost, 0, height)
+            s.dragHost.showHint(s.track, s.slot,
+                                s.info.name + (!s.info.active ? " (inactive)" : s.info.bypass ? " (bypassed)" : "")
+                                + (s.info.faulted ? "\n" + s.info.fault : ""),
+                                p.x, p.y, s.info.faulted)
+        }
         onPressed: (m) => {
             pressAt = Qt.point(m.x, m.y)
             dragged = false

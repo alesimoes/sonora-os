@@ -16,6 +16,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
+#include <algorithm>
 
 #include "insert_controller.h"
 
@@ -120,6 +121,11 @@ public:
     Q_INVOKABLE void paramReset(const QString& key);
 
     Q_INVOKABLE QString latencyText(qreal frames) const;
+    // short_plugin_name(), for a slot `chars` characters wide.
+    Q_INVOKABLE QString shortName(const QString& name, int chars) const {
+        return QString::fromStdString(
+            short_plugin_name(name.toStdString(), static_cast<std::size_t>(std::max(1, chars))));
+    }
 
 signals:
     void changed();

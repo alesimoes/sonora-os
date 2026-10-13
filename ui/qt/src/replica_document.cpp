@@ -118,6 +118,7 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     pending_.push_back(std::move(p));
     shown_ = model::History(std::move(s), shown_.budget());
     next_unreserved_ = 0;
+    ++session_generation_;
     return true;
 }
 
@@ -166,6 +167,10 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
                               const std::vector<api::CommandReply>& replies) {
     bool changed = false;
     for (const api::ModelUpdate& m : updates) {
+        // A whole document: possibly another session (another interface's
+        // Open), possibly this one again after a Resync. Either way, an id
+        // held across it is not to be trusted.
+        if (m.kind == api::ModelUpdateKind::Snapshot) ++session_generation_;
         std::string why;
         if (!replica_.receive(from_wire(m), why)) {
             // Lost track: the whole document again, undo window and all.

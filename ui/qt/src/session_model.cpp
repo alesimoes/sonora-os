@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "session_model.h"
 
+#include <QTimer>
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
@@ -433,17 +434,11 @@ bool has_inserts(const Snapshot& s) {
     return false;
 }
 
-// How long a save waits for the engine's FlushPluginState reply before a
-// second Save may write without it. The engine bounds each GetState itself
-// (ADR-0012 §8) and answers well inside this; past it the engine is wedged,
-// and the operator's session matters more than one plugin's latest state.
-constexpr qint64 kFlushPatienceMs = 10'000;
-
 }  // namespace
 
 bool SessionModel::saveSession(std::string& why) {
     if (save_waiting_) {
-        if (save_wait_.elapsed() < kFlushPatienceMs) {
+        if (save_wait_.elapsed() < flush_patience_ms_) {
             why = "a save is already waiting for the plugins' state from the engine";
             return false;
         }
@@ -488,6 +483,14 @@ bool SessionModel::saveSession(std::string& why) {
     }
     sync();
     emit notice(QStringLiteral("Saving: collecting the plugins' state from the engine"));
+    // Never left waiting in silence: once the patience is spent the
+    // operator is told what a second Save will do.
+    QTimer::singleShot(static_cast<int>(flush_patience_ms_), this, [this, ticket]() {
+        if (!save_waiting_ || ticket != save_ticket_) return;
+        emit refused(QStringLiteral(
+            "Not saved yet: the engine has not sent the plugins' state. Save again to write the "
+            "session without it; plugin settings would be as last recorded."));
+    });
     return true;
 }
 

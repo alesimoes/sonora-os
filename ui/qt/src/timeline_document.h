@@ -67,6 +67,10 @@ public:
     // with `why`, when the document's owner cannot be reached.
     virtual bool reset(model::Snapshot s, std::string& why) = 0;
     uint64_t revision() const { return snapshot().revision; }
+    // Changes whenever the document may have become another session (an
+    // Open here, or a whole document from the engine), whose ids mean other
+    // things: something that waited across it must not act on an id.
+    uint64_t session_generation() const { return session_generation_; }
 
     // Brings the document's plugin values up to date with the running
     // plugins (ADR-0012 §8, ModelAction::FlushPluginState): before File >
@@ -80,6 +84,9 @@ public:
         (void)insert;
         done(true, {});
     }
+
+protected:
+    uint64_t session_generation_ = 0;
 };
 
 // The document, held here. Undo is common/model's History: a pointer over

@@ -136,6 +136,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          reply before serialising (ADR-0012 §8), once a host can hold state.
          Done in the UI insert-slots PR (ADR-0012 checklist 6); Alt-drag
          copy flushes the source insert the same way.
+       - `active` on `AddInsert` (op codec, session-format and protocol
+         change; ui-engineer and rt-engineer co-review under ADR-0007 §6).
+         Until then an Alt-drag copy of an inactive insert is AddInsert
+         (active) then SetInsertActive(false): two undo steps, so the
+         first Undo leaves the copy active and starts its plugin, and the
+         engine starts a host only to stop it. test_inserts
+         `copy_of_an_inactive_insert` pins the current behaviour; flip it
+         when the field lands (review of PR #50, medium).
+       - Insert-slot mouse gestures per profile: Ctrl-click bypass,
+         Ctrl+Start-click inactive and Alt-drag copy are Pro Tools' and
+         apply under every key map, `logic.json` included. Logic's own
+         (Option-click bypass on a slot, among others) need a mouse section
+         in the key-map format (`keymaps/README.md`), as keys have; they
+         clash with no key binding meanwhile (review of PR #50, low).
 5. [ ] LV2 state save/restore, `worker:schedule`, presets; plugin manager;
        editors under WSLg (the host opens parentless X11 toplevels). VST3
        hosting is done (this PR, `brain/research/plugin-host-vst3.md`);

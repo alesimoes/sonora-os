@@ -255,6 +255,61 @@ int move_copy_remove() {
     return 0;
 }
 
+// The current behaviour, pinned until AddInsert carries `active` (BACKLOG,
+// review of PR #50): an inactive insert's copy is two undo steps, so one
+// Undo leaves the copy in place and active.
+int copy_of_an_inactive_insert() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.ctl().add(0, 0, kComp, why));
+    r.settle();
+    r.inserts.setActive(0, 0, false);
+    r.settle();
+    r.inserts.dropInsert(0, 0, 1, 0, true);
+    r.settle();
+    const SlotView copy = r.slot(1, 0);
+    CHECK(copy.present && !copy.active);
+    CHECK(r.session.controller().undo(why));
+    r.settle();
+    CHECK(r.slot(1, 0).present && r.slot(1, 0).active);   // the defect, as it stands
+    CHECK(r.session.controller().undo(why));
+    r.settle();
+    CHECK(!r.slot(1, 0).present);
+    CHECK(!r.slot(0, 0).active);   // the original is untouched throughout
+    std::printf("  copy of an inactive insert: ok\n");
+    return 0;
+}
+
+// A copy that waited for the plugin's state across another session's
+// arrival copies nothing: the ids it held name other things now.
+int copy_across_an_open() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.ctl().add(0, 0, kComp, why));
+    r.settle();
+    r.inserts.dropInsert(0, 0, 1, 0, true);   // the flush is on its way
+    model::Snapshot other = make_empty_session(4, 48000);
+    CHECK(r.doc.reset(other, why));
+    r.settle();
+    for (int t = 0; t < 4; ++t) CHECK(!r.slot(t, 0).present);
+    CHECK(!r.refused.empty() && r.refused.back().find("replaced") != std::string::npos);
+    std::printf("  copy across an open: ok\n");
+    return 0;
+}
+
+int short_names() {
+    CHECK(short_plugin_name("Fake Gain", 9) == "Fake Gain");
+    CHECK(short_plugin_name("Fake Compressor", 8) == "FkCmprss");
+    CHECK(short_plugin_name("Fake Compressor", 12) == "FakeComprssr");
+    CHECK(short_plugin_name("Plate Reverb", 9) == "PlateRvrb");
+    CHECK(short_plugin_name("Pro-Q 3", 6) == "ProQ3");
+    CHECK(short_plugin_name("Échelle", 3).size() <= 3);
+    std::printf("  short names: ok\n");
+    return 0;
+}
+
 int faults() {
     Rig r;
     CHECK(r.connect());
@@ -421,6 +476,22 @@ int save_flushes_first() {
     r.settle();
     CHECK(r.written.size() == 3);
     CHECK(r.notices.back().find("as last recorded") != std::string::npos);
+
+    // An engine that never answers: the operator is told once the patience
+    // is spent, and a second Save then writes without the plugins' state.
+    r.session.setFlushPatienceMs(50);
+    CHECK(r.ctl().add(2, 0, kGain, why));
+    r.settle();
+    r.fake.die();
+    const std::size_t refused_before = r.refused.size();
+    CHECK(r.session.saveSession(why) && r.session.saveWaiting());
+    QTest::qWait(120);
+    CHECK(r.refused.size() == refused_before + 1 &&
+          r.refused.back().find("Save again") != std::string::npos);
+    CHECK(r.written.size() == 3);
+    CHECK(r.session.saveSession(why));
+    CHECK(r.written.size() == 4 && !r.session.saveWaiting());
+    CHECK(r.notices.back().find("never sent") != std::string::npos);
     std::printf("  save flushes the plugins first: ok\n");
     return 0;
 }
@@ -524,6 +595,9 @@ int main(int argc, char** argv) {
     if (catalog_and_chooser() != 0) return 1;
     if (add_bypass_undo() != 0) return 1;
     if (move_copy_remove() != 0) return 1;
+    if (copy_of_an_inactive_insert() != 0) return 1;
+    if (copy_across_an_open() != 0) return 1;
+    if (short_names() != 0) return 1;
     if (faults() != 0) return 1;
     if (parameters_and_delay() != 0) return 1;
     if (save_flushes_first() != 0) return 1;

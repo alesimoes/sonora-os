@@ -106,6 +106,7 @@ Rectangle {
         property real gy: 0
 
         function beginDrag(track, slot, name) {
+            hint.visible = false
             fromTrack = track; fromSlot = slot; dragLayer.name = name
             targetTrack = -1; targetSlot = -1
             dragging = true
@@ -138,7 +139,43 @@ Rectangle {
             fromTrack = fromSlot = targetTrack = targetSlot = -1
         }
         function openMenu(track, slot, x, y) {
+            hint.visible = false
             slotMenu.show(track, slot, x, y)
+        }
+        function showHint(track, slot, text, x, y, alarm) {
+            if (dragging) return
+            hint.track = track; hint.slot = slot
+            hint.text = text; hint.alarm = alarm
+            hint.x = Math.max(Theme.space1, Math.min(x, mix.width - hint.width - Theme.space1))
+            hint.y = y + 2
+            hint.visible = true
+        }
+        function hideHint(track, slot) {
+            if (hint.track === track && hint.slot === slot) hint.visible = false
+        }
+
+        Rectangle {
+            id: hint
+            objectName: "insertHint"
+            property int track: -1
+            property int slot: -1
+            property string text
+            property bool alarm: false
+            visible: false
+            width: Math.min(280, hintText.implicitWidth + 2 * Theme.space2)
+            height: hintText.implicitHeight + 2 * Theme.space1
+            radius: Theme.radiusSmall
+            color: hint.alarm ? Theme.alarmSurface : Theme.panel
+            border.color: hint.alarm ? Theme.alarm : Theme.borderStrong
+            Text {
+                id: hintText
+                x: Theme.space2; y: Theme.space1
+                width: Math.min(implicitWidth, 280 - 2 * Theme.space2)
+                wrapMode: Text.Wrap
+                text: hint.text
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
         }
 
         Rectangle {

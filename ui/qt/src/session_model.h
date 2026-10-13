@@ -102,6 +102,12 @@ public:
     // not current.
     bool saveSession(std::string& why);
     bool saveWaiting() const { return save_waiting_; }
+    // How long a save waits for the engine's FlushPluginState reply before
+    // the operator is told, and a second Save may write without it. The
+    // engine bounds each GetState itself (ADR-0012 §8) and answers well
+    // inside this; past it the engine is wedged, and the session matters
+    // more than one plugin's latest state. Tests shorten it.
+    void setFlushPatienceMs(qint64 ms) { flush_patience_ms_ = ms; }
     // File > Open. Refused while a take is open, at another sample rate
     // than this session's, and over unsaved changes unless `discard`.
     bool openSessionFile(const QString& file, bool discard, std::string& why);
@@ -238,6 +244,7 @@ private:
     bool save_waiting_ = false;    // a save waits for the plugins' state
     uint64_t save_ticket_ = 0;     // which save a flush answers, so an abandoned one is ignored
     QElapsedTimer save_wait_;
+    qint64 flush_patience_ms_ = 10'000;
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");

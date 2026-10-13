@@ -143,6 +143,8 @@ void InsertModel::slotClicked(int track, int slot, int modifiers) {
         openBrowser(track, slot);
         return;
     }
+    // Pro Tools' gestures under every key-map profile: the key-map format
+    // has no mouse section yet (BACKLOG, insert-slot mouse gestures).
     const bool ctrl = (modifiers & Qt::ControlModifier) != 0;
     const bool start = (modifiers & Qt::MetaModifier) != 0;
     std::string why;

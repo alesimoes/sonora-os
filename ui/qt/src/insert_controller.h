@@ -58,6 +58,13 @@ struct SlotView {
     bool has_catalog_entry = false;   // the catalog knows the plugin
 };
 
+// A plugin name in at most `max_chars` characters, for a slot on a narrow
+// strip: the name itself when it fits; else its words run together and
+// their inner lower-case vowels dropped from the end until it fits
+// ("Fake Compressor" in 8 is "FkCmprss"); else cut. A slot is ten
+// characters wide at 18 strips, and "Fake C..." names nothing.
+std::string short_plugin_name(const std::string& name, std::size_t max_chars);
+
 // The value text a parameter shows, and where it sits on its control:
 // labels for stepped values, On/Off for a toggle, the number and its unit
 // for a continuous one. A VST3 continuous value is normalised (ADR-0012
@@ -129,8 +136,10 @@ public:
     // Alt-drag: the plugin and its values onto another slot, a new insert.
     // The source's state is flushed from its running plugin first, so the
     // copy holds what the operator hears. `done` runs once, now or after
-    // the engine answers; on success its text is a caution when the state
-    // could not be had and the copy took the last saved one.
+    // the engine answers; on success its text is a caution when the copy
+    // differs from its source (a follow-up step refused) or took the last
+    // saved state because the plugin's own could not be had. A copy whose
+    // wait spans another session arriving copies nothing.
     using Done = std::function<void(bool ok, const std::string& text)>;
     void copy(int from_track, int from_slot, int to_track, int to_slot, Done done);
     bool set_active(int track, int slot, bool active, std::string& why);
