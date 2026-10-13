@@ -25,3 +25,14 @@
             return 1;                                                               \
         }                                                                           \
     } while (0)
+
+// SONORA_DSP_QUICK=1 (PR CI and the sanitizer builds): the slow tests
+// (ctest label "slow") run one rate and one setting instead of every one.
+// The nightly workflow runs them in full.
+#include <cstdlib>
+#include <cstring>
+
+inline bool dsp_quick() {
+    const char* q = std::getenv("SONORA_DSP_QUICK");
+    return q != nullptr && std::strcmp(q, "1") == 0;
+}

@@ -59,6 +59,33 @@ int test_latency_is_exact() {
     return 0;
 }
 
+// up_delay() is what a detector reading the oversampled signal aligns
+// with: an impulse at base sample n peaks at top-rate index F n + up_delay().
+int test_up_delay_is_exact() {
+    for (std::uint32_t f : kFactors) {
+        for (double pass : {0.4535, 0.49}) {
+            Oversampler os;
+            CHECK(os.prepare(f, 1, 128, pass, 80.0));
+            std::vector<float> in(1024, 0.0f);
+            in[300] = 1.0f;
+            std::vector<double> hi;
+            for (std::size_t pos = 0; pos < in.size(); pos += 128) {
+                const double* h = os.up(0, &in[pos], 128);
+                hi.insert(hi.end(), h, h + 128 * f);
+            }
+            std::size_t peak = 0;
+            for (std::size_t i = 0; i < hi.size(); ++i) {
+                if (std::fabs(hi[i]) > std::fabs(hi[peak])) peak = i;
+            }
+            const long measured = static_cast<long>(peak) - 300L * static_cast<long>(f);
+            std::printf("oversampling %ux, passband %.4f fs: up_delay %u, measured %ld\n", f, pass,
+                        os.up_delay(), measured);
+            CHECK(measured == static_cast<long>(os.up_delay()));
+        }
+    }
+    return 0;
+}
+
 double sine_gain_db(Oversampler& os, double fs, double freq) {
     const std::size_t n = 16384;
     std::vector<float> in(n);
@@ -142,6 +169,7 @@ int test_oversampling_reduces_aliasing() {
 int main() {
     int failed = 0;
     failed += test_latency_is_exact();
+    failed += test_up_delay_is_exact();
     failed += test_passband_is_flat();
     failed += test_oversampling_reduces_aliasing();
     if (failed != 0) {

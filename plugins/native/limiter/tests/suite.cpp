@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The limiter against its bars: zero true-peak overs on a band-limited
-// stress set measured by a 16x reference finer than the limiter's own
-// detector, transparency below the ceiling, release from a step test,
-// aliasing on steady tones, and the common checks.
+// The limiter against its bars: zero true-peak overs on a stress set, full-
+// band white noise included, read both by the BS.1770 4x meter and by a 16x
+// reference finer than any detector of ours; transparency below the
+// ceiling; release from a step test; aliasing on steady tones; what the
+// true-peak guard adds on those tones against the first stage alone; and
+// the common checks.
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <string>
+#include <vector>
 
+#include "sonora/dsp/limiter.h"
 #include "sonora/dsp/math.h"
 #include "sonora/measure/measure.h"
 #include "sonora/native/limiter.h"
@@ -58,30 +63,48 @@ std::vector<Stress> stress() {
              measure::band_limit_and_fade(x, fs);
              return x;
          }},
+        // Not band-limited and not faded: full scale up to Nyquist with an
+        // abrupt start, the case the look-ahead stage alone let through.
+        {"full-band white noise, +12 dB", [](double fs) { return measure::noise(fs, 12.0, 1.0, 99u); }},
+        {"full-band white noise, +24 dB", [](double fs) { return measure::noise(fs, 24.0, 1.0, 7u); }},
     };
 }
 
 void ceiling(Suite& s) {
-    double worst = -1e9;
-    int overs = 0;
-    for (double fs : measure::kRates) {
-        for (double ceil_db : {-1.0, -0.1}) {
+    double worst_ref = -1e9, worst_meter = -1e9;
+    int overs = 0, runs = 0;
+    const std::vector<double> rates = measure::quick() ? std::vector<double>{48000.0}
+                                                       : std::vector<double>{44100.0, 48000.0, 96000.0};
+    const std::vector<double> ceilings = measure::quick() ? std::vector<double>{-1.0} : std::vector<double>{-1.0, -0.1};
+    for (double fs : rates) {
+        for (double ceil_db : ceilings) {
             for (const Stress& st : stress()) {
                 auto p = s.make();
                 measure::apply(*p, {{"ceiling", static_cast<float>(ceil_db)}, {"release", 20.0f}});
                 p->prepare(fs, 128, 2);
-                const Chans y = measure::render(*p, st.make(fs));
-                double tp = 0.0;
-                for (const auto& c : y) tp = std::fmax(tp, measure::reference_true_peak(c, dsp::db_to_gain(ceil_db - 6.0)));
-                const double margin = dsp::gain_to_db(tp) - ceil_db;
-                worst = std::fmax(worst, margin);
-                if (margin > 0.0) ++overs;
+                // Silence after the signal, so the output holds all of it
+                // rather than ending mid-signal in a step of its own.
+                const Chans y = measure::render(
+                    *p, measure::concat({st.make(fs), measure::silence(fs, (p->latency() + 1024) / fs)}));
+                double ref = 0.0, met = 0.0;
+                for (const auto& c : y) {
+                    ref = std::fmax(ref, measure::reference_true_peak(c, dsp::db_to_gain(ceil_db - 1.0)));
+                    met = std::fmax(met, measure::meter_true_peak(c));
+                }
+                const double m_ref = dsp::gain_to_db(ref) - ceil_db;
+                const double m_met = dsp::gain_to_db(met) - ceil_db;
+                worst_ref = std::fmax(worst_ref, m_ref);
+                worst_meter = std::fmax(worst_meter, m_met);
+                if (m_ref > 0.0 || m_met > 0.0) ++overs;
+                ++runs;
             }
         }
     }
-    s.check("true-peak overs above the ceiling (16x reference; 5 signals x 2 ceilings x 3 rates)",
+    s.check("true-peak overs above the ceiling, 16x reference and BS.1770 meter (" + std::to_string(runs) +
+                " runs" + (measure::quick() ? ", quick" : "") + ")",
             overs, 0.0, overs == 0, "count");
-    s.info("highest output true peak relative to the ceiling", worst, "dB", "target is 0.05 dB under");
+    s.info("highest output true peak relative to the ceiling, 16x reference", worst_ref, "dB", "target is 0.05 dB under");
+    s.info("highest output true peak relative to the ceiling, BS.1770 meter", worst_meter, "dB", "target is 0.05 dB under");
 }
 
 void transparency(Suite& s) {
@@ -146,6 +169,37 @@ void aliasing(Suite& s) {
     }
 }
 
+// What the true-peak guard adds, on record: THD+N and non-harmonic energy
+// of the processor (both stages) against the look-ahead stage alone, at
+// the processor's defaults, on tones 6 dB over the ceiling. The guard
+// acts by gain, so on a steady tone it can only add the sidebands of its
+// own ramps; the aliasing bar above applies to the whole chain.
+void guard_cost(Suite& s) {
+    const double fs = 48000.0;
+    for (double f : {1000.0, 5000.0, 10000.0, 15000.0, 19000.0}) {
+        const Chans x = measure::sine(fs, f, 5.0, 1.5);
+        auto p = s.make();
+        measure::apply(*p, {{"ceiling", -1.0f}});
+        p->prepare(fs, 128, 2);
+        const Chans chain = measure::render(*p, x);
+        dsp::LookaheadLimiter alone;
+        alone.prepare(fs, 2, static_cast<std::uint32_t>(std::lround(1.5e-3 * fs)));
+        alone.set_ceiling(dsp::db_to_gain(-1.0));
+        alone.set_release(0.05);
+        Chans first = x;
+        for (std::size_t pos = 0; pos < first[0].size(); pos += 128) {
+            const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(128, first[0].size() - pos));
+            float* io[2] = {&first[0][pos], &first[1][pos]};
+            alone.process(io, n);
+        }
+        const std::string at = std::to_string(static_cast<int>(f)) + " Hz 6 dB over the ceiling";
+        s.info("THD+N, " + at + ", both stages", measure::thdn_db(chain[0], 38400, fs, f), "dB",
+               "first stage alone " + std::to_string(measure::thdn_db(first[0], 38400, fs, f)) + " dB");
+        s.info("non-harmonic energy, " + at + ", both stages", measure::alias_dbc(chain[0], 38400, fs, f), "dBc",
+               "first stage alone " + std::to_string(measure::alias_dbc(first[0], 38400, fs, f)) + " dBc");
+    }
+}
+
 }  // namespace
 
 int limiter(const measure::Args& args) {
@@ -154,6 +208,7 @@ int limiter(const measure::Args& args) {
     transparency(s);
     release(s);
     aliasing(s);
+    guard_cost(s);
     const Config golden = {{"input", 9.0f}, {"ceiling", -1.0f}, {"release", 40.0f}};
     // The tone at -6 dBFS through 12 dB of drive is limited throughout, so
     // every swept parameter changes the gain the tone gets.

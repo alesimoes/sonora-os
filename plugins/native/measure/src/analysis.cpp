@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cmath>
 #include <complex>
+#include <cstdlib>
+#include <cstring>
 
 #include "sonora/dsp/biquad.h"
 #include "sonora/dsp/fft.h"
 #include "sonora/dsp/math.h"
+#include "sonora/dsp/reference_peak.h"
+#include "sonora/dsp/true_peak.h"
 #include "sonora/measure/measure.h"
 
 namespace sonora::measure {
@@ -128,33 +132,22 @@ double hf_residue_peak(const std::vector<float>& y, double fs, std::size_t from)
 }
 
 double reference_true_peak(const std::vector<float>& y, double near_level) {
-    const int half = 256, over = 16;
-    static std::vector<double> table;
-    if (table.empty()) {
-        const double beta = dsp::kaiser_beta(120.0);
-        table.resize(over * (2 * half) + 1);
-        for (int i = 0; i <= over * 2 * half; ++i) {
-            const double t = static_cast<double>(i) / over - half;
-            const double sn = t == 0.0 ? 1.0 : std::sin(kPi * t) / (kPi * t);
-            table[i] = sn * dsp::kaiser(t / half, beta);
-        }
-    }
-    double pk = 0.0;
-    const long n = static_cast<long>(y.size());
-    for (long k = 0; k + 1 < n; ++k) {
-        pk = std::fmax(pk, std::fabs(y[k]));
-        if (std::fmax(std::fabs(y[k]), std::fabs(y[k + 1])) < near_level) continue;
-        for (int p = 1; p < over; ++p) {
-            double acc = 0.0;
-            for (int j = -half + 1; j <= half; ++j) {
-                const long idx = k + j;
-                if (idx < 0 || idx >= n) continue;
-                acc += y[idx] * table[(half - j) * over + p];
-            }
-            pk = std::fmax(pk, std::fabs(acc));
-        }
-    }
-    return pk;
+    return dsp::reference_true_peak(y.data(), y.size(), near_level);
+}
+
+double meter_true_peak(const std::vector<float>& y) {
+    dsp::TruePeakDetector tp;
+    tp.prepare(1);
+    double m = 0.0;
+    for (float v : y) m = std::fmax(m, tp.process(0, v));
+    // Flush the interpolator, so peaks in the last samples are read too.
+    for (std::uint32_t i = 0; i < 2 * tp.delay(); ++i) m = std::fmax(m, tp.process(0, 0.0));
+    return m;
+}
+
+bool quick() {
+    const char* q = std::getenv("SONORA_DSP_QUICK");
+    return q != nullptr && std::strcmp(q, "1") == 0;
 }
 
 }  // namespace sonora::measure

@@ -66,6 +66,7 @@ bool Oversampler::prepare(std::uint32_t factor, std::uint32_t channels,
     stages_.assign(s_count, Stage{});
     taps_.assign(s_count, 0);
     std::uint64_t top_delay = 0;
+    std::uint64_t up_delay = 0;
     for (std::uint32_t s = 0; s < s_count; ++s) {
         const double rate = static_cast<double>(2u << s);  // output rate / base
         const double df = ((1u << s) - 2.0 * passband_ratio) / rate;
@@ -76,7 +77,11 @@ bool Oversampler::prepare(std::uint32_t factor, std::uint32_t channels,
         stages_[s].even = halfband_even_taps(k, beta);
         taps_[s] = 4 * k - 1;
         top_delay += static_cast<std::uint64_t>(2 * k - 1) << (s_count - s);
+        // On the way up alone, a stage delays by 2k - 1 samples at its
+        // output rate.
+        up_delay += static_cast<std::uint64_t>(2 * k - 1) << (s_count - 1 - s);
     }
+    up_delay_ = static_cast<std::uint32_t>(up_delay);
     const std::uint64_t top = std::uint64_t{1} << s_count;
     pad_ = static_cast<std::uint32_t>((top - top_delay % top) % top);
     latency_ = static_cast<std::uint32_t>((top_delay + pad_) / top);

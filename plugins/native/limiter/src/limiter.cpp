@@ -2,6 +2,7 @@
 #include "sonora/native/limiter.h"
 
 #include <cmath>
+#include <vector>
 
 #include "sonora/dsp/limiter.h"
 #include "sonora/dsp/math.h"
@@ -15,6 +16,11 @@ using namespace limiter;
 
 const char* const kOffOn[] = {"off", "on"};
 const char* const kLinks[] = {"unlinked", "linked"};
+
+// The guard's own look-ahead: long enough that its ramps put little energy
+// near Nyquist (2 ms measured no better on full-band noise), short enough
+// to keep the chain's latency down.
+constexpr double kGuardLookaheadSeconds = 0.001;
 
 const ParamInfo kParams[kParamCount] = {
     kBypassParam,
@@ -37,16 +43,28 @@ public:
 protected:
     bool on_prepare() override {
         const auto la = static_cast<std::uint32_t>(std::lround(value(kLookahead) * 1e-3 * sample_rate()));
+        const auto gla = static_cast<std::uint32_t>(std::lround(kGuardLookaheadSeconds * sample_rate()));
         if (!lim_.prepare(sample_rate(), channels(), la)) return false;
-        set_latency(lim_.latency());
+        if (!guard_.prepare(sample_rate(), channels(), max_frames(), gla)) return false;
+        ceiling_.assign(max_frames(), 1.0);
+        set_latency(lim_.latency() + guard_.latency());
         return true;
     }
 
-    void on_reset() noexcept override { lim_.reset(); }
+    void on_reset() noexcept override {
+        lim_.reset();
+        guard_.reset();
+    }
 
     void on_param(std::uint32_t index, bool) noexcept override {
-        if (index == kTruePeak) lim_.set_true_peak(value(kTruePeak) >= 0.5f);
-        if (index == kLink) lim_.set_linked(value(kLink) >= 0.5f);
+        if (index == kTruePeak) {
+            lim_.set_true_peak(value(kTruePeak) >= 0.5f);
+            guard_.set_true_peak(value(kTruePeak) >= 0.5f);
+        }
+        if (index == kLink) {
+            lim_.set_linked(value(kLink) >= 0.5f);
+            guard_.set_linked(value(kLink) >= 0.5f);
+        }
     }
 
     void render(const float* const* in, float* const* out, const float* const*, std::uint32_t,
@@ -55,19 +73,29 @@ protected:
         float frame[dsp::LookaheadLimiter::kMaxChannels];
         for (std::uint32_t i = 0; i < frames; ++i) {
             const double drive = dsp::db_to_gain(smoother(kInput).next());
-            lim_.set_ceiling(dsp::db_to_gain(smoother(kCeiling).next()));
+            ceiling_[i] = dsp::db_to_gain(smoother(kCeiling).next());
+            lim_.set_ceiling(ceiling_[i]);
             // The release coefficient is an exp(); recomputed only while
             // the release is being moved.
-            if (smoother(kRelease).moving() || i == 0) lim_.set_release(smoother(kRelease).next() * 1e-3);
-            else smoother(kRelease).next();
+            if (smoother(kRelease).moving() || i == 0) {
+                const double r = smoother(kRelease).next() * 1e-3;
+                lim_.set_release(r);
+                guard_.set_release(r);
+            } else {
+                smoother(kRelease).next();
+            }
             for (std::uint32_t c = 0; c < chs; ++c) frame[c] = static_cast<float>(in[c][i] * drive);
             lim_.process_frame(frame);
             for (std::uint32_t c = 0; c < chs; ++c) out[c][i] = frame[c];
         }
+        // The ceiling guarantee, on what the look-ahead stage made.
+        guard_.process(out, ceiling_.data(), frames);
     }
 
 private:
     dsp::LookaheadLimiter lim_;
+    dsp::TruePeakGuard guard_;
+    std::vector<double> ceiling_;  // per sample of the block, sized in prepare
 };
 
 }  // namespace

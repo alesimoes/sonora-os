@@ -45,6 +45,12 @@ public:
     std::uint32_t factor() const noexcept { return factor_; }
     // Round-trip delay (up then down), in base-rate samples.
     std::uint32_t latency() const noexcept { return latency_; }
+    // Delay of up() alone, in samples at the top rate (factor x base):
+    // base-rate sample n appears at top-rate index factor * n + up_delay().
+    // Not always a multiple of the factor, so a detector that reads the
+    // oversampled signal without coming back down (TruePeakGuard in
+    // limiter.h) aligns itself with this rather than with latency().
+    std::uint32_t up_delay() const noexcept { return up_delay_; }
     // Taps per stage, first stage first. For reports.
     const std::vector<std::uint32_t>& stage_taps() const noexcept { return taps_; }
 
@@ -77,6 +83,7 @@ private:
 
     std::uint32_t factor_ = 1;
     std::uint32_t latency_ = 0;
+    std::uint32_t up_delay_ = 0;
     std::uint32_t pad_ = 0;
     std::vector<Stage> stages_;
     std::vector<std::uint32_t> taps_;

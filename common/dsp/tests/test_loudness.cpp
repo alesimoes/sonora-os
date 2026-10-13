@@ -349,7 +349,10 @@ int test_tech3342_lra(double fs) {
 int main() {
     int failed = 0;
     failed += test_k_weighting_coefficients();
-    for (double fs : {44100.0, 48000.0, 96000.0}) {
+    // Slow (ctest label): one rate under SONORA_DSP_QUICK=1, all three nightly.
+    const std::vector<double> rates = dsp_quick() ? std::vector<double>{48000.0}
+                                                  : std::vector<double>{44100.0, 48000.0, 96000.0};
+    for (double fs : rates) {
         failed += test_tech3341_integrated(fs);
         failed += test_tech3341_short_term_and_momentary(fs);
         failed += test_tech3341_true_peak(fs);

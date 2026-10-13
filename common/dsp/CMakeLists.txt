@@ -15,6 +15,7 @@ add_library(sonora_dsp STATIC
   src/limiter.cpp
   src/loudness.cpp
   src/oversampling.cpp
+  src/reference_peak.cpp
   src/true_peak.cpp
   src/arch/${SONORA_DSP_ARCH}/denormals.cpp
 )
@@ -32,3 +33,7 @@ foreach(t filters oversampling loudness dynamics limiter)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   add_test(NAME dsp_${t} COMMAND test_dsp_${t})
 endforeach()
+# The two slow ones (tens of seconds in Release, minutes under ASan) carry
+# the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one
+# setting), the nightly workflow runs `ctest -L slow` in full.
+set_tests_properties(dsp_limiter dsp_loudness PROPERTIES LABELS slow)

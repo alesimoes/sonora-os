@@ -86,9 +86,17 @@ long xcorr_lag(const std::vector<float>& in, const std::vector<float>& out, long
 // or a click shows up here, a smooth change of a 100 Hz tone does not.
 double hf_residue_peak(const std::vector<float>& y, double fs, std::size_t from = 0);
 // 16x true peak, Kaiser-windowed sinc +-256 taps (finer, and longer, than
-// any detector of ours), evaluated between samples where either neighbour
-// reaches near_level; elsewhere a reconstruction cannot reach the ceiling.
+// any detector of ours), exact wherever it reaches near_level
+// (common/dsp/reference_peak.h says how it finds those places).
 double reference_true_peak(const std::vector<float>& y, double near_level);
+// What a BS.1770-5 Annex 2 meter reads: common/dsp's meter detector, 4x
+// and 32 taps per phase, as loudness.h runs it.
+double meter_true_peak(const std::vector<float>& y);
+
+// SONORA_DSP_QUICK=1: the slow sweeps (the limiter's stress set) run one
+// rate and one setting instead of all of them. PR CI and the sanitizer
+// builds set it; the nightly workflow does not.
+bool quick();
 
 // ---- golden files ------------------------------------------------------------
 
