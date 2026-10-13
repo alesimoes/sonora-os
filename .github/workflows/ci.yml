@@ -57,8 +57,9 @@ jobs:
       # tools/build-ui-entrypoint.sh fails before building if any UI test is
       # not registered: ui/qt skips itself when Qt is missing or too old, and
       # a green job that ran no UI test would say the interface was tested.
-      # The pixel test (ui_render) runs under xvfb-run on llvmpipe. --measure
-      # is not run here: it is slow and only meaningful on the target.
+      # The pixel test (ui_render) runs on a private Xvfb and llvmpipe.
+      # --measure is not run here: it is slow and only meaningful on the
+      # target.
       - name: Build and test, the UI tests included
         env:
           SONORA_UI_IMAGE_BUILT: "1"

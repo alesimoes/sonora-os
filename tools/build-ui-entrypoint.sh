@@ -14,7 +14,7 @@ UI="$BUILD/sonora-ui"
 
 cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
 
-# ui/qt skips itself when Qt or xvfb-run is missing, which is right for
+# ui/qt skips itself when Qt or Xvfb is missing, which is right for
 # tools/build-engine.sh and wrong here: this image exists to run the UI tests,
 # and a green run that registered none would say the interface was tested.
 listed=$(ctest --test-dir "$BUILD" -N)

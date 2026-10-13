@@ -104,11 +104,14 @@ set_tests_properties(ui_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 # graph, where meters draw nothing by design.
 add_executable(test_ui_render tests/test_render.cpp)
 target_link_libraries(test_ui_render PRIVATE sonora_ui_qt Qt6::Test)
-find_program(SONORA_XVFB_RUN xvfb-run)
-if(SONORA_XVFB_RUN)
+# A private Xvfb per run, through tests/with-xvfb.sh, which says why it is
+# not xvfb-run.
+find_program(SONORA_XVFB Xvfb)
+if(SONORA_XVFB)
   add_test(NAME ui_render
-           COMMAND ${SONORA_XVFB_RUN} -a -s "-screen 0 1280x720x24" $<TARGET_FILE:test_ui_render>)
+           COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/with-xvfb.sh 1280x720x24
+                   $<TARGET_FILE:test_ui_render>)
   set_tests_properties(ui_render PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
 else()
-  message(STATUS "ui/qt: xvfb-run not found; ui_render (a rendered frame) is not run")
+  message(STATUS "ui/qt: Xvfb not found; ui_render (a rendered frame) is not run")
 endif()
