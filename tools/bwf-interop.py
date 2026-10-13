@@ -25,6 +25,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -291,10 +292,24 @@ def ardour_positions(paths, rate, workdir):
     """
     new_session = "ardour8-new_empty_session"
     sess = os.path.join(workdir, "interop")
-    if subprocess.run([new_session, sess, "interop"],
-                      capture_output=True).returncode != 0:
-        return None, "ardour8-new_empty_session failed"
     ardour_file = os.path.join(sess, "interop.ardour")
+    # Ardour 8 sometimes aborts at exit (rc 134, "exception not rethrown")
+    # after the session is already written, about 1 run in 10 on one CPU.
+    # The session file is what this check needs, so judge by that, keep the
+    # tool's output for diagnosis, and retry a genuine failure once.
+    for attempt in (1, 2):
+        shutil.rmtree(sess, ignore_errors=True)
+        made = subprocess.run([new_session, sess, "interop"],
+                              capture_output=True, text=True)
+        with open(os.path.join(workdir, "ardour.log"), "a",
+                  encoding="utf-8") as log:
+            log.write(f"{new_session} attempt {attempt}: rc={made.returncode}\n")
+            log.write(made.stdout + made.stderr)
+        if os.path.isfile(ardour_file):
+            break
+    else:
+        return None, (f"{new_session} wrote no session file "
+                      f"(rc={made.returncode}; see ardour.log)")
     with open(ardour_file, encoding="utf-8") as f:
         xml = f.read()
     ids = []
