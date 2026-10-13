@@ -10,15 +10,22 @@ back or opening a PR. Never iterate on the full loop.
 
 | Area changed | Fast loop (iterate) | Full loop (once, at the end) |
 |---|---|---|
-| `engine/` | `tools/build-engine.sh` (incremental, cmake + ctest) | + `tools/test-engine-docker.sh` (seconds) |
+| `common/`, `contracts/`, `engine/`, `drivers/`, `ui/` (C++ modules, ADR-0007) | `tools/build-engine.sh` (incremental, root CMake + ctest) | + `tools/test-engine-docker.sh` (seconds) |
+| `ui/qt` (Qt 6 shell) | no Qt build script on `main` yet: see the branch's handoff | see the branch's handoff |
 | `iso/`, `audio-stack/` | inspect the built ISO with `xorriso` in the livebuild container | `tools/build-iso.sh` (about 10 min with cache), then `tools/test-boot-qemu.sh` (about 2 min) |
 | `tools/write-usb.sh` | `WRITE_USB_BOOT=0 tools/test-write-usb.sh` (about 2 min, container only) | `tools/test-write-usb.sh` (about 12 min, five QEMU boots) |
 | any `tools/*.sh` | `bash -n` on the file | shellcheck as CI runs it (below) |
 
-Shellcheck as CI runs it:
+Shellcheck as CI runs it: Ubuntu 24.04's apt shellcheck (0.9.0); a newer
+release flags things CI does not. From the repository root, in Git Bash or
+on Linux. `MSYS2_ARG_CONV_EXCL` stops Git Bash rewriting `/mnt`, and
+`pwd -W` gives Docker a Windows path, falling back to `pwd` on Linux:
 
-    docker run --rm -v "$(pwd -W):/mnt:ro" -w /mnt koalaman/shellcheck:stable \
-      tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
+    MSYS2_ARG_CONV_EXCL='*' docker run --rm \
+      -v "$(pwd -W 2>/dev/null || pwd):/mnt:ro" -w /mnt ubuntu:24.04 bash -c '
+        apt-get update -qq && apt-get install -y -qq shellcheck >/dev/null 2>&1 &&
+        shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot &&
+        echo SHELLCHECK_OK'
 
 Timings were measured on the owner's Windows host with Docker Desktop and
 QEMU/WHPX (2026-10-12). Use them to choose; do not quote them as results.
@@ -28,6 +35,7 @@ QEMU/WHPX (2026-10-12). Use them to choose; do not quote them as results.
 - Redirect every long run to a file under the ignored `build-*/` directory
   and read back only the verdict:
 
+      mkdir -p build-usb
       tools/test-write-usb.sh > build-usb/run.log 2>&1; echo "exit=$?" >> build-usb/run.log
       grep -E "FAIL|RESULT|TEST (PASS|FAIL)|^exit=" build-usb/run.log
 
