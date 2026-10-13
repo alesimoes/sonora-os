@@ -42,7 +42,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <thread>
 #include <vector>
 
 using namespace sonora;
@@ -498,7 +497,7 @@ int serve(const Options& o) {
     // (getLatencySamples) only there, never on the thread running process().
     int exit_code = 0;
     std::atomic<bool> finished{false};
-    std::thread processing([&] {
+    auto body = [&] {
         uint32_t f = flags;
         if (make_current_thread_realtime(rt_priority)) f |= plugin::kHostRealtime;
         // Validation ran without the flags, so what a plugin did with
@@ -510,7 +509,17 @@ int serve(const Options& o) {
         exit_code = process_blocks(h, chain, layout, in, out, ipc_frames, o.engine_pid);
         finished.store(true, std::memory_order_release);
         notify_control();
-    });
+    };
+    // 1 MiB, not the default 8: the stack is locked and populated whole
+    // (start_thread), and with 8 MiB a crashing host's core dump delayed its
+    // exit past the 50-block detection test in CI (55 and 86 blocks).
+    constexpr std::size_t kProcessingStack = std::size_t(1) << 20;
+    void* processing = start_thread([](void* b) { (*static_cast<decltype(body)*>(b))(); }, &body,
+                                    kProcessingStack);
+    if (!processing) {
+        std::fprintf(stderr, "sonora-plugin-host: cannot start the processing thread\n");
+        return 2;
+    }
     // The control loop. Read the word before the work, so a notice that
     // lands during the work changes it and the wait returns at once.
     for (;;) {
@@ -519,7 +528,7 @@ int serve(const Options& o) {
         chain.control();
         wait_for_change(control_word(), seen, kIdleWaitNs);
     }
-    processing.join();
+    join_thread(processing);
     return exit_code;
 }
 

@@ -2,10 +2,12 @@
 // Linux implementation of the plugin boundary seam: futex wake, memfd region.
 #include "ipc.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstring>
 #include <ctime>
+#include <new>
 
 #include <linux/futex.h>
 #include <pthread.h>
@@ -107,6 +109,43 @@ void release_region(SharedRegion& region) {
 
 bool lock_memory() noexcept {
     return mlockall(MCL_CURRENT | MCL_FUTURE) == 0;
+}
+
+void* start_thread(void (*fn)(void*), void* arg, std::size_t stack_bytes) noexcept {
+    struct Start {
+        void (*fn)(void*);
+        void* arg;
+    };
+    auto* t = new (std::nothrow) pthread_t;
+    auto* s = new (std::nothrow) Start{fn, arg};
+    pthread_attr_t attr;
+    bool ok = t && s && pthread_attr_init(&attr) == 0;
+    if (ok) {
+        ok = pthread_attr_setstacksize(&attr, std::max<std::size_t>(stack_bytes, PTHREAD_STACK_MIN)) == 0 &&
+             pthread_create(
+                 t, &attr,
+                 [](void* p) -> void* {
+                     const Start start = *static_cast<Start*>(p);
+                     delete static_cast<Start*>(p);
+                     start.fn(start.arg);
+                     return nullptr;
+                 },
+                 s) == 0;
+        pthread_attr_destroy(&attr);
+    }
+    if (!ok) {
+        delete t;
+        delete s;
+        return nullptr;
+    }
+    return t;
+}
+
+void join_thread(void* thread) noexcept {
+    if (!thread) return;
+    auto* t = static_cast<pthread_t*>(thread);
+    pthread_join(*t, nullptr);
+    delete t;
 }
 
 bool make_current_thread_realtime(int priority) noexcept {

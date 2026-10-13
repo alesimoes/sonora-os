@@ -25,9 +25,11 @@ message(STATUS "plugins/host: building sonora-plugin-host against lilv ${LILV_VE
 
 # The seam both sides of the boundary use: the host here, and the engine-role
 # test driver. The engine's half moves to common/platform with M4+ (ipc.h).
+# start_thread: the host's processing thread.
+find_package(Threads REQUIRED)
 add_library(sonora_plugin_ipc STATIC src/ipc.h src/linux/ipc_linux.cpp)
 target_include_directories(sonora_plugin_ipc PUBLIC src)
-target_link_libraries(sonora_plugin_ipc PUBLIC sonora_plugin_protocol)
+target_link_libraries(sonora_plugin_ipc PUBLIC sonora_plugin_protocol Threads::Threads)
 
 # The URID map plugins call from run() on the SCHED_FIFO thread: lock-free
 # and allocation-free after construction. Needs only the LV2 headers.
@@ -58,10 +60,8 @@ target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_L
 
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h
                src/lv2_host.cpp src/lv2_host.h)
-# The processing thread runs the plugins; the main thread stays theirs.
-find_package(Threads REQUIRED)
 target_link_libraries(sonora-plugin-host PRIVATE sonora_plugin_ipc sonora_plugin_loader
-                      sonora_urid_map PkgConfig::LILV Threads::Threads)
+                      sonora_urid_map PkgConfig::LILV)
 if(VST3SDK_INCLUDE_DIR)
   target_sources(sonora-plugin-host PRIVATE src/vst3_host.cpp src/vst3_host.h)
   target_include_directories(sonora-plugin-host SYSTEM PRIVATE ${VST3SDK_INCLUDE_DIR})

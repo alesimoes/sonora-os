@@ -117,6 +117,11 @@ Also packaged and unused: `dpf-plugins-vst3`, `zam-plugins`,
    with the next block. An earlier version read it on the processing
    thread, which VST3 does not allow; the in-tree latency plugin segfaults
    if asked there (ctest `plugin_host_vst3_latency_change_main_thread`).
+   The processing thread has a 1 MiB stack. `mlockall` populates and locks
+   a new thread's whole stack, and with the default 8 MiB a crashing
+   host's core dump delayed its exit. In CI the death was seen 55 (LV2) and
+   86 (VST3) blocks after the trigger, against a 50-block test. In the
+   container it was 17 to 18 blocks with 8 MiB and 9 to 14 with 1 MiB.
    Still a deviation: the VST3 workflow wants deactivate, read, reactivate,
    and the host reads without stopping. The conforming path is the
    contract's restart: a new host, then Ready, then a latency re-read.

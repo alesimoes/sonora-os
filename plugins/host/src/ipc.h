@@ -53,6 +53,14 @@ void release_region(SharedRegion& region);
 bool lock_memory() noexcept;
 bool make_current_thread_realtime(int priority) noexcept;
 
+// A thread whose stack is `stack_bytes`, not the platform default. Under
+// lock_memory every page of a new thread's stack is populated and locked, so
+// the size is resident RAM, and it is written out with the core when a
+// plugin crashes the host, which delays the exit the engine waits to see.
+// Returns null if the OS refused. join_thread waits for it and frees it.
+void* start_thread(void (*fn)(void*), void* arg, std::size_t stack_bytes) noexcept;
+void join_thread(void* thread) noexcept;
+
 // Flush-to-zero and denormals-are-zero on the calling thread (MXCSR on x86,
 // FPCR.FZ on AArch64). A plugin's filter tail decaying into denormals costs
 // up to two orders of magnitude per sample on x86 without them.
