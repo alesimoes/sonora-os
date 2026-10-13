@@ -83,6 +83,12 @@ The p50 and p99 agree with the futex round trip in `adr-0007-measurements.md`
    audio thread (`completed_block` not advancing). Death needs the control
    thread (`waitpid`/pidfd); the heartbeat covers a host that is alive but
    hung outside a plugin.
+4. **Bundle paths need `lilv_new_file_uri` on an absolute path.** A
+   hand-built `file://` URI with a relative path finds nothing (regression:
+   `plugin_host_probe_liar`).
+5. **Zero over-period callbacks cannot be asserted in the container.** One
+   VM stall of about 5.9 ms comes every ~20 000 blocks, so the driver allows
+   `kOsNoiseCallbacks = 2`; the bare-metal RT run is where zero is expected.
 
 ## Open, and inputs to the Phase 4 plugin ADR
 
