@@ -183,15 +183,37 @@ bool Session::start_recording(int take_number, std::string* error) {
     return true;
 }
 
-void Session::stop() {
+bool Session::stop(std::string* error) {
     transport_->set_state(TransportState::Stopped);
     // Let the disk thread flush what is still buffered before we close files.
     // stop() joins it, so after this line nothing else uses the writers.
     if (disk_) disk_->stop();
+    std::string first_failure;
+    int more_failures = 0;
     for (auto& t : tracks_) {
         t->set_draining(false);
+        // Only a take this call ends is reported; a writer keeps its last
+        // failure after closing, and ~Session() stops again.
+        const bool was_open = t->writer().is_open();
         t->writer().close();
+        if (!was_open || !t->writer().failed()) continue;
+        if (first_failure.empty()) {
+            first_failure = t->writer().path() + ": " + t->writer().failure();
+        } else {
+            ++more_failures;
+        }
     }
+    if (first_failure.empty()) return true;
+    // Past the 4 GB limit every armed track fails together; one line with a
+    // count says that better than eighteen.
+    std::string why = first_failure;
+    if (more_failures > 0) {
+        why += " (and " + std::to_string(more_failures) + " more track" +
+               (more_failures == 1 ? "" : "s") + ")";
+    }
+    std::fprintf(stderr, "sonora: take failed, %s\n", why.c_str());
+    if (error) *error = why;
+    return false;
 }
 
 void Session::process(const float* const* inputs, uint32_t nframes) {

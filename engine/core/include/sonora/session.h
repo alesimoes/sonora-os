@@ -52,8 +52,12 @@ public:
     // call created are removed, and `error`, if given, says which file and
     // why.
     bool start_recording(int take_number, std::string* error = nullptr);
-    // Closes every open file and stops the transport.
-    void stop();
+    // Closes every open file and stops the transport. Returns false if the
+    // take it ends failed on any track -- a disk error, or the file reaching
+    // the 4 GB WAV limit -- and `error`, if given, says which file and why.
+    // The files are closed either way, and one that reached the limit is
+    // valid up to its last whole frame.
+    bool stop(std::string* error = nullptr);
 
     // --- real-time safe: called from the audio callback ---
     // inputs[i] is a block of nframes for track i (nullptr if unconnected).

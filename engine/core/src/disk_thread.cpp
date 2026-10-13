@@ -60,6 +60,10 @@ void DiskThread::drain_once() {
             if (scratch_.size() < samples) scratch_.resize(samples);
 
             ring.read(scratch_.data(), samples);
+            // A false return is the writer marking the take failed (disk
+            // error, 4 GB limit); Session::stop() reports it. The ring is
+            // still drained, so the callback does not count overruns for a
+            // take that is already lost.
             t->writer().write(scratch_.data(), frames);
         }
     }

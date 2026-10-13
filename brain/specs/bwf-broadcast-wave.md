@@ -41,12 +41,19 @@ fields that v0 leaves zeroed, so writing zeroes there is valid.
 - All integers are little-endian, like the rest of RIFF.
 - A `bext` chunk is fixed-size at 602 bytes for v0. Writing a short chunk makes
   some readers mis-parse everything after it.
+- What we write: Originator, TimeReference (the session playhead at record
+  start, so session-relative rather than "since midnight"), Version 0, and
+  OriginationDate/OriginationTime as below.
+- `OriginationDate` and `OriginationTime` are filled when the file is opened,
+  from the **local** wall clock. Tech 3285 names no time zone; the fields
+  describe when the recording was made where it was made, which is local
+  time. If the clock cannot be read the fields stay zero rather than wrong.
+  The clock is injectable (`WavWriter::set_clock`) so the test can pin it.
+- An odd-sized `data` chunk is followed by one zero pad byte, which the data
+  chunk's size does not count and the RIFF size does (RIFF chunk rule). Mono
+  24-bit with an odd frame count is the case that needs it.
 - Our writer: `common/audiofile/src/wav_writer.cpp`. Field offsets are
   asserted in `common/audiofile/tests/test_wav_writer.cpp`.
-- What we write today: Originator, TimeReference (the session playhead at
-  record start, so session-relative rather than "since midnight") and
-  Version 0. OriginationDate and OriginationTime are left zero, which §2.3
-  does not allow; see BACKLOG.
 - Checked against ffprobe, soxi, libsndfile, mediainfo and Ardour 8.12 by
   `tools/test-bwf-interop.sh`; results and reader quirks in
   `brain/research/bwf-interop.md`. Ardour treats a TimeReference of 0 as
@@ -57,6 +64,9 @@ fields that v0 leaves zeroed, so writing zeroes there is valid.
 Files over 4 GB overflow the 32-bit RIFF size fields. Pro Tools and most tools
 handle this with **RF64** (`RF64`/`ds64` chunks, EBU Tech 3306). We do not
 write RF64 yet; a 24-bit mono 48 kHz take hits the limit at about 8 hours, so
-this is not urgent but it is a real ceiling. Tracked in the backlog. The
-writer does not stop at the ceiling: `close()` casts both sizes to 32 bits, so
-a longer take gets a wrapped header rather than an error.
+this is not urgent but it is a real ceiling. Tracked in the backlog.
+
+Until RF64 lands the writer never wraps: a write that would take the RIFF
+size past 2^32 - 1 (counting the pad byte) writes only the whole frames that
+fit, marks the take failed with "take reached the 4 GB WAV limit", and
+`Session::stop()` reports it with the file name. The file stays valid.
