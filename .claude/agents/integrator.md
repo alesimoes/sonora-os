@@ -44,7 +44,10 @@ blobs over 100 MB and the history keeps them even after a later deletion, so
 catching this before merge is the only cheap moment.
 
 **5. Is the brain current?** A feature that established something durable and
-left `brain/` and `planning/STATUS.md` untouched is not finished. Say so.
+left `brain/` and `planning/STATUS.md` untouched is not finished. Say so. The
+branch's `planning/handoffs/` file must be deleted in the merged change: its
+lasting content belongs in `brain/` and `STATUS.md`, and a stale handoff
+misleads the next session.
 
 ## Posting the verdict
 

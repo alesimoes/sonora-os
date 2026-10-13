@@ -45,6 +45,18 @@ Both builds need Linux. From Windows, use the container wrappers:
     tools/build-engine.sh      # cmake + ctest
     tools/build-iso.sh         # produces iso/sonora.iso
 
+## Working in sessions
+
+Context is the main cost. Keep sessions short and join them with handoffs.
+
+- Starting on a branch: read `planning/handoffs/<branch>.md` if it exists,
+  not old transcripts. Stopping: write it (`handoff` skill).
+- Test with the fast loop, prove once with the full one (`test-loop` skill).
+  Long output goes to a file under `build-*/`; read back the verdict line.
+- Read large files by line range; never paste logs or diffs into a report.
+- One agent per task and per review round; reports point to files rather
+  than repeating them.
+
 ## Conventions
 
 - C++17, 4-space indent, `snake_case` members with a trailing underscore.
