@@ -13,6 +13,14 @@
 // rebuilt as the replica plus what is still in flight, so it never drifts
 // from the engine for longer than a round trip.
 //
+// A lost connection (set_link): a request the engine has not answered went
+// over a connection that no longer exists, or was dropped unsent, so its
+// fate is unknown and it is dropped, never replayed on the Snapshot the next
+// connection brings. That Snapshot is the engine's document, which is what
+// is shown; one notice says how many edits were dropped. An accepted request
+// whose update was lost stays until that Snapshot, which contains it. While
+// the link is down, edits and File > Open are refused outright.
+//
 // Ids: an operation carries the ids it introduces (reserve_id()). Two
 // interfaces may pick the same one; the engine refuses the second, and that
 // interface sees the refusal. Single-operator use never meets it.
@@ -51,18 +59,25 @@ public:
     model::Id reserve_id() override;
     // Sends the session to the engine (ModelAction::Load) and shows it at
     // once.
-    void reset(model::Snapshot s) override;
+    bool reset(model::Snapshot s, std::string& why) override;
 
     // What the engine sent since the last call, in arrival order. Returns
     // true when what is shown changed.
     bool receive(const std::vector<api::ModelUpdate>& updates,
                  const std::vector<api::CommandReply>& replies);
+    // The connection to the engine went (`up` false) or was replaced by a new
+    // one (`up` true); called after receive() has had what the old one
+    // brought. Returns true when what is shown changed.
+    bool set_link(bool up);
 
     // The engine's document has arrived (its first Snapshot).
     bool synced() const { return replica_.synced(); }
     std::size_t in_flight() const { return pending_.size(); }
     // Why the engine refused a request; for the status line.
     std::function<void(const std::string&)> on_refused;
+    // A File > Open was among the dropped requests: the window must stop
+    // naming that file, or Save would write the engine's document over it.
+    std::function<void()> on_load_abandoned;
 
 private:
     struct Pending {
@@ -78,10 +93,12 @@ private:
     void rebuild();
 
     Submit submit_;
+    model::Snapshot placeholder_;   // shown, with the requests on top, until the first Snapshot
     model::Replica replica_;
     model::History shown_;
     std::deque<Pending> pending_;
     model::Id next_unreserved_ = 0;
+    bool offline_ = false;
 };
 
 }  // namespace sonora::ui

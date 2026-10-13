@@ -17,7 +17,11 @@
 // which is the resync: a Replica fed by this class undoes and redoes in step
 // with the engine after it. A request sent while there is no connection is
 // dropped and never answered, as by a dead engine; the stopped heartbeat
-// is what the interface shows.
+// is what the interface shows. So a request without a reply when the
+// connection goes never gets one: an interface that keeps requests in
+// flight watches connected() and greetings() and drops them then
+// (ControlAdapter::watchConnection, ReplicaDocument::set_link), and never
+// replays them on the new connection's Snapshot.
 //
 // No socket or mapping code here: common/platform has it (ADR-0008 P9).
 #pragma once

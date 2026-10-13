@@ -18,6 +18,7 @@
 // No Qt type here, so it is tested without a display.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -49,10 +50,29 @@ public:
     void setModelSink(ModelSink sink) { model_sink_ = std::move(sink); }
     uint64_t submitModel(const api::ModelRequest& request);
 
+    // Which connection to the engine is up: 0 for none, and a new value for
+    // each new one (SocketEngine's greetings). An engine in this process has
+    // no connection to lose and needs no probe.
+    using ConnectionProbe = std::function<uint64_t()>;
+    // Told, after the model sink, when the connection went (false) or was
+    // replaced (true). Every request without a reply by then is lost: its
+    // seq is forgotten and a lost command is reported on the status line.
+    using LinkSink = std::function<void(bool up)>;
+    void watchConnection(ConnectionProbe probe, LinkSink sink);
+
+    // Requests unanswered are remembered up to this many each, the oldest
+    // forgotten first, so an engine that never answers costs bounded memory.
+    static constexpr std::size_t kMaxAwaiting = 1024;
+    std::size_t awaiting_model_replies() const { return model_seqs_.size(); }
+    std::size_t awaiting_command_replies() const { return pending_.size(); }
+
 private:
     api::EngineControl& engine_;
     EngineInfo info_;
     ModelSink model_sink_;
+    ConnectionProbe probe_;
+    LinkSink link_sink_;
+    uint64_t connection_ = 0;
     std::set<uint64_t> model_seqs_;             // model requests awaiting a reply
     std::vector<api::CommandReply> model_replies_;
     std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line

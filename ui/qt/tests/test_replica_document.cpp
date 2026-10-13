@@ -126,7 +126,7 @@ int open_sends_the_session_to_the_engine() {
     CHECK(r.doc.can_undo());
     model::Snapshot demo = make_demo_session(4, 48000);
     const std::size_t regions = demo.edit->tracks[0]->playlists[0]->regions.size();
-    r.doc.reset(demo);
+    CHECK(r.doc.reset(demo, why));
     CHECK(r.doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == regions);
     CHECK(!r.doc.can_undo());
     r.tick();
@@ -136,7 +136,7 @@ int open_sends_the_session_to_the_engine() {
     CHECK(!r.doc.can_undo());
 
     // A session at another rate is refused by the engine and taken back.
-    r.doc.reset(make_empty_session(2, 44100));
+    CHECK(r.doc.reset(make_empty_session(2, 44100), why));
     r.tick();
     CHECK(r.refused.size() == 1);
     CHECK(r.doc.snapshot().settings.sample_rate == 48000);
@@ -144,9 +144,28 @@ int open_sends_the_session_to_the_engine() {
     return 0;
 }
 
+// The link going down drops what the engine never answered, even before its
+// first Snapshot, and refuses edits until it is back.
+int a_lost_link_drops_what_was_not_answered() {
+    Rig r;
+    std::string why;
+    CHECK(r.doc.submit(marker(r.doc.reserve_id(), "Unsent"), why));
+    CHECK(markers(r.doc) == 1 && r.doc.in_flight() == 1);
+    CHECK(r.doc.set_link(false));
+    CHECK(markers(r.doc) == 0 && r.doc.in_flight() == 0);
+    CHECK(r.refused.size() == 1);
+    CHECK(!r.doc.submit(marker(r.doc.reserve_id(), "Offline"), why) && !why.empty());
+    CHECK(!r.doc.reset(make_demo_session(4, 48000), why));
+    CHECK(!r.doc.set_link(true));
+    CHECK(r.doc.submit(marker(r.doc.reserve_id(), "Back"), why));
+    CHECK(markers(r.doc) == 1);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    if (a_lost_link_drops_what_was_not_answered() != 0) return 1;
     if (edits_show_at_once_and_stay() != 0) return 1;
     if (another_interfaces_edit_arrives_and_a_clash_is_refused() != 0) return 1;
     if (open_sends_the_session_to_the_engine() != 0) return 1;

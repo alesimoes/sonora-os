@@ -62,8 +62,9 @@ public:
     // what apply() checks.
     virtual model::Id reserve_id() = 0;
     // A different session (one was opened): the snapshot replaced, and a new
-    // history, because undo never crosses into another session.
-    virtual void reset(model::Snapshot s) = 0;
+    // history, because undo never crosses into another session. Refused,
+    // with `why`, when the document's owner cannot be reached.
+    virtual bool reset(model::Snapshot s, std::string& why) = 0;
     uint64_t revision() const { return snapshot().revision; }
 };
 
@@ -83,7 +84,7 @@ public:
     bool can_undo() const override { return history_.can_undo(); }
     bool can_redo() const override { return history_.can_redo(); }
     model::Id reserve_id() override;
-    void reset(model::Snapshot s) override;
+    bool reset(model::Snapshot s, std::string& why) override;
 
     const model::History& history() const { return history_; }
 

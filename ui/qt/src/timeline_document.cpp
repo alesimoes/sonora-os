@@ -75,9 +75,10 @@ Id ModelDocument::reserve_id() {
     return next_unreserved_++;
 }
 
-void ModelDocument::reset(Snapshot s) {
+bool ModelDocument::reset(Snapshot s, std::string&) {
     history_ = History(std::move(s), budget_);
     next_unreserved_ = 0;
+    return true;
 }
 
 // --- sessions built from operations -------------------------------------------

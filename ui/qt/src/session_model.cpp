@@ -520,7 +520,7 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
               " Hz; it cannot play here until sample-rate conversion exists";
         return false;
     }
-    doc_.reset(std::move(loaded.snapshot));
+    if (!doc_.reset(std::move(loaded.snapshot), why)) return false;
     ctl_.document_replaced();
     file_ = file;
     saved_revision_ = doc_.revision();
@@ -535,6 +535,22 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     emit sessionChanged();
     emit notice(QStringLiteral("Opened ") + file_);
     return true;
+}
+
+void SessionModel::openWasLost() {
+    const QString lost = file_;
+    file_.clear();
+    saved_bytes_.clear();
+    save_generation_ = 0;
+    // Nothing on disk holds what is shown, so it reads as unsaved.
+    saved_revision_ = UINT64_MAX;
+    seen_revision_ = UINT64_MAX;
+    sync();
+    emit sessionChanged();
+    if (!lost.isEmpty()) {
+        emit notice(lost + QStringLiteral(" was not opened: the engine was unreachable. "
+                                          "Open it again."));
+    }
 }
 
 QVariantList SessionModel::sessionList() const {

@@ -104,6 +104,17 @@ add_executable(test_ui_replica_document tests/test_replica_document.cpp)
 target_link_libraries(test_ui_replica_document PRIVATE sonora_ui_qt)
 add_test(NAME ui_replica_document COMMAND test_ui_replica_document)
 
+# The same document on sonora-engine as a process, across lost connections.
+# The engine is run, not linked (ADR-0007 §1).
+if(UNIX AND TARGET sonora-engine)
+  add_executable(test_ui_replica_reconnect tests/test_replica_reconnect.cpp)
+  target_link_libraries(test_ui_replica_reconnect PRIVATE sonora_ui_qt sonora_client sonora_platform)
+  target_compile_definitions(test_ui_replica_reconnect PRIVATE
+    SONORA_ENGINE_BIN="$<TARGET_FILE:sonora-engine>")
+  add_dependencies(test_ui_replica_reconnect sonora-engine)
+  add_test(NAME ui_replica_reconnect COMMAND test_ui_replica_reconnect)
+endif()
+
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)
 target_compile_definitions(test_ui_shell PRIVATE

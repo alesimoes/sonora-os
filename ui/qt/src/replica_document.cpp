@@ -28,10 +28,12 @@ model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
     return u;
 }
 
+constexpr const char* kOffline = "the engine is not connected; nothing was changed";
+
 }  // namespace
 
 ReplicaDocument::ReplicaDocument(Submit submit, model::Snapshot placeholder)
-    : submit_(std::move(submit)), shown_(std::move(placeholder)) {}
+    : submit_(std::move(submit)), placeholder_(placeholder), shown_(std::move(placeholder)) {}
 
 uint64_t ReplicaDocument::send(api::ModelAction action, std::string bytes) {
     api::ModelRequest r;
@@ -41,6 +43,10 @@ uint64_t ReplicaDocument::send(api::ModelAction action, std::string bytes) {
 }
 
 bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
+    if (offline_) {
+        why = kOffline;
+        return false;
+    }
     // Checked here first, against what is shown, so a refusal the engine
     // would make anyway reaches the status line in this frame, unsent.
     model::History trial = shown_;
@@ -57,6 +63,10 @@ bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
 }
 
 bool ReplicaDocument::undo(std::string& why) {
+    if (offline_) {
+        why = kOffline;
+        return false;
+    }
     if (!shown_.undo()) {
         why = "nothing to undo";
         return false;
@@ -69,6 +79,10 @@ bool ReplicaDocument::undo(std::string& why) {
 }
 
 bool ReplicaDocument::redo(std::string& why) {
+    if (offline_) {
+        why = kOffline;
+        return false;
+    }
     if (!shown_.redo()) {
         why = "nothing to redo";
         return false;
@@ -85,23 +99,49 @@ model::Id ReplicaDocument::reserve_id() {
     return next_unreserved_++;
 }
 
-void ReplicaDocument::reset(model::Snapshot s) {
+bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
+    if (offline_) {
+        why = kOffline;
+        return false;
+    }
     model::WriteInfo info;
     info.written_by = "sonora-ui";
     std::string bytes, error;
-    // A snapshot that came from a file always serializes; one that cannot
-    // is shown here alone, and the engine's next update replaces it.
-    if (model::serialize(s, info, bytes, error)) {
-        Pending p;
-        p.kind = Pending::Kind::Load;
-        p.load = s;
-        p.seq = send(api::ModelAction::Load, std::move(bytes));
-        pending_.push_back(std::move(p));
-    } else if (on_refused) {
-        on_refused("the session could not be sent to the engine: " + error);
+    if (!model::serialize(s, info, bytes, error)) {
+        why = "the session could not be sent to the engine: " + error;
+        return false;
     }
+    Pending p;
+    p.kind = Pending::Kind::Load;
+    p.load = s;
+    p.seq = send(api::ModelAction::Load, std::move(bytes));
+    pending_.push_back(std::move(p));
     shown_ = model::History(std::move(s), shown_.budget());
     next_unreserved_ = 0;
+    return true;
+}
+
+bool ReplicaDocument::set_link(bool up) {
+    offline_ = !up;
+    std::size_t dropped = 0;
+    bool load_dropped = false;
+    for (const Pending& p : pending_) {
+        if (p.answered) continue;
+        ++dropped;
+        load_dropped = load_dropped || p.kind == Pending::Kind::Load;
+    }
+    if (dropped == 0) return false;
+    pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
+                                  [](const Pending& p) { return !p.answered; }),
+                   pending_.end());
+    rebuild();
+    if (on_refused) {
+        on_refused("the connection to the engine was lost: " + std::to_string(dropped) +
+                   (dropped == 1 ? " edit" : " edits") +
+                   " it had not confirmed were dropped; the engine's document is shown");
+    }
+    if (load_dropped && on_load_abandoned) on_load_abandoned();
+    return true;
 }
 
 bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
@@ -142,12 +182,8 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
 }
 
 void ReplicaDocument::rebuild() {
-    if (!replica_.synced()) {
-        // Nothing from the engine yet: what is shown stays the placeholder
-        // with the requests applied, which is what shown_ already is.
-        return;
-    }
-    model::History h = *replica_.history();
+    model::History h = replica_.synced() ? *replica_.history()
+                                         : model::History(placeholder_, shown_.budget());
     for (const Pending& p : pending_) {
         std::string why;
         switch (p.kind) {

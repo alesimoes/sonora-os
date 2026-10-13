@@ -169,11 +169,14 @@ int main(int argc, char** argv) {
                                      : a.opt.engine_socket.toStdString();
     std::unique_ptr<api::EngineControl> backend;
     api::testing::FakeEngine* fake = nullptr;
+    client::SocketEngine* socket = nullptr;
     std::string engine_notice;
     if (!a.opt.fake_engine && !endpoint.empty() && platform::endpoint_live(endpoint)) {
         client::SocketEngine::Options so;
         so.endpoint = endpoint;
-        backend = std::make_unique<client::SocketEngine>(so);
+        auto s = std::make_unique<client::SocketEngine>(so);
+        socket = s.get();
+        backend = std::move(s);
         std::fprintf(stderr, "sonora-ui: on the engine at %s\n", endpoint.c_str());
     } else {
         api::testing::FakeEngine::Config fake_config;
@@ -216,7 +219,12 @@ int main(int argc, char** argv) {
     ReplicaDocument document(
         [&engine](const api::ModelRequest& r) { return engine.submitModel(r); },
         make_empty_session(engine.info().track_count, rate));
-    if (a.opt.demo) document.reset(make_demo_session(engine.info().track_count, rate));
+    if (a.opt.demo) {
+        std::string why;
+        if (!document.reset(make_demo_session(engine.info().track_count, rate), why)) {
+            std::fprintf(stderr, "sonora-ui: the demo session: %s\n", why.c_str());
+        }
+    }
     // No peak files exist yet, so every waveform is synthetic whichever
     // session is open; the window says so whenever it draws one.
     SyntheticPeakSource peaks(rate, 120.0);
@@ -229,6 +237,14 @@ int main(int argc, char** argv) {
                                               const std::vector<api::CommandReply>& replies) {
         if (document.receive(updates, replies)) session.documentUpdated();
     });
+    document.on_load_abandoned = [&session]() { session.openWasLost(); };
+    if (socket != nullptr) {
+        engine.watchConnection(
+            [socket]() { return socket->connected() ? socket->greetings() : 0; },
+            [&document, &session](bool up) {
+                if (document.set_link(up)) session.documentUpdated();
+            });
+    }
 
     KeyRouter router(keymap, engine.info().implemented_commands,
                      [&engine](const std::string& c, const CommandContext& ctx) {

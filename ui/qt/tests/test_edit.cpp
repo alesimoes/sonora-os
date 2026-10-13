@@ -276,7 +276,7 @@ int test_history() {
     OK(roomy.redo(why) && roomy.revision() == r + 1);
 
     // reset: another session, and no undo into the old one.
-    roomy.reset(make_empty_session(3, kRate));
+    OK(roomy.reset(make_empty_session(3, kRate), why));
     OK(roomy.snapshot().edit->tracks.size() == 3);
     OK(!roomy.can_undo() && !roomy.can_redo());
     OK(roomy.reserve_id() == roomy.snapshot().next_id);
