@@ -40,3 +40,16 @@
     ] , [
         a lv2:OutputPort, lv2:AudioPort ; lv2:index 3 ; lv2:symbol "out_r" ; lv2:name "Out R"
     ] .
+
+<urn:sonora:test#nan>
+    a lv2:Plugin, lv2:UtilityPlugin ;
+    doap:name "Sonora test: NaN and Inf on demand" ;
+    doap:license <https://www.gnu.org/licenses/gpl-3.0> ;
+    lv2:port [
+        a lv2:InputPort, lv2:ControlPort ; lv2:index 0 ; lv2:symbol "nan" ; lv2:name "NaN" ;
+        lv2:default 0.0 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ; lv2:portProperty lv2:toggled
+    ] , [
+        a lv2:InputPort, lv2:AudioPort ; lv2:index 1 ; lv2:symbol "in" ; lv2:name "In"
+    ] , [
+        a lv2:OutputPort, lv2:AudioPort ; lv2:index 2 ; lv2:symbol "out" ; lv2:name "Out"
+    ] .

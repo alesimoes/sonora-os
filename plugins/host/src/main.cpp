@@ -7,7 +7,10 @@
 //   sonora-plugin-host --list [--json] [--bundle DIR]...
 //   sonora-plugin-host --probe URI [--channels N] [--bundle DIR]...
 //   sonora-plugin-host --shm-fd FD --chain URI[,URI...] [--bundle DIR]...
-//                      [--set INDEX:SYMBOL=VALUE]...
+//                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
+//
+// --engine-pid is the engine's pid: the host exits at once if that process is
+// not its parent, and later when it stops being so (ipc.h, die_with_parent).
 //
 // Exit codes in --shm-fd mode: 0 clean shutdown, 2 usage or channel error,
 // 3 chain refused at load or validation, 4 a plugin faulted while running.
@@ -23,6 +26,7 @@
 #include "lv2_host.h"
 #include "sonora/plugin/protocol.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +42,7 @@ struct Options {
     bool list = false, json = false;
     std::string probe;
     int shm_fd = -1;
+    int64_t engine_pid = 0;
     std::vector<std::string> chain, bundles;
     struct Set {
         uint32_t instance;
@@ -54,7 +59,7 @@ struct Options {
                  "usage: sonora-plugin-host --list [--json] [--bundle DIR]...\n"
                  "       sonora-plugin-host --probe URI [--channels N] [--bundle DIR]...\n"
                  "       sonora-plugin-host --shm-fd FD --chain URI[,URI...] [--bundle DIR]...\n"
-                 "                          [--set INDEX:SYMBOL=VALUE]...\n",
+                 "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n",
                  why);
     std::exit(2);
 }
@@ -84,6 +89,7 @@ Options parse(int argc, char** argv) {
         else if (a == "--json") o.json = true;
         else if (a == "--probe") o.probe = next();
         else if (a == "--shm-fd") o.shm_fd = std::atoi(next().c_str());
+        else if (a == "--engine-pid") o.engine_pid = std::atoll(next().c_str());
         else if (a == "--chain") o.chain = split(next(), ',');
         else if (a == "--bundle") o.bundles.push_back(next());
         else if (a == "--channels") o.channels = static_cast<uint32_t>(std::atoi(next().c_str()));
@@ -199,11 +205,11 @@ int refuse(plugin::ChannelHeader& h, const ChainError& err, plugin::HostState st
     return state == plugin::HostState::Refused ? 3 : 4;
 }
 
-void publish_latency(plugin::ChannelHeader& h, const Lv2Chain& chain) {
+void publish_latency(plugin::ChannelHeader& h, const Lv2Chain& chain, uint32_t ipc_frames) {
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].latency_frames.store(chain.instance_latency(i), std::memory_order_relaxed);
     // The IPC's own delay is declared like any look-ahead (ADR-0007 §4.3).
-    const uint32_t total = chain.total_latency() + h.pipeline_depth * h.block_frames;
+    const uint32_t total = chain.total_latency() + ipc_frames;
     if (total != h.latency_frames.load(std::memory_order_relaxed)) {
         h.latency_frames.store(total, std::memory_order_relaxed);
         h.latency_generation.fetch_add(1, std::memory_order_release);
@@ -211,7 +217,12 @@ void publish_latency(plugin::ChannelHeader& h, const Lv2Chain& chain) {
 }
 
 int serve(const Options& o) {
-    die_with_parent();
+    if (!die_with_parent(o.engine_pid)) {
+        std::fprintf(stderr, "sonora-plugin-host: the engine (pid %lld) is not this host's parent; "
+                             "it is gone, so this host exits\n",
+                     static_cast<long long>(o.engine_pid));
+        return 2;
+    }
     SharedRegion region;
     std::string err;
     if (!map_region(o.shm_fd, region, err)) {
@@ -225,6 +236,10 @@ int serve(const Options& o) {
                      h.layout_version, plugin::kLayoutVersion);
         return 2;
     }
+    // Taken once from the validated header. Nothing below re-reads the fixed
+    // part, which a plugin in this process could overwrite.
+    const plugin::Layout layout = plugin::layout_of(h);
+    const uint32_t ipc_frames = h.pipeline_depth * h.block_frames;
 
     // Loading runs at normal priority: plugins read files and allocate in
     // instantiate(), and that must not happen at SCHED_FIFO.
@@ -232,9 +247,10 @@ int serve(const Options& o) {
     load_bundles(world, o);
     ChainConfig cfg;
     cfg.sample_rate = h.sample_rate;
-    cfg.max_frames = h.max_frames;
+    cfg.max_frames = layout.max_frames;
     cfg.block_frames = h.block_frames;
-    cfg.channels = h.channels;
+    cfg.channels = layout.channels;
+    const int rt_priority = h.host_rt_priority;
     Lv2Chain chain(world, cfg);
     ChainError cerr;
     for (const std::string& uri : o.chain)
@@ -246,18 +262,21 @@ int serve(const Options& o) {
     if (!chain.validate(cerr)) return refuse(h, cerr, plugin::HostState::Refused);
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].replicas.store(chain.replicas(i), std::memory_order_relaxed);
-    publish_latency(h, chain);
+    publish_latency(h, chain, ipc_frames);
 
     uint32_t flags = 0;
     if (lock_memory()) flags |= plugin::kHostMemoryLocked;
-    if (make_current_thread_realtime(h.host_rt_priority)) flags |= plugin::kHostRealtime;
+    if (make_current_thread_realtime(rt_priority)) flags |= plugin::kHostRealtime;
+    // Every plugin runs on this thread from here on. Validation ran without
+    // the flags, so what a plugin did with denormals there was its worst case.
+    if (flush_denormals_on_this_thread()) flags |= plugin::kHostFlushDenormals;
     h.host_flags.store(flags, std::memory_order_relaxed);
 
-    std::vector<const float*> in(h.channels);
-    std::vector<float*> out(h.channels);
-    for (uint32_t c = 0; c < h.channels; ++c) {
-        in[c] = plugin::input_plane(region.base, h, c);
-        out[c] = plugin::output_plane(region.base, h, c);
+    std::vector<const float*> in(layout.channels);
+    std::vector<float*> out(layout.channels);
+    for (uint32_t c = 0; c < layout.channels; ++c) {
+        in[c] = plugin::input_plane(region.base, layout, c);
+        out[c] = plugin::output_plane(region.base, layout, c);
     }
     h.state.store(static_cast<uint32_t>(plugin::HostState::Ready), std::memory_order_release);
     signal(h.done_word);
@@ -275,9 +294,14 @@ int serve(const Options& o) {
         if (block == last) {
             wait_for_change(h.request_word, seen, kIdleWaitNs);
             h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+            // Checked when idle only, never between a submit and its
+            // completion: the backstop for a death signal that cannot fire.
+            if (!parent_is(o.engine_pid)) break;
             continue;
         }
-        const uint32_t frames = h.submitted_frames.load(std::memory_order_relaxed);
+        // Clamped, so a forged frame count cannot run past the planes.
+        const uint32_t frames =
+            std::min(h.submitted_frames.load(std::memory_order_relaxed), layout.max_frames);
         plugin::ParamChange pc;
         while (plugin::pop_param(h, pc)) chain.set_control(pc.instance, pc.port, pc.value);
 
@@ -289,7 +313,7 @@ int serve(const Options& o) {
         const uint64_t took = monotonic_ns() - t0;
         if (took > h.worst_block_ns.load(std::memory_order_relaxed))
             h.worst_block_ns.store(took, std::memory_order_relaxed);
-        publish_latency(h, chain);
+        publish_latency(h, chain, ipc_frames);
 
         last = block;
         h.completed_block.store(block, std::memory_order_release);
@@ -300,6 +324,7 @@ int serve(const Options& o) {
     signal(h.done_word);
     return 0;
 }
+
 
 }  // namespace
 

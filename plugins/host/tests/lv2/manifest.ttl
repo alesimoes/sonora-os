@@ -4,3 +4,4 @@
 <urn:sonora:test#crash> a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .
 <urn:sonora:test#sleep> a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .
 <urn:sonora:test#liar>  a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .
+<urn:sonora:test#nan>   a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .

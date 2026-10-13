@@ -31,7 +31,9 @@ zeroconvolv among them).
 
 - **Gain.** eg-amp at 0, −6 and +12 dB, set through the parameter ring while
   running: measured +0.0000, −6.0000, +12.0000 dB, mono and stereo (replicated
-  mono instance per channel).
+  mono instance per channel), at depth 1 and depth 0. A change pushed in
+  callback p lands in exactly the first block submitted at or after p (checked
+  per block, eg-amp does not smooth).
 - **Latency is what the plugin says, to the sample.** Noise at −20 dBFS
   through x42-dpl, then through dpl → LSP limiter → eg-amp. Reported 64 and
   304 frames. The delay found by search was 64 and 304. The wet path minus
@@ -41,18 +43,28 @@ zeroconvolv among them).
   pipelined mode (depth 1) the host reported 192 = 64 + 128 and the null held
   at 192: the IPC block is absorbed by PDC like any look-ahead.
 - **Crash.** `urn:sonora:test#crash` segfaults on a parameter. Host died of
-  SIGSEGV; the driver noticed 7 blocks later (non-blocking `waitpid`), read
-  `current_instance` = 1 from the still-mapped region and named the plugin.
-  All 400 callbacks ran; none overran the period.
+  SIGSEGV; the driver noticed 7 to 8 blocks later (non-blocking `waitpid`),
+  read `current_instance` = 1 from the still-mapped region and named the
+  plugin. All 400 callbacks ran; none overran the period. Same at depth 1
+  and depth 0.
 - **Deadline.** `urn:sonora:test#sleep` sleeping 20 ms per block: every block
-  dropped at the deadline, the host left the plan after 8 consecutive misses
-  with the plugin named. No callback overran the period.
+  dropped, the host left the plan after 8 consecutive misses with the plugin
+  named (block 108 at depth 1, 107 at depth 0). No callback overran the
+  period.
+- **NaN and Inf at run time.** `urn:sonora:test#nan` writes NaN/Inf on every
+  fourth sample for 100 blocks: none reached the driver, the host counted
+  3 200 replaced samples against that plugin and 0 against eg-amp after it,
+  and the chain was bit-identical to its input once the plugin stopped.
 - **Validation.** `urn:sonora:test#liar` declares 2 channels and writes 8:
   refused before the chain was offered, by the canary guard behind each
   buffer. A stereo plugin on a mono chain and a missing URI are refused and
   named.
 
-### Round trip per block, sync mode (submit, futex wake, host runs the chain, futex wake back)
+### Round trip per block (submit, futex wake, host runs the chain, futex wake back)
+
+Measured by the `rtt` scenario, which sleeps on `done_word` to time the IPC.
+That wait is a measurement harness, not a protocol mode: the engine's audio
+thread never waits on a host (finding 1).
 
 | Chain | n | p50 µs | p99 µs | p99.9 µs | max µs | dropped |
 |---|---|---|---|---|---|---|
@@ -73,15 +85,17 @@ The p50 and p99 agree with the futex round trip in `adr-0007-measurements.md`
    This is the same tail the earlier measurement saw (3.6 ms). It argues for
    **`pipeline_depth` 1 on the audio thread**: one block of declared latency
    (2.67 ms at 128), and the callback only polls `completed_block` and makes
-   one wake syscall. Depth 0 needs a bounded wait on the audio thread, which
-   is the auditor's ruling and this tail's exposure.
+   one wake syscall. **Decided in review (2026-10-13): depth 1 is the
+   default and the protocol has no wait on the audio thread.** Depth 0
+   survives only as poll-only (submit early, look once late in the same
+   callback), pending the auditor's ruling on the single `FUTEX_WAKE`.
 2. **One input slot and one output slot are enough** if the engine submits
    only when `completed_block == submitted_block`. A late host is then never
    handed new input while it reads the old, and a late output is discarded,
    not played a block late (which would break the declared latency).
 3. **Death and lateness need different detectors.** Lateness is seen on the
    audio thread (`completed_block` not advancing). Death needs the control
-   thread (`waitpid`/pidfd); the heartbeat covers a host that is alive but
+   thread (a pidfd in the engine; the driver polls `waitpid`); the heartbeat covers a host that is alive but
    hung outside a plugin.
 4. **Bundle paths need `lilv_new_file_uri` on an absolute path.** A
    hand-built `file://` URI with a relative path finds nothing (regression:
@@ -89,6 +103,25 @@ The p50 and p99 agree with the futex round trip in `adr-0007-measurements.md`
 5. **Zero over-period callbacks cannot be asserted in the container.** One
    VM stall of about 5.9 ms comes every ~20 000 blocks, so the driver allows
    `kOsNoiseCallbacks = 2`; the bare-metal RT run is where zero is expected.
+6. **Name the culprit from the streak, not the last read.** At depth 1 the
+   eighth miss came 21.3 ms after the slow block was submitted, just after
+   the 20 ms sleep ended, and `current_instance` read -1 at removal. The
+   engine must remember the instance it saw running during the misses.
+7. **Everything the host writes is untrusted** (engine owner's review of
+   PR #26). The first draft computed plane addresses from offsets in the
+   shared header, which a scribbling plugin could rewrite to aim the engine's
+   RT `memcpy` anywhere. Each side now keeps a private `Layout`; host-written
+   words go through `checked_*` before use (contract header, "Trust").
+8. **The URID map is on the RT path.** Plugins call `urid:map` from `run()`.
+   The first version took a mutex and grew a `vector<string>` whose growth
+   moved short (SSO) strings under earlier `unmap()` pointers. It is now an
+   open-addressed table filled once per slot by CAS, with text in a fixed
+   arena: no lock, no allocation after construction (`test_urid_map`).
+9. **`PR_SET_PDEATHSIG` follows the forking thread.** It fires when the
+   thread that forked the host exits, and never if the engine died before
+   the `prctl`. The host checks `getppid()` against `--engine-pid` after the
+   `prctl` and in its idle loop; the engine must fork hosts from its
+   long-lived control thread and watch them with a pidfd.
 
 ## Open, and inputs to the Phase 4 plugin ADR
 

@@ -52,6 +52,25 @@ void release_region(SharedRegion& region);
 // without CAP_SYS_NICE still has to run the tests.
 bool lock_memory() noexcept;
 bool make_current_thread_realtime(int priority) noexcept;
-void die_with_parent() noexcept;
+
+// Flush-to-zero and denormals-are-zero on the calling thread (MXCSR on x86,
+// FPCR.FZ on AArch64). A plugin's filter tail decaying into denormals costs
+// up to two orders of magnitude per sample on x86 without them.
+bool flush_denormals_on_this_thread() noexcept;
+
+// Ask to be killed when the engine dies, then check the engine is still the
+// parent: if it died before the request was made, the request never fires.
+// Returns false when the engine is already gone. `engine_pid` <= 0 skips the
+// check (a person running the host by hand).
+//
+// Linux sends the death signal when the THREAD that forked this process
+// exits, not when the engine process does. So the engine must spawn hosts
+// from its long-lived control thread, and it watches its hosts with a pidfd
+// (pidfd_open, polled on that thread), never with waitpid from a callback.
+bool die_with_parent(int64_t engine_pid) noexcept;
+
+// The idle loop's backstop for the case above: false once the engine that
+// started us is no longer our parent.
+bool parent_is(int64_t engine_pid) noexcept;
 
 }  // namespace sonora::plugin_host

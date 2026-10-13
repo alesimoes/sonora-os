@@ -66,17 +66,34 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        plugins, the host loop, and the shared-memory round-trip measurement
        (PR #26; `brain/research/plugin-host-lv2-container.md`). The runtime
        canary check covers only 64 words past `max_frames`.
-2. [ ] rt-engineer review of the draft `contracts/plugin/include/sonora/plugin/protocol.h`
-       (single slot, submit-only-when-idle, `pipeline_depth`, parameter ring,
-       `current_instance`). It stays `kLayoutVersion` 0 until accepted.
-3. [ ] Plugin ADR (M9) from that measurement: pipeline depth on the audio
-       thread (the container saw a 2 ms timed wait return 5.9 ms late), host
+2. [ ] Accept `contracts/plugin/include/sonora/plugin/protocol.h`. Merged as
+       a DRAFT with PR #26 (trust rule, private `Layout`, depth 1 default,
+       no audio-thread wait); stays `kLayoutVersion` 0 until these land (the
+       same list is the `TODO(accept)` block at the top of the header):
+       - parameters: per-block-tagged changes with a frame offset, and a
+         last-value table in the region;
+       - crash/restart: never reuse a region a dead host touched; restart =
+         new memfd + host + Ready + latency re-read, rejoining through a
+         control-thread plan swap with parameters replayed;
+       - plan swaps (ADR-0009): bypass atomic + RtEvent; `HostChannel` state
+         keyed by stable node id outside the plan; an in-flight depth-1 block
+         discarded across a chain swap; PDC across a `latency_generation`
+         bump; a "dry" miss is dry delayed by `latency_frames`;
+       - versioning: `header_bytes`, static_asserts on sizeof/offsetof, and
+         how "incompatible" is reported;
+       - the RT auditor's ruling on one `FUTEX_WAKE` per callback (depth 0
+         poll-only depends on it too).
+3. [ ] Plugin ADR (M9) from that measurement: depth 1 on the audio thread
+       (the container saw a 2 ms timed wait return 5.9 ms late), host
        per chain/track/plugin, the wake syscall's auditor ruling, `HostControl`
        over the control socket (scan via one `--probe` per process,
        instantiate, remove, editor with the parent-window token).
 4. [ ] `engine/plugin_client` and PDC, once M4 exists: `HostChannel::submit/collect`
-       on the contract, host death via pidfd on the control thread, removal
-       after N consecutive misses with the plugin named to the operator; a
+       on the contract, hosts forked from the long-lived control thread and
+       watched by pidfd (`PR_SET_PDEATHSIG` follows the forking thread),
+       removal after N consecutive misses with the plugin seen running during
+       the streak named to the operator, the per-plugin NaN/Inf counters
+       shown; a
        2048-sample track lands aligned (ctest).
 5. [ ] LV2 state save/restore, `worker:schedule`, presets; VST3, then
        yabridge; plugin manager; editors under WSLg (the host opens

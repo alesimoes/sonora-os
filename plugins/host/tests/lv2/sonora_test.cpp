@@ -7,6 +7,7 @@
 //   urn:sonora:test#crash  mono pass-through; segfaults when `crash` > 0.5
 //   urn:sonora:test#sleep  mono pass-through; sleeps `sleep_ms` per block
 //   urn:sonora:test#liar   declares stereo, writes 8 channels into output 0
+//   urn:sonora:test#nan    mono pass-through; writes NaN and Inf when `nan` > 0.5
 
 #include <lv2/core/lv2.h>
 
@@ -14,10 +15,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <limits>
 
 namespace {
 
-enum Kind { kCrash, kSleep, kLiar };
+enum Kind { kCrash, kSleep, kLiar, kNan };
 
 struct Plugin {
     Kind kind;
@@ -67,6 +69,15 @@ void run(LV2_Handle h, uint32_t n) {
         }
         std::memcpy(p->out[0], p->in[0], n * sizeof(float));
         break;
+    case kNan:
+        std::memcpy(p->out[0], p->in[0], n * sizeof(float));
+        // What a filter does when its state blows up: NaN, then Inf, on every
+        // fourth sample, so the rest of the block is still the input.
+        if (p->control && *p->control > 0.5f)
+            for (uint32_t i = 0; i < n; i += 4)
+                p->out[0][i] = (i & 4) ? std::numeric_limits<float>::infinity()
+                                       : std::numeric_limits<float>::quiet_NaN();
+        break;
     case kLiar:
         // Treats output 0 as eight interleaved-by-block channels. Real
         // plugins do this when their channel count is a compile-time
@@ -83,6 +94,7 @@ const LV2_Descriptor kDescriptors[] = {
     {"urn:sonora:test#crash", instantiate<kCrash>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#sleep", instantiate<kSleep>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#liar", instantiate<kLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
+    {"urn:sonora:test#nan", instantiate<kNan>, connect, nullptr, run, nullptr, cleanup, nullptr},
 };
 
 }  // namespace

@@ -34,6 +34,14 @@ constexpr uint32_t kRuntimeGuardWords = 64;
 // have no UI yet, so inputs are always an empty sequence.
 constexpr std::size_t kAtomBytes = 8192;
 
+// NaN and Inf have an all-ones exponent. Tested as bits so it holds under any
+// floating-point flags a plugin leaves behind.
+bool is_finite_bits(float f) noexcept {
+    uint32_t bits;
+    std::memcpy(&bits, &f, sizeof bits);
+    return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
 bool is_canary(const float* p) {
     uint32_t bits;
     std::memcpy(&bits, p, sizeof bits);
@@ -45,36 +53,6 @@ std::string node_string(const LilvNode* n) {
 }
 
 }  // namespace
-
-// ---------------------------------------------------------------------------
-// URID map
-
-UridMap::UridMap() {
-    map_.handle = this;
-    map_.map = [](LV2_URID_Map_Handle h, const char* uri) {
-        return static_cast<UridMap*>(h)->map(uri);
-    };
-    unmap_.handle = this;
-    unmap_.unmap = [](LV2_URID_Unmap_Handle h, LV2_URID id) {
-        return static_cast<UridMap*>(h)->unmap(id);
-    };
-}
-
-LV2_URID UridMap::map(const char* uri) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = ids_.find(uri);
-    if (it != ids_.end()) return it->second;
-    uris_.emplace_back(uri);
-    const LV2_URID id = static_cast<LV2_URID>(uris_.size());
-    ids_.emplace(uris_.back(), id);
-    return id;
-}
-
-const char* UridMap::unmap(LV2_URID id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (id == 0 || id > uris_.size()) return nullptr;
-    return uris_[id - 1].c_str();
-}
 
 // ---------------------------------------------------------------------------
 // World
@@ -400,6 +378,19 @@ bool Lv2Chain::canaries_intact(uint32_t from_frame, uint32_t words) const noexce
     return true;
 }
 
+uint64_t Lv2Chain::sanitise_stage(std::size_t stage, uint32_t frames) noexcept {
+    uint64_t bad = 0;
+    for (uint32_t c = 0; c < config_.channels; ++c) {
+        float* b = buffer(stage, c);
+        for (uint32_t i = 0; i < frames; ++i)
+            if (!is_finite_bits(b[i])) {
+                b[i] = 0.f;
+                ++bad;
+            }
+    }
+    return bad;
+}
+
 bool Lv2Chain::process(const float* const* in, float* const* out, uint32_t frames,
                        plugin::ChannelHeader* report, ChainError& error) noexcept {
     frames = std::min(frames, config_.max_frames);
@@ -433,6 +424,10 @@ bool Lv2Chain::process(const float* const* in, float* const* out, uint32_t frame
             error.instance = static_cast<int>(k);
             return false;
         }
+        // Before the next plugin sees it: a NaN fed into a filter stays in
+        // its state, so one bad block from k would silence k + 1 for good.
+        if (const uint64_t bad = sanitise_stage(k + 1, frames); bad && report)
+            report->instances[k].nonfinite_samples.fetch_add(bad, std::memory_order_relaxed);
     }
     if (report) report->current_instance.store(-1, std::memory_order_relaxed);
 

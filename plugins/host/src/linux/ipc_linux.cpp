@@ -17,6 +17,10 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#endif
+
 namespace sonora::plugin_host {
 
 namespace {
@@ -112,10 +116,33 @@ bool make_current_thread_realtime(int priority) noexcept {
     return pthread_setschedparam(pthread_self(), SCHED_FIFO, &p) == 0;
 }
 
-void die_with_parent() noexcept {
+bool flush_denormals_on_this_thread() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+    // FTZ is bit 15, DAZ bit 6.
+    _mm_setcsr(_mm_getcsr() | 0x8040u);
+    return (_mm_getcsr() & 0x8040u) == 0x8040u;
+#elif defined(__aarch64__)
+    uint64_t fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr |= uint64_t(1) << 24;  // FZ flushes denormal inputs and outputs alike
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr));
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool die_with_parent(int64_t engine_pid) noexcept {
     // A host outliving its engine would hold the plugins' resources and the
     // region forever. The engine is the only parent a host ever has.
     prctl(PR_SET_PDEATHSIG, SIGKILL);
+    // If the engine died between fork and prctl, this process was reparented
+    // and the death signal will never come.
+    return parent_is(engine_pid);
+}
+
+bool parent_is(int64_t engine_pid) noexcept {
+    return engine_pid <= 0 || static_cast<int64_t>(getppid()) == engine_pid;
 }
 
 }  // namespace sonora::plugin_host

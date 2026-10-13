@@ -8,12 +8,15 @@
 // allows it) at 128 frames / 48 kHz, the same shape as the measurement
 // harness in brain/research/adr-0007-measurements.md. It follows the rules
 // the engine will: never write a slot the host may be reading, never wait
-// past the deadline, drop and count instead.
+// on the host at all, drop and count instead.
 //
 //   plugin_driver --host EXE --bundle DIR --scenario NAME [options]
 //
-// Scenarios: gain, latency, crash, deadline, refusals, rtt.
-// Exit: 0 pass, 1 fail, 77 skip (a required plugin is not installed).
+// Scenarios: gain, latency, crash, deadline, nonfinite, refusals, rtt.
+// --mode pipelined (pipeline_depth 1, the default) or poll (depth 0,
+// poll-only). Neither waits on the host; rtt is a measurement and does.
+// Exit: 0 pass, 1 fail, 77 a required plugin is not installed (a failure in
+// ctest unless SONORA_PLUGIN_TESTS_ALLOW_SKIP is ON).
 
 #include "ipc.h"
 #include "sonora/plugin/protocol.h"
@@ -59,7 +62,7 @@ const char* const kEgAmp = "http://lv2plug.in/plugins/eg-amp";
 const char* const kDpl = "http://gareus.org/oss/lv2/dpl#mono";
 
 struct Args {
-    std::string host, bundle, scenario, mode = "sync";
+    std::string host, bundle, scenario, mode = "pipelined";
     std::vector<std::string> chain;
     uint32_t channels = 1;
     uint64_t blocks = 0;
@@ -110,15 +113,18 @@ public:
     bool start(const Args& a, const std::vector<std::string>& uris, uint32_t channels,
                uint32_t pipeline_depth) {
         chain = uris;
-        channels_ = channels;
+        depth_ = pipeline_depth;
+        // The engine's own copy: plane addresses never come from the region.
+        layout_ = plugin::make_layout(channels, kMaxFrames);
         std::string err;
-        if (!create_region(plugin::region_size(channels, kMaxFrames), region_, err)) {
+        if (!create_region(layout_.region_size, region_, err)) {
             std::printf("  cannot create the channel: %s\n", err.c_str());
             return false;
         }
         std::memset(region_.base, 0, region_.size);
-        h = plugin::init_header(region_.base, kRate, kMaxFrames, kBlock, channels, pipeline_depth,
+        h = plugin::init_header(region_.base, layout_, kRate, kBlock, pipeline_depth,
                                 static_cast<uint32_t>(uris.size()), 70);
+        const std::string engine_pid = std::to_string(getpid());
         pid_ = fork();
         if (pid_ < 0) return false;
         if (pid_ == 0) {
@@ -127,7 +133,8 @@ public:
             else dup2(region_.handle, 3);
             const std::string chain_arg = join(uris, ',');
             std::vector<const char*> argv = {a.host.c_str(), "--shm-fd", "3", "--chain",
-                                             chain_arg.c_str(), "--bundle", a.bundle.c_str(), nullptr};
+                                             chain_arg.c_str(), "--bundle", a.bundle.c_str(),
+                                             "--engine-pid", engine_pid.c_str(), nullptr};
             execv(a.host.c_str(), const_cast<char* const*>(argv.data()));
             _exit(127);
         }
@@ -139,7 +146,7 @@ public:
         const uint64_t end = monotonic_ns() + timeout_ns;
         for (;;) {
             const uint32_t seen = h->done_word.load(std::memory_order_acquire);
-            const auto s = static_cast<plugin::HostState>(h->state.load(std::memory_order_acquire));
+            const auto s = plugin::checked_state(h->state.load(std::memory_order_acquire));
             if (s != plugin::HostState::Starting) return s;
             if (!alive() || monotonic_ns() > end) return plugin::HostState::Starting;
             wait_for_change(h->done_word, seen, 20'000'000);
@@ -188,41 +195,77 @@ public:
     ~Host() { stop(); }
 
     // ---- the RT half: what engine/plugin_client's submit/collect would do.
+    // Nothing here waits on the host (protocol.h, block protocol).
 
     bool idle() const {
         return h->completed_block.load(std::memory_order_acquire) == block_;
     }
 
-    void submit(const float* const* in, uint32_t frames) {
-        for (uint32_t c = 0; c < channels_; ++c)
-            std::memcpy(plugin::input_plane(region_.base, *h, c), in[c], frames * sizeof(float));
+    void submit(const float* const* in, uint32_t frames, uint64_t callback) {
+        for (uint32_t c = 0; c < layout_.channels; ++c)
+            std::memcpy(plugin::input_plane(region_.base, layout_, c), in[c], frames * sizeof(float));
         ++block_;
+        submitted_at_ = callback;
         h->submitted_frames.store(frames, std::memory_order_relaxed);
         h->submitted_block.store(block_, std::memory_order_release);
         signal(h->request_word);
     }
 
     void read_output(float* const* out, uint32_t frames) {
-        for (uint32_t c = 0; c < channels_; ++c)
-            std::memcpy(out[c], plugin::output_plane(region_.base, *h, c), frames * sizeof(float));
+        for (uint32_t c = 0; c < layout_.channels; ++c)
+            std::memcpy(out[c], plugin::output_plane(region_.base, layout_, c), frames * sizeof(float));
     }
 
-    // pipeline_depth 0: submit and collect in the same callback, bounded by
-    // `deadline` (absolute). rtt_ns is set when the block came back.
-    bool run_sync(const float* const* in, float* const* out, uint32_t frames, uint64_t deadline,
-                  uint64_t& rtt_ns) {
-        if (!idle()) return false;  // still on an older block: never touch its slot
+    // One callback. Returns the callback whose input produced `out`, or -1
+    // when nothing was collected (the block is dropped).
+    //
+    // Depth 1: collect the block submitted in the previous callback if it is
+    // already complete, then submit this one. A block that completed later
+    // than that is discarded rather than played a block late, which would
+    // break the declared latency.
+    //
+    // Depth 0, poll-only: submit, let the rest of the graph run (here: sleep
+    // to `collect_at`, standing for the engine's other tracks), then look
+    // once. Nothing waits on the host.
+    int64_t run(const float* const* in, float* const* out, uint32_t frames, uint64_t callback,
+                uint64_t collect_at) {
+        // Still on an older block: never touch its slots.
+        if (!idle()) return -1;
+        if (depth_ == 1) {
+            int64_t got = -1;
+            if (block_ > 0 && submitted_at_ + 1 == callback) {
+                read_output(out, frames);
+                got = int64_t(submitted_at_);
+            }
+            submit(in, frames, callback);
+            return got;
+        }
+        submit(in, frames, callback);
+        sleep_until(collect_at);
+        if (!idle()) return -1;
+        read_output(out, frames);
+        return int64_t(callback);
+    }
+
+    // The callback of the most recent submit.
+    uint64_t submitted_at() const { return submitted_at_; }
+
+    // MEASUREMENT HARNESS ONLY (scenario rtt): submit, then sleep on
+    // done_word until the block is back or the deadline passes, to time the
+    // IPC round trip. The engine's audio thread never does this; a timed wait
+    // there is exposed to the scheduler tail (5.9 ms late seen, container).
+    bool round_trip(const float* const* in, float* const* out, uint32_t frames, uint64_t callback,
+                    uint64_t deadline, uint64_t& rtt_ns) {
+        if (!idle()) return false;
         const uint64_t t0 = monotonic_ns();
-        submit(in, frames);
+        submit(in, frames, callback);
         for (;;) {
             const uint32_t seen = h->done_word.load(std::memory_order_acquire);
             const bool done = h->completed_block.load(std::memory_order_acquire) == block_;
             const uint64_t now = monotonic_ns();
             if (done) rtt_ns = now - t0;
-            // A timed wait can return long after its timeout when the OS
-            // does not run us (seen: 2 ms asked, 7.9 ms taken, container).
-            // A block noticed after the deadline is a miss, even if the
-            // host was on time: the callback is what was late.
+            // A block noticed after the deadline is a miss, even if the host
+            // was on time: the callback is what was late.
             if (now > deadline) {
                 ++late_;
                 return false;
@@ -235,34 +278,24 @@ public:
         }
     }
 
-    // pipeline_depth 1: collect the previous callback's block, submit this
-    // one. No wait at all. A block that comes back late is discarded rather
-    // than played a block late, which would break the declared latency.
-    bool run_pipelined(const float* const* in, float* const* out, uint32_t frames,
-                       uint64_t callback) {
-        bool have = false;
-        if (idle()) {
-            if (block_ > 0 && submitted_at_ + 1 == callback) {
-                read_output(out, frames);
-                have = true;
-            }
-            submit(in, frames);
-            submitted_at_ = callback;
-        }
-        return have;
-    }
-
-    // Sync blocks given up because the deadline had passed when the driver
-    // looked, whether or not the host had finished.
+    // round_trip blocks given up because the deadline had passed when the
+    // driver looked, whether or not the host had finished.
     uint64_t late() const { return late_; }
 
 private:
+    static void sleep_until(uint64_t at_ns) {
+        timespec ts{time_t(at_ns / 1000000000ull), long(at_ns % 1000000000ull)};
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+        }
+    }
+
     uint64_t late_ = 0;
     SharedRegion region_;
+    plugin::Layout layout_;
     pid_t pid_ = -1;
     int status_ = 0;
     bool reaped_ = false;
-    uint32_t channels_ = 1;
+    uint32_t depth_ = plugin::kDefaultPipelineDepth;
     uint64_t block_ = 0;
     uint64_t submitted_at_ = 0;
 };
@@ -328,28 +361,37 @@ double percentile(std::vector<double> v, double p) {
     return v[i];
 }
 
-// Start a host and wait for it. Returns kSkip when a plugin is simply not
-// installed, so a machine without the Debian packages skips rather than fails.
+// Start a host and wait for it. Returns kSkip when a plugin is not
+// installed; ctest treats that as a failure unless skips were allowed
+// (SONORA_PLUGIN_TESTS_ALLOW_SKIP), because CI must not go green without
+// having run the test.
 int start_ready(Host& host, const Args& a, const std::vector<std::string>& chain,
                 uint32_t channels, uint32_t depth) {
     if (!host.start(a, chain, channels, depth)) return 1;
     const plugin::HostState s = host.wait_ready(30'000'000'000ull);
     if (s == plugin::HostState::Ready) {
         const uint32_t flags = host.h->host_flags.load();
-        std::printf("  host ready: chain latency %u frames, host %s, memory %s\n",
-                    host.h->latency_frames.load(),
+        std::printf("  host ready: depth %u, chain latency %u frames, host %s, memory %s, %s\n", depth,
+                    plugin::checked_latency(host.h->latency_frames.load()),
                     (flags & plugin::kHostRealtime) ? "SCHED_FIFO 70" : "SCHED_OTHER (no RT allowed)",
-                    (flags & plugin::kHostMemoryLocked) ? "locked" : "not locked");
+                    (flags & plugin::kHostMemoryLocked) ? "locked" : "not locked",
+                    (flags & plugin::kHostFlushDenormals) ? "FTZ/DAZ" : "denormals not flushed");
         for (std::size_t i = 0; i < chain.size(); ++i)
             std::printf("    [%zu] %s: latency %u, replicas %u\n", i, chain[i].c_str(),
-                        host.h->instances[i].latency_frames.load(), host.h->instances[i].replicas.load());
+                        plugin::checked_latency(host.h->instances[i].latency_frames.load()),
+                        host.h->instances[i].replicas.load());
         return 0;
     }
     const auto reason = static_cast<plugin::Refusal>(host.h->refusal.load());
     std::printf("  host not ready: state %s, refusal %u, instance %d, %s\n",
-                state_name(host.h->state.load()), unsigned(reason), host.h->refusal_instance.load(),
+                state_name(host.h->state.load()), unsigned(reason),
+                plugin::checked_instance(host.h->refusal_instance.load(), uint32_t(chain.size())),
                 host.death().c_str());
-    return reason == plugin::Refusal::NotFound ? kSkip : 1;
+    if (reason == plugin::Refusal::NotFound) {
+        std::printf("  SKIP: a plugin this test needs is not installed (tools/Dockerfile.plugins)\n");
+        return kSkip;
+    }
+    return 1;
 }
 
 void report_loop(const LoopStats& st) {
@@ -358,24 +400,33 @@ void report_loop(const LoopStats& st) {
                 (unsigned long long)st.over_period, kPeriodNs / 1e3);
 }
 
+uint32_t depth_of(const Args& a) { return a.mode == "poll" ? 0 : 1; }
+
+const char* chain_name(const std::vector<std::string>& chain, int32_t i) {
+    return i >= 0 && i < int32_t(chain.size()) ? chain[size_t(i)].c_str() : "?";
+}
+
 // ---------------------------------------------------------------------------
 // Scenarios
 
 // A gain plugin changes the level by exactly what was asked, on every
-// channel, and a parameter sent through the ring lands at block granularity.
+// channel, and a parameter pushed through the ring in callback p lands in
+// the first block submitted at or after p, not before and not later.
 int scenario_gain(const Args& a) {
     const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
-    std::printf("gain: %s, %u channel(s), sync\n", join(chain, ',').c_str(), a.channels);
+    std::printf("gain: %s, %u channel(s), %s\n", join(chain, ',').c_str(), a.channels, a.mode.c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, a.channels, 0)) return r;
+    if (int r = start_ready(host, a, chain, a.channels, depth_of(a))) return r;
     if (a.channels > 1)
         check(host.h->instances[0].replicas.load() == a.channels, "a mono plugin is replicated per channel");
 
     // eg-amp: port 0 is "gain" in dB (lv2info http://lv2plug.in/plugins/eg-amp).
+    // It applies the gain without smoothing, so every block shows its value.
     struct Phase { uint64_t from; float db; };
     const Phase phases[] = {{0, 0.f}, {200, -6.f}, {400, 12.f}};
     const uint64_t total = 600;
-    std::vector<double> in_sq(3, 0), out_sq(3, 0);
+    std::vector<double> in_e(total, 0), out_e(total, -1);  // by source callback
+    std::vector<char> submitted(total, 0);
     uint64_t dropped = 0;
     Signal sig(a.channels);
     const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
@@ -384,27 +435,51 @@ int scenario_gain(const Args& a) {
             if (i >= phases[k].from) p = k;
         if (i == phases[p].from && i > 0) plugin::push_param(*host.h, {0, 0, phases[p].db, 0});
         sig.sine(i, 997.0, 0.1f);
-        uint64_t rtt = 0;
-        if (!host.run_sync(sig.in.data(), sig.out.data(), kBlock, deadline, rtt)) {
+        for (uint32_t c = 0; c < a.channels; ++c)
+            for (uint32_t s = 0; s < kBlock; ++s) in_e[i] += double(sig.buf[c][s]) * sig.buf[c][s];
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
+        submitted[i] = host.submitted_at() == i;
+        if (from < 0) {
             ++dropped;
             return true;
         }
-        if (i < phases[p].from + 10) return true;  // settle
+        double e = 0;
         for (uint32_t c = 0; c < a.channels; ++c)
-            for (uint32_t s = 0; s < kBlock; ++s) {
-                in_sq[p] += double(sig.buf[c][s]) * sig.buf[c][s];
-                out_sq[p] += double(sig.obuf[c][s]) * sig.obuf[c][s];
-            }
+            for (uint32_t s = 0; s < kBlock; ++s) e += double(sig.obuf[c][s]) * sig.obuf[c][s];
+        out_e[size_t(from)] = e;
         return true;
     });
     report_loop(st);
     std::printf("  dropped %llu of %llu blocks\n", (unsigned long long)dropped, (unsigned long long)total);
+
+    auto block_db = [&](uint64_t b) { return 10.0 * std::log10(out_e[b] / in_e[b]); };
     for (int k = 0; k < 3; ++k) {
-        const double db = 10.0 * std::log10(out_sq[k] / in_sq[k]);
+        const uint64_t end = k < 2 ? phases[k + 1].from : total - 1;
+        double in_sum = 0, out_sum = 0;
+        for (uint64_t b = phases[k].from + 10; b < end; ++b)
+            if (out_e[b] >= 0) in_sum += in_e[b], out_sum += out_e[b];
+        const double db = 10.0 * std::log10(out_sum / in_sum);
         char what[128];
         std::snprintf(what, sizeof what, "gain %+.1f dB measured %+.4f dB (tolerance 0.01)",
                       phases[k].db, db);
-        check(in_sq[k] > 0 && std::fabs(db - phases[k].db) < 0.01, what);
+        check(in_sum > 0 && std::fabs(db - phases[k].db) < 0.01, what);
+    }
+    for (int k = 1; k < 3; ++k) {
+        uint64_t land = phases[k].from;
+        while (land < total && !submitted[land]) ++land;
+        bool exact = land < total;
+        uint64_t seen = 0;
+        for (uint64_t b = phases[k].from > 20 ? phases[k].from - 20 : 0; b < phases[k].from + 20; ++b) {
+            if (out_e[b] < 0) continue;
+            const float want = b >= land ? phases[k].db : phases[k - 1].db;
+            if (std::fabs(block_db(b) - want) > 0.01) exact = false;
+            ++seen;
+        }
+        char what[160];
+        std::snprintf(what, sizeof what,
+                      "%+.0f dB pushed in callback %llu lands in block %llu, the first submitted after it",
+                      phases[k].db, (unsigned long long)phases[k].from, (unsigned long long)land);
+        check(exact && seen > 20, what);
     }
     check(dropped * 20 < total, "fewer than 5 % of blocks dropped");
     return 0;
@@ -420,13 +495,14 @@ std::vector<uint32_t> pdc_delays(const std::vector<uint32_t>& path_latency) {
 }
 
 // A latency-reporting chain: what it reports is what it does, to the sample,
-// and PDC built on the report nulls the wet path against the dry one.
+// and PDC built on the report nulls the wet path against the dry one. In
+// pipelined mode the report includes the block of IPC delay.
 int scenario_latency(const Args& a) {
     const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kDpl} : a.chain;
-    const bool piped = a.mode == "pipelined";
+    const uint32_t depth = depth_of(a);
     std::printf("latency: %s, mono, %s\n", join(chain, ',').c_str(), a.mode.c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, 1, piped ? 1 : 0)) return r;
+    if (int r = start_ready(host, a, chain, 1, depth)) return r;
     const uint32_t gen0 = host.h->latency_generation.load();
 
     const uint64_t total = a.blocks ? a.blocks : 900;
@@ -440,10 +516,9 @@ int scenario_latency(const Args& a) {
     Signal sig(1);
     const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
         std::memcpy(sig.buf[0].data(), &in[i * kBlock], kBlock * sizeof(float));
-        uint64_t rtt = 0;
-        const bool ok = piped ? host.run_pipelined(sig.in.data(), sig.out.data(), kBlock, i)
-                              : host.run_sync(sig.in.data(), sig.out.data(), kBlock, deadline, rtt);
-        if (ok) {
+        // Stored by the callback that played it, so the IPC block shows up
+        // as delay exactly like a plugin's look-ahead.
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0) {
             std::memcpy(&out[i * kBlock], sig.obuf[0].data(), kBlock * sizeof(float));
             got[i] = 1;
         }
@@ -451,7 +526,9 @@ int scenario_latency(const Args& a) {
     });
     report_loop(st);
 
-    const uint32_t L = host.h->latency_frames.load();
+    const uint32_t L = plugin::checked_latency(host.h->latency_frames.load());
+    check(L != plugin::kLatencyInvalid, "the reported latency is plausible");
+    if (L == plugin::kLatencyInvalid) return 0;
     check(host.h->latency_generation.load() == gen0, "latency did not change while running");
     // Two tracks into one bus: dry (latency 0) and this chain (L).
     const std::vector<uint32_t> delays = pdc_delays({0, L});
@@ -466,7 +543,7 @@ int scenario_latency(const Args& a) {
     uint64_t dropped = 0, last_drop = 0;
     bool any_drop = false;
     for (uint64_t b = 0; b < total; ++b) {
-        if (!got[b] && !(piped && b == 0)) {
+        if (!got[b] && !(depth == 1 && b == 0)) {
             ++dropped;
             any_drop = true;
             last_drop = b;
@@ -509,33 +586,32 @@ int scenario_latency(const Args& a) {
 // culprit is named.
 int scenario_crash(const Args& a) {
     const std::vector<std::string> chain = {kEgAmp, "urn:sonora:test#crash"};
-    std::printf("crash: %s, sync\n", join(chain, ',').c_str());
+    std::printf("crash: %s, %s\n", join(chain, ',').c_str(), a.mode.c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, 1, 0)) return r;
+    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
     const uint64_t total = 400, trigger = 100;
     uint64_t gone_at = 0, completed_after = 0;
-    int culprit = -2;
+    int32_t culprit = -2;
     Signal sig(1);
     const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
         if (i == trigger) plugin::push_param(*host.h, {1, 0, 1.f, 0});  // crash := 1
         sig.sine(i, 440.0, 0.1f);
-        uint64_t rtt = 0;
-        const bool ok = host.run_sync(sig.in.data(), sig.out.data(), kBlock, deadline, rtt);
+        const bool ok = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0;
         if (!ok) sig.silence_out();
         if (gone_at && ok) ++completed_after;
-        // The control thread's job in the engine (pidfd or SIGCHLD there).
-        // Polled here for brevity; it is one non-blocking waitpid, and the
+        // The control thread's job in the engine (a pidfd there). Polled
+        // here for brevity; it is one non-blocking waitpid, and the
         // over-period check below still holds with it inside the callback.
         if (!gone_at && !host.alive()) {
             gone_at = i;
-            culprit = host.h->current_instance.load(std::memory_order_relaxed);
+            culprit = plugin::checked_instance(host.h->current_instance.load(std::memory_order_relaxed),
+                                               uint32_t(chain.size()));
         }
         return true;
     });
     report_loop(st);
     std::printf("  host gone at block %llu: %s; it was running instance %d (%s)\n",
-                (unsigned long long)gone_at, host.death().c_str(), culprit,
-                culprit >= 0 && culprit < int(chain.size()) ? chain[size_t(culprit)].c_str() : "?");
+                (unsigned long long)gone_at, host.death().c_str(), culprit, chain_name(chain, culprit));
     check(gone_at >= trigger && gone_at < trigger + 50, "the host's death was detected within 50 blocks");
     check(host.reaped() && WIFSIGNALED(host.status()) && WTERMSIG(host.status()) == SIGSEGV,
           "the host died of SIGSEGV");
@@ -550,27 +626,35 @@ int scenario_crash(const Args& a) {
 // on, and removed after kMaxConsecutiveMisses with its name.
 int scenario_deadline(const Args& a) {
     const std::vector<std::string> chain = {kEgAmp, "urn:sonora:test#sleep"};
-    std::printf("deadline: %s, sync, sleep 20 ms from block 100\n", join(chain, ',').c_str());
+    std::printf("deadline: %s, %s, sleep 20 ms from block 100\n", join(chain, ',').c_str(),
+                a.mode.c_str());
     Host host;
-    if (int r = start_ready(host, a, chain, 1, 0)) return r;
+    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
     const uint64_t total = 300, trigger = 100;
-    int streak = 0, culprit = -2;
+    int streak = 0;
+    int32_t culprit = -2;
     uint64_t removed_at = 0, misses_before = 0;
     Signal sig(1);
     const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
         if (i == trigger) plugin::push_param(*host.h, {1, 0, 20.f, 0});  // sleep_ms := 20
         sig.sine(i, 440.0, 0.1f);
         if (removed_at) return true;  // out of the plan: the track plays dry
-        uint64_t rtt = 0;
-        if (host.run_sync(sig.in.data(), sig.out.data(), kBlock, deadline, rtt)) {
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline) >= 0) {
             streak = 0;
             return true;
         }
+        // Depth 1 has nothing to collect in callback 0; that is not a miss.
+        if (depth_of(a) == 1 && i == 0) return true;
         if (i < trigger) ++misses_before;
-        if (++streak >= kMaxConsecutiveMisses) {
-            removed_at = i;
-            culprit = host.h->current_instance.load(std::memory_order_relaxed);
-        }
+        // Remember who was running during the streak. At depth 1 the last
+        // miss can fall just after the slow block finished (20 ms sleep, 8
+        // misses = 21.3 ms), when current_instance is already -1: reading it
+        // only at removal named nobody.
+        const int32_t running = plugin::checked_instance(
+            host.h->current_instance.load(std::memory_order_relaxed), uint32_t(chain.size()));
+        if (streak == 0) culprit = -1;
+        if (running >= 0) culprit = running;
+        if (++streak >= kMaxConsecutiveMisses) removed_at = i;
         return true;
     });
     host.kill_now();
@@ -578,13 +662,64 @@ int scenario_deadline(const Args& a) {
     std::printf("  removed at block %llu after %d consecutive misses; it was in instance %d (%s); "
                 "%llu misses before the trigger\n",
                 (unsigned long long)removed_at, kMaxConsecutiveMisses, culprit,
-                culprit >= 0 && culprit < int(chain.size()) ? chain[size_t(culprit)].c_str() : "?",
-                (unsigned long long)misses_before);
+                chain_name(chain, culprit), (unsigned long long)misses_before);
     check(removed_at >= trigger && removed_at < trigger + 2 * kMaxConsecutiveMisses,
           "the late host left the plan after the miss limit");
     check(culprit == 1, "the late plugin is named (chain index 1)");
     check(st.callbacks == total, "the driver ran every callback");
     check(st.over_period <= kOsNoiseCallbacks, "no callback waited past the period on a sleeping plugin");
+    return 0;
+}
+
+// A plugin that writes NaN and Inf while running: the host replaces them with
+// 0 before the next plugin and the engine see them, counts them against that
+// plugin and nobody else, and the chain is clean again once it stops.
+int scenario_nonfinite(const Args& a) {
+    const std::vector<std::string> chain = {"urn:sonora:test#nan", kEgAmp};
+    std::printf("nonfinite: %s, %s, NaN/Inf from block 100 to 200\n", join(chain, ',').c_str(),
+                a.mode.c_str());
+    Host host;
+    if (int r = start_ready(host, a, chain, 1, depth_of(a))) return r;
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+    check(host.h->host_flags.load() & plugin::kHostFlushDenormals,
+          "the host set FTZ/DAZ on its processing thread");
+#endif
+    const uint64_t total = 300, on = 100, off = 200;
+    uint64_t nonfinite_out = 0, zeroed = 0, bad_blocks = 0, clean_after = 0, compared_after = 0;
+    std::vector<std::vector<float>> inputs(total, std::vector<float>(kBlock));
+    Signal sig(1);
+    const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
+        if (i == on) plugin::push_param(*host.h, {0, 0, 1.f, 0});
+        if (i == off) plugin::push_param(*host.h, {0, 0, 0.f, 0});
+        sig.sine(i, 440.0, 0.1f);
+        std::copy(sig.buf[0].begin(), sig.buf[0].begin() + kBlock, inputs[i].begin());
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i, deadline);
+        if (from < 0) return true;
+        const float* o = sig.obuf[0].data();
+        bool had_zero = false, equal = true;
+        for (uint32_t s = 0; s < kBlock; ++s) {
+            if (!std::isfinite(o[s])) ++nonfinite_out;
+            if (s % 4 == 0 && o[s] == 0.f && inputs[size_t(from)][s] != 0.f) had_zero = true;
+            if (o[s] != inputs[size_t(from)][s]) equal = false;
+        }
+        if (had_zero) ++bad_blocks, zeroed += kBlock / 4;
+        if (uint64_t(from) > off + 2) {
+            ++compared_after;
+            if (equal) ++clean_after;
+        }
+        return true;
+    });
+    report_loop(st);
+    const uint64_t counted0 = host.h->instances[0].nonfinite_samples.load();
+    const uint64_t counted1 = host.h->instances[1].nonfinite_samples.load();
+    std::printf("  %llu blocks carried replaced samples; host counted %llu against [0], %llu against [1]\n",
+                (unsigned long long)bad_blocks, (unsigned long long)counted0, (unsigned long long)counted1);
+    check(nonfinite_out == 0, "no NaN or Inf reached the engine");
+    check(bad_blocks >= 50 && counted0 >= zeroed && counted0 % (kBlock / 4) == 0,
+          "every NaN/Inf was replaced by 0 and counted against the plugin that wrote it");
+    check(counted1 == 0, "the plugin after it saw only finite input and is not blamed");
+    check(compared_after > 50 && clean_after == compared_after,
+          "once the plugin stops, the chain passes the input unchanged");
     return 0;
 }
 
@@ -609,10 +744,10 @@ int scenario_refusals(const Args& a) {
     std::printf("refusals\n");
     for (const Case& c : cases) {
         Host host;
-        if (!host.start(a, c.chain, c.channels, 0)) return 1;
+        if (!host.start(a, c.chain, c.channels, plugin::kDefaultPipelineDepth)) return 1;
         const plugin::HostState s = host.wait_ready(30'000'000'000ull);
         const auto reason = static_cast<plugin::Refusal>(host.h->refusal.load());
-        const int inst = host.h->refusal_instance.load();
+        const int inst = plugin::checked_instance(host.h->refusal_instance.load(), uint32_t(c.chain.size()));
         usleep(100000);
         host.alive();
         std::printf("  [%s] state %s, refusal %u, instance %d, host %s\n", join(c.chain, ',').c_str(),
@@ -624,11 +759,12 @@ int scenario_refusals(const Args& a) {
     return 0;
 }
 
-// Round trip per block, as the engine would see it in sync mode.
+// Round trip per block: a measurement of the IPC, not a protocol mode. It
+// sleeps on done_word, which the engine's audio thread never does.
 int scenario_rtt(const Args& a) {
     const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
     const uint64_t total = a.blocks ? a.blocks : 3000;
-    std::printf("rtt: %s, %u channel(s), %llu blocks of %u at %u Hz, sync, deadline %.0f us\n",
+    std::printf("rtt: %s, %u channel(s), %llu blocks of %u at %u Hz, measurement wait, deadline %.0f us\n",
                 join(chain, ',').c_str(), a.channels, (unsigned long long)total, kBlock, kRate,
                 kDeadlineNs / 1e3);
     Host host;
@@ -640,7 +776,7 @@ int scenario_rtt(const Args& a) {
     const LoopStats st = run_periodic(total, [&](uint64_t i, uint64_t deadline) {
         sig.sine(i, 997.0, 0.1f);
         uint64_t rtt = 0;
-        if (host.run_sync(sig.in.data(), sig.out.data(), kBlock, deadline, rtt))
+        if (host.round_trip(sig.in.data(), sig.out.data(), kBlock, i, deadline, rtt))
             rtt_us.push_back(rtt / 1e3);
         else
             ++dropped;
@@ -666,7 +802,13 @@ Args parse(int argc, char** argv) {
         if (k == "--host") a.host = v;
         else if (k == "--bundle") a.bundle = v;
         else if (k == "--scenario") a.scenario = v;
-        else if (k == "--mode") a.mode = v;
+        else if (k == "--mode") {
+            if (v != "pipelined" && v != "poll") {
+                std::fprintf(stderr, "plugin_driver: --mode is pipelined or poll\n");
+                std::exit(2);
+            }
+            a.mode = v;
+        }
         else if (k == "--chain") a.chain = split(v, ',');
         else if (k == "--channels") a.channels = uint32_t(std::atoi(v.c_str()));
         else if (k == "--blocks") a.blocks = uint64_t(std::atoll(v.c_str()));
@@ -677,7 +819,7 @@ Args parse(int argc, char** argv) {
     }
     if (a.host.empty() || a.bundle.empty() || a.scenario.empty()) {
         std::fprintf(stderr, "usage: plugin_driver --host EXE --bundle DIR --scenario NAME "
-                             "[--chain URI,...] [--channels N] [--mode sync|pipelined] [--blocks N]\n");
+                             "[--chain URI,...] [--channels N] [--mode pipelined|poll] [--blocks N]\n");
         std::exit(2);
     }
     return a;
@@ -699,6 +841,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "latency") r = scenario_latency(a);
     else if (a.scenario == "crash") r = scenario_crash(a);
     else if (a.scenario == "deadline") r = scenario_deadline(a);
+    else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "rtt") r = scenario_rtt(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());

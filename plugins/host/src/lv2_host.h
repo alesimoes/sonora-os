@@ -5,14 +5,13 @@
 // (ADR-0007 §1: nothing outside plugins/host links a plugin SDK).
 
 #include "sonora/plugin/protocol.h"
+#include "urid_map.h"
 
 #include <lilv/lilv.h>
 #include <lv2/options/options.h>
-#include <lv2/urid/urid.h>
 
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,26 +37,6 @@ struct PluginInfo {
     int latency_port = -1;
     std::vector<std::string> required_features;
     std::vector<std::string> missing_features;  // required and not provided
-};
-
-// URID map shared by every instance in this process. Plugins are allowed to
-// call it from instantiate() and, in practice, sometimes from run(); a mutex
-// is acceptable because this process has one processing thread and the map
-// is only contended by plugins' own worker threads, if any.
-class UridMap {
-public:
-    LV2_URID map(const char* uri);
-    const char* unmap(LV2_URID id);
-    LV2_URID_Map* map_feature() { return &map_; }
-    LV2_URID_Unmap* unmap_feature() { return &unmap_; }
-    UridMap();
-
-private:
-    std::mutex mutex_;
-    std::unordered_map<std::string, LV2_URID> ids_;
-    std::vector<std::string> uris_;  // index id - 1
-    LV2_URID_Map map_;
-    LV2_URID_Unmap unmap_;
 };
 
 class Lv2World {
@@ -122,9 +101,12 @@ public:
     // declared. Must pass before the chain is offered to the engine.
     bool validate(ChainError& error);
 
-    // The processing thread. No allocation, no lock (barring a plugin's own
-    // URID calls), no I/O. Returns false, with `error` set, when a plugin
-    // wrote outside its buffers; the process must then be considered corrupt.
+    // The processing thread. No allocation, no lock, no I/O, including the
+    // URID calls plugins make from run(). Every NaN or Inf a plugin writes is
+    // replaced by 0 before the next plugin sees it and counted against that
+    // plugin in report->instances[k].nonfinite_samples. Returns false, with
+    // `error` set, when a plugin wrote outside its buffers; the process must
+    // then be considered corrupt.
     bool process(const float* const* in, float* const* out, uint32_t frames,
                  plugin::ChannelHeader* report, ChainError& error) noexcept;
 
@@ -142,6 +124,7 @@ private:
     float* buffer(std::size_t stage, uint32_t channel);
     void fill_canaries(uint32_t frames);
     bool canaries_intact(uint32_t from_frame, uint32_t words) const noexcept;
+    uint64_t sanitise_stage(std::size_t stage, uint32_t frames) noexcept;
     void reset_atom_ports(Slot& s) noexcept;
 
     Lv2World& world_;
