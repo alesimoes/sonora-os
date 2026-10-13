@@ -473,6 +473,13 @@ ADR-0011 "For the owner".
 - [ ] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s,
       meeting their `quality.json`. CPU figures on the owner's laptop
       recorded in `brain/research/` (ADR-0011 Unverified 4). dsp-engineer.
+- [ ] Still missing after N0 (PR #34 review, 2026-10-13): the RTSan job
+      that runs the harness and the golden tests (ADR-0011 §2.3; the
+      ADR-0007 follow-up above), and the MSVC `portable` job that runs the
+      golden tests under MSVC (ADR-0011 §3.4, ADR-0008 P7 above). Until
+      both exist, "RTSan-clean" and "passes under MSVC" are claims nobody
+      has checked for `common/dsp` and `plugins/native`. distro-engineer
+      with dsp-engineer.
 - [ ] Research, before N1: licences of DPF (pinned commit), the VST3 SDK
       (MIT since 3.8, reported), ONNX Runtime; ONNX Runtime on trixie and
       its installed size (ADR-0011 Unverified 1, 3). researcher; feeds

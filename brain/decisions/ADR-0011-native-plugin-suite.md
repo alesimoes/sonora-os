@@ -1,6 +1,7 @@
 # ADR-0011 — The native plugin suite
 
-- Status: **Proposed**, 2026-10-13
+- Status: **Proposed**, 2026-10-13. Amendment 1 (coordinator, 2026-10-13):
+  §2.2 edges and the N0 decisions, at the end.
 - Date: 2026-10-13
 - Decided by: architect, for the owner. The points that are the owner's to
   settle are listed at the end, under "For the owner".
@@ -272,6 +273,32 @@ layer 3   assistant (N7) ──> ui/client, contracts/api, common/model, common/
 
   M5's forbidden-include check names `plugins/native/format` as the second
   allowed place for those headers, and only for the plugin side.
+
+**Amendment 1 to §2.2, 2026-10-13 (coordinator, on the review of PR #34,
+stage N0).** Two edges are added to the table:
+
+```
+layer 1   plugins/native/sdk ──> common/dsp            (flush-to-zero guard and smoothers, in the base class)
+layer 2   plugins/native/measure ──> common/json       (reads quality.json, writes the JSON reports)
+```
+
+- **`plugins/native/sdk → common/dsp`.** `ProcessorBase` gives every
+  processor flush-to-zero for the whole of `process()` and its parameter
+  smoothing. Both must be the same code the processors use: an FTZ guard
+  written twice is the arch-specific code ADR-0008 and §2.3 confine to
+  `common/dsp/src/arch/`, and a second smoother is a second definition of
+  "smoothing time", which the zipper bar is measured against. Both
+  modules are neutral and layer 1, so no layering rule is crossed; the
+  edge points from the interface to the arithmetic, never back.
+- **`plugins/native/measure → common/json`.** §3.1 puts the thresholds in
+  `quality.json` and has the harness write one JSON report per processor.
+  `common/json` is the project's canonical JSON (ADR-0009 §5), so the
+  harness reads and writes it through that, not through a second parser.
+  The harness is offline and never on an audio thread.
+- No other edge changes. M5's dependency check takes both.
+
+The same review settled four more points for N0; they are recorded under
+"Amendment 1" after "For the owner".
 
 **2.3 Portability and real time.**
 - **Neutral modules (ADR-0008 §1):** `common/dsp`, `plugins/native/sdk`, and
@@ -1178,3 +1205,69 @@ The architect cannot settle these.
 
    N7 does not start before these rulings. Nothing else in this ADR
    depends on them.
+
+## Amendment 1, 2026-10-13: the coordinator's decisions on N0
+
+Made by the coordinator on the review of PR #34 (`feature/dsp-core`, stage
+N0). The measurements behind each are in
+`brain/research/native-dsp-n0-measurements.md`.
+
+1. **Edges.** `plugins/native/sdk → common/dsp` and
+   `plugins/native/measure → common/json` are allowed. The reasons are in
+   §2.2, "Amendment 1 to §2.2".
+2. **EQ: two modes, the operator's choice, as Pro Tools offers a
+   low-latency choice.**
+   - **Mixing: "analog matched (2x)" is the default.** It meets §3.2's
+     ±0.1 dB from 20 Hz to 20 kHz at 44.1 and 48 kHz, at a latency of 69
+     samples at every rate, reported for PDC. No single second-order
+     section meets ±0.1 dB for wide upper bells at 1x (measured: a
+     least-squares-optimal biquad is 0.42 dB off for a 10 kHz, Q 1,
+     +18 dB bell at 44.1 kHz), so the bar is met by running at twice the
+     rate rather than by loosening it.
+   - **Tracking: "zero latency" (1x).** Matched designs at the session
+     rate, no added latency. It does not meet ±0.1 dB above about 2 kHz
+     for wide bells, and it does not hide that: the harness reports its
+     error against the analog prototype for every curve it measures
+     (`plugins/native/eq/quality.json`, "reported, not a bar").
+   - Phase holds §3.2's 5° for f0 up to 2 kHz and reaches 8.5° above. The
+     EQ's `quality.json` states the bar that way. That loosening is
+     recorded here for the architect; the coordinator has not ruled on it.
+3. **Limiter: never above its ceiling.**
+   - The look-ahead stage keeps its **0.05 dB target margin** under the
+     ceiling.
+   - **A mastering limiter must never exceed its ceiling.** After the
+     look-ahead stage, a true-peak guard (`dsp::TruePeakGuard`) detects at
+     8x, with a first stage built to be the reference meter's own filter,
+     and also takes the BS.1770 4x meter's reading as a need, then applies
+     a second look-ahead gain at the same target. A final clamp holds the
+     sample peak and is asserted never to act. §3.2's "Ceiling" row is
+     then met on the full-band case as well: zero overs on the BS.1770 4x
+     meter and on the 16x reference, over the stress set and full-band
+     white noise, at every rate, ceiling and release tested.
+   - What it costs, measured: about 310 samples more latency at 48 kHz
+     (the limiter reports 430 in all at its defaults), about 48 µs more
+     per block (the limiter is 80 µs at p50, inside class C), and on
+     tones 6 dB over the ceiling non-harmonic energy of -147 dBc or lower
+     (bar -90 dBc).
+4. **CPU measurement (§3.5): two deviations, accepted by the
+   coordinator.**
+   - **Not asserted in PR CI.** A shared runner says nothing about the
+     reference machine. The §3.5 measurement, p99.9 and max per block over
+     a 60 s render at q128, 48 kHz, stereo, single thread, is
+     `tools/dsp-cpu.sh`, run by the nightly workflow and by hand on the
+     reference machine; its reports are kept, and a class bar missed on a
+     shared runner does not fail the build. ctest keeps the quick
+     per-block check: denormals, silence against active, measured side by
+     side.
+   - **The class bar is asserted on the "code path" figure**: the
+     per-block minimum over five identical renders, which removes the
+     host's scheduling noise and leaves the cost of the code. The
+     single-run p99.9 and max are reported beside it. Inside Docker
+     Desktop the single-run max misses class A for every processor (a
+     2.4 µs delay block measured 137 µs); only a bare-metal RT run says
+     what the appliance sees (Unverified 4 stays open).
+5. **CI cost.** The slow DSP tests (`dsp_limiter`, `dsp_loudness`,
+   `native_limiter`, ctest label `slow`) run one rate, one ceiling and one
+   release in PR CI and under the sanitizers (`SONORA_DSP_QUICK=1`), and in
+   full in the nightly workflow, in Release and under ASan and UBSan. TSan
+   leaves out the single-threaded `dsp_*` and `native_*` tests.
