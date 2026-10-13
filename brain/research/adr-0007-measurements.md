@@ -159,6 +159,50 @@ called from inside a marked callback (`jack_port_get_buffer` and so on),
 trips an interceptor. That needs the real engine built under RTSan against
 the PipeWire container.
 
+### Settled 2026-10-12, with M2 [measured]
+
+- **Setup.** `sonora-engine` was built with `clang-22 -fsanitize=realtime`
+  from branch `contract/backend`. Disassembly shows
+  `__rtsan_realtime_enter` at the entry of `JackBackend::Impl::process_cb`,
+  `Session::process` and `Track::report_peak`, and a probe program
+  confirmed the runtime catches `malloc` there.
+- **Normal recording.** The engine recorded 18 tracks through
+  `tools/test-engine-entrypoint.sh` (PipeWire 1.4.2, quantum 128) with no
+  RTSan report, `xruns=0`, and every track carrying its own tone. The
+  callback's libjack calls (`jack_port_get_buffer`, `jack_last_frame_time`,
+  `jack_get_sample_rate` every period) did not trip an interceptor.
+- **Refusal paths.** Forcing quantum 64 and rate 96000 mid-take was also
+  clean under RTSan.
+- **Limit.** These results cover only the paths those runs executed.
+  `-Wfunction-effects` still warns on the libjack calls, because they are
+  unannotated C.
+
+**Rate change in pw-jack, as the rt-safety-auditor read it** [source:
+pipewire-jack 1.4.2, `pipewire-jack.c` lines 5328–5349, not measured
+here]:
+- `jack_get_sample_rate()` is lock-free while the client is active, so it
+  may be called from the callback.
+- With `jack.locked-process=true`, the default, the notification and the
+  periods are serialised, so no period at a new rate runs before the
+  notification.
+
+The engine checks the rate every period anyway, which keeps it correct
+without that default and under jackd2.
+
+**What the container measured:**
+- With 18 tracks and `clock.force-rate 96000` mid-take, no 96 kHz period
+  landed in any file. The check was the zero crossings of the 5639 Hz track
+  in every 128-frame period: 29–30 throughout, where a 96 kHz period would
+  show about 15.
+- That held for the per-period check and also for the earlier code, which
+  relied on the notification alone (3 runs). The container therefore
+  confirms the auditor's reading. It cannot single out the per-period
+  check; only `test_period_guard` does.
+- **Trap.** `clock.force-rate` is silently ignored when the configuration's
+  `clock.allowed-rates` lacks the rate. A runtime image built from an
+  `audio-stack/` that allows only 48000 Hz makes this test pass without
+  testing anything.
+
 ## 2. `std::atomic` lock-freedom (ADR item 6)
 
 [measured] `g++ 14.2.0-19 -std=c++17 -O2` printed
@@ -430,8 +474,9 @@ What this means for SonoraOS [inferred]:
    of the syscall on the audio thread itself (the auditor's ruling the ADR
    asks for), and whether `sched_rt_runtime_us=-1` is acceptable if spinning
    is ever wanted.
-3. Whether `pipewire-jack`'s libjack calls trip RTSan interceptors from
-   inside a `nonblocking` callback.
+3. ~~Whether `pipewire-jack`'s libjack calls trip RTSan interceptors from
+   inside a `nonblocking` callback.~~ They did not, on the paths exercised;
+   see "Settled 2026-10-12, with M2" in §1.
 4. RTSan on arm64 (`libclang_rt.rtsan-aarch64`). It was not checked.
 5. Atomics on real arm64 hardware: only the compile-time answer was checked.
 6. Plugin editors with a real Qt 6 Wayland UI, a real LV2/VST3 editor, and

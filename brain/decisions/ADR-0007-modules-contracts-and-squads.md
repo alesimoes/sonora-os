@@ -1112,6 +1112,60 @@ and `contracts/*`. It also extends M5's check with an include allowlist for
 the platform-neutral modules, and adds a required Windows (MSVC) CI job after
 M5. §1's dependency rules are otherwise unchanged.
 
+## Update, 2026-10-12: the backend contract as landed (M2)
+
+Source: branch `contract/backend`, after reviews by the code-reviewer, the
+rt-safety-auditor and the driver-engineer as co-owner. Where §4.2's sketch
+and the landed headers differ, the headers in `contracts/backend/` are the
+contract. Nothing here touches §3 or §10.
+
+1. **`make_backend()` lives in `engine/app`, not in the contract.** A
+   factory names every driver, and contracts may not depend on drivers. It
+   is a function local to `main.cpp`, the one place that names a concrete
+   backend.
+2. **A new module, `drivers/support`** (`sonora_driver_support`, header
+   only, driver squad). It holds `natural_less`, `PeriodGuard`,
+   `FrameClock` and `describe_ports()`, which `drivers/jack` uses and
+   `drivers/fake` will use. It is not `common/base`, because everything
+   there must be RT-safe and `natural_less` allocates. Edges:
+   `drivers/support` → `contracts/backend`, `common/base`; `drivers/jack`
+   and `drivers/fake` → `drivers/support`.
+3. **Ports carry a device.** `PortInfo { device, name, channel }`, where
+   `channel` counts within the device. `BackendConfig::capture_device`
+   chooses the device. Empty means the only one, and `open()` fails naming
+   the devices when there are several. Pro Audio applies to every ALSA
+   card, so onboard audio plus the UMC1820 in one sorted list shifted
+   channels. The rule is stated once, in the contract, as the pure
+   function `select_device()`. A device that is not present yet selects
+   nothing and is not an error, so a USB interface may still enumerate
+   late. `sonora-engine --device NAME` sets it.
+4. **What is fatal.** Server loss; `DeviceGone`, when a port that fed an
+   input is unregistered; `Stalled`, when no period arrives for one second
+   while active, checked by `fatal()` against the control thread's clock;
+   and a rate or buffer-size change. `DeviceGone` covers any source port,
+   not only physical ones: an input that loses its source has lost its
+   take either way, and this lets the container test exercise it.
+5. **Guarantees added to §4.2.**
+   - A period whose rate or size differs from the first is refused before
+     `process()`. The rate is read in the period itself, not only from
+     the server's notification.
+   - No `process()` call starts after `fatal()` first returns true. One
+     already running may finish, and `deactivate()` is the barrier.
+   - The callback writes every output, silence included.
+   - `inputs[i]` may be null, and non-null does not mean connected.
+   - `frame_time` never decreases; the backend widens JACK's 32-bit
+     counter.
+   - `buffer_frames()` is the size the first period set.
+   - `connect_inputs_in_order()` is idempotent.
+6. **`fatal_reason()` returns `std::string` by value.** It runs on the
+   control thread only, and its reasons carry specifics ("48000 -> 96000
+   Hz", the device). `fatal()` stays callable from any thread.
+7. **The engine locks its memory.** `mlockall(MCL_CURRENT | MCL_FUTURE)`
+   runs before the session exists, and the engine refuses to start unless
+   `RLIMIT_MEMLOCK` is or can be raised to unlimited (see the commit for
+   why a finite limit is refused). Tests that start the engine in a
+   container need `--ulimit memlock=-1:-1`.
+
 ## Alternatives rejected
 
 **Keep one library and rely on discipline.** It costs nothing today. It costs
