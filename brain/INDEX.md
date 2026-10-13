@@ -47,5 +47,6 @@ One line per entry. Agents read this before opening anything else.
 - [2026-10-11 ring buffer data race](postmortems/2026-10-11-ringbuffer-data-race.md) — producer used the consumer's memory ordering; every test passed, TSan did not.
 - [2026-10-11 RT kernel not default](postmortems/2026-10-11-rt-kernel-not-default.md) — the image installed the RT kernel but booted the generic one; no symptom except unexplained xruns.
 - [2026-10-12 write-usb.sh never run](postmortems/2026-10-12-write-usb-never-run.md) — would have erased the stick and stopped, or formatted the EFI partition; its guard offered to erase a Docker VM disk.
+- [2026-10-13 loopback swap from a skipped period](postmortems/2026-10-13-loopback-swap-skipped-period.md) — PipeWire's dummy driver skipped a period with no xrun; the self-linked input read two blocks swapped; the engine's output was continuous and its clock reported nothing.
 - [2026-10-12 boot menu waits forever](postmortems/2026-10-12-boot-menu-waits-forever.md) — live-build's isolinux and GRUB templates have no timeout; no test ran a bootloader unattended.
 - [2026-10-11 debootstrap tar failure](postmortems/2026-10-11-livebuild-tar-failure.md) — live-build cannot build a chroot on a Windows bind mount; also caught a masked exit code and a missing engine install.

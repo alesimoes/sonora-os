@@ -236,11 +236,12 @@ def check(directory, tracks, rate, seconds):
     return 0
 
 
-def check_playback(played_path, recorded_path, buffer_frames, pan_law_db=-3.0):
+def check_playback(played_path, recorded_path, buffer_frames, pan_law_db=-3.0, clock_steps=0):
     """The take recorded from the monitor bus's left output must be the take
     that was played, at the pan law's centre gain, starting where the region
     starts on the timeline, late only by whole periods of loop latency.
-    Both files start at timeline frame 0 (their TimeReference)."""
+    Both files start at timeline frame 0 (their TimeReference).
+    `clock_steps` is the engine's count for the recording run: see below."""
     for path in (played_path, recorded_path):
         if read_bext_time_reference(path) != 0:
             print(f"FAIL: {path} does not start at timeline frame 0")
@@ -319,6 +320,40 @@ def check_playback(played_path, recorded_path, buffer_frames, pan_law_db=-3.0):
     if lag > 2 * buffer_frames:
         print("FAIL: the playback is later than the loop latency explains")
         return 1
+    # The loop is a self-link: PipeWire's JACK layer gives in_2 the output's
+    # own buffer, one of two in turn. A period the server skips without an
+    # xrun, which the engine counts as a clock step, breaks the turn, and a
+    # block reads out_1 a period early or late (postmortem 2026-10-13). That
+    # and only that is excused, and only when steps were counted: every
+    # block still nulls exactly, at the loop latency or a period either side
+    # of it, and at most two blocks per step. Track 1's tone repeats every
+    # 192 frames, so a block 64 frames out passes as a period out; the
+    # engine's own timing is held to every frame, with no excuse, by
+    # engine/control's test_playback_loopback.
+    if worst > 1e-5 and clock_steps > 0 and buffer_frames:
+        def nulls(b, at):
+            for j in range(b * buffer_frames, min(end, (b + 1) * buffer_frames)):
+                want = gain * played[j - at] if 0 <= j - at < len(played) else 0.0
+                if abs(recorded[j] - want) > 1e-5:
+                    return False
+            return True
+        moved = []
+        for b in range((end + buffer_frames - 1) // buffer_frames):
+            if nulls(b, lag):
+                continue
+            if nulls(b, lag - buffer_frames) or nulls(b, lag + buffer_frames):
+                moved.append(b * buffer_frames)
+                continue
+            print(f"FAIL: the block at recorded frame {b * buffer_frames} nulls at no"
+                  f" loop latency")
+            return 1
+        if len(moved) > 2 * clock_steps:
+            print(f"FAIL: {len(moved)} blocks a period early or late, more than"
+                  f" {clock_steps} clock steps explain")
+            return 1
+        print(f"PLAYBACK PASS: {len(moved)} blocks read a period early or late"
+              f" (recorded frames {moved[:8]}), across {clock_steps} clock steps")
+        return 0
     # Two 24-bit quantisations sit between the played and the recorded
     # sample: about 1.2e-7. 1e-5 is -100 dBFS.
     if worst > 1e-5:
@@ -334,6 +369,7 @@ def main():
     ap.add_argument("--check", metavar="DIR")
     ap.add_argument("--check-playback", nargs=2, metavar=("PLAYED", "RECORDED"))
     ap.add_argument("--buffer", type=int, default=128)
+    ap.add_argument("--clock-steps", type=int, default=0)
     ap.add_argument("--tracks", type=int, default=4)
     ap.add_argument("--rate", type=int, default=48000)
     ap.add_argument("--seconds", type=float, default=3.0)
@@ -345,7 +381,8 @@ def main():
     if args.check:
         return check(args.check, args.tracks, args.rate, args.seconds)
     if args.check_playback:
-        return check_playback(args.check_playback[0], args.check_playback[1], args.buffer)
+        return check_playback(args.check_playback[0], args.check_playback[1], args.buffer,
+                              clock_steps=args.clock_steps)
     ap.error("pass --generate, --check or --check-playback")
 
 
