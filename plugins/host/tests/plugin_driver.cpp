@@ -13,7 +13,9 @@
 //   plugin_driver --host EXE --bundle DIR... --scenario NAME [options]
 //
 // Scenarios: gain, latency, latency_change, crash, deadline, nonfinite,
-// refusals (--format lv2|vst3), rtt, params and list_json (VST3).
+// refusals (--format lv2|vst3), rtt, params and list_json (VST3), and render
+// (an offline run checked against a reference render, for Sonora's own
+// bundles; --args-file).
 // --mode pipelined (pipeline_depth 1, the default) or poll (depth 0,
 // poll-only). Neither waits on the host; rtt is a measurement and does.
 // Exit: 0 pass, 1 fail, 77 a required plugin is not installed (a failure in
@@ -82,6 +84,12 @@ struct Args {
     bool has_change = false;
     uint32_t change_param = 0;
     float change_value = 0.f;
+    // render: the session rate, the files, and what the host is told.
+    uint32_t rate = kRate;
+    std::string input, expected;
+    double tolerance = 1e-6;
+    int64_t expect_latency = -1;
+    std::vector<std::string> sets;  // host --set INDEX:SYMBOL=VALUE
 };
 
 int failures = 0;
@@ -138,7 +146,7 @@ public:
             return false;
         }
         std::memset(region_.base, 0, region_.size);
-        h = plugin::init_header(region_.base, layout_, kRate, kBlock, pipeline_depth,
+        h = plugin::init_header(region_.base, layout_, a.rate, kBlock, pipeline_depth,
                                 static_cast<uint32_t>(uris.size()), 70);
         const std::string engine_pid = std::to_string(getpid());
         pid_ = fork();
@@ -153,6 +161,10 @@ public:
             for (const std::string& b : a.bundles) {
                 argv.push_back("--bundle");
                 argv.push_back(b.c_str());
+            }
+            for (const std::string& s : a.sets) {
+                argv.push_back("--set");
+                argv.push_back(s.c_str());
             }
             argv.push_back(nullptr);
             execv(a.host.c_str(), const_cast<char* const*>(argv.data()));
@@ -1084,10 +1096,129 @@ int scenario_rtt(const Args& a) {
     return 0;
 }
 
+// Planar float32 (every sample of channel 0, then channel 1, ...), the
+// layout sonora-dsp-measure --host-fixture writes.
+bool read_planar(const std::string& path, uint32_t channels, std::vector<std::vector<float>>& out) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::vector<float> all;
+    float buf[4096];
+    for (std::size_t n; (n = std::fread(buf, sizeof(float), 4096, f)) > 0;) all.insert(all.end(), buf, buf + n);
+    std::fclose(f);
+    if (channels == 0 || all.size() % channels != 0) return false;
+    const std::size_t frames = all.size() / channels;
+    out.assign(channels, {});
+    for (uint32_t c = 0; c < channels; ++c)
+        out[c].assign(all.begin() + std::ptrdiff_t(c * frames), all.begin() + std::ptrdiff_t((c + 1) * frames));
+    return true;
+}
+
+// A plugin whose exact output is known, rendered through a real host
+// process: Sonora's own bundles against the N0 reference renders
+// (sonora-dsp-measure --host-fixture, ADR-0011 §1.2's checkpoint). Not
+// periodic: each block is submitted and then waited for, so none is dropped
+// and the output is the plugin's, sample for sample. Only a harness waits
+// like this; the engine never does (Host::round_trip says why).
+int scenario_render(const Args& a) {
+    std::printf("render: %s at %u Hz, %u channel(s)\n", join(a.chain, ',').c_str(), a.rate, a.channels);
+    std::vector<std::vector<float>> in, want;
+    if (a.chain.size() != 1 || !read_planar(a.input, a.channels, in) ||
+        !read_planar(a.expected, a.channels, want) || in[0].size() != want[0].size()) {
+        check(false, "one plugin, and --input and --expected of the same length and channel count");
+        return 0;
+    }
+    Host host;
+    // Depth 0: a block's output is that block's, with no IPC delay to undo.
+    if (int r = start_ready(host, a, a.chain, a.channels, 0)) return r;
+    const uint32_t latency = plugin::checked_latency(host.h->instances[0].latency_frames.load());
+    if (a.expect_latency >= 0) {
+        char what[128];
+        std::snprintf(what, sizeof what, "the plugin reports %u frames of latency, the reference %lld", latency,
+                      (long long)a.expect_latency);
+        check(int64_t(latency) == a.expect_latency, what);
+    }
+
+    const std::size_t frames = in[0].size();
+    std::vector<std::vector<float>> got(a.channels, std::vector<float>(frames, 0.f));
+    std::vector<const float*> ip(a.channels);
+    std::vector<float*> op(a.channels);
+    bool complete = true;
+    uint64_t block = 0;
+    for (std::size_t pos = 0; pos < frames && complete; pos += kBlock, ++block) {
+        const uint32_t n = uint32_t(std::min<std::size_t>(kBlock, frames - pos));
+        for (uint32_t c = 0; c < a.channels; ++c) {
+            ip[c] = in[c].data() + pos;
+            op[c] = got[c].data() + pos;
+        }
+        host.submit(ip.data(), n, block);
+        const uint64_t give_up = monotonic_ns() + 5'000'000'000ull;
+        for (;;) {
+            const uint32_t seen = host.h->done_word.load(std::memory_order_acquire);
+            if (host.idle()) break;
+            if (!host.alive() || monotonic_ns() > give_up) {
+                complete = false;
+                break;
+            }
+            wait_for_change(host.h->done_word, seen, 100'000'000);
+        }
+        if (complete) host.read_output(op.data(), n);
+    }
+    check(complete, "every block came back from the host");
+    if (!complete) {
+        std::printf("  host: %s\n", host.death().c_str());
+        return 0;
+    }
+
+    double worst = 0.0;
+    std::size_t worst_at = 0;
+    uint32_t worst_ch = 0;
+    for (uint32_t c = 0; c < a.channels; ++c)
+        for (std::size_t i = 0; i < frames; ++i) {
+            const double d = std::fabs(double(got[c][i]) - double(want[c][i]));
+            if (d > worst) worst = d, worst_at = i, worst_ch = c;
+        }
+    std::printf("  %zu frames: max |plugin - reference| = %.3g (channel %u, frame %zu: %.9g against %.9g)\n",
+                frames, worst, worst_ch, worst_at, double(got[worst_ch][worst_at]),
+                double(want[worst_ch][worst_at]));
+    char what[128];
+    std::snprintf(what, sizeof what, "output equals the N0 reference render within %.3g", a.tolerance);
+    check(worst <= a.tolerance, what);
+    check(host.h->instances[0].nonfinite_samples.load() == 0, "no NaN or Inf from the plugin");
+    check(host.h->params_rejected.load() == 0, "no parameter change refused");
+    return 0;
+}
+
+// --args-file PATH stands for the arguments in PATH, one per line: the
+// render fixtures sonora-dsp-measure writes. VST3 parameter titles have
+// spaces, so a line is one argument whatever it holds.
+std::vector<std::string> expand_args(int argc, char** argv) {
+    std::vector<std::string> out;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--args-file") != 0 || i + 1 >= argc) {
+            out.push_back(argv[i]);
+            continue;
+        }
+        std::FILE* f = std::fopen(argv[++i], "r");
+        if (!f) {
+            std::fprintf(stderr, "plugin_driver: cannot read %s\n", argv[i]);
+            std::exit(2);
+        }
+        char line[4096];
+        while (std::fgets(line, sizeof line, f)) {
+            std::string s = line;
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+            out.push_back(s);
+        }
+        std::fclose(f);
+    }
+    return out;
+}
+
 Args parse(int argc, char** argv) {
     Args a;
-    for (int i = 1; i + 1 < argc; i += 2) {
-        const std::string k = argv[i], v = argv[i + 1];
+    const std::vector<std::string> args = expand_args(argc, argv);
+    for (std::size_t i = 0; i + 1 < args.size(); i += 2) {
+        const std::string k = args[i], v = args[i + 1];
         if (k == "--host") a.host = v;
         else if (k == "--bundle") a.bundles.push_back(v);
         else if (k == "--format") a.format = v;
@@ -1107,6 +1238,12 @@ Args parse(int argc, char** argv) {
         else if (k == "--chain") a.chain = split(v, ',');
         else if (k == "--channels") a.channels = uint32_t(std::atoi(v.c_str()));
         else if (k == "--blocks") a.blocks = uint64_t(std::atoll(v.c_str()));
+        else if (k == "--rate") a.rate = uint32_t(std::atoi(v.c_str()));
+        else if (k == "--input") a.input = v;
+        else if (k == "--expected") a.expected = v;
+        else if (k == "--tolerance") a.tolerance = std::atof(v.c_str());
+        else if (k == "--expect-latency") a.expect_latency = std::atoll(v.c_str());
+        else if (k == "--set") a.sets.push_back(v);
         else {
             std::fprintf(stderr, "plugin_driver: unknown argument %s\n", k.c_str());
             std::exit(2);
@@ -1116,7 +1253,9 @@ Args parse(int argc, char** argv) {
         std::fprintf(stderr, "usage: plugin_driver --host EXE --bundle DIR... --scenario NAME "
                              "[--chain ID,...] [--channels N] [--mode pipelined|poll] [--blocks N]\n"
                              "       [--format lv2|vst3] [--gain-param ID] [--gain-linear 1] "
-                             "[--expect-replicas N]\n");
+                             "[--expect-replicas N]\n"
+                             "       render: [--args-file F] --input F --expected F [--rate HZ] "
+                             "[--tolerance X] [--expect-latency N] [--set INDEX:SYMBOL=VALUE]...\n");
         std::exit(2);
     }
     return a;
@@ -1144,6 +1283,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "rtt") r = scenario_rtt(a);
     else if (a.scenario == "params") r = scenario_params(a);
     else if (a.scenario == "list_json") r = scenario_list_json(a);
+    else if (a.scenario == "render") r = scenario_render(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
 
     if (r != 0) return r;

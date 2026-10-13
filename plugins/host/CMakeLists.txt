@@ -248,3 +248,47 @@ set_tests_properties(${_plugin_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)
 if(SONORA_PLUGIN_TESTS_ALLOW_SKIP)
   set_tests_properties(${_plugin_tests} PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# --- Sonora's own bundles (ADR-0011 N1, the checkpoint of §1.2): every
+# native processor loaded as a file through this host, LV2 and VST3, and its
+# output compared with the N0 reference render of the same input
+# (sonora-dsp-measure --host-fixture). The host never links plugins/native;
+# it only waits for the bundles to be built.
+get_property(_native GLOBAL PROPERTY SONORA_NATIVE_PLUGINS)
+if(_native)
+  add_dependencies(plugin_driver sonora_native_bundles)
+  set(_fixtures ${CMAKE_BINARY_DIR}/native-host-fixtures)
+  file(MAKE_DIRECTORY ${_fixtures})
+  set(_render $<TARGET_FILE:plugin_driver> --host $<TARGET_FILE:sonora-plugin-host>
+              --scenario render --channels 2)
+  set(_native_tests)
+  foreach(n ${_native})
+    # --preroll 512: Chain::validate runs 4 blocks of 128 frames of silence
+    # through the plugin before the first real block (src/chain.cpp).
+    # --vst3-tempo 120: the tempo the VST3 host's ProcessContext carries
+    # (src/vst3_host.cpp); the LV2 host sends no transport.
+    add_test(NAME native_host_fixture_${n}
+             COMMAND sonora-dsp-measure --processor ${n} --host-fixture ${_fixtures}
+                     --preroll 512 --vst3-tempo 120
+                     --golden ${CMAKE_SOURCE_DIR}/plugins/native/${n}/tests/golden)
+    set_tests_properties(native_host_fixture_${n} PROPERTIES FIXTURES_SETUP native_fixture_${n}
+                         LABELS plugins)
+    get_property(_uri GLOBAL PROPERTY SONORA_NATIVE_${n}_LV2_URI)
+    get_property(_cid GLOBAL PROPERTY SONORA_NATIVE_${n}_VST3_ID)
+    foreach(_case golden-44100 golden-48000 golden-96000 bypass-48000)
+      add_test(NAME native_lv2_${n}_${_case}
+               COMMAND ${_render} --bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${n}.lv2 --chain ${_uri}
+                       --args-file ${_fixtures}/${n}-${_case}-lv2.args)
+      list(APPEND _native_tests native_lv2_${n}_${_case})
+      set_tests_properties(native_lv2_${n}_${_case} PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
+      if(VST3SDK_INCLUDE_DIR)
+        add_test(NAME native_vst3_${n}_${_case}
+                 COMMAND ${_render} --bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${n}.vst3 --chain ${_cid}
+                         --args-file ${_fixtures}/${n}-${_case}-vst3.args)
+        list(APPEND _native_tests native_vst3_${n}_${_case})
+        set_tests_properties(native_vst3_${n}_${_case} PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
+      endif()
+    endforeach()
+  endforeach()
+  set_tests_properties(${_native_tests} PROPERTIES LABELS plugins)
+endif()

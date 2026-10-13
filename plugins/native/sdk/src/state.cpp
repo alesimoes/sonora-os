@@ -45,7 +45,8 @@ std::string written(const Value& v) {
 
 }  // namespace
 
-std::string descriptor_json(const Descriptor& d) {
+std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols,
+                            std::uint32_t symbol_count) {
     Value root = Value::object();
     root.set("id", Value::string(d.id));
     root.set("name", Value::string(d.name));
@@ -75,6 +76,17 @@ std::string descriptor_json(const Descriptor& d) {
             for (std::uint32_t k = 0; k < p.choice_count; ++k) c.push(Value::string(p.choices[k]));
             o.set("choices", std::move(c));
         }
+        Value formats = Value::object();
+        bool any = false;
+        for (std::uint32_t k = 0; k < symbol_count; ++k) {
+            if (symbols[k].index != i) continue;
+            Value f = Value::object();
+            f.set("symbol", Value::string(symbols[k].symbol));
+            f.set("inverted", Value::boolean(symbols[k].inverted));
+            formats.set(symbols[k].format, std::move(f));
+            any = true;
+        }
+        if (any) o.set("formats", std::move(formats));
         params.push(std::move(o));
     }
     root.set("params", std::move(params));

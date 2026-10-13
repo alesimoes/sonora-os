@@ -79,12 +79,18 @@ void modulation(Suite& s) {
 
 }  // namespace
 
+// The golden configuration, shared with the host tests (sonora-dsp-measure
+// --host-fixture): the bundles are rendered through Sonora's hosts with it.
+measure::Config chorus_golden_config() {
+    return {{"rate", 1.3f}, {"depth", 3.0f}, {"delay", 12.0f}, {"voices", 3.0f},
+            {"spread", 70.0f}, {"feedback", 20.0f}, {"mix", 60.0f}};
+}
+
 int chorus(const measure::Args& args) {
     Suite s("chorus", [] { return make_chorus(); }, args);
     centre_delay(s);
     modulation(s);
-    const Config golden = {{"rate", 1.3f}, {"depth", 3.0f}, {"delay", 12.0f}, {"voices", 3.0f},
-                           {"spread", 70.0f}, {"feedback", 20.0f}, {"mix", 60.0f}};
+    const Config golden = chorus_golden_config();
     measure::check_common(s, golden, {{"dry path, mix 0", {{"mix", 0.0f}}}});
     return s.finish();
 }

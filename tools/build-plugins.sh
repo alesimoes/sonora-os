@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the whole CMake root with lilv present, so plugins/host is built, and
 # run ctest: the plugin host tests against real LV2 and VST3 plugins from Debian, the
-# in-tree misbehaving plugins, and every other module's tests.
+# in-tree misbehaving plugins, Sonora's own bundles (ADR-0011 N1: rendered
+# through the host against the N0 references, lv2lint, the VST3 validator),
+# and every other module's tests.
 #
 #   tools/build-plugins.sh                 build + full ctest
 #   tools/build-plugins.sh -L plugins      build + only the plugin host tests
@@ -44,8 +46,13 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
-docker build -q --label org.sonora=1 -t "$IMAGE" \
-  -f "$(host_path "$ROOT/tools")/Dockerfile.plugins" "$(host_path "$ROOT/tools")" >/dev/null
+# CI builds the image itself, with its layers cached between runs (the
+# validators' build stage takes minutes uncached), and sets
+# SONORA_PLUGINS_IMAGE_BUILT=1 so it is not built a second time here.
+if [[ "${SONORA_PLUGINS_IMAGE_BUILT:-0}" != 1 ]]; then
+  docker build -q --label org.sonora=1 -t "$IMAGE" \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.plugins" "$(host_path "$ROOT/tools")" >/dev/null
+fi
 
 # The build directory is container-specific and ignored by git.
 docker run --rm --label org.sonora=1 \
@@ -53,7 +60,8 @@ docker run --rm --label org.sonora=1 \
   -e MEASURE="$MEASURE" \
   -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
   set -euo pipefail
-  cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON >/dev/null
+  cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON \
+    -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON >/dev/null
   cmake --build build-plugins -j"$(nproc)"
   ctest --test-dir build-plugins --output-on-failure "$@"
   if [[ "$MEASURE" == 1 ]]; then

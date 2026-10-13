@@ -36,9 +36,11 @@ add_subdirectory(common/platform)
 # Neutral DSP for the native plugin suite and the meters (ADR-0011 §2.1),
 # layer 1 on common/base.
 add_subdirectory(common/dsp)
-# The native plugin suite (ADR-0011): the Processor interface, then the
-# measurement harness, then each processor. No format adapters yet (N1).
+# The native plugin suite (ADR-0011): the Processor interface, the format
+# adapters (each processor's directory asks them for its LV2 and VST3
+# bundles), then the measurement harness, then each processor.
 add_subdirectory(plugins/native/sdk)
+add_subdirectory(plugins/native/format)
 add_subdirectory(plugins/native/measure)
 add_subdirectory(plugins/native/eq)
 add_subdirectory(plugins/native/compressor)

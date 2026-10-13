@@ -202,6 +202,12 @@ void guard_cost(Suite& s) {
 
 }  // namespace
 
+// The golden configuration, shared with the host tests (sonora-dsp-measure
+// --host-fixture): the bundles are rendered through Sonora's hosts with it.
+measure::Config limiter_golden_config() {
+    return {{"input", 9.0f}, {"ceiling", -1.0f}, {"release", 40.0f}};
+}
+
 int limiter(const measure::Args& args) {
     Suite s("limiter", [] { return make_limiter(); }, args);
     ceiling(s);
@@ -209,7 +215,7 @@ int limiter(const measure::Args& args) {
     release(s);
     aliasing(s);
     guard_cost(s);
-    const Config golden = {{"input", 9.0f}, {"ceiling", -1.0f}, {"release", 40.0f}};
+    const Config golden = limiter_golden_config();
     // The tone at -6 dBFS through 12 dB of drive is limited throughout, so
     // every swept parameter changes the gain the tone gets.
     const Config zipper = {{"input", 12.0f}};

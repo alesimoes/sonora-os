@@ -68,9 +68,12 @@ public:
                          std::uint32_t event_count, const Transport& transport) noexcept SONORA_RT = 0;
 
     virtual float param(std::uint32_t index) const noexcept = 0;
-    // Not real-time: sets a value at once, without smoothing. For state
-    // restore and offline setup; a playing host sends events instead.
-    virtual bool set_param(std::uint32_t index, float value) noexcept = 0;
+    // Sets a value at once, without smoothing: for state restore, offline
+    // setup, and the values a format adapter hands over before the first
+    // block (format/bridge.h). Real-time safe (bounded arithmetic, no
+    // allocation), but a playing host sends events instead, or the change
+    // is a step. A reconfiguring value waits for the next prepare().
+    virtual bool set_param(std::uint32_t index, float value) noexcept SONORA_RT = 0;
 };
 
 }  // namespace sonora::native

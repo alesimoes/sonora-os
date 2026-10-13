@@ -11,6 +11,8 @@
 
 #include <cstdint>
 
+#include "sonora/rt.h"
+
 namespace sonora::native {
 
 enum class Unit : std::uint8_t {
@@ -56,7 +58,7 @@ struct ParamInfo {
 
 // Clamps to the range and rounds stepped values; rejects non-finite input
 // by returning the default.
-float sanitize(const ParamInfo& p, float value) noexcept;
+float sanitize(const ParamInfo& p, float value) noexcept SONORA_RT;
 // Position in [0, 1] on the parameter's taper, and back. For hosts and
 // for full-range sweeps in the zipper test.
 double to_normalized(const ParamInfo& p, double value) noexcept;

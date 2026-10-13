@@ -119,13 +119,19 @@ void expander_curve(Suite& s) {
 
 }  // namespace
 
+// The golden configuration, shared with the host tests (sonora-dsp-measure
+// --host-fixture): the bundles are rendered through Sonora's hosts with it.
+measure::Config gate_golden_config() {
+    return {{"threshold", -30.0f}, {"range", -40.0f}, {"attack", 0.5f}, {"hold", 10.0f},
+            {"release", 60.0f}, {"key_hpf_on", 1.0f}};
+}
+
 int gate(const measure::Args& args) {
     Suite s("gate", [] { return make_gate(); }, args);
     gate_timing(s);
     hysteresis(s);
     expander_curve(s);
-    const Config golden = {{"threshold", -30.0f}, {"range", -40.0f}, {"attack", 0.5f}, {"hold", 10.0f},
-                           {"release", 60.0f}, {"key_hpf_on", 1.0f}};
+    const Config golden = gate_golden_config();
     // Closed on the -6 dBFS tone with 20 dB of range, so the tone is
     // audible, range moves it, and a threshold sweep opens the gate; a
     // 10 ms attack, so the opening itself is not the click. A second pass

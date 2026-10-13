@@ -168,6 +168,13 @@ void feedback_and_pingpong(Suite& s) {
 
 }  // namespace
 
+// The golden configuration, shared with the host tests (sonora-dsp-measure
+// --host-fixture): the bundles are rendered through Sonora's hosts with it.
+measure::Config delay_golden_config() {
+    return {{"note_l", 8.0f}, {"note_r", 7.0f}, {"tempo", 140.0f}, {"feedback", 40.0f},
+            {"hpf", 150.0f}, {"lpf", 6000.0f}, {"mix", 40.0f}};
+}
+
 int delay(const measure::Args& args) {
     Suite s("delay", [] { return make_delay(); }, args);
     exact_times(s);
@@ -178,8 +185,7 @@ int delay(const measure::Args& args) {
     // on, where the note values and the tempo are. Each change of time is
     // a crossfade, never a click.
     measure::check_zipper(s, {{"mix", 50.0f}, {"feedback", 50.0f}}, ", synced");
-    const Config golden = {{"note_l", 8.0f}, {"note_r", 7.0f}, {"tempo", 140.0f}, {"feedback", 40.0f},
-                           {"hpf", 150.0f}, {"lpf", 6000.0f}, {"mix", 40.0f}};
+    const Config golden = delay_golden_config();
     const Config zipper = {{"sync", 0.0f}, {"mix", 50.0f}, {"feedback", 50.0f}};
     measure::check_common(s, golden,
                           {{"dry path, mix 0", {{"mix", 0.0f}}}, {"dry path, ping-pong, mix 0", {{"mix", 0.0f}, {"pingpong", 1.0f}}}},

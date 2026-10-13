@@ -18,7 +18,21 @@
 
 namespace sonora::native {
 
-std::string descriptor_json(const Descriptor& d);
+// Where a plugin format addresses a parameter by something other than its
+// id. The format adapter knows (DPF's LV2 exporter names the bypass port
+// "lv2_enabled" and inverts it); the descriptor carries it so an editor
+// built from the descriptor finds the port.
+struct FormatSymbol {
+    std::uint32_t index;  // into Descriptor::params
+    const char* format;   // "lv2"
+    const char* symbol;   // what that format calls it
+    bool inverted;        // the format's value is (min + max) - ours
+};
+
+// With `symbols`, each listed parameter gets a "formats" object:
+// {"lv2": {"symbol": "lv2_enabled", "inverted": true}}.
+std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols = nullptr,
+                            std::uint32_t symbol_count = 0);
 
 std::string save_state(const Processor& p);
 // On failure the processor is unchanged and `error` says why.

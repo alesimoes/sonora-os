@@ -492,6 +492,19 @@ ADR-0011 "For the owner".
       on DPF, LV2 and VST3; `lv2lint` and Steinberg `validator` in CI; the
       DPF-VST3 checkpoint on the EQ (Unverified 2). dsp-engineer,
       plugin-engineer reviews.
+- [ ] N1 follow-up (PR #40 review, code L2): render through a bundle the
+      paths the host fixture never reaches. Parameter changes after the
+      first block (smoothed, and VST3's one-block-late delivery,
+      ADR-0011 Amendment 2), and reconfiguring values (the EQ's zero-latency
+      mode, a non-default limiter look-ahead) through a host that
+      re-activates the instance. Needs a driver scenario that sets values
+      mid-render and re-activates. dsp-engineer, plugin-engineer reviews.
+- [ ] N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
+      `setBufferSize(..., true)`, which deactivates and re-activates, and so
+      re-prepares and allocates, on whatever thread the host calls
+      `options:set` from. Check the LV2 options interface's threading class
+      and what Ardour, Carla and our host do. If a host can call it beside
+      `run()`, defer the change to the next `activate()`. dsp-engineer.
 - [ ] N1, with M9: plugin-parameter target on `ParameterChange` and the
       read-only telemetry region in `contracts/plugin`. plugin-engineer +
       rt-engineer + ui-engineer.
