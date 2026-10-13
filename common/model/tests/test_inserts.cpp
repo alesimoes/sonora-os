@@ -130,9 +130,11 @@ int test_move_active_replace() {
     History h(new_session(settings()));
     Ids ids(h.current());
     const AddTrack vox = add_track(ids, "Vox");
-    const AddTrack gtr = add_track(ids, "Gtr", 2);
+    const AddTrack gtr = add_track(ids, "Gtr");
+    const AddTrack keys = add_track(ids, "Keys", 2);
     CHECK_APPLY(h, vox);
     CHECK_APPLY(h, gtr);
+    CHECK_APPLY(h, keys);
     const AddInsert a = add_insert(ids, vox.track, 0);
     const AddInsert b = add_insert(ids, vox.track, 1);
     CHECK_APPLY(h, a);
@@ -146,6 +148,9 @@ int test_move_active_replace() {
     CHECK_APPLY(h, (MoveInsert{a.insert, vox.track, 5}));
     // Onto a slot another insert holds: refused, naming the slot.
     CHECK(refused(h, MoveInsert{a.insert, vox.track, 1}, "slot B on track"));
+    // Onto a track of another channel count: refused, since the plugin was
+    // chosen for this one's and a chain has one layout (ADR-0012 §7.1).
+    CHECK(refused(h, MoveInsert{a.insert, keys.track, 0}, "from a 1-channel track onto a 2-channel"));
     // To another track, keeping its values.
     CHECK_APPLY(h, (MoveInsert{a.insert, gtr.track, 9}));
     CHECK(inserts_of(h.current(), 0).size() == 1);
@@ -285,6 +290,55 @@ int test_replica_and_file() {
     return 0;
 }
 
+// An insert's values outlive it only while undo or redo can bring it back;
+// then they are pruned, on the document and on every replica alike, so they
+// stop riding every Snapshot window.
+int test_orphaned_values_are_pruned() {
+    // A new edit after an undo drops the redo branch, and with it the values
+    // of an insert only that branch held.
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    const AddInsert a = add_insert(ids, vox.track, 0);
+    CHECK_APPLY(h, a);
+    CHECK_APPLY(h, (SetInsertParams{a.insert, {{"threshold", -3.0f}}}));
+    CHECK(h.undo());
+    CHECK(h.current().mix.find_insert(a.insert) != nullptr);   // redo still reaches it
+    CHECK_APPLY(h, (SetTrackName{vox.track, "Lead"}));
+    CHECK(h.current().mix.find_insert(a.insert) == nullptr);
+
+    // A replaced insert's values go once every step that held it is below
+    // the floor; the replica follows the floor and prunes the same.
+    Document doc(new_session(settings()), 4096);
+    Replica replica;
+    ReplicationUpdate u;
+    std::string error;
+    CHECK(doc.snapshot(u, error) && replica.receive(u, error));
+    Ids more(doc.current());
+    const AddTrack gtr = add_track(more, "Gtr");
+    CHECK(doc.apply(gtr, u, error) && replica.receive(u, error));
+    const AddInsert b = add_insert(more, gtr.track, 0);
+    CHECK(doc.apply(b, u, error) && replica.receive(u, error));
+    ReplaceInsert r;
+    r.insert = b.insert;
+    r.replacement = more();
+    r.plugin = limiter();
+    CHECK(doc.apply(r, u, error) && replica.receive(u, error));
+    CHECK(doc.current().mix.find_insert(b.insert) != nullptr);   // undo reaches it
+    for (int i = 0; i < 64 && doc.current().mix.find_insert(b.insert) != nullptr; ++i) {
+        AddMarker m;
+        m.marker.id = more();
+        m.marker.position = 1000 * i;
+        m.marker.name = "M" + std::to_string(i);
+        CHECK(doc.apply(m, u, error) && replica.receive(u, error));
+    }
+    CHECK(doc.current().mix.find_insert(b.insert) == nullptr);
+    CHECK(doc.current().mix.find_insert(r.replacement) != nullptr);
+    CHECK(replica.current() == doc.current());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -299,6 +353,7 @@ int main() {
     t(test_move_active_replace);
     t(test_refusals);
     t(test_replica_and_file);
+    t(test_orphaned_values_are_pruned);
     if (failed != 0) {
         std::fprintf(stderr, "model_inserts: %d of %d failed\n", failed, run);
         return 1;

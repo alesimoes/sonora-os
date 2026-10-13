@@ -27,7 +27,9 @@ namespace sonora::api {
 // disagree refuse each other at connect, by name, with both numbers.
 // 2 (M7): ModelAction::Load.
 // 3 (ADR-0012 §8): PluginParameterChange, PluginCatalog,
-//   EventKind::PluginFault; insert operations ride ModelRequest as before.
+//   EventKind::PluginFault, EngineEvent::insert,
+//   ModelAction::FlushPluginState; insert operations ride ModelRequest as
+//   before.
 constexpr uint32_t kProtocolVersion = 3;
 
 // --- client -> engine -------------------------------------------------------
@@ -54,19 +56,35 @@ struct ParameterChange {
     float value = 0.0f;
 };
 
+// A value moved in the plugin's own editor (ADR-0012 §8) comes from the
+// host, not from a client, so no client sends its SetInsertParams. The
+// engine records it itself: at the end of each ParamTouched gesture, and
+// on EditorClosed for whatever moved without a gesture end (an LV2 UI that
+// never says one), it applies SetInsertParams with the insert's whole
+// value list, the moved keys set, and every replica gets it as a
+// ModelUpdate like any other. So the generic panel, compare and the saved
+// values follow the editor, at most one gesture behind. Nothing is sent
+// while a gesture runs.
+//
 // A plugin parameter moving: a knob drag or a surface encoder (ADR-0012 §8).
 // ParameterChange stays track-only. The engine maps it to the insert's
 // chain and hands it to the audio thread; the end of the gesture is saved
 // with the model's SetInsertParams, as a fader's is with SetMix.
-// Protocol version 3.
+//
+// Addressed by insert id and stable key, never by the catalog's dense
+// index: a rescan may reorder a plugin's parameters while a drag is in
+// flight, and an index from the old catalog would then move another
+// parameter. The engine resolves the key against the running instance's
+// own table, built by the scan that instantiated it, so the change reaches
+// the parameter the operator touched or is refused. Protocol version 3.
 struct PluginParameterChange {
     uint64_t seq = 0;
     uint64_t insert = 0;   // the insert's model id
-    // The dense index from the PluginCatalog entry of the insert's plugin,
-    // never a VST3 ParamID or an LV2 port index (ADR-0012 §5.1).
-    uint32_t param = 0;
+    // PluginParam::key: the LV2 port symbol or the VST3 ParamID in decimal,
+    // as the session file stores it (ADR-0012 §6.1).
+    std::string key;
     // Format-native (ADR-0012 §5.2): the LV2 port value, or the VST3
-    // normalised value. The engine refuses one outside the catalog's range.
+    // normalised value. The engine refuses one outside the parameter's range.
     float value = 0.0f;
 };
 
@@ -86,6 +104,18 @@ enum class ModelAction : uint32_t {
     // so the engine needs no view of the interface's filesystem and File >
     // Open's checks stay where the dialog is. Protocol version 2.
     Load = 4,
+    // Bring the document's plugin values up to date with the running
+    // plugins (ADR-0012 §8): before File > Save, and before an insert is
+    // copied or compared. `op` is empty for every insert, or one insert's id
+    // in decimal. The engine has each running plugin's state written to its
+    // file and applies SetInsertState, and SetInsertParams for values moved
+    // in the plugin's own editor and not yet recorded; every replica gets
+    // those as ModelUpdates, and the reply comes after the last of them, so
+    // once it is Ok the replica holds what a session file must. Failed names
+    // each insert whose state could not be had (its host down, GetState
+    // timed out); the others' updates still went out. An insert that is not
+    // running already has its last state in the document. Protocol 3.
+    FlushPluginState = 5,
 };
 
 struct ModelRequest {
@@ -134,18 +164,27 @@ enum class EventKind : uint32_t {
     // change, device gone). The engine closes the take; the interface says
     // why and leaves.
     Fatal = 3,
-    // An insert went wrong: its host crashed, was removed for missed
-    // blocks, restarted, refused the plugin, produced non-finite samples;
-    // the plugin is missing at open; or the host binary does not speak this
-    // engine's versions (ADR-0012 §8). `track` is the track index, `frame`
-    // the slot (0..9, A..J), and the text names the plugin. Protocol 3.
+    // An insert is down: its host crashed, was removed for missed blocks,
+    // is restarting, refused the plugin, produced non-finite samples; the
+    // plugin is missing; or plugins cannot be hosted at all (ADR-0012 §8).
+    // `insert` is the insert's model id, which a MoveInsert or a
+    // ReorderTracks in flight does not change; `track` is -1, and the
+    // interface finds the slot in its replica. The text names the plugin,
+    // its track and its slot, for a log. One fault stands per insert, the
+    // latest replacing the one before; empty text clears it (the insert
+    // runs again, or is gone: removed, undone, inactive, another session
+    // opened). A client that attaches later is sent every fault that still
+    // stands, and no other. Protocol 3.
     PluginFault = 4,
 };
 
 struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
+    // TakeFailed: the take number. 0 otherwise.
     uint64_t frame = 0;
+    // PluginFault: the insert's model id. 0 otherwise. Protocol 3.
+    uint64_t insert = 0;
     std::string text;
 };
 
@@ -192,7 +231,9 @@ enum PluginParamFlag : uint32_t {
 constexpr uint32_t kKnownParamFlags = (1u << 5) - 1;
 
 struct PluginParam {
-    uint32_t index = 0;    // dense; equal to the entry's place in `params`
+    // Dense; equal to the entry's place in `params`. The order to show them
+    // in, and nothing more: a change names its parameter by `key`.
+    uint32_t index = 0;
     std::string key;       // the stable key the session file stores (ADR-0012 §6.1)
     std::string name;
     // Format-native, as the value a PluginParameterChange carries.
@@ -200,6 +241,15 @@ struct PluginParam {
     float max = 1.0f;
     float default_value = 0.0f;
     uint32_t flags = 0;    // PluginParamFlag
+    // What the value is in: "dB", "Hz", "ms", "%"; empty when the plugin
+    // does not say (LV2 units:unit, VST3 ParameterInfo::units).
+    std::string unit;
+    // 0: continuous. Otherwise the number of values it takes, evenly spaced
+    // from min to max: 2 for a toggle, the choices of an enum (LV2
+    // enumeration scale points, VST3 stepCount + 1). Never 1.
+    uint32_t steps = 0;
+    // Empty, or one label per step, in order from min ("Off", "Peak", "RMS").
+    std::vector<std::string> labels;
 };
 
 struct PluginInfo {
@@ -208,6 +258,10 @@ struct PluginInfo {
     std::string name;
     std::string vendor;
     std::string version;
+    // What a browser groups it by, as the plugin declares it, broadest
+    // first: its LV2 classes' labels ("Dynamics", "Compressor"), or its VST3
+    // subCategories split at '|' ("Fx", "Dynamics"). May be empty.
+    std::vector<std::string> categories;
     uint32_t inputs = 0;   // audio channels
     uint32_t outputs = 0;
     // False when the scan refused the plugin; `refusal` says why, and an

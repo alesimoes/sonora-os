@@ -264,7 +264,9 @@ struct MixState {
     std::vector<TrackMix> tracks;
     // Keyed by insert id, and outliving an undone AddInsert or a
     // RemoveInsert the same way, so undo and redo bring a plugin back with
-    // its settings.
+    // its settings. Unlike a track's, an entry goes once no step in the undo
+    // window holds its insert (History::prune_insert_values): an insert
+    // carries up to kMaxInsertParams values.
     std::vector<InsertMix> inserts;
     const TrackMix* find(Id track) const;
     const InsertMix* find_insert(Id insert) const;

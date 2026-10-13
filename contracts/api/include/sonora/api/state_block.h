@@ -76,12 +76,19 @@ enum InsertFlag : uint32_t {
     kInsertMissing = 1u << 6,      // the plugin is not installed here
 };
 
-// One insert slot of a track. Under the header's seqlock.
+// One insert slot of a track.
 struct InsertState {
+    // Under the header's seqlock: read together, a fault with the latency
+    // it leaves.
     std::atomic<uint32_t> flags;            // InsertFlag
     std::atomic<uint32_t> latency_frames;   // the insert's own, as its host reports it
+    // Not under the seqlock: each a word read on its own, which never needs
+    // another to make sense, and which only rises while the slot holds the
+    // same insert. Once hosts run they move
+    // on most publishes; inside the section they made every slot a store in
+    // it again, and a reader starved (rt-engineer review of #46).
     std::atomic<uint32_t> misses;           // blocks not collected; monotonic
-    std::atomic<uint32_t> worst_run_us;     // the longest block its host took
+    std::atomic<uint32_t> worst_run_us;     // the longest block its host took; monotonic
     std::atomic<uint32_t> nonfinite;        // NaN or Inf samples replaced; monotonic
 };
 
@@ -104,7 +111,8 @@ struct alignas(64) TrackState {
     std::atomic<uint32_t> latency_frames;
     // Not under the seqlock; see above.
     PeakRing peaks;
-    // Under the seqlock, slot A first. Layout 2.
+    // Slot A first; flags and latency under the seqlock, the counters not.
+    // Layout 2.
     InsertState inserts[kInsertSlots];
 };
 
@@ -123,7 +131,7 @@ struct alignas(64) StateHeader {
     // Also the tick the peak ring slots are tagged with.
     std::atomic<uint64_t> heartbeat;
     // Odd while a publish is writing. Covers everything below and every
-    // TrackState field except the peaks.
+    // TrackState field except the peaks and the insert counters.
     std::atomic<uint64_t> seq;
 
     std::atomic<uint32_t> transport_state;   // TransportState
@@ -243,7 +251,8 @@ public:
     bool init(void* memory, std::size_t bytes, uint32_t capacity_tracks,
               uint32_t track_count, uint64_t publish_period_ns);
 
-    // One publish: the seqlock section, then the peaks, then the heartbeat.
+    // One publish: the seqlock section, then the insert counters and the
+    // peaks, then the heartbeat.
     // `tracks` and `peaks` have track_count entries. Short and bounded: it
     // never loops and never waits for a reader.
     void publish(const TransportFields& transport, const TrackFields* tracks,

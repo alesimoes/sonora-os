@@ -106,7 +106,7 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
         t.overruns.store(tracks[i].overruns, rel);
         t.clip_count.store(tracks[i].clip_count, rel);
         t.latency_frames.store(tracks[i].latency_frames, rel);
-        // Fifty fields a track that seldom move (a fault, a latency change,
+        // Twenty fields a track that seldom move (a fault, a latency change,
         // an edit): stored only when they changed. Every store lengthens the
         // section a reader retries around, and storing them all on every
         // publish starved a 60 Hz reader under TSan on a two-core runner.
@@ -114,17 +114,37 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
         InsertFields* published = &inserts_[std::size_t{i} * kInsertSlots];
         for (uint32_t k = 0; k < kInsertSlots; ++k) {
             const InsertFields& from = tracks[i].inserts[k];
-            if (std::memcmp(&from, &published[k], sizeof from) == 0) continue;
+            if (from.flags == published[k].flags &&
+                from.latency_frames == published[k].latency_frames) {
+                continue;
+            }
             InsertState& to = t.inserts[k];
             to.flags.store(from.flags, rel);
             to.latency_frames.store(from.latency_frames, rel);
-            to.misses.store(from.misses, rel);
-            to.worst_run_us.store(from.worst_run_us, rel);
-            to.nonfinite.store(from.nonfinite, rel);
-            published[k] = from;
+            published[k].flags = from.flags;
+            published[k].latency_frames = from.latency_frames;
         }
     }
     h.seq.store(s + 2, rel);
+
+    // The counters move on most publishes once hosts run, so they are kept
+    // out of the section; changed-only still saves the cache lines.
+    for (uint32_t i = 0; i < track_count_; ++i) {
+        InsertFields* published = &inserts_[std::size_t{i} * kInsertSlots];
+        for (uint32_t k = 0; k < kInsertSlots; ++k) {
+            const InsertFields& from = tracks[i].inserts[k];
+            InsertFields& was = published[k];
+            InsertState& to = tracks_[i].inserts[k];
+            if (from.misses != was.misses) to.misses.store(from.misses, rel);
+            if (from.worst_run_us != was.worst_run_us) {
+                to.worst_run_us.store(from.worst_run_us, rel);
+            }
+            if (from.nonfinite != was.nonfinite) to.nonfinite.store(from.nonfinite, rel);
+            was.misses = from.misses;
+            was.worst_run_us = from.worst_run_us;
+            was.nonfinite = from.nonfinite;
+        }
+    }
 
     // The slots before the heartbeat: a reader that sees tick n finds every
     // slot up to n written.

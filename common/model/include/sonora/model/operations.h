@@ -165,10 +165,15 @@ struct ReorderTracks {
 // --- inserts (ADR-0012 §6.3) ------------------------------------------------
 //
 // Structure (which plugin, which slot, active) is undoable: owner decision
-// O1's default. Flipping it moves the next five into is_undoable()'s
-// not-undoable list and TrackEdit::inserts into MixState; neither the
-// codec nor the session file changes. Values (bypass, parameters, state)
-// are mix state either way, saved and never undone, as a fader is.
+// O1's default. Values (bypass, parameters, state) are mix state either
+// way, saved and never undone, as a fader is.
+//
+// Flipping O1 is not small. is_undoable() is five lines, but
+// TrackEdit::inserts moves into MixState, and with it apply.cpp's
+// locate_insert and edit_insert, same_document(), the session reader, and
+// the undo-window codec, which serialises inserts inside each edit track
+// (kWindowFormat 2) and so changes format. Only the operation codec and the
+// session file stay as they are.
 
 // A new insert in a free slot of `track`, active, with these values.
 struct AddInsert {
@@ -187,7 +192,7 @@ struct RemoveInsert {
 };
 
 // Between slots of one track or onto another track; refused onto a slot
-// another insert holds.
+// another insert holds, and onto a track of another channel count.
 struct MoveInsert {
     Id insert = 0;
     Id to_track = 0;

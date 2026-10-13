@@ -98,12 +98,12 @@ public:
         pos_ += n;
         return true;
     }
-    bool list(std::vector<std::string>& v) {
+    bool list(std::vector<std::string>& v, std::size_t cap = kMaxListEntries) {
         uint32_t n = 0;
         if (!u32(n)) return false;
-        if (n > kMaxListEntries) {
+        if (n > cap) {
             return fail("a list of " + std::to_string(n) + " entries, over the cap of " +
-                        std::to_string(kMaxListEntries));
+                        std::to_string(cap));
         }
         v.clear();
         for (uint32_t i = 0; i < n; ++i) {
@@ -164,7 +164,7 @@ private:
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
-constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Load);
+constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::FlushPluginState);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::PluginFault);
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::Snapshot);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
@@ -223,6 +223,7 @@ void encode(const EngineEvent& m, std::string& out) {
     w.u32(static_cast<uint32_t>(m.kind));
     w.i32(m.track);
     w.u64(m.frame);
+    w.u64(m.insert);
     w.str(m.text);
 }
 
@@ -239,7 +240,7 @@ void encode(const PluginParameterChange& m, std::string& out) {
     Writer w(out, Type::PluginParameterChange);
     w.u64(m.seq);
     w.u64(m.insert);
-    w.u32(m.param);
+    w.str(m.key);
     w.f32(m.value);
 }
 
@@ -255,6 +256,25 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
                     " parameters, over the cap of " + std::to_string(kMaxPluginParams);
             return false;
         }
+        if (p.categories.size() > kMaxPluginCategories) {
+            error = p.name + " has " + std::to_string(p.categories.size()) +
+                    " categories, over the cap of " + std::to_string(kMaxPluginCategories);
+            return false;
+        }
+        for (const PluginParam& q : p.params) {
+            if (q.key.size() > kMaxParamKeyBytes) {
+                error = p.name + " parameter " + q.name + " has a key of " +
+                        std::to_string(q.key.size()) + " bytes, over the cap of " +
+                        std::to_string(kMaxParamKeyBytes);
+                return false;
+            }
+            if (q.labels.size() > kMaxParamLabels) {
+                error = p.name + " parameter " + q.name + " has " +
+                        std::to_string(q.labels.size()) + " labels, over the cap of " +
+                        std::to_string(kMaxParamLabels);
+                return false;
+            }
+        }
     }
     Writer w(out, Type::PluginCatalog);
     w.u64(m.generation);
@@ -265,6 +285,7 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
         w.str(p.name);
         w.str(p.vendor);
         w.str(p.version);
+        w.list(p.categories);
         w.u32(p.inputs);
         w.u32(p.outputs);
         w.u32(p.usable ? 1 : 0);
@@ -279,6 +300,9 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
             w.f32(q.max);
             w.f32(q.default_value);
             w.u32(q.flags);
+            w.str(q.unit);
+            w.u32(q.steps);
+            w.list(q.labels);
         }
     }
     return true;
@@ -356,7 +380,8 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
     Reader r(bytes, error);
     EngineEvent m;
     if (!r.type(Type::EngineEvent) || !r.enumeration(m.kind, kLastEvent) ||
-        !r.i32(m.track) || !r.u64(m.frame) || !r.str(m.text) || !r.done()) {
+        !r.i32(m.track) || !r.u64(m.frame) || !r.u64(m.insert) || !r.str(m.text) ||
+        !r.done()) {
         return false;
     }
     out = std::move(m);
@@ -379,10 +404,10 @@ bool decode(std::string_view bytes, PluginParameterChange& out, std::string& err
     Reader r(bytes, error);
     PluginParameterChange m;
     if (!r.type(Type::PluginParameterChange) || !r.u64(m.seq) || !r.u64(m.insert) ||
-        !r.u32(m.param) || !r.f32(m.value) || !r.done()) {
+        !r.str(m.key, kMaxParamKeyBytes) || !r.f32(m.value) || !r.done()) {
         return false;
     }
-    out = m;
+    out = std::move(m);
     return true;
 }
 
@@ -398,15 +423,17 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
         PluginInfo p;
         uint32_t params = 0;
         if (!r.enumeration(p.format, kLastFormat) || !r.str(p.id) || !r.str(p.name) ||
-            !r.str(p.vendor) || !r.str(p.version) || !r.u32(p.inputs) || !r.u32(p.outputs) ||
+            !r.str(p.vendor) || !r.str(p.version) ||
+            !r.list(p.categories, kMaxPluginCategories) || !r.u32(p.inputs) || !r.u32(p.outputs) ||
             !r.flag(p.usable) || !r.str(p.refusal) || !r.flag(p.has_editor) ||
             !r.count(params, kMaxPluginParams, "parameters")) {
             return false;
         }
         for (uint32_t k = 0; k < params; ++k) {
             PluginParam q;
-            if (!r.u32(q.index) || !r.str(q.key) || !r.str(q.name) || !r.f32(q.min) ||
-                !r.f32(q.max) || !r.f32(q.default_value) || !r.u32(q.flags)) {
+            if (!r.u32(q.index) || !r.str(q.key, kMaxParamKeyBytes) || !r.str(q.name) ||
+                !r.f32(q.min) || !r.f32(q.max) || !r.f32(q.default_value) || !r.u32(q.flags) ||
+                !r.str(q.unit) || !r.u32(q.steps) || !r.list(q.labels, kMaxParamLabels)) {
                 return false;
             }
             const std::string where = p.name + " parameter " + std::to_string(k);
@@ -421,6 +448,13 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
             }
             if ((q.flags & ~kKnownParamFlags) != 0) {
                 return r.fail(where + " has flags this version does not define");
+            }
+            if (q.steps == 1) {
+                return r.fail(where + " has 1 step; a stepped parameter takes at least 2");
+            }
+            if (!q.labels.empty() && q.labels.size() != q.steps) {
+                return r.fail(where + " has " + std::to_string(q.labels.size()) +
+                              " labels for " + std::to_string(q.steps) + " steps");
             }
             p.params.push_back(std::move(q));
         }

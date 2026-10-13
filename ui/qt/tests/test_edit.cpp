@@ -1105,6 +1105,21 @@ int test_pre_migration_backup() {
     OK(write_session_file(fresh, "{}", why, caution));
     OK(!QFileInfo::exists(QDir(QFileInfo(fresh).absolutePath())
                               .filePath(QStringLiteral("Session File Backups"))));
+
+    // A file of a newer version is refused, not replaced: this build cannot
+    // read what it would destroy (session-format.md, forward compatibility).
+    const QString newer = session_file_path(dir.path(), QStringLiteral("Newer"));
+    const std::string v99 = "{\n  \"sonora_session\": 99\n}\n";
+    CHECK(QDir().mkpath(QFileInfo(newer).absolutePath()));
+    {
+        QFile out(newer);
+        CHECK(out.open(QIODevice::WriteOnly));
+        CHECK(out.write(v99.data(), static_cast<qint64>(v99.size())) ==
+              static_cast<qint64>(v99.size()));
+    }
+    OK(!write_session_file(newer, "{\"sonora_session\": 2}\n", why, caution));
+    OK(why.find("version 99") != std::string::npos && why.find("newer") != std::string::npos);
+    OK(contents(newer) == v99);
     return 0;
 }
 

@@ -547,13 +547,16 @@ std::string plugin_problem(const PluginRef& p, std::string& where) {
     return {};
 }
 
+std::string insert_param_count_problem(std::size_t count) {
+    if (count <= kMaxInsertParams) return {};
+    return "holds " + str(static_cast<std::int64_t>(count)) + " values; an insert holds at most " +
+           str(static_cast<std::int64_t>(kMaxInsertParams));
+}
+
 std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::string& where) {
     where = "params";
-    if (m.params.size() > kMaxInsertParams) {
-        return "holds " + str(static_cast<std::int64_t>(m.params.size())) +
-               " values; an insert holds at most " +
-               str(static_cast<std::int64_t>(kMaxInsertParams));
-    }
+    std::string why = insert_param_count_problem(m.params.size());
+    if (!why.empty()) return why;
     std::unordered_set<std::string> keys;
     for (std::size_t i = 0; i < m.params.size(); ++i) {
         const ParamValue& p = m.params[i];

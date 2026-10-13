@@ -89,6 +89,11 @@ void round_trips() {
         ModelRequest back;
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.seq == 3 && back.action == ModelAction::Redo && back.op == m.op);
+        m.action = ModelAction::FlushPluginState;
+        m.op = "42";
+        wire::encode(m, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.action == ModelAction::FlushPluginState && back.op == "42");
     }
     {
         CommandReply r;
@@ -110,7 +115,13 @@ void round_trips() {
         EngineEvent back;
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.kind == EventKind::TakeFailed && back.track == -1 && back.frame == 12 &&
-              back.text == e.text);
+              back.insert == 0 && back.text == e.text);
+        e.kind = EventKind::PluginFault;
+        e.frame = 0;
+        e.insert = 0x0102030405060708ull;
+        wire::encode(e, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.kind == EventKind::PluginFault && back.insert == e.insert && back.frame == 0);
     }
     {
         ModelUpdate u;
@@ -337,6 +348,7 @@ PluginCatalog sample_catalog() {
     a.name = "x42-dpl \xC3\xA9";
     a.vendor = "x42";
     a.version = "0.9.2";
+    a.categories = {"Dynamics", "Limiter"};
     a.inputs = a.outputs = 1;
     a.has_editor = true;
     PluginParam q;
@@ -347,6 +359,7 @@ PluginCatalog sample_catalog() {
     q.max = 0.0f;
     q.default_value = -1.0f;
     q.flags = kParamAutomatable | kParamLogarithmic;
+    q.unit = "dB";
     a.params.push_back(q);
     q.index = 1;
     q.key = "enable";
@@ -354,6 +367,16 @@ PluginCatalog sample_catalog() {
     q.min = 0.0f;
     q.max = 1.0f;
     q.default_value = 1.0f;
+    q.unit.clear();
+    q.steps = 2;
+    a.params.push_back(q);
+    q.index = 2;
+    q.key = "mode";
+    q.flags = kParamEnum;
+    q.max = 2.0f;
+    q.default_value = 0.0f;
+    q.steps = 3;
+    q.labels = {"Peak", "RMS", "True peak"};
     a.params.push_back(q);
     PluginInfo& b = c.plugins[1];
     b.format = PluginFormat::Vst3;
@@ -373,14 +396,18 @@ void plugin_messages() {
         PluginParameterChange c;
         c.seq = 41;
         c.insert = 0x00ABCDEF01234567ull;
-        c.param = 8191;
+        c.key = "4294967295";
         c.value = -0.75f;
         wire::encode(c, bytes);
         PluginParameterChange back;
         CHECK(wire::decode(bytes, back, error));
-        CHECK(back.seq == 41 && back.insert == c.insert && back.param == 8191 &&
+        CHECK(back.seq == 41 && back.insert == c.insert && back.key == "4294967295" &&
               back.value == -0.75f);
         CHECK(!wire::decode(bytes + "x", back, error) && mentions(error, "left over"));
+        // A key no plugin has: longer than any LV2 symbol or ParamID needs.
+        c.key.assign(wire::kMaxParamKeyBytes + 1, 'k');
+        wire::encode(c, bytes);
+        CHECK(!wire::decode(bytes, back, error) && mentions(error, "over the cap"));
     }
     const PluginCatalog c = sample_catalog();
     CHECK(wire::encode(c, bytes, error));
@@ -390,14 +417,18 @@ void plugin_messages() {
     const PluginInfo& a = back.plugins[0];
     CHECK(a.format == PluginFormat::Lv2 && a.id == c.plugins[0].id && a.name == c.plugins[0].name);
     CHECK(a.vendor == "x42" && a.version == "0.9.2" && a.inputs == 1 && a.outputs == 1);
-    CHECK(a.usable && a.refusal.empty() && a.has_editor && a.params.size() == 2);
+    CHECK(a.usable && a.refusal.empty() && a.has_editor && a.params.size() == 3);
+    CHECK(a.categories == c.plugins[0].categories);
     CHECK(a.params[0].key == "threshold" && a.params[0].min == -10.0f &&
           a.params[0].max == 0.0f && a.params[0].default_value == -1.0f &&
           a.params[0].flags == (kParamAutomatable | kParamLogarithmic));
+    CHECK(a.params[0].unit == "dB" && a.params[0].steps == 0 && a.params[0].labels.empty());
     CHECK(a.params[1].index == 1 && a.params[1].flags == (kParamToggle | kParamPastCap));
+    CHECK(a.params[1].steps == 2 && a.params[1].labels.empty());
+    CHECK(a.params[2].steps == 3 && a.params[2].labels == c.plugins[0].params[2].labels);
     const PluginInfo& b = back.plugins[1];
     CHECK(b.format == PluginFormat::Vst3 && !b.usable && b.refusal == "the scan timed out");
-    CHECK(!b.has_editor && b.params.empty() && b.inputs == 2);
+    CHECK(!b.has_editor && b.params.empty() && b.inputs == 2 && b.categories.empty());
 
     // Each refusal names what is wrong, and leaves the output alone.
     const auto refused = [&](PluginCatalog bad, const char* says) {
@@ -428,13 +459,32 @@ void plugin_messages() {
     bad = c;
     bad.plugins.resize(wire::kMaxCatalogPlugins + 1);
     CHECK(refused(bad, "over the cap"));
+    // Steps and labels that cannot be drawn as a choice.
+    bad = c;
+    bad.plugins[0].params[2].steps = 1;
+    bad.plugins[0].params[2].labels.resize(1);
+    CHECK(refused(bad, "1 step"));
+    bad = c;
+    bad.plugins[0].params[2].labels.pop_back();
+    CHECK(refused(bad, "2 labels for 3 steps"));
+    bad = c;
+    bad.plugins[0].params[0].labels = {"a"};
+    CHECK(refused(bad, "1 labels for 0 steps"));
+    bad = c;
+    bad.plugins[0].params[2].steps = static_cast<uint32_t>(wire::kMaxParamLabels + 1);
+    bad.plugins[0].params[2].labels.resize(wire::kMaxParamLabels + 1);
+    CHECK(refused(bad, "over the cap"));
+    bad = c;
+    bad.plugins[0].categories.resize(wire::kMaxPluginCategories + 1);
+    CHECK(refused(bad, "over the cap"));
     // A flag byte that is neither 0 nor 1. `usable` follows the outputs:
-    // type, generation, count, format, four strings, inputs, outputs.
+    // type, generation, count, format, four strings, categories (a count),
+    // inputs, outputs.
     std::string enc;
     PluginCatalog one;
     one.plugins.resize(1);
     CHECK(wire::encode(one, enc, error));
-    const std::size_t usable_at = 1 + 8 + 4 + 4 + 4 * 4 + 4 + 4;
+    const std::size_t usable_at = 1 + 8 + 4 + 4 + 4 * 4 + 4 + 4 + 4;
     enc[usable_at] = 2;
     CHECK(!wire::decode(enc, back, error) && mentions(error, "a flag of 2"));
     // A count past the cap is refused before anything is reserved for it.
@@ -453,8 +503,7 @@ void plugin_messages() {
     CHECK(wire::decode_into(bytes, inbox, error));
     EngineEvent e;
     e.kind = EventKind::PluginFault;
-    e.track = 2;
-    e.frame = 9;
+    e.insert = 9;
     e.text = "x42-dpl (slot J) crashed";
     wire::encode(e, bytes);
     CHECK(wire::decode_into(bytes, inbox, error));
@@ -465,7 +514,7 @@ void plugin_messages() {
     CHECK(inbox.catalogs.size() == 1 && inbox.catalogs[0].plugins.size() == 2);
     CHECK(inbox.replies.size() == 1 && inbox.replies[0].seq == 3);
     CHECK(inbox.events.size() == 1 && inbox.events[0].kind == EventKind::PluginFault &&
-          inbox.events[0].frame == 9);
+          inbox.events[0].insert == 9);
     CHECK(inbox.model.size() == 1 && inbox.model[0].revision == 4);
     // What a client sends is not for a client's inbox.
     PluginParameterChange pc;

@@ -416,6 +416,19 @@ int test_malformed_inserts() {
     CHECK(refused(edit(text, "\"version\": \"1.2.14\"",
                        "\"version\": \"1.2.14\", \"vendor\": \"LSP\""),
                   "unknown key \"vendor\"", "tracks[0].inserts[1].plugin.vendor"));
+
+    // Too many values is refused by the count, before any is read: the
+    // malformed entry past the cap is never reached.
+    std::string many = "\"params\": [\n";
+    for (std::size_t k = 0; k < kMaxInsertParams; ++k) {
+        many += "            {\"key\": \"p" + std::to_string(k) + "\", \"value\": 0},\n";
+    }
+    const std::string crowded =
+        edit(edit(text, "\"params\": [\n            {\n              \"key\": \"threshold\"",
+                  many + "            {\n              \"key\": \"threshold\""),
+             "\"key\": \"gain\",\n              \"value\": 0.3", "\"key\": \"gain\"");
+    CHECK(refused(crowded, "holds 8194 values; an insert holds at most 8192",
+                  "tracks[0].inserts[0].params"));
     return 0;
 }
 

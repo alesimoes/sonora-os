@@ -33,6 +33,8 @@ std::string marker_problem(const Marker& m);
 std::string plugin_problem(const PluginRef& p, std::string& where);
 std::string inserts_problem(const std::vector<Insert>& inserts, std::string& where);
 std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::string& where);
+// Empty when `count` values fit one insert.
+std::string insert_param_count_problem(std::size_t count);
 
 const Region* find_region(const Playlist& p, Id id);
 // Canonical order: by the left region's position.

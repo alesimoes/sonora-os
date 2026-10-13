@@ -45,6 +45,13 @@ constexpr std::size_t kMaxListEntries = 4096;
 // ADR-0012 §5.1, which no one insert can pass either.
 constexpr std::size_t kMaxCatalogPlugins = 4096;
 constexpr std::size_t kMaxPluginParams = 8192;
+// An enum parameter's labels, and a plugin's categories: far past any
+// plugin's, short of a list that would make a catalog unreadable.
+constexpr std::size_t kMaxParamLabels = 4096;
+constexpr std::size_t kMaxPluginCategories = 16;
+// A parameter key: an LV2 port symbol or a VST3 ParamID in decimal (ten
+// digits). No real one comes near it.
+constexpr std::size_t kMaxParamKeyBytes = 256;
 
 // The type byte, or false for an empty buffer.
 bool peek_type(std::string_view bytes, Type& out);
@@ -71,7 +78,7 @@ bool decode(std::string_view bytes, ModelUpdate& out, std::string& error);
 bool decode(std::string_view bytes, PluginParameterChange& out, std::string& error);
 // Also refuses a catalog that would mislead an interface: a dense index out
 // of place, a non-finite or inverted range, a flag this version does not
-// define.
+// define, one step, labels that are not one per step.
 bool decode(std::string_view bytes, PluginCatalog& out, std::string& error);
 
 // A client's half: whatever the engine sends to a client (a reply, an

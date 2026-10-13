@@ -92,8 +92,16 @@ bool keep_older_version(const QString& file, std::string& why) {
     std::int64_t version = 0;
     if (!model::file_format_version(std::string_view(old.constData(), static_cast<std::size_t>(old.size())),
                                     version) ||
-        version >= model::kFormatVersion) {
+        version == model::kFormatVersion) {
         return true;
+    }
+    // Forward compatibility: a newer build's file is never overwritten by an
+    // older one, which cannot even read what it would destroy.
+    if (version > model::kFormatVersion) {
+        why = text(file) + " is a session file of version " + std::to_string(version) +
+              ", newer than the version " + std::to_string(model::kFormatVersion) +
+              " this build writes; it is left as it is. Save under another name";
+        return false;
     }
     const QFileInfo info(file);
     const QString backups = QDir(info.absolutePath()).filePath(QStringLiteral("Session File Backups"));

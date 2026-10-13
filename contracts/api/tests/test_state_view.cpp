@@ -86,12 +86,11 @@ bool consistent(const TransportSnapshot& s) {
            s.compensation_shortfall_frames == k;
 }
 
+// Only what the seqlock covers. The per-insert counters are words of their
+// own, outside it, and a snapshot may pair them with the next publish.
 bool inserts_carry(const TrackSnapshot& s, uint32_t k) {
     for (const InsertSnapshot& in : s.inserts) {
-        if (in.flags != k || in.latency_frames != k || in.misses != k || in.worst_run_us != k ||
-            in.nonfinite != k) {
-            return false;
-        }
+        if (in.flags != k || in.latency_frames != k) return false;
     }
     return true;
 }
@@ -274,6 +273,74 @@ void paced_writer_does_not_starve_a_60hz_reader() {
     std::printf("  paced 1 kHz writer, 60 Hz reader: %d ticks, %d stale, worst tick %.3f ms\n",
                 ticks, stale,
                 std::chrono::duration<double, std::milli>(worst).count());
+}
+
+// Checklist 4's load: every running insert's misses and worst run move on
+// most publishes. Those counters sit outside the seqlock, so a slot that
+// only counts is not stored inside the section a reader retries around,
+// and a 60 Hz reader is not starved as it was when every slot was stored on
+// every publish (rt-engineer review of #46). Counters only ever rise.
+void counter_churn_does_not_starve_a_60hz_reader() {
+    StateBlockMemory mem(kTracks);
+    StateWriter w;
+    CHECK(w.init(mem.data(), mem.bytes(), kTracks, kTracks, 1'000'000));
+    const auto fill = [](Publish& p, uint32_t k) {
+        p.fill(k);
+        for (TrackFields& tr : p.tracks) {
+            for (InsertFields& in : tr.inserts) {
+                in.flags = kInsertPresent | kInsertActive | kInsertRunning;
+                in.latency_frames = 64;
+                in.misses = k;
+                in.worst_run_us = k;
+                in.nonfinite = k;
+            }
+        }
+    };
+    Publish first(kTracks);
+    first.inserts = false;
+    fill(first, 1);
+    w.publish(first.t, first.tracks.data(), first.peaks.data());
+    std::atomic<bool> stop{false};
+    std::thread writer([&]() {
+        Publish p(kTracks);
+        p.inserts = false;
+        auto next = Clock::now();
+        for (uint32_t k = 2; !stop.load(std::memory_order_relaxed); ++k) {
+            fill(p, k);
+            w.publish(p.t, p.tracks.data(), p.peaks.data());
+            next += std::chrono::microseconds(1000);
+            std::this_thread::sleep_until(next);
+        }
+    });
+    StateView v;
+    std::string error;
+    CHECK(v.attach(mem.data(), mem.bytes(), error));
+    StateFrame f;
+    int stale = 0, torn = 0, backwards = 0;
+    std::vector<uint32_t> last(kTracks, 0);
+    auto next = Clock::now();
+    for (int tick = 0; tick < 60; ++tick) {
+        v.frame(f);
+        if (f.transport.stale) {
+            ++stale;
+        } else {
+            for (uint32_t i = 0; i < kTracks; ++i) {
+                const InsertSnapshot& in = f.tracks[i].inserts[kInsertSlots - 1];
+                if (in.latency_frames != 64 || !in.present()) ++torn;
+                if (in.misses < last[i]) ++backwards;
+                last[i] = std::max(last[i], in.misses);
+            }
+        }
+        next += std::chrono::microseconds(16667);
+        std::this_thread::sleep_until(next);
+    }
+    stop = true;
+    writer.join();
+    CHECK(torn == 0);
+    CHECK(backwards == 0);
+    CHECK(stale == 0);
+    CHECK(last[0] > 1);
+    std::printf("  counters moving on every publish, 60 Hz frames: %d stale\n", stale);
 }
 
 // A frame is one publish: the transport and every track read under one
@@ -520,6 +587,7 @@ int main() {
     blocked_writer_reads_stale();
     never_torn_unpaced();
     paced_writer_does_not_starve_a_60hz_reader();
+    counter_churn_does_not_starve_a_60hz_reader();
     frame_is_one_publish();
     peak_cursors_are_per_reader();
     heartbeat();

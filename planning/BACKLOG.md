@@ -101,6 +101,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        the streak named to the operator, the per-plugin NaN/Inf counters
        shown; a
        2048-sample track lands aligned (ctest).
+       - Start and stop hosts from the document diff (the set of active
+         insert ids before and after each change), not from the op kind:
+         today `starts_a_host()` in `engine_control_server.cpp` gates only
+         Apply of AddInsert and ReplaceInsert, but undo and redo of
+         RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
+         bring an insert into the chain (rt-engineer review of #46, low 4).
+       - Key an instance on (insert id, channel layout) in the plan builder.
+       - Wire Qt File > Save to send `FlushPluginState` and wait for its
+         reply before serialising (ADR-0012 §8), once a host can hold state.
 5. [ ] LV2 state save/restore, `worker:schedule`, presets; plugin manager;
        editors under WSLg (the host opens parentless X11 toplevels). VST3
        hosting is done (this PR, `brain/research/plugin-host-vst3.md`);

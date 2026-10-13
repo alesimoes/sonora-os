@@ -560,6 +560,17 @@ public:
         if (!locate_insert(*before_.edit, op.insert, at)) return no_insert(op.insert);
         const std::size_t to = locate_track(*before_.edit, op.to_track);
         if (to == kNone) return fail("track " + str(op.to_track) + " does not exist");
+        // A chain runs at its track's channel count, in and out (ADR-0012
+        // §7.1), and the plugin was chosen for this one. Moving it across
+        // would keep a mono plugin on a stereo track, or the reverse.
+        const std::uint16_t from_channels = before_.edit->tracks[at.track]->channels;
+        const std::uint16_t to_channels = before_.edit->tracks[to]->channels;
+        if (from_channels != to_channels) {
+            return fail("insert " + str(op.insert) + " cannot move from a " +
+                        str(static_cast<std::uint64_t>(from_channels)) + "-channel track onto a " +
+                        str(static_cast<std::uint64_t>(to_channels)) +
+                        "-channel one; add the plugin there instead");
+        }
         auto edit = std::make_shared<EditState>(*before_.edit);
         auto from_track = std::make_shared<TrackEdit>(*edit->tracks[at.track]);
         Insert moving = from_track->inserts[at.index];

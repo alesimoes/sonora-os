@@ -53,7 +53,8 @@ std::vector<SessionEntry> list_sessions(const QString& dir);
 
 // Atomically replaces `file` with `bytes`, creating its folder. A `file` of
 // an older format version is first copied, once, to "Session File
-// Backups/<Name>.v<old>.sonora" (session-format.md, "Versioning"). On
+// Backups/<Name>.v<old>.sonora" (session-format.md, "Versioning"); a `file`
+// of a newer format version is refused and left untouched. On
 // failure `why` says what failed, and a folder this call created is removed
 // again, so a retry finds the name free. Once the new file has replaced the old one
 // the save has happened and this returns true; `caution` is then empty, or

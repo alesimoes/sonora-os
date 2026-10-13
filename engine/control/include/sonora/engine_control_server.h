@@ -229,9 +229,13 @@ private:
     // Track atomics only when `mix_changed` (see show()).
     void show_document(bool mix_changed);
     // The document's inserts to the state block, every one faulted until
-    // this engine can host plugins; with `report`, a PluginFault for each
-    // active one (a session just opened).
-    void show_inserts(bool report);
+    // this engine can host plugins, and one standing PluginFault per active
+    // insert: said when it enters the chain, cleared when it leaves (removed,
+    // inactive). With `new_session`, every standing fault is cleared first:
+    // the ids are another session's.
+    void show_inserts(bool new_session);
+    // A FlushPluginState: which inserts, and whether they can be flushed.
+    bool flush_plugin_state(const std::string& which, std::string& why);
     // A take that has just closed joins the document.
     void follow_transport();
     // Held record replies, once the controller no longer waits to start.
@@ -266,6 +270,10 @@ private:
     // Events that still stand, encoded, for a client that attaches later:
     // what a restarted interface must find on screen.
     std::vector<std::string> notices_;
+    // One per insert with a fault standing, by insert id: kept apart from
+    // notices_ so a cleared fault is never replayed and faults never crowd
+    // a device notice out of kMaxStandingNotices.
+    std::map<uint64_t, std::string> plugin_faults_;
     std::string inputs_missing_;
     std::string take_failed_;
     std::string fatal_;

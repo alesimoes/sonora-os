@@ -17,10 +17,14 @@
 // (fake_catalog() unless Config::plugins says otherwise) sent after the
 // Snapshot; insert operations accepted when they name a usable catalog
 // plugin with the track's channel count; PluginParameterChange checked
-// against the catalog's dense index and range; every insert's flags and
-// latency in the state block, its chain's latency (one IPC block plus its
-// running inserts') on the track, and the largest as the session's
-// compensation. No audio passes through a plugin.
+// against the catalog's key and range; every insert's flags and latency in
+// the state block, its chain's latency (one IPC block plus its running
+// inserts') on the track, and the largest as the session's compensation;
+// one standing PluginFault per active insert that is down or missing,
+// cleared when it runs again or leaves the chain; values moved in a
+// plugin's own editor recorded as SetInsertParams at gesture end and on
+// close; FlushPluginState applying the state a plugin was scripted to
+// have. No audio passes through a plugin.
 //
 // The transport rolls on a script: play starts
 // the playhead from where it stands at the sample rate, stop holds it,
@@ -119,11 +123,22 @@ public:
     // The latency a plugin reports, by catalog id, for every insert of it.
     void script_plugin_latency(const std::string& plugin_id, uint32_t frames);
     // An insert's host goes down (`why` says how: a PluginFault event, the
-    // faulted flag, a miss counted) or, with an empty `why`, comes back.
+    // faulted flag, a miss counted) or, with an empty `why`, comes back (the
+    // fault cleared).
     void script_insert_fault(uint64_t insert, const std::string& why);
-    // The last value a PluginParameterChange set, by insert and dense index;
-    // NaN when none has.
-    float plugin_value(uint64_t insert, uint32_t param) const;
+    // The operator moves a parameter in the plugin's own editor: the host's
+    // ParamTouched. Nothing reaches a client until the gesture ends, or the
+    // editor closes; then the engine applies SetInsertParams, as the real
+    // one will (messages.h).
+    void script_editor_change(uint64_t insert, const std::string& key, float value);
+    void script_editor_gesture_end(uint64_t insert);
+    void script_editor_closed(uint64_t insert);
+    // The state GetState would return for an insert now, as the file it
+    // would be written to: FlushPluginState records it with SetInsertState.
+    void script_plugin_state(uint64_t insert, const std::string& sha256, uint64_t bytes);
+    // The plugin's live value, by insert and key, as a PluginParameterChange
+    // or its own editor last set it; NaN when neither has.
+    float plugin_value(uint64_t insert, const std::string& key) const;
 
     // The linear level channel `ch` shows at `t_s` seconds: a level of its
     // own per channel, so a meter showing a neighbour's signal is visible.
@@ -146,8 +161,17 @@ private:
     uint64_t playhead() const;
     void send_catalog();
     bool plugin_change(const PluginParameterChange& c, std::string& why);
-    // PluginFault for every insert whose plugin is not in the catalog.
-    void report_missing();
+    // One standing PluginFault per active insert that is down or missing,
+    // and a clear for each that no longer is; with `reset` (another session
+    // opened), every standing one is cleared first.
+    void refresh_faults(bool reset);
+    // SetInsertParams for what the insert's editor moved and the document
+    // does not hold yet.
+    void record_editor_values(uint64_t insert);
+    bool flush_plugin_state(const std::string& which, std::string& why);
+    // An operation the engine makes itself (op_codec bytes), applied and
+    // sent to the replica.
+    bool apply_own(const std::string& op, std::string& why);
     void insert_fields(TrackFields* tracks, uint32_t count, TransportFields& tf) const;
 
     Config cfg_;
@@ -188,9 +212,17 @@ private:
 
     uint64_t catalog_generation_ = 1;
     std::map<std::string, uint32_t> plugin_latency_;   // by catalog id
-    std::map<uint64_t, std::string> faults_;           // by insert id
+    std::map<uint64_t, std::string> faults_;           // scripted, by insert id
+    std::map<uint64_t, std::string> said_faults_;      // standing, as sent
     std::map<uint64_t, uint32_t> misses_;              // by insert id
-    std::map<uint64_t, std::vector<float>> plugin_values_;
+    std::map<uint64_t, std::map<std::string, float>> plugin_values_;
+    // Moved in an editor, not yet in the document.
+    std::map<uint64_t, std::map<std::string, float>> editor_moved_;
+    struct ScriptedState {
+        std::string sha256;
+        uint64_t bytes = 0;
+    };
+    std::map<uint64_t, ScriptedState> plugin_state_;
 };
 
 }  // namespace sonora::api::testing

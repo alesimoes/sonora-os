@@ -560,8 +560,8 @@ of `common/model`, so contract files under ADR-0007 §6):
 | Operation | Undoable | Effect |
 |---|---|---|
 | `AddInsert{track, insert, slot, plugin, params, state}` | yes | new insert in a free slot |
-| `RemoveInsert{insert}` | yes | its `InsertMix` entry outlives it, like `TrackMix` after an undone `AddTrack`, so redo restores its values |
-| `MoveInsert{insert, to_track, to_slot}` | yes | between slots or tracks; refused onto an occupied slot |
+| `RemoveInsert{insert}` | yes | its `InsertMix` entry outlives it, like `TrackMix` after an undone `AddTrack`, so redo restores its values; pruned once no step in the undo window holds the insert |
+| `MoveInsert{insert, to_track, to_slot}` | yes | between slots or tracks; refused onto an occupied slot, and onto a track of another channel count (a chain has its track's layout, §7.1) |
 | `SetInsertActive{insert, active}` | yes | Pro Tools' active/inactive: in or out of the chain |
 | `SetInsertBypass{insert, bypass}` | no | mix state |
 | `SetInsertParams{insert, params}` | no | the end of a gesture, and every insert's values at save |
@@ -675,29 +675,73 @@ updates `FakeEngine` and the conformance suite in the same PR.
   validation refused) is a reply with the reason, and for a `Refused` host
   also a `PluginFault` event naming the plugin.
 - **Continuous parameter changes:** a new message,
-  `PluginParameterChange{seq, insert, param (dense index), value}`. The
-  control thread maps it to the chain and sends it on as an `RtCommand`.
-  `ParameterChange` stays track-only. The UI writes the end of a gesture
-  with `SetInsertParams`, as faders will with `SetMix`.
+  `PluginParameterChange{seq, insert, key, value}`. The control thread
+  resolves the stable key against the running instance's own key table
+  (built by the scan that instantiated it), maps it to the dense index of
+  §5.1 and sends it on as an `RtCommand`. Not the catalog's dense index:
+  a rescan can reorder a plugin's parameters while a drag is in flight,
+  and an index from the old catalog would move another parameter
+  (rt-engineer review of #46; a catalog generation in the message was the
+  other option, and would only have refused the drag). `ParameterChange`
+  stays track-only. The UI writes the end of a gesture with
+  `SetInsertParams`, as faders will with `SetMix`.
+- **Values moved in the plugin's own editor** (ui-engineer review of #46,
+  H1): the host's `ParamTouched` comes to the engine, not to a client, so
+  the **engine** records them. At the end of each `ParamTouched` gesture,
+  and on `EditorClosed` for whatever moved without a gesture end, it
+  applies `SetInsertParams` (the insert's whole list, the moved keys set)
+  to the document and every replica gets it as a `ModelUpdate`. Nothing is
+  sent while a gesture runs; a client is at most one gesture behind, and
+  the generic panel, compare and the saved values never hold a stale value.
+  Option (b), a `PluginParameterValue` engine → client message, was not
+  needed for that and is not in protocol 3.
+- **Flushing plugin state** (H1's companion, M1): `ModelAction::FlushPluginState`,
+  `op` empty for every insert or one insert id in decimal. The engine has
+  each running plugin's state written (`GetState`, then the saver thread's
+  durable write of §6.1), applies `SetInsertState`, and `SetInsertParams`
+  for editor values not yet recorded; the reply comes after the last of
+  those updates, so a client whose reply is Ok holds what a session file
+  must. File > Save, and an insert copy or compare on a state-heavy plugin,
+  send it first. Failed names each insert whose state could not be had;
+  the others' updates still went out.
 - **The catalog:** a new engine → client message, `PluginCatalog`: per
-  plugin, format, id, name, vendor, version, channels, usable or the
-  refusal reason, has-editor, and per parameter its dense index, key, name,
-  range, default and flags (automatable, toggle, enum, logarithmic, past
-  the cap). Sent after the Snapshot and again after a rescan.
+  plugin, format, id, name, vendor, version, categories (LV2 class labels
+  or VST3 subCategories, broadest first), channels, usable or the refusal
+  reason, has-editor, and per parameter its dense index (display order
+  only), key, name, range, default, flags (automatable, toggle, enum,
+  logarithmic, past the cap), unit, step count (0 continuous) and one label
+  per step when the plugin names them. Sent after the Snapshot and again
+  after a rescan.
 - **Commands** (catalog ids, `Engine` domain, key-mappable):
   `plugin.rescan`; `plugin.editor.open` and `plugin.editor.close` with the
   track as target and `"<slot> <parent token>"` as argument (the token
   is opaque and empty on the appliance); `plugin.retry` for a chain left
   down by §5.3.
 - **Events:** `EventKind::PluginFault` (append-only): crashed, removed for
-  misses, restarted, refused, non-finite output, missing at open, host
-  incompatible. `track` and the text name the plugin and the slot.
+  misses, restarted, refused, non-finite output, missing, host
+  incompatible. It names the insert by its model id in a field of its own,
+  `EngineEvent::insert` (not `track` and slot, which a `MoveInsert` or
+  `ReorderTracks` in flight would make wrong; not `frame`, which is the
+  take number). `track` is -1; the text names plugin, track and slot for a
+  log. One fault **stands** per insert: an active insert that is down or
+  missing has one, the latest replacing the last, and leaving that state
+  (running again, removed, undone, made inactive, another session opened)
+  clears it with an empty text. The control server keeps the standing
+  faults by insert id, apart from the 32 standing notices, and replays
+  only those to a client that attaches later. Recomputed from the
+  document after every change, so an insert that undo or `SetInsertActive`
+  brings back into the chain is reported as one a `Load` brings.
 - **State block, layout version 2:** per track an `InsertState` for each of
   the 10 slots: flags (present, active, bypassed, running, restarting,
-  faulted, missing), latency frames, misses (monotonic), worst run in µs,
-  non-finite samples (monotonic); in the header the total compensation and
-  the over-maximum shortfall. If PR #41's planned layout-2 fields (locate,
-  bus peaks) land first, this is layout 3.
+  faulted, missing) and latency frames under the seqlock; misses, worst run
+  in µs and non-finite samples (all monotonic while the slot holds the same
+  insert) **outside** it, each a word read alone. Once hosts run those
+  counters move on most publishes, and inside the section they made every
+  slot a store in it again and starved a reader (rt-engineer review of
+  #46; the regression test churns them on every publish under TSan). In
+  the header the total compensation and the over-maximum shortfall. If PR
+  #41's planned layout-2 fields (locate, bus peaks) land first, this is
+  layout 3.
 - **Telemetry for our own editors** (ADR-0011 §2.6): one more memfd per
   host, created by the engine, mapped read-write by the host's RT thread
   (atomics only, paced at most once per block), forwarded to a client on
@@ -982,8 +1026,11 @@ Each has the measurement that settles it and who takes it.
    `Session::process`**; the start-up clocksource check.
 5. **Control-server wiring**, rt-engineer: the scan worker and catalog
    cache, §6.3 operations driving host lifecycle and replans,
-   `PluginParameterChange` to `RtCommand`, save (`GetState`,
-   `SetInsertState`, `SetInsertParams`), `PluginFault` events and the state
+   `PluginParameterChange` to `RtCommand` by the instance's key table,
+   `FlushPluginState` (`GetState`, `SetInsertState`, `SetInsertParams`,
+   reply last), editor values recorded at gesture end and on
+   `EditorClosed`, hosts started and stopped from the document diff of
+   active insert ids, `PluginFault` events and the state
    block's insert fields, the editor commands, the start-up version check.
 6. **UI insert slots**, ui-engineer: A–J slots on each mixer strip, the
    plugin picker from `PluginCatalog`, active/inactive and bypass, the

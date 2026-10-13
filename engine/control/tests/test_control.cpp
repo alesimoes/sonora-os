@@ -14,12 +14,14 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "sonora/api/conformance.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/api/wire.h"
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
 #include "sonora/model/op_codec.h"
@@ -492,6 +494,54 @@ void housekeeping_and_early_events() {
     CHECK(runs.load() >= 1);
 }
 
+// The events a client attaching now is greeted with: every one that stands.
+std::vector<api::EngineEvent> late_greeting(RealEngine& real, api::Inbox& in) {
+    struct Got {
+        std::mutex mutex;
+        std::vector<std::string> frames;
+    };
+    auto got = std::make_shared<Got>();
+    EngineControlServer& server = real.engine().server();
+    const auto id = server.attach(
+        [got](std::string frame) {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            got->frames.push_back(std::move(frame));
+        },
+        {});
+    // The control thread takes the attach before a request delivered after
+    // it, so once that request is answered the greeting is all there.
+    api::CommandRequest r;
+    r.command = "no.such.command";
+    const uint64_t seq = real.send(r);
+    CHECK(until(real, in, [&]() {
+        for (const auto& reply : in.replies) {
+            if (reply.seq == seq) return true;
+        }
+        return false;
+    }));
+    server.detach(id);
+    std::vector<std::string> frames;
+    {
+        std::lock_guard<std::mutex> lock(got->mutex);
+        frames = got->frames;
+    }
+    api::wire::Reassembler reassembler;
+    api::Inbox late;
+    std::string message, error;
+    for (const std::string& f : frames) {
+        if (reassembler.add(f, message, error) == api::wire::Reassembler::Result::Complete) {
+            api::wire::decode_into(message, late, error);
+        }
+    }
+    return late.events;
+}
+
+std::size_t plugin_faults_in(const std::vector<api::EngineEvent>& events) {
+    std::size_t n = 0;
+    for (const auto& e : events) n += e.kind == api::EventKind::PluginFault ? 1 : 0;
+    return n;
+}
+
 // Until engine/plugin_client lands this engine hosts nothing, and says so
 // at every door: an empty catalog, NotImplemented for whatever would start
 // a host, the health flag, and every insert of a session it opens shown
@@ -555,6 +605,7 @@ void no_plugin_hosting_yet() {
     CHECK(r.message.find("engine/plugin_client") != std::string::npos);
     api::PluginParameterChange c;
     c.insert = add.insert;
+    c.key = "threshold";
     CHECK(reply_to(real.send(c), r));
     CHECK(r.result == DispatchResult::NotImplemented);
 
@@ -590,18 +641,44 @@ void no_plugin_hosting_yet() {
     for (std::size_t i = events; i < in.events.size(); ++i) {
         if (in.events[i].kind != api::EventKind::PluginFault) continue;
         ++faults;
-        CHECK(in.events[i].track == 0 && in.events[i].frame == 0);
-        CHECK(in.events[i].text.find("x42-dpl (slot A) is not running") != std::string::npos);
+        CHECK(in.events[i].insert == active && in.events[i].track == -1);
+        CHECK(in.events[i].text.find("x42-dpl (") != std::string::npos &&
+              in.events[i].text.find("slot A) is not running") != std::string::npos);
     }
     CHECK(faults == 1);
 
-    // Edits that start no host apply: the insert goes out of the chain.
+    // Opened again and again, the session's fault stands once: neither the
+    // last session's nor a copy per open is replayed to a later client, and
+    // none takes a device notice's place (rt-engineer review of #46).
+    for (int i = 0; i < 40; ++i) {
+        CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    }
+    std::vector<api::EngineEvent> late = late_greeting(real, in);
+    CHECK(plugin_faults_in(late) == 1);
+    for (const auto& e : late) {
+        if (e.kind == api::EventKind::PluginFault) CHECK(e.insert == active && !e.text.empty());
+    }
+
+    // Edits that start no host apply: the insert goes out of the chain, and
+    // its fault is cleared, for this client and for a later one.
     m.action = api::ModelAction::Apply;
     CHECK(model::encode_operation(model::SetInsertActive{active, false}, m.op, error));
     CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
     CHECK(until(real, in, [&]() {
         return (real.state().track(0).inserts[0].flags & api::kInsertActive) == 0;
     }));
+    CHECK(until(real, in, [&]() {
+        if (in.events.empty()) return false;
+        const api::EngineEvent& e = in.events.back();
+        return e.kind == api::EventKind::PluginFault && e.insert == active && e.text.empty();
+    }));
+    late = late_greeting(real, in);
+    CHECK(plugin_faults_in(late) == 0);
+    // FlushPluginState: nothing runs, so nothing to record, and Ok.
+    api::ModelRequest flush;
+    flush.action = api::ModelAction::FlushPluginState;
+    flush.op = std::to_string(active);
+    CHECK(reply_to(real.submit(flush), r) && r.result == DispatchResult::Ok);
 
     // A fader ride survives a change to an insert's values: only the
     // faders' part of the mix goes to the Track atomics.

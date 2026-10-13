@@ -588,6 +588,12 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
         if (!rd.flag(v, p, "bypass", m.bypass)) return false;
         const Value* params = nullptr;
         if (!rd.array(v, p, "params", params)) return false;
+        // Counted before a value is copied: a file may hold any number, and
+        // insert_mix_problem below would only refuse them once all were read.
+        if (!rd.checked(detail::insert_param_count_problem(params->items().size()), v, p,
+                        "params")) {
+            return false;
+        }
         for (std::size_t k = 0; k < params->items().size(); ++k) {
             const Value& e = params->items()[k];
             const std::string kp = index_path(p + ".params", k);
