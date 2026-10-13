@@ -63,6 +63,16 @@ end of its run. Keep it short: what is true now, not a diary.
   waited forever at their menu, so an unattended machine never reached the
   engine. Nothing caught it, because no test ran a bootloader unattended.
   ISO rebuilt 2026-10-12 with the fix.
+- **Qt 6 shell (`ui/qt`, `sonora-ui`; #10).** 18 scene-graph meters,
+  transport status, footer, track arming and key routing through `ui/keymap`, as a separate process over a
+  synthetic engine. `tools/build-ui.sh` builds it and runs 10 tests in the
+  `sonora-ui` image (one renders frames under Xvfb); the engine container and
+  CI have no Qt and skip it. The digit row is named by its physical key, so
+  AZERTY and ABNT2 arm the right track (`keymaps/README.md`). Measured with
+  llvmpipe only (`brain/research/qt-shell-render-cost.md`): no GPU figure.
+  Open: no compositor or systemd unit for it in the ISO (a compositor ADR is
+  architect's); no CI job builds it; whether `app.quit` closes only the UI;
+  at M4 `EngineAdapter`/`SyntheticEngine` give way to the control API.
 - **Still unverified:** no real audio interface has ever been attached, so
   there is still no latency or xrun figure from hardware. Nothing has run on a
   physical machine or a physical USB stick: every claim above is a loop

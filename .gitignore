@@ -1,6 +1,8 @@
 # Build output
 build/
 build-container/
+# The Qt interface, built by tools/build-ui.sh in the sonora-ui image.
+build-ui-container/
 # The sanitizer builds, named as in .github/workflows/ci.yml.
 build-tsan/
 build-asan/

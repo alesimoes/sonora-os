@@ -35,3 +35,6 @@ add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
 add_subdirectory(engine/app)
+# Optional: skipped, with one status line, where Qt 6 is not installed (the
+# engine's build container and CI). tools/build-ui.sh builds it.
+add_subdirectory(ui/qt)

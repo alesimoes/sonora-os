@@ -9,6 +9,12 @@
 # harness good for correctness, layout and screenshots, and useless for any
 # frame-rate claim. Frame rate is measured on real hardware or not at all.
 #
+# cage and qt6-wayland let the interface run the way the appliance will run
+# it: the one client of a Wayland kiosk compositor, here on wlroots' headless
+# backend. That exercises the platform plugin and full-screen behaviour. It
+# does not choose the compositor (ADR-0006 leaves that open), and nothing
+# here puts one into the image.
+#
 # Build context is the repository root.
 FROM debian:trixie
 
@@ -28,6 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libglx-mesa0 \
       libegl-mesa0 \
       xvfb \
+      xauth \
+      qt6-wayland \
+      cage \
+      grim \
       x11-utils \
       imagemagick \
       libjack-jackd2-dev \
