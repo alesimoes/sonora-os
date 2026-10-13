@@ -14,11 +14,12 @@ transport.** Every section below says what it contributes to that.
 
 | Thread | Module | Touches |
 |---|---|---|
-| Document thread (one, non-RT) | `engine/control` | Owns the `Document`: applies operations, keeps the undo stack, asks for plans, serialises saves. The only writer of the model. |
-| Plan builder (same thread, or a worker it owns) | `engine/core`, non-RT functions | Reads a snapshot, compiles a `PlaybackPlan`. |
-| Disk reader (new, non-RT) | `engine/core` | Fills the source cache for the windows the plans need. |
-| Disk writer (today's `DiskThread`) | `engine/core` | Drains capture rings. Never waits on the reader. |
-| Audio thread | `engine/core` | Reads the current plan and the cache. Nothing else from this document. |
+| Document thread (one, non-RT) | `engine/control` | Owns the `Document`: applies operations, keeps the undo stack, builds and publishes plans, retires them. The only writer of the model. |
+| Plan builder (the document thread, or a worker it owns if measured too slow) | `engine/control` (ADR-0007 §2) | Reads a snapshot, compiles a `PlaybackPlan` whose layout `engine/core` defines. |
+| Saver (one, non-RT) | `engine/control` | Every save, autosave and backup, in order, through `common/platform`. |
+| Disk reader (new, non-RT) | `engine/core` | Fills the plans' chunk slots for the residency window; unlinks and reclaims chunks. |
+| Disk writer (today's `DiskThread`) | `engine/core` | Drains capture rings, splits takes at boundary records, `fdatasync`s periodically. Never waits on the reader. |
+| Audio thread | `engine/core` | Reads the current plan, its chunk slots and the `Track` atomics. Nothing else from this document. |
 | UI replica | `ui/client` | Its own copy of the model, kept current by operations (below). |
 
 **`common/model` is never on the audio thread** (ADR-0007 §2). Its types
@@ -96,8 +97,9 @@ to the playlist touched, not the session.
 
 That gives three things for the price of one:
 
-- **Undo is a pointer.** The undo stack holds the `EditState` before and
-  after each operation. Undo restores the previous pointer. There is no
+- **Undo is a pointer.** The undo stack holds one `EditState` per step: step
+  *i* is the state after operation *i*, step 0 the state at open. Undo moves
+  the pointer back one step, redo forward. There is no
   inverse operation to write, so there is no inverse operation to get wrong.
   A wrong inverse is how a DAW's undo corrupts a session, and here it is
   how a take would disappear.
@@ -116,13 +118,26 @@ That gives three things for the price of one:
 | Mix state: gain, pan, mute, solo, monitor bus | no | As in Pro Tools, a fader move is not an edit. If mix lived in `EditState`, undoing a trim would also jump the faders back. |
 | Settings: timecode, tempo, loop, punch | no | Session settings, changed deliberately. |
 
-The undo stack is bounded: 200 steps by default. When a step falls off the
-end, the `EditState`s only it referenced are freed on the document thread.
+The undo stack is **bounded by bytes, not steps** (ADR-0009 §1). Each step
+is charged the bytes it alone allocated: the playlists and tracks it copied,
+not those it shares with its neighbours. While the total is over the budget
+(64 MiB by default, a session setting), the oldest step is evicted and the
+values only it referenced are freed on the document thread. The newest step
+is never evicted, so even a bulk edit larger than the budget can be undone
+once. A step count would bound nothing: a nudge copies one playlist, a
+select-all nudge copies all of them.
+
+The engine alone decides eviction. Every history message to a replica
+(operation, `Undo`, `Redo`) carries the **undo floor**, the oldest revision
+still undoable, and the replica evicts down to it. Both sides then offer the
+same steps, whatever their allocators count.
+
 *Unverified: memory per undo step on a large session.* The worst case is an
-edit on a long playlist, about 100 bytes per region copied. Measurement for
-the M8 PR: 18 tracks × 2,000 regions, 200 single-region edits on the longest
-playlist, peak RSS. If it is over about 64 MB, playlists get chunked
-(copy-on-write per 256 regions) before anything else changes.
+edit on a long playlist, about 100 bytes per region copied. Measurement
+before M8: 18 tracks × 2,000 regions, 200 single-region edits on the longest
+playlist plus bulk edits, peak RSS. If a few dozen steps exceed the budget,
+playlists get chunked (copy-on-write per 256 regions) before anything else
+changes.
 
 ## Operations
 
@@ -143,11 +158,14 @@ in a UI replica and produce the same value.
 **Operations are the replication format** (ADR-0007 M8). The engine sends
 each applied operation, with the revision it produced, to every replica. A
 replica applies it and checks the revision is the next one. Undo and redo
-are sent as `Undo{revision}` and `Redo{revision}`, and the replica moves its
-own history pointer; it keeps the same bounded stack. A gap or a mismatch
+are sent as `Undo{revision, floor}` and `Redo{revision, floor}`, and the
+replica moves its own history pointer; each operation also carries `floor`,
+and the replica evicts history below it (above). A gap or a mismatch
 makes the replica ask for a full snapshot, which is the session file's
-canonical JSON. One codec serves saving, replication resync and test
-fixtures.
+canonical JSON. In `contracts/api` that payload is **opaque bytes**:
+`contracts/api` cannot depend on `common/model` (ADR-0007 §1), so the
+engine encodes and `ui/client` decodes with `common/model`. One codec serves
+saving, replication resync and test fixtures.
 
 ### Operations Phase 2 needs
 
@@ -185,13 +203,20 @@ region R:
 1. **Before A**, the plan plays R on T. If the pre-roll passes through
    `A − H`, capture starts there, with `H = max(punch_crossfade, 1 s)` of
    handle, as far as the pre-roll allows. The engine knows `A` in advance,
-   so starting early costs nothing. The capture start is sample-accurate: the
-   punch points travel to the audio thread as `RtCommand`s with frame
-   positions (ADR-0007 §2).
-2. **From A to B**, T monitors its input (the `"auto"` rule), and capture
-   continues to `B + H` or the end of the pass.
-3. **At punch-out**, the take closes **without stopping the transport**.
-   The document thread then applies, as one undoable step: `AddSource`
+   so starting early costs nothing. The punch points travel to the audio
+   thread as `RtCommand`s with frame positions (ADR-0007 §2), and both the
+   capture start and stop are **sample-accurate inside a block**: the audio
+   thread computes the frame offset of `A − H` within the block and copies
+   into the capture ring from that offset, not from the block's start.
+2. **At A**, T's monitoring switches from playback to input (the `"auto"`
+   rule) at the exact frame inside the block, as a ramp of `punch_crossfade`
+   samples centred on A with the crossfade's shape. That is the same
+   crossfade the take will get in step 3, so what the performer hears while
+   punching is what plays back afterwards. At **B** the same ramp switches
+   back. Capture continues to `B + H` or the end of the pass.
+3. **At punch-out**, the take closes **without stopping the transport**, by
+   an in-band boundary (below). Once the disk thread reports the take closed,
+   the document thread applies, as one undoable step: `AddSource`
    (not undoable, pool) and `RecordTake`, whose overwrite splits R into
    `R₁ = [.., A)` and `R₂ = [B, ..)` and places the new region N at `[A, B)`.
    It also adds two crossfades of `punch_crossfade` samples, centred on
@@ -210,30 +235,58 @@ lines up with what was heard. In model terms N's `source_offset` is
 exists it is the backend's reported latency, and the source records which
 figure was used (`latency_compensation`).
 
-What the engine does not do today and must, for this sequence:
+### Closing a take while rolling: in-band boundaries
 
-- **Close a take while rolling.** `Session::stop()` stops the transport and
-  joins the disk thread to close files. Punch-out needs a take boundary that
-  is not a transport stop.
-- **Fix the take-epoch race first.** `planning/BACKLOG.md`, "Known gaps": a
-  callback that loaded `Recording` for the previous take can write into a
-  ring being reset. Back-to-back punches are exactly the start/stop cycle,
-  at the operator's speed, not after a 100 ms stall. The epoch handshake and
-  its regression test are a prerequisite of punch, not a follow-up.
-- **Separate "rolling" from "recording" per track.** The transport rolls;
-  capture is a per-track window inside it.
+`Session::stop()` today stops the transport, joins the disk thread to close
+files, and resets the capture rings before the next take. Punch-out needs a
+take boundary that is not a transport stop, and back-to-back punches would
+run that reset at operator speed, which is the take-epoch race in
+`planning/BACKLOG.md` ("Known gaps"). The boundary therefore travels **in
+band, with the audio**:
+
+- Per track, the audio thread keeps a running count of frames it has pushed
+  into the capture ring. It pushes frames only inside a capture window.
+- At a window's start and end it pushes a **boundary record** on an SPSC
+  ring to the disk thread: `{track, take, kind (open|close), at_frame}`,
+  where `at_frame` is that running count, plus, for `open`, the timeline
+  position of the first frame. The record is pushed after the frames it
+  refers to (release), so the disk thread never sees a boundary ahead of its
+  audio.
+- The disk thread drains the capture ring up to the next boundary's
+  `at_frame` and **splits at exactly that frame**: the frames before go to
+  the closing take's file, whose header it finalises and closes; the frames
+  after go to the next take's file.
+- **The capture ring is never reset.** There is nothing to race against, so
+  the take-epoch handshake is no longer needed. This replaces it; the
+  regression test for the old race is still written first, and must pass.
+- The disk thread **opens the next take's files ahead**, as soon as a take
+  starts, so opening a file is never in the drain path at a boundary.
+- After closing a take, the disk thread reports **"take closed, length N"**
+  to `engine/control`. `AddSource` and `RecordTake` are applied only then,
+  with N from disk, not computed from the transport.
+- "Rolling" and "recording" are separate per track: the transport rolls,
+  and capture is a per-track window inside it.
+
+A boundary record ring that is full is an overrun of the same kind as a
+full capture ring: counted, never a wait. Its capacity (at least four
+records per track) is fixed at session creation.
 
 ## The playback plan
 
-The audio thread reads a `PlaybackPlan`, built off-thread from a
+The audio thread reads a `PlaybackPlan`, built by `engine/control` from a
 `Snapshot`, published through an atomic pointer, retired by epoch and freed
-off the audio thread. That mechanism is ADR-0007 §2. This document adds
-what the plan contains and when it may be published.
+off the audio thread. That mechanism is ADR-0007 §2; the exact retirement
+protocol, memory orders included, is ADR-0009 §4.1 and is not restated
+here. This document adds what the plan contains and when it may be
+published.
 
 ### Contents
 
-One allocation, sized when built, freed as a whole. No pointers into the
-model. Trivially destructible.
+One allocation, sized when built, written in full by the builder before it
+is published (so every page is faulted in off the audio thread and locked
+by M2's `mlockall(MCL_FUTURE)`), freed as a whole. No pointers into the
+model. Trivially destructible. Its structure is immutable; the chunk-slot
+array is its one mutable part, written only by the disk reader.
 
 ```cpp
 struct PlanSegment {                  // a region, flattened
@@ -241,6 +294,8 @@ struct PlanSegment {                  // a region, flattened
     uint32_t source_slot[2];          // index into the session's source table
     uint16_t source_channel[2];
     int64_t source_offset;            // source frame at `start`
+    uint32_t first_chunk_slot[2];     // per channel, into chunk_slots
+    uint32_t first_chunk_index[2];    // source chunk number of that first slot
     float gain;                       // linear, region gain
     int64_t fade_in_end, fade_out_start;
     uint8_t fade_in_shape, fade_out_shape;
@@ -251,45 +306,79 @@ struct PlanSegment {                  // a region, flattened
 struct PlanTrack {
     uint32_t engine_track;            // index of the engine's Track
     uint32_t first_segment, segment_count;   // sorted by start
-    uint32_t delay_frames;            // PDC; 0 in Phase 2, the field exists now
 };
 
 struct PlanNode {                     // the graph, in topological order
     NodeKind kind;                    // TrackOut, BusSum, HardwareOut
-    uint32_t inputs_begin, inputs_count;
+    uint32_t stable_id;               // survives plan swaps; keys delay-line state
+    uint32_t first_input_edge, input_edge_count;
     uint32_t scratch_buffer;          // preallocated at session creation
 };
 
+struct PlanEdge {                     // from's output feeds to's input
+    uint32_t from_node, to_node;
+    uint32_t delay_frames;            // PDC; 0 in Phase 2, the field exists now
+};
+
 struct PlaybackPlan {
-    uint64_t epoch;
+    uint64_t epoch;                   // how the audio thread detects a new plan
     uint64_t model_revision;          // which snapshot it came from
     PlanTrack* tracks;  uint32_t track_count;
     PlanSegment* segments;
     PlanNode* nodes;    uint32_t node_count;
-    uint32_t monitor_out[2];          // physical playback channels
+    PlanEdge* edges;    uint32_t edge_count;   // grouped by to_node
+    std::atomic<uint32_t>* chunk_slots; uint32_t chunk_slot_count;
+    uint64_t peak_chunk_demand;       // max over window positions, for the pool check
+    uint32_t monitor_out[2];          // indices into AudioBlock::outputs
     float pan_law;                    // per-track coefficients use the atomics
 };
 ```
 
+- **Delay sits on edges**, because PDC delays a path into a node, not the
+  node. The **delay-line state lives outside the plan**, in `engine/core`,
+  keyed by `(to_node.stable_id, edge)`, preallocated to the session's maximum
+  delay. A swap that keeps a node keeps its delay line's contents, so a plan
+  swap never restarts a delay from silence.
+- **Fixed maxima at session creation:** tracks, nodes, edges, scratch
+  buffers, source slots, chunk slots per plan, maximum delay. The builder
+  refuses a plan that exceeds any of them and names the limit.
+- **Chunk slots replace a lookup table.** A segment's channel *c* plays
+  source chunk `k` from slot `first_chunk_slot[c] + (k −
+  first_chunk_index[c])`: an index computation and one acquire load. The
+  slot holds a pool buffer index or "empty".
+- The audio thread detects a new plan by `epoch`, never by pointer
+  (ADR-0009 §4.1: a freed plan's address can be reused).
+
 The audio thread finds the segment under the playhead by keeping a cursor
 per track, advanced as it plays and reset by binary search after a locate
-or a swap. Never a scan from the start.
+or a new epoch. Never a scan from the start.
 
 ### The monitor bus plan
 
 Phase 2's graph is fixed: one `TrackOut` node per track, one `BusSum`, one
 `HardwareOut` with two channels. Per block, for each track:
 
-1. Choose input or playback by the track's monitor mode and armed state.
+1. Choose input or playback by the track's monitor mode and armed state;
+   a switch that falls inside the block (punch A or B) happens at its frame,
+   as a ramp (see "Punch in").
 2. Playback: render the segments under `[playhead, playhead + nframes)`
-   from the source cache, with region gain and fades.
+   from the chunk slots, with region gain and fades.
 3. Apply the track's fader and mute, and pan into L and R with the session's
    pan law. **These are atomics on `Track`**, read once per block, as gain
-   and mute already are. A fader move is not a plan swap.
-4. Sum into the bus. Apply bus gain. Write to the two output ports.
+   and mute already are. A fader move is not a plan swap. Each is **ramped
+   linearly across the block** from the value applied at the end of the
+   previous block, so a fader jump or a mute is never a step.
+4. Sum into the bus. Apply bus gain, ramped the same way.
+5. `HardwareOut` writes L and R into `AudioBlock::outputs[monitor_out[0]]`
+   and `outputs[monitor_out[1]]`, and writes silence into every other output
+   it was given. The M2 backend contract (`contract/backend`, PR pending)
+   already carries `outputs` and `output_count` and requires every frame of
+   every output to be written, because a backend buffer holds whatever the
+   last cycle left in it.
 
 Solo is computed from the atomics too: any solo set means unsoloed tracks
-contribute nothing. It is a per-block check, not a structural change.
+contribute nothing, ramped to and from zero like mute. It is a per-block
+check, not a structural change.
 
 It is a node list rather than a hard-coded loop for the reason the owner
 gave: inserts, sends, VCA and groups arrive on top of the same graph. Phase
@@ -308,26 +397,45 @@ catches up, a hole in the playback, right where the operator is listening.
 
 So:
 
-- **Playback reads through a source cache, not through per-track rings.**
-  The disk reader loads fixed-size chunks of source files (64 k frames,
-  *unverified*, see below) into a pool of buffers allocated at session
-  creation. The audio thread looks a chunk up by `(source_slot,
-  chunk_index)` in a fixed-size lock-free table. If a chunk is not there,
-  the audio thread plays silence for it and counts an underrun, the same
+- **Playback reads through source chunks, not through per-track rings.**
+  The disk reader loads fixed-size chunks of source audio, converted to
+  float (8 k to 16 k frames, *unverified*, see below), into a pool of
+  buffers allocated at session creation, and links each into the slots of
+  the plans that play it. It **coalesces** adjacent chunks of one source into
+  a single read. If a slot is empty when the audio thread needs it, the
+  audio thread plays silence for that span and counts an underrun, the same
   rule as a capture overrun: count it, never block.
 - **A plan is published only once the chunks it needs are resident:** from
-  the current playhead to one read-ahead window beyond, plus the loop start
-  when looping. The document thread builds the plan, the reader loads its
-  window, and only then is the pointer swapped. Until then the old plan keeps
-  playing, correctly, for the edit as it was. The delay is a disk read, tens
-  of milliseconds, invisible against an operator's reaction time.
-- **The same gate applies to locate.** The reader loads the target window,
-  then the locate `RtCommand` goes to the audio thread. "Locate without
-  dropping a block" (Phase 2 backlog) is this rule.
-- **Chunk reclamation uses the plan's epoch rule.** The reader unlinks a
-  chunk from the table, then reuses its buffer only after the audio thread
-  has started a later block. That is the same proof as retiring a plan.
-  When the backend is deactivated, the reader reuses buffers at once.
+  the current playhead through the residency window, plus the loop start
+  when looping. The document thread builds the plan, the reader fills its
+  window, and only then is the pointer exchanged. Until then the old plan
+  keeps playing, correctly, for the edit as it was.
+- **Only the newest plan waits.** If a newer plan is built while one is
+  pending, the pending plan is cancelled with its queued reads and freed at
+  once (it was never published). Plans are never queued.
+- **The residency window is derived from the measurement, not chosen:**
+  `W` = the playhead's advance during the worst-case coalesced read latency,
+  times 2, plus one block. The worst case, not the average, is the figure.
+- **The same gate applies to locate.** The reader loads the minimum window
+  at the target, then the locate `RtCommand` goes to the audio thread.
+  "Locate without dropping a block" (Phase 2 backlog) is this rule. Locate
+  latency is bounded by one coalesced read per source channel in that
+  window; the engine measures every locate and publishes p99 and max in
+  diagnostics, and past 100 ms the UI shows "Locating…". It never starts
+  playing a window that is not resident.
+- **Chunk reclamation uses the plan's retirement rule** (ADR-0009 §4.1).
+  The reader stores "empty" into every slot naming a chunk, reads the block
+  counter, and reuses the buffer only once the counter has moved. When the
+  callback is stalled nothing is reused; after `deactivate()` returns,
+  everything unlinked is reused at once.
+- **Pool exhaustion never evicts the playing plan.** Eviction order: chunks
+  linked by no plan; then the playing plan's chunks behind the playhead and
+  outside the loop-start window. Never the playing plan's chunks in
+  `[playhead, playhead + W)` or at the loop start. If the pending plan still
+  does not fit, it stays pending, the UI shows "edit not yet audible:
+  playback cache full" with a counter, and it is published at the next
+  stop. A plan whose `peak_chunk_demand` exceeds half the pool is flagged
+  when built, before it plays.
 
 Why a chunk cache and not the per-track playback ring Ardour uses: a
 per-track ring holds audio *already rendered for the old plan*. After undo
@@ -338,11 +446,18 @@ edit does not change, so a plan swap invalidates nothing already loaded.
 The cost: fades, crossfades and region gain run on the audio thread. That
 is a multiply-add per sample per voice, at most two voices per track.
 
-Sizing: the pool is fixed at session creation (CLAUDE.md: buffers are sized
-when the session is created) and locked with the rest of the engine's
-memory. Two windows per playing track, one for the current plan and one for
-the plan being prepared. At 8 s per window, 18 tracks, 48 kHz, float: about
-55 MB. *Unverified: the window size.*
+Sizing: the pool is a fixed number of chunks, set at session creation
+(CLAUDE.md: buffers are sized when the session is created), pre-faulted by
+writing every page once on a non-RT thread, and locked with the rest of the
+engine's memory. Demand is counted per source channel and per region in the
+window, not per track: a track needs, summed over the segments overlapping
+the window, *channels* × (⌈overlap / *C*⌉ + 1) chunks. So a stereo track
+counts twice, a crossfade counts both its sources, and a comped playlist
+costs at least one chunk per channel per region in the window, however
+short. Two plans (playing and pending) may need disjoint chunks. Example: 18
+stereo tracks, 16 k-frame chunks (64 KiB as float), a 4 s window, one region
+per window: 2 × 13 × 18 × 2 = 936 chunks, about 59 MiB. *Unverified: chunk
+size, window, and the demand of a 2,000-region comp.*
 
 ### Recording and playback share the disk
 
@@ -354,7 +469,7 @@ want the device, the writer wins.
 *Unverified, and it sets the read-ahead window and the chunk size:*
 sustained mixed throughput on the persistence partition of a real USB
 stick, 18 tracks recording at 24-bit/48 kHz while 18 play back, chunk sizes
-of 64 k and 256 k frames; worst-case read latency is the figure that
+of 8 k and 16 k frames with coalesced reads; worst-case read latency is the figure that
 matters, not the average. 18 in plus 18 out at 24-bit/48 kHz is about
 5.2 MB/s of mixed I/O; ROADMAP Phase 6 already calls 4.6 MB/s of writes
 alone (32 tracks) the wrong load for a live medium, so this is close to the
@@ -374,32 +489,50 @@ state, outside the model, until the engine's operation arrives.
 
 `common/model` uses standard C++17 only (ADR-0008): no file system calls,
 no threads, no clocks. It turns bytes into a `Snapshot` and back, and it
-applies operations. Opening files, `fsync`, scanning `Audio Files/` and
-reading BWF headers are its callers' business: `engine/control` through
-`common/platform` and `common/audiofile`. That keeps `apply` pure, which is
-what replication and the tests both rely on.
+applies operations. It returns bytes; it never writes them. Opening files,
+`fsync`, scanning `Audio Files/` and reading BWF headers are its callers'
+business: `engine/control` through `common/platform` and
+`common/audiofile`. That keeps `apply` pure, which is what replication and
+the tests both rely on. It parses through `common/json`, which is not part
+of `common/base` because `common/base` must stay RT-safe.
 
 ## Tests the M8 PR starts with
 
 - Load every fixture, save, and compare bytes: canonical output.
 - `apply` then undo returns an `EditState` equal to the original, for every
   operation, including overwrite in each of its four cases.
-- A replica fed the operation log equals the engine's snapshot.
+- A replica fed the operation log, floors included, equals the engine's
+  snapshot and offers the same undo steps.
+- Undo eviction: past the byte budget the oldest steps go and the newest
+  never does.
 - Each invariant of the session format is rejected at load with its key
   path.
 - `RecordTake` over a region, then undo: the source is still in the pool.
-- In `engine/core`, against `drivers/fake`: punch in, punch out and undo
-  while rolling, and assert no output block is silent that should not be,
-  and that the captured file's samples land at the compensated position.
-  That is the Phase 2 exit criterion as a ctest.
+
+And in `engine/core`, with the reader and the punch work:
+
+- The ThreadSanitizer stress test of the retirement protocol (ADR-0009
+  §4.1): a fake callback thread, a publishing document thread and a reader
+  linking and unlinking chunks, at least 10⁶ swaps, with deactivate and
+  reactivate cycles. In CI.
+- Boundary records: a take split at exactly `at_frame` for frame offsets 0,
+  1, `nframes − 1` inside a block; back-to-back punches with no gap; the
+  old take-epoch race's regression test passing with a stalled callback.
+- Against `drivers/fake`: punch in, punch out and undo while rolling, and
+  assert no output block is silent that should not be, and that the
+  captured file's samples land at the compensated position. That is the
+  Phase 2 exit criterion as a ctest. **It depends on ADR-0007 M3**: it needs
+  `drivers/fake` with outputs captured, so it cannot land before M3.
 
 ## Open questions
 
-- Chunk size and read-ahead window: the researcher's USB measurement above.
-- Undo memory on a large session: the M8 measurement above.
-- Whether the plan builder runs on the document thread or a worker. It is
-  the document thread unless building a plan for 18 tracks of 2,000 regions
-  is measured above about 20 ms.
+- Chunk size and residency window: the researcher's USB measurement above.
+- Undo memory on a large session, and pool demand of a 2,000-region comp:
+  measured before M8 (`planning/BACKLOG.md`, Phase 2).
+- Whether the plan builder runs on the document thread or a worker that
+  `engine/control` owns. It is the document thread unless building a plan
+  for 18 tracks of 2,000 regions is measured above about 20 ms.
 - Phase 3's loop recording creates a take per pass. Whether each pass is a
   `RecordTake` on an alternate playlist, or one source with pass markers, is
-  Phase 3's decision. Both fit this model.
+  Phase 3's decision. Both fit this model; the boundary records already
+  split a pass at a frame.

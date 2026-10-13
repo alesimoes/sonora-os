@@ -39,7 +39,7 @@ another DAW at the right timecode.
 - Timeline data model with undo. Regions, fades, crossfades.
 - Session file format, documented in `brain/specs/` before it is written:
   `brain/specs/session-format.md` and `brain/specs/timeline-model.md`, with
-  ADR-0009 (proposed).
+  ADR-0009 (accepted 2026-10-13).
 
 Decided by the owner, 2026-10-12: playback starts with a **fixed 2-channel
 monitor bus**. Every track feeds it, panned, with its fader and mute. The

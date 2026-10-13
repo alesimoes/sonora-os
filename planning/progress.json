@@ -24,7 +24,8 @@
             {"id": "engine.record.ringbuffer", "title": "Lock-free SPSC ring buffer, correct memory ordering", "size": "M", "phase": 0, "status": "done", "evidence": "79b94de; ringbuffer ctest runs under TSan in CI (sanitizers job)"},
             {"id": "engine.record.multichannel", "title": "Session sized to the interface, ports connected in channel order", "size": "M", "phase": 1, "status": "done", "evidence": "88f1dde, PR #1; port_order ctest, per-track tone identity checked by test-engine-docker.sh"},
             {"id": "engine.record.take_safety", "title": "Takes never overwritten (O_EXCL, numbered from the folder), no arming mid-take", "size": "S", "phase": 1, "status": "done", "evidence": "PR #2 and #5; takes and wav_writer ctests"},
-            {"id": "engine.record.take_epoch", "title": "Take-epoch handshake: no old-take samples at the head of a new file", "size": "S", "phase": 1, "status": "todo", "note": "Known gap in BACKLOG; regression test first"},
+            {"id": "engine.record.take_epoch", "title": "No old-take samples at the head of a new file: in-band take boundaries, capture ring never reset", "size": "S", "phase": 1, "status": "todo", "note": "ADR-0009 replaces the epoch handshake with boundary records; regression test first"},
+            {"id": "engine.record.fdatasync", "title": "Periodic fdatasync of open take files through common/platform, stated loss window", "size": "S", "phase": 2, "status": "todo", "note": "ADR-0009 Consequences; interval set by measuring fdatasync cost on a stick"},
             {"id": "engine.record.mlock", "title": "Engine memory locked before the session exists, lock-free atomics asserted", "size": "S", "phase": 1, "status": "doing", "branch": "contract/backend"},
             {"id": "engine.record.direct_io", "title": "Measure direct I/O and a signalled disk thread against buffered stdio and 10 ms polling", "size": "S", "phase": 5, "status": "todo", "note": "Unscheduled in BACKLOG; phase assigned here"}
           ]
@@ -45,7 +46,7 @@
             {"id": "engine.transport.record_stop", "title": "Record/stop transport with a sample playhead", "size": "S", "phase": 0, "status": "done", "evidence": "ea768b7; playhead drives the BWF time reference, exercised by test-engine-docker.sh"},
             {"id": "engine.transport.locate", "title": "Sample-accurate locate without dropping a block", "size": "M", "phase": 2, "status": "todo"},
             {"id": "engine.transport.loop", "title": "Loop playback", "size": "M", "phase": 2, "status": "todo"},
-            {"id": "engine.transport.punch", "title": "Punch in and out over an existing take, closing the take while rolling", "size": "M", "phase": 2, "status": "todo", "note": "Needs engine.record.take_epoch first (ADR-0009 Consequences)"},
+            {"id": "engine.transport.punch", "title": "Punch in and out over an existing take, closing the take while rolling", "size": "M", "phase": 2, "status": "todo", "note": "Sample-accurate capture and monitor switch inside a block; take closed by boundary records (ADR-0009, timeline-model.md)"},
             {"id": "engine.transport.preroll", "title": "Pre-roll and post-roll", "size": "S", "phase": 2, "status": "todo"}
           ]
         },
@@ -53,7 +54,7 @@
           "id": "engine.timeline",
           "title": "Timeline model and undo",
           "items": [
-            {"id": "engine.timeline.spec", "title": "Timeline model spec and ADR-0009 (snapshots, operations, plan swap)", "size": "S", "phase": 2, "status": "doing", "branch": "docs/phase2-session-timeline"},
+            {"id": "engine.timeline.spec", "title": "Timeline model spec and ADR-0009 (snapshots, operations, plan swap)", "size": "S", "phase": 2, "status": "done", "evidence": "PR #11; ADR-0009 accepted by the engine owner 2026-10-13, review changes applied"},
             {"id": "engine.timeline.model", "title": "common/model: regions over sources (ADR-0007 M8)", "size": "L", "phase": 2, "status": "todo"},
             {"id": "engine.timeline.undo", "title": "Undo/redo stack, doubling as the UI replica's replication format", "size": "M", "phase": 2, "status": "todo"},
             {"id": "engine.timeline.region_ops", "title": "Region operations: move, trim, split, duplicate", "size": "M", "phase": 2, "status": "todo"},
@@ -65,7 +66,7 @@
           "id": "engine.session",
           "title": "Session format",
           "items": [
-            {"id": "engine.session.spec", "title": "Session file format spec in brain/specs/", "size": "S", "phase": 2, "status": "doing", "branch": "docs/phase2-session-timeline"},
+            {"id": "engine.session.spec", "title": "Session file format spec in brain/specs/", "size": "S", "phase": 2, "status": "done", "evidence": "PR #11; brain/specs/session-format.md, reviewed with ADR-0009"},
             {"id": "engine.session.json", "title": "common/json: strict JSON, integer-exact, shared with the key map (ADR-0009)", "size": "S", "phase": 2, "status": "todo"},
             {"id": "engine.session.io", "title": "Session reader and writer", "size": "M", "phase": 2, "status": "todo"}
           ]
@@ -160,6 +161,7 @@
             {"id": "ui.keymaps.profiles", "title": "Pro Tools and Logic profiles checked against vendor guides", "size": "M", "phase": 3, "status": "done", "evidence": "PR #2; brain/research/protools-logic-key-bindings.md, all three profiles load in the keymap ctest"},
             {"id": "ui.keymaps.switch", "title": "Choose and switch profile from the UI", "size": "S", "phase": 3, "status": "todo"},
             {"id": "ui.keymaps.focus", "title": "Commands Keyboard Focus mode", "size": "S", "phase": 3, "status": "todo"},
+            {"id": "ui.keymaps.locale", "title": "Bug: keymap JSON numbers parsed with strtod, so a de_DE locale breaks fractional values; use from_chars", "size": "S", "phase": 2, "status": "todo", "note": "BACKLOG Phase 2; ui-engineer"},
             {"id": "ui.keymaps.tty1", "title": "Linux console chords: derive sendable keys from the console keymap", "size": "S", "phase": 1, "status": "todo", "note": "Known gap in BACKLOG"}
           ]
         }

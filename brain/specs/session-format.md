@@ -52,18 +52,34 @@ Numbers, the place JSON usually goes wrong:
 - Integers are in `0 ≤ n ≤ 2^53 − 1`, so `jq`, Python and JavaScript read them
   exactly. At 192 kHz that is over 1,400 years of timeline. The reader rejects
   anything outside, any fraction, and any exponent on an integer field.
-- **Floats appear only for gain and pan.** Gain is in dB, pan in −1…+1. They
-  are written with `std::to_chars` (shortest round-trip form, independent of
-  the C locale), so a value read and written back is bit-identical. Gain at or
-  below −144 dB means silence; JSON has no −∞.
+- **Floats appear only for gain, pan and tempo.** Gain is in dB, pan in
+  −1…+1. They are written with `std::to_chars` (shortest round-trip form for
+  `float`) and read with `std::from_chars` **straight into `float`**, never
+  through `double`, which would round twice. Both ignore the C locale, so a
+  machine set to `de_DE` reads `-2.5` as −2.5, not as −2. A value read and
+  written back is bit-identical. Gain at or below −144 dB means silence;
+  JSON has no −∞.
+- Integers are parsed from their lexeme with `std::from_chars` into
+  `int64_t`, never through a floating-point value.
 
 The parser is strict: unknown keys, duplicate keys, missing required keys,
 wrong types, trailing commas and comments are all errors, reported with the
 line and the key path (`tracks[3].playlists[0].regions[12].length`). A file
-is capped at 64 MiB and 64 levels of nesting, so a corrupt or hostile file
-fails with a message instead of exhausting memory or stack. The keymap
+is capped at 64 MiB, 64 levels of nesting, 4,000,000 values in the DOM, and
+256 MiB of DOM memory as the parser accounts it; past any cap it fails with a
+message naming the cap. A corrupt or hostile file therefore cannot exhaust
+memory or stack. A real session is far inside: 18 tracks of 2,000 regions is
+about 15 MB and under 1,000,000 values.
+
+**Key order on read:** any order is accepted, except that `sonora_session`
+must be the first key of the top-level object (it is the magic). The set of
+keys is strict; their order is not, so a file that went through `jq` or a
+hand edit still loads. The writer always emits the canonical order, so the
+next save restores it. The keymap
 loader already set this standard for error messages (`keymaps/README.md`);
-the session parser shares its code (ADR-0009 §5).
+the session parser shares its code, in `common/json` (ADR-0009 §5), which
+is its own module and not part of `common/base`, because `common/base` must
+stay RT-safe and a DOM allocates.
 
 Why JSON, briefly (the full comparison is in ADR-0009): it is diffable, a
 strict parser is small enough to own (ADR-0002 froze the package set, and
@@ -79,6 +95,7 @@ writes, does not matter at this size (see "Size").
 {
   "sonora_session": 1,
   "written_by": "sonora-engine 0.2.0",
+  "save_generation": 42,
   "name": "Vocals Friday",
   "sample_rate": 48000,
   "audio_format": "int24",
@@ -96,6 +113,7 @@ writes, does not matter at this size (see "Size").
 |---|---|---|
 | `sonora_session` | integer | Format version, and the magic: a file without this key as the first key is not a session file. See "Versioning". |
 | `written_by` | string | Program and version that wrote it. Diagnostic only; no logic reads it. |
+| `save_generation` | integer | Incremented by every write (main file or autosave) whose content differs from the last bytes written. It, not the file's mtime, decides whether an autosave is newer than the main file: an appliance without a network may have no correct clock, copying a folder rewrites mtimes, and FAT keeps them to 2 s. A save with no change writes nothing, so canonical bytes still hold. |
 | `name` | string | Display name. The file name is the folder's business. |
 | `sample_rate` | integer | Session rate. Every source must match it. A backend at another rate is a start-up failure (ADR-0003), not a resample. |
 | `audio_format` | `"int24"` \| `"float32"` | Format of new recordings. Existing sources keep their own. |
@@ -305,8 +323,10 @@ shape.
 A crossfade joins two regions that **butt** (`left.position + left.length ==
 right.position`) on the same playlist. It extends each region into the
 other's handle: with `align: "centre"` the fade runs from
-`right.position − length/2` to `right.position + length/2`; `"pre"` ends at
-the cut, `"post"` starts at it. The required handle (a region's source
+`right.position − ⌊length/2⌋` to `right.position − ⌊length/2⌋ + length`, so an
+odd length puts the extra sample after the cut; `"pre"` ends at the cut,
+`"post"` starts at it. The same rule places the punch crossfades and the
+monitoring ramps at A and B. The required handle (a region's source
 material past its edge) must exist, and is checked at load and on every
 edit that creates or moves a crossfade. Without the handle the crossfade is
 refused, not shortened silently.
@@ -350,7 +370,7 @@ mapping.
 | `TimeReference` | `timecode.origin` + the timeline position of the file's **first frame**, after latency compensation: `origin + P0 − L`, where `P0` is the playhead when capture of this file began and `L` the round-trip latency. The default origin of 01:00:00:00 keeps this positive. |
 | `Version` | 1 once `umid` is written; 0 until then, as today. |
 | `UMID` | The source's `umid`. |
-| `Description` | `sonora take=<n> track=<id> session=<name>`. Machine-readable, and harmless in another DAW's browser. |
+| `Description` | `sonora take=<n> track=<id> session=<name>`, plus ` punch=<A>-<B>` (timeline samples, relative to `origin`) for a punch take. Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. |
 | `Originator` | `Sonora Engine`, as today. |
 | `OriginationDate/Time` | Wall clock when the take began. |
 
@@ -376,9 +396,13 @@ disagree with.
 
 ## Saving: atomic, never torn
 
-The model serialises an immutable snapshot (`timeline-model.md`), so a save
-never blocks editing and never sees a half-applied edit. The bytes then go
-to disk like this, on a non-real-time thread:
+The model serialises an immutable snapshot (`timeline-model.md`) into bytes,
+so a save never blocks editing and never sees a half-applied edit. The
+model does no I/O. `engine/control` hands the bytes to its **one saver
+thread**, which performs every write (main file, autosave, backups) in
+order; a save requested while one runs is coalesced into the newest
+snapshot, so two saves never race on the same `.tmp`. The saver writes
+like this:
 
 1. Write `<name>.sonora.tmp` in the session folder (same filesystem as the
    target, or rename is not atomic).
@@ -396,15 +420,16 @@ written from memory rather than by renaming the old file away. A leftover
 main file has parsed.
 
 `fsync` is not standard C++. Under ADR-0008 (portability), `common/model`
-is platform-neutral: it produces bytes and calls a `write_file_durably(path,
-bytes)` seam in `common/platform`, whose POSIX implementation does steps 1–4.
-`std::filesystem::rename` alone is not enough, because it does not sync.
+is platform-neutral and only produces bytes. The saver in `engine/control`
+calls `write_file_durably(path, bytes)` in `common/platform`, whose POSIX
+implementation does steps 1–4. `std::filesystem::rename` alone is not
+enough, because it does not sync.
 
 **Autosave.** After every committed take (the `RecordTake` operation) and
 every 60 s while there are unsaved edits, the same procedure writes
 `Session File Backups/<name>.autosave.sonora`. Explicit save writes the main
-file. At open, an autosave newer than the main file is offered, never applied
-silently.
+file. At open, an autosave with a higher `save_generation` than the main
+file is offered, never applied silently.
 
 ### Size
 
@@ -427,9 +452,25 @@ provides them:
   length from the file size. That is the one write to a closed file the
   format allows. The disk thread periodically patching the header during a
   take (ADR-0007 Consequences) makes this shorter; it does not replace it.
+- **Audio reaches the medium on a schedule.** Written data sits in the page
+  cache until the kernel flushes it, so without a sync a power cut can lose
+  tens of seconds of a take. The disk thread calls `fdatasync` on every open
+  take file every 2 s (*placeholder*), through `common/platform`, never from
+  the audio thread. The **loss window** at a power cut is then at most that
+  interval plus the capture ring's depth, per track. Until this lands
+  (backlog, rt-engineer) the format makes no claim about audio surviving a
+  power cut. *Unverified:* the `fdatasync` cost on a stick while 18 tracks
+  record, which must not cause a capture overrun; it sets the interval.
+- **Punch takes are recovered by their own header.** A recovered orphan
+  whose `Description` carries `punch=<A>-<B>` is offered for placement as
+  that punch, over `[A, B)` with the session's punch crossfades. Without
+  that field, or if its length cannot cover `[A, B)`, it is recovered as an
+  **unused source**, never placed over existing material automatically.
 
-What is lost in a power cut: edits since the last autosave, and the undo
-history, which is never saved. No audio, and no take's placement.
+What is lost in a power cut: edits since the last autosave, the undo
+history, which is never saved, and at most the loss window of audio at the
+end of each take being recorded. No take's placement: every take carries it
+in its header.
 
 *Unverified, and the measurement that settles it is the researcher's:*
 whether `rename` plus a directory `fsync` is durable through the persistence
