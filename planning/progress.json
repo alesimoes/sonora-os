@@ -295,11 +295,11 @@
           "items": [
             {"id": "system.image.livebuild", "title": "live-build hybrid ISO with the engine installed", "size": "M", "phase": 1, "status": "done", "evidence": "7477aab; iso/sonora.iso built 2026-10-12, contents inspected, boots in QEMU"},
             {"id": "system.image.rt_kernel", "title": "RT kernel, the only and default kernel", "size": "S", "phase": 1, "status": "done", "evidence": "da342af; QEMU boot test checks -rt- in uname -r and both bootloader defaults byte for byte"},
-            {"id": "system.image.audio_tuning", "title": "PipeWire quantum/rate pin, RT limits, sysctl", "size": "M", "phase": 1, "status": "done", "evidence": "All three tuning files installed (STATUS, image inspected); records at q128 in test-engine-docker.sh"},
+            {"id": "system.image.audio_tuning", "title": "PipeWire quantum/rate pin, RT limits, sysctl", "size": "M", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Tuning files ship, but min-quantum is 64 and allowed-rates includes 96000, so the quantum is not actually pinned"},
             {"id": "system.image.autostart", "title": "Boot with no login into the engine, respawn on exit", "size": "M", "phase": 1, "status": "done", "evidence": "PR #1; QEMU boot test: engine holds its PID, NRestarts 0, no serial login prompt"},
             {"id": "system.image.boot_timeout", "title": "Boot menus time out unattended", "size": "S", "phase": 1, "status": "done", "evidence": "PR #6; unattended isolinux and GRUB boots reach the engine in test-write-usb.sh"},
             {"id": "system.image.kiosk", "title": "Kiosk compositor for the Qt shell, plus its ADR", "size": "M", "phase": 3, "status": "todo"},
-            {"id": "system.image.followups", "title": "USB writer and quantum follow-ups", "size": "S", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Branch has no commits yet; scope taken from its name"}
+            {"id": "system.image.followups", "title": "USB writer follow-ups (wipe through the verified fd, recheck before mkfs, flock)", "size": "S", "phase": 1, "status": "doing", "branch": "feature/usb-and-quantum-followups", "note": "Branch has no commits yet; scope taken from its name"}
           ]
         },
         {
