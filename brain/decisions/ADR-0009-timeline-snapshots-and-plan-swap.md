@@ -654,13 +654,13 @@ are by nature more than one operation:
 - a take on N tracks: `AddSource` then `RecordTake` per track, which is
   N undo steps today where Pro Tools has one;
 - ADR-0011's mix assistant, which applies an accepted plan as one
-  operation. The compound gives that plan atomicity. It does not by itself
-  make the plan undoable: under item 4 a plan of `SetMix`,
-  `SetInsertParams` and send levels makes no undo step, and a plan of
-  `AddInsert` plus parameters undoes only the structure. ADR-0011
-  (Proposed) says "one undoable compound operation" and "ordinary,
-  undoable parameter changes", which ADR-0012 §6.3 contradicts today. That
-  is the open owner decision below, not something this update settles.
+  operation. The compound gives that plan atomicity. Its undo follows the
+  owner's decision of 2026-10-14 (item 4): the plan's structural members
+  (`AddInsert`, sends) are one edit-undo step, and its value members
+  (`SetMix`, `SetInsertParams`) are one step in the separate mix and
+  plug-in undo history. ADR-0011 (Proposed) says "one undoable compound
+  operation" and "ordinary, undoable parameter changes". Read against
+  this update, that means two steps, one per history, from one operation.
 
 Sending these operations one at a time has three defects. A refusal
 halfway through leaves the first half applied. Every replica sees the
@@ -683,7 +683,7 @@ heard half done. And undo takes N presses. Grouping undo steps in
      show ("Undo Paste", "Undo Record"), since `operation_name` would say
      "Compound". `apply()` ignores it, and it is not part of an
      operation's equality. It is optional on the wire; when it is absent,
-     the UI shows `operation_name` of the first undoable member.
+     each history shows `operation_name` of its own first member.
    - **ADR-0007 §6 classification.** This is an **additive** change to
      `common/model`'s public headers (`operations.h`, `op_codec.h`) and
      to `contracts/api` (the bump in item 6). It is reviewed by
@@ -733,30 +733,58 @@ heard half done. And undo takes N presses. Grouping undo steps in
    costs one residency wait; §4.2's newest-wins rule is unchanged, and the
    record gate after a take compound behaves as it does today, because
    `show_document` already runs once per take.
-4. **Undo covers what the members' undo covers, no more.** A compound is
-   undoable when at least one member is. It then pushes one step, the
-   final `EditState`, charged the exclusive bytes against the previous
-   step as any step is (§1). The intermediate states are never steps. Undo
-   restores the `EditState` and nothing else (§3). Therefore:
-   - a multi-track take (`AddSource`×N, `RecordTake`×N) is one undo step,
-     and undoing it leaves its N sources in the pool, as undoing one
-     `RecordTake` already does;
-   - Alt-click on solo or mute (`SetMix`×N) makes **no** undo step,
-     because mute and solo are mix state (§3), as in Pro Tools. The
-     compound gives it atomicity and one update. Today it makes N
-     revisions and no undo step, since `SetMix` is not undoable. The UI
-     must not offer to undo it. When this lands, the BACKLOG line "it
-     should be one compound undo step" for Alt-click is corrected to "no
-     undo step".
+4. **Undo: at most one step per history, never one per member.**
 
-   **Open, owner decision pending: should mixer and plug-in value changes
-   (`SetMix`, `SetInsertBypass`, `SetInsertParams`, `SetInsertState`) ever
-   be undoable?** `timeline-model.md` "What undo covers" and ADR-0012 §6.3
-   say no, as Pro Tools does. Logic undoes them, and ADR-0011 asks for
-   undoable plans. The answer changes the undoable column for those
-   operations, not this update: the compound's rule, one undo step if any
-   member is undoable, none otherwise, gives the right result under
-   either answer, because it reads each member's own flag.
+   **Decided by the owner, 2026-10-14: mixer and plug-in value changes
+   have their own undo history, separate from the edit undo,** as Pro
+   Tools keeps mix and plug-in undo apart from edit undo. Edit Ctrl+Z
+   keeps covering only edit-state operations, and the model's edit undo
+   table (`timeline-model.md` "What undo covers", ADR-0012 §6.3) stays as
+   it is: `SetMix` (fader, pan, mute, solo), `SetInsertBypass` and
+   `SetInsertParams` remain non-undoable *for the edit history*, and go to
+   the mix and plug-in history instead. `SetInsertActive` stays in the
+   edit history, as the table has it. `SetInsertState` is written at save,
+   after `GetState`, and is not an operator's gesture, so it makes no step
+   in either. The mix and plug-in history itself is a separate piece of
+   work (BACKLOG Track 2 item 6), not part of this update's
+   implementation.
+
+   **Edit history.** A compound is edit-undoable when at least one member
+   is. It then pushes one edit step, the final `EditState`, charged the
+   exclusive bytes against the previous step as any step is (§1). The
+   intermediate states are never steps. Edit undo restores the
+   `EditState` and nothing else (§3).
+
+   **A compound that mixes edit and mix members is accepted, and makes
+   one step in each history:** one edit-undo step for its edit members,
+   as above, and one mix-undo step for its mix members, both carrying the
+   compound's `label`. Each history undoes its own step independently, as
+   Pro Tools' two undos do. Refusing mixed compounds was rejected, because
+   the edits that need them most are mixed by nature: the mix
+   assistant's accepted plan (`AddInsert` and its parameter values, a send
+   and its level), and a new track or insert created with its starting
+   values. Refused, they would have to go as two operations, and replicas
+   and the plan builder would see, and could play, an insert at its
+   default values between them: the very defect the compound exists to
+   remove (Context). The split costs nothing in the model: `apply()` is
+   unchanged, and only the two histories each record what belongs to
+   them. An edit undo that removes an insert leaves its values in its
+   `InsertMix` entry (ADR-0012 §6.3), so a redo restores them; how a mix
+   step whose insert is gone is shown or skipped is for the mix history's
+   design (BACKLOG Track 2 item 6). Until that history exists, mix members
+   make no step, as today.
+
+   Therefore:
+   - a multi-track take (`AddSource`×N, `RecordTake`×N) is one edit-undo
+     step, and undoing it leaves its N sources in the pool, as undoing one
+     `RecordTake` already does;
+   - Alt-click on solo or mute (`SetMix`×N) makes **no** edit-undo step,
+     and one mix-undo step once that history exists. The compound gives it
+     atomicity and one update. Today it makes N revisions and no undo step
+     at all, since `SetMix` is not undoable. Edit Ctrl+Z must not offer to
+     undo it. When this lands, the BACKLOG line "it should be one compound
+     undo step" for Alt-click is corrected to "no edit-undo step; one
+     mix-undo step (Track 2 item 6)".
 5. **A size limit: 4,096 members.** 4,096 is about 200 members per track
    on 18 tracks. That covers an 18-track take (36 members), Alt-click
    (18), and a cut or paste over a selection of a few hundred regions. The
@@ -876,6 +904,10 @@ heard half done. And undo takes N presses. Grouping undo steps in
   fall below the edits the compound exists for (item 5).
 - **Pre-scanning members against `before` for the engine checks.** It
   misjudges any member that depends on an earlier one (item 2).
+- **Refusing a compound that mixes edit and mix members.** It would keep
+  each compound in one history, but it splits the mix assistant's plans
+  and new inserts with their starting values into two operations, and so
+  brings back the intermediate state the compound exists to hide (item 4).
 
 ## Alternatives rejected
 
