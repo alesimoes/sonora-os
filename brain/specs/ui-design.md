@@ -148,6 +148,16 @@ track dimmed, with the reason in `caution`, never hidden.
 - Waveform overview: one min/max column per pixel, centred, scaled by the
   vertical zoom, from a `PeakSource` (synthetic until peak files exist; the
   toolbar says so in `caution`).
+- **Fades** are drawn as the engine plays them: the gain curve
+  (`fade_gain`, which calls `sonora::fade_in_gain` in common/base's
+  `sonora/fade_curve.h`, the one definition the engine plays) as a 1.5 px `fadeLine`
+  (`#E8EBEF`) across the waveform area, and what the fade takes away above it
+  darkened by `fadeShade` (black at 55 %). A **crossfade** is a box over the
+  span both regions sound in, `crossfadeFill` (text at 12 %) with a 1 px
+  `crossfadeEdge` (text at 50 %), both curves inside it. A crossfade replaces
+  the fades of the ends it joins, so those are not drawn: a curve nobody
+  hears would be a control that lies. The Edit toolbar shows the shape the
+  no-dialog fade keys make (FADE, X-FADE); a click picks the next one.
 - A time selection is `accent` at 20 % over the lane.
 - The insertion cursor is a 1 px `accent` line while stopped; the playhead
   a 2 px `playhead` line while playing, `record` while recording.

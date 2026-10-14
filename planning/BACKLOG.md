@@ -86,6 +86,21 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
        zoom; fades; clip gain; markers.
+       - [x] Fades and crossfades (`feature/ui-fades`): keys, Smart Tool
+             corners, Clear; still open: a Fades dialog, batch fades.
+       - [ ] A crossfade keeps the fade it hides at that end, so clearing the
+             crossfade brings it back, and it still takes room from the
+             other end (the interface clamps and refuses against it, naming
+             it). Pro Tools drops it: crossfade plus SetFade 0 needs the
+             compound operation below.
+       - [ ] common/model does not refuse a crossfade that overlaps the
+             region's own fade at its other end (the engine multiplies
+             them). The interface refuses it; the model should too, in
+             `playlist_problem`, so no other client can write one.
+       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle need several model
+             operations as one undo step: a compound operation in
+             common/model (or the engine resolving the command, ADR-0009)
+             comes first.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain

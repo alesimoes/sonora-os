@@ -51,6 +51,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
     Q_PROPERTY(QString gridValue READ gridValue NOTIFY editStateChanged)
+    Q_PROPERTY(QString fadeShape READ fadeShape NOTIFY editStateChanged)
+    Q_PROPERTY(QString crossfadeShape READ crossfadeShape NOTIFY editStateChanged)
     Q_PROPERTY(int selectedTrack READ selectedTrack NOTIFY selectionChanged)
     Q_PROPERTY(QString selectionStart READ selectionStart NOTIFY selectionChanged)
     Q_PROPERTY(QString selectionEnd READ selectionEnd NOTIFY selectionChanged)
@@ -150,6 +152,10 @@ public:
     QString editMode() const { return QString::fromLatin1(edit_mode_name(ctl_.mode())); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
     QString gridValue() const { return QString::fromLatin1(grid_value_name(ctl_.grid())); }
+    QString fadeShape() const { return QString::fromLatin1(fade_shape_name(ctl_.fade_shape())); }
+    QString crossfadeShape() const {
+        return QString::fromLatin1(fade_shape_name(ctl_.crossfade_shape()));
+    }
     int selectedTrack() const { return ctl_.selection().track; }
     QString selectionStart() const;
     QString selectionEnd() const;
@@ -182,6 +188,10 @@ public:
     Q_INVOKABLE void rulerClick(qreal x);
     Q_INVOKABLE void selectTrack(int index);
     Q_INVOKABLE void cycleGrid();
+    // The shape the next fade, or crossfade, is made with: the no-dialog
+    // fades use the last shape chosen, as Pro Tools' do.
+    Q_INVOKABLE void cycleFadeShape();
+    Q_INVOKABLE void cycleCrossfadeShape();
     Q_INVOKABLE void cycleMainCounter();
     Q_INVOKABLE void setWindow(const QString& w);
 
@@ -270,7 +280,7 @@ private:
     // What was last published, to emit only on change.
     uint64_t seen_revision_ = UINT64_MAX;
     bool seen_dirty_ = false;
-    int seen_mode_ = -1, seen_tool_ = -1, seen_grid_ = -1;
+    int seen_mode_ = -1, seen_tool_ = -1, seen_grid_ = -1, seen_fades_ = -1;
     Selection seen_sel_;
     bool seen_sel_valid_ = false;
     ViewState seen_view_;

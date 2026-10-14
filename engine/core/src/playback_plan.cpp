@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/playback_plan.h"
 
-#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <new>
@@ -75,21 +74,6 @@ void layout_monitor_graph(PlaybackPlan& plan) {
     plan.nodes[bus] = PlanNode{NodeKind::BusSum, kBusSumStableId, 0, tracks, bus, 0};
     plan.nodes[out] = PlanNode{NodeKind::HardwareOut, kHardwareOutStableId, tracks, 1, out, 0};
     plan.edges[tracks] = PlanEdge{bus, out, 0, tracks};
-}
-
-float fade_in_gain(FadeCurve shape, float x) noexcept SONORA_RT {
-    if (x <= 0.0f) return 0.0f;
-    if (x >= 1.0f) return 1.0f;
-    constexpr float kHalfPi = 1.57079632679489662f;
-    switch (shape) {
-        case FadeCurve::EqualPower:
-            return std::sin(kHalfPi * x);
-        case FadeCurve::SCurve:
-            return 0.5f - 0.5f * std::cos(2.0f * kHalfPi * x);
-        case FadeCurve::Linear:
-            break;
-    }
-    return x;
 }
 
 }  // namespace sonora
