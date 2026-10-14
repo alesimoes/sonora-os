@@ -66,6 +66,15 @@ public:
     // came: the transport stopped, and no callback ran after it.
     void close_all();
 
+    // Tests only: called in every pass once the boundary records are taken
+    // and before any ring is drained, so a test can land the audio
+    // thread's writes exactly there. Set while the thread is not running.
+    using PassHook = void (*)(void* context);
+    void set_pass_hook(PassHook hook, void* context) {
+        hook_ = hook;
+        hook_context_ = context;
+    }
+
     // Files closed since the last call, in the order they were closed.
     // Any thread.
     std::vector<ClosedFile> take_closed();
@@ -76,6 +85,9 @@ public:
 private:
     struct TrackState {
         uint64_t consumed = 0;  // samples read from the ring, ever
+        // How far this pass may read: the ring's fill, read before the
+        // boundary records were.
+        uint64_t visible = 0;
         int active = -1;        // the writer slot the ring drains into
         std::deque<CaptureBoundary> pending;
     };
@@ -98,6 +110,8 @@ private:
     std::vector<ClosedFile> closed_;
     std::thread thread_;
     std::atomic<bool> running_{false};
+    PassHook hook_ = nullptr;
+    void* hook_context_ = nullptr;
 };
 
 }  // namespace sonora

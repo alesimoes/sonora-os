@@ -56,20 +56,29 @@ void DiskThread::run() {
 }
 
 void DiskThread::drain_once() {
-    // Records first: each one was pushed after its samples, so every
-    // sample a record read here refers to is already in its ring.
+    // The fill first, then the records. A record is pushed after the
+    // samples before it, so every sample a record read here refers to is
+    // in its ring. And a window's samples are written after its open
+    // record, so every sample counted here has its record among those read
+    // below: read the other way round, samples written in between would be
+    // drained before their window opened, and dropped.
+    for (std::size_t i = 0; i < tracks_.size(); ++i) {
+        state_[i].visible = state_[i].consumed + tracks_[i]->capture_ring().read_space();
+    }
     CaptureBoundary b{};
     while (boundaries_.read(&b, 1) == 1) {
         if (b.track < state_.size()) state_[b.track].pending.push_back(b);
     }
+    if (hook_) hook_(hook_context_);
     for (std::size_t i = 0; i < tracks_.size(); ++i) drain_track(i);
 }
 
 void DiskThread::drain_track(std::size_t i) {
     TrackState& s = state_[i];
-    RingBuffer<float>& ring = tracks_[i]->capture_ring();
     for (;;) {
-        uint64_t n = ring.read_space();
+        // A record read this pass may lie past the fill read before it; the
+        // samples up to it are drained next pass.
+        uint64_t n = s.visible - s.consumed;
         if (!s.pending.empty()) {
             const uint64_t at = s.pending.front().at;
             n = at > s.consumed ? std::min<uint64_t>(n, at - s.consumed) : 0;

@@ -417,6 +417,38 @@ int test_full_boundary_ring() {
     return 0;
 }
 
+// Found by CI's ASan job (record_fake, playback_loopback lost a take's
+// first blocks): a disk pass that took the boundary records, and then read
+// samples the audio thread had written after them, dropped those samples
+// as outside any window, though their open record was already in the ring.
+// The audio thread's blocks land exactly there, through the pass hook.
+int test_samples_after_the_records_are_kept() {
+    Rig rig("pass_hook", 1);
+    Session& s = *rig.session;
+    struct Ctx {
+        Rig* rig;
+        int blocks;
+    } ctx{&rig, 0};
+    s.disk().set_pass_hook(
+        [](void* c) {
+            auto* x = static_cast<Ctx*>(c);
+            if (x->blocks == 0) x->rig->blocks(3);
+            ++x->blocks;
+        },
+        &ctx);
+    std::string error;
+    CHECK(s.start_recording(1, &error));
+    s.closed_takes();  // a pass with the records empty, then three blocks
+    rig.blocks(2);
+    CHECK(s.stop(&error));
+    s.disk().set_pass_hook(nullptr, nullptr);
+    const FileCheck c = check_file(rig.file(0, 1));
+    CHECK(c.ok);
+    CHECK(c.time_reference == 0);
+    CHECK(c.frames == 5 * kBlock);
+    return 0;
+}
+
 // Two takes started over a third before any callback ran hold both slots:
 // the next is refused with the reason, not waited for past a bound, and
 // leaves no file behind.
@@ -515,6 +547,7 @@ int main() {
     if (test_takes_while_rolling() != 0) return 1;
     if (test_stop_without_a_callback() != 0) return 1;
     if (test_full_boundary_ring() != 0) return 1;
+    if (test_samples_after_the_records_are_kept() != 0) return 1;
     if (test_no_free_slot_is_refused() != 0) return 1;
     if (test_concurrent_punches() != 0) return 1;
     std::printf("test_take_boundaries: ok\n");
