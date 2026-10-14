@@ -66,10 +66,12 @@ if [[ "$MODE" == screenshot ]]; then
   shoot "$SHOT" --window edit
   shoot "$mix" --window mix
   shoot "$base-no-engine.png" --window edit --engine-dies-after 2
+  # The Edit window zoomed in on the snare's crossfade and the fades near it.
+  shoot "$base-fades.png" --window edit --edit-view fades
   # The Mix window with the plugin chooser open, and with a parameter panel.
   shoot "${mix%.png}-browser.png" --window mix --insert-view browser
   shoot "${mix%.png}-panel.png" --window mix --insert-view panel
-  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png and the Mix window's chooser and panel"
+  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png and the Mix window's chooser and panel"
   exit 0
 fi
 

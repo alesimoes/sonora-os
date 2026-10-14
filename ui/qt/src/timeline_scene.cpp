@@ -30,10 +30,42 @@ void outline(std::vector<SceneRect>& out, double x, double y, double w, double h
 
 uint32_t with_alpha(uint32_t argb, uint8_t a) { return (argb & 0x00ffffffu) | (uint32_t(a) << 24); }
 
+// The area a region's waveform is drawn in, under its name band.
+void wave_area(double lane_y, const ViewState& v, double& wy, double& wh) {
+    const double y = lane_y + kLaneInset;
+    const double h = v.track_height - 2 * kLaneInset;
+    const double band = std::min<double>(theme::kRegionNameBand, h / 3);
+    wy = y + band + 1;
+    wh = h - band - 2;
+}
+
+// A fade's gain curve over pixels [fx0, fx1), clipped to [cx0, cx1): the
+// curve the engine plays (fade_gain), one column a pixel, as a line, with
+// `shade` (when non-zero) over what the fade takes away above it.
+void draw_fade_curve(double fx0, double fx1, bool rising, FadeShape shape, double cx0,
+                     double cx1, double wy, double wh, uint32_t line, uint32_t shade,
+                     std::vector<SceneRect>& out) {
+    if (fx1 - fx0 < 1.0 || wh <= 2) return;
+    const int first = static_cast<int>(std::floor(std::max(fx0, cx0)));
+    const int last = static_cast<int>(std::ceil(std::min(fx1, cx1)));
+    double prev = -1;
+    for (int px = first; px < last; ++px) {
+        const double x = (px + 0.5 - fx0) / (fx1 - fx0);
+        const float g = fade_gain(shape, static_cast<float>(rising ? x : 1.0 - x));
+        const double yc = wy + (1.0 - g) * wh;
+        if (shade != 0) add(out, px, wy, 1.0, yc - wy, shade);
+        const double from = prev < 0 ? yc : prev;
+        add(out, px, std::min(from, yc) - 0.75, 1.0, std::max(1.5, std::abs(yc - from) + 1.5),
+            line);
+        prev = yc;
+    }
+}
+
 // One region at [pos, pos + len) reading its source from `offset`, drawn on
-// lane `lane_y`. `ghost` draws it translucent (a drag's origin).
-void draw_region(const Region& r, Frames pos, Frames len, Frames offset, double lane_y,
-                 const ViewState& v, uint32_t palette, bool selected, bool ghost,
+// lane `lane_y`, with the fades `fades` says are heard. `ghost` draws it
+// translucent (a drag's origin).
+void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const RegionFades& fades,
+                 double lane_y, const ViewState& v, uint32_t palette, bool selected, bool ghost,
                  const PeakSource& peaks, Scene& out) {
     const double x0 = v.x_of(pos), x1 = v.x_of(pos + len);
     if (x1 < 0 || x0 > v.width) return;
@@ -70,11 +102,53 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, double 
             add(out.rects, px, top, 1.0, std::max(1.0, bot - top), wave);
         }
     }
+    // A trim in the hand can leave fades longer than the region; they are
+    // drawn as they would fit.
+    const Frames in = std::clamp<Frames>(fades.in, 0, len);
+    const Frames fade_out = std::clamp<Frames>(fades.out, 0, len - in);
+    if (!r.mute && wh > 2) {
+        const uint32_t line = with_alpha(theme::kFadeLine, alpha);
+        const uint32_t shade = ghost ? 0u : theme::kFadeShade;
+        if (in > 0) {
+            draw_fade_curve(x0, v.x_of(pos + in), true, fades.in_shape, cx0, cx1, wy, wh, line,
+                            shade, out.rects);
+        }
+        if (fade_out > 0) {
+            draw_fade_curve(v.x_of(pos + len - fade_out), x1, false, fades.out_shape, cx0, cx1, wy,
+                            wh, line, shade, out.rects);
+        }
+    }
     if (selected && !ghost) outline(out.rects, cx0, y, cx1 - cx0, h, 1.5, theme::kRegionSelectedOutline);
     if (!ghost && x1 - x0 > 24) {
         out.labels.push_back({static_cast<float>(cx0 + 4), static_cast<float>(y),
                               static_cast<float>(cx1 - cx0 - 8), r.name, theme::kText,
                               theme::kTextCaption});
+    }
+}
+
+// Each crossfade on `p` as the engine plays it: over [cut - before, cut +
+// after), the left region falling and the right one rising, in a box that
+// marks the span both sound in.
+void draw_crossfades(const Playlist& p, double lane_y, const ViewState& v, Scene& out) {
+    double wy = 0, wh = 0;
+    wave_area(lane_y, v, wy, wh);
+    const double y = lane_y + kLaneInset;
+    const double h = v.track_height - 2 * kLaneInset;
+    for (const Crossfade& x : p.crossfades) {
+        Frames cut = -1;
+        for (const Region& r : p.regions) {
+            if (r.id == x.right) cut = r.position;
+        }
+        if (cut < 0) continue;
+        Frames before = 0, after = 0;
+        crossfade_extent(x, before, after);
+        const double fx0 = v.x_of(cut - before), fx1 = v.x_of(cut + after);
+        if (fx1 < 0 || fx0 > v.width) continue;
+        const double cx0 = std::max(0.0, fx0), cx1 = std::min(v.width, fx1);
+        add(out.rects, cx0, y, cx1 - cx0, h, theme::kCrossfadeFill);
+        outline(out.rects, cx0, y, cx1 - cx0, h, 1.0, theme::kCrossfadeEdge);
+        draw_fade_curve(fx0, fx1, false, x.shape, cx0, cx1, wy, wh, theme::kFadeLine, 0, out.rects);
+        draw_fade_curve(fx0, fx1, true, x.shape, cx0, cx1, wy, wh, theme::kFadeLine, 0, out.rects);
     }
 }
 
@@ -127,30 +201,44 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         // button comes up.
         if (drag.moved && drag.preview && drag.preview->id == p->id) {
             for (const Region& r : drag.preview->regions) {
-                draw_region(r, r.position, r.length, r.source_offset, y, v, palette,
-                            r.id == drag.region, false, peaks, out);
+                draw_region(r, r.position, r.length, r.source_offset,
+                            region_fades(*drag.preview, r), y, v, palette, r.id == drag.region,
+                            false, peaks, out);
             }
+            draw_crossfades(*drag.preview, y, v, out);
             continue;
         }
         for (const Region& r : p->regions) {
             const bool dragged = drag.moved && drag.region == r.id;
             const bool selected = sel.region == r.id;
+            RegionFades fades = region_fades(*p, r);
             if (!dragged) {
-                draw_region(r, r.position, r.length, r.source_offset, y, v, palette, selected,
-                            false, peaks, out);
+                draw_region(r, r.position, r.length, r.source_offset, fades, y, v, palette,
+                            selected, false, peaks, out);
                 continue;
             }
-            if (drag.kind == Drag::Kind::Move) {
-                draw_region(r, r.position, r.length, r.source_offset, y, v, palette, false, true,
-                            peaks, out);
-                draw_region(r, drag.start, r.length, r.source_offset, y, v, palette, true, false,
-                            peaks, out);
-            } else {
-                draw_region(r, drag.start, drag.end - drag.start,
-                            r.source_offset + (drag.start - r.position), y, v, palette, true,
-                            false, peaks, out);
+            switch (drag.kind) {
+                case Drag::Kind::Move:
+                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, palette,
+                                false, true, peaks, out);
+                    draw_region(r, drag.start, r.length, r.source_offset, fades, y, v, palette,
+                                true, false, peaks, out);
+                    break;
+                case Drag::Kind::FadeIn:
+                case Drag::Kind::FadeOut:
+                    // The fade in the hand, as the drop will set it.
+                    (drag.kind == Drag::Kind::FadeIn ? fades.in : fades.out) = drag.fade;
+                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, palette,
+                                true, false, peaks, out);
+                    break;
+                default:
+                    draw_region(r, drag.start, drag.end - drag.start,
+                                r.source_offset + (drag.start - r.position), fades, y, v, palette,
+                                true, false, peaks, out);
+                    break;
             }
         }
+        draw_crossfades(*p, y, v, out);
     }
 
     // A time range on the selected track, or the one being dragged out.

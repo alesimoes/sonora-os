@@ -10,7 +10,8 @@
 #   tools/build-ui.sh --screenshot PATH     ... then the Edit window, the Mix
 #                                           window (PATH-mix.png), its plugin
 #                                           chooser and parameter panel
-#                                           (-mix-browser, -mix-panel) and the
+#                                           (-mix-browser, -mix-panel), the Edit
+#                                           window zoomed on fades (-fades) and the
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the
 #                                           compositor itself (grim); also the

@@ -62,7 +62,7 @@ set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
 # FakeEngine: the engine behind the adapter when no real one is running,
 # and in the tests (control_adapter.h).
-target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap sonora_model sonora_api sonora_api_fake
+target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 # Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
 target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
