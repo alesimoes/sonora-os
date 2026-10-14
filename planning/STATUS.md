@@ -170,6 +170,19 @@ end of its run. Keep it short: what is true now, not a diary.
   is refused before the prompt; a missing or empty device is not reported as
   "in use". Each asserted in `tools/test-write-usb.sh` (strace and seeded
   patterns). Loop devices and QEMU only, as before.
+- **Transport window and the tempo map (`feature/ui-transport`).** Bars and
+  beats are read through the whole tempo map (they were read from its first
+  entry, so a loaded session with a tempo change had a counter, ruler and
+  grid that disagreed with it after the change): counters, the Bars|Beats
+  ruler, the Edit window's grid lines and Grid-mode snapping. A meter change
+  starts a bar where it stands; a tempo change carries the count on. The
+  Transport window (`window.transport`, Pro Tools' Ctrl+numpad 1, and a
+  button in the bar) floats over either window: the transport keys, the
+  position in every format from one reading, tempo, meter and the next
+  change, the map, pre/post-roll, loop and punch. Pre/post-roll and the
+  click are shown dimmed with the reason: the engine runs neither yet. Open:
+  no tempo or meter ruler, no tempo editing, no counter entry (no locate
+  command), and the nudge still steps by the first entry's grid value.
 - **Edit and Mix windows (`ui/qt`, branch `feature/ui-arrange-mixer`).**
   Pro Tools workflow over the synthetic engine: rulers (timecode from
   01:00:00:00, bars|beats, min:secs), scene-graph timeline with waveform

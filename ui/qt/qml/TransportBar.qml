@@ -11,6 +11,8 @@ Rectangle {
     id: bar
     required property ShellModel shell
     required property SessionModel session
+    // Null where no Transport window is wired: then the button is not shown.
+    property TransportModel transport: null
     // Open lists the sessions folder in a panel the window owns.
     signal openRequested()
 
@@ -46,6 +48,14 @@ Rectangle {
                 text: "Mix"; fontPx: Theme.textBody; implicitHeight: 28; implicitWidth: 56
                 active: bar.session.window === "mix"
                 onClicked: if (!active) bar.shell.invoke("window.toggle_mix_edit", -1)
+            }
+            // What the profile's Window > Transport key sends.
+            SButton {
+                objectName: "transportButton"
+                visible: bar.transport !== null
+                text: "Transport"; fontPx: Theme.textBody; implicitHeight: 28
+                active: bar.transport !== null && bar.transport.open
+                onClicked: bar.shell.invoke("window.transport", -1)
             }
         }
 
@@ -158,7 +168,11 @@ Rectangle {
                 }
             }
             Text {
-                text: bar.session.tempoText
+                objectName: "barTempo"
+                // The map's tempo where the counter is, not its first entry.
+                text: bar.transport !== null
+                      ? bar.transport.tempoText + " bpm  " + bar.transport.meterText
+                      : bar.session.tempoText
                 color: Theme.textSecondary
                 font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
             }

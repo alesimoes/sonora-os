@@ -150,6 +150,22 @@ never move when the tempo changes.** Musical-time anchoring (for MIDI, later)
 is a separate field added with a version bump, not a reinterpretation of
 this one. `bpm` is the one other float in the file.
 
+How the map is counted. The interface's counters, ruler and grid read it
+this way, and the click must put its downbeats in the same places:
+
+- `bpm` counts quarter notes, whatever the meter. A beat is the meter's
+  denominator note, so a 6/8 bar at 120 bpm holds six eighths of 0.25 s.
+- An entry's tempo and meter hold from its `at` to the next entry's `at`.
+- An entry that changes only `bpm` carries the count on: the bar and beat
+  in progress continue at the new tempo, so a bar may straddle the change.
+- An entry that changes `meter` starts a new bar at its `at`. If that
+  falls inside a bar (more than half a tick, 1/1920 of a beat, past a bar
+  line), the bar it cuts short is still counted as a bar, and the new
+  meter's first bar is the next number. Within half a tick of a bar line,
+  the entry is on that line.
+- Each entry counts from its own `at` frame, so rounding does not
+  accumulate along the map.
+
 ### `transport`
 
 ```json

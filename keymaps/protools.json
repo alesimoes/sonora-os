@@ -75,6 +75,11 @@
       "verified": false,
       "comment": "Command+= / Control+=, Toggle Mix/Edit windows. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
     },
+    "ctrl+numpad_1": {
+      "command": "window.transport",
+      "verified": false,
+      "comment": "Window > Transport, Command+1 on the numeric keypad (Ctrl+1 on Windows). Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "ctrl+q": {
       "command": "app.quit",
       "verified": false,

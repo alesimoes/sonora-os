@@ -59,6 +59,10 @@ if [[ "$MODE" == screenshot ]]; then
   }
   base="${SHOT%.png}"
   mix="${base%-edit}-mix.png"
+  # The Transport window open over the Edit window, on the demo session
+  # with a tempo map: sonora-ui-transport.png beside sonora-ui-edit.png.
+  shoot "${base%-edit}-transport.png" --window edit --transport-view
+  echo "saved /out/${base%-edit}-transport.png"
   shoot "$SHOT" --window edit
   shoot "$mix" --window mix
   shoot "$base-no-engine.png" --window edit --engine-dies-after 2
