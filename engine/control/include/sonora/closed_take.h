@@ -21,10 +21,9 @@
 #include <vector>
 
 #include "sonora/model/replication.h"
+#include "sonora/session.h"
 
 namespace sonora {
-
-class Session;
 
 // The document the engine starts with when no session file is opened: one
 // model track per engine track, as many channels as it records, each
@@ -39,10 +38,12 @@ bool place_file(model::Document& document, const std::string& session_dir,
                 const std::string& relative_path, std::size_t track,
                 std::vector<model::ReplicationUpdate>& updates, std::string& error);
 
-// The take numbered `take` has just closed: for every armed track that wrote
-// frames, its file as a Recorded source and a RecordTake on the active
-// playlist of the track at the same display index. One undo step per track.
-bool add_closed_take(model::Document& document, const Session& session, int take,
+// A take the disk thread has closed (Session::closed_takes()): for every
+// file of it that holds frames, the file as a Recorded source and a
+// RecordTake on the active playlist of the track at the same display index.
+// One undo step per track.
+bool add_closed_take(model::Document& document, const Session& session,
+                     const Session::ClosedTake& take,
                      std::vector<model::ReplicationUpdate>& updates, std::string& error);
 
 }  // namespace sonora

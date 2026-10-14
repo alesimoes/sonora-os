@@ -26,7 +26,10 @@ playback can follow edits; it is in flight.
 3. [ ] Playback: disk reader, chunk pool, residency-gated plan swap, output
        through the fixed 2-channel monitor bus (DAW 1 detail, below).
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
-       locate, pre-roll; input monitoring.
+       locate, pre-roll; input monitoring. In-band boundaries, record
+       while rolling and punch in/out on the fly at block boundaries:
+       `feature/record-while-rolling`. Punch points inside a block, loop,
+       pre-roll and input monitoring remain.
 5. [x] M4: control API, wire codec, state block and `StateView` per
        ADR-0007 §3, `InProcessEngine`, `FakeEngine`; removes the illegal
        edges (`contract/api`; `engine/app` → `ui/tui` stays as the
@@ -625,7 +628,7 @@ Order and owners are in ADR-0008 §5.
       Under `de_DE` the decimal separator is `,`, so `0.5` parses as `0`.
       Fix with `std::from_chars`; regression test that sets a comma locale
       first. ui-engineer.
-- [ ] Close a take while rolling with **in-band boundary records**
+- [x] Close a take while rolling with **in-band boundary records**
       (`brain/specs/timeline-model.md`, "Closing a take while rolling"):
       audio thread → SPSC ring → disk thread splits at exactly the frame;
       the capture ring is never reset; the next take's files opened ahead;
@@ -635,6 +638,18 @@ Order and owners are in ADR-0008 §5.
       handshake** in "Known gaps": with no ring reset there is no race. The
       race's regression test is still written first. rt-engineer, audited
       by rt-safety-auditor.
+      Landed on `feature/record-while-rolling` (2026-10-14), except the
+      sample-accurate parts: windows open and close on block boundaries, and
+      the auto-monitor switch has no ramp yet. Both go with the punch points
+      below.
+- [ ] Punch points inside a block: capture opens and closes at a frame the
+      control thread sets ahead (Pro Tools' punch range, Logic's autopunch),
+      sample-accurate, the monitor switched there with a ramp; files opened
+      when the punch is armed. Then a `transport.punch` command in the
+      `contracts/api` catalogue for punching in and out on the fly
+      (`Session::start_recording()` while rolling, `Session::punch_out()`),
+      and its vendor bindings in `keymaps/`. rt-engineer, contract owner for
+      the catalogue.
 - [ ] Periodic `fdatasync` of every open take file from the disk thread,
       through `common/platform`, with the loss window stated in the UI and
       in `brain/specs/session-format.md` ("Crash recovery"). Measure its cost
@@ -673,6 +688,9 @@ Order and owners are in ADR-0008 §5.
   regression test first. rt-engineer, audited by rt-safety-auditor.
   **Superseded by ADR-0009:** the fix is now the in-band boundary records
   in Phase 2 ("Close a take while rolling"), which remove the ring reset.
+  **Fixed on `feature/record-while-rolling`:** the ring is never reset, and
+  `test_take_boundaries` reproduces the race on the old code (an insert
+  runner's `begin()` stalls a callback after it has loaded the take).
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.

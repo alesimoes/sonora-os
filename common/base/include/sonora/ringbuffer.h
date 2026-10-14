@@ -77,13 +77,10 @@ public:
         return count;
     }
 
-    // Only while neither producer nor consumer is using the ring. The relaxed
-    // stores are made visible to them by whatever release store hands the
-    // ring back -- see Track::set_draining().
-    void reset() {
-        read_.store(0, std::memory_order_relaxed);
-        write_.store(0, std::memory_order_relaxed);
-    }
+    // No reset(): a ring shared with the audio thread cannot be proven idle
+    // on the other side, and an index stored under a writer mid-copy hands
+    // the reader whatever the buffer held. Boundaries travel in band
+    // instead (DiskThread, CaptureBoundary).
 
 private:
     static std::size_t round_up_pow2(std::size_t n) {

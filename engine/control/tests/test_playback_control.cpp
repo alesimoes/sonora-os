@@ -511,6 +511,50 @@ int test_take_origin_is_first_recorded_frame() {
     return 0;
 }
 
+// Takes closed while rolling join the document from the disk thread's
+// report: punched out, and started over another, each at its own origin and
+// length on disk, while the transport never stops. writer() names the take
+// recording now, so the report is the only thing that can name these.
+int test_takes_closed_while_rolling_join_the_document() {
+    auto session = make_session(1);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    sonora::model::Document doc(sonora::engine_document(s));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    run_block_in(s, o, in);
+    const int first = s.next_free_take();
+    CHECK(s.start_recording(first, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.start_recording(first + 1, &error));
+    for (int i = 0; i < 2; ++i) run_block_in(s, o, in);
+    CHECK(s.punch_out());
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() == sonora::TransportState::Rolling);
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 2);
+    std::vector<sonora::model::ReplicationUpdate> updates;
+    for (const Session::ClosedTake& take : closed) {
+        CHECK(sonora::add_closed_take(doc, s, take, updates, error));
+    }
+    const auto& track = *doc.current().edit->tracks[0];
+    const sonora::model::Playlist* list = nullptr;
+    for (const auto& p : track.playlists) {
+        if (p->id == track.active_playlist) list = p.get();
+    }
+    CHECK(list != nullptr);
+    CHECK(list->regions.size() == 2);
+    CHECK(list->regions[0].position == kBlock);
+    CHECK(list->regions[0].length == 3 * kBlock);
+    CHECK(list->regions[1].position == 4 * kBlock);
+    CHECK(list->regions[1].length == 2 * kBlock);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
 // Return to zero, then record, in one pass of the terminal loop: the take
 // starts at zero once the locate is applied, and the playhead never jumps
 // while it runs.
@@ -1006,6 +1050,7 @@ int main() {
     if (test_locate_and_cancel()) return 1;
     if (test_transport_commands()) return 1;
     if (test_take_origin_is_first_recorded_frame()) return 1;
+    if (test_takes_closed_while_rolling_join_the_document()) return 1;
     if (test_return_to_zero_then_record()) return 1;
     if (test_pending_locate_dropped_by_a_take()) return 1;
     if (test_record_waits_for_residency()) return 1;

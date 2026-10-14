@@ -236,7 +236,8 @@ private:
     void show_inserts(bool new_session);
     // A FlushPluginState: which inserts, and whether they can be flushed.
     bool flush_plugin_state(const std::string& which, std::string& why);
-    // A take that has just closed joins the document.
+    // Every take the disk thread has closed joins the document: at a stop,
+    // a punch-out, or a take started over another.
     void follow_transport();
     // Held record replies, once the controller no longer waits to start.
     void resolve_records();
@@ -309,8 +310,6 @@ private:
     };
     // Record requests waiting for the residency gate, answered together.
     std::vector<HeldReply> held_records_;
-    bool was_recording_ = false;
-    int recording_take_ = 0;
 
     uint64_t next_housekeeping_ns_ = 0;
     bool fatal_said_ = false;
