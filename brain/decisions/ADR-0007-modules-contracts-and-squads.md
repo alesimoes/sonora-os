@@ -1428,6 +1428,10 @@ rt-safety-auditor's, before it merges.
      `tool.*`, `zoom.*`, `edit.mode.*` and `app.quit`. Everything else is
      `Engine`, `track.select*` included, as §5 reads.
      `is_engine_command()` says which.
+     *Note, 2026-10-14:* `window.transport` (PR #62) is `Interface` too.
+     It shows or hides the interface's Transport window, which is how the
+     operator is looking at the session (§5), and it was added alone under
+     §6's exception for an interface command id.
    - `api/messages.h`: `CommandRequest`, `ParameterChange` (`ParamId::Gain`,
      linear 0..4), `ModelRequest` (`Apply`, `Undo`, `Redo`, `Resync`),
      `Hello` (adds `track_names`), `CommandReply`, `EngineEvent`
