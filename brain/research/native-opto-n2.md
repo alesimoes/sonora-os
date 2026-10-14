@@ -150,8 +150,17 @@ quiet; 0.25 ms grid for 40 ms after each step), max |model - ngspice|:
 | compress, peak 100, 1 kHz, +12 dBFS (30.8 dB, driver limit) | 0.10 / 0.11 | 0.014 / 0.016 / 0.0033 |
 
 The eco figures are reported: the +12 dBFS case's 0.1 dB is the first
-millisecond of an attack of 30 dB. The eco processor equals the circuit
-it wraps bit for bit (`max |difference| 0`). The references regenerate in
+millisecond of an attack of 30 dB. The eco processor at 48 kHz matches
+the circuit it wraps on the first case (`max |difference| 0` measured,
+held to 1e-7 FS, the processor's float output); standard and high are
+not compared with the circuit directly: the table's standard column is
+the circuit (`OptoChannel`) at those rates, and the standard processor
+is held through the static curve and its release times against eco's.
+The reference integrates the cell's own equations through behavioural
+sources and takes the amplifier and driver as ideal gains, so it proves
+the discretisation and the linear network, not the cell's fidelity to
+the hardware (no SPICE model of this photoresistor exists; see "Not
+measured"). The references regenerate in
 22 s; each `spice_opto_*` ctest re-runs one case and holds the netlist
 byte for byte and the trajectory to 1e-5 dB.
 
@@ -234,6 +243,38 @@ meets it at every rate. At 18-21 dB of reduction (-6 dBFS, peak
 reduction 100, every position) eco reaches -52 to -54 dBc (8 kHz at
 48 kHz) and standard -117 to -129 dBc, reported.
 
+### Eco at high frequencies (code review of PR #57, finding 1)
+
+The EL law is steep, so the light is a narrow pulse at each peak of the
+drive (about 0.5 rad wide). At the base rate a high tone is sampled a
+few times a period, and on a tone locked to the rate the samples land at
+the same places every cycle: the reduction depends on the tone's phase
+against them. Standard samples the pulse densely and does not. Eco
+against standard over nine phases (0 to pi/2), compress, peak reduction
+100, `native_opto` (`eco_high_frequency`, held to `eco_hf`):
+
+| Tone | -30 dBFS | -20 dBFS | -10 dBFS | Bar |
+|---|---|---|---|---|
+| 12 kHz at 48 kHz (fs/4): eco over the phases, standard | 0.80-1.57, 1.26 dB | 6.66-7.82, 7.34 dB | 14.11-15.18, 14.70 dB | |
+| 12 kHz at 48 kHz: max \|eco - standard\| | 0.46 dB | 0.68 dB | 0.58 dB | 0.75 |
+| 11.025 kHz at 44.1 kHz (fs/4): the same | 0.46 dB | 0.68 dB | 0.58 dB | 0.75 |
+| 8 kHz at 48 kHz: the same | 0.031 dB | 0.019 dB | 0.066 dB | 0.1 |
+
+So eco's level at fs/4 is within +-0.7 dB of standard's (1.2 dB of
+spread over the phase), and at 8 kHz within 0.07 dB. A tone not locked
+to the rate walks through the phases and averages them (10 kHz at
+48 kHz: no phase dependence in a Python port of the cell), or near fs/4
+beats slowly at its offset, which the aliasing check counts.
+
+Documented, not fixed. Averaging the light with the light at the
+linearly interpolated midpoint of the step halves the spread (1.16 to
+0.62 dB at 12 kHz, -20 dBFS, in the Python port) but reads the peaks low,
+linear interpolation being -3 dB at fs/4: every phase then falls short
+of standard, by up to 1.06 dB, a worse error than the spread. A
+four-point midpoint is still -1.1 dB at fs/4 and needs the next sample,
+which eco's zero latency does not have. Doing better needs the samples
+standard has; eco is the economy mode, and standard is the default.
+
 ### Key, link, hot input
 
 - External key at -6 dBFS on a -40 dBFS input: 17.6 dB of reduction (key
@@ -252,7 +293,11 @@ reduction 100, every position) eco reaches -52 to -54 dBc (8 kHz at
   quality, both positions, full emphasis, and anti-phase with the link
   off: finite, the deepest reduction 40.3 dB (the cell's floor under the
   driver's full swing; [M]: up to 40 dB; bar 40.5), the worst block
-  8.5-10 µs eco, 38-44 µs standard, 79-87 µs high.
+  8.5-10 µs eco, 38-44 µs standard, 79-87 µs high. Held (RT audit of
+  PR #57, item 2) at most 6 times the median block on a -60 dBFS square
+  in the same configuration, as the tube: 0.93-1.10 times measured
+  (fix round, same machine), so a cell whose cost came to depend on the
+  drive would trip it long before it cost the period.
 
 ### Common checks
 

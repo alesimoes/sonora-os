@@ -5,8 +5,8 @@
 // (brain/research/native-opto-n2.md) has the citations and the numbers.
 // - The circuit against ngspice on the same equations (tests/spice/,
 //   measure/spice_opto.h): the gain reduction through tone bursts, at
-//   44.1, 48 and 96 kHz; and the processor bit for bit against the
-//   circuit it wraps.
+//   44.1, 48 and 96 kHz; and the processor in eco at 48 kHz against the
+//   circuit it wraps, within 1e-7 FS (the processor's float output).
 // - The static curve against the model's steady state, solved here from
 //   the circuit's equations rather than rendered; the ratio in compress
 //   ("gentle ... a low compression ratio" [M]) and in limit ("a higher
@@ -19,7 +19,8 @@
 // - THD against level at 1 kHz against [M]'s 0.35 %; low-frequency
 //   distortion reported; flat response below threshold ([M]: +-0.1 dB,
 //   30 Hz to 15 kHz).
-// - Aliasing at the nominal level, with no oversampling.
+// - Aliasing at the nominal level, per quality; eco's level at fs/4 and
+//   8 kHz against standard's, over the tone's phase.
 // - The key input, the stereo link, hot input, and the common checks.
 #include <algorithm>
 #include <cmath>
@@ -629,6 +630,71 @@ void aliasing(Suite& s) {
     s.data().set("aliasing", rows);
 }
 
+// Eco's level at high frequencies. The EL law is steep, so the light is a
+// narrow pulse at each peak of the drive (about 0.5 rad wide), and at the
+// base rate a high tone is sampled a few times a period. On a tone locked
+// to the rate the samples land at the same places every cycle, so the
+// reduction depends on the tone's phase against them (code review of PR
+// #57, finding 1). Standard (4x) samples the pulse densely and does not.
+// Held: eco against standard over nine phases (0 to pi/2), at fs/4 (four
+// samples a period, the worst case) and at 8 kHz (six), compress at full
+// peak reduction, from near the threshold to 15 dB of reduction. A tone
+// not locked to the rate walks through these phases and averages them, or
+// near fs/4 beats slowly at its offset; the aliasing check counts that.
+// Not fixed in eco, documented (opto.h, Quality). Averaging the light with
+// the light at the linearly interpolated midpoint halves the spread (1.16
+// to 0.62 dB, 12 kHz at 48 kHz, -20 dBFS, a Python port of the cell) but
+// reads the peaks low (linear interpolation is -3 dB at fs/4), so every
+// phase falls short of standard, by up to 1.06 dB: worse than the spread.
+// A four-point midpoint is still -1.1 dB at fs/4 and needs the next
+// sample, which eco's zero latency does not have.
+void eco_high_frequency(Suite& s) {
+    struct Case {
+        double fs, f;
+        const char* bar;
+    };
+    const Case cases[] = {{48000.0, 12000.0, "eco_hf.fs4_db"},
+                          {44100.0, 11025.0, "eco_hf.fs4_db"},
+                          {48000.0, 8000.0, "eco_hf.f8k_db"}};
+    const double secs = measure::quick() ? 1.5 : 2.0;
+    json::Value rows = json::Value::array();
+    for (const Case& c : cases) {
+        const auto len = static_cast<std::size_t>(secs * c.fs);
+        const std::size_t from = len - static_cast<std::size_t>(0.25 * c.fs);
+        for (double level : {-30.0, -20.0, -10.0}) {
+            const double a = std::pow(10.0, level / 20.0);
+            auto gr = [&](float quality, double phase) {
+                Chans x(1, std::vector<float>(len));
+                for (std::size_t n = 0; n < len; ++n)
+                    x[0][n] = static_cast<float>(a * std::sin(dsp::kTwoPi * c.f * static_cast<double>(n) / c.fs + phase));
+                auto p = measuring(s, c.fs, 1, {{"peak_reduction", 100.0f}, {"mode", 0.0f}, {"quality", quality}});
+                const Chans y = aligned(*p, x);
+                return -db(measure::rms(y[0], from) / measure::rms(x[0], from));
+            };
+            const double ref = gr(1.0f, 0.0);
+            double lo = 1e300, hi = -1e300;
+            for (int i = 0; i <= 8; ++i) {
+                const double g = gr(0.0f, i * dsp::kTwoPi / 32.0);
+                lo = std::fmin(lo, g);
+                hi = std::fmax(hi, g);
+            }
+            const double dev = std::fmax(hi - ref, ref - lo);
+            const std::string what = fmt("eco, %.0f Hz at %.0f Hz, %.0f dBFS", c.f, c.fs, level) +
+                                     ", compress, peak reduction 100: max |reduction - standard's| over 9 phases";
+            s.check_le(what, dev, s.bar(c.bar), "dB", fmt("eco %.2f to %.2f dB, standard %.2f dB", lo, hi, ref));
+            json::Value r = json::Value::array();
+            r.push(jf(c.fs));
+            r.push(jf(c.f));
+            r.push(jf(level));
+            r.push(jf(lo));
+            r.push(jf(hi));
+            r.push(jf(ref));
+            rows.push(r);
+        }
+    }
+    s.data().set("eco_hf_fs_f_level_lo_hi_standard", rows);
+}
+
 // ---- key, link, hot input --------------------------------------------------------------
 
 void key_and_link(Suite& s) {
@@ -669,8 +735,13 @@ void key_and_link(Suite& s) {
 
 // Squares at 0, +12 and +24 dBFS, peak reduction 100, the gain at its top
 // (+40 dB), each position and full emphasis: the output finite, the
-// reduction no deeper than the cell's floor ([M]'s 40 dB), and every
-// block inside the 2.67 ms period (minimum of three runs).
+// reduction no deeper than the cell's floor ([M]'s 40 dB), and the worst
+// block (minimum of three runs, so one preemption does not count) no more
+// than hot_block_ratio times the median block on a quiet square (-60
+// dBFS) in the same configuration, the bar the tube's review settled on
+// (#52). The cell's cost is flat in its state (RT audit of #57): a change
+// that made it depend on the drive, an iterative cell step say, trips
+// this long before it costs the 2.67 ms period, which is also checked.
 void hot_input(Suite& s) {
     const double fs = 48000.0;
     // In phase on both channels: linked, the drivers' grids are joined and
@@ -682,33 +753,47 @@ void hot_input(Suite& s) {
                               {{"quality", 1.0f}, {"link", 0.0f}}};
     const char* names[] = {"standard, compress", "standard, limit", "standard, emphasis 100", "eco, compress",
                            "high, compress", "standard, link off, channels in anti-phase"};
+    const double ratio_bar = s.bar("hot_block_ratio");
+    auto square = [&](double dbfs, bool anti) {
+        const double a = std::pow(10.0, dbfs / 20.0);
+        Chans x(2, std::vector<float>(static_cast<std::size_t>(1.0 * fs)));
+        for (std::size_t n = 0; n < x[0].size(); ++n) {
+            const float v =
+                static_cast<float>(std::sin(dsp::kTwoPi * 997.0 * static_cast<double>(n) / fs) >= 0.0 ? a : -a);
+            x[0][n] = v;
+            x[1][n] = anti ? -v : v;
+        }
+        return x;
+    };
+    // One render: the output with the latency taken out; each block's time
+    // folded into `fastest`, the minimum over the runs.
+    auto run_once = [&](const Config& cfg, const Chans& x, std::vector<double>& fastest, bool first) {
+        auto p = s.make();
+        measure::apply(*p, {{"peak_reduction", 100.0f}, {"gain", 40.0f}, {"mix", 100.0f}});
+        measure::apply(*p, cfg);
+        p->prepare(fs, 128, 2);
+        std::vector<double> us;
+        measure::RenderOptions opt;
+        opt.block_us = &us;
+        Chans xp = x;
+        for (auto& ch : xp) ch.resize(ch.size() + p->latency(), ch.back());
+        Chans y = measure::render(*p, xp, {}, opt);
+        for (auto& ch : y) ch.erase(ch.begin(), ch.begin() + p->latency());
+        if (first) fastest = us;
+        for (std::size_t k = 0; k < us.size(); ++k) fastest[k] = std::fmin(fastest[k], us[k]);
+        return y;
+    };
     for (int ci = 0; ci < 6; ++ci) {
+        const Chans quiet = square(-60.0, ci == 5);
         for (double dbfs : {0.0, 12.0, 24.0}) {
-            const double a = std::pow(10.0, dbfs / 20.0);
-            Chans x(2, std::vector<float>(static_cast<std::size_t>(1.0 * fs)));
-            for (std::size_t n = 0; n < x[0].size(); ++n) {
-                const float v = static_cast<float>(
-                    std::sin(dsp::kTwoPi * 997.0 * static_cast<double>(n) / fs) >= 0.0 ? a : -a);
-                x[0][n] = v;
-                x[1][n] = ci == 5 ? -v : v;
-            }
-            std::vector<double> worst;
+            const Chans x = square(dbfs, ci == 5);
+            std::vector<double> worst, calm;
             double deepest = 0.0;
             bool finite = true;
             for (int run = 0; run < 3; ++run) {
-                auto p = s.make();
-                measure::apply(*p, {{"peak_reduction", 100.0f}, {"gain", 40.0f}, {"mix", 100.0f}});
-                measure::apply(*p, configs[ci]);
-                p->prepare(fs, 128, 2);
-                std::vector<double> us;
-                measure::RenderOptions opt;
-                opt.block_us = &us;
-                Chans xp = x;
-                for (auto& ch : xp) ch.resize(ch.size() + p->latency(), ch.back());
-                Chans y = measure::render(*p, xp, {}, opt);
-                for (auto& ch : y) ch.erase(ch.begin(), ch.begin() + p->latency());
-                if (run == 0) worst = us;
-                for (std::size_t k = 0; k < us.size(); ++k) worst[k] = std::fmin(worst[k], us[k]);
+                // Interleaved, so a slow spell on the machine meets both.
+                run_once(configs[ci], quiet, calm, run == 0);
+                const Chans y = run_once(configs[ci], x, worst, run == 0);
                 for (std::size_t c = 0; c < 2; ++c) {
                     for (std::size_t n = 0; n < y[c].size(); ++n) {
                         finite &= std::isfinite(y[c][n]);
@@ -717,10 +802,15 @@ void hot_input(Suite& s) {
                 }
             }
             const double w = *std::max_element(worst.begin() + 1, worst.end());
+            std::vector<double> sorted(calm.begin() + 1, calm.end());
+            std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+            const double median = sorted[sorted.size() / 2];
             const std::string what = std::string(names[ci]) + fmt(", %+.0f dBFS square, gain +40 dB", dbfs);
             s.check(what + ": output finite", finite ? 1.0 : 0.0, 1.0, finite, "bool");
             s.check_le(what + ": deepest reduction", deepest, s.bar("deepest_gr_db"), "dB",
                        "the cell under the driver's full swing ([M]: up to 40 dB)");
+            s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
+                       fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
             s.check_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us", "the 128-frame period at 48 kHz");
         }
     }
@@ -768,6 +858,7 @@ int opto(const measure::Args& args) {
     attack(s);
     distortion(s);
     aliasing(s);
+    eco_high_frequency(s);
     key_and_link(s);
     hot_input(s);
     const Config golden = opto_golden_config();

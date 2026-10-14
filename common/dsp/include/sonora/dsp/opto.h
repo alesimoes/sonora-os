@@ -130,7 +130,8 @@ public:
 
     // [EL], relative units: 0 where it would underflow (|v| below
     // (el_b / 700)^2, 6 mV), so silence costs no exp and leaves no
-    // subnormal.
+    // subnormal. The cell's and the side chain's states are another
+    // matter: OptoChannel's private members say how they are flushed.
     double light(double drive_v) const noexcept SONORA_RT;
     // One sample of the photoconductor under `generation` (k L, 1/s).
     void tick(double generation) noexcept SONORA_RT;
@@ -238,6 +239,13 @@ private:
     // below 320 Hz, where the transform moves a frequency by under 0.02 %
     // at 44.1 kHz, and they shape the side chain only. The suite holds
     // the discretised response to the analog one (sidechain_analog_mag).
+    // Denormals: unlike light(), these states have no floor. After digital
+    // silence the high-pass state decays by its pole (0.985 at 44.1 kHz,
+    // 0.9965 at 4x 48 kHz) and the pre-emphasis state with it, reaching the
+    // subnormal range in about a second at every rate; the cell's trap 2
+    // after about 1.5 hours. The caller's DenormalGuard (arch/) flushes
+    // them, as ProcessorBase::process holds one; on the generic arch, which
+    // has no flush, they run slow rather than wrong (the tube's caveat).
     double hp_b0_ = 1.0, hp_a1_ = 0.0, hp_x1_ = 0.0, hp_y1_ = 0.0;
     double em_b0_ = 1.0, em_b1_ = 0.0, em_a1_ = 0.0, em_x1_ = 0.0, em_y1_ = 0.0;
     double sc_gain_ = 0.0;  // R2 / (R30 + R2) x amp_gain x peak share

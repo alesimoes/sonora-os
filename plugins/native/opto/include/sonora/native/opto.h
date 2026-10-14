@@ -41,7 +41,15 @@
 //   with the side chain's ripple, and the product of that movement with
 //   the signal has components above Nyquist; at the base rate they fold
 //   into the band. Eco runs at the base rate with no latency (aliasing at
-//   the nominal level -73 to -77 dBc, ADR-0011 §3.2's eco bar; class A).
+//   the nominal level -71.1, -73.8 and -91.7 dBc at 44.1, 48 and 96 kHz,
+//   against ADR-0011 §3.2's eco bar of -70; class A). Its level at high
+//   frequencies depends on the tone's phase against the samples: the
+//   light is a narrow pulse at each peak of the drive, sampled four times
+//   a period at fs/4. A tone locked to fs/4 (12 kHz at 48 kHz) is reduced
+//   within +-0.7 dB of standard's figure (1.2 dB of spread over its
+//   phase), at 8 kHz within 0.07 dB; a tone not locked to the rate
+//   averages over the phases, or near fs/4 beats slowly at its offset.
+//   Not fixed in eco (tests/suite.cpp, eco_high_frequency, says why).
 //   Standard (the default) runs at 4x through the half-band oversampler,
 //   with its latency: 2x leaves the light's fourth harmonic folding into
 //   the band at 44.1 kHz (-89 dBc at 19 kHz, over the -90 bar). High is

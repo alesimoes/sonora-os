@@ -46,10 +46,12 @@ void OptoCell::tick(double generation) noexcept {
     const double g = clamp(generation, 0.0, p_.el_gain);
     // Every state one forward-Euler step from the same old state: no
     // division, and the traps off the sample-to-sample chain. The fastest
-    // rate any state reaches (1 / tau_r + B n + c1 + c2, under 140 /s at
-    // the carriers' bound) is a few thousandths of a step at 44.1 kHz,
-    // where the step is stable, positive and within 0.03 dB of ngspice's
-    // trapezoidal solution (the SPICE reference).
+    // rate any state reaches is trap 1's occupancy, k1 n + 1 / tau_1,
+    // about 290 /s at the carriers' bound (the carriers' own, 1 / tau_r +
+    // B n + c1 + c2, is about 136 /s): under 0.007 of a step at 44.1 kHz,
+    // where the step is stable and positive. Against ngspice's trapezoidal
+    // solution (the SPICE reference) at 44.1 kHz: 0.10 dB at worst, in the
+    // first millisecond of a 30 dB attack; 0.033 dB or less elsewhere.
     const double loss = inv_tau_r_ + p_.bimolecular * n_old + p_.trap1_capture * (1.0 - m1) +
                         p_.trap2_capture * (1.0 - m2);
     n_ = n_old + dt * (g + e1_ * m1 + e2_ * m2 - loss * n_old);

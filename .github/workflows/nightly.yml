@@ -83,9 +83,13 @@ jobs:
       # processor getting slower, not the runner. The absolute bar is
       # held on the reference machine with tools/dsp-cpu.sh, unflagged.
       # brain/research/native-tube-n2.md, "The gate". The opto's eco
-      # (class A, 20 us) is gated the same way and for the same reason:
-      # its standard quality ships over class A beside it
-      # (brain/research/native-opto-n2.md).
+      # (class A, 20 us) is gated for the same reason, its standard
+      # quality shipping over class A beside it
+      # (brain/research/native-opto-n2.md), but more loosely: its
+      # quality.json has no cpu.p999_kernels yet, so only the scaled class
+      # bar holds (eco measures about 9 us, so a regression of about 2.2x
+      # still passes), not the tube's regression bar. Recording the
+      # baseline is planning/BACKLOG.md, N2 opto follow-ups, item (e).
       # Exit 3 is inconclusive: the runner changed speed during the run,
       # so the step neither passes nor fails it; it says so as a warning.
       - name: Tube and opto eco, class bars, runner-calibrated (gates)
