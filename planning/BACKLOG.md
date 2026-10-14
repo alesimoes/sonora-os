@@ -356,12 +356,16 @@ not start or extend those items before the Complete DAW closes (owner,
       distro-engineer with rt-engineer.
 - [ ] `-Wfunction-effects` to an error, per module, once clean. Today (clang-22,
       `ci/rtsan`) it reports SONORA_RT functions calling unmarked ones that
-      RTSan, at run time, finds clean: `ProcessorBase::apply_event` and
-      `on_reset` (plugins/native/sdk, virtual hooks every processor
-      overrides), `LookaheadLimiter::set_release` and
+      RTSan, at run time, finds clean: `ProcessorBase::apply_event`
+      (plugins/native/sdk), `LookaheadLimiter::set_release` and
       `TruePeakGuard::set_release` (limiter), `Bridge::descriptor`
       (format), `std::chrono::steady_clock::now` in `Session::process`
-      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API. Mark the
+      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API.
+      `ProcessorBase::on_reset` is done (auditor, PR #54): no test reached
+      process()'s non-finite-output branch, so `native_sdk` now forces a
+      NaN from inside a processor and the harness's `check_reset` runs every
+      processor's on_reset from a nonblocking function; both clean under
+      RTSan, and the hook is `SONORA_RT`. Mark the
       ours `SONORA_RT` (the hooks are an SDK interface change, so with the
       dsp-engineer's review), then promote the module. rt-engineer.
 - [x] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s

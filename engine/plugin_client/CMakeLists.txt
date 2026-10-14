@@ -79,6 +79,11 @@ if(SONORA_RTSAN)
   set_tests_properties(plugin_client_rtsan_raw_syscall PROPERTIES
     ENVIRONMENT RTSAN_OPTIONS=halt_on_error=true
     PASS_REGULAR_EXPRESSION "real-time unsafe function `syscall`")
+  # The scope closes: a syscall after wake_all in the same context is reported.
+  add_test(NAME plugin_client_rtsan_after_wake COMMAND test_rtsan_wake --after-wake)
+  set_tests_properties(plugin_client_rtsan_after_wake PROPERTIES
+    ENVIRONMENT RTSAN_OPTIONS=halt_on_error=true
+    PASS_REGULAR_EXPRESSION "real-time unsafe function `syscall`.*raw_wake")
 else()
   message(STATUS "engine/plugin_client: not a SONORA_RTSAN build; the RTSan check of "
                  "wake_all (ADR-0012 Unverified 10) runs in tools/build-rtsan.sh")

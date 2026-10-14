@@ -11,6 +11,8 @@
 // wake_all() therefore runs its one syscall with RTSan disabled for that
 // call only (common/platform/src/posix/wake.cpp, the auditor's A1/A3), and
 // the plain run must exit 0 under halt_on_error=true: no report at all.
+// --after-wake shows the scope closes: a raw syscall after wake_all, in the
+// same realtime context, is reported (ctest expects raw_wake in the stack).
 #include "sonora/platform/wake.h"
 #include "sonora/rt.h"
 
@@ -41,6 +43,13 @@ void raw_wake() noexcept SONORA_RT {
     syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
 }
 
+// wake_all, then the raw syscall in the same realtime context: reported
+// only if wake_all's scope turned RTSan back on when it closed.
+void wake_then_raw() noexcept SONORA_RT {
+    callback();
+    raw_wake();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -49,8 +58,12 @@ int main(int argc, char** argv) {
         std::printf("a raw syscall from a nonblocking function was not reported\n");
         return 0;
     }
+    if (argc > 1 && std::strcmp(argv[1], "--after-wake") == 0) {
+        wake_then_raw();
+        std::printf("a raw syscall after wake_all was not reported: its scope left RTSan off\n");
+        return 0;
+    }
     callback();
-    // Twice: the scope must have re-enabled RTSan, not left it off.
     callback();
     std::printf("wake_all ran twice from a nonblocking function with no RTSan report\n");
     return 0;

@@ -181,6 +181,54 @@ int test_nonfinite_input_recovers() {
     return 0;
 }
 
+// A Toy whose own state blows up: from the third block on its render
+// writes NaN until reset, whatever the input. The base class must silence
+// that block and call on_reset() from inside process(), the one place it
+// does so on the audio thread (under RTSan, a realtime context).
+class Blowup : public Toy {
+public:
+    int resets = 0;
+
+protected:
+    void on_reset() noexcept override {
+        Toy::on_reset();
+        ++resets;
+        renders_ = 0;
+    }
+    void render(const float* const* in, float* const* out, const float* const* sc, std::uint32_t scc,
+                std::uint32_t frames) noexcept override {
+        Toy::render(in, out, sc, scc, frames);
+        if (++renders_ >= 3) {
+            for (std::uint32_t c = 0; c < channels(); ++c) out[c][frames / 2] = std::nanf("");
+        }
+    }
+
+private:
+    int renders_ = 0;
+};
+
+int test_nonfinite_output_resets() {
+    Blowup t;
+    CHECK(t.prepare(48000.0, 128, 2));
+    const int after_prepare = t.resets;
+    const auto in = ramp(128 * 6, 2);
+    const auto out = render(t, in, 128, {});
+    for (const auto& ch : out) {
+        for (float v : ch) CHECK(std::isfinite(v));
+    }
+    // Blocks 3 and 6 blew up (the counter restarts at each reset): each
+    // silenced whole and followed by a reset.
+    CHECK(t.nonfinite_blocks() == 2);
+    CHECK(t.resets - after_prepare == 2);
+    for (std::size_t i = 256; i < 384; ++i) CHECK(out[0][i] == 0.0f && out[1][i] == 0.0f);
+    CHECK(out[0][100] == in[0][95]);
+    // The block after a reset renders again: the delay line was cleared, so
+    // its first five samples are silence and the rest the input.
+    CHECK(out[0][384 + 4] == 0.0f);
+    CHECK(out[0][384 + 10] == in[0][384 + 5]);
+    return 0;
+}
+
 int test_in_place_and_oversized_blocks() {
     Toy a, b;
     CHECK(a.prepare(48000.0, 64, 1));
@@ -237,6 +285,7 @@ int main() {
     failed += test_bypass_is_latency_compensated();
     failed += test_declick_has_no_step();
     failed += test_nonfinite_input_recovers();
+    failed += test_nonfinite_output_resets();
     failed += test_in_place_and_oversized_blocks();
     failed += test_state_round_trip();
     if (failed != 0) {
