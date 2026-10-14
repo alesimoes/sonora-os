@@ -104,7 +104,11 @@ void DiskThread::move(std::size_t i, uint64_t n) {
         // is the writer marking the take failed (disk error, 4 GB limit);
         // the ring is still drained, so the callback does not count
         // overruns for a take that is already lost.
-        if (s.active >= 0) t.writer(s.active).write(scratch_.data(), samples / ch);
+        if (s.active >= 0) {
+            t.writer(s.active).write(scratch_.data(), samples / ch);
+        } else {
+            dropped_.fetch_add(samples, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -124,6 +128,9 @@ void DiskThread::apply(std::size_t i, const CaptureBoundary& b) {
         const int take = t.slot_take(slot);
         // Opened for an earlier take whose window never opened here: the
         // track was disarmed before its first block, or the record was lost.
+        // "Earlier" is "smaller" because take numbers only increase: every
+        // take is numbered by next_free_take(), one past the highest on
+        // disk, and start_recording() puts its files on disk.
         if (take != 0 && take < static_cast<int>(b.take)) finish(i, slot);
     }
     // Take 0 has no file: tests drive the ring with it. A take whose files

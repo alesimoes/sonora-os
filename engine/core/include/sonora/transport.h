@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include "sonora/rt.h"
+
 namespace sonora {
 
 enum class TransportState : int {
@@ -34,12 +36,12 @@ public:
 
     // The audio thread's read of both, once per block. Sequentially
     // consistent, because Session::stop() orders its store of Stopped
-    // against the callback's own flag (Session::in_callback_) the same way.
+    // against the callback's own count (Session::callback_seq_) the same way.
     struct Word {
         TransportState state;
         uint32_t take;
     };
-    Word load_word() const {
+    Word load_word() const noexcept SONORA_RT {
         const uint64_t w = word_.load(std::memory_order_seq_cst);
         return {state_of(w), take_of(w)};
     }
@@ -67,8 +69,12 @@ private:
     static uint64_t word(TransportState s, uint32_t take) {
         return (uint64_t{take} << 8) | static_cast<uint64_t>(s);
     }
-    static TransportState state_of(uint64_t w) { return static_cast<TransportState>(w & 0xFF); }
-    static uint32_t take_of(uint64_t w) { return static_cast<uint32_t>(w >> 8); }
+    static TransportState state_of(uint64_t w) noexcept SONORA_RT {
+        return static_cast<TransportState>(w & 0xFF);
+    }
+    static uint32_t take_of(uint64_t w) noexcept SONORA_RT {
+        return static_cast<uint32_t>(w >> 8);
+    }
 
     const uint32_t sample_rate_;
     std::atomic<uint64_t> word_{0};

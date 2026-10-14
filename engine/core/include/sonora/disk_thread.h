@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -66,14 +67,7 @@ public:
     // came: the transport stopped, and no callback ran after it.
     void close_all();
 
-    // Tests only: called in every pass once the boundary records are taken
-    // and before any ring is drained, so a test can land the audio
-    // thread's writes exactly there. Set while the thread is not running.
     using PassHook = void (*)(void* context);
-    void set_pass_hook(PassHook hook, void* context) {
-        hook_ = hook;
-        hook_context_ = context;
-    }
 
     // Files closed since the last call, in the order they were closed.
     // Any thread.
@@ -81,8 +75,25 @@ public:
 
     // Total frames the callback could not hand off, summed across tracks.
     uint32_t total_overruns() const;
+    // Samples read from a capture ring with no file open to take them: the
+    // block of a callback that outlasted stop()'s bound, whose take was
+    // already closed, or take 0, which has no file. Any thread.
+    uint64_t dropped_samples() const { return dropped_.load(std::memory_order_relaxed); }
 
 private:
+    // Only a test defines it, to reach set_pass_hook().
+    friend struct DiskThreadTestAccess;
+    // Called in every pass once the boundary records are taken and before
+    // any ring is drained, so a test can land the audio thread's writes
+    // exactly there. Refused while the thread runs: the members are plain,
+    // and the thread reads them.
+    void set_pass_hook(PassHook hook, void* context) {
+        assert(!running());
+        if (running()) return;
+        hook_ = hook;
+        hook_context_ = context;
+    }
+
     struct TrackState {
         uint64_t consumed = 0;  // samples read from the ring, ever
         // How far this pass may read: the ring's fill, read before the
@@ -110,6 +121,7 @@ private:
     std::vector<ClosedFile> closed_;
     std::thread thread_;
     std::atomic<bool> running_{false};
+    std::atomic<uint64_t> dropped_{0};
     PassHook hook_ = nullptr;
     void* hook_context_ = nullptr;
 };

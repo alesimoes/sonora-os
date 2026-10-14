@@ -317,6 +317,7 @@ bool Session::punch_out() {
 void Session::collect_closed() {
     if (!disk_->running()) disk_->drain_once();
     for (DiskThread::ClosedFile& f : disk_->take_closed()) {
+        if (!f.failure.empty()) failed_files_.push_back(f.path + ": " + f.failure);
         const auto it = closing_.find(f.take);
         if (it != closing_.end()) it->second.take.files.push_back(std::move(f));
     }
@@ -336,15 +337,20 @@ std::vector<Session::ClosedTake> Session::closed_takes() {
     return out;
 }
 
-void Session::wait_for_callback() const {
+bool Session::wait_for_callback() const {
+    // The other half of process()'s entry store: either that callback loads
+    // Stopped, or this load sees it in flight.
+    const uint64_t seq = callback_seq_.load(std::memory_order_seq_cst);
+    if ((seq & 1) == 0) return true;
     // A callback lasts a period; a second is a backend that has hung. What
     // it writes after this reaches no file: the disk thread drops samples
-    // no open slot claims.
+    // no open slot claims, and counts them.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (in_callback_.load(std::memory_order_seq_cst) &&
-           std::chrono::steady_clock::now() < deadline) {
+    while (callback_seq_.load(std::memory_order_acquire) == seq) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
         std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
+    return true;
 }
 
 namespace {
@@ -360,18 +366,24 @@ std::string describe_failures(const std::string& first, int more) {
 }  // namespace
 
 std::string Session::take_failure() const {
-    std::string first;
-    int more = 0;
+    std::string first = failed_files_.empty() ? std::string() : failed_files_.front();
+    int more = failed_files_.empty() ? 0 : static_cast<int>(failed_files_.size()) - 1;
     for (const auto& t : tracks_) {
-        for (int slot = 0; recording_take_ != 0 && slot < Track::kWriterSlots; ++slot) {
-            // The disk thread owns the writer while the slot holds the take.
+        for (int slot = 0; slot < Track::kWriterSlots; ++slot) {
+            // The disk thread owns the writer while the slot holds a take.
             // failed() is an acquire load, so failure() is settled once it
             // is true; path() was set by this thread when it opened the file.
-            if (t->slot_take(slot) != recording_take_) continue;
+            if (t->slot_take(slot) == 0) continue;
             WavWriter& w = t->writer(slot);
             if (!w.failed()) continue;
+            const std::string said = w.path() + ": " + w.failure();
+            // Closed and collected, but its slot not yet given back.
+            if (std::find(failed_files_.begin(), failed_files_.end(), said) !=
+                failed_files_.end()) {
+                continue;
+            }
             if (first.empty()) {
-                first = w.path() + ": " + w.failure();
+                first = said;
             } else {
                 ++more;
             }
@@ -381,9 +393,12 @@ std::string Session::take_failure() const {
 }
 
 bool Session::stop(std::string* error) {
-    const int take = recording_take_;
     transport_->set_state(TransportState::Stopped);
-    wait_for_callback();
+    if (!wait_for_callback()) {
+        std::fprintf(stderr,
+                     "sonora: the audio callback did not return within 1 s of the"
+                     " stop; what it still records reaches no file\n");
+    }
     // Joins the disk thread and drains what is left, close records
     // included. After this line nothing else uses the writers.
     disk_->stop();
@@ -392,20 +407,11 @@ bool Session::stop(std::string* error) {
     collect_closed();
     recording_take_ = 0;
 
-    const auto it = closing_.find(take);
-    if (take == 0 || it == closing_.end()) return true;
-    std::string first_failure;
-    int more_failures = 0;
-    for (const DiskThread::ClosedFile& f : it->second.take.files) {
-        if (f.failure.empty()) continue;
-        if (first_failure.empty()) {
-            first_failure = f.path + ": " + f.failure;
-        } else {
-            ++more_failures;
-        }
-    }
-    if (first_failure.empty()) return true;
-    const std::string why = describe_failures(first_failure, more_failures);
+    std::vector<std::string> failed;
+    failed.swap(failed_files_);
+    if (failed.empty()) return true;
+    const std::string why =
+        describe_failures(failed.front(), static_cast<int>(failed.size()) - 1);
     std::fprintf(stderr, "sonora: take failed, %s\n", why.c_str());
     if (error) *error = why;
     return false;
@@ -451,8 +457,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // Per thread, and a backend may call from a new thread after a
     // reactivation, so it is checked every block.
     const FlushDenormals flush_denormals;
-    // Before the transport is read; stop() waits on it (Transport::load_word).
-    in_callback_.store(true, std::memory_order_seq_cst);
+    // Odd from here. Before the transport is read, and seq_cst: with stop()'s
+    // seq_cst store of Stopped and its seq_cst load of this count, either
+    // this callback loads Stopped or stop() sees it in flight
+    // (Transport::load_word). Weakened, both could miss.
+    callback_seq_.fetch_add(1, std::memory_order_seq_cst);
     // ADR-0009 §4.1: the block count, then the plan, before anything reads
     // either. A new plan is told by its epoch, never its address.
     const PlaybackPlan* plan = plans_->acquire();
@@ -561,7 +570,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     if (rolling) transport_->advance(nframes);
     expected_playhead_ = playhead + (rolling ? nframes : 0);
-    in_callback_.store(false, std::memory_order_release);
+    // Release is enough here, not at entry: a stop() whose load reads this
+    // value reads it before the next callback's seq_cst entry in the single
+    // total order, so that callback's transport load sees Stopped.
+    callback_seq_.fetch_add(1, std::memory_order_release);
 }
 
 void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t take,
@@ -593,6 +605,10 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
                 window = take;
             } else {
                 // Tried again next block: the take starts late on this track.
+                // If it ends first (punch_out(), a take over it), there is
+                // no retry: the slot opened for it stays held, its file empty,
+                // and closed_takes() holds the take back, until this track's
+                // next open or stop() closes it.
                 boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
                 t.note_overrun();
             }

@@ -111,12 +111,13 @@ public:
     // no take is running.
     bool punch_out();
     // Stops the transport and closes every open file, waiting for the
-    // callback in flight, if any, to finish first. Returns false if the
-    // take it ends failed on any track -- a disk error, or the file reaching
-    // the 4 GB WAV limit -- and `error`, if given, says which file and why.
-    // The files are closed either way, and one that reached the limit is
-    // valid up to its last whole frame. Leaves the disk thread stopped;
-    // disk().start() before the next take.
+    // callback in flight, if any, to finish first. Returns false if any
+    // take since the last stop() failed on any track -- the one it ends, or
+    // one punched out or started over while rolling; a disk error, or the
+    // file reaching the 4 GB WAV limit -- and `error`, if given, says which
+    // file and why. The files are closed either way, and one that reached
+    // the limit is valid up to its last whole frame. Leaves the disk thread
+    // stopped; disk().start() before the next take.
     bool stop(std::string* error = nullptr);
 
     // A take whose files are all closed, each with the length it has on
@@ -131,9 +132,10 @@ public:
     std::vector<ClosedTake> closed_takes();
     // The take being recorded, as the control thread last set it; 0 if none.
     int recording_take() const { return recording_take_; }
-    // While a take runs: empty, or which file failed and why, in the words
-    // stop() will use. Writing stops at the failure, so the operator is told
-    // now rather than when the take ends. Control thread; allocates.
+    // Empty, or which file failed since the last stop() and why, in the
+    // words stop() will use: the running take's, or a take's ended while
+    // rolling. Writing stops at the failure, so the operator is told now
+    // rather than when the transport stops. Control thread; allocates.
     std::string take_failure() const;
 
     // Transport while not recording. play() rolls from the playhead;
@@ -161,11 +163,17 @@ public:
     uint64_t locates_dropped() const { return locates_dropped_.load(std::memory_order_relaxed); }
     // Capture boundary records the audio thread could not push because the
     // disk thread had fallen behind. A lost open delays that track's take
-    // by a block and is counted as an overrun on it too; a lost close ends
-    // the file where the next take starts, or at stop().
+    // by a block and is counted as an overrun on it too; if the take ends
+    // before the retry, its file on that track stays open, empty, and
+    // closed_takes() holds the take back, until the track's next open or
+    // stop(). A lost close ends the file where the next take starts, or at
+    // stop().
     uint64_t boundary_overruns() const {
         return boundary_overruns_.load(std::memory_order_relaxed);
     }
+    // Recorded samples no file took (DiskThread::dropped_samples()): above
+    // all, a callback that outlasted stop()'s 1 s bound.
+    uint64_t dropped_samples() const { return disk_->dropped_samples(); }
 
     // The timeline frame of the running or last take's first recorded
     // sample, or kNoOrigin before the audio thread has recorded one.
@@ -217,8 +225,9 @@ private:
                  uint64_t playhead) noexcept SONORA_RT;
     // Pulls the disk thread's closed files into closing_.
     void collect_closed();
-    // Until the callback running now, if one is, has returned.
-    void wait_for_callback() const;
+    // Until the callback running now, if one is, has returned, or 1 s has
+    // passed. False on the timeout.
+    bool wait_for_callback() const;
 
     void mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
              uint32_t n, bool rolling, bool recording, uint64_t playhead) noexcept SONORA_RT;
@@ -259,6 +268,11 @@ private:
     };
     std::map<int, Closing> closing_;
     int recording_take_ = 0;
+    // "path: why" for every file closed failed since the last stop(), in
+    // the order closed. A take punched out or started over has left
+    // recording_take_, and its failure must still reach take_failure() and
+    // stop() (PR #60, code review 3).
+    std::vector<std::string> failed_files_;
 
     // Declared before the reader, so the reader is gone before the plans it
     // serves are freed.
@@ -323,10 +337,14 @@ private:
     // Reset by start_recording() before it publishes the take; set by the
     // audio thread in the take's first block.
     std::atomic<uint64_t> take_origin_{kNoOrigin};
-    // True while process() runs. stop() waits for it to clear after storing
-    // Stopped, so no callback that read the take before the store is still
-    // writing it when the files are closed.
-    std::atomic<bool> in_callback_{false};
+    // Odd while process() runs; each callback adds one on entry and one on
+    // exit. stop() waits, after storing Stopped, for the callback in flight
+    // to return, so none that read the take before the store is still
+    // writing it when the files are closed. A count, not a flag: any change
+    // proves that callback returned, so stop() never has to land in the gap
+    // between two callbacks, which near full DSP load is far shorter than
+    // its poll (PR #60, RT audit 1).
+    std::atomic<uint64_t> callback_seq_{0};
 };
 
 }  // namespace sonora

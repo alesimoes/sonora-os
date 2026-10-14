@@ -141,7 +141,19 @@ bool add_closed_take(model::Document& document, const Session& session,
                      std::vector<model::ReplicationUpdate>& updates, std::string& error) {
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
+    std::string first_failure;
+    int more_failures = 0;
     for (const DiskThread::ClosedFile& f : take.files) {
+        // A file that failed stopped short of its take: it stays on disk,
+        // but is not placed as if it were the take (PR #60, code review 3).
+        if (!f.failure.empty()) {
+            if (first_failure.empty()) {
+                first_failure = f.path + ": " + f.failure;
+            } else {
+                ++more_failures;
+            }
+            continue;
+        }
         if (f.frames == 0) continue;
         if (f.path.compare(0, prefix.size(), prefix) != 0) continue;
         const std::string relative = f.path.substr(prefix.size());
@@ -166,7 +178,13 @@ bool add_closed_take(model::Document& document, const Session& session,
         rec.split_right_id = rec.region.id + 1;
         if (!apply(document, rec, updates, error)) return false;
     }
-    return true;
+    if (first_failure.empty()) return true;
+    error = first_failure;
+    if (more_failures > 0) {
+        error += " (and " + std::to_string(more_failures) + " more track" +
+                 (more_failures == 1 ? "" : "s") + ")";
+    }
+    return false;
 }
 
 }  // namespace sonora

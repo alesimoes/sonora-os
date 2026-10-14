@@ -718,8 +718,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
-        // Before anything else can change arming: the closed take's tracks
-        // are the armed ones.
+        // A stop just dispatched closed a take: placed now, so the reply
+        // follows its RecordTake updates. Placement comes from the disk
+        // thread's report of each file, not from arming.
         follow_transport();
         if (d == DispatchResult::Ok && changes_arming(r.command)) {
             playback_->apply_monitoring(document_->current());

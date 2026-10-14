@@ -60,6 +60,15 @@ void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
         }                                                                \
     } while (0)
 
+// The pass hook is private to DiskThread; only a test defines this.
+namespace sonora {
+struct DiskThreadTestAccess {
+    static void set_pass_hook(DiskThread& d, DiskThread::PassHook hook, void* context) {
+        d.set_pass_hook(hook, context);
+    }
+};
+}  // namespace sonora
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -79,22 +88,23 @@ public:
                         std::memory_order_relaxed);
         armed_.store(true, std::memory_order_release);
     }
+    // Every callback, not only one: a DSP load of nearly a whole period.
+    void load_every_callback(std::chrono::microseconds for_how_long) {
+        load_ns_.store(static_cast<uint64_t>(
+                           std::chrono::duration_cast<std::chrono::nanoseconds>(for_how_long)
+                               .count()),
+                       std::memory_order_relaxed);
+    }
     bool stalled() const { return stalled_.load(std::memory_order_acquire); }
     bool stalled_once() const { return stalled_once_.load(std::memory_order_acquire); }
 
     void begin(uint64_t now_ns) noexcept SONORA_RT override {
-        if (!armed_.exchange(false, std::memory_order_acq_rel)) return;
-        stalled_.store(true, std::memory_order_release);
-        const uint64_t until = now_ns + stall_ns_.load(std::memory_order_relaxed);
-        // A spin, not a sleep: what is under test is a callback descheduled
-        // for this long, and the RTSan build must not see a blocking call.
-        for (;;) {
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
-            if (static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()) >= until) {
-                break;
-            }
+        if (!armed_.exchange(false, std::memory_order_acq_rel)) {
+            spin_until(now_ns + load_ns_.load(std::memory_order_relaxed));
+            return;
         }
+        stalled_.store(true, std::memory_order_release);
+        spin_until(now_ns + stall_ns_.load(std::memory_order_relaxed));
         stalled_.store(false, std::memory_order_release);
         stalled_once_.store(true, std::memory_order_release);
     }
@@ -108,10 +118,24 @@ public:
     void end() noexcept SONORA_RT override {}
 
 private:
+    // A spin, not a sleep: what is under test is a callback descheduled for
+    // this long, and the RTSan build must not see a blocking call.
+    static void spin_until(uint64_t until_ns) noexcept SONORA_RT {
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            if (static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()) >=
+                until_ns) {
+                return;
+            }
+        }
+    }
+
     std::atomic<bool> armed_{false};
     std::atomic<bool> stalled_{false};
     std::atomic<bool> stalled_once_{false};
     std::atomic<uint64_t> stall_ns_{0};
+    std::atomic<uint64_t> load_ns_{0};
 };
 
 struct Rig {
@@ -241,6 +265,14 @@ FileCheck check_file(const std::string& path) {
     return c;
 }
 
+// The closed takes' files, by take and track.
+using Closed = std::map<int, std::map<int, sonora::DiskThread::ClosedFile>>;
+void add(Closed& into, std::vector<Session::ClosedTake> takes) {
+    for (auto& t : takes) {
+        for (auto& f : t.files) into[t.take][f.track] = std::move(f);
+    }
+}
+
 // BACKLOG "Known gaps", the take-epoch race. A callback loads Recording for
 // take K and stalls; the operator stops and starts take K + 1 meanwhile;
 // the callback then writes K's block. It must land in K, not at the head of
@@ -296,15 +328,159 @@ int test_stalled_callback_across_stop_and_start() {
     // Nothing of k reappears in k + 1.
     CHECK(a.last < b.first);
     CHECK(s.tracks()[0]->overruns() == 0);
+    CHECK(s.dropped_samples() == 0);
     return 0;
 }
 
-// The closed takes' files, by take and track.
-using Closed = std::map<int, std::map<int, sonora::DiskThread::ClosedFile>>;
-void add(Closed& into, std::vector<Session::ClosedTake> takes) {
-    for (auto& t : takes) {
-        for (auto& f : t.files) into[t.take][f.track] = std::move(f);
+// RT audit 1 on PR #60: near full DSP load the gap between two callbacks is
+// far shorter than stop()'s poll, so a wait that looked for "no callback
+// running" almost never saw one and ran to its 1 s bound, though every
+// callback returned within a period. Each callback here spins 20 ms with no
+// gap after it.
+int test_stop_under_full_load() {
+    Rig rig("full_load", 1);
+    Session& s = *rig.session;
+    StallRunner runner;
+    CHECK(rig.publish_chain_on_track_0());
+    runner.load_every_callback(std::chrono::microseconds(20000));
+    s.set_insert_chains(&runner);
+
+    std::atomic<bool> quit{false};
+    std::thread audio([&] {
+        while (!quit.load(std::memory_order_acquire)) rig.block();
+    });
+
+    std::string error;
+    const int first = s.next_free_take();
+    for (int k = first; k < first + 3; ++k) {
+        s.disk().start();
+        CHECK(s.start_recording(k, &error));
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        const auto t0 = std::chrono::steady_clock::now();
+        CHECK(s.stop(&error));
+        const auto took = std::chrono::steady_clock::now() - t0;
+        std::printf("  stop() under full load: %lld ms\n",
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(took).count()));
+        CHECK(took < std::chrono::milliseconds(500));
     }
+    quit.store(true, std::memory_order_release);
+    audio.join();
+    s.set_insert_chains(nullptr);
+
+    for (int k = first; k < first + 3; ++k) {
+        const FileCheck c = check_file(rig.file(0, k));
+        CHECK(c.ok);
+        CHECK(c.frames > 0);
+    }
+    CHECK(s.dropped_samples() == 0);
+    return 0;
+}
+
+// Code review 7 on PR #60: a callback that loaded Recording for take K and
+// stalled past stop()'s 1 s bound. stop() gives up on it and closes K; the
+// block it then writes is K's audio with no file left to take it, so it is
+// dropped and counted (review 4), and never lands in K + 1.
+int test_callback_stalled_past_the_bound() {
+    Rig rig("stall_past_bound", 1);
+    Session& s = *rig.session;
+    StallRunner runner;
+    CHECK(rig.publish_chain_on_track_0());
+    s.set_insert_chains(&runner);
+    s.disk().start();
+
+    std::atomic<bool> quit{false};
+    std::thread audio([&] {
+        while (!quit.load(std::memory_order_acquire)) {
+            rig.block();
+            std::this_thread::sleep_for(std::chrono::microseconds(1000));
+        }
+    });
+
+    const int k = s.next_free_take();
+    std::string error;
+    CHECK(s.start_recording(k, &error));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    runner.arm(std::chrono::milliseconds(1500));
+    for (int i = 0; i < 2000 && !runner.stalled(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(runner.stalled());
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool k_ok = s.stop(&error);
+    const auto took = std::chrono::steady_clock::now() - t0;
+    const bool still_stalled = runner.stalled();
+    s.disk().start();
+    const bool k1_started = s.start_recording(k + 1, &error);
+    for (int i = 0; i < 5000 && !runner.stalled_once(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const bool k1_ok = s.stop(&error);
+    quit.store(true, std::memory_order_release);
+    audio.join();
+    s.set_insert_chains(nullptr);
+
+    CHECK(k_ok);
+    CHECK(took >= std::chrono::milliseconds(900));
+    CHECK(still_stalled);
+    CHECK(k1_started);
+    CHECK(k1_ok);
+    const FileCheck a = check_file(rig.file(0, k));
+    const FileCheck b = check_file(rig.file(0, k + 1));
+    CHECK(a.ok);
+    CHECK(b.ok);
+    CHECK(a.frames > 0);
+    CHECK(b.frames > 0);
+    CHECK(a.last < b.first);
+    // The stalled block, exactly: one block of one mono track.
+    CHECK(s.dropped_samples() == kBlock);
+    CHECK(s.tracks()[0]->overruns() == 0);
+    return 0;
+}
+
+// Code review 7 on PR #60: a close record lost to a full boundary ring.
+// The file ends where the track's next window opens, or at stop()'s
+// close_all() when none does; either way it holds exactly its own frames,
+// and the take is reported once it ends.
+int test_lost_close_record() {
+    Rig rig("lost_close", 1, 2);  // holds one record
+    Session& s = *rig.session;
+    std::string error;
+    s.play();
+    CHECK(s.start_recording(1, &error));
+    rig.block();  // open 1, and the ring is full
+    CHECK(s.punch_out());
+    rig.block();  // close 1 lost
+    CHECK(s.boundary_overruns() == 1);
+    // Drains open 1 and take 1's block; with no close, take 1 is still open.
+    CHECK(s.closed_takes().empty());
+    rig.blocks(2);
+    CHECK(s.start_recording(2, &error));
+    rig.block();  // open 2, the ring full again
+    CHECK(s.punch_out());
+    rig.block();  // close 2 lost
+    CHECK(s.boundary_overruns() == 2);
+
+    // Open 2 ends take 1's file.
+    Closed closed;
+    add(closed, s.closed_takes());
+    CHECK(closed.size() == 1 && closed.count(1) == 1);
+    CHECK(closed[1][0].frames == kBlock);
+    // Nothing closes take 2 but stop().
+    CHECK(s.stop(&error));
+    add(closed, s.closed_takes());
+    CHECK(closed.count(2) == 1);
+    CHECK(closed[2][0].frames == kBlock);
+
+    const FileCheck a = check_file(rig.file(0, 1));
+    const FileCheck b = check_file(rig.file(0, 2));
+    CHECK(a.ok && a.time_reference == 0 && a.frames == kBlock);
+    CHECK(b.ok && b.time_reference == 4 * kBlock && b.frames == kBlock);
+    CHECK(s.tracks()[0]->overruns() == 0);
+    CHECK(s.dropped_samples() == 0);
+    CHECK(g_allocations.load() == 0);
+    return 0;
 }
 
 // Punch in on the fly, a take started over another, punch out on the fly,
@@ -429,7 +605,8 @@ int test_samples_after_the_records_are_kept() {
         Rig* rig;
         int blocks;
     } ctx{&rig, 0};
-    s.disk().set_pass_hook(
+    sonora::DiskThreadTestAccess::set_pass_hook(
+        s.disk(),
         [](void* c) {
             auto* x = static_cast<Ctx*>(c);
             if (x->blocks == 0) x->rig->blocks(3);
@@ -441,7 +618,7 @@ int test_samples_after_the_records_are_kept() {
     s.closed_takes();  // a pass with the records empty, then three blocks
     rig.blocks(2);
     CHECK(s.stop(&error));
-    s.disk().set_pass_hook(nullptr, nullptr);
+    sonora::DiskThreadTestAccess::set_pass_hook(s.disk(), nullptr, nullptr);
     const FileCheck c = check_file(rig.file(0, 1));
     CHECK(c.ok);
     CHECK(c.time_reference == 0);
@@ -544,6 +721,9 @@ int test_concurrent_punches() {
 
 int main() {
     if (test_stalled_callback_across_stop_and_start() != 0) return 1;
+    if (test_stop_under_full_load() != 0) return 1;
+    if (test_callback_stalled_past_the_bound() != 0) return 1;
+    if (test_lost_close_record() != 0) return 1;
     if (test_takes_while_rolling() != 0) return 1;
     if (test_stop_without_a_callback() != 0) return 1;
     if (test_full_boundary_ring() != 0) return 1;
