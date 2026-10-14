@@ -22,6 +22,7 @@
 #include "session_files.h"
 #include "session_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/fade_curve.h"
 #include "theme.h"
 #include "time_format.h"
 #include "timeline_document.h"
@@ -609,9 +610,17 @@ int test_time() {
 // the gain the engine plays.
 
 int test_fades() {
-    // The curve: engine/core's fade_in_gain() formula, by value. Linear and
-    // S-curve halves sum to one, equal power in power, as session.cpp says
-    // a crossfade's two sides must.
+    // The curve: the engine's sonora::fade_in_gain() itself, reached through
+    // model::FadeShape. Each shape must land on the engine's curve of the
+    // same name (the law's values are pinned in engine/core's
+    // test_playback_mix). Linear and S-curve halves sum to one, equal power
+    // in power, as session.cpp says a crossfade's two sides must.
+    OK(fade_gain(FadeShape::Linear, 0.1f) ==
+       sonora::fade_in_gain(sonora::FadeCurve::Linear, 0.1f));
+    OK(fade_gain(FadeShape::EqualPower, 0.1f) ==
+       sonora::fade_in_gain(sonora::FadeCurve::EqualPower, 0.1f));
+    OK(fade_gain(FadeShape::SCurve, 0.1f) ==
+       sonora::fade_in_gain(sonora::FadeCurve::SCurve, 0.1f));
     for (FadeShape shape : {FadeShape::Linear, FadeShape::EqualPower, FadeShape::SCurve}) {
         OK(fade_gain(shape, -0.5f) == 0.0f && fade_gain(shape, 0.0f) == 0.0f);
         OK(fade_gain(shape, 1.0f) == 1.0f && fade_gain(shape, 2.0f) == 1.0f);
@@ -861,6 +870,91 @@ int test_fades() {
         r = rect_at(scene.rects, static_cast<float>(e.view().x_of(4 * kBar + half - kBeat) - 4.5),
                     static_cast<float>(wy + 2));
         OK(r && r->argb != theme::kFadeShade);
+    }
+    return 0;
+}
+
+// A crossfade replaces the fade at the end it joins, but the model keeps that
+// fade and still counts it (fade_in + fade_out <= length). And the model
+// does not stop a crossfade from overlapping the region's own fade at its
+// other end, which the engine would multiply. Both are settled here, where
+// the operator acts, so a refusal names something they can see.
+int test_fades_against_crossfades() {
+    const Frames half = kBar / 2;
+    std::string why;
+
+    // --- the hidden fade: A [1, 3) bars with a 1-bar fade-out, then a 1-beat
+    // Pre crossfade into B, moved to butt at 3 bars ---
+    {
+        ModelDocument doc(two_tracks());
+        const Id pl = playlist_of(doc.snapshot(), 0);
+        OK(doc.submit(MoveRegion{pl, 11, 3 * kBar, kNoId}, why));
+        OK(doc.submit(SetFade{pl, 10, FadeEnd::Out, {kBar, FadeShape::Linear}}, why));
+        Crossfade xf;
+        xf.left = 10;
+        xf.right = 11;
+        xf.length = kBeat;
+        xf.align = Align::Pre;
+        OK(doc.submit(SetCrossfade{pl, xf}, why));
+        OK(region_fades(*active_playlist(doc.snapshot().edit->tracks[0].get()),
+                        *region(doc.snapshot(), 10)).out == 0);  // not drawn, not heard
+        EditController c(doc);
+        c.set_viewport(1000, 200);
+        const double th = c.view().track_height;
+        // By key: refused by the clamp, naming the fade under the crossfade,
+        // not by the model naming fade_out.length.
+        const uint64_t rev = doc.snapshot().revision;
+        c.select_track(0);
+        c.set_insertion(kBar + kBar + half);
+        OK(!c.fade_to_start(why));
+        OK(why.find("under its crossfade") != std::string::npos &&
+           why.find("fade_out.length") == std::string::npos);
+        OK(doc.snapshot().revision == rev);
+        // By the Smart Tool: the drag stops where the model's count stops it.
+        const double ax0 = c.view().x_of(kBar);
+        OK(c.press(ax0 + 3, th * 0.1, why));
+        c.move(c.view().x_of(kBar + kBar + half), th * 0.1);
+        OK(c.drag().fade == kBar);
+        OK(c.release(c.view().x_of(kBar + kBar + half), th * 0.1, why));
+        OK(region(doc.snapshot(), 10)->fade_in.length == kBar && valid(doc.snapshot()));
+    }
+
+    // --- the overlap: a crossfade into the region's own fade at the other end ---
+    {
+        ModelDocument doc(two_tracks());
+        const Id pl = playlist_of(doc.snapshot(), 0);
+        OK(doc.submit(MoveRegion{pl, 11, 3 * kBar, kNoId}, why));
+        OK(doc.submit(SetFade{pl, 10, FadeEnd::In, {kBar + 3 * kBeat, FadeShape::Linear}}, why));
+        EditController c(doc);
+        c.set_viewport(1000, 200);
+        const double th = c.view().track_height;
+        const auto range = [&](Frames a, Frames b) {
+            c.set_tool(Tool::Select);
+            std::string e;
+            const double x0 = c.view().x_of(a), x1 = c.view().x_of(b);
+            const bool ok = c.press(x0, th / 2, e) && c.release(x1, th / 2, e);
+            c.set_tool(Tool::Smart);
+            return ok;
+        };
+        const uint64_t rev = doc.snapshot().revision;
+        // Centred, 1 bar: half a bar into A, which has 1.75 bars of fade-in.
+        OK(range(3 * kBar - half, 3 * kBar + half));
+        OK(!c.fade_selection(why));
+        OK(why.find("\"A\"'s fade-in") != std::string::npos);
+        OK(doc.snapshot().revision == rev);
+        OK(active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.empty());
+        // A Pre crossfade of one beat just meets it: allowed.
+        OK(range(3 * kBar - kBeat, 3 * kBar) && c.fade_selection(why));
+        OK(active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.size() == 1);
+        OK(valid(doc.snapshot()));
+        // The mirror: B [3, 4) with a 0.75-bar fade-out, a half-bar Post crossfade.
+        OK(c.undo(why));
+        OK(doc.submit(SetFade{pl, 11, FadeEnd::Out, {3 * kBeat, FadeShape::Linear}}, why));
+        const uint64_t rev2 = doc.snapshot().revision;
+        OK(range(3 * kBar, 3 * kBar + half));
+        OK(!c.fade_selection(why));
+        OK(why.find("\"B\"'s fade-out") != std::string::npos);
+        OK(doc.snapshot().revision == rev2);
     }
     return 0;
 }
@@ -1394,7 +1488,8 @@ int test_pre_migration_backup() {
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    if (test_model() || test_history() || test_controller() || test_fades() || test_taper() ||
+    if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
+        test_taper() ||
         test_time() ||
         test_scene() || test_routing() || test_files() || test_save_failures() ||
         test_pre_migration_backup()) {

@@ -149,7 +149,8 @@ track dimmed, with the reason in `caution`, never hidden.
   vertical zoom, from a `PeakSource` (synthetic until peak files exist; the
   toolbar says so in `caution`).
 - **Fades** are drawn as the engine plays them: the gain curve
-  (`fade_gain`, engine/core's `fade_in_gain` formula) as a 1.5 px `fadeLine`
+  (`fade_gain`, which calls `sonora::fade_in_gain` in common/base's
+  `sonora/fade_curve.h`, the one definition the engine plays) as a 1.5 px `fadeLine`
   (`#E8EBEF`) across the waveform area, and what the fade takes away above it
   darkened by `fadeShade` (black at 55 %). A **crossfade** is a box over the
   span both regions sound in, `crossfadeFill` (text at 12 %) with a 1 px

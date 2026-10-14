@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "sonora/fade_curve.h"
 #include "sonora/rt.h"
 
 namespace sonora {
@@ -21,9 +22,6 @@ namespace sonora {
 // A chunk slot that names no pool buffer: the audio thread plays silence
 // there and counts a miss.
 constexpr uint32_t kNoChunk = 0xFFFFFFFFu;
-
-// The values match model::FadeShape, so the builder casts.
-enum class FadeCurve : uint8_t { Linear = 0, EqualPower = 1, SCurve = 2 };
 
 // Append-only. A track with an active insert is TrackSource -> InsertChain
 // -> TrackFader, the three steps TrackOut fuses (ADR-0012 §7.1).
@@ -186,10 +184,5 @@ inline uint32_t chunk_slot_of(const PlanSegment& s, uint32_t ch,
     if (k >= s.chunk_count[ch]) return kNoChunk;
     return s.first_chunk_slot[ch] + static_cast<uint32_t>(k);
 }
-
-// The gain at position x in [0, 1] of a fade in of this shape. A fade out
-// is fade_in_gain(shape, 1 - x), so a crossfade's two sides sum to 1
-// (linear, s-curve) or their squares do (equal power).
-float fade_in_gain(FadeCurve shape, float x) noexcept SONORA_RT;
 
 }  // namespace sonora

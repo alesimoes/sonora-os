@@ -178,8 +178,11 @@ end of its run. Keep it short: what is true now, not a diary.
   no-dialog crossfade on the profiles' keys (Pro Tools d/g/f, Logic
   ctrl+alt+x), the Smart Tool's fade corners with a live preview, Clear on a
   fade's span; one `SetFade`/`SetCrossfade` each, which the engine already
-  plays. Curves are drawn with the engine's formula, and a crossfaded end
-  shows the crossfade, not the region's own fade the plan builder replaces.
+  plays. Curves are drawn by the engine's own `fade_in_gain` (moved to
+  common/base `sonora/fade_curve.h`, so the two cannot drift), and a
+  crossfaded end shows the crossfade, not the region's own fade the plan
+  builder replaces. Fade room counts the fade a crossfade hides, as the model
+  does; a crossfade over a region's own fade at its other end is refused.
   Open: no Fades dialog, no batch fades over several regions, crossfades
   only pre, centred or post (the model has no other alignment).
 - **Playback landed (#41, ADR-0009 update).** The engine records and plays

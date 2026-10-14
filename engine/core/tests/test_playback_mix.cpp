@@ -129,6 +129,21 @@ int test_fade_curves() {
     CHECK(sonora::fade_in_gain(FadeCurve::EqualPower, 1.0f) == 1.0f);
     CHECK(near(sonora::fade_in_gain(FadeCurve::EqualPower, 0.5f), kCentre));
     CHECK(near(sonora::fade_in_gain(FadeCurve::SCurve, 0.25f), 0.5f - 0.5f * std::cos(0.25f * 3.14159265f)));
+    // The law itself, by value, away from the symmetry points: the checks
+    // above also pass for sqrt(x) as "equal power" or smoothstep as the
+    // s-curve. ui/qt draws through this same function (sonora/fade_curve.h),
+    // so a change here is a change to what the timeline shows.
+    struct Pin {
+        FadeCurve shape;
+        float x, gain;
+    };
+    const Pin pins[] = {
+        {FadeCurve::Linear, 0.1f, 0.1f},           {FadeCurve::Linear, 0.8f, 0.8f},
+        {FadeCurve::EqualPower, 0.1f, 0.15643447f}, {FadeCurve::EqualPower, 0.25f, 0.38268343f},
+        {FadeCurve::EqualPower, 0.8f, 0.95105652f}, {FadeCurve::SCurve, 0.1f, 0.02447174f},
+        {FadeCurve::SCurve, 0.25f, 0.14644661f},    {FadeCurve::SCurve, 0.8f, 0.90450850f},
+    };
+    for (const Pin& p : pins) CHECK(near(sonora::fade_in_gain(p.shape, p.x), p.gain, 1e-6f));
     return 0;
 }
 

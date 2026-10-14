@@ -213,10 +213,11 @@ private:
 
 // --- fades, as the engine plays them ---
 //
-// The gain at `x` (0..1 through a fade-in) for each shape. The same formula
-// as engine/core's fade_in_gain(), which ui/ may not link (ADR-0007 §1);
-// test_edit holds the two to the same values, so the curve the timeline
-// draws is the gain the operator hears.
+// The gain at `x` (0..1 through a fade-in) for each shape: the engine's own
+// sonora::fade_in_gain() from common/base's sonora/fade_curve.h, the one
+// definition engine/core plays, so the curve the timeline draws cannot drift
+// from the gain the operator hears. engine/core's test_playback_mix pins the
+// law's values.
 float fade_gain(model::FadeShape shape, float x);
 const char* fade_shape_name(model::FadeShape shape);
 model::FadeShape next_fade_shape(model::FadeShape shape);

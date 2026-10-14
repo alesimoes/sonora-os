@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "fader_taper.h"
+#include "sonora/fade_curve.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -53,16 +54,16 @@ int ViewState::track_at(double y) const {
 
 // --- fades -----------------------------------------------------------------
 
+static_assert(static_cast<uint8_t>(FadeShape::Linear) ==
+                      static_cast<uint8_t>(sonora::FadeCurve::Linear) &&
+                  static_cast<uint8_t>(FadeShape::EqualPower) ==
+                      static_cast<uint8_t>(sonora::FadeCurve::EqualPower) &&
+                  static_cast<uint8_t>(FadeShape::SCurve) ==
+                      static_cast<uint8_t>(sonora::FadeCurve::SCurve),
+              "model::FadeShape and sonora::FadeCurve must share values");
+
 float fade_gain(FadeShape shape, float x) {
-    if (x <= 0.0f) return 0.0f;
-    if (x >= 1.0f) return 1.0f;
-    constexpr float kHalfPi = 1.57079632679489662f;
-    switch (shape) {
-        case FadeShape::EqualPower: return std::sin(kHalfPi * x);
-        case FadeShape::SCurve: return 0.5f - 0.5f * std::cos(2.0f * kHalfPi * x);
-        case FadeShape::Linear: break;
-    }
-    return x;
+    return sonora::fade_in_gain(static_cast<sonora::FadeCurve>(shape), x);
 }
 
 const char* fade_shape_name(FadeShape shape) {
@@ -118,6 +119,19 @@ Frames reach_out(const RegionFades& f) {
     Frames before = 0, after = 0;
     crossfade_extent(*f.out_crossfade, before, after);
     return before;
+}
+
+// What a new fade at one end may not run into: the other end's reach as it
+// is heard, or that end's own stored fade if a crossfade hides it, whichever
+// is longer. The model keeps the hidden fade and still counts it
+// (region_problem: fade_in + fade_out <= length), so a limit from the heard
+// reach alone would pass a drag the model then refuses.
+Frames taken_at_end(const Region& r, const RegionFades& f) {
+    return std::max(reach_out(f), r.fade_out.length);
+}
+
+Frames taken_at_start(const Region& r, const RegionFades& f) {
+    return std::max(reach_in(f), r.fade_in.length);
 }
 
 const Region* region_on(const Playlist& p, Id id) {
@@ -563,9 +577,9 @@ void EditController::move(double x, double /*y*/) {
             // fades that overlap, and a drag stops at the limit rather than
             // ending in a refusal.
             if (drag_.kind == Drag::Kind::FadeIn) {
-                drag_.fade = std::clamp<Frames>(at - r->position, 0, r->length - reach_out(f));
+                drag_.fade = std::clamp<Frames>(at - r->position, 0, r->length - taken_at_end(*r, f));
             } else {
-                drag_.fade = std::clamp<Frames>(r->end() - at, 0, r->length - reach_in(f));
+                drag_.fade = std::clamp<Frames>(r->end() - at, 0, r->length - taken_at_start(*r, f));
             }
             break;
         }
@@ -754,10 +768,23 @@ bool EditController::set_region_fade(Id region, FadeEnd end, Frames length, std:
         why = crossfaded_refusal(p, *r, *x, in);
         return false;
     }
-    const Frames room = r->length - (in ? reach_out(f) : reach_in(f));
+    const Frames room = r->length - (in ? taken_at_end(*r, f) : taken_at_start(*r, f));
     if (length < 0 || length > room) {
-        why = std::string("a fade-") + (in ? "in" : "out") + " that long would run into " +
-              named(*r) + "'s fade-" + (in ? "out" : "in");
+        const char* self = in ? "in" : "out";
+        const char* other = in ? "out" : "in";
+        why = std::string("a fade-") + self + " that long would run into " + named(*r) +
+              "'s fade-" + other;
+        const Crossfade* hiding = in ? f.out_crossfade : f.in_crossfade;
+        const Frames stored = in ? r->fade_out.length : r->fade_in.length;
+        const Frames heard = in ? reach_out(f) : reach_in(f);
+        if (hiding != nullptr && length >= 0 && length <= r->length - heard && stored > heard) {
+            // The limit is a fade nobody can see: say where it is and how to
+            // reach it, rather than name a fade that is not drawn.
+            const Region* n = region_on(p, in ? hiding->right : hiding->left);
+            why += std::string(", kept under its crossfade with ") +
+                   (n ? named(*n) : std::string("its neighbour")) +
+                   "; clear the crossfade, then that fade-" + other + ", to make room";
+        }
         return false;
     }
     const Fade& now = in ? r->fade_in : r->fade_out;
@@ -827,9 +854,26 @@ bool EditController::fade_selection(std::string& why) {
         // a lopsided range becomes a centred crossfade of its length, and
         // the selection is redrawn to show exactly what was made.
         x.align = b == cut ? Align::Pre : a == cut ? Align::Post : Align::Centre;
-        if (!submit(SetCrossfade{p.id, x}, why)) return false;
         Frames before = 0, after = 0;
         crossfade_extent(x, before, after);
+        // Not into the fade at either region's other end. The model refuses
+        // two crossfades that meet inside a region but not a crossfade over
+        // the region's own fade, which the engine would multiply: two fades
+        // at once over the overlap, heard as a dip nobody drew. Refused, not
+        // shortened, as the model refuses a missing handle.
+        const RegionFades lf = region_fades(p, l), rf = region_fades(p, r);
+        if (before > l.length - reach_in(lf) || after > r.length - reach_out(rf)) {
+            const bool left = before > l.length - reach_in(lf);
+            const Region& n = left ? l : r;
+            const bool crossfaded = (left ? lf.in_crossfade : rf.out_crossfade) != nullptr;
+            const char* end = left ? "start" : "end";
+            why = "the crossfade would overlap " +
+                  (crossfaded ? "the crossfade at " + named(n) + "'s " + end
+                              : named(n) + "'s fade-" + (left ? "in" : "out")) +
+                  "; shorten that first, or select less of " + named(n);
+            return false;
+        }
+        if (!submit(SetCrossfade{p.id, x}, why)) return false;
         sel_.region = kNoId;
         sel_.start = sel_.insertion = cut - before;
         sel_.end = cut + after;
