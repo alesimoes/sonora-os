@@ -860,17 +860,31 @@ bool EditController::fade_selection(std::string& why) {
         // two crossfades that meet inside a region but not a crossfade over
         // the region's own fade, which the engine would multiply: two fades
         // at once over the overlap, heard as a dip nobody drew. Refused, not
-        // shortened, as the model refuses a missing handle.
+        // shortened, as the model refuses a missing handle. A fade kept
+        // under a crossfade at the other end counts too: clearing that
+        // crossfade brings it back, over this one.
         const RegionFades lf = region_fades(p, l), rf = region_fades(p, r);
-        if (before > l.length - reach_in(lf) || after > r.length - reach_out(rf)) {
-            const bool left = before > l.length - reach_in(lf);
+        const bool left = before > l.length - taken_at_start(l, lf);
+        if (left || after > r.length - taken_at_end(r, rf)) {
             const Region& n = left ? l : r;
-            const bool crossfaded = (left ? lf.in_crossfade : rf.out_crossfade) != nullptr;
+            const Crossfade* other = left ? lf.in_crossfade : rf.out_crossfade;
+            const Frames heard = left ? reach_in(lf) : reach_out(rf);
+            const Frames stored = left ? l.fade_in.length : r.fade_out.length;
+            const std::string fade = named(n) + "'s fade-" + (left ? "in" : "out");
             const char* end = left ? "start" : "end";
-            why = "the crossfade would overlap " +
-                  (crossfaded ? "the crossfade at " + named(n) + "'s " + end
-                              : named(n) + "'s fade-" + (left ? "in" : "out")) +
-                  "; shorten that first, or select less of " + named(n);
+            if (other != nullptr && stored > heard &&
+                (left ? before <= l.length - heard : after <= r.length - heard)) {
+                // The limit is a fade nobody can see: say where it is.
+                const Region* m = region_on(p, left ? other->left : other->right);
+                why = "the crossfade would overlap " + fade + ", kept under its crossfade with " +
+                      (m ? named(*m) : std::string("its neighbour")) +
+                      "; clear that crossfade, then that fade-" + (left ? "in" : "out") +
+                      ", or select less of " + named(n);
+            } else {
+                why = "the crossfade would overlap " +
+                      (other != nullptr ? "the crossfade at " + named(n) + "'s " + end : fade) +
+                      "; shorten that first, or select less of " + named(n);
+            }
             return false;
         }
         if (!submit(SetCrossfade{p.id, x}, why)) return false;
@@ -927,6 +941,28 @@ bool EditController::clear_fade_at_selection(bool& done, std::string& why) {
         crossfade_extent(x, before, after);
         if (sel_.start == r->position - before && sel_.end == r->position + after) {
             done = true;
+            // Removing it brings back the fades each region keeps under it.
+            // A document can hold one that overlaps whatever is at that
+            // region's other end (made before fade_selection counted hidden
+            // fades, or by another interface); the engine would multiply the
+            // two, so the crossfade stays, and the reason says what to do.
+            const Region* l = region_on(p, x.left);
+            for (const bool in : {true, false}) {
+                const Region* n = in ? r : l;
+                if (n == nullptr) continue;
+                const RegionFades f = region_fades(p, *n);
+                const Frames back = in ? n->fade_in.length : n->fade_out.length;
+                const Frames other = in ? reach_out(f) : reach_in(f);
+                if (back <= n->length - other) continue;
+                const Crossfade* there = in ? f.out_crossfade : f.in_crossfade;
+                const char* end = in ? "end" : "start";
+                why = "clearing this crossfade would bring back " + named(*n) + "'s fade-" +
+                      (in ? "in" : "out") + ", kept under it, over " +
+                      (there != nullptr ? "the crossfade at " + named(*n) + "'s " + end
+                                        : named(*n) + "'s fade-" + (in ? "out" : "in")) +
+                      "; shorten that first";
+                return false;
+            }
             return submit(RemoveCrossfade{p.id, x.left, x.right}, why);
         }
     }
