@@ -215,7 +215,11 @@ for the edit modes, the Smart/Trim/Select/Grab tools, zoom, undo and redo,
 separate, trim to the insertion point, clear, nudge, track selection, mute,
 solo, `app.save` (the native session file, written by the window until the
 engine has session commands) and `window.toggle_mix_edit` (`ctrl+equal` in `protools.json`, `x` in
-`logic.json`, both `"verified": false` until checked against the guides).
+`logic.json`, both `"verified": false` until checked against the guides),
+and `window.transport`, the Transport window (`ctrl+numpad_1` in
+`protools.json`, Window > Transport, `"verified": false`; `logic.json` has
+no key for it until Logic's own is confirmed, and the bar's Transport
+button opens it there).
 A track command bound without a target acts on the selected track there, so
 `shift+r`, `shift+s` and `shift+m` work in the window and still report that
 they failed at a tty, which has no selection.
