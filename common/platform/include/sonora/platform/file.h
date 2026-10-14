@@ -15,4 +15,17 @@ namespace sonora::platform {
 // not get the file (POSIX: O_CLOEXEC, set atomically with the open).
 std::FILE* create_exclusive(const std::string& path);
 
+// Flushes `f`'s buffer and asks the OS to put its data, and the size needed
+// to read it back, on the medium (POSIX: fdatasync). Blocks for as long as
+// the device takes, which on a USB stick can be long: never from the audio
+// thread. False with errno set if either step failed. A file the OS cannot
+// sync at all (EINVAL: a pipe, a special file) counts as synced, since there
+// is nothing more this call could do for it.
+bool sync_data(std::FILE* f);
+
+// Makes the entries of directory `path` durable, so a file just created in
+// it is still found after a power cut (POSIX: fsync on the directory). False
+// with errno set on failure.
+bool sync_directory(const std::string& path);
+
 }  // namespace sonora::platform

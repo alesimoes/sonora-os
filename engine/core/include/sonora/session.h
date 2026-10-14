@@ -79,6 +79,13 @@ struct SessionConfig {
     // Capture boundary records the disk thread may fall behind by. 0: eight
     // per track, at least 64. A full ring is an overrun, never a wait.
     uint32_t boundary_records = 0;
+    // How often the disk thread checkpoints every open take: header patched
+    // to the frames written, data synced (WavWriter::checkpoint()). With the
+    // capture ring's depth this is the stated loss window per track at a
+    // power cut (session-format.md, "Crash recovery"). 2 s is the spec's
+    // placeholder until the sync's cost on a stick is measured (ADR-0009
+    // Unverified 8).
+    double sync_seconds = 2.0;
     PlaybackConfig playback;
 };
 

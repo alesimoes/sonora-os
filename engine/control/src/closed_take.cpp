@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/closed_take.h"
 
+#include <cstdio>
+#include <filesystem>
+
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
+#include "sonora/wav_recovery.h"
 
 namespace sonora {
 
@@ -203,6 +207,34 @@ bool add_closed_take(model::Document& document, const Session& session,
     if (first_failure.empty()) return true;
     error = "was cut short: " + cut_short();
     return false;
+}
+
+std::vector<std::string> recover_unclosed_takes(const std::string& session_dir,
+                                                uint32_t sample_rate) {
+    std::vector<std::string> notices;
+    for (const TakeRecovery& r : recover_takes(session_dir + "/Audio Files")) {
+        const std::string name = std::filesystem::path(r.path).filename().string();
+        switch (r.outcome) {
+            case TakeRecovery::Outcome::Repaired: {
+                char seconds[32];
+                std::snprintf(seconds, sizeof seconds, "%.1f",
+                              sample_rate ? static_cast<double>(r.frames) / sample_rate : 0.0);
+                notices.push_back("recovered " + name +
+                                  ": the engine stopped before closing it; " + seconds +
+                                  " s were on disk and are kept. It is in Audio Files, "
+                                  "not on the timeline");
+                break;
+            }
+            case TakeRecovery::Outcome::Short:
+                notices.push_back(name + " is shorter than its header (" + r.why +
+                                  "); the part on disk plays");
+                break;
+            default:
+                notices.push_back("could not recover " + name + ": " + r.why);
+                break;
+        }
+    }
+    return notices;
 }
 
 }  // namespace sonora

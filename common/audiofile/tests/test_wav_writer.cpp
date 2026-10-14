@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/wav_writer.h"
 
+#include "sonora/wav_reader.h"
+
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -376,6 +378,111 @@ int main() {
         CHECK(data > 0);
         CHECK(read_u32(c, data - 4) == 2 * 8);
         CHECK(read_u32(c, 4) == c.size() - 8);
+    }
+
+    // --- a checkpoint leaves a file any reader can open, mid-take ---
+    //
+    // Until close() the sizes were zero, so a take whose engine died before
+    // closing it read as empty, whatever it held (ADR-0007 Consequences,
+    // "the disk thread periodically patching the WAV header").
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        w.set_clock(fixed_clock);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Float32, 7));
+        std::vector<float> ramp(100);
+        for (std::size_t i = 0; i < ramp.size(); ++i) ramp[i] = static_cast<float>(i) / 128.0f;
+        CHECK(w.write(ramp.data(), 60));
+        w.set_time_reference(4800);
+        CHECK(w.checkpoint());
+
+        // Another handle, as a reader after a crash would have.
+        auto b = slurp(path);
+        long data = find_chunk(b, "data");
+        CHECK(data > 0);
+        CHECK(read_u32(b, data - 4) == 60 * 4);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+        sonora::WavReader r;
+        std::string error;
+        CHECK(r.open(path, error));
+        CHECK(r.frames() == 60);
+        CHECK(r.time_reference() == 4800);
+        std::vector<float> got(60);
+        CHECK(r.read(0, 60, got.data()) == 60);
+        for (int i = 0; i < 60; ++i) CHECK(got[i] == ramp[i]);
+        r.close();
+
+        // The take carries on where it was, not over the header.
+        CHECK(w.write(ramp.data() + 60, 40));
+        b = slurp(path);
+        data = find_chunk(b, "data");
+        CHECK(read_u32(b, data - 4) == 60 * 4);
+        CHECK(w.close());
+        b = slurp(path);
+        CHECK(read_u32(b, data - 4) == 100 * 4);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+        CHECK(r.open(path, error));
+        CHECK(r.frames() == 100);
+        got.resize(100);
+        CHECK(r.read(0, 100, got.data()) == 100);
+        for (int i = 0; i < 100; ++i) CHECK(got[i] == ramp[i]);
+        r.close();
+    }
+
+    // --- odd-sized data: the checkpoint's header matches the file ---
+    //
+    // The pad byte goes on at close(); until then a RIFF size that counted
+    // it would claim a byte the file does not have.
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const std::vector<float> block(5, 0.25f);
+        CHECK(w.write(block.data(), 5));
+        CHECK(w.checkpoint());
+        auto b = slurp(path);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+        CHECK(read_u32(b, 4) == kEmptyRiffSize + 15);
+        CHECK(w.write(block.data(), 2));
+        CHECK(w.close());
+        b = slurp(path);
+        const long data = find_chunk(b, "data");
+        CHECK(read_u32(b, data - 4) == 21);
+        CHECK(read_u32(b, 4) == kEmptyRiffSize + 22);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+    }
+
+    // --- flush() hands buffered audio to the OS, the header untouched ---
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        CHECK(!w.flush());
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const std::vector<float> block(5, 0.25f);
+        CHECK(w.write(block.data(), 5));
+        CHECK(w.flush());
+        const auto b = slurp(path);
+        CHECK(b.size() == 8 + kEmptyRiffSize + 15);
+        CHECK(read_u32(b, 4) == 0);
+        CHECK(w.close());
+    }
+
+    // --- a checkpoint on a closed or failed take is harmless ---
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        CHECK(!w.checkpoint());
+        w.set_riff_size_limit(kEmptyRiffSize + 6);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const std::vector<float> block(4, 0.25f);
+        CHECK(!w.write(block.data(), 4));
+        CHECK(w.failed());
+        // Nothing more to make durable; close() finishes it as before.
+        CHECK(!w.checkpoint());
+        CHECK(w.close());
+        const auto b = slurp(path);
+        CHECK(read_u32(b, 4) == b.size() - 8);
+        CHECK(w.failure() == "take reached the 4 GB WAV limit");
     }
 
     std::remove(path.c_str());

@@ -45,8 +45,12 @@ playback can follow edits; it is in flight.
        edges (`contract/api`; `engine/app` → `ui/tui` stays as the
        composition root until M7, ADR-0007 M4 update item 7).
 5b. [ ] M5, M6.
-6. [ ] Take safety in DAW 1: 4 GB limit refused, periodic `fdatasync`, a
-       take that survives `kill -9`, bext date.
+6. [x] Take safety in DAW 1: 4 GB limit refused and bext date (PR #16);
+       periodic checkpoint (header patched, `fdatasync`, folder `fsync`)
+       and a take that survives `kill -9`, repaired at the next startup
+       (`feature/take-safety`). Still open: offering recovered and orphan
+       takes for placement at session open (`engine.record.orphan_offer`);
+       the `fdatasync` cost on a stick (ADR-0009 Unverified 8, OS 1).
 7. [x] M7 process split: socket and memfd behind `common/platform`,
        headless `sonora-engine`, `SocketEngine`, `sonora-tui`, `sonora-ctl`,
        the Qt UI on the engine's document (`feature/process-split`; ADR-0007
