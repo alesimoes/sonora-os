@@ -238,6 +238,40 @@ int test_hot_square_every_factor() {
     return 0;
 }
 
+// Regression (the merge gate of PR #52, low): a failed sample restarts the
+// stage, and that restart used to be reset(), which also cleared the
+// iteration counts, so max_iterations_seen() forgot the very failure that
+// resets() counted (the case below read 714 resets and 7 iterations at
+// most). A rate no processor runs the stage at (8 kHz, 14 times under
+// eco's lowest) with a +-100 V square is where the solve fails on demand.
+int test_failure_keeps_iteration_count() {
+    TriodeStage st;
+    CHECK(st.prepare(8000.0));
+    for (int n = 0; n < 20000; ++n) st.tick((n / 7) % 2 ? TriodeStage::kMaxInputV : -TriodeStage::kMaxInputV);
+    std::printf("  8 kHz, +-100 V square: %llu resets, %u iterations at most\n",
+                static_cast<unsigned long long>(st.resets()), st.max_iterations_seen());
+    CHECK(st.resets() > 0);
+    CHECK(st.max_iterations_seen() >= TriodeStage::kMaxIterations);
+    // A restart leaves a valid state: nothing non-finite carries over, and
+    // silence brings the output back to a fresh stage's rest value (2 s,
+    // tens of the coupling capacitors' time constants).
+    TriodeStage fresh;
+    CHECK(fresh.prepare(8000.0));
+    const double rest = fresh.tick(0.0);
+    double y = 0.0;
+    for (int n = 0; n < 2 * 8000; ++n) {
+        y = st.tick(0.0);
+        CHECK(std::isfinite(y));
+    }
+    CHECK_LE(std::fabs(y - rest), 1e-6, "output 2 s after the failures against rest, V");
+    // reset() is the caller's: it clears the counts, and the resets stay.
+    const std::uint64_t resets = st.resets();
+    st.reset();
+    CHECK(st.max_iterations_seen() == 0);
+    CHECK(st.resets() == resets);
+    return 0;
+}
+
 // Two stages in lockstep give each stage exactly what it gives alone, even
 // when the two need different numbers of Newton iterations (one quiet,
 // one driven into grid current).
@@ -271,6 +305,7 @@ int main() {
     failed += test_small_signal_gain();
     failed += test_extremes();
     failed += test_tick2_matches_tick();
+    failed += test_failure_keeps_iteration_count();
     failed += test_hot_square_every_factor();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);

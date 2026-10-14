@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -89,11 +90,73 @@ void Suite::fail(const std::string& why) {
     ++failures_;
 }
 
+void Suite::start_cpu_calibration() {
+    if (kernel_before_us_ > 0.0) return;
+    kernel_before_us_ = reference_kernel_us(std::min(20.0, args_.cpu_seconds));
+}
+
+void Suite::calibrated_cpu(const std::string& what, double p999_us, double max_us) {
+    calibrated_.push_back({what, p999_us, max_us});
+}
+
+void Suite::finish_cpu_calibration() {
+    if (calibrated_.empty()) return;
+    const double before = kernel_before_us_;
+    const double after = reference_kernel_us(std::min(20.0, args_.cpu_seconds));
+    const double ref = reference_kernel_reference_us();
+    const std::string how = "p50, per-block minimum of 5 runs";
+    info("CPU reference kernel per block, this machine, before the loads", before, "us", how);
+    info("CPU reference kernel per block, this machine, after the loads", after, "us", how);
+    info("CPU reference kernel per block, reference machine", ref, "us", "calibrate.cpp");
+    // The kernel's p50 holds to 0.1 % on a quiet machine. A larger change
+    // between the two timings is the machine changing (a neighbour
+    // arriving, a clock step) while the loads ran, which no one scale can
+    // correct: the comparison would be a coin flip (review of PR #55).
+    const double drift = std::fabs(after - before) / std::min(before, after);
+    info("CPU reference kernel, after against before", 100.0 * drift, "%",
+         "over 5 % the calibrated CPU checks are inconclusive");
+    if (!(drift <= kCalibrationDrift)) {
+        inconclusive_ = true;
+        std::printf("  INCONCLUSIVE: the machine's speed changed during the run (reference kernel %.2f us before "
+                    "the loads, %.2f us after); the calibrated CPU checks are neither passed nor failed\n",
+                    before, after);
+        for (const auto& c : calibrated_) {
+            info(c.what + "p99.9, inconclusive", c.p999_us, "us", "not held to a bar");
+            info(c.what + "max, inconclusive", c.max_us, "us", "not held to a bar");
+        }
+        return;
+    }
+    const double kernel = 0.5 * (before + after);
+    const double scale = kernel / ref;
+    info("CPU runner scale", scale, "", "the CPU class bars are multiplied by it");
+    char note[160];
+    std::snprintf(note, sizeof note,
+                  "per-block minimum of 5 runs; class bar x %.3f, this machine's reference kernel against the "
+                  "reference machine's",
+                  scale);
+    const bool baseline = quality("cpu.p999_kernels") != nullptr;
+    for (const auto& c : calibrated_) {
+        check_le(c.what + "p99.9, runner-calibrated", c.p999_us, bar("cpu.p999_us") * scale, "us", note);
+        check_le(c.what + "max, runner-calibrated", c.max_us, bar("cpu.max_us") * scale, "us", note);
+        // The scaled class bar alone trips on a regression of 20 % on one
+        // runner and 28 % on another (review of PR #55). The recorded
+        // worst case in kernels, the most any measured machine gave,
+        // trips on 15 % on any of them.
+        if (baseline) {
+            check_le(c.what + "p99.9 in reference kernels", c.p999_us / kernel,
+                     bar("cpu.p999_kernels") * kKernelRegression, "kernels",
+                     "cpu.p999_kernels x 1.15: the recorded worst case, plus 15 %");
+        }
+    }
+}
+
 int Suite::finish() {
+    finish_cpu_calibration();
     if (!args_.report_dir.empty()) {
         Value root = Value::object();
         root.set("processor", Value::string(name_));
         root.set("failures", Value::integer(failures_));
+        root.set("inconclusive", Value::boolean(inconclusive_));
         root.set("checks", std::move(checks_));
         root.set("data", std::move(data_));
         std::string out, err;
@@ -103,6 +166,11 @@ int Suite::finish() {
         }
         checks_ = Value::array();
         data_ = Value::object();
+    }
+    if (failures_ == 0 && inconclusive_) {
+        std::printf("%s: INCONCLUSIVE (0 failing; the calibrated CPU checks could not be held, see above)\n",
+                    name_.c_str());
+        return kInconclusive;
     }
     std::printf("%s: %s (%d failing)\n", name_.c_str(), failures_ == 0 ? "meets its bars" : "FAILS", failures_);
     return failures_ == 0 ? 0 : 1;

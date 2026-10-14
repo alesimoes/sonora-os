@@ -134,6 +134,10 @@ struct Args {
     bool regenerate_golden = false;
     bool cpu = false;          // the 60 s CPU measurement (not run in ctest)
     double cpu_seconds = 60.0;
+    // Hold the CPU bars scaled by this machine's speed against the
+    // reference machine's, measured with the reference kernel
+    // (calibrate.cpp): for a shared CI runner. Off, the bars are absolute.
+    bool cpu_calibrate = false;
 };
 
 class Suite {
@@ -162,7 +166,24 @@ public:
     // Free-form data for the report (curves for the plots).
     json::Value& data() { return data_; }
 
-    // Prints the table, writes the report; returns the process exit code.
+    // --cpu-calibrate (calibrate.cpp). start_cpu_calibration() times the
+    // reference kernel once, before the first load; calibrated_cpu()
+    // records a load's p99.9 and max ("what" ends in ": "). finish() times
+    // the kernel again and, when the two timings agree within
+    // kCalibrationDrift, holds each load to the class bars scaled by the
+    // kernel's cost here over the reference machine's, and its p99.9 in
+    // kernels to cpu.p999_kernels x kKernelRegression when quality.json
+    // records that baseline. When they disagree the machine changed speed
+    // during the run: the checks are inconclusive, neither passed nor
+    // failed, and finish() returns kInconclusive.
+    void start_cpu_calibration();
+    void calibrated_cpu(const std::string& what, double p999_us, double max_us);
+    static constexpr double kCalibrationDrift = 0.05;
+    static constexpr double kKernelRegression = 1.15;
+    static constexpr int kInconclusive = 3;
+
+    // Prints the table, writes the report; returns the process exit code:
+    // 0, 1 when a check failed, or kInconclusive.
     int finish();
 
 private:
@@ -173,6 +194,14 @@ private:
     json::Value checks_ = json::Value::array();
     json::Value data_ = json::Value::object();
     int failures_ = 0;
+    struct CalibratedCpu {
+        std::string what;
+        double p999_us, max_us;
+    };
+    std::vector<CalibratedCpu> calibrated_;
+    double kernel_before_us_ = 0.0;
+    bool inconclusive_ = false;
+    void finish_cpu_calibration();
 };
 
 // ---- the checks every processor runs ----------------------------------------
@@ -213,6 +242,11 @@ void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string&
 // check_cpu's programme signal (noise with a log sweep under it, peaks
 // about -12 dBFS), raised by gain_db.
 Chans cpu_programme(double fs, double seconds, double gain_db);
+// The reference kernel's p50 per q128 stereo block on this machine
+// (per-block minimum of 5 runs over `seconds`), and on the reference
+// machine: their ratio scales the CPU bars under --cpu-calibrate.
+double reference_kernel_us(double seconds);
+double reference_kernel_reference_us();
 // Runs all of the above. The zipper sweeps run on `zipper` when given (a
 // configuration where every swept parameter is audible), else on golden.
 void check_common(Suite& s, const Config& golden,

@@ -241,13 +241,111 @@ Standard and high, now (reported, not held to the bar):
   solve's own only to its tolerance, so a host's preroll used to move the
   state in its last bits. The re-activation render then differed by 3e-8;
   now it is exact.
-- **The gate.** PR CI does not measure CPU (ADR-0011 Amendment 1 item 4).
-  The nightly `cpu` job now runs `tools/dsp-cpu.sh build 60 tube` as a
-  step without `continue-on-error`, so the eco bar gates that workflow,
-  while the other processors' figures stay informative. It runs on a
-  shared runner slower than this machine, so it can turn the nightly
-  red. That is a figure to look at, decided with the coordinator on the
-  review of PR #52.
+- **The gate** is its own section below.
+
+### The gate (merge gate of PR #52, follow-up)
+
+**Eco has margin; the 59.5 µs was host load.** The merge gate measured
+the eco square at p99.9 59.5 µs against the 60 µs bar while other
+sessions' containers ran. Re-measured on a quiet host (no other
+container; the 1-minute load average under 1.5 inside the Docker VM
+before each run), three 60 s runs, 2026-10-14, at `a55df5e` plus this
+follow-up (which does not touch the solve's arithmetic):
+
+| Eco (2x), p99.9 / max, µs | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| programme, drive +14 dB | 41.2 / 41.7 | 41.3 / 41.9 | 42.3 / 43.2 |
+| programme +12 dB, drive +36 dB | 44.2 / 45.4 | 44.3 / 46.1 | 45.8 / 47.3 |
+| 0 dBFS square, drive +36 dB | 36.8 / 37.9 | 36.6 / 37.4 | 37.8 / 38.2 |
+
+The worst case is 45.8 µs, 24 % under the bar and under the 50 µs the
+follow-up asked for, so the solve was not optimised further. The
+per-block minimum of five runs removes preemption, not a neighbour
+that slows every block (a shared core, a lower clock under load): the
+figure that counts is one taken on a quiet host.
+
+**PR CI does not measure CPU** (ADR-0011 Amendment 1 item 4). The
+nightly `cpu` job holds eco to class B on a shared GitHub runner, and an
+absolute bar there would gate the runner's speed, not the code: the
+first run of this follow-up landed on an AMD EPYC 7763, where the
+unchanged eco solve measured 65.6 µs on the +12 dB programme, red
+against 60, with 45.8 µs at worst on the reference machine.
+
+So the nightly's bar is **runner-calibrated**
+(`tools/dsp-cpu.sh --calibrated`, `sonora-dsp-measure --cpu-calibrate`):
+- The same step first times a **reference kernel**
+  (`plugins/native/measure/src/calibrate.cpp`): two channels of 256
+  samples per q128 block, each a serial chain of a one-pole filter,
+  three fixed Newton passes on a diode clipper (one `exp` and one
+  division each), and a biquad. That is the shape of the triode solve
+  (a dependent chain with transcendental calls and divisions on it, as
+  perf showed), so the two scale alike across machines. Fixed iteration
+  count and input: its cost does not depend on data. It uses nothing
+  from `common/dsp`, so a DSP change cannot move it.
+- Its p50 (per-block minimum of 5 runs, 20 s) over its p50 on the
+  reference machine, `kReferenceKernelUs` = 32.6 µs (i7-11800H, the
+  sonora-build:trixie container, GCC 14; 32.58-32.60 µs over three
+  runs, `sonora-dsp-measure --cpu-reference-kernel`), is the runner's
+  **scale**. Every CPU bar is multiplied by it; the kernel, the scale and
+  the scaled bar are in the report.
+- The kernel is frozen: an edit to it, its flags or its timing must
+  re-measure `kReferenceKernelUs` on the reference machine in the same
+  commit.
+- Locally, and on the reference machine, `tools/dsp-cpu.sh` without the
+  flag holds the absolute bar, as before.
+
+Measured on GitHub runners, the nightly dispatched on this branch:
+
+| Runner | kernel | scale | eco p99.9 worst (bar) | uncalibrated (bar 60) |
+|---|---|---|---|---|
+| AMD EPYC 7763, run 38505906342 | 42.1 µs | 1.291 | 64.4 µs, +12 dB programme (77.5) | 65.6 µs: red |
+| AMD EPYC 9V45, run 38506494424 | 29.7 µs | 0.911 | 42.8 µs, +12 dB programme (54.6) | 42.9 µs |
+
+In kernels, eco's worst case costs 1.40 on the reference machine, 1.44
+on the EPYC 9V45 and 1.53 on the EPYC 7763: the kernel tracks the solve
+across three microarchitectures to within 10 %. The scaled class bar is
+60 / 32.6 = 1.84 kernels, so on its own it trips on a regression of about
+20 % on a 7763 and 28 % on a 9V45 (review of PR #55): which one depends
+on the runner the job draws. Two additions make the gate the same on
+every runner:
+- **A baseline in kernels.** `quality.json` records `cpu.p999_kernels`
+  = 1.53, eco's worst p99.9 on the slowest-tracking machine measured
+  (the EPYC 7763, +12 dB programme), and each eco load's p99.9 in
+  kernels is held to it x 1.15 = 1.76. That trips on a regression of
+  about 15 % on any of the three machines; the scaled class bar stays as
+  the backstop. A deliberate change to the solve's cost re-records the
+  baseline from a nightly's report, in the same commit, and says why.
+- **The kernel is timed before and after the loads.** A neighbour that
+  slows every block, or a clock step, while the loads run is something
+  the per-block minimum cannot remove, and a kernel timed in another
+  phase would mis-scale the bar both ways (a false red, a hidden
+  regression). The harness times the kernel before the first load and
+  again at the end; when the two differ by more than 5 % the calibrated
+  checks are **inconclusive**: reported without a bar, neither passed
+  nor failed, `sonora-dsp-measure` exits 3, `tools/dsp-cpu.sh` prints
+  INCONCLUSIVE and exits 3, and the nightly step turns that into a
+  warning annotation, not a red and not a pass. Otherwise the scale is
+  the mean of the two. On a quiet reference machine the two timings
+  agree to 0.03 % (32.579 and 32.588 µs); with the load average at 3.4
+  (other sessions' containers) they differed by 6.9 % (34.87 and 32.60 µs),
+  and that run came out inconclusive, as it should.
+- The max bar is scaled too. A p50 ratio has no physical claim on a
+  tail's maximum, but the 150 µs bar is lenient enough that it adds no
+  flake; it is reported, and the p99.9 checks are the gate.
+
+Quiet reference machine, calibrated, after these changes: eco p99.9
+41.4 / 45.0 / 37.1 µs (programme, +12 dB programme, square), 1.27 /
+1.38 / 1.14 kernels against 1.76; absolute, the same build, with the
+load average at 3.4-3.7 (another session's container): 44.7 / 47.2
+/ 40.3 µs against 60.
+
+**Diagnostics kept across a restart** (merge gate, low). A failed sample
+restarted the stage through `reset()`, which also cleared
+`max_iterations_seen()`, so the count forgot the failure `resets()`
+recorded (8 kHz, a ±100 V square: 714 resets, 7 iterations at most).
+The restart is now `restore_operating_point()`, the same bounded copy
+without the counts; `reset()` stays the caller's and still clears them.
+`test_triode`'s `test_failure_keeps_iteration_count` reads 12 now.
 
 ### Bundles (`tools/build-plugins.sh`)
 

@@ -500,6 +500,11 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
 }
 
 void TriodeStage::reset() noexcept {
+    restore_operating_point();
+    last_iter_ = max_iter_ = 0;
+}
+
+void TriodeStage::restore_operating_point() noexcept {
     at_rest_ = true;
     for (std::uint32_t m = 0; m < M; ++m) j_[m] = op_j_[m];
     i_[0] = op_i_[0];
@@ -510,7 +515,6 @@ void TriodeStage::reset() noexcept {
     ji_[1] = op_ji_[1];
     ji_[2] = op_ji_[2];
     for (int k = 0; k < 4; ++k) inv_[k] = op_inv_[k];
-    last_iter_ = max_iter_ = 0;
 }
 
 namespace {

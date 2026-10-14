@@ -344,6 +344,9 @@ void check_cpu(Suite& s, const Config& c, const std::string& label, bool assert_
 
 void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string& label, bool assert_bar) {
     if (!s.args().cpu) return;
+    // The reference kernel's first timing, before any load (the second is
+    // at finish(), after them all).
+    if (s.args().cpu_calibrate) s.start_cpu_calibration();
     const double fs = 48000.0;
     // Five identical renders from a fresh processor. The first run's
     // figures are the raw ones, preemption and all. The per-block minimum
@@ -370,7 +373,11 @@ void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string&
     }
     const std::string what = "CPU per block, q128 48 kHz stereo" + label + ": ";
     s.info(what + "p50", percentile(best, 0.5), "us", "per-block minimum of 5 runs");
-    if (assert_bar) {
+    if (assert_bar && s.args().cpu_calibrate) {
+        // A shared runner: held at finish(), against bars scaled by this
+        // machine's speed, once the kernel has been timed after the loads.
+        s.calibrated_cpu(what, percentile(best, 0.999), percentile(best, 1.0));
+    } else if (assert_bar) {
         s.check_le(what + "p99.9", percentile(best, 0.999), s.bar("cpu.p999_us"), "us", "per-block minimum of 5 runs");
         s.check_le(what + "max", percentile(best, 1.0), s.bar("cpu.max_us"), "us", "per-block minimum of 5 runs");
     } else {
