@@ -61,6 +61,26 @@ endfunction()
 set(instrumentation "^__(asan|tsan|ubsan|msan|lsan|sanitizer)_" "^__stack_chk_fail$" "^__stack_chk_guard$"
     "^__rtsan_(realtime_enter|realtime_exit|ensure_initialized)$")
 
+function(defined_symbols file out)
+  execute_process(COMMAND ${NM} -C --defined-only ${file}
+                  OUTPUT_VARIABLE text ERROR_VARIABLE err RESULT_VARIABLE rc)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "${NM} -C --defined-only ${file} failed (${rc}): ${err}")
+  endif()
+  string(REPLACE ";" "," text "${text}")
+  string(REPLACE "[" "<" text "${text}")
+  string(REPLACE "]" ">" text "${text}")
+  string(REPLACE "\n" ";" lines "${text}")
+  set(symbols)
+  foreach(line IN LISTS lines)
+    string(STRIP "${line}" line)
+    if(line MATCHES "^[0-9a-fA-F]+ [TtWw] (.+)$")
+      list(APPEND symbols "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+  set(${out} "${symbols}" PARENT_SCOPE)
+endfunction()
+
 function(check_allowed obj what)
   set(allowed ${ARGN})
   undefined_symbols(${obj} symbols)
@@ -92,13 +112,40 @@ if(n_objects EQUAL 0)
 endif()
 # Beyond the C memory functions and wake_all: PluginClient's three
 # audio-thread entry points, whose bodies are in rt.cpp's object and held to
-# this same list, and the RTTI vtables a polymorphic class's typeinfo names
+# this same list (checked below, not assumed), and the RTTI vtables a polymorphic class's typeinfo names
 # (PluginChainRunner : InsertChainRunner). Those are data, never called.
+set(client_entry "^sonora::plugin_client::PluginClient::(begin_callback|process_chain|end_callback)\\(")
 foreach(obj IN LISTS RT_OBJECTS)
   check_allowed(${obj} "the audio thread"
                 "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\("
-                "^sonora::plugin_client::PluginClient::(begin_callback|process_chain|end_callback)\\("
+                "${client_entry}"
                 "^vtable for __cxxabiv1::__(si_)?class_type_info$")
+endforeach()
+
+# The allowlist admits PluginClient's entry points by name only because
+# their bodies sit in an RT_OBJECTS object and so are held to it too. A name
+# proves neither: a body moved to client.cpp, or a same-named overload
+# defined there and called by the runner, would match the name and escape
+# the allowlist. So each one referenced must be defined, with that exact
+# signature, in one of RT_OBJECTS (PR #59 RT re-audit).
+set(rt_defined)
+foreach(obj IN LISTS RT_OBJECTS)
+  defined_symbols(${obj} defs)
+  list(APPEND rt_defined ${defs})
+endforeach()
+foreach(obj IN LISTS RT_OBJECTS)
+  undefined_symbols(${obj} symbols)
+  foreach(sym IN LISTS symbols)
+    if(sym MATCHES "${client_entry}")
+      list(FIND rt_defined "${sym}" at)
+      if(at EQUAL -1)
+        message(SEND_ERROR "${obj} calls '${sym}', which no RT_OBJECTS object defines: its body escapes the allowlist")
+        math(EXPR failures "${failures} + 1")
+      else()
+        message(STATUS "  ${sym}: defined in RT_OBJECTS")
+      endif()
+    endif()
+  endforeach()
 endforeach()
 
 set(found_wake FALSE)

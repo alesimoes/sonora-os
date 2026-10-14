@@ -46,8 +46,11 @@ inline void reset_heap_counts() {
 inline bool heap_untouched() { return g_allocations.load() == 0 && g_frees.load() == 0; }
 }  // namespace playback_test
 
+// RTSan interposes malloc/free itself (a weak trampoline); a strong
+// definition here would replace it and blind RTSan's heap checks in every
+// test that includes this header.
 #if defined(__has_feature)
-#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer)
+#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer) ||     __has_feature(realtime_sanitizer)
 #define PLAYBACK_TEST_SANITIZED 1
 #endif
 #endif
