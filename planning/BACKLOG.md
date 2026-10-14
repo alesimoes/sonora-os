@@ -41,6 +41,29 @@ playback can follow edits; it is in flight.
        `engine/control`.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
+9. [ ] For the Mix window (Track 3 item 2, `feature/ui-mixer-monitor`):
+       - state block layout 3 with each track's post-fader peak (L/R, after
+         pan and mute) and the monitor bus's L/R peak. `Session` already
+         has `bus_peak_`; it is not published. Until then the strips' meters
+         are labelled IN and the bus's NO DATA, and pre/post-fader metering
+         cannot be offered;
+       - a `ParamId` for the monitor bus gain (and track pan), so those ride
+         through ParameterChange too instead of a SetMonitorBus / SetMix per
+         step;
+       - FakeEngine's published track gain ignores SetMix (the real engine
+         writes faders from the document when the mix changes); it should
+         follow it, as conformance would show;
+       - a Resync (and a new connection's Snapshot) should re-apply the
+         document's mix to the engine's tracks, as ADR-0009 item 3 says a
+         Snapshot does: the server's Resync path never sets `mix_changed`,
+         so ride steps a lost link stranded stay in the gain atomics. The UI
+         resends every track's gain on each new document meanwhile
+         (`MixModel::resendGains`, PR #61);
+       - `PlaybackController::apply_mix` (playback_controller.cpp:88) writes
+         only engine tracks that still map to a document track, so a solo
+         on a track that left the document (an undone AddTrack) stays set
+         and `any_solo` (session.cpp:452) silences the rest while the UI
+         shows no solo. Reset `tracks_[i]` for `i >=` the document's tracks.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -52,6 +75,9 @@ playback can follow edits; it is in flight.
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
+5. [ ] Solo safe in `TrackMix` (session format, op codec, plan builder: a
+       solo-safe track is never implicitly muted). The Mix window refuses
+       Ctrl-click on solo by name until it exists (`feature/ui-mixer-monitor`).
 
 ### Track 3: UI (ui-engineer)
 
@@ -76,6 +102,21 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              common/model (or the engine resolving the command, ADR-0009)
              comes first.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
+       - [x] `feature/ui-mixer-monitor`: fader rides heard through
+             ParameterChange and saved by one SetMix at release; typed gain
+             and pan in the readouts; Ctrl-fine pan; Alt-click solo/mute
+             all; strips read the mix by display order (they read
+             MixState's id order); meters labelled for what they read.
+       - [ ] Post-fader and bus meters, pre/post switch: Track 1 item 9.
+       - [x] Interrupted rides (PR #61 review): a ride holds its track id
+             and session and is dropped, with the reason, if either goes
+             before release; every new document resends the engine's gains;
+             live-parameter Ok replies no longer clear the status line.
+       - [ ] Alt-click on solo or mute is one SetMix per track, so one undo
+             step per track; it should be one compound undo step (needs a
+             compound op or a history group in `common/model`).
+       - [ ] Solo safe: Track 2 item 5. Solo modes (latch, X-OR,
+             momentary) and stereo pan wait for those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.
 4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy.
