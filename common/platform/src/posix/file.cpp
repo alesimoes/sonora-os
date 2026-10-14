@@ -24,4 +24,21 @@ std::FILE* create_exclusive(const std::string& path) {
     return f;
 }
 
+bool sync_data(std::FILE* f) {
+    if (std::fflush(f) != 0) return false;
+    return ::fdatasync(::fileno(f)) == 0 || errno == EINVAL;
+}
+
+bool sync_directory(const std::string& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return false;
+    // Some filesystems refuse fsync on a directory with EINVAL; their
+    // entries are as durable as they will ever be.
+    const bool ok = ::fsync(fd) == 0 || errno == EINVAL;
+    const int err = errno;
+    ::close(fd);
+    errno = err;
+    return ok;
+}
+
 }  // namespace sonora::platform

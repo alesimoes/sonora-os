@@ -100,3 +100,15 @@ if(TARGET sonora-plugin-host)
     set_tests_properties(${_sp_tests} PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 endif()
+
+# Take safety (BACKLOG DAW 1): the disk thread checkpoints open takes on a
+# schedule, and a take survives kill -9 of the recording process. The kill
+# needs fork (ADR-0008 V3: OS-specific tests live in tests/posix).
+add_executable(test_take_checkpoint tests/test_take_checkpoint.cpp)
+target_link_libraries(test_take_checkpoint PRIVATE sonora_core Threads::Threads)
+add_test(NAME take_checkpoint COMMAND test_take_checkpoint)
+if(UNIX)
+  add_executable(test_take_kill tests/posix/test_take_kill.cpp)
+  target_link_libraries(test_take_kill PRIVATE sonora_core sonora_audiofile Threads::Threads)
+  add_test(NAME take_kill COMMAND test_take_kill)
+endif()

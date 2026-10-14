@@ -581,6 +581,13 @@ int main(int argc, char** argv) {
                      cfg.dir.c_str());
         return 1;
     }
+    // Before anything records: a take an earlier engine died recording
+    // (kill -9, a crash, power) gets the length that reached the disk.
+    const std::vector<std::string> recovered =
+        sonora::recover_unclosed_takes(cfg.dir, cfg.sample_rate);
+    for (const std::string& line : recovered) {
+        std::fprintf(stderr, "sonora: %s\n", line.c_str());
+    }
 
     // Declared after the session, so it is destroyed first: its destructor
     // deactivates, and the callback never outlives what it calls into.
@@ -798,6 +805,12 @@ int main(int argc, char** argv) {
         sonora::api::EngineEvent e;
         e.kind = sonora::api::EventKind::Notice;
         e.text = onboard_notice;
+        server.post_event(e);
+    }
+    for (const std::string& line : recovered) {
+        sonora::api::EngineEvent e;
+        e.kind = sonora::api::EventKind::Notice;
+        e.text = line;
         server.post_event(e);
     }
     server.start();
