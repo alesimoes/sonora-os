@@ -388,20 +388,6 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     ++callbacks_;
 
     const uint32_t nframes = block.nframes;
-    // insert_chain_runner.h: once per callback, whole callback, or not at
-    // all.
-    runner_ = nullptr;
-    if (plan_valid_ && plan->last_insert_node != kNoNode) {
-        InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
-        if (r != nullptr && nframes <= max_block_) {
-            runner_ = r;
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
-            runner_->begin(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()));
-        } else if (r != nullptr) {
-            chain_bypassed_.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
     const TransportState state = transport_->state();
     const bool recording = state == TransportState::Recording;
     const bool rolling = state != TransportState::Stopped;
@@ -422,6 +408,23 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             reseek_ = true;
         }
         transport_->note_locate();
+    }
+
+    // After the take's state is loaded and before its capture: a runner
+    // that stalls here is the callback descheduled across stop() and the
+    // next take (test_take_boundaries). insert_chain_runner.h: once per
+    // callback, whole callback, or not at all.
+    runner_ = nullptr;
+    if (plan_valid_ && plan->last_insert_node != kNoNode) {
+        InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
+        if (r != nullptr && nframes <= max_block_) {
+            runner_ = r;
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            runner_->begin(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()));
+        } else if (r != nullptr) {
+            chain_bypassed_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
