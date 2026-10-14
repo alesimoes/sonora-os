@@ -122,6 +122,10 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
     plans_ = std::make_unique<PlanExchange>();
     reader_ = std::make_unique<DiskReader>(rc, *plans_, *transport_);
     commands_ = std::make_unique<RingBuffer<RtCommand>>(pb.command_capacity);
+    param_commands_ = std::make_unique<RingBuffer<RtCommand>>(
+        pb.plugin_param_capacity ? pb.plugin_param_capacity : 1);
+    params_.reset(new RtCommand[param_commands_->capacity()]());
+    node_params_.reset(new ChainParamEvent[param_commands_->capacity()]());
 
     // Every track with a chain: the largest graph a plan can have.
     scratch_buffers_ = graph_nodes(tracks, tracks);
@@ -185,6 +189,19 @@ bool Session::post_locate(uint64_t frame) {
     c.kind = RtCommand::Kind::Locate;
     c.frame = frame;
     return commands_->write(&c, 1) == 1;
+}
+
+bool Session::post_plugin_param(uint32_t store, uint32_t instance, uint32_t param, float value) {
+    // A NaN would reach the store, every later submit and the host's
+    // table; the plan never names kNoParamStore.
+    if (store == kNoParamStore || !std::isfinite(value)) return false;
+    RtCommand c{};
+    c.kind = RtCommand::Kind::PluginParam;
+    c.store = store;
+    c.instance = instance;
+    c.param = param;
+    c.value = value;
+    return param_commands_->write(&c, 1) == 1;
 }
 
 bool Session::create_dirs() {
@@ -391,14 +408,27 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // insert_chain_runner.h: once per callback, whole callback, or not at
     // all. A zero-frame callback mixes nothing, so it would reach begin()
     // and never end(); it is not a chain block, bypassed or otherwise.
+    // The period's start as the backend's server stamped it: the callback
+    // reads no clock (contracts/backend, callback_ns). A period it could not
+    // stamp carries the last stamp forward by the last period.
+    uint64_t callback_ns = block.callback_ns;
+    if (callback_ns == 0 && last_callback_ns_ != 0 && cfg_.sample_rate != 0) {
+        callback_ns = last_callback_ns_ +
+                      static_cast<uint64_t>(last_nframes_) * 1'000'000'000ull / cfg_.sample_rate;
+    }
+    last_callback_ns_ = callback_ns;
+    last_nframes_ = nframes;
     runner_ = nullptr;
     if (plan_valid_ && plan->last_insert_node != kNoNode && nframes > 0) {
         InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
-        if (r != nullptr && nframes <= max_block_) {
+        // A runner with a fixed block runs only callbacks of that size
+        // (contracts/plugin: every block is block_frames); in any other
+        // period its bound chains play silence, counted, until
+        // engine/control has rebuilt the client for the new period.
+        const uint32_t fixed = r != nullptr ? r->block_frames() : 0;
+        if (r != nullptr && nframes <= max_block_ && (fixed == 0 || nframes == fixed)) {
             runner_ = r;
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
-            runner_->begin(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()));
+            runner_->begin(callback_ns);
         } else if (r != nullptr) {
             chain_bypassed_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -424,6 +454,12 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         }
         transport_->note_locate();
     }
+    // Every parameter change posted before this callback, at most the
+    // ring's capacity: what a producer adds meanwhile waits for the next.
+    // The InsertChain nodes take theirs in mix(); what none takes is
+    // dropped below, never carried to a later plan.
+    params_count_ = static_cast<uint32_t>(
+        param_commands_->read(params_.get(), param_commands_->capacity()));
 
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track* t = tracks_[i].get();
@@ -484,6 +520,17 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     bus_applied_ = bus_target_;
 
+    // A taken change is marked None in mix(); the rest had no node.
+    uint32_t untaken = 0;
+    for (uint32_t i = 0; i < params_count_; ++i) {
+        if (params_[i].kind == RtCommand::Kind::PluginParam) ++untaken;
+    }
+    if (untaken != 0) {
+        params_dropped_.store(params_dropped_.load(std::memory_order_relaxed) + untaken,
+                              std::memory_order_relaxed);
+    }
+    params_count_ = 0;
+
     if (rolling) transport_->advance(nframes);
     expected_playhead_ = playhead + (rolling ? nframes : 0);
 }
@@ -526,10 +573,33 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
                 const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot) {
-                    runner_->run(node, in, out, n);
-                } else {
+                    // runner_ is set only for a callback mixed whole, so
+                    // this runs once per node per callback and each change
+                    // is handed once, to the first node naming its store.
+                    uint32_t k = 0;
+                    for (uint32_t i = 0; i < params_count_; ++i) {
+                        RtCommand& c = params_[i];
+                        if (c.kind != RtCommand::Kind::PluginParam || c.store != node.param_store) {
+                            continue;
+                        }
+                        node_params_[k++] = ChainParamEvent{c.instance, c.param, 0, c.value};
+                        c.kind = RtCommand::Kind::None;
+                    }
+                    runner_->run(node, in, out, n, k != 0 ? node_params_.get() : nullptr, k);
+                } else if (node.channel_slot == kNoChannelSlot) {
+                    // Unbound: laid out with latency 0, so dry is aligned.
                     std::memcpy(L, in[0], n * sizeof(float));
                     std::memcpy(R, in[1], n * sizeof(float));
+                } else {
+                    // Bound, but not run this callback (no runner, or a
+                    // callback the runner does not take): the plan delays
+                    // every other path by this chain's latency, so dry
+                    // would reach the bus that much early (PR #59
+                    // re-review). Silence, as for a miss (ADR-0012 §3).
+                    std::memset(L, 0, n * sizeof(float));
+                    std::memset(R, 0, n * sizeof(float));
+                    unrun_chain_blocks_.store(unrun_chain_blocks_.load(std::memory_order_relaxed) + 1,
+                                              std::memory_order_relaxed);
                 }
                 if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
                 continue;

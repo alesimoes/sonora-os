@@ -285,9 +285,15 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     report.compensation_shortfall_frames = comp.shortfall_frames;
     report.clamped_edges = comp.clamped_edges;
     report.undelayed_edges = comp.undelayed_edges;
+    // What the plan carries, not what the resolver asked for: a binding the
+    // layout left unbound plays with latency 0, and the state block must
+    // show the latency that is compensated (PR #59 re-review).
     report.track_latency.assign(limits.engine_tracks, 0);
-    for (uint32_t t = 0; t < limits.engine_tracks; ++t) {
-        if (bindings[t].active) report.track_latency[t] = bindings[t].latency_frames;
+    for (uint32_t ni = 0; ni < plan->node_count; ++ni) {
+        const PlanNode& n = plan->nodes[ni];
+        if (n.kind != NodeKind::InsertChain) continue;
+        const uint32_t t = plan->tracks[n.track].engine_track;
+        if (t < limits.engine_tracks) report.track_latency[t] = n.latency_frames;
     }
 
     // Peak demand: the sum changes only where a window edge crosses a
