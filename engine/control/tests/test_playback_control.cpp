@@ -1000,6 +1000,32 @@ int test_latency_change_is_a_new_plan() {
     return 0;
 }
 
+// PR #59 re-review (1): the report shows the latency the plan carries. A
+// binding with a slot but no node state is laid out unbound, latency 0, so
+// the state block must say 0 for its track, not the 256 the resolver gave.
+int test_report_shows_the_planned_latency() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, track_op(102, 103, "B"));
+    CHECK_APPLY(h, insert_op(100, 500, 0));
+    CHECK_APPLY(h, insert_op(102, 501, 0));
+    PlaybackController ctl(s, kDir);
+    ctl.set_chain_resolver([](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
+        b.channel_slot = engine_track;
+        b.latency_frames = 256;
+        if (engine_track == 1) b.node_state = engine_track;
+    });
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    CHECK(ctl.playing_report().track_latency[0] == 0);
+    CHECK(ctl.playing_report().track_latency[1] == 256);
+    CHECK(ctl.playing_report().compensation_frames == 256);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1023,6 +1049,7 @@ int main() {
     if (test_huge_gain_is_no_nan()) return 1;
     if (test_build_with_chains()) return 1;
     if (test_latency_change_is_a_new_plan()) return 1;
+    if (test_report_shows_the_planned_latency()) return 1;
     if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
