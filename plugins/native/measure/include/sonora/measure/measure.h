@@ -194,12 +194,22 @@ void check_denormals(Suite& s, const Config& c);
 // "zipper", delivered once per 128-frame block as a host would.
 // `label` tells passes over different configurations apart in the report.
 void check_zipper(Suite& s, const Config& c, const std::string& label = "");
-// The zipper checks' input: a 100 Hz tone at -6 dBFS, faded in.
-Chans zipper_tone(double fs, double seconds);
+// The zipper checks' input: a 100 Hz tone, -6 dBFS unless quality.json's
+// "zipper_tone_dbfs" says otherwise (the bar then moves with it), faded in.
+Chans zipper_tone(double fs, double seconds, double dbfs = -6.0);
 // Golden renders at 44.1, 48 and 96 kHz against tests/golden.
 void check_golden(Suite& s, const Config& c);
 // p50, p99.9 and max per block at q128, 48 kHz, stereo (--cpu only).
-void check_cpu(Suite& s, const Config& c, const std::string& label = "");
+// assert_bar false: the figures are reported, not held to the class bar (a
+// quality over its class beside an eco mode that is held to it, ADR-0011
+// §3.5).
+void check_cpu(Suite& s, const Config& c, const std::string& label = "", bool assert_bar = true);
+// The same on a given 48 kHz stereo input (a worst case: a hot input at
+// full drive), at least a few seconds long.
+void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string& label, bool assert_bar = true);
+// check_cpu's programme signal (noise with a log sweep under it, peaks
+// about -12 dBFS), raised by gain_db.
+Chans cpu_programme(double fs, double seconds, double gain_db);
 // Runs all of the above. The zipper sweeps run on `zipper` when given (a
 // configuration where every swept parameter is audible), else on golden.
 void check_common(Suite& s, const Config& golden,

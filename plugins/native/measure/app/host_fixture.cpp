@@ -73,6 +73,7 @@
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
 #include "sonora/native/reverb.h"
+#include "sonora/native/tube.h"
 
 namespace sonora::native::suites {
 measure::Config eq_golden_config();
@@ -82,6 +83,7 @@ measure::Config limiter_golden_config();
 measure::Config delay_golden_config();
 measure::Config chorus_golden_config();
 measure::Config reverb_golden_config();
+measure::Config tube_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -137,6 +139,9 @@ const Target kTargets[] = {
      {"mix", 20.0f}, {}},
     {"reverb", [] { return native::make_reverb(); }, native::suites::reverb_golden_config, true,
      {"decay", 4.0f}, {}},
+    // Quality changes the oversampling factor, and so the latency.
+    {"tube", [] { return native::make_tube(); }, native::suites::tube_golden_config, true,
+     {"drive", 24.0f}, {{"quality", 2.0f}}},
 };
 
 struct Case {

@@ -6,7 +6,8 @@
 Reads <name>.json for the native processors and writes PNGs: the EQ's
 measured response against its analog target in both modes, the dynamics
 processors' static curves, the reverb's reverberation time per octave
-band against its design and its frozen level, and the CPU figures
+band against its design and its frozen level, the tube's harmonic levels
+against ngspice and its aliasing per quality, and the CPU figures
 against the class bars.
 Needs matplotlib. A reporting aid, not a test: the bars live in each
 processor's quality.json and are checked by ctest.
@@ -127,6 +128,63 @@ def reverb_plots(rev, out_dir):
     plt.close(fig)
 
 
+def tube_plots(tube, out_dir):
+    stage = [r for r in tube["data"].get("spice_stage", []) if r["rate"] == 192000.0]
+    if stage:
+        dem = [r for r in stage if r["case"].startswith("dempwolf")]
+        kor = [r for r in stage if r["case"].startswith("koren")]
+        rows = [dem[i:i + 4] for i in range(0, len(dem), 4)] + ([kor] if kor else [])
+        fig, axes = plt.subplots(len(rows), 4, figsize=(14, 2.7 * len(rows)), squeeze=False)
+        for i, row in enumerate(rows):
+            for j, r in enumerate(row):
+                ax = axes[i][j]
+                k = list(range(2, 10))
+                ax.bar([x - 0.2 for x in k], r["spice_dbc"][1:], 0.4, color="0.6", label="ngspice")
+                ax.bar([x + 0.2 for x in k], r["model_dbc"][1:], 0.4, color="C0", label="model, 192 kHz")
+                ax.set_title(r["case"] + " (H1 %.1f V)" % r["h1_v"], fontsize=8)
+                ax.set_ylim(-120, 0)
+                ax.set_xticks(k)
+                ax.set_xlabel("harmonic", fontsize=7)
+                ax.set_ylabel("dBc", fontsize=7)
+                ax.grid(True, axis="y", alpha=0.3)
+                if i == 0 and j == 0:
+                    ax.legend(fontsize=7)
+            for j in range(len(row), 4):
+                axes[i][j].axis("off")
+        fig.suptitle("Triode stage: harmonic levels, model (4x at 48 kHz) against ngspice on the same netlist")
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        fig.savefig(os.path.join(out_dir, "tube-harmonics-vs-spice.png"), dpi=110)
+        plt.close(fig)
+    alias = tube["data"].get("aliasing", [])
+    if alias:
+        names = ["eco (2x)", "standard (4x)", "high (8x)"]
+        levels = ["nominal: default drive, -18 dBFS (held)", "default drive, -6 dBFS", "drive +18 dB, -6 dBFS"]
+        rates = sorted({a["rate"] for a in alias})
+        fig, axes = plt.subplots(1, len(rates), figsize=(5 * len(rates), 3.8), squeeze=False)
+        for c, fs in enumerate(rates):
+            ax = axes[0][c]
+            for q in range(3):
+                for lv, style in ((0, "-"), (1, "--"), (2, ":")):
+                    pts = sorted((a["tone"], a["alias_dbc"]) for a in alias
+                                 if a["rate"] == fs and a["quality"] == q and a["level"] == lv)
+                    if pts:
+                        ax.plot([p[0] for p in pts], [p[1] for p in pts], style, color="C%d" % q, marker=".",
+                                label=names[q] + ", " + levels[lv] if c == 0 else None)
+            ax.axhline(-90, color="k", lw=0.8)
+            ax.axhline(-70, color="k", lw=0.8, ls="--")
+            ax.set_xscale("log")
+            ax.set_title("%g kHz" % (fs / 1000.0), fontsize=9)
+            ax.set_xlabel("tone, Hz")
+            ax.set_ylabel("non-harmonic energy, dBc")
+            ax.set_ylim(-160, 0)
+            ax.grid(True, which="both", alpha=0.3)
+        axes[0][0].legend(fontsize=5.5, loc="upper left")
+        fig.suptitle("Tube drive: aliasing per quality (bars: -90 dBc default, -70 dBc eco, at nominal drive)")
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        fig.savefig(os.path.join(out_dir, "tube-aliasing.png"), dpi=110)
+        plt.close(fig)
+
+
 def cpu(reports, out_dir):
     rows = []
     for name, rep in reports.items():
@@ -174,13 +232,15 @@ def main():
         return 2
     report_dir, out_dir = sys.argv[1], sys.argv[2]
     os.makedirs(out_dir, exist_ok=True)
-    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus", "reverb"]
+    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus", "reverb", "tube"]
     reports = {n: load(report_dir, n) for n in names}
     if reports["eq"]:
         eq_responses(reports["eq"], out_dir)
     static_curves(reports["compressor"], reports["gate"], out_dir)
     if reports["reverb"]:
         reverb_plots(reports["reverb"], out_dir)
+    if reports["tube"]:
+        tube_plots(reports["tube"], out_dir)
     cpu(reports, out_dir)
     print("plots written to", out_dir)
     return 0

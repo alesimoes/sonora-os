@@ -12,7 +12,7 @@
 # brain/research/native-dsp-n0-measurements.md with the CPU model.
 #
 # Usage, on Linux, after a Release build of the root (tools/build-engine.sh):
-#   tools/dsp-cpu.sh [build-dir] [seconds]
+#   tools/dsp-cpu.sh [build-dir] [seconds] [processor...]
 # build-dir defaults to build/ (build-container/ when run inside the
 # sonora-build image from Windows); seconds defaults to 60.
 #
@@ -25,6 +25,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${1:-$ROOT/build}"
 SECONDS_ARG="${2:-60}"
+shift $(( $# > 2 ? 2 : $# ))
+PROCESSORS=("$@")
+if [[ ${#PROCESSORS[@]} -eq 0 ]]; then
+  PROCESSORS=(eq compressor gate limiter delay chorus reverb tube)
+fi
 MEASURE="$BUILD/sonora-dsp-measure"
 OUT="$BUILD/dsp-reports-cpu"
 
@@ -35,7 +40,7 @@ fi
 mkdir -p "$OUT"
 
 status=0
-for p in eq compressor gate limiter delay chorus reverb; do
+for p in "${PROCESSORS[@]}"; do
   if ! "$MEASURE" --processor "$p" \
       --quality "$ROOT/plugins/native/$p/quality.json" \
       --golden "$ROOT/plugins/native/$p/tests/golden" \

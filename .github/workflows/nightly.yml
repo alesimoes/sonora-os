@@ -71,6 +71,16 @@ jobs:
         continue-on-error: true
         run: tools/dsp-cpu.sh build 60
 
+      # The one exception, asked for on the review of PR #52: the tube
+      # drive's eco quality is the mode ADR-0011 §3.5 lets it ship with
+      # over class B, so its bar (60 us p99.9 per q128 stereo block, on the
+      # programme signal and on two full-drive worst cases) gates this
+      # workflow. The other processors' figures stay informative above.
+      # A runner much slower than the reference machine can fail it; that
+      # is a red nightly to look at, not a merged regression.
+      - name: Tube eco, class B (gates)
+        run: tools/dsp-cpu.sh build 60 tube
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
