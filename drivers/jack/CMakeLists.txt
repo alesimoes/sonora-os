@@ -20,3 +20,12 @@ target_link_libraries(sonora-fake-capture PRIVATE PkgConfig::JACK)
 add_executable(sonora-conformance-jack tests/conformance_jack.cpp)
 target_link_libraries(sonora-conformance-jack PRIVATE
   sonora_backend_jack sonora_backend_conformance)
+
+# The control for tools/rtsan-jack.sh, which runs JackBackend under RTSan
+# against live servers: a callback that allocates, which RTSan must report
+# from process_cb. Only in the SONORA_RTSAN build; not a ctest, for the same
+# reason as the conformance run.
+if(SONORA_RTSAN)
+  add_executable(sonora-rtsan-jack-canary tests/rtsan_canary.cpp)
+  target_link_libraries(sonora-rtsan-jack-canary PRIVATE sonora_backend_jack)
+endif()

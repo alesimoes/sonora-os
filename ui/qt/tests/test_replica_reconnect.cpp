@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
@@ -58,11 +60,23 @@ public:
             o, error);
         if (!process_) std::fprintf(stderr, "  engine: %s\n", error.c_str());
     }
+    // Its stderr is a file deleted with the directory, so it is read here:
+    // an RTSan report in it (the rtsan CI job halts the engine on one), or an
+    // exit other than 0 when asked to leave, fails the test, printed.
     ~EngineProcess() {
         if (!process_) return;
         process_->terminate();
         if (!process_->wait(10000)) process_->kill();
         process_->wait(-1);
+        const bool exit_failed = !process_->exited_normally() || process_->exit_code() != 0;
+        std::ifstream f(dir_ / "engine.err");
+        const std::string err((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (exit_failed || err.find("ERROR: RealtimeSanitizer") != std::string::npos) {
+            std::fprintf(stderr, "FAIL sonora-engine: %s; its stderr:\n%s\n",
+                         exit_failed ? "did not exit 0 when asked to stop" : "RealtimeSanitizer report",
+                         err.c_str());
+            ++failures;
+        }
     }
     const std::string& endpoint() const { return endpoint_; }
 

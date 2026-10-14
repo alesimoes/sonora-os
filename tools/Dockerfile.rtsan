@@ -4,9 +4,21 @@
 # libclang-rt-22-dev carries the RTSan runtime, llvm-22 the symbolizer that
 # turns a report's addresses into our function names. GCC 14 stays the
 # compiler of the shipped build; this image is a second configuration only.
+#
+# Two live servers for the JACK backend's callbacks (tools/rtsan-jack.sh):
+# jackd2 on its dummy driver, and PipeWire with pipewire-jack, the JACK the
+# ISO ships, reached through pw-jack. libjack-jackd2-0 stays the default
+# libjack here, which the runtime image avoids; pw-jack's LD_LIBRARY_PATH
+# puts PipeWire's in front for the runs that want it.
+#
+# lilv, the LV2 headers, the VST3 SDK headers and the Debian plugins
+# tools/Dockerfile.plugins carries, so plugins/host (its run_block is
+# SONORA_RT) and plugin_client's host tests are built and run under RTSan
+# too. The validators (lv2lint, Steinberg's) are left to the plugins job:
+# they judge bundles, not the RT path, and are built from source there.
 FROM debian:trixie-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       clang-22 \
       libclang-rt-22-dev \
       llvm-22 \
@@ -15,6 +27,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       make \
       pkg-config \
       libjack-jackd2-dev \
+      jackd2 \
+      jack-example-tools \
+      pipewire \
+      pipewire-bin \
+      pipewire-jack \
+      libspa-0.2-modules \
+      wireplumber \
+      dbus \
+      dbus-x11 \
+      procps \
+      liblilv-dev \
+      lv2-dev \
+      lv2-examples \
+      x42-plugins \
+      lsp-plugins-lv2 \
+      libvst3sdk-dev \
+      vst3sdk-plugins \
+      lsp-plugins-vst3 \
       ca-certificates \
       locales \
     && rm -rf /var/lib/apt/lists/* \

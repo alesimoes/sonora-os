@@ -933,7 +933,7 @@ public:
 
     uint32_t replicas() const noexcept override { return static_cast<uint32_t>(inst_.size()); }
 
-    void run(uint32_t frames) noexcept override {
+    void run(uint32_t frames) noexcept SONORA_RT override {
         const auto n = static_cast<int32>(std::min(frames, max_frames_));
         for (Instance& i : inst_) {
             for (std::size_t b = 1; b < i.in_bus.size(); ++b) {
@@ -993,7 +993,7 @@ public:
         return true;
     }
 
-    bool intact() const noexcept override {
+    bool intact() const noexcept SONORA_RT override {
         const std::size_t words = std::min<std::size_t>(kTrapCheckWords, trap_.size());
         for (std::size_t k = 0; k < words; ++k) {
             uint32_t bits;
@@ -1003,7 +1003,7 @@ public:
         return true;
     }
 
-    uint32_t latency() const noexcept override { return latency_.load(std::memory_order_acquire); }
+    uint32_t latency() const noexcept SONORA_RT override { return latency_.load(std::memory_order_acquire); }
 
     // Some plugins only know their latency once they have processed (LSP's
     // getLatencySamples() is 0 after setActive and 240 after one block), so
@@ -1025,13 +1025,13 @@ public:
     uint32_t param_count() const noexcept override { return static_cast<uint32_t>(dense_ids_.size()); }
 
     // At its frame offset, normalised and clamped to [0, 1] (ADR-0012 §5.2).
-    bool set_param(uint32_t dense, float value, uint32_t offset) noexcept override {
+    bool set_param(uint32_t dense, float value, uint32_t offset) noexcept SONORA_RT override {
         if (dense >= dense_ids_.size() || !std::isfinite(value)) return false;
         ParamQueue* q = in_changes_.queue_for(dense, dense_ids_[dense]);
         return q && q->add_sorted(static_cast<int32>(offset), std::clamp(static_cast<double>(value), 0.0, 1.0));
     }
 
-    bool replace_param(uint32_t dense, float value) noexcept override {
+    bool replace_param(uint32_t dense, float value) noexcept SONORA_RT override {
         if (dense >= dense_ids_.size() || !std::isfinite(value)) return false;
         ParamQueue* q = in_changes_.queue_for(dense, dense_ids_[dense]);
         if (!q) return false;
@@ -1058,7 +1058,7 @@ public:
     std::string param_key(uint32_t dense) const override { return std::to_string(dense_ids_[dense]); }
     std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].symbol; }
     float param_default(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].def; }
-    int bypass_param() const noexcept override { return bypass_dense_; }
+    int bypass_param() const noexcept SONORA_RT override { return bypass_dense_; }
 
 private:
     struct Instance {

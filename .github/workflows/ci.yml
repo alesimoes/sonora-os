@@ -135,7 +135,14 @@ jobs:
     # (drivers/fake), plugin_client's InsertChain step or a native processor
     # through the Bridge and its bundles into malloc, a lock or a syscall
     # fails with RTSan's report. -Wfunction-effects prints its findings as
-    # warnings; the runtime check is the gate.
+    # warnings; the runtime check is the gate. With lilv and the VST3 SDK in
+    # the image, sonora-plugin-host's block (run_block) and the LV2/VST3
+    # plugins it runs are checked too, and a report in a test that passed
+    # anyway (a child the test lets die) fails the job. Then
+    # tools/rtsan-jack.sh runs JackBackend's process_cb and xrun_cb against
+    # jackd2 (dummy driver) and PipeWire (pipewire-jack, the shipped pin):
+    # a canary that must be reported, the backend conformance suite and a
+    # recorded take.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

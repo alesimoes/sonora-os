@@ -302,6 +302,8 @@
 #include <cstring>
 #include <new>
 
+#include "sonora/rt.h"
+
 namespace sonora::plugin {
 
 inline constexpr uint32_t kChannelMagic = 0x48504E53u;  // "SNPH", little-endian
@@ -1044,7 +1046,7 @@ inline bool finite_bits(float f) noexcept {
 template <class Deliver, class Replace>
 uint32_t consume_block_params(ChannelHeader& h, const std::atomic<float>* table, const ParamMap& m,
                               HostValues& v, uint64_t block, uint32_t frames, Deliver&& deliver,
-                              Replace&& replace) noexcept {
+                              Replace&& replace) noexcept SONORA_RT {
     uint32_t consumed = 0;
     uint64_t late = 0, rejected = 0;
     ParamChange p;
