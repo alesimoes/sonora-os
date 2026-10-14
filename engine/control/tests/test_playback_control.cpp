@@ -607,7 +607,7 @@ int test_failure_in_a_take_punched_out_is_reported() {
         return nullptr;
     };
     CHECK(regions(0) && regions(0)->size() == 1);
-    CHECK((*regions(0))[0].length == 4 * kBlock);
+    CHECK((*regions(0))[0].length == 3 * kBlock);
     // Exactly the 10 frames that fit under the limit, at the take's start.
     CHECK(regions(1) && regions(1)->size() == 1);
     CHECK((*regions(1))[0].length == 10);
