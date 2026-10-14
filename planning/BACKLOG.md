@@ -55,16 +55,16 @@ playback can follow edits; it is in flight.
        - [x] FakeEngine publishes the document's gain and mute when an
          update changes them, on a Resync and at connect, as the real
          engine does; conformance check "the mix follows the document"
-         holds both (PR MX_PR);
+         holds both (PR #71);
        - [x] a Resync and a new connection's Snapshot apply the document's
          mix (ADR-0009 §4 item 3), so a ride a lost link stranded does not
-         stay in the gain atomics (PR MX_PR). `MixModel::resendGains`
+         stay in the gain atomics (PR #71). `MixModel::resendGains`
          (PR #61) is no longer needed for that; Track 3 decides whether to
          keep it;
        - [x] `PlaybackController::apply_mix` puts an engine track the
          document does not have at unity, unmuted, unsoloed and centred,
          so an undone AddTrack of a soloed track no longer silences the
-         rest (PR MX_PR, `playback_control`).
+         rest (PR #71, `playback_control`).
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -511,7 +511,7 @@ not start or extend those items before the Complete DAW closes (owner,
       two of five full runs, and pass alone (`playback_fake` 10 of 10).
       CI's 4-core runners have not shown it. Measure under load, or mark
       them RUN_SERIAL. rt-engineer with dsp-engineer.
-      `playback_fake` is fixed (PR MX_PR). The 0.354 is the tone's peak
+      `playback_fake` is fixed (PR #71). The 0.354 is the tone's peak
       at the -3 dB bus gain against silence, which is a missed chunk. The
       test ran 8 blocks per 1 ms sleep, about 21 times real time, so in one
       5 ms reader tick it could roll 40 blocks, past the 4800-frame window.
