@@ -15,6 +15,7 @@
 #include <QQuickView>
 #include <QSignalSpy>
 #include <QTest>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -129,6 +130,15 @@ void test_reading() {
     OK(bb(5 * kBeat120, cut) == "3|1|000");
     // The beats the change cut off read as the change's own frame.
     OK(frame_of({1, 3, 0}, cut) == 2 * kBeat120);
+    // Also the last of them, and past its start: no beat of the bar the
+    // change ended lands inside the new meter's first bar.
+    OK(frame_of({1, 4, 480}, cut) == 2 * kBeat120);
+    SessionSettings cut2 = cut;   // 2/4: the cut-off beats overlap the new bar's
+    cut2.tempo[1].meter = {{2, 4}};
+    OK(bb(2 * kBeat120, cut2) == "2|1|000");
+    OK(frame_of({1, 4, 0}, cut2) == 2 * kBeat120);
+    OK(frame_of({1, 3, 480}, cut2) == 2 * kBeat120);
+    OK(frame_of({2, 2, 0}, cut2) == 3 * kBeat120);
 
     // A 6/8 bar: six eighths, each half a quarter.
     SessionSettings eight;
@@ -240,6 +250,37 @@ void test_grid() {
         }
     }
     OK(line_at_25);
+
+    // A meter change just past a bar line leaves a sliver of a bar, far
+    // closer than 4 px to the line before it at this zoom. That one line is
+    // dropped; the rest of the grid stays.
+    SessionSettings sliver;
+    sliver.sample_rate = kRate;
+    sliver.tempo = {TempoEntry{0, 120.0f, {{4, 4}}}, TempoEntry{kBar120 + 100, 120.0f, {{3, 4}}}};
+    snap.settings = sliver;
+    v.scroll = 0;
+    auto lines_drawn = [&](bool grid_mode, GridValue g) {
+        build_timeline_scene(snap, v, Selection{}, Drag{}, grid_mode, g, peaks, scene);
+        std::vector<float> xs;
+        for (const auto& r : scene.rects) {
+            if (r.w == 1 && r.h == static_cast<float>(v.height)) xs.push_back(r.x);
+        }
+        return xs;
+    };
+    auto drawn_at = [](const std::vector<float>& xs, double frame, double fpp) {
+        const auto x = static_cast<float>(std::floor(frame / fpp));
+        return std::find(xs.begin(), xs.end(), x) != xs.end();
+    };
+    for (bool grid_mode : {false, true}) {
+        const std::vector<float> xs = lines_drawn(grid_mode, GridValue::Bar);
+        OK(drawn_at(xs, kBar120, v.fpp));                              // bar 2
+        OK(drawn_at(xs, kBar120 + 100 + 3 * kBeat120, v.fpp));         // bar 4
+        OK(drawn_at(xs, kBar120 + 100 + 6 * kBeat120, v.fpp));         // bar 5
+        for (std::size_t i = 1; i < xs.size(); ++i) OK(xs[i] - xs[i - 1] >= 3.0f);
+    }
+    // A grid uniformly closer than 4 px is still not drawn at all.
+    v.fpp = kBeat120 / 3.0;
+    OK(lines_drawn(true, GridValue::Beat).empty());
 }
 
 // --- the Transport window's model ----------------------------------------------
@@ -336,6 +377,23 @@ void test_model() {
     t.onTransport(TransportSnapshot{}, true);
     OK(tempos.count() == 1);
     OK(t.tempoChanges() == 1);
+    // The map changes and the position does not: every reading follows the
+    // map at once, not when the position next moves.
+    insertion = kAt96 + kBeat96;
+    t.onTransport(TransportSnapshot{}, true);
+    OK(t.barsBeats() == QStringLiteral("17|2|000"));
+    settings.tempo.pop_back();   // 120 throughout: 16 bars and 1.25 beats
+    t.onTransport(TransportSnapshot{}, true);
+    OK(t.barsBeats() == QStringLiteral("17|2|240"));
+    // The same for the sample rate, which Timecode and Min:Secs read.
+    settings.sample_rate = 96000;
+    t.onTransport(TransportSnapshot{}, true);
+    OK(t.minSecs() == QString::fromStdString(format_min_sec(kAt96 + kBeat96, 96000)));
+    OK(t.timecode() == QString::fromStdString(format_timecode(kAt96 + kBeat96, settings)));
+    settings.sample_rate = kRate;
+    settings.tempo = mapped().tempo;
+    insertion = kBeat120;
+    t.onTransport(TransportSnapshot{}, true);
 
     // What the engine does not run is said, never offered.
     OK(!TransportModel::clickAvailable());
@@ -400,10 +458,7 @@ void test_window() {
     uint64_t now = 1;
     ShellModel model(engine, router);
     model.setClock([&now]() { return now; });
-    model.setTransportSink([&](const TransportSnapshot& t, bool alive) {
-        session.onTransport(t, alive);
-        transport.onTransport(t, alive);
-    });
+    link_transport(model, session, transport);   // as main.cpp wires them
 
     QQuickView view;
     view.resize(1280, 720);
@@ -446,23 +501,36 @@ void test_window() {
     engine.snapshot.state = TransportMode::Rolling;
     engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96 + kBeat96);
     model.tick();
-    OK(text("transportBarsBeats") == QStringLiteral("17|2|000"));
-    // The big counter is the same reading, in the main counter's format.
-    OK(text("transportCounter") == QStringLiteral("17|2|000"));
-    session.cycleMainCounter();   // Min:Secs
-    OK(text("transportCounter") == text("transportMinSecs"));
-    for (int i = 0; i < 3; ++i) session.cycleMainCounter();   // back to Bars|Beats
-    OK(text("transportTempo").contains(QStringLiteral("96.00")));
-    OK(text("transportMeter") == QStringLiteral("4/4"));
-    OK(text("barTempo") == QStringLiteral("96.00 bpm  4/4"));
+    // The window publishes on the main counter's cue, so from the first tick
+    // of the roll the two agree, whichever position that cue has reached.
+    OK(text("transportCounter") == session.mainCounter());
     // The main counter (Bars|Beats by default) reads the map too, at its
     // own quarter rate; a frame or two past the beat is still its tick 0.
     for (int i = 1; i <= 4; ++i) {
         engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96 + kBeat96 + i);
         model.tick();
+        OK(text("transportCounter") == session.mainCounter());
     }
     OK(session.mainCounterFormat() == QStringLiteral("Bars|Beats"));
     OK(session.mainCounter() == QStringLiteral("17|2|000"));
+    OK(text("transportBarsBeats") == QStringLiteral("17|2|000"));
+    // The big counter is the same reading, in the main counter's format.
+    OK(text("transportCounter") == QStringLiteral("17|2|000"));
+    session.cycleMainCounter();   // Min:Secs
+    OK(text("transportCounter") == text("transportMinSecs"));
+    OK(text("transportCounter") == session.mainCounter());
+    for (int i = 0; i < 3; ++i) session.cycleMainCounter();   // back to Bars|Beats
+    OK(text("transportTempo").contains(QStringLiteral("96.00")));
+    OK(text("transportMeter") == QStringLiteral("4/4"));
+    OK(text("barTempo") == QStringLiteral("96.00 bpm  4/4"));
+    // Rolling, the bar's counter and the window show one reading on every
+    // tick, never two a few ticks apart.
+    for (int i = 1; i <= 12; ++i) {
+        engine.snapshot.playhead_frames += 700;
+        model.tick();
+        OK(session.mainCounter() == transport.barsBeats());
+        OK(text("transportCounter") == session.mainCounter());
+    }
 
     // The click is not in this build: a press says so, nothing lights.
     QQuickItem* click_button = named(root, QStringLiteral("transportClick"));

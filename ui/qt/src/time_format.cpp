@@ -193,6 +193,10 @@ model::Frames frame_of(const MusicalTime& t, const model::SessionSettings& s) {
     std::vector<Segment> segs;
     build_segments(s, segs);
     for (const Segment& g : segs) {
+        // A bar that ended before this segment began, and was not reached in
+        // the one before: a meter change cut it short, and what is left of it
+        // is the change's own frame, not a place inside the new meter's bars.
+        if (t.bar - 1 < g.bar0) return static_cast<model::Frames>(std::llround(g.start));
         const double x = static_cast<double>(t.bar - 1 - g.bar0) * g.num + (t.beat - 1) +
                          t.tick / 960.0 - g.beat0;
         if (x < 0) return static_cast<model::Frames>(std::llround(g.start));

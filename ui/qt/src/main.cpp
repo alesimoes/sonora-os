@@ -402,10 +402,7 @@ int main(int argc, char** argv) {
     register_types();
     ShellModel model(engine, router);
     a.model = &model;
-    model.setTransportSink([&session, &transport](const TransportSnapshot& t, bool alive) {
-        session.onTransport(t, alive);
-        transport.onTransport(t, alive);
-    });
+    link_transport(model, session, transport);
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
     plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {

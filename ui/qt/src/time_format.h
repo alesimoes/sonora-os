@@ -13,9 +13,12 @@
 // and meter hold from its `at` to the next entry's. A tempo change alone
 // carries the count on, so a bar may straddle it; a meter change starts a
 // new bar where it stands, and a bar it cuts short is still counted, as a
-// bar. (The applications move a meter change to the next bar line; our map
-// holds frames, and a reading that moved the change would put the bar lines
-// somewhere the session does not.)
+// bar. brain/specs/session-format.md ("tempo") states this rule for every
+// reader of the map, the click included. (Whether Pro Tools and Logic
+// always move a meter change to a bar line is unverified: Pro Tools' Meter
+// Change dialog appears to have a snap-to-bar option that can be off. Our
+// map holds frames either way, and a reading that moved the change would
+// put the bar lines somewhere the session does not.)
 #pragma once
 
 #include <cstddef>
@@ -45,8 +48,9 @@ struct MusicalTime {
     }
 };
 MusicalTime musical_time(model::Frames f, const model::SessionSettings& s);
-// Where `t` falls, to the nearest frame. A beat a meter change cut off reads
-// as the change's own frame; a position before 1|1|000 as 0.
+// Where `t` falls, to the nearest frame. Any beat or tick of a bar a meter
+// change cut short, past the change, reads as the change's own frame; a
+// position before 1|1|000 as 0.
 model::Frames frame_of(const MusicalTime& t, const model::SessionSettings& s);
 // The tempo map entry in force at `f`, by index. An empty map (which the
 // session format forbids) reads as the default entry.

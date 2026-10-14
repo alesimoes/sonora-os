@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "session_model.h"
+#include "shell_model.h"
 #include "sonora/command.h"
 
 namespace sonora::ui {
@@ -62,12 +64,16 @@ void TransportModel::onTransport(const TransportSnapshot& t, bool alive) {
     const model::SessionSettings& now = settings_fn_();
     bool settings_changed = false;
     if (!(now == settings_)) {
-        const bool tempo_changed = now.tempo != settings_.tempo ||
-                                   now.sample_rate != settings_.sample_rate;
-        settings_changed = !(now.transport == settings_.transport) ||
-                           now.sample_rate != settings_.sample_rate;
+        const bool rate_changed = now.sample_rate != settings_.sample_rate;
+        const bool tempo_changed = now.tempo != settings_.tempo || rate_changed;
+        const bool timecode_changed = !(now.timecode == settings_.timecode);
+        settings_changed = !(now.transport == settings_.transport) || rate_changed ||
+                           timecode_changed;
         settings_ = now;
         if (tempo_changed) refreshTempo(true);
+        // The same position reads differently now: what is shown is stale
+        // even though the position did not move.
+        if (tempo_changed || timecode_changed) shown_ = -1;
     }
 
     // A stale read keeps what was shown; it is one tick's seqlock miss, and
@@ -97,9 +103,17 @@ void TransportModel::onTransport(const TransportSnapshot& t, bool alive) {
 
     if (state_changed) emit stateChanged();
     if (settings_changed) emit settingsChanged();
-    const bool force = state_changed || settings_changed || !rolling_ || ++ticks_ % kEvery == 0;
+    // Following the main counter, a rolling position is published on its
+    // cue alone (followCounter), so the two never show different readings.
+    const bool force = !rolling_ ||
+                       (!counter_led_ && (state_changed || settings_changed ||
+                                          ++ticks_ % kEvery == 0));
     refreshPosition(force);
     refreshTempo(false);
+}
+
+void TransportModel::followCounter() {
+    if (rolling_) refreshPosition(true);
 }
 
 void TransportModel::refreshPosition(bool force) {
@@ -137,6 +151,19 @@ void TransportModel::refreshTempo(bool force) {
         tempo_map_.push_back(m);
     }
     emit tempoChanged();
+}
+
+void link_transport(ShellModel& shell, SessionModel& session, TransportModel& transport) {
+    transport.counter_led_ = true;
+    // The window takes the playhead first, so that when SessionModel
+    // publishes its counters in the same tick the window publishes the same
+    // position with them.
+    shell.setTransportSink([&session, &transport](const TransportSnapshot& t, bool alive) {
+        transport.onTransport(t, alive);
+        session.onTransport(t, alive);
+    });
+    QObject::connect(&session, &SessionModel::counterChanged, &transport,
+                     &TransportModel::followCounter);
 }
 
 QString TransportModel::positionSource() const {

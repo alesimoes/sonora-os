@@ -61,7 +61,9 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,25p' "${BASH_SOURCE[0]}"
+      # The header comment, however long it grows: line 2 to the first
+      # line that is not a comment.
+      awk 'NR > 1 && !/^#/ { exit } NR > 1' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)

@@ -31,6 +31,16 @@ class CommandRegistry;
 
 namespace sonora::ui {
 
+class SessionModel;
+class ShellModel;
+class TransportModel;
+
+// Feeds both models from the shell's tick and publishes the window's
+// position text on the main counter's cue, so the counter in the bar and
+// the Transport window show one reading while rolling, not two a few ticks
+// apart. Replaces any transport sink the shell had.
+void link_transport(ShellModel& shell, SessionModel& session, TransportModel& transport);
+
 class TransportModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool open READ open WRITE setOpen NOTIFY openChanged)
@@ -77,6 +87,9 @@ public:
     // changed tempo map or transport setting is noticed: comparing the
     // settings is cheaper than one more signal to keep in step.
     void onTransport(const TransportSnapshot& t, bool alive);
+    // The main counter has just published (SessionModel::counterChanged):
+    // while rolling, publish the same position. Wired by link_transport().
+    void followCounter();
 
     bool open() const { return open_; }
     void setOpen(bool on);
@@ -123,6 +136,7 @@ signals:
     void settingsChanged();
 
 private:
+    friend void link_transport(ShellModel&, SessionModel&, TransportModel&);
     static bool range_set(const std::array<model::Frames, 2>& r) { return r[1] > r[0]; }
     void refreshPosition(bool force);
     void refreshTempo(bool force);
@@ -138,6 +152,9 @@ private:
     model::Frames position_ = -1;
     model::Frames shown_ = -1;
     unsigned ticks_ = 0;
+    // Set by link_transport(): while rolling, the position text follows the
+    // main counter's cue instead of a tick count of its own.
+    bool counter_led_ = false;
     QString bars_beats_, timecode_, min_secs_, samples_;
     std::size_t tempo_index_ = static_cast<std::size_t>(-1);
     QString tempo_text_, meter_text_, next_change_;
