@@ -13,6 +13,10 @@ std::string short_name(const std::string& command) {
     return dot == std::string::npos ? command : command.substr(dot + 1);
 }
 
+bool is_interface(const CommandSpec* spec) {
+    return spec != nullptr && spec->domain == CommandDomain::Interface;
+}
+
 }  // namespace
 
 KeyMap keymap_or_built_in(const std::string& path, std::string& refusal) {
@@ -26,21 +30,73 @@ KeyMap keymap_or_built_in(const std::string& path, std::string& refusal) {
 }
 
 KeyRouter::KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send)
-    : map_(std::move(map)), engine_(std::move(engine_implemented)), send_(std::move(send)) {}
+    : map_(std::move(map)),
+      profile_(map_),
+      engine_(std::move(engine_implemented)),
+      send_(std::move(send)) {
+    local_.install("focus.commands", [this](const CommandContext&) {
+        setCommandsFocus(!commands_focus_);
+        return true;
+    });
+}
 
 bool KeyRouter::implemented(const std::string& id) const {
-    return local_.implemented(id) ||
-           std::find(engine_.begin(), engine_.end(), id) != engine_.end();
+    if (local_.implemented(id)) return true;
+    // An Interface command the engine lists is still not the engine's to run.
+    if (is_interface(find_command(id))) return false;
+    return std::find(engine_.begin(), engine_.end(), id) != engine_.end();
 }
 
 std::vector<std::string> KeyRouter::prepare(const std::vector<KeyChord>& device) {
+    device_ = device;
+    prepared_ = true;
+    map_ = profile_;
     const auto impl = [this](const std::string& id) { return implemented(id); };
-    std::vector<std::string> notices = map_.ensure_essentials(device, impl);
+    std::vector<std::string> notices = map_.ensure_essentials(device_, impl);
+    buildHelp();
+    return notices;
+}
 
+std::vector<std::string> KeyRouter::setMap(KeyMap map) {
+    profile_ = std::move(map);
+    return prepare(device_);
+}
+
+std::vector<std::string> KeyRouter::setEngineCommands(std::vector<std::string> engine_implemented) {
+    engine_ = std::move(engine_implemented);
+    if (!prepared_) return {};
+    return prepare(device_);
+}
+
+void KeyRouter::setCommandsFocus(bool on) {
+    if (commands_focus_ == on) return;
+    commands_focus_ = on;
+    buildHelp();
+}
+
+bool KeyRouter::hasFocusKeys() const {
+    for (const auto& b : map_.bindings()) {
+        if (needs_commands_focus(b)) return true;
+    }
+    return false;
+}
+
+std::string KeyRouter::focusToggleChord() const {
+    for (const auto& b : map_.bindings()) {
+        if (b.command == "focus.commands" &&
+            std::find(device_.begin(), device_.end(), b.chord) != device_.end()) {
+            return KeyMap::chord_to_string(b.chord);
+        }
+    }
+    return std::string();
+}
+
+void KeyRouter::buildHelp() {
     help_.clear();
     for (const auto& b : map_.bindings()) {
         if (!implemented(b.command) || needs_selection(b)) continue;
-        if (std::find(device.begin(), device.end(), b.chord) == device.end()) continue;
+        if (needs_commands_focus(b) && !commands_focus_) continue;
+        if (std::find(device_.begin(), device_.end(), b.chord) == device_.end()) continue;
         std::string e = KeyMap::chord_to_string(b.chord) + "=" + short_name(b.command);
         if (b.ctx.has_target()) e += std::to_string(b.ctx.target + 1);
         help_.push_back(std::move(e));
@@ -48,7 +104,6 @@ std::vector<std::string> KeyRouter::prepare(const std::vector<KeyChord>& device)
     if (help_.empty()) {
         help_.push_back("no key in this profile does anything this build implements");
     }
-    return notices;
 }
 
 RouteResult KeyRouter::route(const KeyChord& chord) {
@@ -57,6 +112,20 @@ RouteResult KeyRouter::route(const KeyChord& chord) {
         RouteResult r;
         r.kind = RouteResult::Kind::Unbound;
         r.message = KeyMap::chord_to_string(chord) + " is not bound";
+        return r;
+    }
+    if (needs_commands_focus(*b) && !commands_focus_) {
+        // Not silently nothing: the key is the profile's, and the operator
+        // is told what it would do and how to make it do it.
+        RouteResult r;
+        r.kind = RouteResult::Kind::FocusOff;
+        r.command = b->command;
+        r.ctx = b->ctx;
+        const std::string toggle = focusToggleChord();
+        r.message = KeyMap::chord_to_string(chord) + " is " + b->command +
+                    " only with Commands Keyboard Focus, which is off; " +
+                    (toggle.empty() ? std::string("the a-z button turns it on")
+                                    : toggle + " or the a-z button turns it on");
         return r;
     }
     return invoke(b->command, b->ctx);
@@ -71,7 +140,7 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
     RouteResult r;
     r.command = command;
     r.ctx = ctx;
-    if (local_.implemented(command)) {
+    const auto run_local = [&]() {
         std::string why;
         r.kind = RouteResult::Kind::Local;
         r.result = local_.dispatch(command, ctx, why);
@@ -79,15 +148,18 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
             r.message = command + ": " + (why.empty() ? dispatch_result_text(r.result) : why);
         }
         return r;
-    }
-    if (std::find(engine_.begin(), engine_.end(), command) != engine_.end()) {
+    };
+    // The engine is the authority on what it runs: once it implements an
+    // Engine command, the window's stand-in for it is no longer used.
+    if (spec != nullptr && !is_interface(spec) &&
+        std::find(engine_.begin(), engine_.end(), command) != engine_.end()) {
         r.kind = RouteResult::Kind::Sent;
         r.seq = send_(command, ctx);
         return r;
     }
+    if (local_.implemented(command)) return run_local();
     r.kind = RouteResult::Kind::NotImplemented;
-    r.result = spec ? DispatchResult::NotImplemented
-                                     : DispatchResult::UnknownCommand;
+    r.result = spec ? DispatchResult::NotImplemented : DispatchResult::UnknownCommand;
     r.message = command + ": " + dispatch_result_text(r.result);
     return r;
 }

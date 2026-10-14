@@ -54,7 +54,11 @@ struct EngineInfo {
     uint32_t buffer_frames = 0;
     uint32_t track_count = 0;
     // What the engine has handlers for. Feeds KeyMap::ensure_essentials()
-    // together with the interface's own registry, as §5 says.
+    // together with the interface's own registry, as §5 says. Read again
+    // from each new connection's Hello, as a restarted engine may be another
+    // build; ShellModel hands a changed list to the key router.
+    // The format and track count stay those of the first Hello: what is
+    // sized from them is not resized on a reconnect.
     std::vector<std::string> implemented_commands;
 };
 

@@ -233,6 +233,14 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
         hello_.track_names.push_back("Audio " + std::to_string(i + 1));
     }
     hello_.implemented_commands = engine_commands();
+    for (const std::string& id : cfg_.planned_commands) {
+        const auto& have = hello_.implemented_commands;
+        if (!is_engine_command(id) || std::find(have.begin(), have.end(), id) != have.end()) {
+            continue;
+        }
+        planned_.push_back(id);
+        hello_.implemented_commands.push_back(id);
+    }
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
     scripted_.assign(cfg_.tracks, -1.0f);
@@ -688,6 +696,11 @@ void FakeEngine::handle(const std::string& bytes) {
         if (!is_engine_command(r.command)) {
             reply(r.seq, DispatchResult::NotImplemented,
                   r.command + " is the interface's own command; the engine does not run it");
+            return;
+        }
+        if (std::find(planned_.begin(), planned_.end(), r.command) != planned_.end()) {
+            planned_log_.push_back({r.command, r.target});
+            reply(r.seq, DispatchResult::Ok, "");
             return;
         }
         const auto& ids = engine_commands();

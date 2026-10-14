@@ -43,6 +43,7 @@ A binding's value is either a command name, or an object with:
 | `argument` | free-form string for a command that needs a value. No command in this build takes one, so supplying it is a load error rather than a field that is quietly ignored. |
 | `origin` | `"vendor"` (the default): the application's own key for this command. `"sonora"`: a chord we chose because the application has no key for the command -- arming track 3 by number, say. |
 | `verified` | `false` marks a vendor binding we have not confirmed against the application's documentation. Defaults to `true`. Not allowed with `"origin": "sonora"`, which has nothing to be confirmed against. |
+| `focus` | `"commands"`: the binding runs only while Pro Tools' Commands Keyboard Focus is on (see "Commands Keyboard Focus" below). The only value; Pro Tools' Clip List and Groups List focuses do not exist here, and naming one is a load error. Not allowed on `focus.commands` itself, which could then never turn focus back on. |
 | `comment` | free text, usually why a binding is ours or unverified |
 
 The key is a chord: zero or more modifiers and one key, joined by `+`.
@@ -223,6 +224,63 @@ button opens it there).
 A track command bound without a target acts on the selected track there, so
 `shift+r`, `shift+s` and `shift+m` work in the window and still report that
 they failed at a tty, which has no selection.
+
+### Where a command goes
+
+The window sends a command where its `CommandSpec::domain` says
+(`contracts/api/include/sonora/command.h`, ADR-0007 §5). An Interface command
+(`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `app.quit`) runs in the window
+and never reaches the engine, even if an engine lists it. An Engine command
+goes to the engine over the control API once the engine's Hello lists it;
+until then a handler the window installed stands in (the Edit window's edits,
+which reach the engine as model requests), and the engine's own takes over
+the day it lists the command. Neither: "not implemented in this build", on
+the status line.
+
+### Commands Keyboard Focus
+
+Pro Tools' single-key edit commands -- A trims the clip start, B separates, E
+toggles zoom -- run only while Commands Keyboard Focus is on (Avid, *Pro Tools
+Shortcuts Guide*, ch. 3: "To enable Commands Keyboard Focus for the Edit
+window ... Click the a-z button for the Edit window. Press Command+Option+1
+(Mac) or Control+Alt+1 (Windows)"). `protools.json` marks those keys
+`"focus": "commands"` and binds `ctrl+alt+1` to `focus.commands`.
+
+In the Qt window the a-z button in the footer, beside "Keys", shows the state, lit while
+focus is on, and toggles it, as `ctrl+alt+1` does; it is shown only for a
+profile that has focus keys. Focus starts on, which is how the letters
+behaved before there was a toggle. With it off a focus key does not run its
+command and says so on the status line, naming the key that turns focus on.
+A focus key never counts as a way to arm, record, stop or quit, because it
+can be off. The focus-free forms Avid documents for A and S are bound too
+(`alt+shift+7`, `alt+shift+8`).
+
+A terminal has no a-z indicator, and a mode the operator cannot see is worse
+than none, so at the tty focus keys stay live as they always were.
+
+Unverified: which state Pro Tools opens a session in; that Command+Option+1
+turns focus off again (Avid describes enabling it); what Pro Tools does with
+these letters while focus is off (Avid documents only the enabled case, see
+`brain/research/protools-logic-key-bindings.md` §3); and whether focus applies
+in the Mix window. Here it applies in both windows.
+
+### Switching profiles
+
+The Keys button at the left of the footer opens the Keys menu: every `*.json` in
+the key map folder, each loaded when the list is made, so a file that would
+be refused is listed with the reason rather than offered. Choosing one runs
+the same essentials check and repair as start-up and replaces the key map's
+notices; a file that no longer loads is refused and the keys stay as they
+were. The Commands Keyboard Focus state is kept across a switch.
+
+The folder is `--keymap-dir`, else `$SONORA_KEYMAP_DIR`, else the folder of
+`--keymap`, else `share/sonora/keymaps` beside the binary (where `cmake
+--install` puts these files), else `/usr/share/sonora/keymaps`. The choice is
+remembered in `$XDG_CONFIG_HOME/sonora/keymap` (else
+`~/.config/sonora/keymap`), as a bare file name when it is in the folder, and
+used at the next start unless `--keymap` is given. If it cannot be written
+the menu still switches, and a notice says the choice will not survive a
+restart.
 
 ## Known but unimplemented
 

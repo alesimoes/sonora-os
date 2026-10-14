@@ -36,6 +36,7 @@ add_library(sonora_ui_qt STATIC
   src/control_adapter.h src/control_adapter.cpp
   src/meter_model.h src/meter_model.cpp
   src/key_router.h src/key_router.cpp
+  src/keymap_profiles.h src/keymap_profiles.cpp
   src/qt_keys.h src/qt_keys.cpp
   src/meter_item.h src/meter_item.cpp
   src/shell_model.h src/shell_model.cpp
@@ -79,6 +80,9 @@ add_executable(sonora-ui src/main.cpp)
 # none is running, and for the tests.
 target_link_libraries(sonora-ui PRIVATE sonora_ui_qt sonora_client sonora_platform)
 install(TARGETS sonora-ui RUNTIME DESTINATION bin)
+# The profiles the Keys menu offers; keymap_profiles.h finds them beside bin/.
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/keymaps/ DESTINATION share/sonora/keymaps
+        FILES_MATCHING PATTERN "*.json")
 
 # --- tests ------------------------------------------------------------------
 # Headless. test_meter_model and test_qt_keys need no display at all;
@@ -147,6 +151,16 @@ add_executable(test_ui_mix tests/test_mix.cpp)
 target_link_libraries(test_ui_mix PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix COMMAND test_ui_mix)
 set_tests_properties(ui_mix PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Key maps on the control API: commands routed by domain, the Commands
+# Keyboard Focus toggle, the profile switch and what it remembers, on
+# FakeEngine; then the Keys menu and the a-z button in the real QML.
+add_executable(test_ui_keymaps tests/test_keymaps.cpp)
+target_link_libraries(test_ui_keymaps PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_keymaps PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_keymaps COMMAND test_ui_keymaps)
+set_tests_properties(ui_keymaps PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)
