@@ -716,6 +716,15 @@ Order and owners are in ADR-0008 §5.
       (`Session::start_recording()` while rolling, `Session::punch_out()`),
       and its vendor bindings in `keymaps/`. rt-engineer, contract owner for
       the catalogue.
+      Before it lands (PR #60, review 4): `Session::failed_files_` lasts
+      until `stop()`, so after take K fails, `take_failure()` stays
+      non-empty through a clean take K + 1 started while rolling.
+      `engine_control_server.cpp` (the `TakeFailed` block in the transport
+      follower) would then post "take K + 1 failed" naming K's file, and the
+      health flag would never clear, though ADR-0007 says the next clean take
+      clears both. Key the failures by take, or clear them when a take's
+      close is collected. Unreachable today: `transport.record` during a
+      take does nothing.
 - [ ] Periodic `fdatasync` of every open take file from the disk thread,
       through `common/platform`, with the loss window stated in the UI and
       in `brain/specs/session-format.md` ("Crash recovery"). Measure its cost
@@ -768,6 +777,11 @@ Order and owners are in ADR-0008 §5.
   it at the edit point (`gtk2_ardour/editor_audio_import.cc:989`, tag 8.12).
   A non-zero session start would avoid that, but it is a timeline decision
   (ADR), not a writer fix. `brain/research/bwf-interop.md`, finding 2.
+- A `stop()` whose wait for the callback in flight times out (1 s, a hung
+  backend) still returns true. The block that callback records late shows
+  only on stderr and in `Session::dropped_samples()`, which the UI does not
+  surface (PR #60, review 5). Acceptable for a hung backend, but the
+  operator should see it: a Notice, or the health flag.
 - `DiskThread` polls every 10 ms. Correct, but a condition variable signalled
   by the callback would be better once there is a reason to care. It must not
   make the callback block.

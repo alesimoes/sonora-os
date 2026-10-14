@@ -42,8 +42,10 @@ bool place_file(model::Document& document, const std::string& session_dir,
 // file of it that holds frames, the file as a Recorded source and a
 // RecordTake on the active playlist of the track at the same display index.
 // One undo step per track. A file that failed (disk error, 4 GB limit) is
-// not placed: the rest are, and the call returns false with `error` naming
-// the failed file and why.
+// placed up to its last whole frame, like the rest, and the call returns
+// false with `error` naming the failed file and why. `error` reads after
+// "take N ": "was cut short: ..." for a failed file, "is on disk but not in
+// the session: ..." when a file could not be placed at all.
 bool add_closed_take(model::Document& document, const Session& session,
                      const Session::ClosedTake& take,
                      std::vector<model::ReplicationUpdate>& updates, std::string& error);

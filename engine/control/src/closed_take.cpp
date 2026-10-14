@@ -143,25 +143,35 @@ bool add_closed_take(model::Document& document, const Session& session,
     const std::string prefix = dir + "/";
     std::string first_failure;
     int more_failures = 0;
+    const auto not_placed = [&error](const std::string& why) {
+        error = "is on disk but not in the session: " + why;
+        return false;
+    };
     for (const DiskThread::ClosedFile& f : take.files) {
-        // A file that failed stopped short of its take: it stays on disk,
-        // but is not placed as if it were the take (PR #60, code review 3).
+        // A failed file is still valid up to its last whole frame
+        // (bwf-broadcast-wave.md), so what was recorded before the failure
+        // is placed, and the failure is reported rather than hidden
+        // (timeline-model.md, "Closed takes").
         if (!f.failure.empty()) {
             if (first_failure.empty()) {
-                first_failure = f.path + ": " + f.failure;
+                first_failure = f.path + ": " + f.failure +
+                                (f.frames == 0 ? ", with nothing recorded before it"
+                                               : ", placed up to the failure");
             } else {
                 ++more_failures;
             }
-            continue;
         }
         if (f.frames == 0) continue;
         if (f.path.compare(0, prefix.size(), prefix) != 0) continue;
         const std::string relative = f.path.substr(prefix.size());
 
-        const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), error);
-        if (!t) return false;
+        std::string why;
+        const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), why);
+        if (!t) return not_placed(why);
         model::AddSource src;
-        if (!source_of(document, dir, relative, t->channels, src.source, error)) return false;
+        if (!source_of(document, dir, relative, t->channels, src.source, why)) {
+            return not_placed(why);
+        }
         src.source.kind = model::SourceKind::Recorded;
         src.source.take = take.take;
         src.source.recorded_on_track = t->id;
@@ -169,17 +179,17 @@ bool add_closed_take(model::Document& document, const Session& session,
         const model::Id track_id = t->id;
         const model::Id playlist = t->active_playlist;
         const uint16_t channels = t->channels;
-        if (!apply(document, src, updates, error)) return false;
+        if (!apply(document, src, updates, why)) return not_placed(why);
 
         model::RecordTake rec;
         rec.track = track_id;
         rec.playlist = playlist;
         rec.region = region_of(src.source, document.current().next_id, stem(relative), channels);
         rec.split_right_id = rec.region.id + 1;
-        if (!apply(document, rec, updates, error)) return false;
+        if (!apply(document, rec, updates, why)) return not_placed(why);
     }
     if (first_failure.empty()) return true;
-    error = first_failure;
+    error = "was cut short: " + first_failure;
     if (more_failures > 0) {
         error += " (and " + std::to_string(more_failures) + " more track" +
                  (more_failures == 1 ? "" : "s") + ")";

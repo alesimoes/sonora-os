@@ -343,8 +343,10 @@ bool Session::wait_for_callback() const {
     const uint64_t seq = callback_seq_.load(std::memory_order_seq_cst);
     if ((seq & 1) == 0) return true;
     // A callback lasts a period; a second is a backend that has hung. What
-    // it writes after this reaches no file: the disk thread drops samples
-    // no open slot claims, and counts them.
+    // it writes after this follows its own boundary records: into the take
+    // it belongs to if a file is still open for it, as when the next
+    // start_recording() reopens before they drain. Only samples that no
+    // open slot claims are dropped, and counted.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     while (callback_seq_.load(std::memory_order_acquire) == seq) {
         if (std::chrono::steady_clock::now() >= deadline) return false;
@@ -397,7 +399,8 @@ bool Session::stop(std::string* error) {
     if (!wait_for_callback()) {
         std::fprintf(stderr,
                      "sonora: the audio callback did not return within 1 s of the"
-                     " stop; what it still records reaches no file\n");
+                     " stop; what it still records is dropped unless a file is"
+                     " open for it\n");
     }
     // Joins the disk thread and drains what is left, close records
     // included. After this line nothing else uses the writers.

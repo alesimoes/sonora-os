@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
@@ -345,6 +346,10 @@ private:
     // between two callbacks, which near full DSP load is far shorter than
     // its poll (PR #60, RT audit 1).
     std::atomic<uint64_t> callback_seq_{0};
+    // process() bumps it on every callback; a lock-based fallback would put
+    // a lock on the audio thread.
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,
+                  "callback_seq_ must be lock-free");
 };
 
 }  // namespace sonora

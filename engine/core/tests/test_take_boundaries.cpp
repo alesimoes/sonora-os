@@ -303,7 +303,9 @@ int test_stalled_callback_across_stop_and_start() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(runner.stalled());
-    // The callback holds Recording for take k now.
+    // The callback holds Recording for take k now, and its block starts at
+    // p: the playhead advances only at the end of process().
+    const uint64_t p = s.transport().playhead();
     const bool k_ok = s.stop(&error);
     s.disk().start();
     const bool k1_started = s.start_recording(k + 1, &error);
@@ -325,6 +327,9 @@ int test_stalled_callback_across_stop_and_start() {
     CHECK(b.ok);
     CHECK(a.frames > 0);
     CHECK(b.frames > 0);
+    // The stalled block is k's last: a callback that loaded the transport
+    // only after the stall would have written nothing, ending k at p - 1.
+    CHECK(a.last == static_cast<float>(p + kBlock - 1));
     // Nothing of k reappears in k + 1.
     CHECK(a.last < b.first);
     CHECK(s.tracks()[0]->overruns() == 0);

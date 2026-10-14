@@ -249,8 +249,7 @@ void EngineControlServer::follow_transport() {
         if (!ok) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
-            e.text = "take " + std::to_string(take.take) +
-                     " is on disk but not in the session: " + why;
+            e.text = "take " + std::to_string(take.take) + " " + why;
             post_event(e);
         }
         if (!updates.empty()) show_document(false);

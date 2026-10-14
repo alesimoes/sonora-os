@@ -559,7 +559,8 @@ int test_takes_closed_while_rolling_join_the_document() {
 // was then punched out. punch_out() forgot it, so take_failure() went
 // quiet, the next stop() said all was well, and the closed-take report
 // placed the truncated file as a good take. Now the failure is still said
-// until stop(), stop() reports it, and the failed file is not placed.
+// until stop(), stop() reports it, and the failed file is placed up to its
+// last whole frame, as main did: the operator keeps what was recorded.
 int test_failure_in_a_take_punched_out_is_reported() {
     constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
     auto session = make_session(2);
@@ -596,16 +597,21 @@ int test_failure_in_a_take_punched_out_is_reported() {
     CHECK(!sonora::add_closed_take(doc, s, closed[0], updates, placed));
     CHECK(placed.find("Audio 2_") != std::string::npos);
     CHECK(placed.find("4 GB") != std::string::npos);
-    const auto regions = [&](std::size_t t) {
+    CHECK(placed.find("placed up to the failure") != std::string::npos);
+    CHECK(placed.find("Audio 1_") == std::string::npos);
+    const auto regions = [&](std::size_t t) -> const std::vector<sonora::model::Region>* {
         const auto& track = *doc.current().edit->tracks[t];
         for (const auto& p : track.playlists) {
-            if (p->id == track.active_playlist) return p->regions.size();
+            if (p->id == track.active_playlist) return &p->regions;
         }
-        return std::size_t{99};
+        return nullptr;
     };
-    // The good file is placed; the truncated one is not.
-    CHECK(regions(0) == 1);
-    CHECK(regions(1) == 0);
+    CHECK(regions(0) && regions(0)->size() == 1);
+    CHECK((*regions(0))[0].length == 4 * kBlock);
+    // Exactly the 10 frames that fit under the limit, at the take's start.
+    CHECK(regions(1) && regions(1)->size() == 1);
+    CHECK((*regions(1))[0].length == 10);
+    CHECK((*regions(1))[0].position == (*regions(0))[0].position);
     CHECK(s.take_failure() == why);
 
     std::string at_stop;

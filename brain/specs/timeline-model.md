@@ -297,11 +297,22 @@ band, with the audio**:
   reason.
 - `stop()` stores Stopped, waits for the callback in flight (bounded, one
   second), joins the disk thread and closes what no close record reached.
-  A callback later still writes into no file: the disk thread drops
-  samples that no open slot claims.
+  A callback later still is not waited for. Its samples follow its own
+  boundary records, so they land in their take while a file is open for it
+  (the next `start_recording()` may reopen before they drain). Only
+  samples that no open slot claims are dropped, and counted
+  (`dropped_samples()`).
 - After closing a take, the disk thread reports **"take closed, length N"**
   to `engine/control`. `AddSource` and `RecordTake` are applied only then,
   with N from disk, not computed from the transport.
+- **A file that failed is placed up to the failure.** A write error or the
+  4 GB limit (`bwf-broadcast-wave.md`) leaves the file valid up to its last
+  whole frame, so N is that length and the region is placed like the rest
+  of the take: an operator who fills the disk keeps what was recorded. The
+  failure is not hidden. `add_closed_take()` returns
+  false naming the file and why ("placed up to the failure"), the control
+  server posts it as a Notice, and `stop()` still reports it. A failed file
+  with no frames is not placed, and is reported the same way.
 - "Rolling" and "recording" are separate per track: the transport rolls,
   and capture is a per-track window inside it.
 
