@@ -141,6 +141,18 @@ add_test(NAME plugin_host_crash_futex COMMAND ${_drive} --scenario crash --wake 
 add_test(NAME plugin_host_deadline COMMAND ${_drive} --scenario deadline)
 add_test(NAME plugin_host_deadline_futex COMMAND ${_drive} --scenario deadline --wake futex)
 add_test(NAME plugin_host_nonfinite COMMAND ${_drive} --scenario nonfinite)
+# The RTSan build only: the host's block (run_block) is SONORA_RT, so the
+# plugins it runs are checked as the engine's callback is. The control for
+# that: the deadline scenario with the test plugin's sleep left unexempted
+# must be reported from run_block. Its pass condition is the report, so
+# tools/build-rtsan.sh's scan for reports in passing tests skips it.
+if(SONORA_RTSAN)
+  add_test(NAME plugin_host_rtsan_block COMMAND ${_drive} --scenario deadline)
+  set_tests_properties(plugin_host_rtsan_block PROPERTIES
+    ENVIRONMENT "SONORA_TEST_RTSAN_SLEEP=1;RTSAN_OPTIONS=halt_on_error=true"
+    PASS_REGULAR_EXPRESSION "real-time unsafe function `nanosleep`.*run_block"
+    LABELS "plugins;rtsan-report")
+endif()
 add_test(NAME plugin_host_gain_mono COMMAND ${_drive} --scenario gain)
 add_test(NAME plugin_host_gain_stereo COMMAND ${_drive} --scenario gain --channels 2)
 add_test(NAME plugin_host_gain_futex COMMAND ${_drive} --scenario gain --wake futex)

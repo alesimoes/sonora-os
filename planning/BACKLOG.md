@@ -111,11 +111,18 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              (A1/A3) and `plugin_client_rtsan_wake` is clean under
              `halt_on_error=true`. The reachability test allows that pair
              in wake.cpp's object only.
-       - [ ] RTSan over `plugin_client_host_*` and `plugins/host`: they need
-             lilv and the test plugins, which the `rtsan` image does not
-             carry (the `plugins` image builds with GCC). Add a Clang
-             RTSan configure to the plugins image, or lilv to
-             `tools/Dockerfile.rtsan`. distro-engineer.
+       - [x] RTSan over `plugin_client_host_*` and `plugins/host`
+             (`ci/rtsan-jack`): lilv, the VST3 SDK headers and the Debian
+             LV2/VST3 test plugins are in `tools/Dockerfile.rtsan`; the
+             host's per-block work is `run_block`, `SONORA_RT`, so
+             Chain::process and every plugin's run() are checked. Clean:
+             eg-amp, x42-dpl, LSP limiter (LV2 and VST3), AGain, the
+             native bundles. The in-tree `#sleep` plugin's sleep is the
+             deadline tests' overrun and is exempt; `plugin_host_rtsan_block`
+             is the control (unexempted, reported from run_block). The
+             deadline tests had passed with the host halted by RTSan, so
+             `tools/build-rtsan.sh` now fails any report in a passing test
+             not labelled `rtsan-report`.
        - [ ] Wire `PluginClient::process_chain` into the InsertChain node
              (checklist 3, `feature/plan-pdc`): once per node per callback
              with the whole block, `param_store = kNoStore` for a chain
@@ -349,18 +356,39 @@ not start or extend those items before the Complete DAW closes (owner,
       `-Wfunction-effects` advisory. `SONORA_RT` expands to
       `[[clang::nonblocking]]`. CI job `rtsan`, `tools/build-rtsan.sh`,
       `-DSONORA_RTSAN=ON`; every ctest runs under it.
-- [ ] libjack inside the callback under RTSan in CI: the `rtsan` job has
-      no PipeWire, so `JackBackend::process_cb` is only covered by the
-      2026-10-12 manual run (brain/research/adr-0007-measurements.md).
-      Run `tools/test-engine-entrypoint.sh` on an RTSan engine.
-      distro-engineer with rt-engineer.
+- [x] libjack inside the callback under RTSan in CI (`ci/rtsan-jack`):
+      `tools/rtsan-jack.sh`, in CI job `rtsan`, runs `process_cb` and
+      `xrun_cb` against jackd2 (dummy driver) and PipeWire 1.4
+      (pipewire-jack, the shipped pin): `sonora-rtsan-jack-canary` (a
+      malloc after process_cb's libjack calls, must be reported), the
+      backend conformance suite, and a recorded take. No report:
+      `jack_port_get_buffer`, `jack_get_sample_rate` and
+      `jack_last_frame_time` are clean on both, so no suppression or
+      scope. `xrun_cb` ran (2 xruns, jackd2); under PipeWire no xrun
+      could be caused (SIGSTOP of the device or of the engine for 0.2 s:
+      xruns=0), so on the audio thread it is unexercised.
+- [ ] Conformance `fault_xrun` on jackd2: an xrun caused by stopping an
+      upstream client is counted by `xruns()`, but the dummy driver never
+      skips a cycle, so the check's "frame_time shows a gap" fails
+      (measured 2026-10-14, `ci/rtsan-jack`). Decide whether the gap is
+      part of the contract for an xrun the backend's own period did not
+      cause; until then `tools/rtsan-jack.sh` causes the xrun in a take,
+      not through the suite. rt-engineer.
+- [ ] Load-sensitive tests under `ctest -j16` (16-core dev host, RTSan
+      build, 2026-10-14): `dsp_triode`/`dsp_triode_generic` (worst hot
+      block over the quiet median 6.18 to 8.64, bar 6) and
+      `playback_fake` (worst residual 0.354, expected < 1e-6) failed in
+      two of five full runs, and pass alone (`playback_fake` 10 of 10).
+      CI's 4-core runners have not shown it. Measure under load, or mark
+      them RUN_SERIAL. rt-engineer with dsp-engineer.
 - [ ] `-Wfunction-effects` to an error, per module, once clean. Today (clang-22,
       `ci/rtsan`) it reports SONORA_RT functions calling unmarked ones that
       RTSan, at run time, finds clean: `ProcessorBase::apply_event`
       (plugins/native/sdk), `LookaheadLimiter::set_release` and
       `TruePeakGuard::set_release` (limiter), `Bridge::descriptor`
       (format), `std::chrono::steady_clock::now` in `Session::process`
-      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API.
+      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API (clean
+      at run time on jackd2 and pipewire-jack, `tools/rtsan-jack.sh`).
       `ProcessorBase::on_reset` is done (auditor, PR #54): no test reached
       process()'s non-finite-output branch, so `native_sdk` now forces a
       NaN from inside a processor and the harness's `check_reset` runs every
@@ -522,6 +550,9 @@ Order and owners are in ADR-0008 §5.
       `clock_discontinuities()` stays 0. The deferral covers an xrun that
       lands by the next period; one later still would be counted twice.
       From the PR #41 RT audit. rt-engineer.
+      Note (`ci/rtsan-jack`, 2026-10-14): on PipeWire 1.4's dummy driver
+      in a container, SIGSTOP of the engine for 0.2 s mid-take gave
+      xruns=0; jackd2 gave 2 for the same on an upstream client.
 - [ ] A take on N tracks is one undo step: a multi-track `RecordTake` (one
       operation carrying every track's region), as Pro Tools' one undo
       removes the whole take. Today `add_closed_take()` applies one
