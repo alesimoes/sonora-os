@@ -257,6 +257,9 @@ private:
     // Built after document_ and destroyed before it; touched only by the
     // control thread, or before start() and after stop().
     std::unique_ptr<PlaybackController> playback_;
+    // The plans published when the state block last took the playing
+    // plan's compensation.
+    uint64_t compensation_shown_for_ = ~uint64_t{0};
 
     CommandRegistry registry_;
     std::vector<std::string> implemented_;
