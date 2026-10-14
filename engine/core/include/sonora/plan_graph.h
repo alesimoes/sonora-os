@@ -55,7 +55,10 @@ constexpr uint32_t kTrackFaderIdTag = 0x03000000u;
 // chains[t].active, TrackSource -> InsertChain -> TrackFader; then BusSum
 // and HardwareOut. Edges grouped by to_node, every delay 0 and no delay
 // line. Needs nodes and edges sized by graph_nodes()/graph_edges() over the
-// active chains. Sets last_insert_node. Scratch buffer = node index.
+// active chains. Sets last_insert_node. Scratch buffer = node index. An
+// active binding with no channel slot or no node state is laid out
+// unbound: kNoChannelSlot, no store, kNoNodeState, latency 0. The session
+// passes such a chain through, so its latency is 0 whatever it declared.
 void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains);
 
 // Which delay line serves which (from stable id, to stable id) pair, kept by

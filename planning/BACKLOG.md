@@ -138,12 +138,64 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              deadline tests had passed with the host halted by RTSan, so
              `tools/build-rtsan.sh` now fails any report in a passing test
              not labelled `rtsan-report`.
-       - [ ] Wire `PluginClient::process_chain` into the InsertChain node
-             (checklist 3, `feature/plan-pdc`): once per node per callback
-             with the whole block, `param_store = kNoStore` for a chain
-             without parameters, `begin_callback`/`end_callback` around the
-             plan. Then `SupervisedChain` into the control server
-             (checklist 5); pidfd instead of polling.
+       - [x] Wire `PluginClient::process_chain` into the InsertChain node:
+             `PluginChainRunner` (engine/core, PR #59; in engine/core
+             because ADR-0007 draws core -> plugin_client, not the
+             reverse). Once per node per callback with the whole block,
+             `kNoStore` passed through, a chain wider than stereo silence
+             and counted, a mono chain's side 1 set to side 0. "Unbound" is
+             the builder's: `layout_track_graph` lays out a binding with no
+             slot or no node state as no slot, latency 0 (rt-engineer
+             ruling 1), and a node that still reaches the runner at
+             `kNoNodeState` is silence, counted, never dry and early. A
+             zero-frame callback neither begins nor ends. ctest `plan_pdc`,
+             `plugin_chain_runner` (no host) and `session_plugins_*`:
+             Session::process with real hosts, LV2 and VST3, Debian's and
+             in-tree, mono and stereo, a 2048-frame chain of four Debian
+             limiters landing bit for bit on a dry track, a stalled host
+             removed while the dry track plays on and no callback waits.
+             rt-engineer co-review (ADR-0007 §6): engine/core links
+             sonora_plugin_client, which links common/platform PRIVATE.
+       - [ ] `SupervisedChain` into the control server (checklist 5),
+             with the ChainResolver filling ChainBinding from it; pidfd
+             instead of polling.
+       Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
+       out of that PR's scope and handed to checklist 5:
+       - [ ] The callback's timestamp: `Session::process` calls
+             `std::chrono::steady_clock::now()` for `runner_->begin()`
+             (session.cpp, the chain gate; auditor finding 1, the only
+             out-of-line call on the path, flagged by `-Wfunction-effects`).
+             Pass a backend-supplied cycle time instead (JACK
+             `jack_get_cycle_times`), or have the ISO's audio stack refuse
+             a clocksource other than `tsc`. Proof on the UMC1820 target:
+             `current_clocksource` reads `tsc`, and `strace -f -e
+             trace=clock_gettime` on a playing `sonora-engine` shows no call
+             from the audio thread.
+       - [ ] One block size, one policy (auditor finding 4, rt-engineer
+             item 3): pin `ClientConfig::block_frames` to the backend's
+             period and set `max_chain_channels = 2`; on a period change,
+             restart the hosts and replan (the chain latencies include the
+             IPC block). Today another period silences every chain
+             (`frame_mismatches`) while compensation still delays the dry
+             tracks. Session's gate uses the runner's block size, so a
+             mismatch is counted once, in `chain_bypassed_blocks`.
+       - [ ] Parameter events into `run()` (rt-engineer item 1): Session's
+             drain discards every non-Locate `RtCommand` uncounted, so a
+             `PluginParameterChange` vanishes. Drain it into per-node-state
+             staging preallocated at session creation (`max_nodes` x a
+             per-callback cap, overflow counted), and change the interface
+             to `run(node, in, out, frames, const ParamEvent*, uint32_t)`.
+             The runner stays stateless.
+       - [ ] `PluginFault` from the client, not the runner (rt-engineer
+             item 2): the control thread polls `slot_status(slot)` and
+             `removed(slot)` for the slots the resolver assigned, so a
+             fault names its chain. The runner's session-wide counters stay
+             diagnostics or go, never a second source.
+       - [ ] One owner for teardown (session, hosts, runner, supervisor,
+             client), and `session_plugins_*` moved to engine/control once
+             the resolver drives it, with a supervisor-level `idle()` in
+             place of the test reading `plugin::ChannelHeader` (rt-engineer
+             items 4 and 5).
        - [ ] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
              `HostSupervisor::start` blocks its caller up to 10 s waiting
              for Ready. Before it runs on the control server's thread it
@@ -203,9 +255,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
          bring an insert into the chain (rt-engineer review of #46, low 4).
        - Key an instance on (insert id, channel layout) in the plan builder.
-       - Implement `InsertChainRunner` (engine/core, PR #48) over
-         PluginClient: begin -> begin_callback, run -> process_chain,
-         end -> end_callback (the mapping is in insert_chain_runner.h);
+       - `InsertChainRunner` over PluginClient is `PluginChainRunner`
+         (done, see above). Left for checklist 5:
          the ChainResolver fills latency_frames from
          PluginClient::latency_frames(slot) and the slot, generation,
          store and node state from the supervisor. Match the explicit
