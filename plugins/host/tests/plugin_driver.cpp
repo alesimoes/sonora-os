@@ -217,7 +217,9 @@ PluginParams probe_params(const Args& a, const std::string& id) {
     if (auto it = cache.find(id); it != cache.end()) return it->second;
     std::string cmd = shell_quote(a.host) + " --probe " + shell_quote(id);
     for (const std::string& b : a.bundles) cmd += " --bundle " + shell_quote(b);
-    cmd += " 2>/dev/null";
+    // stderr is left to the test's output: the probe validates the chain,
+    // running every plugin, and a sanitizer's report there must reach the
+    // log (and tools/build-rtsan.sh's scan of it).
     PluginParams out;
     if (std::FILE* p = popen(cmd.c_str(), "r")) {
         std::string all;

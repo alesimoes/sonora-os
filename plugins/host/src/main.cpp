@@ -69,6 +69,7 @@
 #include "lv2_host.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
+#include "sonora/rt.h"
 #ifdef SONORA_HAVE_VST3
 #include "vst3_host.h"
 #endif
@@ -448,7 +449,7 @@ int refuse(plugin::ChannelHeader& h, const ChainError& err, plugin::HostState st
     return state == plugin::HostState::Refused ? plugin::kHostExitRefused : plugin::kHostExitFaulted;
 }
 
-void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_frames) {
+void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_frames) noexcept SONORA_RT {
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].latency_frames.store(chain.instance_latency(i), std::memory_order_relaxed);
     // The IPC's own delay is declared like any look-ahead (ADR-0007 §4.3).
@@ -546,6 +547,38 @@ struct Session {
 
 constexpr uint64_t kParkedPollNs = 20'000'000;
 
+// One submitted block, from its parameters to its completion. The host's
+// side of the audio thread: SONORA_RT, so the RTSan build checks it and the
+// plugins it runs, as it checks the engine's callback. The waits between
+// blocks are outside it, as they are outside the engine's callback. False
+// when a plugin wrote outside its buffers; the caller says so and faults,
+// off the RT path, since saying so allocates.
+bool run_block(Session& s, uint64_t block, uint32_t frames, ChainError& cerr) noexcept SONORA_RT {
+    plugin::ChannelHeader& h = s.h;
+    auto deliver = [&](uint32_t i, uint32_t p, uint32_t offset, float v) noexcept SONORA_RT {
+        return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, offset)
+                                         : s.chain.set_param(i, p, v, offset);
+    };
+    auto replace = [&](uint32_t i, uint32_t p, float v) noexcept SONORA_RT {
+        return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, 0) : s.chain.replace_param(i, p, v);
+    };
+    // The ring for this block and older ones, then the table if values_seq
+    // moved (L1); contracts/plugin, block protocol c.
+    plugin::consume_block_params(h, s.table, s.map, s.values, block, frames, deliver, replace);
+
+    const uint64_t t0 = monotonic_ns();
+    if (!s.chain.process(s.in.data(), s.out.data(), frames, &h, cerr)) return false;
+    const uint64_t took = monotonic_ns() - t0;
+    if (took > h.worst_block_ns.load(std::memory_order_relaxed))
+        h.worst_block_ns.store(took, std::memory_order_relaxed);
+    publish_latency(h, s.chain, s.ipc_frames);
+
+    h.completed_block.store(block, std::memory_order_release);
+    signal(h.done_word);
+    h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 // The processing thread's loop, at SCHED_FIFO when allowed. Returns the exit
 // code: 0 on shutdown or a gone engine, kHostExitFaulted when a plugin faulted.
 int process_blocks(Session& s) {
@@ -554,13 +587,6 @@ int process_blocks(Session& s) {
     TimerPacer pacer;
     uint64_t last = h.completed_block.load(std::memory_order_relaxed);
     uint64_t next_parent_check = monotonic_ns() + kParentCheckNs;
-    auto deliver = [&](uint32_t i, uint32_t p, uint32_t offset, float v) noexcept {
-        return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, offset)
-                                         : s.chain.set_param(i, p, v, offset);
-    };
-    auto replace = [&](uint32_t i, uint32_t p, float v) noexcept {
-        return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, 0) : s.chain.replace_param(i, p, v);
-    };
     for (;;) {
         if (h.shutdown.load(std::memory_order_acquire) || s.stop.load(std::memory_order_acquire)) break;
         if (s.pause.request.load(std::memory_order_acquire)) {
@@ -596,25 +622,11 @@ int process_blocks(Session& s) {
                                ": the region was overwritten";
                 return refuse(h, cerr, plugin::HostState::Faulted);
             }
-            const uint32_t frames = s.block_frames;
-            // The ring for this block and older ones, then the table if
-            // values_seq moved (L1); contracts/plugin, block protocol c.
-            plugin::consume_block_params(h, s.table, s.map, s.values, block, frames, deliver, replace);
-
-            const uint64_t t0 = monotonic_ns();
-            if (!s.chain.process(s.in.data(), s.out.data(), frames, &h, cerr)) {
+            if (!run_block(s, block, s.block_frames, cerr)) {
                 cerr.message = "wrote outside its declared buffers while running";
                 return refuse(h, cerr, plugin::HostState::Faulted);
             }
-            const uint64_t took = monotonic_ns() - t0;
-            if (took > h.worst_block_ns.load(std::memory_order_relaxed))
-                h.worst_block_ns.store(took, std::memory_order_relaxed);
-            publish_latency(h, s.chain, s.ipc_frames);
-
             last = block;
-            h.completed_block.store(block, std::memory_order_release);
-            signal(h.done_word);
-            h.heartbeat.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
         if (s.mode == plugin::WakeMode::Futex) wait_for_change(s.clock.tick, seen, kIdleWaitNs);

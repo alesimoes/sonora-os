@@ -98,14 +98,14 @@ public:
 
     // Processing thread. No allocation, no lock, no I/O. Reads the input
     // buffers and writes the output buffers given at instantiation.
-    virtual void run(uint32_t frames) noexcept = 0;
+    virtual void run(uint32_t frames) noexcept SONORA_RT = 0;
     // False once the plugin wrote somewhere it was not given, beyond what
     // the chain's own buffer canaries see (VST3: a channel past the bus's
     // declared count). Checked by the chain after every run().
-    virtual bool intact() const noexcept { return true; }
+    virtual bool intact() const noexcept SONORA_RT { return true; }
     // The plugin's own latency, as last reported. Any thread; it can change
     // under run() when control() re-reads it.
-    virtual uint32_t latency() const noexcept = 0;
+    virtual uint32_t latency() const noexcept SONORA_RT = 0;
     // The main thread: the one that created the plugin, while run() goes on
     // on the processing thread. Not RT. Re-reads what the plugin announced
     // from another thread (VST3: restartComponent(kLatencyChanged)), with
@@ -129,10 +129,10 @@ public:
     // format-native (LV2 plain, VST3 normalised). LV2 applies it at the
     // block start (ADR-0012 §5.1). False when `dense` is out of range or the
     // value is not finite; the caller counts it.
-    virtual bool set_param(uint32_t dense, float value, uint32_t offset) noexcept = 0;
+    virtual bool set_param(uint32_t dense, float value, uint32_t offset) noexcept SONORA_RT = 0;
     // A last-value table value: from the block start, superseding any change
     // already queued for this parameter in the next run().
-    virtual bool replace_param(uint32_t dense, float value) noexcept { return set_param(dense, value, 0); }
+    virtual bool replace_param(uint32_t dense, float value) noexcept SONORA_RT { return set_param(dense, value, 0); }
     // A parameter by name, for --set: LV2 port symbol, VST3 title or "#ParamID".
     virtual bool param_index(const std::string& symbol, uint32_t& dense) const = 0;
     // The stable key the session file stores (ADR-0012 §6.1): LV2 port
@@ -143,9 +143,9 @@ public:
     virtual float param_default(uint32_t dense) const = 0;
     // The plugin's own bypass parameter (VST3 kIsBypass, LV2 lv2:enabled),
     // as a dense index, or -1 when the host bypasses it with a delay line.
-    virtual int bypass_param() const noexcept { return -1; }
+    virtual int bypass_param() const noexcept SONORA_RT { return -1; }
     // The value of bypass_param() for bypassed or not.
-    virtual float bypass_value(bool bypassed) const noexcept { return bypassed ? 1.f : 0.f; }
+    virtual float bypass_value(bool bypassed) const noexcept SONORA_RT { return bypassed ? 1.f : 0.f; }
     // The format-native range of a dense parameter: the LV2 port's, VST3's
     // normalised [0, 1].
     virtual void param_range(uint32_t, float& min, float& max) const {

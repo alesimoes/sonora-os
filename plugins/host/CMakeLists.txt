@@ -164,6 +164,18 @@ add_test(NAME plugin_host_crash_futex COMMAND ${_drive} --scenario crash --wake 
 add_test(NAME plugin_host_deadline COMMAND ${_drive} --scenario deadline)
 add_test(NAME plugin_host_deadline_futex COMMAND ${_drive} --scenario deadline --wake futex)
 add_test(NAME plugin_host_nonfinite COMMAND ${_drive} --scenario nonfinite)
+# The RTSan build only: the host's block (run_block) is SONORA_RT, so the
+# plugins it runs are checked as the engine's callback is. The control for
+# that: the deadline scenario with the test plugin's sleep left unexempted
+# must be reported from run_block. Its pass condition is the report, so
+# tools/build-rtsan.sh's scan for reports in passing tests skips it.
+if(SONORA_RTSAN)
+  add_test(NAME plugin_host_rtsan_block COMMAND ${_drive} --scenario deadline)
+  set_tests_properties(plugin_host_rtsan_block PROPERTIES
+    ENVIRONMENT "SONORA_TEST_RTSAN_SLEEP=1;RTSAN_OPTIONS=halt_on_error=true"
+    PASS_REGULAR_EXPRESSION "real-time unsafe function `nanosleep`.*run_block"
+    LABELS "plugins;rtsan-report")
+endif()
 add_test(NAME plugin_host_gain_mono COMMAND ${_drive} --scenario gain)
 add_test(NAME plugin_host_gain_stereo COMMAND ${_drive} --scenario gain --channels 2)
 add_test(NAME plugin_host_gain_futex COMMAND ${_drive} --scenario gain --wake futex)
@@ -344,13 +356,13 @@ if(_native)
     # key input's, stereo and mono, for a processor that takes one, routed
     # (key) and not (nokey: the external key on and no --sidechain, which
     # must key from the input, not from silence); and the re-activation for
-    # a latency-changing value, for the two that have one.
+    # a latency-changing value, for the three that have one.
     set(_cases golden-44100 golden-48000 golden-96000 bypass-48000 automation-48000 mono-48000)
     get_property(_sidechain GLOBAL PROPERTY SONORA_NATIVE_${n}_SIDECHAIN)
     if(_sidechain)
       list(APPEND _cases key-48000 key-mono-48000 nokey-48000 nokey-mono-48000)
     endif()
-    if(n STREQUAL "eq" OR n STREQUAL "limiter")
+    if(n STREQUAL "eq" OR n STREQUAL "limiter" OR n STREQUAL "tube")
       list(APPEND _cases reconfigure-48000)
     endif()
     foreach(_case ${_cases})

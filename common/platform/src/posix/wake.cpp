@@ -8,6 +8,19 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#if defined(__has_feature)
+#if __has_feature(realtime_sanitizer)
+#define SONORA_WAKE_RTSAN_SCOPE 1
+// The runtime's own pair, declared here rather than through
+// <sanitizer/rtsan_interface.h>: that header does not mark them noexcept, so
+// calling them from a noexcept function costs a terminate landing pad
+// (std::terminate, __cxa_begin_catch) that the A3 reachability test refuses.
+// They are C functions of the runtime and never throw.
+extern "C" void __rtsan_disable() noexcept;
+extern "C" void __rtsan_enable() noexcept;
+#endif
+#endif
+
 namespace sonora::platform {
 
 // The futex word must be a plain aligned u32 (contracts/plugin asserts the
@@ -19,7 +32,19 @@ namespace sonora::platform {
 void wake_all(std::atomic<uint32_t>& word) noexcept SONORA_RT {
     // Result and errno ignored: there is nothing the audio thread could do
     // about a failed wake, and a host that missed it times out and looks.
+#ifdef SONORA_WAKE_RTSAN_SCOPE
+    // RTSan reports every syscall() from a nonblocking function (measured,
+    // ADR-0012 Unverified 10, engine/plugin_client/tests/test_rtsan_wake.cpp).
+    // This one is the audited exception: the rt-safety-auditor accepted one
+    // shared FUTEX_WAKE per callback (A1, gated by kHostWakeEnabled) and
+    // wake_all as the only common/platform symbol on the audio thread (A3),
+    // with the RTSan job allowing it by a scope around this call alone.
+    __rtsan_disable();
+#endif
     syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
+#ifdef SONORA_WAKE_RTSAN_SCOPE
+    __rtsan_enable();
+#endif
 }
 
 void wait_for_change(const std::atomic<uint32_t>& word, uint32_t seen, uint64_t timeout_ns) noexcept {

@@ -91,6 +91,17 @@ average — an average hides exactly the spike that causes the xrun.
 
 ## Status
 
+**2026-10-13, ADR-0012 checklist 3:** the delay plan exists. The plan has
+`TrackSource`, `InsertChain` and `TrackFader` nodes; `compensate()`
+(`engine/core/src/plan_graph.cpp`) sets every edge's delay by §7.3 on the
+control thread; delay lines live in the session, kept per pair of stable
+ids across swaps, from a pool capped at `max_delayed_edges`; over
+`max_delay_frames` the plan is clamped and the shortfall reported in the
+state block. A track behind a 2048-frame chain lands sample-exact beside a
+100-frame chain and a dry track (ctest `plan_pdc`), on a test runner that
+delays by its declared latency. Chains pass through until
+`engine/plugin_client` binds a host.
+
 **2026-10-13, ADR-0012 (M9):** the open questions above are answered for
 plugins. The workers are the plugin hosts' own RT threads, one host per
 insert chain, scheduled by the kernel; the engine runs no plugin worker

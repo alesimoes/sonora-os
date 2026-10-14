@@ -70,7 +70,8 @@ protected:
     // Allocate and configure; read `reconfigures` parameters with value().
     // Call set_latency() here. Returns false for an unsupported layout.
     virtual bool on_prepare() = 0;
-    virtual void on_reset() noexcept = 0;
+    // Also called from process() when the output went non-finite: audio thread.
+    virtual void on_reset() noexcept SONORA_RT = 0;
     // A parameter's target changed. `jump` is true outside playback
     // (prepare, set_param): the smoother is already at the new value.
     virtual void on_param(std::uint32_t index, bool jump) noexcept SONORA_RT {

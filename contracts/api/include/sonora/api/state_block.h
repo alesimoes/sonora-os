@@ -46,6 +46,11 @@ enum TrackFlag : uint32_t {
     kTrackSolo = 1u << 2,
     kTrackInputMonitor = 1u << 3,
     kTrackInputConnected = 1u << 4,
+    // Layout 2: the playing plan could not delay this track as far as the
+    // slowest path needs (over the compensation maximum, or no delay line
+    // left), so it reaches the bus early by up to the header's
+    // compensation_shortfall_frames. Shown red (ADR-0012 §7.3).
+    kTrackCompensationShort = 1u << 5,
 };
 
 enum HealthFlag : uint32_t {

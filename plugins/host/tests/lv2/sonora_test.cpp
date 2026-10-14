@@ -31,6 +31,13 @@
 #include <ctime>
 #include <limits>
 
+#if defined(__has_feature)
+#if __has_feature(realtime_sanitizer)
+#include <sanitizer/rtsan_interface.h>
+#define SONORA_TEST_RTSAN 1
+#endif
+#endif
+
 namespace {
 
 enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar, kState };
@@ -42,6 +49,8 @@ constexpr uint32_t kLookaheadRing = 256;  // a power of two above the delay
 
 struct Plugin {
     Kind kind;
+    // SONORA_TEST_RTSAN_SLEEP set: the sleep is left to RTSan (see run()).
+    bool rtsan_checks_sleep = false;
     const float* control = nullptr;
     const float* in[2] = {nullptr, nullptr};
     float* out[2] = {nullptr, nullptr};
@@ -76,6 +85,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Fea
         p->blocks_urid = map->map(map->handle, kBlocksUri);
         p->long_urid = map->map(map->handle, LV2_ATOM__Long);
     }
+    p->rtsan_checks_sleep = std::getenv("SONORA_TEST_RTSAN_SLEEP") != nullptr;
     return p;
 }
 
@@ -144,7 +154,22 @@ void run(LV2_Handle h, uint32_t n) {
         if (p->control && *p->control > 0.f) {
             const long ns = static_cast<long>(*p->control * 1e6f);
             timespec ts{ns / 1000000000L, ns % 1000000000L};
+#ifdef SONORA_TEST_RTSAN
+            // The overrun the deadline tests are about, made on purpose. The
+            // host's block is a realtime context under RTSan, which would
+            // halt the host here first and test RTSan instead of the
+            // deadline; the host code around this run() stays checked.
+            // plugin_host_rtsan_block turns the exemption off, and RTSan
+            // must then report this sleep from the host's run_block.
+            if (!p->rtsan_checks_sleep) {
+                const __rtsan::ScopedDisabler the_overrun_is_the_test;
+                nanosleep(&ts, nullptr);
+            } else {
+                nanosleep(&ts, nullptr);
+            }
+#else
             nanosleep(&ts, nullptr);
+#endif
         }
         std::memcpy(p->out[0], p->in[0], n * sizeof(float));
         break;

@@ -24,6 +24,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
@@ -70,6 +71,22 @@ fs::path fresh_dir(const char* what) {
     return p;
 }
 
+// A child's stderr goes to a file that is deleted with its directory, so
+// what it says there is read here: an RTSan report (the rtsan CI job halts
+// the engine's callback on one, exit 43) or, when it was asked to leave, an
+// exit other than 0, fails the test, with the file printed so the log and
+// tools/build-rtsan.sh's scan of it see the report.
+void audit_child(const std::string& err_path, const char* who, bool exit_failed) {
+    std::ifstream f(err_path);
+    const std::string err((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    const bool reported = err.find("ERROR: RealtimeSanitizer") != std::string::npos;
+    if (!reported && !exit_failed) return;
+    std::fprintf(stderr, "FAIL %s: %s; its stderr (%s):\n%s\n", who,
+                 reported ? "RealtimeSanitizer report" : "exited non-zero when asked to stop",
+                 err_path.c_str(), err.c_str());
+    ++failures;
+}
+
 // sonora-engine as a process: headless, on drivers/fake, four tracks, its
 // socket and session in `dir`.
 class EngineProcess {
@@ -86,6 +103,7 @@ public:
         platform::ChildProcess::Options o;
         o.stdout_path = (dir_ / ("engine" + std::to_string(++runs_) + ".out")).string();
         o.stderr_path = (dir_ / ("engine" + std::to_string(runs_) + ".err")).string();
+        err_path_ = o.stderr_path;
         std::string error;
         process_ = platform::ChildProcess::spawn(
             {SONORA_ENGINE_BIN, "--backend", "fake", "--tracks", "4", "--dir",
@@ -104,6 +122,7 @@ public:
         process_->wait(-1);
         const int rc = process_->exited_normally() ? process_->exit_code() : -1;
         process_.reset();
+        audit_child(err_path_, "sonora-engine", rc != 0);
         return rc;
     }
 
@@ -112,6 +131,7 @@ public:
         process_->kill();
         process_->wait(-1);
         process_.reset();
+        audit_child(err_path_, "sonora-engine", false);
     }
 
     const std::string& endpoint() const { return endpoint_; }
@@ -121,6 +141,7 @@ public:
 private:
     fs::path dir_;
     std::string endpoint_;
+    std::string err_path_;
     int runs_ = 0;
     std::unique_ptr<platform::ChildProcess> process_;
 };
@@ -272,6 +293,7 @@ void an_interface_killed_mid_take(const char* self) {
     // As a crash: no goodbye on the socket.
     ui->kill();
     CHECK(ui->wait(5000) && !ui->exited_normally());
+    audit_child((dir / "child.err").string(), "the interface child", false);
     const uint64_t at = v.transport().playhead;
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     CHECK(until(watcher, in, [&]() {

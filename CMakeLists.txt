@@ -11,6 +11,23 @@ endif()
 
 add_compile_options(-Wall -Wextra)
 
+# The RealtimeSanitizer build (tools/build-rtsan.sh, CI's rtsan job; ADR-0007,
+# first 2026-10-12 update). Every SONORA_RT function is [[clang::nonblocking]]
+# under this compiler, so RTSan aborts a test that allocates, locks or makes
+# a blocking call inside one. -Wfunction-effects is the same rule read at
+# compile time; it stays a warning because it cannot see through libstdc++
+# (it infers nothing past std::__throw_length_error), and the runtime check
+# is the gate.
+option(SONORA_RTSAN "Build with -fsanitize=realtime (Clang 20 or later)" OFF)
+if(SONORA_RTSAN)
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
+    message(FATAL_ERROR "SONORA_RTSAN needs Clang 20 or later; this is ${CMAKE_CXX_COMPILER_ID} "
+                        "${CMAKE_CXX_COMPILER_VERSION}")
+  endif()
+  add_compile_options(-fsanitize=realtime -fno-omit-frame-pointer -Wfunction-effects)
+  add_link_options(-fsanitize=realtime)
+endif()
+
 # Every executable lands in the build root, so build/sonora-engine stays where
 # tools/build-iso.sh and tools/test-engine-docker.sh look for it.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -49,6 +66,7 @@ add_subdirectory(plugins/native/limiter)
 add_subdirectory(plugins/native/delay)
 add_subdirectory(plugins/native/chorus)
 add_subdirectory(plugins/native/reverb)
+add_subdirectory(plugins/native/tube)
 add_subdirectory(plugins/native/measure/app)
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)

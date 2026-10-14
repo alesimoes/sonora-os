@@ -7,6 +7,7 @@ add_library(sonora_core STATIC
   src/track.cpp
   src/disk_thread.cpp
   src/playback_plan.cpp
+  src/plan_graph.cpp
   src/plan_exchange.cpp
   src/disk_reader.cpp
 )
@@ -37,3 +38,10 @@ add_test(NAME disk_reader COMMAND test_disk_reader)
 add_executable(test_playback_mix tests/test_playback_mix.cpp)
 target_link_libraries(test_playback_mix PRIVATE sonora_core)
 add_test(NAME playback_mix COMMAND test_playback_mix)
+
+# ADR-0012 checklist 3: insert chains and PDC in the plan. The 2048-frame
+# alignment on a test runner with a declared latency, the clamp and the
+# delay-line pool cap, a latency change by swap, no allocation in process().
+add_executable(test_plan_pdc tests/test_plan_pdc.cpp)
+target_link_libraries(test_plan_pdc PRIVATE sonora_core)
+add_test(NAME plan_pdc COMMAND test_plan_pdc)

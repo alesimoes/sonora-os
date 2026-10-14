@@ -3,18 +3,28 @@
 // ADR-0012 Unverified 10: does RealtimeSanitizer intercept the raw
 // syscall() inside common/platform's wake_all()? Built only with
 // -fsanitize=realtime (Clang 20 or later; engine/plugin_client's CMakeLists
-// says when it is skipped). Run with RTSAN_OPTIONS=halt_on_error=false so a
-// report does not end the run: the output is the answer.
-//   - No report: RTSan does not see the wake; nothing to suppress.
-//   - One report naming syscall: it does; the RTSan job then allows that
-//     one call with a scoped suppression or reports it as the one known
-//     syscall (ADR-0012 Consequences). Either way it must be the only one.
+// says when it is skipped).
+//
+// Settled 2026-10-13 with clang-22: it does. An unscoped syscall(SYS_futex)
+// from a nonblocking function is reported as unsafe-library-call `syscall`
+// (the --raw-syscall canary below, which ctest expects to be reported).
+// wake_all() therefore runs its one syscall with RTSan disabled for that
+// call only (common/platform/src/posix/wake.cpp, the auditor's A1/A3), and
+// the plain run must exit 0 under halt_on_error=true: no report at all.
+// --after-wake shows the scope closes: a raw syscall after wake_all, in the
+// same realtime context, is reported (ctest expects raw_wake in the stack).
 #include "sonora/platform/wake.h"
 #include "sonora/rt.h"
 
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 namespace {
 
@@ -26,11 +36,35 @@ void callback() noexcept SONORA_RT {
     sonora::platform::wake_all(word);
 }
 
+// The same futex wake without wake_all's scope: proves RTSan sees a raw
+// syscall at all, so the clean run above is the scope working, not RTSan
+// missing it.
+void raw_wake() noexcept SONORA_RT {
+    syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
+}
+
+// wake_all, then the raw syscall in the same realtime context: reported
+// only if wake_all's scope turned RTSan back on when it closed.
+void wake_then_raw() noexcept SONORA_RT {
+    callback();
+    raw_wake();
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--raw-syscall") == 0) {
+        raw_wake();
+        std::printf("a raw syscall from a nonblocking function was not reported\n");
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--after-wake") == 0) {
+        wake_then_raw();
+        std::printf("a raw syscall after wake_all was not reported: its scope left RTSan off\n");
+        return 0;
+    }
     callback();
-    std::printf("wake_all returned from a nonblocking function; any RTSan report above is the answer to "
-                "ADR-0012 Unverified 10\n");
+    callback();
+    std::printf("wake_all ran twice from a nonblocking function with no RTSan report\n");
     return 0;
 }

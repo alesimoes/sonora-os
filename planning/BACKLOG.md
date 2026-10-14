@@ -104,12 +104,25 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        Carried from the PR #45 reviews (ADR-0012 checklist 4):
        RT half and supervisor stub landed on `feature/plugin-client`
        (engine/plugin_client); the items below marked [x] are in it.
-       - [ ] RTSan CI job (Unverified 10): Clang 20+ (apt.llvm.org on
-             trixie; Debian's clang-19 has no `-fsanitize=realtime`). The
-             test `plugin_client_rtsan_wake` is written and registers
-             itself where the flag exists; the job builds with Clang and
-             runs it plus the plugin_client tests under RTSan, and records
-             whether the `syscall` in `wake_all` is reported.
+       - [x] RTSan CI job (Unverified 10), `ci/rtsan`: CI job `rtsan`
+             (`tools/build-rtsan.sh`, clang-22). The `syscall` in
+             `wake_all` IS reported (`plugin_client_rtsan_raw_syscall`
+             holds that); `wake_all` runs it in an `__rtsan_disable` scope
+             (A1/A3) and `plugin_client_rtsan_wake` is clean under
+             `halt_on_error=true`. The reachability test allows that pair
+             in wake.cpp's object only.
+       - [x] RTSan over `plugin_client_host_*` and `plugins/host`
+             (`ci/rtsan-jack`): lilv, the VST3 SDK headers and the Debian
+             LV2/VST3 test plugins are in `tools/Dockerfile.rtsan`; the
+             host's per-block work is `run_block`, `SONORA_RT`, so
+             Chain::process and every plugin's run() are checked. Clean:
+             eg-amp, x42-dpl, LSP limiter (LV2 and VST3), AGain, the
+             native bundles. The in-tree `#sleep` plugin's sleep is the
+             deadline tests' overrun and is exempt; `plugin_host_rtsan_block`
+             is the control (unexempted, reported from run_block). The
+             deadline tests had passed with the host halted by RTSan, so
+             `tools/build-rtsan.sh` now fails any report in a passing test
+             not labelled `rtsan-report`.
        - [ ] Wire `PluginClient::process_chain` into the InsertChain node
              (checklist 3, `feature/plan-pdc`): once per node per callback
              with the whole block, `param_store = kNoStore` for a chain
@@ -129,7 +142,9 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [x] A2.2: the caller charges `value_copy_bytes` against
              `kValueCopyBudgetBytes` per callback (first submits wait,
              held-change resyncs submit without the copy and stay set).
-       - [x] A2.5: the plan node carries the store's index, not a pointer.
+       - [x] A2.5: the plan node carries the store's index, not a pointer
+             (`PlanNode::param_store`, filled through the builder's
+             ChainResolver; PDC PR, ADR-0012 checklist 3).
        - [x] A3: the reachability test (nm); the RTSan test is written, its job is the item above (no `common/platform` symbol but
              `wake_all` reachable from `Session::process`) and the RTSan
              test for `wake_all` (Unverified 10) land BEFORE the first
@@ -173,6 +188,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
          bring an insert into the chain (rt-engineer review of #46, low 4).
        - Key an instance on (insert id, channel layout) in the plan builder.
+       - Implement `InsertChainRunner` (engine/core, PR #48) over
+         PluginClient: begin -> begin_callback, run -> process_chain,
+         end -> end_callback (the mapping is in insert_chain_runner.h);
+         the ChainResolver fills latency_frames from
+         PluginClient::latency_frames(slot) and the slot, generation,
+         store and node state from the supervisor. Match the explicit
+         0xFFFFFFFF "none" for param_store and node_state. A callback
+         longer than max_block_frames passes every chain through unrun
+         (counted); show Session::chain_bypassed_blocks() somewhere.
        - Wire Qt File > Save to send `FlushPluginState` and wait for its
          reply before serialising (ADR-0012 §8), once a host can hold state.
          Done in the UI insert-slots PR (ADR-0012 checklist 6); Alt-drag
@@ -349,13 +373,52 @@ not start or extend those items before the Complete DAW closes (owner,
       during a failed take exits 1 with the terminal restored. Only the
       `Session::take_failure()` half is unit-tested today.
 
-- [ ] RTSan CI job: `clang-22` from trixie main, its own build
+- [x] RTSan CI job: `clang-22` from trixie main, its own build
       (`-fsanitize=realtime`, which cannot be combined with ASan or TSan),
       `-Wfunction-effects` advisory. `SONORA_RT` expands to
-      `[[clang::nonblocking]]`. Most useful after M3 (fake backend). Also
-      check whether libjack calls trip RTSan inside the callback.
-      distro-engineer with rt-engineer.
-- [ ] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s
+      `[[clang::nonblocking]]`. CI job `rtsan`, `tools/build-rtsan.sh`,
+      `-DSONORA_RTSAN=ON`; every ctest runs under it.
+- [x] libjack inside the callback under RTSan in CI (`ci/rtsan-jack`):
+      `tools/rtsan-jack.sh`, in CI job `rtsan`, runs `process_cb` and
+      `xrun_cb` against jackd2 (dummy driver) and PipeWire 1.4
+      (pipewire-jack, the shipped pin): `sonora-rtsan-jack-canary` (a
+      malloc after process_cb's libjack calls, must be reported), the
+      backend conformance suite, and a recorded take. No report:
+      `jack_port_get_buffer`, `jack_get_sample_rate` and
+      `jack_last_frame_time` are clean on both, so no suppression or
+      scope. `xrun_cb` ran (2 xruns, jackd2); under PipeWire no xrun
+      could be caused (SIGSTOP of the device or of the engine for 0.2 s:
+      xruns=0), so on the audio thread it is unexercised.
+- [ ] Conformance `fault_xrun` on jackd2: an xrun caused by stopping an
+      upstream client is counted by `xruns()`, but the dummy driver never
+      skips a cycle, so the check's "frame_time shows a gap" fails
+      (measured 2026-10-14, `ci/rtsan-jack`). Decide whether the gap is
+      part of the contract for an xrun the backend's own period did not
+      cause; until then `tools/rtsan-jack.sh` causes the xrun in a take,
+      not through the suite. rt-engineer.
+- [ ] Load-sensitive tests under `ctest -j16` (16-core dev host, RTSan
+      build, 2026-10-14): `dsp_triode`/`dsp_triode_generic` (worst hot
+      block over the quiet median 6.18 to 8.64, bar 6) and
+      `playback_fake` (worst residual 0.354, expected < 1e-6) failed in
+      two of five full runs, and pass alone (`playback_fake` 10 of 10).
+      CI's 4-core runners have not shown it. Measure under load, or mark
+      them RUN_SERIAL. rt-engineer with dsp-engineer.
+- [ ] `-Wfunction-effects` to an error, per module, once clean. Today (clang-22,
+      `ci/rtsan`) it reports SONORA_RT functions calling unmarked ones that
+      RTSan, at run time, finds clean: `ProcessorBase::apply_event`
+      (plugins/native/sdk), `LookaheadLimiter::set_release` and
+      `TruePeakGuard::set_release` (limiter), `Bridge::descriptor`
+      (format), `std::chrono::steady_clock::now` in `Session::process`
+      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API (clean
+      at run time on jackd2 and pipewire-jack, `tools/rtsan-jack.sh`).
+      `ProcessorBase::on_reset` is done (auditor, PR #54): no test reached
+      process()'s non-finite-output branch, so `native_sdk` now forces a
+      NaN from inside a processor and the harness's `check_reset` runs every
+      processor's on_reset from a nonblocking function; both clean under
+      RTSan, and the hook is `SONORA_RT`. Mark the
+      ours `SONORA_RT` (the hooks are an SDK interface change, so with the
+      dsp-engineer's review), then promote the module. rt-engineer.
+- [x] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s
       reader stress test (with its deactivate cycles) at least: they drive
       `Session::process()` and the chunk-slot loads through every playback
       path (fades, crossfades, ramps, misses, locates, swaps, delay lines).
@@ -363,11 +426,19 @@ not start or extend those items before the Complete DAW closes (owner,
       PR #41's RT audit adds about ten audio-thread functions checked by
       reading only (FrameClock, PlanExchange::acquire, render_segment,
       FlushDenormals): the job should cover `test_playback_fake` and
-      `test_frame_clock` too.
+      `test_frame_clock` too. All of them run in CI job `rtsan`
+      (`ci/rtsan`), clean.
 - [x] With M4, the state publisher is paced on a fixed timer. `StateView`
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
       shared-memory atomic type. rt-engineer.
+- [ ] Double-buffered state block (layout version bump, ADR first). Today
+      a publisher preempted mid-section makes every read stale until it runs
+      again (PR #53); with two copies and an index flipped after each
+      write, readers take the finished copy and never wait on a stopped
+      writer. Then the timing tests can hold every tick to "not stale"
+      under load, not only to "stale only while the writer was stopped".
+      rt-engineer with ui-engineer.
 - [ ] Virtual-card QEMU test: `snd-dummy model=rme9652` (26 ordered AUX
       ports) through the real ALSA → PipeWire → JACK path, with the engine
       actually recording. The count is per node. driver-engineer with
@@ -482,6 +553,12 @@ Order and owners are in ADR-0008 §5.
       queued behind an edit, transport.stop included, waits that long. Move
       the builder to a worker owned by engine/control, as ADR-0009 §4
       allows, before sessions that size are edited. rt-engineer.
+      Left out of the PDC PR (ADR-0012 checklist 3) to keep it reviewable:
+      `show()` reports a refused plan synchronously today, and the worker
+      changes that contract. The worker takes the PlaybackController's
+      PlanContinuity and ChainResolver with it (control-thread state, read
+      only by the builder); each build starts from a copy of the playing
+      plan's continuity.
 - [ ] The stop reply waits on the closed take's plan rebuild:
       `follow_transport()` runs before `reply()` in
       `EngineControlServer::handle()`, so Space's Ok comes after every
@@ -495,6 +572,9 @@ Order and owners are in ADR-0008 §5.
       `clock_discontinuities()` stays 0. The deferral covers an xrun that
       lands by the next period; one later still would be counted twice.
       From the PR #41 RT audit. rt-engineer.
+      Note (`ci/rtsan-jack`, 2026-10-14): on PipeWire 1.4's dummy driver
+      in a container, SIGSTOP of the engine for 0.2 s mid-take gave
+      xruns=0; jackd2 gave 2 for the same on an upstream client.
 - [ ] A take on N tracks is one undo step: a multi-track `RecordTake` (one
       operation carrying every track's region), as Pro Tools' one undo
       removes the whole take. Today `add_closed_take()` applies one
@@ -641,9 +721,9 @@ ADR-0011 "For the owner".
 - [ ] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s,
       meeting their `quality.json`. CPU figures on the owner's laptop
       recorded in `brain/research/` (ADR-0011 Unverified 4). dsp-engineer.
-- [ ] Still missing after N0 (PR #34 review, 2026-10-13): the RTSan job
-      that runs the harness and the golden tests (ADR-0011 §2.3; the
-      ADR-0007 follow-up above), and the MSVC `portable` job that runs the
+- [ ] Still missing after N0 (PR #34 review, 2026-10-13): ~~the RTSan job
+      that runs the harness and the golden tests~~ (done in `ci/rtsan`:
+      native_* and dsp_* run under RTSan in CI job `rtsan`), and the MSVC `portable` job that runs the
       golden tests under MSVC (ADR-0011 §3.4, ADR-0008 P7 above). Until
       both exist, "RTSan-clean" and "passes under MSVC" are claims nobody
       has checked for `common/dsp` and `plugins/native`. distro-engineer
@@ -693,14 +773,34 @@ ADR-0011 "For the owner".
       5 % of the set decay; onset on the pre-delay to the sample), LV2 and
       VST3 bundles, stereo and mono, through N1's format layer.
       Measurements: `brain/research/native-reverb-n2.md`. dsp-engineer.
-- [ ] N2 slice 2: ngspice in the build container and the SPICE reference
-      harness (netlists of published schematics, rendered offline at 8x,
-      compared in `sonora-dsp-measure`); the triode stage (Koren and
-      Dempwolf models, grid current, supply sag) as the first model held to
-      it, with oversampling or ADAA and measured aliasing (Unverified 8).
-      dsp-engineer.
+- [x] N2 slice 2, `feature/dsp-n2-tube`: ngspice in the plugins image and
+      the SPICE reference harness (`measure/spice.h`: netlists generated
+      from the model's own values, committed, re-run by `spice_triode_*`);
+      the triode stage in `common/dsp` (`triode.h`: Dempwolf and Koren laws,
+      grid current, interelectrode capacitances, MNA/DK Newton solve); the
+      tube drive processor on it (2x/4x/8x, LV2 and VST3, stereo and mono).
+      Measurements: `brain/research/native-tube-n2.md`. dsp-engineer.
 - [ ] N2 slice 3: transformer (core saturation and hysteresis, LF first)
-      and the tube drive processor built on slices 2 and 3. dsp-engineer.
+      as an output stage of the tube drive, with the supply sag an output
+      stage draws (slice 2 has one preamp stage, which draws too little
+      for sag to matter). dsp-engineer.
+- [ ] N2 tube follow-ups (slice 2): (a) CPU: eco (2x) meets class B at
+      44-48 us p99.9 per q128 stereo block on programme and full-drive
+      worst cases (Docker Desktop, i7-11800H); standard (4x) is 72-110 us
+      and high (8x) 137-155 us, over it, beside eco as ADR-0011 §3.5
+      allows. Next candidates, measured on the reference machine first:
+      the DK method's precomputed solution table over the two port
+      voltages (Yeh 2010) against accuracy to ngspice, and fewer passes on
+      regime changes (`brain/research/native-tube-n2.md`). (e) Before the
+      first arm64 build: flush-to-zero in `common/dsp/src/arch/aarch64/`
+      (FPCR.FZ); the generic arch does not flush, and the oversampler's
+      and delays' histories reach subnormals after ~16 s of silence.
+      (b) The triode laws against published 12AX7 plate
+      curves or the owner's tubes (slice 2 checks the solver against SPICE
+      on the same laws, not the laws against a tube). (c) The bias
+      (cathode resistor) and a second stage as parameters, each with its
+      SPICE cases. (d) Golden files under Clang and MSVC once those jobs
+      exist. dsp-engineer.
 - [ ] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
       NAB and IEC record and playback EQ, wow and flutter). dsp-engineer.
 - [ ] N2 slice 5: modelled noise and hum in `common/dsp` (seeded, published

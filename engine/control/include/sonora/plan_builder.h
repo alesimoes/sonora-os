@@ -10,8 +10,11 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "sonora/model/model.h"
+#include "sonora/plan_graph.h"
 #include "sonora/playback_plan.h"
 
 namespace sonora {
@@ -26,6 +29,32 @@ struct BuildLimits {
     uint32_t chunk_frames = 16384;
     int64_t window_frames = 0;
     uint32_t pool_chunks = 0;
+    // The session's delay-line pool and per-line maximum (ADR-0012 §7.3).
+    // Past either the plan is still built, and the shortfall reported.
+    uint32_t max_delay_frames = 0;
+    uint32_t delay_lines = 0;
+};
+
+// What the control thread knows of a track's chain when it builds: the host
+// channel slot and its generation, the parameter store's index and the
+// checked latency. The builder has set `active` (the track has an active
+// insert) and `chain_id` (the track id) before the call. Until
+// engine/plugin_client lands nothing binds a slot, so every chain passes
+// its input through with no latency; tests inject a latency here.
+using ChainResolver = std::function<void(const model::TrackEdit& track, uint32_t engine_track,
+                                         ChainBinding& binding)>;
+
+// What one build hands the next, so a swap keeps each track's channel state:
+// the delay line of each pair of stable ids, and the stable key of each
+// model track. A track keeps its key for the session whatever its position,
+// so a delete or a reorder never hands it another track's delay history.
+// Copyable: the publisher builds on a copy of the playing plan's, so a plan
+// that is cancelled before it plays leaves no trace.
+struct PlanContinuity {
+    explicit PlanContinuity(uint32_t delay_lines = 0) : pool(delay_lines) {}
+    DelayLinePool pool;
+    std::unordered_map<model::Id, uint32_t> track_keys;
+    uint32_t next_key = 1;
 };
 
 // The engine source-table slot of a model source, registering it on first
@@ -42,6 +71,16 @@ struct PlanReport {
     bool over_half_pool = false;
     uint32_t segments = 0;
     uint32_t chunk_slots = 0;
+    // PDC as built (ADR-0012 §7.3). A non-zero shortfall is shown in red:
+    // the maximum or the delay-line pool left some path early by that much.
+    uint32_t compensation_frames = 0;
+    uint32_t compensation_shortfall_frames = 0;
+    uint32_t clamped_edges = 0;
+    uint32_t undelayed_edges = 0;
+    // Per engine track: its chain's latency, and how early it reaches the
+    // bus.
+    std::vector<uint32_t> track_latency;
+    std::vector<uint32_t> track_shortfall;
 };
 
 // On success `out` is a plan with `epoch`, fully written, ready to hand to
@@ -52,6 +91,17 @@ struct PlanReport {
 // out. A crossfade extends its left region into its handle to cut + after
 // and its right region back to cut - before, each faded over that span with
 // the crossfade's shape, which replaces the region's own fade on that edge.
+//
+// A track with an active insert is TrackSource -> InsertChain -> TrackFader
+// (ADR-0012 §7.1), bound through `chains` (may be empty); every edge into
+// the bus is delayed so all tracks arrive aligned on the slowest, with lines
+// and track keys from `continuity`, which the build updates.
+bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
+                const SourceSlot& source_slot, const ChainResolver& chains,
+                PlanContinuity& continuity, uint64_t epoch, PlaybackPlan*& out,
+                PlanReport& report, std::string& error);
+// No chain bound, a continuity of its own: for callers with no host and no
+// plan before this one.
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error);

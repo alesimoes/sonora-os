@@ -1760,3 +1760,33 @@ Where this note and the headers differ, the headers are the contract.
      `O_CREAT|O_EXCL|O_CLOEXEC`; `WavWriter` uses it, so a `sonora-tui`
      started mid-take does not inherit an open take
      (`wav_writer_cloexec`).
+
+## Update, 2026-10-13: `StateView` waits on a section by the clock
+
+Source: `api_state_view` failing under TSan on loaded CI runners (PR #46's
+fix run, PR #50). No signature changed; `StateView` gains `kMaxReadWaitNs`
+and a `retries()` counter.
+
+The M4 rule "retry the seqlock at most 64 times, yielding between attempts"
+bounded attempts, not time. On a loaded host each 20 µs sleep returned
+about a millisecond later, and a read of a writer stopped mid-section took
+36 to 51 ms in CI, three UI frames, where about 3 ms was meant.
+
+- A read that finds the writer inside a section waits it out (16 yields,
+  then 20 µs sleeps) until it has seen **that same section** open for
+  `kMaxReadWaitNs` (3 ms) by `steady_clock`, then reports stale. 64
+  attempts remain the cap.
+- A read the writer overtook (the sequence moved under it) retries at
+  once: the writer is running.
+- Timing from the start of the read was tried and rejected: a reader
+  descheduled past the deadline came back to an ordinary section and went
+  stale with a running writer.
+- The tests no longer hold a 60 Hz tick to a wall-clock bar, which measured
+  the reader's own scheduling. A stale tick must instead coincide with a
+  publish the writer was switched out of (`getrusage(RUSAGE_THREAD)`) or
+  that stayed open for `kMaxReadWaitNs`. Later reads against a stopped
+  writer are checked by retry count, not time.
+- Known limit: a publisher preempted mid-section still makes every read
+  stale until it runs again, and on a loaded host the switch-count excuse
+  covers much of the run. A double-buffered state block (layout bump) is
+  the fix, in `planning/BACKLOG.md`.

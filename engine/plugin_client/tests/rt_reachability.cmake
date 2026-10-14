@@ -18,7 +18,8 @@
 # up here. One level deeper, wake_all's object may reach only the raw
 # syscall. Checks:
 #  1. rt.cpp's object: only the allowlist.
-#  2. wake.cpp's object: only syscall (and the same instrumentation).
+#  2. wake.cpp's object: only syscall (and the same instrumentation), plus,
+#     in the RTSan build, the scope around that syscall (auditor A1/A3).
 #  3. engine/core references no common/platform symbol: Session::process
 #     reaches the platform only through check 1's object. Revisit if
 #     engine/core ever links common/platform for its non-RT threads.
@@ -50,8 +51,10 @@ function(undefined_symbols file out)
 endfunction()
 
 # The build's own instrumentation (sanitizers, stack protector), never the
-# code's calls.
-set(instrumentation "^__(asan|tsan|ubsan|msan|lsan|sanitizer)_" "^__stack_chk_fail$" "^__stack_chk_guard$")
+# code's calls. RTSan's are named one by one: __rtsan_disable is a call the
+# code makes, and only wake_all's object may make it (check 2).
+set(instrumentation "^__(asan|tsan|ubsan|msan|lsan|sanitizer)_" "^__stack_chk_fail$" "^__stack_chk_guard$"
+    "^__rtsan_(realtime_enter|realtime_exit|ensure_initialized)$")
 
 function(check_allowed obj what)
   set(allowed ${ARGN})
@@ -92,7 +95,7 @@ foreach(obj IN LISTS WAKE_OBJECTS)
   get_filename_component(name ${obj} NAME)
   if(name MATCHES "^wake\\.cpp\\.o(bj)?$")
     set(found_wake TRUE)
-    check_allowed(${obj} "wake_all's object" "^syscall$")
+    check_allowed(${obj} "wake_all's object" "^syscall$" "^__rtsan_(disable|enable)$")
   endif()
 endforeach()
 if(NOT found_wake)

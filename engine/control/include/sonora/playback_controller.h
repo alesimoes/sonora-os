@@ -87,6 +87,16 @@ public:
     bool play_requested() const { return play_requested_; }
     bool record_requested() const { return record_requested_; }
     const PlanReport& last_report() const { return report_; }
+    // The report of the plan the audio thread plays: its compensation and
+    // each track's chain latency are what the state block shows.
+    const PlanReport& playing_report() const { return playing_report_; }
+
+    // How chains are bound when a plan is built (plan_builder.h). A chain's
+    // latency changes only through a new plan: after the resolver's answer
+    // changes, show() the snapshot again (ADR-0012 §7.3).
+    void set_chain_resolver(ChainResolver resolver) { resolver_ = std::move(resolver); }
+    // What the next build starts from. For tests.
+    const PlanContinuity& playing_continuity() const { return playing_continuity_; }
     uint64_t plans_published() const { return published_; }
     // Locate request to the audio thread's queue, in milliseconds.
     double last_locate_ms() const { return last_locate_ms_; }
@@ -112,12 +122,20 @@ private:
     const std::string dir_;
     BuildLimits limits_;
     std::unordered_map<model::Id, uint32_t> slots_;
+    ChainResolver resolver_;
+    // Each build starts from the playing plan's continuity, so a plan
+    // cancelled before it plays cannot move a playing edge to another line
+    // (rt-safety audit of PR #48); the pending plan's becomes the playing
+    // one when it is published.
+    PlanContinuity playing_continuity_;
+    PlanContinuity pending_continuity_;
 
     PlaybackPlan* pending_ = nullptr;
     uint64_t pending_gen_ = 0;
     std::vector<Dropped> retired_;     // exchanged out, freed by the epoch rule
     std::vector<Dropped> cancelled_;   // never published, freed once dropped
-    PlanReport report_;
+    PlanReport report_;                // of the plan last built
+    PlanReport playing_report_;
     uint64_t published_ = 0;
 
     bool input_monitoring_ = true;

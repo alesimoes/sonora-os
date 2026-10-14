@@ -6,9 +6,11 @@
 # common/audiofile (a BWF take writer) is not needed.
 add_library(sonora_dsp_measure STATIC
   src/analysis.cpp
+  src/calibrate.cpp
   src/checks.cpp
   src/render.cpp
   src/signals.cpp
+  src/spice.cpp
   src/suite.cpp
   src/wav.cpp
 )

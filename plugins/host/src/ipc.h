@@ -21,19 +21,21 @@
 #include <cstdint>
 #include <string>
 
+#include "sonora/rt.h"
+
 namespace sonora::plugin_host {
 
 // Bump `word` (release) and wake every sleeper on it. Not for the audio
 // thread: the engine's audio thread bumps the clock tick and, only behind
 // kHostWakeEnabled, calls platform::wake_all itself.
-void signal(std::atomic<uint32_t>& word) noexcept;
+void signal(std::atomic<uint32_t>& word) noexcept SONORA_RT;
 
 // Sleep while `word` still equals `seen`, at most `timeout_ns`. Returns
 // early on a change, a wake or a signal; the caller always re-checks its
 // condition. Works on a read-only mapping. Never for the audio thread.
 void wait_for_change(const std::atomic<uint32_t>& word, uint32_t seen, uint64_t timeout_ns) noexcept;
 
-uint64_t monotonic_ns() noexcept;
+uint64_t monotonic_ns() noexcept SONORA_RT;
 
 // Sleep until CLOCK_MONOTONIC reaches `at_ns` (absolute, so a late wake does
 // not push the next one later). The timer-paced host's wait (ADR-0012 §1.3).

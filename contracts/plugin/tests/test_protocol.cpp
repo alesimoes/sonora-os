@@ -17,6 +17,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__has_feature)
+#if __has_feature(realtime_sanitizer)
+#include <sanitizer/rtsan_interface.h>
+#define SONORA_TEST_RTSAN 1
+#endif
+#endif
+
 using namespace sonora::plugin;
 
 // ---------------------------------------------------------------------------
@@ -278,13 +285,22 @@ struct Fixture {
     Fixture() { v.applied = applied.data(); }
 
     uint32_t consume(uint64_t block, uint32_t frames = 128) {
+        // consume_block_params is SONORA_RT, so under RTSan these test
+        // recorders, which allocate, run with RTSan off; the algorithm
+        // around them is still checked.
         return consume_block_params(
             *h, table, map, v, block, frames,
             [&](uint32_t i, uint32_t p, uint32_t off, float x) {
+#ifdef SONORA_TEST_RTSAN
+                const __rtsan::ScopedDisabler test_recorder_allocates;
+#endif
                 log.push_back({i, p, off, x, false});
                 return true;
             },
             [&](uint32_t i, uint32_t p, float x) {
+#ifdef SONORA_TEST_RTSAN
+                const __rtsan::ScopedDisabler test_recorder_allocates;
+#endif
                 log.push_back({i, p, 0, x, true});
                 return true;
             });
