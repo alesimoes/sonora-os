@@ -212,11 +212,19 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              the resolver drives it, with a supervisor-level `idle()` in
              place of the test reading `plugin::ChannelHeader` (rt-engineer
              items 4 and 5).
-       - [ ] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
-             `HostSupervisor::start` blocks its caller up to 10 s waiting
-             for Ready. Before it runs on the control server's thread it
-             becomes asynchronous: spawn, return, and notice Ready (or the
-             refusal, or the timeout) from `poll()`.
+       - [x] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
+             `HostSupervisor::spawn` and `SupervisedChain::begin` return at
+             once; `HostProcess::poll_startup` and `SupervisedChain::poll`
+             notice Ready (Swapped), the refusal (Down, not retried) or the
+             timeout (Down); a restart is `Restarting`, then a later
+             `Swapped`, the old slot in the plan meanwhile. The blocking
+             `start()` stays for harnesses. `SupervisedChain::idle()` and
+             `HostProcess::idle()` (rt-engineer item 5). ctest
+             `plugin_client_host_{async_start,ready_timeout,async_refused}`,
+             and `miss` checks Restarting before Swapped with no poll over
+             150 ms. Still blocking on the control thread: `HostProcess::stop()`
+             (shutdown word, then up to 2 s) from `retired()` and the
+             destructor; make it asynchronous with the control-server PR.
        - [x] rt-eng M5: fade/ramp state per node, keyed by the chain's
              stable id like the delay lines, not per slot, so make-before-
              break does not cut hard; the silent block a channel switch

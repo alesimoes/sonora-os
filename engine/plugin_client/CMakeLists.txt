@@ -111,7 +111,7 @@ if(TARGET sonora-plugin-host)
   set(_pc_host $<TARGET_FILE:test_plugin_client_host> --host $<TARGET_FILE:sonora-plugin-host>
                --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
   set(_pc_tests)
-  foreach(scenario passthrough params miss crash restarts nan)
+  foreach(scenario async_start ready_timeout async_refused passthrough params miss crash restarts nan)
     add_test(NAME plugin_client_host_${scenario} COMMAND ${_pc_host} --scenario ${scenario})
     list(APPEND _pc_tests plugin_client_host_${scenario})
   endforeach()
