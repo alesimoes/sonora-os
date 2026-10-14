@@ -140,6 +140,11 @@ struct CommandOutcome {
     std::string command;  // carried back so the status line can name it
     DispatchResult result = DispatchResult::Ok;
     std::string message;  // the handler's reason when result is Failed
+    // The answer to a live parameter (a fader ride, a plugin parameter), not
+    // to a command: its Ok confirms one step of a gesture, so it must not
+    // clear what the status line is saying -- the refusal at a ride's end
+    // among others.
+    bool live = false;
 };
 
 class EngineAdapter {

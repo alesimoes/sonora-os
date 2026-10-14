@@ -29,10 +29,14 @@ uint64_t ControlAdapter::send(const std::string& command, const CommandContext& 
     r.target = ctx.target;
     r.argument = ctx.argument;
     const uint64_t seq = engine_.send(r);
-    pending_[seq] = command;
+    await(seq, command, false);
+    return seq;
+}
+
+void ControlAdapter::await(uint64_t seq, std::string name, bool live) {
+    pending_[seq] = Awaited{std::move(name), live};
     // Seqs only grow, so the first is the oldest.
     if (pending_.size() > kMaxAwaiting) pending_.erase(pending_.begin());
-    return seq;
 }
 
 uint64_t ControlAdapter::submitModel(const api::ModelRequest& request) {
@@ -55,7 +59,8 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         o.seq = r.seq;
         const auto it = pending_.find(r.seq);
         if (it != pending_.end()) {
-            o.command = it->second;
+            o.command = it->second.name;
+            o.live = it->second.live;
             pending_.erase(it);
         }
         o.result = r.result;
@@ -88,10 +93,11 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
     if (now == connection_) return;
     connection_ = now;
     model_seqs_.clear();
-    for (const auto& [seq, command] : pending_) {
+    for (const auto& [seq, awaited] : pending_) {
         CommandOutcome o;
         o.seq = seq;
-        o.command = command;
+        o.command = awaited.name;
+        o.live = awaited.live;
         o.result = DispatchResult::Failed;
         o.message = "the connection to the engine was lost before it answered";
         replies.push_back(std::move(o));
@@ -152,8 +158,7 @@ uint64_t ControlAdapter::send_track_gain(uint32_t track, float linear) {
     c.value = linear;
     const uint64_t seq = engine_.send(c);
     // Named for the status line, so a refusal says which fader.
-    pending_[seq] = "the fader of track " + std::to_string(track + 1);
-    if (pending_.size() > kMaxAwaiting) pending_.erase(pending_.begin());
+    await(seq, "the fader of track " + std::to_string(track + 1), true);
     return seq;
 }
 
@@ -165,8 +170,7 @@ uint64_t ControlAdapter::send_plugin_parameter(uint64_t insert, const std::strin
     c.value = value;
     const uint64_t seq = engine_.send(c);
     // Named for the status line, as a command is, so a refusal says what.
-    pending_[seq] = "plugin parameter " + key;
-    if (pending_.size() > kMaxAwaiting) pending_.erase(pending_.begin());
+    await(seq, "plugin parameter " + key, true);
     return seq;
 }
 

@@ -686,6 +686,20 @@ float SessionModel::stripGain(int track) const {
     return m != nullptr ? m->gain_db : 0.0f;
 }
 
+model::Id SessionModel::trackId(int track) const {
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    if (track < 0 || track >= static_cast<int>(tracks.size())) return kNoId;
+    return tracks[static_cast<std::size_t>(track)]->id;
+}
+
+int SessionModel::trackIndex(model::Id id) const {
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (tracks[i]->id == id) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 float SessionModel::stripPan(int track) const {
     const model::TrackMix* m = strip_mix(ctl_.snapshot(), track);
     return m != nullptr ? m->pan : 0.0f;

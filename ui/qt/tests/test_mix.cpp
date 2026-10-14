@@ -13,6 +13,10 @@
 //   - a fader ride is heard through ParameterChange per step and saved by
 //     one SetMix at release; the bus, and a track the engine lacks, ride
 //     through the document instead;
+//   - an interrupted ride never leaves the engine and the document apart:
+//     a lost link is put right by the next connection's Snapshot, the
+//     refusal at release stays said, and a ride whose track moved or left,
+//     or whose session was replaced, is dropped with the reason;
 //   - Alt-click solo and mute set every track; Ctrl-click solo (solo safe)
 //     is refused, loudly, and changes nothing;
 //   - the QML: what the meters read is written on them, a drag on a fader
@@ -70,6 +74,9 @@ struct Rig {
     ShellModel shell{engine, router};
     MixModel mixer;
     std::vector<std::string> refused;
+    // False while the connection is down: what the sender sends then is
+    // dropped unsent, as SocketEngine drops it before a new Hello.
+    bool link = true;
 
     static api::testing::FakeEngine::Config config() {
         api::testing::FakeEngine::Config c;
@@ -82,7 +89,9 @@ struct Rig {
     explicit Rig(int live_tracks = 4)
         : mixer(session,
                 live_tracks < 0 ? MixModel::GainSender()
-                                : [this](uint32_t t, float g) { engine.send_track_gain(t, g); },
+                                : [this](uint32_t t, float g) {
+                                      if (link) engine.send_track_gain(t, g);
+                                  },
                 live_tracks < 0 ? 0u : static_cast<uint32_t>(live_tracks), true) {
         engine.setModelSink([this](const std::vector<api::ModelUpdate>& u,
                                    const std::vector<api::CommandReply>& r) {
@@ -285,6 +294,166 @@ int ride_through_the_document() {
     return 0;
 }
 
+// --- interrupted rides (PR #61 review, findings 1-3) ---------------------------
+
+void resync(Rig& r) {
+    api::ModelRequest q;
+    q.action = api::ModelAction::Resync;
+    r.engine.submitModel(q);
+}
+
+int ride_across_a_lost_link() {
+    // Regression: the link went mid-ride. The steps already delivered set
+    // the engine's gain; the document refused the release while offline and
+    // the restoring change was dropped unsent; a Resync does not re-apply
+    // the mix, so the engine kept the ride's gain with nothing to say so.
+    Rig r;
+    CHECK(r.connect());
+    r.mixer.beginRide(1);
+    r.mixer.ride(1, -40, 200, false);
+    const float up = static_cast<float>(r.mixer.rideGain());
+    CHECK(up > 0.0f);
+    r.settle();
+    CHECK(near(r.engine_gain(1), fader_linear_gain(up)));
+    r.link = false;
+    r.doc.set_link(false);
+    r.mixer.endRide(1);
+    r.settle();
+    CHECK(near(r.session.stripGain(1), 0.0) && !r.refused.empty());
+    CHECK(near(r.engine_gain(1), fader_linear_gain(up)));
+    // The next connection brings the engine's document as a Snapshot (a
+    // Resync here): the engine is put back to what that document holds.
+    r.link = true;
+    r.doc.set_link(true);
+    resync(r);
+    r.settle();
+    CHECK(near(r.session.stripGain(1), 0.0));
+    for (uint32_t i = 0; i < 4; ++i) CHECK(near(r.engine_gain(i), 1.0));
+    std::printf("  a ride cut by a lost link is undone on the next Snapshot: ok\n");
+    return 0;
+}
+
+int ride_refusal_stays_said() {
+    // Regression: endRide said the refusal, then the restoring change's Ok
+    // reply cleared the status line on the next tick.
+    Rig r;
+    CHECK(r.connect());
+    QObject::connect(&r.session, &SessionModel::refused, &r.shell, &ShellModel::say);
+    r.mixer.beginRide(1);
+    r.mixer.ride(1, -40, 200, false);
+    r.settle();
+    r.doc.set_link(false);   // the document refuses; the fader's path still answers
+    r.mixer.endRide(1);
+    const QString said = r.shell.statusText();
+    CHECK(!said.isEmpty());
+    r.settle();
+    CHECK(r.shell.statusText() == said);
+    CHECK(near(r.engine_gain(1), 1.0));
+    // Nor does a ride's every step wipe what the line was saying.
+    r.doc.set_link(true);
+    r.shell.say(QStringLiteral("a line"));
+    r.mixer.beginRide(2);
+    r.mixer.ride(2, -20, 200, false);
+    r.mixer.ride(2, -20, 200, false);
+    r.settle();
+    CHECK(r.mixer.liveSteps() >= 3);
+    CHECK(r.shell.statusText() == QStringLiteral("a line"));
+    r.mixer.endRide(2);
+    // A command's Ok still clears it.
+    r.shell.invoke(QStringLiteral("transport.play"), -1);
+    r.settle();
+    CHECK(r.shell.statusText().isEmpty());
+    std::printf("  a ride's refusal stays on the status line: ok\n");
+    return 0;
+}
+
+int ride_follows_its_track() {
+    // Regression: a ride was its strip's index. A reorder mid-ride (Ctrl+Z
+    // with the mouse down) moved the next steps to another track, and the
+    // release saved the ride onto it.
+    {
+        Rig r;
+        CHECK(r.connect());
+        std::string why;
+        CHECK(r.session.controller().set_gain(1, -6.0f, why));
+        r.settle();
+        r.mixer.beginRide(1);
+        r.mixer.ride(1, -40, 200, false);
+        r.settle();
+        CHECK(r.engine_gain(1) > 1.0f);
+        std::vector<model::Id> order;
+        for (const auto& t : r.doc.snapshot().edit->tracks) order.push_back(t->id);
+        std::reverse(order.begin(), order.end());
+        CHECK(r.doc.submit(model::ReorderTracks{order}, why));
+        r.settle();
+        CHECK(r.mixer.rideTrack() == MixModel::kNoRide);
+        CHECK(!r.refused.empty() && r.refused.back().find("moved") != std::string::npos);
+        const uint64_t rev = r.doc.revision();
+        const uint64_t steps = r.mixer.liveSteps();
+        r.mixer.ride(1, -40, 200, false);
+        r.mixer.endRide(1);
+        r.settle();
+        CHECK(r.doc.revision() == rev && r.mixer.liveSteps() == steps);
+        const QList<qreal> g = r.session.gains();
+        CHECK(near(g[0], 0.0) && near(g[1], 0.0) && near(g[2], -6.0) && near(g[3], 0.0));
+        for (int i = 0; i < 4; ++i) {
+            CHECK(near(r.engine_gain(static_cast<uint32_t>(i)),
+                       fader_linear_gain(static_cast<float>(g[i]))));
+        }
+    }
+    // The track leaves (an undone AddTrack) mid-ride: dropped, nothing saved.
+    {
+        Rig r;
+        CHECK(r.connect());
+        std::string why;
+        model::AddTrack add;
+        add.track = r.doc.reserve_id();
+        add.name = "Extra";
+        add.playlist = r.doc.reserve_id();
+        add.playlist_name = "Extra.01";
+        add.mix.input = {0};
+        CHECK(r.doc.submit(add, why));
+        r.settle();
+        CHECK(r.session.trackCount() == 5);
+        r.mixer.beginRide(4);
+        r.mixer.ride(4, -30, 200, false);
+        r.settle();
+        CHECK(r.session.stripGain(4) > 0.0f);
+        CHECK(r.doc.undo(why));
+        r.settle();
+        CHECK(r.session.trackCount() == 4);
+        CHECK(r.mixer.rideTrack() == MixModel::kNoRide);
+        CHECK(!r.refused.empty() && r.refused.back().find("gone") != std::string::npos);
+        const uint64_t rev = r.doc.revision();
+        r.mixer.ride(4, -30, 200, false);
+        r.mixer.endRide(4);
+        r.settle();
+        CHECK(r.doc.revision() == rev);
+    }
+    // Another session arrives mid-ride (another interface's Open): the
+    // release must not write the old ride into it.
+    {
+        Rig r;
+        CHECK(r.connect());
+        r.mixer.beginRide(0);
+        r.mixer.ride(0, -40, 200, false);
+        r.settle();
+        CHECK(r.engine_gain(0) > 1.0f);
+        std::string why;
+        CHECK(r.doc.reset(make_empty_session(4, 48000), why));
+        r.settle();
+        CHECK(r.mixer.rideTrack() == MixModel::kNoRide);
+        CHECK(!r.refused.empty() && r.refused.back().find("session") != std::string::npos);
+        const uint64_t rev = r.doc.revision();
+        r.mixer.endRide(0);
+        r.settle();
+        CHECK(r.doc.revision() == rev && near(r.session.stripGain(0), 0.0));
+        CHECK(near(r.engine_gain(0), 1.0));
+    }
+    std::printf("  a ride is its track's, and is dropped when it goes: ok\n");
+    return 0;
+}
+
 // --- typed values and modifier clicks, through the engine ---------------------
 
 int typed_values() {
@@ -448,6 +617,9 @@ int main(int argc, char** argv) {
     if (display_order() != 0) return 1;
     if (track_ride() != 0) return 1;
     if (ride_through_the_document() != 0) return 1;
+    if (ride_across_a_lost_link() != 0) return 1;
+    if (ride_refusal_stays_said() != 0) return 1;
+    if (ride_follows_its_track() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (qml() != 0) return 1;

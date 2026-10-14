@@ -52,7 +52,18 @@ playback can follow edits; it is in flight.
          step;
        - FakeEngine's published track gain ignores SetMix (the real engine
          writes faders from the document when the mix changes); it should
-         follow it, as conformance would show.
+         follow it, as conformance would show;
+       - a Resync (and a new connection's Snapshot) should re-apply the
+         document's mix to the engine's tracks, as ADR-0009 item 3 says a
+         Snapshot does: the server's Resync path never sets `mix_changed`,
+         so ride steps a lost link stranded stay in the gain atomics. The UI
+         resends every track's gain on each new document meanwhile
+         (`MixModel::resendGains`, PR #61);
+       - `PlaybackController::apply_mix` (playback_controller.cpp:88) writes
+         only engine tracks that still map to a document track, so a solo
+         on a track that left the document (an undone AddTrack) stays set
+         and `any_solo` (session.cpp:452) silences the rest while the UI
+         shows no solo. Reset `tracks_[i]` for `i >=` the document's tracks.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -82,6 +93,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              all; strips read the mix by display order (they read
              MixState's id order); meters labelled for what they read.
        - [ ] Post-fader and bus meters, pre/post switch: Track 1 item 9.
+       - [x] Interrupted rides (PR #61 review): a ride holds its track id
+             and session and is dropped, with the reason, if either goes
+             before release; every new document resends the engine's gains;
+             live-parameter Ok replies no longer clear the status line.
+       - [ ] Alt-click on solo or mute is one SetMix per track, so one undo
+             step per track; it should be one compound undo step (needs a
+             compound op or a history group in `common/model`).
        - [ ] Solo safe: Track 2 item 5. Solo modes (latch, X-OR,
              momentary) and stereo pan wait for those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.

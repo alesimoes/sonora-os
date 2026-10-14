@@ -20,6 +20,20 @@
 // ride as before: a SetMix (or SetMonitorBus) per step, which the engine
 // applies as it goes. Never a cap that moves while the sound does not.
 //
+// An interrupted ride must not leave the engine and the document apart, so:
+//
+//   - A ride holds its track, not its strip. If that track moves or leaves,
+//     or the document becomes another session (an Open, a reconnection),
+//     before release, the ride is dropped with the reason on the status
+//     line and saves nothing; the steps a release would have saved onto
+//     whatever now sits under the hand are never written.
+//   - Whenever a whole document arrives (the Snapshot that greets every
+//     connection, a Resync, another interface's Open), every engine track's
+//     gain is sent again from it. The steps of a ride cut by a lost link
+//     went to the engine's gain atomics and nothing in the document holds
+//     them; the engine does not re-apply its mix on a Resync (BACKLOG
+//     Track 1), so the interface puts the atomics back to the document.
+//
 // Modifier clicks, as the Pro Tools Reference Guide documents them for
 // Windows:
 //   Alt-click solo or mute    every track to the clicked track's new state
@@ -35,6 +49,9 @@
 #include <QString>
 #include <cstdint>
 #include <functional>
+#include <string>
+
+#include "sonora/model/model.h"
 
 namespace sonora::ui {
 
@@ -71,6 +88,8 @@ public:
     QString note() const;
     // ParameterChanges sent by rides, for the tests.
     uint64_t liveSteps() const { return live_steps_; }
+    // Times every engine track's gain was sent again from a new document.
+    uint64_t gainResends() const { return gain_resends_; }
 
     // --- a fader ride: press, moves, release ---
     Q_INVOKABLE void beginRide(int track);
@@ -99,12 +118,27 @@ private:
     void sendLive(int track, float db);
     // Every track's solo (or mute) to `on`, one SetMix per track that differs.
     void setAll(bool solo, bool on);
+    // The document changed: a new one resends the gains, and a ride whose
+    // track or session is not there any more is dropped.
+    void documentChanged();
+    // False, with the ride dropped and the reason said, when the ride's
+    // track is no longer the strip it began on or its session was replaced.
+    // `restore`: put the engine back to the document if the ride reached it
+    // (false when the caller resends every gain anyway).
+    bool rideStillHolds(bool restore);
+    void dropRide(const std::string& why, bool restore);
+    // Every engine track's gain, as the document holds it.
+    void resendGains();
 
     SessionModel& session_;
     GainSender sender_;
     uint32_t engine_tracks_;
     bool audible_;
+    uint64_t generation_ = 0;     // the document's session generation, last seen
     int ride_track_ = kNoRide;
+    model::Id ride_id_ = 0;       // the ridden track; 0 for the bus
+    uint64_t ride_generation_ = 0;
+    uint64_t gain_resends_ = 0;
     float ride_db_ = 0.0f;
     float ride_from_db_ = 0.0f;
     bool ride_sent_live_ = false;

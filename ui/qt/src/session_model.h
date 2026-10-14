@@ -206,6 +206,14 @@ public:
     // monitor bus's gain); 0 for a track that has no mix entry.
     float stripGain(int track) const;
     float stripPan(int track) const;
+    // The track a strip shows (kNoId past the last), and where a track is
+    // shown now (-1 when it is not), so a gesture can hold the track rather
+    // than the strip it began on.
+    model::Id trackId(int track) const;
+    int trackIndex(model::Id id) const;
+    // TimelineDocument::session_generation: changes when the document may
+    // be another session, or the engine's copy again after a reconnection.
+    uint64_t sessionGeneration() const { return doc_.session_generation(); }
 
     // Pixel geometry the timeline item draws, for the scene builders.
     void buildTimeline(Scene& out) const;
