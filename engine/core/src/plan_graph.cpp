@@ -44,11 +44,19 @@ void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains) {
         ch.input_edge_count = 1;
         ch.scratch_buffer = n;
         ch.track = t;
-        ch.channel_slot = c.channel_slot;
-        ch.channel_generation = c.channel_generation;
-        ch.param_store = c.param_store;
-        ch.node_state = c.node_state;
-        ch.latency_frames = c.latency_frames;
+        // The builder decides "unbound" (PR #59, rt-engineer ruling 1): a
+        // binding with no slot or no node state cannot run on a host, so
+        // the session passes it through, and a pass-through has no latency.
+        // Laid out with its latency, compensate() would delay every other
+        // track for a delay this one never has, and it would arrive early.
+        const bool bound = c.channel_slot != kNoChannelSlot && c.node_state != kNoNodeState;
+        if (bound) {
+            ch.channel_slot = c.channel_slot;
+            ch.channel_generation = c.channel_generation;
+            ch.param_store = c.param_store;
+            ch.node_state = c.node_state;
+            ch.latency_frames = c.latency_frames;
+        }
         ch.channels = channels;
         ch.chain_id = c.chain_id;
         plan.edges[e++] = PlanEdge{source, chain, 0, kNoDelayLine};

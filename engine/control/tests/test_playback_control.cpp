@@ -945,6 +945,7 @@ int test_build_with_chains() {
         b.channel_slot = 10 + engine_track;
         b.channel_generation = 3;
         b.param_store = 20 + engine_track;
+        b.node_state = engine_track;
         b.latency_frames = t.id == 100 ? 2048 : 100;
     };
     sonora::PlanContinuity continuity(limits.delay_lines);
@@ -1031,7 +1032,11 @@ int test_cancelled_plan_leaves_the_pool_alone() {
     CHECK_APPLY(h, track_op(104, 105, "C"));
     CHECK_APPLY(h, insert_op(100, 500, 0));
     PlaybackController ctl(s, kDir);
-    ctl.set_chain_resolver([](const TrackEdit&, uint32_t, sonora::ChainBinding& b) {
+    // Bound (a slot and a node state), or the builder lays the chain out
+    // unbound with latency 0 (PR #59).
+    ctl.set_chain_resolver([](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
+        b.channel_slot = engine_track;
+        b.node_state = engine_track;
         b.latency_frames = 256;
     });
     std::string error;
@@ -1073,7 +1078,9 @@ int test_latency_change_is_a_new_plan() {
     CHECK_APPLY(h, insert_op(100, 500, 0));
     PlaybackController ctl(s, kDir);
     uint32_t latency = 256;
-    ctl.set_chain_resolver([&latency](const TrackEdit&, uint32_t, sonora::ChainBinding& b) {
+    ctl.set_chain_resolver([&latency](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
+        b.channel_slot = engine_track;
+        b.node_state = engine_track;
         b.latency_frames = latency;
     });
     std::string error;

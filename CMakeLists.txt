@@ -83,8 +83,10 @@ add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # Platform-neutral (ADR-0008): the backend engine tests run on, any OS.
 add_subdirectory(drivers/fake)
-# The engine's side of the plugin boundary (ADR-0012 checklist 4). Not
-# linked by engine/core until the InsertChain node lands.
+# The engine's side of the plugin boundary (ADR-0012 checklist 4). Linked
+# by engine/core, added above, for PluginChainRunner; it links
+# common/platform PRIVATE so engine/core still cannot include a platform
+# header (ADR-0007 §1).
 add_subdirectory(engine/plugin_client)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)

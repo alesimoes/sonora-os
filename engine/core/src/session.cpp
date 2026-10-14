@@ -498,9 +498,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // After the take's state is loaded and before its capture: a runner
     // that stalls here is the callback descheduled across stop() and the
     // next take (test_take_boundaries). insert_chain_runner.h: once per
-    // callback, whole callback, or not at all.
+    // callback, whole callback, or not at all. A zero-frame callback mixes
+    // nothing, so it would reach begin() and never end(); it is not a chain
+    // block, bypassed or otherwise.
     runner_ = nullptr;
-    if (plan_valid_ && plan->last_insert_node != kNoNode) {
+    if (plan_valid_ && plan->last_insert_node != kNoNode && nframes > 0) {
         InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
         if (r != nullptr && nframes <= max_block_) {
             runner_ = r;
