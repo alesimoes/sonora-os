@@ -44,7 +44,7 @@ SECONDS_ARG="${2:-60}"
 shift $(( $# > 2 ? 2 : $# ))
 PROCESSORS=("$@")
 if [[ ${#PROCESSORS[@]} -eq 0 ]]; then
-  PROCESSORS=(eq compressor gate limiter delay chorus reverb tube opto)
+  PROCESSORS=(eq compressor gate limiter delay chorus reverb tube opto fet)
 fi
 MEASURE="$BUILD/sonora-dsp-measure"
 OUT="$BUILD/dsp-reports-cpu"

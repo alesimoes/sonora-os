@@ -9,7 +9,9 @@ processors' static curves, the reverb's reverberation time per octave
 band against its design and its frozen level, the tube's harmonic levels
 against ngspice and its aliasing per quality, the opto's static curves,
 release, attack, gain reduction against ngspice, aliasing and distortion,
-and the CPU figures against the class bars.
+the FET limiter's static curves and ratios, attack and release, gain
+reduction against ngspice, aliasing and distortion, and the CPU figures
+against the class bars.
 Needs matplotlib. A reporting aid, not a test: the bars live in each
 processor's quality.json and are checked by ctest.
 """
@@ -318,6 +320,135 @@ def opto_plots(opto, out_dir):
         plt.close(fig)
 
 
+def fet_plots(fet, out_dir):
+    d = fet["data"]
+    curves = d.get("static_curves", [])
+    if curves:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
+        ax = axes[0]
+        for i, c in enumerate(curves):
+            pts = c["in_out_slope"]
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], color="C%d" % i, lw=1.2, label=c["ratio"])
+        ax.plot([-50, 12], [-50, 12], color="0.7", ls=":", lw=0.8)
+        ax.set_xlabel("input, dBFS (1 kHz sine, input control 0 dB)")
+        ax.set_ylabel("output, dBFS (output control 0 dB)")
+        ax.set_title("static curves, standard (4x), attack 0.5 ms, release 250 ms", fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+        ax = axes[1]
+        labels = {"4:1": 4, "8:1": 8, "12:1": 12, "20:1": 20}
+        for i, c in enumerate(curves):
+            pts = [p for p in c["in_out_slope"] if 0 < p[2] < 200 and p[0] - p[1] >= 1.0]
+            ax.plot([p[0] - p[1] for p in pts], [p[2] for p in pts], color="C%d" % i, marker=".", ms=3,
+                    label=c["ratio"])
+            if c["ratio"] in labels:
+                ax.axhline(labels[c["ratio"]], color="C%d" % i, lw=0.8, ls="--")
+        ax.set_yscale("log")
+        ax.set_xlabel("gain reduction, dB")
+        ax.set_ylabel("ratio, input dB / output dB")
+        ax.set_title("ratio against reduction (dashed: the buttons' labels)", fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=7)
+        fig.suptitle("Sonora FET, 48 kHz: static curve and ratio per switch position")
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        fig.savefig(os.path.join(out_dir, "fet-static-curves.png"), dpi=110)
+        plt.close(fig)
+    rel = d.get("release", [])
+    att = d.get("attack_ms_t63us_t90us_gr", [])
+    if rel or att:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.4))
+        ax = axes[0]
+        if att:
+            ax.plot([a[0] for a in att], [a[1] for a in att], marker="o", label="t63 of the reduction")
+            ax.plot([a[0] for a in att], [a[2] for a in att], marker="s", ls="--", label="t90")
+            ax.axhspan(20, 800, color="0.9", lw=0, label="[M]: 20 to 800 us")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("attack control: (R54 + R55) C22, ms")
+        ax.set_ylabel("us")
+        ax.set_title("attack, 20:1, 10 kHz burst from -60 to 0 dBFS (circuit at 768 kHz)", fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=7)
+        ax = axes[1]
+        for i, r in enumerate(rel):
+            g = r["gr_every_10ms"]
+            ax.plot([0.01 * k for k in range(len(g))], [v / r["gr0_db"] for v in g], color="C%d" % i,
+                    label="release %.0f ms: control voltage 1/e in %.0f ms; reduction half in %.0f ms"
+                    % (r["release_ms"], r["vc_tau_ms"], r["t50_ms"]))
+        ax.axhline(0.5, color="k", lw=0.6, ls=":")
+        ax.set_xscale("log")
+        ax.set_xlim(0.01, 6)
+        ax.set_xlabel("seconds after the input drops")
+        ax.set_ylabel("reduction / reduction at the drop")
+        ax.set_title("release: C22's network, then C9's second (20:1, from 0 dBFS)", fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=6.5, loc="lower left")
+        fig.suptitle("Sonora FET: attack and release")
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        fig.savefig(os.path.join(out_dir, "fet-attack-release.png"), dpi=110)
+        plt.close(fig)
+    sp = d.get("spice", [])
+    if sp:
+        fig, axes = plt.subplots(2, 3, figsize=(15, 7), squeeze=False)
+        for i, r in enumerate(sp[:6]):
+            ax = axes[i // 3][i % 3]
+            ax.plot(r["t_s"], r["spice_gr_db"], color="0.6", lw=3, label="ngspice")
+            ax.plot(r["t_s"], r["model_gr_db"], color="C0", lw=1, label="model, 192 kHz (standard at 48)")
+            err = max(abs(a - b) for a, b in zip(r["model_gr_db"], r["spice_gr_db"]))
+            ax.set_title("%s (max |error| %.4f dB)" % (r["case"], err), fontsize=8)
+            ax.set_xlabel("s", fontsize=7)
+            ax.set_ylabel("gain reduction, dB", fontsize=7)
+            ax.grid(True, alpha=0.3)
+            if i == 0:
+                ax.legend(fontsize=7)
+        fig.suptitle("FET stage and side chain: gain reduction through tone bursts, model against ngspice "
+                     "(ngspice's own JFET and diode models)")
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(os.path.join(out_dir, "fet-vs-spice.png"), dpi=110)
+        plt.close(fig)
+    alias = d.get("aliasing", [])
+    thd = d.get("thd_ratio_release_f_gr_pct", [])
+    if alias or thd:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.4))
+        ax = axes[0]
+        names = ["eco (no latency)", "standard (4x)", "high (8x)"]
+        for q in range(3):
+            for fs, style in ((44100.0, "-"), (48000.0, "--")):
+                pts = sorted((a["tone"], a["alias_dbc"]) for a in alias
+                             if a["quality"] == q and a["rate"] == fs and a["level"] == 0)
+                if pts:
+                    ax.plot([p[0] for p in pts], [p[1] for p in pts], style, color="C%d" % q, marker=".",
+                            label="%s, %g kHz" % (names[q], fs / 1000.0))
+        ax.axhline(-90, color="k", lw=0.8)
+        ax.axhline(-70, color="k", lw=0.8, ls="--")
+        ax.set_xscale("log")
+        ax.set_ylim(-170, -40)
+        ax.set_xlabel("tone, Hz (-18 dBFS, input +6 dB, 4:1)")
+        ax.set_ylabel("non-harmonic energy, dBc")
+        ax.set_title("aliasing at the nominal level (bars: -90 default, -70 eco)", fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=6.5)
+        ax = axes[1]
+        i = 0
+        for ratio, rname in ((0.0, "4:1"), (3.0, "20:1")):
+            for rel in sorted({x[1] for x in thd}):
+                r = sorted((x[3], x[4]) for x in thd if x[0] == ratio and x[1] == rel and x[2] == 1000.0)
+                ax.plot([p[0] for p in r], [p[1] for p in r], color="C%d" % i, marker="o",
+                        label="%s, release %.0f ms" % (rname, rel))
+                i += 1
+        ax.axhline(0.5, color="k", lw=0.8, ls="--")
+        ax.set_yscale("log")
+        ax.set_xlabel("gain reduction, dB (1 kHz)")
+        ax.set_ylabel("THD+N, %")
+        ax.set_title("distortion against reduction (dashed: [M]'s 0.5 %)", fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=7)
+        fig.suptitle("Sonora FET: aliasing per quality, and distortion against reduction")
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        fig.savefig(os.path.join(out_dir, "fet-aliasing-thd.png"), dpi=110)
+        plt.close(fig)
+
+
 def cpu(reports, out_dir):
     rows = []
     for name, rep in reports.items():
@@ -365,7 +496,7 @@ def main():
         return 2
     report_dir, out_dir = sys.argv[1], sys.argv[2]
     os.makedirs(out_dir, exist_ok=True)
-    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus", "reverb", "tube", "opto"]
+    names = ["eq", "compressor", "gate", "limiter", "delay", "chorus", "reverb", "tube", "opto", "fet"]
     reports = {n: load(report_dir, n) for n in names}
     if reports["eq"]:
         eq_responses(reports["eq"], out_dir)
@@ -376,6 +507,8 @@ def main():
         tube_plots(reports["tube"], out_dir)
     if reports["opto"]:
         opto_plots(reports["opto"], out_dir)
+    if reports["fet"]:
+        fet_plots(reports["fet"], out_dir)
     cpu(reports, out_dir)
     print("plots written to", out_dir)
     return 0

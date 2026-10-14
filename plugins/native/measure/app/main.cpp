@@ -13,7 +13,9 @@
 //   sonora-dsp-measure --spice-check plugins/native/tube/tests/spice
 //       --ngspice ngspice --work DIR --case N --cases COUNT
 //   the same two with --spice-kind opto and plugins/native/opto/tests/spice:
-//       the optical cell's reference (measure/spice_opto.h)
+//       the optical cell's reference (measure/spice_opto.h); with
+//       --spice-kind fet and plugins/native/fet/tests/spice: the FET
+//       stage's (measure/spice_fet.h)
 //
 // Exit status 0 when every bar in quality.json is met. --host-fixture
 // writes the reference renders the bundles are checked against through
@@ -25,6 +27,7 @@
 #include <string>
 
 #include "sonora/measure/measure.h"
+#include "sonora/measure/spice_fet.h"
 #include "sonora/measure/spice_opto.h"
 
 namespace sonora::native::suites {
@@ -37,6 +40,7 @@ int chorus(const measure::Args&);
 int reverb(const measure::Args&);
 int tube(const measure::Args&);
 int opto(const measure::Args&);
+int fet(const measure::Args&);
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -99,17 +103,20 @@ int main(int argc, char** argv) {
     if (regen != nullptr && std::strcmp(regen, "1") == 0) args.regenerate_golden = true;
 
     // The SPICE reference harness (measure/spice.h).
-    if (spice_kind != "triode" && spice_kind != "opto") {
-        std::fprintf(stderr, "unknown --spice-kind '%s' (triode, opto)\n", spice_kind.c_str());
+    if (spice_kind != "triode" && spice_kind != "opto" && spice_kind != "fet") {
+        std::fprintf(stderr, "unknown --spice-kind '%s' (triode, opto, fet)\n", spice_kind.c_str());
         return 2;
     }
-    const bool opto = spice_kind == "opto";
-    if (!spice_gen.empty())
-        return opto ? measure::opto_spice_generate(spice_gen, ngspice, work)
-                    : measure::spice_generate(spice_gen, ngspice, work);
-    if (!spice_chk.empty())
-        return opto ? measure::opto_spice_check(spice_chk, ngspice, work, spice_case, spice_cases)
-                    : measure::spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
+    if (!spice_gen.empty()) {
+        if (spice_kind == "opto") return measure::opto_spice_generate(spice_gen, ngspice, work);
+        if (spice_kind == "fet") return measure::fet_spice_generate(spice_gen, ngspice, work);
+        return measure::spice_generate(spice_gen, ngspice, work);
+    }
+    if (!spice_chk.empty()) {
+        if (spice_kind == "opto") return measure::opto_spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
+        if (spice_kind == "fet") return measure::fet_spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
+        return measure::spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
+    }
     if (!fixture_dir.empty()) {
         std::printf("sonora-dsp-measure: host fixtures for %s in %s\n", which.c_str(), fixture_dir.c_str());
         return measure::host_fixture(which, fixture_dir, args.golden_dir, preroll, vst3_tempo);
@@ -124,6 +131,7 @@ int main(int argc, char** argv) {
     if (which == "reverb") return native::suites::reverb(args);
     if (which == "tube") return native::suites::tube(args);
     if (which == "opto") return native::suites::opto(args);
+    if (which == "fet") return native::suites::fet(args);
     std::fprintf(stderr, "unknown processor '%s'\n", which.c_str());
     return 2;
 }
