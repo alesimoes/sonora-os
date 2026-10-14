@@ -13,9 +13,9 @@ void PluginChainRunner::run(const PlanNode& node, const float* const in[2], floa
                             uint32_t frames) noexcept SONORA_RT {
     const std::size_t bytes = std::size_t(frames) * sizeof(float);
     if (node.node_state == kNoNodeState) {
-        std::memcpy(out[0], in[0], bytes);
-        std::memcpy(out[1], in[1], bytes);
-        bump(passed_through_);
+        std::memset(out[0], 0, bytes);
+        std::memset(out[1], 0, bytes);
+        bump(no_node_state_);
         return;
     }
     if (node.channels == 0 || node.channels > 2) {

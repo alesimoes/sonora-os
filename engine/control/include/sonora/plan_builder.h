@@ -38,9 +38,10 @@ struct BuildLimits {
 // What the control thread knows of a track's chain when it builds: the host
 // channel slot and its generation, the parameter store's index and the
 // checked latency. The builder has set `active` (the track has an active
-// insert) and `chain_id` (the track id) before the call. Until
-// engine/plugin_client lands nothing binds a slot, so every chain passes
-// its input through with no latency; tests inject a latency here.
+// insert) and `chain_id` (the track id) before the call. A latency counts
+// only with a slot and a node state: without either the chain is laid out
+// unbound and passes its input through with latency 0 (layout_track_graph).
+// Until checklist 5's resolver nothing binds a slot; tests bind one here.
 using ChainResolver = std::function<void(const model::TrackEdit& track, uint32_t engine_track,
                                          ChainBinding& binding)>;
 

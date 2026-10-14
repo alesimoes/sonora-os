@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PluginChainRunner without a host (ADR-0012 §7.2): the cases it decides
-// itself, before or after PluginClient. A node with no node state plays
-// dry; a chain wider than the session's stereo planes is silence, and the
+// itself, before or after PluginClient. A node with no node state is
+// silence; a chain wider than the session's stereo planes is silence, and the
 // client is never handed planes the caller lacks; a mono chain's side 1 is
 // its side 0. A chain bound to a slot no host was ever assigned to is the
 // client's silence, counted as a miss, and begin/end bracket every callback.
@@ -57,23 +57,32 @@ pc::ClientConfig config() {
     return c;
 }
 
-int test_no_node_state_plays_dry() {
+// Review of PR #59 (rt-engineer ruling 1): a node bound to a slot, with a
+// planned latency, but no node state cannot run on a host. Dry, it would
+// reach the bus its latency early; it is silence, counted, and never
+// handed to the client. Mono and stereo alike.
+int test_no_node_state_is_silence() {
     pc::PluginClient client(config());
     PluginChainRunner runner(client);
     Buffers b;
-    b.scribble();
     PlanNode n;
     n.kind = sonora::NodeKind::InsertChain;
     n.channel_slot = 0;
     n.node_state = sonora::kNoNodeState;
-    n.channels = 2;
-    runner.begin(1);
-    runner.run(n, b.ip, b.op, kBlock);
-    runner.end();
-    CHECK(b.out[0] == b.in[0] && b.out[1] == b.in[1]);
-    CHECK(runner.passed_through() == 1);
-    CHECK(runner.collected() + runner.missed() + runner.removed() == 0);
-    CHECK(client.callbacks() == 1);
+    n.latency_frames = 2048;
+    for (uint16_t channels = 1; channels <= 2; ++channels) {
+        n.channels = channels;
+        b.scribble();
+        runner.begin(channels);
+        runner.run(n, b.ip, b.op, kBlock);
+        runner.end();
+        for (int s = 0; s < 2; ++s)
+            for (float v : b.out[s]) CHECK(v == 0.f);
+    }
+    CHECK(runner.no_node_state() == 2);
+    CHECK(runner.collected() + runner.missed() + runner.removed() + runner.unsupported() == 0);
+    CHECK(client.node_status(0).silent_blocks == 0);  // never reached the client
+    CHECK(client.callbacks() == 2);
     return 0;
 }
 
@@ -86,7 +95,7 @@ int test_wider_than_stereo_is_silence() {
     n.kind = sonora::NodeKind::InsertChain;
     n.channel_slot = 0;
     n.node_state = 0;
-    n.channels = 3;  // a key channel the session's planes cannot carry
+    n.channels = 3;  // a plan the builder never makes (ChannelMismatch, §7.1)
     runner.begin(1);
     runner.run(n, b.ip, b.op, kBlock);
     runner.end();
@@ -130,7 +139,7 @@ int test_unassigned_slot_is_a_miss_and_mono_fills_both_sides() {
 }  // namespace
 
 int main() {
-    if (test_no_node_state_plays_dry()) return 1;
+    if (test_no_node_state_is_silence()) return 1;
     if (test_wider_than_stereo_is_silence()) return 1;
     if (test_unassigned_slot_is_a_miss_and_mono_fills_both_sides()) return 1;
     std::puts("plugin_chain_runner: ok");

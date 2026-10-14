@@ -3,8 +3,10 @@
 # and its canaries) as `cmake -P`, with:
 #
 #   NM                the toolchain's nm
-#   RT_OBJECTS        the object files of the audio thread's half (src/rt.cpp
-#                     alone, the OBJECT library sonora_plugin_client_rt)
+#   RT_OBJECTS        the object files on the audio thread's path: src/rt.cpp
+#                     (the OBJECT library sonora_plugin_client_rt) and
+#                     engine/core's PluginChainRunner, which calls it
+#                     (sonora_core_chain_runner)
 #   WAKE_OBJECTS      common/platform's objects; the one built from wake.cpp
 #                     is checked as wake_all's body
 #   CORE_LIB          engine/core's archive (Session::process)
@@ -17,12 +19,15 @@
 # the object calls inline is compiled into it, and its own references show
 # up here. One level deeper, wake_all's object may reach only the raw
 # syscall. Checks:
-#  1. rt.cpp's object: only the allowlist.
+#  1. rt.cpp's and the runner's objects: only the allowlist.
 #  2. wake.cpp's object: only syscall (and the same instrumentation), plus,
 #     in the RTSan build, the scope around that syscall (auditor A1/A3).
 #  3. engine/core references no common/platform symbol: Session::process
-#     reaches the platform only through check 1's object. Revisit if
-#     engine/core ever links common/platform for its non-RT threads.
+#     reaches the platform only through check 1's objects. engine/core links
+#     engine/plugin_client, which links common/platform PRIVATE: the link
+#     reaches the final executable, the include directory does not reach
+#     engine/core, so a platform include there fails to compile (ADR-0007
+#     §1) and this check catches what a declaration alone could still do.
 #  4. wake_all is the only SONORA_RT declaration in common/platform.
 
 cmake_minimum_required(VERSION 3.16)
@@ -85,9 +90,15 @@ list(LENGTH RT_OBJECTS n_objects)
 if(n_objects EQUAL 0)
   message(FATAL_ERROR "RT_OBJECTS is empty")
 endif()
+# Beyond the C memory functions and wake_all: PluginClient's three
+# audio-thread entry points, whose bodies are in rt.cpp's object and held to
+# this same list, and the RTTI vtables a polymorphic class's typeinfo names
+# (PluginChainRunner : InsertChainRunner). Those are data, never called.
 foreach(obj IN LISTS RT_OBJECTS)
   check_allowed(${obj} "the audio thread"
-                "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\(")
+                "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\("
+                "^sonora::plugin_client::PluginClient::(begin_callback|process_chain|end_callback)\\("
+                "^vtable for __cxxabiv1::__(si_)?class_type_info$")
 endforeach()
 
 set(found_wake FALSE)

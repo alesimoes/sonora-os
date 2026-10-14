@@ -12,15 +12,22 @@
 // points and nothing else of plugin_client on the audio thread.
 //
 // Per node:
-//   - node_state == kNoNodeState: passed through (insert_chain_runner.h:
-//     every bound chain needs a node state; one without it is the
-//     builder's slip, played dry and counted, never handed to the client).
-//   - channels outside 1..2: silence, counted. The session's scratch
-//     buffers are stereo planes, so a wider chain (key channels) cannot be
-//     fed from them; PluginClient would index planes the caller lacks.
+//   - node_state == kNoNodeState: silence, counted, never handed to the
+//     client. layout_track_graph() lays such a binding out unbound (no
+//     slot, latency 0), so the session passes it through aligned and never
+//     calls this for it; reaching here means a plan not made by the
+//     builder, whose latency was planned for a host that cannot run.
+//     Playing it dry would put the track on the bus that latency early.
+//   - channels outside 1..2: silence, counted. A chain's width is its
+//     track's (§7.1) and a wider chain is a ChannelMismatch refused at
+//     validation, so this is a plan the builder never makes. The session's
+//     scratch buffers are stereo planes; PluginClient would index planes
+//     the caller lacks.
 //   - otherwise process_chain with the whole callback. A mono chain writes
-//     side 0; side 1 is set to it, so the scratch buffer never carries a
-//     previous node's samples into a fader that reads both.
+//     side 0; side 1 is set to it. The mono fader reads only side 0, so
+//     this is a cheap defence against a PlanTrack::channels that disagrees
+//     with the node's: a stereo fader would otherwise read a previous
+//     node's samples from side 1.
 // No parameter events yet: the session has no path from RtCommand or
 // automation to a chain (checklist 5 maps PluginParameterChange onto one).
 // Until then every node runs on its store's values.
@@ -54,7 +61,7 @@ public:
     uint64_t collected() const { return collected_.load(std::memory_order_relaxed); }
     uint64_t missed() const { return missed_.load(std::memory_order_relaxed); }
     uint64_t removed() const { return removed_.load(std::memory_order_relaxed); }
-    uint64_t passed_through() const { return passed_through_.load(std::memory_order_relaxed); }
+    uint64_t no_node_state() const { return no_node_state_.load(std::memory_order_relaxed); }
     uint64_t unsupported() const { return unsupported_.load(std::memory_order_relaxed); }
 
 private:
@@ -67,7 +74,7 @@ private:
     std::atomic<uint64_t> collected_{0};
     std::atomic<uint64_t> missed_{0};
     std::atomic<uint64_t> removed_{0};
-    std::atomic<uint64_t> passed_through_{0};
+    std::atomic<uint64_t> no_node_state_{0};
     std::atomic<uint64_t> unsupported_{0};
 };
 

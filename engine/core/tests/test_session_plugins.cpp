@@ -20,6 +20,10 @@
 //   aligned_vst3  AGain (unity) and the LSP limiter as VST3, and a mixed
 //                 LV2+VST3 chain in one host, beside a dry track, bit for
 //                 bit
+//   aligned_stereo  a stereo chain (LSP Limiter Stereo, x42-dpl stereo) on
+//                 a stereo track at centre beside a stereo dry track: side
+//                 1 reaches the right bus and side 0 the left, each on the
+//                 dry track's frame, bit for bit
 //
 // Each aligned case also searches the lag in +-2 blocks at which the bus
 // matches best, and requires 0: a misaligned track is reported as a lag,
@@ -30,7 +34,8 @@
 //
 // Between callbacks the aligned cases wait for every host to return its
 // block, as the plugin_client host tests do: a harness may wait, the
-// callback never does. Every process() call is checked for allocation.
+// callback never does. Every process() call is run under the heap counter
+// (report_heap prints what it counts in the build).
 // Exit 77: a Debian plugin this needs is not installed (a failure in CI
 // unless SONORA_PLUGIN_TESTS_ALLOW_SKIP).
 #include <algorithm>
@@ -47,6 +52,13 @@
 #include <thread>
 #include <vector>
 
+// The heap counter is test_plan_pdc's (playback_test.h): on the thread
+// inside process() only, so the supervisor's threads and the spawns this
+// test makes allocate uncounted. It counts operator new/delete and, outside
+// the sanitizers, malloc/calloc/realloc/aligned/free; the host is a
+// separate process, so lilv never runs in this one.
+#define PLAYBACK_TEST_COUNT_HEAP 1
+#include "playback_test.h"
 #include "sonora/plan_graph.h"
 #include "sonora/platform/process.h"
 #include "sonora/platform/wake.h"
@@ -54,38 +66,13 @@
 #include "sonora/plugin_client/host_supervisor.h"
 #include "sonora/session.h"
 
-// operator new and delete counted on the thread inside process(), as
-// test_plan_pdc does; malloc is left alone here because this test also
-// spawns processes and lets lilv-free code allocate on its own threads.
-namespace {
-thread_local bool t_counting = false;
-std::atomic<long> g_heap{0};
-void* counted(std::size_t n) {
-    if (t_counting) g_heap.fetch_add(1, std::memory_order_relaxed);
-    return std::malloc(n > 0 ? n : 1);
-}
-void counted_free(void* p) {
-    if (t_counting && p) g_heap.fetch_add(1, std::memory_order_relaxed);
-    std::free(p);
-}
-}  // namespace
-
-void* operator new(std::size_t n) {
-    if (void* p = counted(n)) return p;
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t n) { return operator new(n); }
-void* operator new(std::size_t n, const std::nothrow_t&) noexcept { return counted(n); }
-void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { return counted(n); }
-void operator delete(void* p) noexcept { counted_free(p); }
-void operator delete[](void* p) noexcept { counted_free(p); }
-void operator delete(void* p, std::size_t) noexcept { counted_free(p); }
-void operator delete[](void* p, std::size_t) noexcept { counted_free(p); }
-
 using namespace sonora;
 using namespace sonora::plugin_client;
 
 namespace {
+
+using playback_test::heap_untouched;
+using playback_test::t_counting;
 
 int failures = 0;
 void check(bool ok, const char* what) {
@@ -103,6 +90,8 @@ const char* const kSleep = "urn:sonora:test#sleep";
 const char* const kEgAmp = "http://lv2plug.in/plugins/eg-amp";
 const char* const kLspLimiter = "http://lsp-plug.in/plugins/lv2/limiter_mono";
 const char* const kDpl = "http://gareus.org/oss/lv2/dpl#mono";
+const char* const kLspLimiterStereo = "http://lsp-plug.in/plugins/lv2/limiter_stereo";
+const char* const kDplStereo = "http://gareus.org/oss/lv2/dpl#stereo";
 const char* const kAGain = "vst3:84E8DE5F92554F5396FAE4133C935A18";
 const char* const kLspLimiterVst3 = "vst3:6473702062316D20202020206A7A357A";
 
@@ -177,11 +166,11 @@ struct Plugin {
 // Raised when a plugin is missing, so the scenario returns kSkip.
 bool g_missing = false;
 
-// A mono chain's spec from the scan: dense counts and the defaults, then
-// the overrides, seeded into the store before the host starts (§5.1).
-ChainSpec chain_spec(const Args& a, const std::vector<Plugin>& plugins) {
+// A chain's spec from the scan: dense counts and the defaults, then the
+// overrides, seeded into the store before the host starts (§5.1).
+ChainSpec chain_spec(const Args& a, const std::vector<Plugin>& plugins, uint16_t channels = 1) {
     ChainSpec s;
-    s.channels = 1;
+    s.channels = channels;
     for (const Plugin& pl : plugins) {
         const Probe p = probe(a, pl.id);
         if (!p.ok) {
@@ -226,6 +215,7 @@ struct Rig {
     int64_t frame = 0;
     float amplitude = 0.1f;
     uint64_t slowest_process_ns = 0;
+    uint16_t track_channels = 1;
     bool ready = false;
 
     static ClientConfig client_config() {
@@ -245,10 +235,11 @@ struct Rig {
         s.block_frames = kBlock;
         return s;
     }
-    static SessionConfig session_config(int tracks) {
+    static SessionConfig session_config(int tracks, uint16_t channels) {
         SessionConfig cfg;
         cfg.dir = "test_session_plugins_unused";
         cfg.track_count = tracks;
+        cfg.channels_per_track = channels;
         cfg.ring_seconds = 0.1;
         cfg.playback.chunk_frames = 256;
         cfg.playback.window_seconds = 0.02;
@@ -259,11 +250,15 @@ struct Rig {
         return cfg;
     }
 
-    // `specs[t]` empty: track t is dry. Pans: -1 left, +1 right.
-    Rig(const Args& a, const std::vector<ChainSpec>& specs, const std::vector<float>& pans)
+    // `specs[t]` empty: track t is dry. Pans: -1 left, +1 right; a stereo
+    // track's pan is balance, so 0 plays side 0 left and side 1 right.
+    // `channels`: every track's, 1 or 2; a track's input is mono, and a
+    // stereo track's source carries it on both sides.
+    Rig(const Args& a, const std::vector<ChainSpec>& specs, const std::vector<float>& pans,
+        uint16_t channels = 1)
         : client(client_config()), scfg(sup_config(a)), sup(scfg, client), runner(client),
-          session(std::make_unique<Session>(session_config(int(specs.size())))),
-          pool(session->delay_lines()) {
+          session(std::make_unique<Session>(session_config(int(specs.size()), channels))),
+          pool(session->delay_lines()), track_channels(channels) {
         check(sup.ok(), "the host speaks this engine's versions and the clock is sealed");
         if (!sup.ok()) {
             std::printf("  %s\n", sup.why().c_str());
@@ -324,32 +319,9 @@ struct Rig {
     }
 
     bool publish() {
-        const std::vector<ChainBinding> chain_bindings = bindings();
-        const auto tracks = uint32_t(chains.size());
-        uint32_t active = 0;
-        for (const ChainBinding& c : chain_bindings) active += c.active ? 1 : 0;
-        PlanSizes sizes;
-        sizes.tracks = tracks;
-        sizes.nodes = graph_nodes(tracks, active);
-        sizes.edges = graph_edges(tracks, active);
-        PlaybackPlan* p = create_plan(sizes);
-        p->epoch = session->plans().next_epoch();
-        p->chunk_frames = 256;
-        p->pan_exponent = 0.5f;
-        for (uint32_t t = 0; t < tracks; ++t) {
-            p->tracks[t].engine_track = t;
-            p->tracks[t].channels = 1;
-        }
-        layout_track_graph(*p, chain_bindings.data());
-        comp = compensate(*p, session->max_delay_frames(), pool, nullptr);
-        DiskReader& r = session->reader();
-        const uint64_t gen = r.serve(session->plans().current(), p);
-        r.run_pass();
-        if (r.resident() != gen) return false;
-        if (!session->plans().publish(p)) return false;
-        r.serve(p, nullptr);
-        r.run_pass();
-        return true;
+        PlaybackPlan* p = playback_test::chain_plan(*session, bindings(), pool, &comp, nullptr,
+                                                    track_channels);
+        return playback_test::publish_plan(*session, p);
     }
 
     // One callback with the signal on every input; nothing in process()
@@ -441,14 +413,23 @@ bool aligned(Rig& rig, uint32_t blocks, float left_tracks, float tolerance, cons
     return ok;
 }
 
+// Exactly what the counter saw: no heap call of the kinds it counts in this
+// build, on the thread inside process(). RTSan's run covers the rest.
+void report_heap() {
+    char line[200];
+    std::snprintf(line, sizeof line, "process() made no heap call (counted: %s)",
+                  playback_test::heap_counter_scope());
+    check(heap_untouched(), line);
+}
+
 void report_runner(const Rig& rig, uint64_t callbacks, uint32_t chains) {
     char line[200];
     std::snprintf(line, sizeof line, "every chain collected in every callback but its first (%llu of %llu)",
                   (unsigned long long)rig.runner.collected(), (unsigned long long)(callbacks * chains));
     check(rig.runner.collected() == (callbacks - 1) * chains && rig.runner.missed() == chains &&
-              rig.runner.removed() == 0 && rig.runner.passed_through() == 0 && rig.runner.unsupported() == 0,
+              rig.runner.removed() == 0 && rig.runner.no_node_state() == 0 && rig.runner.unsupported() == 0,
           line);
-    check(g_heap.load() == 0, "process() allocated and freed nothing");
+    report_heap();
 }
 
 int scenario_aligned_lv2(const Args& a) {
@@ -488,6 +469,35 @@ int scenario_aligned_2048(const Args& a) {
     // -20 dBFS peaks: below both limiters' thresholds (0 dB and -1 dB).
     const uint32_t blocks = 120;
     aligned(rig, blocks, 1.f, 0.f, "the 2048-frame track lands on the dry track's frame, bit for bit");
+    report_runner(rig, blocks, 1);
+    std::printf("  slowest process(): %.1f us\n", double(rig.slowest_process_ns) / 1000.0);
+    return failures ? 1 : 0;
+}
+
+// Review of PR #59 (code-reviewer item 6): a stereo chain through the
+// runner against a real host. Every other case is mono and hard-panned, so
+// no bus ever read side 1 of a chain node. Two stereo tracks: the chain's
+// at centre, where balance is unity on both sides, so the left bus is its
+// side 0 and the right bus its side 1; and a dry one hard left. Right is
+// then the chain's side 1 alone, left its side 0 plus the dry track.
+int scenario_aligned_stereo(const Args& a) {
+    std::printf("aligned_stereo: %s (lk 20 ms) and %s on a stereo track, beside a stereo dry track\n",
+                kLspLimiterStereo, kDplStereo);
+    const Plugin lsp{kLspLimiterStereo, {{"lk", 20.f}}};
+    const Plugin dpl{kDplStereo, {}};
+    std::vector<ChainSpec> specs = {chain_spec(a, {lsp, dpl}, 2), ChainSpec{}};
+    if (g_missing) return kSkip;
+    Rig rig(a, specs, {0.f, -1.f}, 2);
+    if (!rig.ready) return 1;
+    char line[160];
+    std::snprintf(line, sizeof line, "the stereo chain reports %u frames: 960 + 64 + the IPC block",
+                  rig.chains[0]->latency_frames());
+    check(rig.chains[0]->latency_frames() == 960 + 64 + kBlock, line);
+    check(rig.comp.compensation_frames == rig.chains[0]->latency_frames() && rig.comp.shortfall_frames == 0,
+          "the dry track is delayed by all of it, none clamped");
+    const uint32_t blocks = 100;
+    aligned(rig, blocks, 2.f, 0.f,
+            "side 1 is the signal on the dry track's frame, side 0 plus the dry track twice it, bit for bit");
     report_runner(rig, blocks, 1);
     std::printf("  slowest process(): %.1f us\n", double(rig.slowest_process_ns) / 1000.0);
     return failures ? 1 : 0;
@@ -549,7 +559,7 @@ int scenario_stall(const Args& a) {
     // A callback that waited would take the host's 20 ms; this bound is far
     // under it and still loose enough for a loaded container.
     check(rig.slowest_process_ns < 1'000'000, line);
-    check(g_heap.load() == 0, "process() allocated and freed nothing");
+    report_heap();
     return failures ? 1 : 0;
 }
 
@@ -570,6 +580,7 @@ int main(int argc, char** argv) {
     int rc = 2;
     if (a.scenario == "aligned_lv2") rc = scenario_aligned_lv2(a);
     else if (a.scenario == "aligned_2048") rc = scenario_aligned_2048(a);
+    else if (a.scenario == "aligned_stereo") rc = scenario_aligned_stereo(a);
     else if (a.scenario == "aligned_vst3") rc = scenario_aligned_vst3(a);
     else if (a.scenario == "stall") rc = scenario_stall(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());

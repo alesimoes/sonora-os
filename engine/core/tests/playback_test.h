@@ -1,17 +1,176 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Shared by engine/core's playback tests: the CHECK macro, sources written
-// with known contents, and plans built by hand. engine/control builds real
-// plans from a model; these tests are about what engine/core does with one.
+// with known contents, plans built by hand, and, for a test that defines
+// PLAYBACK_TEST_COUNT_HEAP before including this, a heap counter for the
+// thread inside Session::process(). engine/control builds real plans from a
+// model; these tests are about what engine/core does with one.
 #pragma once
 
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <new>
 #include <string>
 #include <vector>
 
+#include "sonora/plan_graph.h"
 #include "sonora/playback_plan.h"
+#include "sonora/session.h"
 #include "sonora/wav_writer.h"
+
+// The counter replaces the global allocators, so it is opt-in, and a test
+// executable that opts in includes this from one translation unit only.
+#if defined(PLAYBACK_TEST_COUNT_HEAP)
+// Every way process() could reach the heap is counted on the thread that
+// sets t_counting: each operator new and delete overload, and, outside the
+// sanitizers (whose own interceptors must keep malloc), malloc, calloc,
+// realloc, the aligned allocators and free. thread_local: a test's other
+// threads (the disk reader, a host supervisor) allocate freely, uncounted.
+namespace playback_test {
+thread_local bool t_counting = false;
+std::atomic<long> g_allocations{0};
+std::atomic<long> g_frees{0};
+
+inline void note_alloc() {
+    if (t_counting) g_allocations.fetch_add(1, std::memory_order_relaxed);
+}
+inline void note_free(void* p) {
+    if (t_counting && p != nullptr) g_frees.fetch_add(1, std::memory_order_relaxed);
+}
+inline void reset_heap_counts() {
+    g_allocations.store(0);
+    g_frees.store(0);
+}
+inline bool heap_untouched() { return g_allocations.load() == 0 && g_frees.load() == 0; }
+}  // namespace playback_test
+
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer)
+#define PLAYBACK_TEST_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
+#define PLAYBACK_TEST_SANITIZED 1
+#endif
+
+#if defined(__GLIBC__) && !defined(PLAYBACK_TEST_SANITIZED)
+#define PLAYBACK_TEST_COUNTS_MALLOC 1
+extern "C" {
+void* __libc_malloc(std::size_t);
+void* __libc_calloc(std::size_t, std::size_t);
+void* __libc_realloc(void*, std::size_t);
+void* __libc_memalign(std::size_t, std::size_t);
+void __libc_free(void*);
+
+void* malloc(std::size_t n) {
+    playback_test::note_alloc();
+    return __libc_malloc(n);
+}
+void* calloc(std::size_t n, std::size_t size) {
+    playback_test::note_alloc();
+    return __libc_calloc(n, size);
+}
+void* realloc(void* p, std::size_t n) {
+    playback_test::note_alloc();
+    return __libc_realloc(p, n);
+}
+void* aligned_alloc(std::size_t align, std::size_t n) {
+    playback_test::note_alloc();
+    return __libc_memalign(align, n);
+}
+void* memalign(std::size_t align, std::size_t n) {
+    playback_test::note_alloc();
+    return __libc_memalign(align, n);
+}
+int posix_memalign(void** out, std::size_t align, std::size_t n) {
+    playback_test::note_alloc();
+    void* p = __libc_memalign(align, n);
+    if (p == nullptr) return 12;  // ENOMEM
+    *out = p;
+    return 0;
+}
+void free(void* p) {
+    playback_test::note_free(p);
+    __libc_free(p);
+}
+}
+#endif
+
+namespace playback_test {
+inline void* counted_new(std::size_t size) {
+    note_alloc();
+    return std::malloc(size > 0 ? size : 1);
+}
+inline void* counted_new_aligned(std::size_t size, std::align_val_t align) {
+    note_alloc();
+    void* p = nullptr;
+    const std::size_t a = static_cast<std::size_t>(align) < sizeof(void*)
+                              ? sizeof(void*)
+                              : static_cast<std::size_t>(align);
+    return posix_memalign(&p, a, size > 0 ? size : 1) == 0 ? p : nullptr;
+}
+inline void counted_delete(void* p) {
+    note_free(p);
+    std::free(p);
+}
+
+// What the counter covers in this build, for a test's evidence line.
+inline const char* heap_counter_scope() {
+#if defined(PLAYBACK_TEST_COUNTS_MALLOC)
+    return "operator new/delete and malloc/calloc/realloc/aligned/free";
+#else
+    return "operator new/delete only (a sanitizer or non-glibc build keeps malloc)";
+#endif
+}
+}  // namespace playback_test
+
+void* operator new(std::size_t size) {
+    if (void* p = playback_test::counted_new(size)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return operator new(size); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    return playback_test::counted_new(size);
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    return playback_test::counted_new(size);
+}
+void* operator new(std::size_t size, std::align_val_t a) {
+    if (void* p = playback_test::counted_new_aligned(size, a)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t a) { return operator new(size, a); }
+void* operator new(std::size_t size, std::align_val_t a, const std::nothrow_t&) noexcept {
+    return playback_test::counted_new_aligned(size, a);
+}
+void* operator new[](std::size_t size, std::align_val_t a, const std::nothrow_t&) noexcept {
+    return playback_test::counted_new_aligned(size, a);
+}
+void operator delete(void* p) noexcept { playback_test::counted_delete(p); }
+void operator delete[](void* p) noexcept { playback_test::counted_delete(p); }
+void operator delete(void* p, std::size_t) noexcept { playback_test::counted_delete(p); }
+void operator delete[](void* p, std::size_t) noexcept { playback_test::counted_delete(p); }
+void operator delete(void* p, std::align_val_t) noexcept { playback_test::counted_delete(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { playback_test::counted_delete(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept {
+    playback_test::counted_delete(p);
+}
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept {
+    playback_test::counted_delete(p);
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept { playback_test::counted_delete(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept {
+    playback_test::counted_delete(p);
+}
+void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept {
+    playback_test::counted_delete(p);
+}
+void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept {
+    playback_test::counted_delete(p);
+}
+#endif  // PLAYBACK_TEST_COUNT_HEAP
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -123,6 +282,51 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
     sonora::layout_monitor_graph(*p);
     for (uint32_t t = 0; t < tracks; ++t) p->edges[t].delay_frames = edge_delay;
     return p;
+}
+
+// A plan with no regions over `session`'s tracks, each `track_channels`
+// wide, the chains as given, laid out and compensated as engine/control's
+// builder does it, against the session's own pool and maximum.
+inline sonora::PlaybackPlan* chain_plan(sonora::Session& session,
+                                        const std::vector<sonora::ChainBinding>& chains,
+                                        sonora::DelayLinePool& pool,
+                                        sonora::Compensation* comp = nullptr,
+                                        std::vector<uint32_t>* shortfall = nullptr,
+                                        uint16_t track_channels = 1) {
+    const auto tracks = static_cast<uint32_t>(session.tracks().size());
+    uint32_t active = 0;
+    for (const sonora::ChainBinding& c : chains) active += c.active ? 1 : 0;
+    sonora::PlanSizes sizes;
+    sizes.tracks = tracks;
+    sizes.nodes = sonora::graph_nodes(tracks, active);
+    sizes.edges = sonora::graph_edges(tracks, active);
+    sonora::PlaybackPlan* p = sonora::create_plan(sizes);
+    p->epoch = session.plans().next_epoch();
+    p->chunk_frames = 256;
+    p->pan_exponent = 0.5f;
+    for (uint32_t t = 0; t < tracks; ++t) {
+        p->tracks[t].engine_track = t;
+        p->tracks[t].channels = track_channels;
+    }
+    sonora::layout_track_graph(*p, chains.data());
+    if (shortfall) shortfall->assign(tracks, 0);
+    const sonora::Compensation c = sonora::compensate(*p, session.max_delay_frames(), pool,
+                                                      shortfall ? shortfall->data() : nullptr);
+    if (comp) *comp = c;
+    return p;
+}
+
+// Makes `p` current as the control thread does: the disk reader has it
+// resident before the session may see it.
+inline bool publish_plan(sonora::Session& session, sonora::PlaybackPlan* p) {
+    sonora::DiskReader& r = session.reader();
+    const uint64_t gen = r.serve(session.plans().current(), p);
+    r.run_pass();
+    if (r.resident() != gen) return false;
+    if (!session.plans().publish(p)) return false;
+    r.serve(p, nullptr);
+    r.run_pass();
+    return true;
 }
 
 }  // namespace playback_test

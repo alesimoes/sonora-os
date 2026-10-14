@@ -235,17 +235,19 @@ end of its run. Keep it short: what is true now, not a diary.
   Called from `Session::process` through `PluginChainRunner` (below); the
   control-server wiring with `host_control.h` (checklist 5) remains.
   Container only.
-- **`Session::process` runs real plugin hosts (`feature/session-plugin-runner`,
-  ADR-0012 checklist 4).** `PluginChainRunner` in engine/core (ADR-0007's
-  edge runs core -> plugin_client) maps the InsertChain node onto
-  `PluginClient`. ctest `session_plugins_*` in `tools/build-plugins.sh`: a
-  2048-frame chain of four Debian LV2 limiters (two LSP at 20 ms, two
-  x42-dpl; 2176 with the IPC block) lands bit for bit on a dry track at the
-  bus; the in-tree look-ahead and eg-amp, AGain and the LSP limiter as
-  VST3, and an LV2+VST3 chain in one host likewise; a host stalled at
-  20 ms a block is removed after 8 misses while the dry track plays on and
-  no `process()` exceeds 1 ms (slowest 28 µs, container); no allocation in
-  `process()`. Hosts are still started by hand in the test: the engine
+- **`Session::process` runs real plugin hosts (#59, ADR-0012 checklist
+  4).** `PluginChainRunner` in engine/core (ADR-0007's edge runs core ->
+  plugin_client) maps the InsertChain node onto `PluginClient`. ctest
+  `session_plugins_*` in `tools/build-plugins.sh`: a 2048-frame chain of
+  four Debian LV2 limiters (two LSP at 20 ms, two x42-dpl; 2176 with the
+  IPC block) lands bit for bit on a dry track at the bus; the in-tree
+  look-ahead and eg-amp, a stereo chain on a stereo track (both sides),
+  AGain and the LSP limiter as VST3, and an LV2+VST3 chain in one host
+  likewise; a host stalled at 20 ms a block is removed after 8 misses while
+  the dry track plays on and no `process()` exceeds 1 ms (slowest 28 µs,
+  container); no operator new/delete, and outside the sanitizers no
+  malloc/free, on the thread inside `process()`. A binding with no slot or
+  no node state is laid out unbound, latency 0, so it is never early. Hosts are still started by hand in the test: the engine
   binary starts none until checklist 5. No parameter events reach a chain
   from the session yet.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
