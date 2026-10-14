@@ -83,6 +83,12 @@ public:
     // be raised past kRiffSizeLimit. Set before open().
     void set_riff_size_limit(uint64_t bytes);
 
+    // Tests only: replaces platform::sync_data() in checkpoint(), to stand
+    // in for a disk that fails or is slow. Null restores it. Same thread as
+    // checkpoint().
+    using SyncData = bool (*)(std::FILE* f);
+    void set_sync(SyncData sync) { sync_ = sync; }
+
     // Whether this take has failed, and why. Safe to ask from another thread
     // while the take runs; failure() is settled once failed() is true, and
     // stays until the next open().
@@ -113,6 +119,7 @@ private:
     bool patch_time_reference_ = false;
     bool folder_synced_ = false;
     LocalClock clock_ = nullptr;
+    SyncData sync_ = nullptr;
     uint64_t riff_size_limit_ = kRiffSizeLimit;
     std::string failure_;
     std::atomic<bool> failed_{false};

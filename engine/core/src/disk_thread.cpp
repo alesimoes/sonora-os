@@ -178,23 +178,26 @@ void DiskThread::finish(std::size_t i, int slot) {
 }
 
 void DiskThread::checkpoint_all() {
-    const auto begin = std::chrono::steady_clock::now();
     for (Track* t : tracks_) {
         for (int slot = 0; slot < Track::kWriterSlots; ++slot) {
             // A slot with a take is this thread's (Track::slot_take()),
             // whether or not its window has opened yet. A failure marks the
             // take failed, which Session::take_failure() reports.
-            if (t->slot_take(slot) != 0 && t->writer(slot).is_open()) {
-                t->writer(slot).checkpoint();
+            if (t->slot_take(slot) == 0 || !t->writer(slot).is_open()) continue;
+            const auto begin = std::chrono::steady_clock::now();
+            t->writer(slot).checkpoint();
+            const auto ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - begin)
+                    .count());
+            if (ns > longest_checkpoint_ns_.load(std::memory_order_relaxed)) {
+                longest_checkpoint_ns_.store(ns, std::memory_order_relaxed);
             }
+            // Between files, so the rings wait for one sync and never for
+            // the sum of them: 18 tracks on a slow stick would come close to
+            // the ring's depth. A file this drain closes is skipped above.
+            drain_once();
         }
-    }
-    const auto ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
-                                                             begin)
-            .count());
-    if (ns > longest_checkpoint_ns_.load(std::memory_order_relaxed)) {
-        longest_checkpoint_ns_.store(ns, std::memory_order_relaxed);
     }
     checkpoints_.fetch_add(1, std::memory_order_relaxed);
 }

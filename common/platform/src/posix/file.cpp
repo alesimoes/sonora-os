@@ -2,8 +2,10 @@
 #include "sonora/platform/file.h"
 
 #include <cerrno>
+#include <cstring>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 namespace sonora::platform {
@@ -39,6 +41,35 @@ bool sync_directory(const std::string& path) {
     ::close(fd);
     errno = err;
     return ok;
+}
+
+FolderLock::~FolderLock() {
+    // Closing the descriptor is what releases a flock.
+    if (handle_ != -1) ::close(static_cast<int>(handle_));
+}
+
+FolderLock::Result FolderLock::acquire(const std::string& path, std::string& error) {
+    if (handle_ != -1) return Result::Held;
+    // flock and not fcntl: an fcntl lock belongs to the process, so a
+    // second holder in it would be granted the lock, and closing any
+    // descriptor on the folder would drop it.
+    const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        error = "cannot open " + path + ": " + std::strerror(errno);
+        return Result::Failed;
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        const int err = errno;
+        ::close(fd);
+        if (err == EWOULDBLOCK) {
+            error = "another engine is using " + path;
+            return Result::Busy;
+        }
+        error = "cannot lock " + path + ": " + std::strerror(err);
+        return Result::Failed;
+    }
+    handle_ = fd;
+    return Result::Held;
 }
 
 }  // namespace sonora::platform

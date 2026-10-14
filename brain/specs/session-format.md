@@ -544,8 +544,19 @@ provides them:
   runs it over `Audio Files/` at startup, before anything records, and says
   each recovered take as a Notice; the take is left unplaced. It touches
   only files whose bext Originator is `Sonora Engine` (another program's WAV
-  may carry chunks after its data), never shortens a header (a file shorter
-  than its header is reported), and is idempotent.
+  may carry chunks after its data), and of those only files whose RIFF size
+  is one an unfinished take has: 0 (`open()`, no checkpoint yet) or the
+  checkpoint's, exactly the header and data with no pad. A RIFF size `close()`
+  wrote, or one a metadata tool wrote when it appended `LIST` or `iXML` to a
+  finished take, means the file is closed, and rule 1 leaves it as it is:
+  read as audio, an appended chunk is a full-scale burst. It never shortens
+  a header (a file shorter than its header is reported), and is
+  idempotent. **One engine per session folder:** the engine holds an
+  advisory lock on the folder (`common/platform` `FolderLock`, `flock` on
+  the folder itself, so nothing is written into it) from before recovery
+  until it exits, and a second engine on the same folder is refused with
+  the reason. Without it the second engine's recovery would treat the
+  first one's open takes as unfinished and cut the frame being written.
 - **The header is kept valid during a take.** At every checkpoint (below)
   the disk thread patches the RIFF and data sizes, and the TimeReference
   once known, to the frames written, so a take whose engine dies reads as
@@ -568,7 +579,11 @@ provides them:
   take with the reason (Linux clears the error, so a retry would claim data
   that is gone). *Unverified:* the `fdatasync` cost on a stick while 18
   tracks record, which must not cause a capture overrun; it sets the
-  interval. `DiskThread::longest_checkpoint_ns()` is the figure to read.
+  interval. A checkpoint pass drains the rings after each file it syncs, so
+  the rings wait for the slowest single sync, never for the sum over 18
+  tracks. `DiskThread::longest_checkpoint_ns()` is that wait, the figure to
+  read: `sonora-engine` prints it at exit ("longest checkpoint") and on the
+  `--record` `RESULT` line (`checkpoint_ms=`).
 - **Punch takes are recovered by their own header.** A recovered orphan
   whose `Description` carries `punch=<A>-<B>` is offered for placement as
   that punch, over `[A, B)` with the session's punch crossfades. Without

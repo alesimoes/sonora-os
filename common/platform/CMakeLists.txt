@@ -42,4 +42,9 @@ if(UNIX)
   add_executable(test_platform_file_sync tests/test_file_sync.cpp)
   target_link_libraries(test_platform_file_sync PRIVATE sonora_platform)
   add_test(NAME platform_file_sync COMMAND test_platform_file_sync)
+
+  # The unsupported stub claims no exclusion; the other holder is a fork.
+  add_executable(test_platform_folder_lock tests/test_folder_lock.cpp)
+  target_link_libraries(test_platform_folder_lock PRIVATE sonora_platform)
+  add_test(NAME platform_folder_lock COMMAND test_platform_folder_lock)
 endif()

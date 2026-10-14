@@ -270,7 +270,7 @@ bool WavWriter::checkpoint() {
     // mid-sync the header may reach the medium without all the audio it
     // counts; recover_take() then reports the file short, and nothing is
     // invented. For kill -9 the page cache holds both, in order.
-    if (!platform::sync_data(file_)) {
+    if (!(sync_ ? sync_ : &platform::sync_data)(file_)) {
         // Linux clears the error a failed fdatasync reports, so a retry
         // would succeed without the data: the take is lost from here.
         if (errno != ENOSYS) {

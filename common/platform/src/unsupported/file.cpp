@@ -21,4 +21,9 @@ bool sync_directory(const std::string&) {
     return false;
 }
 
+FolderLock::~FolderLock() = default;
+
+// Standard C++ has no file lock, so nothing is held and nothing excluded.
+FolderLock::Result FolderLock::acquire(const std::string&, std::string&) { return Result::Held; }
+
 }  // namespace sonora::platform

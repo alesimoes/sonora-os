@@ -28,6 +28,7 @@ uint32_t u32(const unsigned char* p) {
 
 struct Layout {
     bool ours = false;
+    uint32_t riff_bytes = 0;
     uint32_t block_align = 0;
     uint64_t data_body = 0;  // offset of the first sample
     uint64_t data_bytes = 0;
@@ -42,6 +43,7 @@ Layout read_layout(std::FILE* f, std::string& why) {
         why = "not a RIFF/WAVE file";
         return l;
     }
+    l.riff_bytes = u32(head + 4);
     uint64_t at = 12;
     unsigned char ck[8];
     for (;;) {
@@ -115,17 +117,24 @@ TakeRecovery recover_take(const std::string& path) {
     }
 
     r.header_frames = l.data_bytes / l.block_align;
-    const uint64_t finished = l.data_body + l.data_bytes + (l.data_bytes & 1);
-    if (size == finished) {
-        r.outcome = TakeRecovery::Outcome::Intact;
-        r.frames = r.header_frames;
-        return r;
-    }
     if (size < l.data_body + l.data_bytes) {
         r.outcome = TakeRecovery::Outcome::Short;
         r.frames = r.header_frames;
         r.why = "its header counts " + frames_text(r.header_frames) + ", the file holds " +
                 frames_text((size > l.data_body ? size - l.data_body : 0) / l.block_align);
+        return r;
+    }
+    // Unfinished only with a RIFF size that open() (0) or a checkpoint
+    // (the sizes as they were, no pad) wrote. Any other was written by
+    // close() or by another tool: BWF MetaEdit and taggers append LIST or
+    // iXML after the data and count it, and read as audio those bytes are
+    // a full-scale burst. Rule 1: a finished file is never modified.
+    const uint64_t finished = l.data_body + l.data_bytes + (l.data_bytes & 1);
+    const bool unfinished =
+        l.riff_bytes == 0 || l.riff_bytes == l.data_body - 8 + l.data_bytes;
+    if (!unfinished || size == finished) {
+        r.outcome = TakeRecovery::Outcome::Intact;
+        r.frames = r.header_frames;
         return r;
     }
 

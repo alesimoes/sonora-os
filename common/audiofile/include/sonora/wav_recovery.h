@@ -17,7 +17,9 @@ namespace sonora {
 
 struct TakeRecovery {
     enum class Outcome {
-        // Finished: the sizes describe the whole file. Not touched.
+        // Finished: the sizes describe the whole file, or the RIFF size is
+        // one only close() or another program writes (a take closed after
+        // a failure, a chunk a metadata tool appended). Not touched.
         Intact,
         // Sizes rewritten to the whole frames on disk; a trailing part of
         // a frame dropped, an odd chunk padded.

@@ -4,6 +4,7 @@
 // create it names as `create_exclusive()`). Not for the audio thread.
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -27,5 +28,32 @@ bool sync_data(std::FILE* f);
 // it is still found after a power cut (POSIX: fsync on the directory). False
 // with errno set on failure.
 bool sync_directory(const std::string& path);
+
+// An advisory lock on a folder: one engine per session folder, because a
+// second one would run crash recovery over the first one's open takes.
+// Held until the object is destroyed or the process ends, however it ends,
+// so a killed engine never leaves its session locked. Each FolderLock is
+// its own holder, in this process or another. Not inherited by a process
+// this one starts. Advisory: it keeps out only programs that ask for it.
+// POSIX: flock on the folder itself, so nothing is written into it.
+class FolderLock {
+public:
+    enum class Result { Held, Busy, Failed };
+
+    FolderLock() = default;
+    ~FolderLock();
+    FolderLock(const FolderLock&) = delete;
+    FolderLock& operator=(const FolderLock&) = delete;
+
+    // Never waits. Busy: another holder has it. Failed: the folder could
+    // not be opened or locked. Either way `error` says why. Where the
+    // platform has no lock, Held without holding anything: no exclusion is
+    // claimed there.
+    Result acquire(const std::string& path, std::string& error);
+    bool held() const { return handle_ != -1; }
+
+private:
+    intptr_t handle_ = -1;
+};
 
 }  // namespace sonora::platform
