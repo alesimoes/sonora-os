@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <vector>
 
@@ -53,6 +54,14 @@ public:
         }
         last_time_ = b.frame_time;
         last_nframes_ = b.nframes;
+        if (b.callback_ns == 0) {
+            bump(callback_ns_zero_);
+        } else {
+            if (b.callback_ns < last_callback_ns_.load(std::memory_order_relaxed)) {
+                bump(callback_ns_decreases_);
+            }
+            last_callback_ns_.store(b.callback_ns, std::memory_order_relaxed);
+        }
         calls_.store(calls, std::memory_order_release);
     }
 
@@ -66,6 +75,9 @@ public:
     uint32_t size_changes() const { return get(size_changes_); }
     uint32_t decreases() const { return get(decreases_); }
     uint32_t gaps() const { return get(gaps_); }
+    uint32_t callback_ns_zero() const { return get(callback_ns_zero_); }
+    uint32_t callback_ns_decreases() const { return get(callback_ns_decreases_); }
+    uint64_t last_callback_ns() const { return last_callback_ns_.load(std::memory_order_relaxed); }
 
 private:
     static void bump(std::atomic<uint32_t>& a) noexcept SONORA_RT {
@@ -86,6 +98,9 @@ private:
     std::atomic<uint32_t> size_changes_{0};
     std::atomic<uint32_t> decreases_{0};
     std::atomic<uint32_t> gaps_{0};
+    std::atomic<uint32_t> callback_ns_zero_{0};
+    std::atomic<uint32_t> callback_ns_decreases_{0};
+    std::atomic<uint64_t> last_callback_ns_{0};
     // Audio thread only.
     uint64_t last_time_ = 0;
     uint32_t last_nframes_ = 0;
@@ -219,6 +234,35 @@ std::string frame_time_never_decreases(Rig& rig) {
     if (f.rec.gaps() > excused || (rig.exact() && f.rec.gaps() != 0)) {
         return n(f.rec.gaps()) + " gaps in frame_time with " + n(f.b->xruns()) + " xruns and " +
                n(f.b->clock_discontinuities()) + " clock steps";
+    }
+    return "";
+}
+
+// callback_ns is the period's start on the engine's own CLOCK_MONOTONIC
+// (steady_clock): set every period, never decreasing, and close to what this
+// process reads when the periods are over. A server whose time base is
+// another clock (CLOCK_MONOTONIC_RAW drifts; CLOCK_REALTIME is decades off)
+// fails here, and the plugin hosts paced on it would wake at the wrong time
+// (ADR-0012 §1.3).
+std::string callback_ns_is_the_monotonic_clock(Rig& rig) {
+    Fixture f(rig, 2, 2);
+    std::string error;
+    if (!f.start(rig, usable_device(rig), error)) return "start: " + error;
+    if (!wait_calls(rig, f, 64)) return "no periods reached process()";
+    f.b->deactivate();
+    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::steady_clock::now().time_since_epoch())
+                                               .count());
+    if (f.rec.callback_ns_zero() != 0) {
+        return n(f.rec.callback_ns_zero()) + " periods of " + n(f.rec.calls()) + " had no callback_ns";
+    }
+    if (f.rec.callback_ns_decreases() != 0) return n(f.rec.callback_ns_decreases()) + " decreases of callback_ns";
+    const uint64_t last = f.rec.last_callback_ns();
+    // The last period started before now, and not long before: the polls
+    // above take at most seconds.
+    if (last > now || now - last > 10'000'000'000ull) {
+        return "the last callback_ns is " + n(last) + ", steady_clock reads " + n(now) +
+               ": not the same clock";
     }
     return "";
 }
@@ -467,6 +511,7 @@ Result run(Rig& rig, const std::string& rig_name, std::FILE* out) {
         {"open_refuses_another_rate", open_refuses_another_rate},
         {"periods_reach_process", periods_reach_process},
         {"frame_time_never_decreases", frame_time_never_decreases},
+        {"callback_ns_is_the_monotonic_clock", callback_ns_is_the_monotonic_clock},
         {"absent_device_is_not_an_error", absent_device_is_not_an_error},
         {"default_device_policy", default_device_policy},
         {"connect_is_idempotent", connect_is_idempotent},

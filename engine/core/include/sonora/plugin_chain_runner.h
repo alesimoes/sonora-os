@@ -28,9 +28,10 @@
 //     this is a cheap defence against a PlanTrack::channels that disagrees
 //     with the node's: a stereo fader would otherwise read a previous
 //     node's samples from side 1.
-// No parameter events yet: the session has no path from RtCommand or
-// automation to a chain (checklist 5 maps PluginParameterChange onto one).
-// Until then every node runs on its store's values.
+// Parameter events are handed on as the session gathered them for the
+// node's store (Session::post_plugin_param). A node the runner does not hand
+// to the client (no node state, too wide) drops them, counted in
+// events_dropped().
 #pragma once
 
 #include <atomic>
@@ -53,9 +54,10 @@ public:
     explicit PluginChainRunner(plugin_client::PluginClient& client) : client_(client) {}
 
     void begin(uint64_t now_ns) noexcept SONORA_RT override;
-    void run(const PlanNode& node, const float* const in[2], float* const out[2],
-             uint32_t frames) noexcept SONORA_RT override;
+    void run(const PlanNode& node, const float* const in[2], float* const out[2], uint32_t frames,
+             const ChainParamEvent* events, uint32_t event_count) noexcept SONORA_RT override;
     void end() noexcept SONORA_RT override;
+    uint32_t block_frames() const noexcept SONORA_RT override { return client_.config().block_frames; }
 
     // Counters for the control thread, monotonic. One per node run.
     uint64_t collected() const { return collected_.load(std::memory_order_relaxed); }
@@ -63,6 +65,8 @@ public:
     uint64_t removed() const { return removed_.load(std::memory_order_relaxed); }
     uint64_t no_node_state() const { return no_node_state_.load(std::memory_order_relaxed); }
     uint64_t unsupported() const { return unsupported_.load(std::memory_order_relaxed); }
+    // Parameter events of nodes not handed to the client, one per event.
+    uint64_t events_dropped() const { return events_dropped_.load(std::memory_order_relaxed); }
 
 private:
     // One writer, the audio thread: load and store, no read-modify-write.
@@ -76,6 +80,7 @@ private:
     std::atomic<uint64_t> removed_{0};
     std::atomic<uint64_t> no_node_state_{0};
     std::atomic<uint64_t> unsupported_{0};
+    std::atomic<uint64_t> events_dropped_{0};
 };
 
 }  // namespace sonora

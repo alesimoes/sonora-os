@@ -202,31 +202,47 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              instead of polling.
        Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
        out of that PR's scope and handed to checklist 5:
-       - [ ] The callback's timestamp: `Session::process` calls
-             `std::chrono::steady_clock::now()` for `runner_->begin()`
-             (session.cpp, the chain gate; auditor finding 1, the only
-             out-of-line call on the path, flagged by `-Wfunction-effects`).
-             Pass a backend-supplied cycle time instead (JACK
-             `jack_get_cycle_times`), or have the ISO's audio stack refuse
-             a clocksource other than `tsc`. Proof on the UMC1820 target:
-             `current_clocksource` reads `tsc`, and `strace -f -e
-             trace=clock_gettime` on a playing `sonora-engine` shows no call
-             from the audio thread.
+       - [x] The callback's timestamp (checklist 5 RT PR):
+             `contracts/backend` `AudioBlock::callback_ns`, stamped by the
+             backend (JACK: `jack_get_cycle_times`' current_usecs; the fake:
+             its thread's steady_clock), carried forward by the period when
+             0; `Session::process` reads no clock. ctest `plugin_params`
+             (`callback_ns_from_the_backend`) and the conformance check
+             `callback_ns_is_the_monotonic_clock` (fake in ctest; jackd2
+             and PipeWire in `tools/rtsan-jack.sh`). Still open on the
+             UMC1820 target: `strace -f -e trace=clock_gettime` on a playing
+             `sonora-engine` shows no call from the audio thread.
+       - [x] From the #59 re-review (checklist 5 RT PR): the builder's
+             `PlanReport::track_latency` is the latency the plan carries,
+             not the resolver's figure, so an unbound chain shows 0 (ctest
+             `playback_control` `report_shows_the_planned_latency`); and a
+             bound chain the session does not run (no runner, a callback the
+             runner does not take) plays silence, counted in
+             `Session::unrun_chain_blocks()`, never its dry input early
+             (ctest `plan_pdc` `bound_chain_without_a_runner_is_silence`,
+             `long_callback_bypasses_chains`).
        - [ ] One block size, one policy (auditor finding 4, rt-engineer
              item 3): pin `ClientConfig::block_frames` to the backend's
              period and set `max_chain_channels = 2`; on a period change,
              restart the hosts and replan (the chain latencies include the
-             IPC block). Today another period silences every chain
-             (`frame_mismatches`) while compensation still delays the dry
-             tracks. Session's gate uses the runner's block size, so a
-             mismatch is counted once, in `chain_bypassed_blocks`.
-       - [ ] Parameter events into `run()` (rt-engineer item 1): Session's
-             drain discards every non-Locate `RtCommand` uncounted, so a
-             `PluginParameterChange` vanishes. Drain it into per-node-state
-             staging preallocated at session creation (`max_nodes` x a
-             per-callback cap, overflow counted), and change the interface
-             to `run(node, in, out, frames, const ParamEvent*, uint32_t)`.
-             The runner stays stateless.
+             IPC block). Control-server PR. Done in the RT PR: Session's
+             gate uses `InsertChainRunner::block_frames()`, so another
+             period never reaches the client and is counted once, in
+             `chain_bypassed_blocks` (ctest `plugin_params`).
+       - [x] Parameter events into `run()` (rt-engineer item 1; checklist 5
+             RT PR): `Session::post_plugin_param(store, instance, param,
+             value)` into a ring of its own (`plugin_param_capacity`, so a
+             drag never holds a locate back), drained at block start and
+             handed to the InsertChain node naming that store as
+             `run(node, in, out, frames, const ParamEvent*, n)`, in posted
+             order, offset 0; what no node takes is dropped and counted
+             (`plugin_params_dropped`). Gathered per node from one array the
+             ring's capacity rather than per-node-state staging: the
+             session then needs no `max_nodes` of the client's, and the
+             cost is bounded (capacity x InsertChain nodes compares). The
+             runner stays stateless. ctest `plugin_params`,
+             `plugin_chain_runner`, `session_plugins_params` (eg-amp's gain
+             and its bypass, each from the callback after the post).
        - [ ] `PluginFault` from the client, not the runner (rt-engineer
              item 2): the control thread polls `slot_status(slot)` and
              `removed(slot)` for the slots the resolver assigned, so a
@@ -515,8 +531,7 @@ not start or extend those items before the Complete DAW closes (owner,
       RTSan, at run time, finds clean: `ProcessorBase::apply_event`
       (plugins/native/sdk), `LookaheadLimiter::set_release` and
       `TruePeakGuard::set_release` (limiter), `Bridge::descriptor`
-      (format), `std::chrono::steady_clock::now` in `Session::process`
-      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API (clean
+      (format), and libjack's C API (clean
       at run time on jackd2 and pipewire-jack, `tools/rtsan-jack.sh`).
       `ProcessorBase::on_reset` is done (auditor, PR #54): no test reached
       process()'s non-finite-output branch, so `native_sdk` now forces a

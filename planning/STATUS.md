@@ -270,8 +270,19 @@ end of its run. Keep it short: what is true now, not a diary.
   container); no operator new/delete, and outside the sanitizers no
   malloc/free, on the thread inside `process()`. A binding with no slot or
   no node state is laid out unbound, latency 0, so it is never early. Hosts are still started by hand in the test: the engine
-  binary starts none until checklist 5. No parameter events reach a chain
-  from the session yet.
+  binary starts none until checklist 5.
+- **Checklist 5, the RT side (`feature/plugin-chain-control`).** Plugin
+  parameter changes reach a chain: `Session::post_plugin_param` queues an
+  `RtCommand` in a ring of its own, the callback hands it to the
+  InsertChain node naming that store, and `session_plugins_params` moves
+  eg-amp's gain to -20 dB and then bypasses it, each heard from the
+  callback after the post. `Session::process` reads no clock: the backend
+  stamps `AudioBlock::callback_ns` (JACK's cycle time), checked against
+  `steady_clock` by the backend conformance suite. A runner with a fixed
+  block (the client's) runs only callbacks of that size; a bound chain the
+  session does not run plays silence, never dry and early, and the plan
+  report shows the latency the plan carries. The control server does not
+  post any yet, nor start hosts.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays
