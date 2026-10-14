@@ -41,6 +41,18 @@ playback can follow edits; it is in flight.
        `engine/control`.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
+9. [ ] For the Mix window (Track 3 item 2, `feature/ui-mixer-monitor`):
+       - state block layout 3 with each track's post-fader peak (L/R, after
+         pan and mute) and the monitor bus's L/R peak. `Session` already
+         has `bus_peak_`; it is not published. Until then the strips' meters
+         are labelled IN and the bus's NO DATA, and pre/post-fader metering
+         cannot be offered;
+       - a `ParamId` for the monitor bus gain (and track pan), so those ride
+         through ParameterChange too instead of a SetMonitorBus / SetMix per
+         step;
+       - FakeEngine's published track gain ignores SetMix (the real engine
+         writes faders from the document when the mix changes); it should
+         follow it, as conformance would show.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -52,6 +64,9 @@ playback can follow edits; it is in flight.
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
+5. [ ] Solo safe in `TrackMix` (session format, op codec, plan builder: a
+       solo-safe track is never implicitly muted). The Mix window refuses
+       Ctrl-click on solo by name until it exists (`feature/ui-mixer-monitor`).
 
 ### Track 3: UI (ui-engineer)
 
@@ -61,6 +76,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
        zoom; fades; clip gain; markers.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
+       - [x] `feature/ui-mixer-monitor`: fader rides heard through
+             ParameterChange and saved by one SetMix at release; typed gain
+             and pan in the readouts; Ctrl-fine pan; Alt-click solo/mute
+             all; strips read the mix by display order (they read
+             MixState's id order); meters labelled for what they read.
+       - [ ] Post-fader and bus meters, pre/post switch: Track 1 item 9.
+       - [ ] Solo safe: Track 2 item 5. Solo modes (latch, X-OR,
+             momentary) and stereo pan wait for those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.
 4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy.

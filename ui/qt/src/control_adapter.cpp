@@ -145,6 +145,18 @@ void ControlAdapter::frame(EngineFrame& out) const {
     }
 }
 
+uint64_t ControlAdapter::send_track_gain(uint32_t track, float linear) {
+    api::ParameterChange c;
+    c.track = track;
+    c.param = api::ParamId::Gain;
+    c.value = linear;
+    const uint64_t seq = engine_.send(c);
+    // Named for the status line, so a refusal says which fader.
+    pending_[seq] = "the fader of track " + std::to_string(track + 1);
+    if (pending_.size() > kMaxAwaiting) pending_.erase(pending_.begin());
+    return seq;
+}
+
 uint64_t ControlAdapter::send_plugin_parameter(uint64_t insert, const std::string& key,
                                                float value) {
     api::PluginParameterChange c;

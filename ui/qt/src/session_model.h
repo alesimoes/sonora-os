@@ -202,6 +202,10 @@ public:
     Q_INVOKABLE void setGain(int track, qreal db);
     Q_INVOKABLE void panDrag(int track, qreal dx, qreal width);
     Q_INVOKABLE void resetPan(int track);
+    // A strip's gain and pan in the document, by display track (-1: the
+    // monitor bus's gain); 0 for a track that has no mix entry.
+    float stripGain(int track) const;
+    float stripPan(int track) const;
 
     // Pixel geometry the timeline item draws, for the scene builders.
     void buildTimeline(Scene& out) const;

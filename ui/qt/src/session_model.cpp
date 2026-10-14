@@ -302,33 +302,48 @@ QString SessionModel::zoomText() const {
                           : QString::number(1.0 / px_per_s, 'f', 1) + QStringLiteral(" s/px");
 }
 
-QList<bool> SessionModel::mutes() const {
-    QList<bool> out;
-    for (const auto& m : ctl_.snapshot().mix.tracks) out << m.mute;
+// The Mix window's strips are the Edit window's tracks, in display order.
+// MixState::tracks is keyed by id, in no display order, and keeps the
+// entries of undone AddTracks: indexing it by strip showed one track's
+// fader on another's strip once tracks were reordered or one was undone.
+namespace {
+template <typename T, typename F>
+QList<T> per_strip(const model::Snapshot& s, F field) {
+    QList<T> out;
+    for (const auto& t : s.edit->tracks) {
+        const model::TrackMix* m = s.mix.find(t->id);
+        out << (m != nullptr ? field(*m) : field(model::TrackMix{}));
+    }
     return out;
+}
+
+const model::TrackMix* strip_mix(const model::Snapshot& s, int track) {
+    if (track < 0 || track >= static_cast<int>(s.edit->tracks.size())) return nullptr;
+    return s.mix.find(s.edit->tracks[static_cast<std::size_t>(track)]->id);
+}
+}  // namespace
+
+QList<bool> SessionModel::mutes() const {
+    return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.mute; });
 }
 
 QList<bool> SessionModel::solos() const {
-    QList<bool> out;
-    for (const auto& m : ctl_.snapshot().mix.tracks) out << m.solo;
-    return out;
+    return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.solo; });
 }
 
 QList<qreal> SessionModel::gains() const {
-    QList<qreal> out;
-    for (const auto& m : ctl_.snapshot().mix.tracks) out << m.gain_db;
-    return out;
+    return per_strip<qreal>(ctl_.snapshot(),
+                            [](const model::TrackMix& m) { return qreal(m.gain_db); });
 }
 
 QList<qreal> SessionModel::pans() const {
-    QList<qreal> out;
-    for (const auto& m : ctl_.snapshot().mix.tracks) out << m.pan;
-    return out;
+    return per_strip<qreal>(ctl_.snapshot(), [](const model::TrackMix& m) { return qreal(m.pan); });
 }
 
 bool SessionModel::anySolo() const {
-    for (const auto& m : ctl_.snapshot().mix.tracks) {
-        if (m.solo) return true;
+    // An undone track's solo silences nothing that is still there.
+    for (const bool solo : solos()) {
+        if (solo) return true;
     }
     return false;
 }
@@ -660,12 +675,20 @@ QString SessionModel::gainText(qreal db) const { return q(sonora::ui::gain_text(
 QString SessionModel::panText(qreal pan) const { return q(sonora::ui::pan_text(static_cast<float>(pan))); }
 
 void SessionModel::faderDrag(int track, qreal dy, qreal travel, bool fine) {
-    const Snapshot& s = ctl_.snapshot();
-    const float now = track < 0 ? s.mix.bus.gain_db
-                      : track < static_cast<int>(s.mix.tracks.size())
-                          ? s.mix.tracks[static_cast<std::size_t>(track)].gain_db
-                          : 0.0f;
+    const float now = stripGain(track);
     setGain(track, fader_drag(now, static_cast<float>(dy), static_cast<float>(travel), fine));
+}
+
+float SessionModel::stripGain(int track) const {
+    const model::Snapshot& s = ctl_.snapshot();
+    if (track < 0) return s.mix.bus.gain_db;
+    const model::TrackMix* m = strip_mix(s, track);
+    return m != nullptr ? m->gain_db : 0.0f;
+}
+
+float SessionModel::stripPan(int track) const {
+    const model::TrackMix* m = strip_mix(ctl_.snapshot(), track);
+    return m != nullptr ? m->pan : 0.0f;
 }
 
 void SessionModel::resetGain(int track) { setGain(track, 0.0); }
@@ -678,9 +701,9 @@ void SessionModel::setGain(int track, qreal db) {
 }
 
 void SessionModel::panDrag(int track, qreal dx, qreal width) {
-    const auto& ts = ctl_.snapshot().mix.tracks;
-    if (track < 0 || track >= static_cast<int>(ts.size()) || width <= 0) return;
-    const float now = ts[static_cast<std::size_t>(track)].pan;
+    const model::TrackMix* m = strip_mix(ctl_.snapshot(), track);
+    if (m == nullptr || width <= 0) return;
+    const float now = m->pan;
     std::string why;
     run(ctl_.set_pan(track, std::clamp(now + static_cast<float>(2.0 * dx / width), -1.0f, 1.0f), why),
         why);

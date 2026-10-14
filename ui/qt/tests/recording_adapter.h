@@ -66,6 +66,10 @@ public:
         return p;
     }
     bool engine_alive(uint64_t) const override { return alive; }
+    uint64_t send_track_gain(uint32_t track, float linear) override {
+        gain_changes.push_back({track, linear});
+        return ++seq_;
+    }
     uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override {
         plugin_changes.push_back({insert, key, value});
         return ++seq_;
@@ -76,6 +80,12 @@ public:
         catalog_new = false;
         return true;
     }
+
+    struct GainChange {
+        uint32_t track;
+        float linear;
+    };
+    std::vector<GainChange> gain_changes;
 
     struct PluginChange {
         uint64_t insert;
