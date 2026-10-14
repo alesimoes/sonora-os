@@ -14,9 +14,16 @@
 //   urn:sonora:test#key    mono, with a key input: outputs its key, then
 //                          scribbles over the key's `n` samples
 //   urn:sonora:test#keyliar  the same, and writes 64 samples past its key
+//   urn:sonora:test#state  mono pass-through that counts its run() calls and
+//                          keeps the count in its state (state:interface), so
+//                          a restored instance is told apart from a fresh one
 
+#include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
+#include <lv2/state/state.h>
+#include <lv2/urid/urid.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -33,7 +40,9 @@
 
 namespace {
 
-enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar };
+enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar, kState };
+
+constexpr const char* kBlocksUri = "urn:sonora:test#blocks";
 
 constexpr uint32_t kLookaheadFrames = 100;
 constexpr uint32_t kLookaheadRing = 256;  // a power of two above the delay
@@ -51,6 +60,9 @@ struct Plugin {
     // Written through on purpose: what a plugin that uses its inputs as
     // scratch space does.
     float* key = nullptr;
+    // The state plugin: run() counts, save() may read beside it.
+    std::atomic<int64_t> blocks{0};
+    LV2_URID blocks_urid = 0, long_urid = 0;
 };
 
 // Read through a volatile so the compiler cannot prove the address is null
@@ -58,11 +70,49 @@ struct Plugin {
 volatile std::uintptr_t g_nowhere = 0;
 
 template <Kind K>
-LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Feature* const*) {
+LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Feature* const* features) {
     auto* p = new Plugin;
     p->kind = K;
+    if (K == kState) {
+        const LV2_URID_Map* map = nullptr;
+        for (int i = 0; features && features[i]; ++i)
+            if (std::strcmp(features[i]->URI, LV2_URID__map) == 0)
+                map = static_cast<const LV2_URID_Map*>(features[i]->data);
+        if (!map) {
+            delete p;
+            return nullptr;
+        }
+        p->blocks_urid = map->map(map->handle, kBlocksUri);
+        p->long_urid = map->map(map->handle, LV2_ATOM__Long);
+    }
     p->rtsan_checks_sleep = std::getenv("SONORA_TEST_RTSAN_SLEEP") != nullptr;
     return p;
+}
+
+LV2_State_Status save(LV2_Handle h, LV2_State_Store_Function store, LV2_State_Handle handle, uint32_t,
+                      const LV2_Feature* const*) {
+    auto* p = static_cast<Plugin*>(h);
+    const int64_t n = p->blocks.load(std::memory_order_relaxed);
+    return store(handle, p->blocks_urid, &n, sizeof n, p->long_urid, LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
+}
+
+LV2_State_Status restore(LV2_Handle h, LV2_State_Retrieve_Function retrieve, LV2_State_Handle handle,
+                         uint32_t, const LV2_Feature* const*) {
+    auto* p = static_cast<Plugin*>(h);
+    size_t size = 0;
+    uint32_t type = 0, flags = 0;
+    const void* v = retrieve(handle, p->blocks_urid, &size, &type, &flags);
+    if (!v || size != sizeof(int64_t) || type != p->long_urid) return LV2_STATE_ERR_NO_PROPERTY;
+    int64_t n;
+    std::memcpy(&n, v, sizeof n);
+    p->blocks.store(n, std::memory_order_relaxed);
+    return LV2_STATE_SUCCESS;
+}
+
+const LV2_State_Interface kStateInterface = {save, restore};
+
+const void* extension_data(const char* uri) {
+    return std::strcmp(uri, LV2_STATE__interface) == 0 ? &kStateInterface : nullptr;
 }
 
 void connect(LV2_Handle h, uint32_t port, void* data) {
@@ -71,6 +121,11 @@ void connect(LV2_Handle h, uint32_t port, void* data) {
         // 0, 1: in L/R. 2, 3: out L/R.
         if (port < 2) p->in[port] = static_cast<const float*>(data);
         else if (port < 4) p->out[port - 2] = static_cast<float*>(data);
+        return;
+    }
+    if (p->kind == kState) {
+        if (port == 0) p->in[0] = static_cast<const float*>(data);
+        else if (port == 1) p->out[0] = static_cast<float*>(data);
         return;
     }
     if (p->kind == kKey || p->kind == kKeyLiar) {
@@ -137,6 +192,10 @@ void run(LV2_Handle h, uint32_t n) {
         if (p->latency) *p->latency = float(kLookaheadFrames);
         break;
     }
+    case kState:
+        std::memcpy(p->out[0], p->in[0], n * sizeof(float));
+        p->blocks.fetch_add(1, std::memory_order_relaxed);
+        break;
     case kKey:
     case kKeyLiar:
         std::memcpy(p->out[0], p->key, n * sizeof(float));
@@ -164,6 +223,7 @@ const LV2_Descriptor kDescriptors[] = {
     {"urn:sonora:test#lookahead", instantiate<kLookahead>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#key", instantiate<kKey>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#keyliar", instantiate<kKeyLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
+    {"urn:sonora:test#state", instantiate<kState>, connect, nullptr, run, nullptr, cleanup, extension_data},
 };
 
 }  // namespace

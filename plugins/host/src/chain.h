@@ -76,6 +76,37 @@ public:
     // delay clamped there (kBypassHeadroomFrames).
     void prepare_bypass();
 
+    // HostControl (contracts/plugin host_control.h). The main thread; see
+    // Processor for which may run beside process().
+    void param_range(std::size_t i, uint32_t dense, float& min, float& max) const {
+        slots_[i]->param_range(dense, min, max);
+    }
+    void set_touch_sink(TouchSink* sink) {
+        for (std::size_t k = 0; k < slots_.size(); ++k) slots_[k]->set_touch_sink(sink, static_cast<uint32_t>(k));
+    }
+    SaveResult save_state(std::size_t i, std::vector<std::string>& sections, std::string& error) {
+        return slots_[i]->save_state(sections, error);
+    }
+    bool restore_state(std::size_t i, const std::vector<std::string>& sections, std::string& error) {
+        return slots_[i]->restore_state(sections, error);
+    }
+    bool describe_value(std::size_t i, uint32_t dense, float value, std::string& out) const {
+        return slots_[i]->describe_value(dense, value, out);
+    }
+    float bypass_value(std::size_t i, bool bypassed) const { return slots_[i]->bypass_value(bypassed); }
+    // A touch's current value, `param` as touches carry it (a dense index,
+    // or kBypassParam with 1 = bypassed).
+    bool current_touch_value(std::size_t i, uint32_t param, float& v) const {
+        if (i >= slots_.size()) return false;
+        const Processor& p = *slots_[i];
+        if (param != plugin::kBypassParam) return p.current_value(param, v);
+        const int d = p.bypass_param();
+        float raw = 0.f;
+        if (d < 0 || !p.current_value(static_cast<uint32_t>(d), raw)) return false;
+        v = (raw > 0.5f) == (p.bypass_value(true) > 0.5f) ? 1.f : 0.f;
+        return true;
+    }
+
     std::size_t size() const { return slots_.size(); }
     uint32_t instance_latency(std::size_t i) const noexcept SONORA_RT;
     uint32_t total_latency() const noexcept SONORA_RT;

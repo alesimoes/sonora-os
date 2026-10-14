@@ -149,10 +149,32 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `wake_all` reachable from `Session::process`) and the RTSan
              test for `wake_all` (Unverified 10) land BEFORE the first
              `SONORA_RT` caller of `wake_all`.
-       - [ ] `contracts/plugin/host_control.h` (fd-3 socket messages,
+       - [x] `contracts/plugin/host_control.h` (fd-3 socket messages,
              `kHostWireVersion`, `wire N` appended to `--version`) as its own
              contract PR with both reviews, before plugin_client's host
-             supervisor (Hello/Ready, `GetState` for make-before-break).
+             supervisor (Hello/Ready, `GetState` for make-before-break). PR #51.
+       Carried from the PR #51 rt-engineer review, for the host supervisor and
+       the control-server wiring (ADR-0012 checklists 4 and 5); the contract
+       text is in `host_control.h`:
+       - [ ] M2: the engine enforces the touch rates itself: at most
+             `kMaxTouchesPerSecondPerParam` ParamTouched per (instance, param)
+             and `kMaxGestureEndsPerSecond` GestureEnd per host in any
+             one-second window. Past either, the host is a protocol fault
+             (kill, PluginFault naming the insert). Test it with a host that
+             floods GestureBegin/GestureEnd.
+       - [ ] M4: before Reconfigure, an RtCommand sets the node's slot
+             "excused" flag. Misses while it is set are played (fade,
+             silence) and counted, but never count toward the 8-miss
+             removal. The flag clears when the plan built from Reconfigured's
+             `latency_generation` is swapped in, or with the kill on
+             timeout. The window after resume plays misaligned, not silent,
+             until that swap (ADR-0012 §5.4). Test both edges.
+       - [ ] M1: kill a host when `Link::stalled(now, kStalledMessageMs)`
+             (checked in the 50 ms poll) or when `Link::queue` refuses
+             (`kMaxQueuedBytes`).
+       - [ ] Low: a Load that passes `kMaxMessageBytes` (more than about 3
+             large states in one chain) becomes a PluginFault naming the
+             insert: "the chain's plugin states exceed the 64 MiB Load cap".
        - [ ] Use the contract's helpers: `EngineChannel` per slot,
              `collect_output` (count is a miss and a fault), `hold_param`,
              `submit_block`; `parse_version_line` at start-up; `mlock` each

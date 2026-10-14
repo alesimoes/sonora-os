@@ -6,6 +6,7 @@
 #include <lv2/core/lv2.h>
 #include <lv2/options/options.h>
 #include <lv2/parameters/parameters.h>
+#include <lv2/state/state.h>
 
 #include <algorithm>
 #include <cmath>
@@ -216,9 +217,11 @@ public:
         }
     }
 
-    bool init(const LilvPlugin* p, PluginInfo info, uint32_t sample_rate, uint32_t channels,
+    bool init(Lv2World& world, const LilvPlugin* p, PluginInfo info, uint32_t sample_rate, uint32_t channels,
               const std::vector<float*>& in, const std::vector<float*>& out,
               const std::vector<float*>& key, ChainError& error) {
+        world_ = &world;
+        plugin_ = p;
         info_ = std::move(info);
         const std::string who = info_.name + " <" + info_.uri + ">";
         if (!info_.missing_features.empty()) {
@@ -358,7 +361,77 @@ public:
     // lv2:enabled is 1 while processing.
     float bypass_value(bool bypassed) const noexcept SONORA_RT override { return bypassed ? 0.f : 1.f; }
 
+    void param_range(uint32_t dense, float& min, float& max) const override {
+        const PortInfo& p = info_.ports[dense_[dense]];
+        min = std::min(p.min, p.max);
+        max = std::max(p.min, p.max);
+    }
+
+    // One section: the plugin's state:interface save(), as Turtle. Port
+    // values are left out (no get_value): they are the engine's, through the
+    // table, and win over a state anyway (host_control.h, ordering). The LV2
+    // state spec lets save() run beside run(). Replicas are copies of
+    // replica 0. A plugin without state:interface keeps no state of its own.
+    SaveResult save_state(std::vector<std::string>& sections, std::string& error) override {
+        if (!has_state_interface()) return SaveResult::Empty;
+        UridMap& u = world_->urids();
+        LilvState* state = lilv_state_new_from_instance(plugin_, instances_[0], u.map_feature(), nullptr,
+                                                         nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                         LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE, features_);
+        if (!state) {
+            error = info_.name + " <" + info_.uri + ">: its state could not be saved";
+            return SaveResult::Failed;
+        }
+        char* text = lilv_state_to_string(world_->world(), u.map_feature(), u.unmap_feature(), state,
+                                          kStateUri, nullptr);
+        lilv_state_free(state);
+        if (!text) {
+            error = info_.name + " <" + info_.uri + ">: its state could not be written as Turtle";
+            return SaveResult::Failed;
+        }
+        sections = {std::string(text)};
+        lilv_free(text);
+        return SaveResult::Saved;
+    }
+
+    // Before the processing thread starts: restore() is in LV2's
+    // instantiation threading class and must never run beside run().
+    bool restore_state(const std::vector<std::string>& sections, std::string& error) override {
+        if (sections.empty()) return true;
+        const std::string who = info_.name + " <" + info_.uri + ">";
+        if (sections.size() != 1) {
+            error = who + ": an LV2 state has one section, not " + std::to_string(sections.size());
+            return false;
+        }
+        if (!has_state_interface()) {
+            error = who + " keeps no state of its own";
+            return false;
+        }
+        UridMap& u = world_->urids();
+        LilvState* state = lilv_state_new_from_string(world_->world(), u.map_feature(), sections[0].c_str());
+        if (!state) {
+            error = who + ": the state is not one lilv can read";
+            return false;
+        }
+        const LilvNode* of = lilv_state_get_plugin_uri(state);
+        if (!of || info_.uri != lilv_node_as_uri(of)) {
+            error = who + ": the state is another plugin's";
+            lilv_state_free(state);
+            return false;
+        }
+        for (LilvInstance* inst : instances_) lilv_state_restore(state, inst, nullptr, nullptr, 0, features_);
+        lilv_state_free(state);
+        return true;
+    }
+
 private:
+    static constexpr const char* kStateUri = "urn:sonora:plugin-state";
+
+    bool has_state_interface() const {
+        return !instances_.empty() &&
+               lilv_instance_get_extension_data(instances_[0], LV2_STATE__interface) != nullptr;
+    }
+
     void reset_atom_ports() noexcept {
         for (auto& a : atoms_) {
             auto* atom = reinterpret_cast<LV2_Atom*>(a.words.data());
@@ -375,6 +448,8 @@ private:
         }
     }
 
+    Lv2World* world_ = nullptr;
+    const LilvPlugin* plugin_ = nullptr;
     std::vector<LilvInstance*> instances_;  // one, or one per channel
     std::vector<float> controls_;           // indexed by port; shared by replicas
     std::vector<uint32_t> dense_;           // dense index -> input control port
@@ -413,7 +488,7 @@ std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const C
         return nullptr;
     }
     auto proc = std::make_unique<Lv2Processor>(*this, config);
-    if (!proc->init(p, describe(p), config.sample_rate, config.channels, in, out, key, error)) return nullptr;
+    if (!proc->init(*this, p, describe(p), config.sample_rate, config.channels, in, out, key, error)) return nullptr;
     return proc;
 }
 

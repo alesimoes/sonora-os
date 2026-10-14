@@ -296,6 +296,50 @@ struct ControlChannel::Impl {
 ControlChannel::ControlChannel(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 ControlChannel::~ControlChannel() = default;
 
+int ControlChannel::native_handle() const { return impl_->fd; }
+
+bool ControlChannel::pair(std::unique_ptr<ControlChannel>& parent, int& child_handle, std::string& error) {
+    int fds[2];
+    // Both ends close-on-exec at birth, so a child forked by another thread
+    // in the meantime inherits neither; the spawner clears it on the child's
+    // end only, in the child, by dup2 into place.
+    if (::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fds) != 0) {
+        error = os_error("socketpair");
+        return false;
+    }
+    auto impl = std::make_unique<Impl>();
+    impl->fd = fds[0];
+    parent = std::make_unique<ControlChannel>(std::move(impl));
+    child_handle = fds[1];
+    return true;
+}
+
+std::unique_ptr<ControlChannel> ControlChannel::adopt(int handle, std::string& error) {
+    int type = 0;
+    socklen_t len = sizeof type;
+    if (handle < 0 || ::getsockopt(handle, SOL_SOCKET, SO_TYPE, &type, &len) != 0) {
+        error = os_error(("descriptor " + std::to_string(handle) + " is not a socket").c_str());
+        return nullptr;
+    }
+    if (type != SOCK_SEQPACKET) {
+        error = "descriptor " + std::to_string(handle) + " is not a SOCK_SEQPACKET socket";
+        return nullptr;
+    }
+    // Not passed on to anything this process starts (a VST3 scan child).
+    const int flags = ::fcntl(handle, F_GETFD);
+    if (flags < 0 || ::fcntl(handle, F_SETFD, flags | FD_CLOEXEC) != 0) {
+        error = os_error("fcntl");
+        return nullptr;
+    }
+    auto impl = std::make_unique<Impl>();
+    impl->fd = handle;
+    return std::make_unique<ControlChannel>(std::move(impl));
+}
+
+void ControlChannel::close_handle(int handle) {
+    if (handle >= 0) ::close(handle);
+}
+
 std::unique_ptr<ControlChannel> ControlChannel::connect(const std::string& endpoint,
                                                         std::string& error) {
     sockaddr_un addr{};
@@ -452,7 +496,12 @@ IoStatus ControlChannel::receive(std::string& datagram, std::size_t max_bytes,
     datagram.resize(static_cast<std::size_t>(n));
     if (fd >= 0) {
         if (region == nullptr) {
+            // Nobody here asked for one: a peer that sends a descriptor
+            // anyway breaks its contract (HostControl wire 1, the control
+            // API). Closed, and the datagram refused, never ignored.
             drop_fd();
+            error = "a descriptor came with a datagram where none is expected";
+            return IoStatus::Error;
         } else {
             *region = map_received(fd, error);
             if (!*region) return IoStatus::Error;

@@ -50,6 +50,17 @@ std::unique_ptr<ControlChannel> ControlChannel::connect(const std::string&, std:
 }
 ControlChannel::ControlChannel(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 ControlChannel::~ControlChannel() = default;
+int ControlChannel::native_handle() const { return -1; }
+bool ControlChannel::pair(std::unique_ptr<ControlChannel>&, int& child_handle, std::string& error) {
+    child_handle = -1;
+    error = kUnsupported;
+    return false;
+}
+std::unique_ptr<ControlChannel> ControlChannel::adopt(int, std::string& error) {
+    error = kUnsupported;
+    return nullptr;
+}
+void ControlChannel::close_handle(int) {}
 IoStatus ControlChannel::send(std::string_view, int, std::string& error) {
     error = kUnsupported;
     return IoStatus::Error;

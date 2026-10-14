@@ -36,7 +36,9 @@
 // ctest unless SONORA_PLUGIN_TESTS_ALLOW_SKIP is ON).
 
 #include "ipc.h"
+#include "sonora/platform/ipc.h"
 #include "sonora/platform/wake.h"
+#include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
 
 #include <algorithm>
@@ -48,6 +50,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -56,7 +59,9 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -130,7 +135,19 @@ struct Args {
     uint32_t key_channels = 0;
     std::vector<std::string> changes;  // BLOCK:SYMBOL=VALUE, chain instance 0
     bool reactivate = false;           // host --reactivate
+    // --control 1: the engine's way (contracts/plugin host_control.h). The
+    // chain, key channels, re-activation and states go in Load on the
+    // host's socket; --set becomes a seeded table value, as the engine has
+    // no --set. Every scenario that starts hosts through start_ready runs
+    // either way.
+    bool control = false;
+    // state: "counter" (the test plugins: a restored instance counts on
+    // from the saved one) or "same" (the state survives a host replacement
+    // byte for byte). --state-dir: where "Plugin State/" is written.
+    std::string expect_state = "counter", state_dir;
 };
+
+namespace pc = sonora::plugin::control;
 
 int failures = 0;
 void check(bool ok, const char* what) {
@@ -319,6 +336,12 @@ public:
         // Applied to the header before the host starts (incompatible).
         std::function<void(plugin::ChannelHeader&)> mutate;
         Store* store = nullptr;  // null: a store of this host's own
+        // --control: per instance, the StateBlob Load carries ("" for none),
+        // and what the incompatible scenario forges.
+        std::vector<std::string> states;
+        std::function<void(pc::EngineHello&)> hello;
+        std::function<void(pc::Load&)> load;
+        std::string first_message;  // sent instead of EngineHello and Load
     };
 
     bool start(const Args& a, Clock& clock, const std::vector<std::string>& uris, const StartOptions& o) {
@@ -349,6 +372,17 @@ public:
                 if (s >= 0) store_->values[std::size_t(s)] = seed.value;
                 else std::printf("  --param %u:%s: no such parameter\n", seed.instance, seed.key.c_str());
             }
+            // The engine has no --set: a value the model holds is seeded.
+            if (a.control)
+                for (const std::string& set : a.sets) {
+                    const auto colon = set.find(':'), eq = set.rfind('=');
+                    const uint32_t i = uint32_t(std::atoi(set.substr(0, colon).c_str()));
+                    const std::string symbol = set.substr(colon + 1, eq - colon - 1);
+                    const int k = i < described.size() ? described[i].index_of_symbol(symbol) : -1;
+                    const int64_t s = k < 0 ? -1 : plugin::param_slot(map_, i, uint32_t(k));
+                    if (s >= 0) store_->values[std::size_t(s)] = std::strtof(set.c_str() + eq + 1, nullptr);
+                    else std::printf("  --set %s: no such parameter\n", set.c_str());
+                }
         }
         // The engine's own copy: plane and table addresses never come from
         // the region.
@@ -378,35 +412,196 @@ public:
         // Built before fork: the child only rearranges descriptors and execs.
         const std::string engine_pid = std::to_string(getpid());
         const std::string chain_arg = join(uris, ',');
-        std::vector<const char*> argv = {a.host.c_str(), "--shm-fd", "3", "--clock-fd", "4", "--chain",
-                                         chain_arg.c_str(), "--engine-pid", engine_pid.c_str()};
+        std::vector<const char*> argv = {a.host.c_str()};
+        if (a.control) {
+            // The engine's way: the socket at 3, the regions after it, and
+            // the chain in Load (contracts/plugin host_control.h).
+            for (const char* x : {"--control-fd", "3", "--shm-fd", "4", "--clock-fd", "5"}) argv.push_back(x);
+        } else {
+            for (const char* x : {"--shm-fd", "3", "--clock-fd", "4", "--chain"}) argv.push_back(x);
+            argv.push_back(chain_arg.c_str());
+        }
+        argv.push_back("--engine-pid");
+        argv.push_back(engine_pid.c_str());
         for (const std::string& b : a.bundles) {
             argv.push_back("--bundle");
             argv.push_back(b.c_str());
         }
-        for (const std::string& s : a.sets) {
-            argv.push_back("--set");
-            argv.push_back(s.c_str());
-        }
-        // The last key_channels of the region are the key.
         const std::string sidechain = std::to_string(a.key_channels);
-        if (a.key_channels > 0) {
-            argv.push_back("--sidechain");
-            argv.push_back(sidechain.c_str());
+        if (!a.control) {
+            for (const std::string& s : a.sets) {
+                argv.push_back("--set");
+                argv.push_back(s.c_str());
+            }
+            // The last key_channels of the region are the key.
+            if (a.key_channels > 0) {
+                argv.push_back("--sidechain");
+                argv.push_back(sidechain.c_str());
+            }
+            if (a.reactivate) argv.push_back("--reactivate");
         }
-        if (a.reactivate) argv.push_back("--reactivate");
         argv.push_back(nullptr);
+
+        int child_end = -1;
+        if (a.control) {
+            if (!platform::ControlChannel::pair(ctl_, child_end, err)) {
+                std::printf("  cannot create the control socket: %s\n", err.c_str());
+                return false;
+            }
+            // What the engine writes before the host has said anything:
+            // EngineHello first, Load right behind it (Handshake 1).
+            if (!o.first_message.empty()) {
+                queue_raw(o.first_message);
+            } else {
+                pc::EngineHello hello;
+                if (o.hello) o.hello(hello);
+                queue(hello);
+                pc::Load load;
+                load.key_channels = a.key_channels;
+                load.flags = a.reactivate ? pc::kLoadReactivate : 0;
+                for (std::size_t i = 0; i < uris.size(); ++i) {
+                    pc::LoadInstance li;
+                    const bool vst3 = uris[i].rfind("vst3:", 0) == 0;
+                    li.format = vst3 ? pc::Format::Vst3 : pc::Format::Lv2;
+                    li.id = vst3 ? uris[i].substr(5) : uris[i];
+                    li.params = counts[i];
+                    if (i < o.states.size()) li.state = o.states[i];
+                    load.instances.push_back(std::move(li));
+                }
+                if (o.load) o.load(load);
+                queue(load);
+            }
+        }
         const int shm = region_.handle, clk = clock.ro_handle;
         pid_ = fork();
         if (pid_ < 0) return false;
         if (pid_ == 0) {
-            // Out of the way of 3 and 4 first, then into place, without CLOEXEC.
+            // Out of the way of 3 to 5 first, then into place, without CLOEXEC.
             const int s = fcntl(shm, F_DUPFD, 10), k = fcntl(clk, F_DUPFD, 10);
-            if (s < 0 || k < 0 || dup2(s, 3) < 0 || dup2(k, 4) < 0) _exit(126);
+            if (s < 0 || k < 0) _exit(126);
+            if (child_end >= 0) {
+                const int c = fcntl(child_end, F_DUPFD, 10);
+                if (c < 0 || dup2(c, 3) < 0 || dup2(s, 4) < 0 || dup2(k, 5) < 0) _exit(126);
+            } else if (dup2(s, 3) < 0 || dup2(k, 4) < 0) {
+                _exit(126);
+            }
             execv(a.host.c_str(), const_cast<char* const*>(argv.data()));
             _exit(127);
         }
+        platform::ControlChannel::close_handle(child_end);
+        if (ctl_) pump(0);
         return true;
+    }
+
+    // ---- HostControl, the engine's control thread's half. Nothing here
+    // waits except where a scenario asks for a reply: pump() polls with the
+    // timeout given, sends what the Link holds and drains what came, the
+    // way the engine's poll loop does beside the pidfd.
+
+    bool controlled() const { return ctl_ != nullptr; }
+
+    template <class M>
+    void queue(const M& m) {
+        std::string bytes;
+        pc::encode(m, bytes);
+        queue_raw(bytes);
+    }
+    void queue_raw(const std::string& bytes) {
+        std::string e;
+        if (!link_.queue(bytes, e)) std::printf("  cannot queue a message: %s\n", e.c_str());
+    }
+
+    void pump(int timeout_ms) {
+        if (!ctl_ || ctl_closed_) return;
+        pollfd p{ctl_->native_handle(), short(POLLIN | (link_.wants_write() ? POLLOUT : 0)), 0};
+        if (::poll(&p, 1, timeout_ms) < 0) return;
+        std::string e;
+        const pc::Io f = link_.flush([&](std::string_view d) { return io(ctl_->send(d, 0, e)); });
+        if (f == pc::Io::Closed || f == pc::Io::Error) ctl_closed_ = true;
+        const pc::Io r = link_.drain(
+            [&](std::string& d) { return io(ctl_->receive(d, pc::kMaxFrameBytes, nullptr, 0, e)); },
+            [&](std::string_view m) {
+                pc::Type t;
+                // Untrusted (host_control.h): only what a host may send.
+                if (!pc::peek_type(m, t) || !pc::host_to_engine(t)) {
+                    e = "a message type no host sends";
+                    return false;
+                }
+                inbox_.emplace_back(m);
+                return true;
+            },
+            e, monotonic_ns());
+        if (r == pc::Io::Closed) ctl_closed_ = true;
+        // The engine's checks of M1 (host_control.h, timeouts): a host with
+        // a message half received that stopped growing is pinning memory.
+        if (link_.stalled(monotonic_ns(), uint64_t(pc::kStalledMessageMs) * 1000000ull)) {
+            ctl_closed_ = true;
+            ctl_error_ = "a message half received for " + std::to_string(pc::kStalledMessageMs) + " ms";
+        }
+        if (r == pc::Io::Error) {
+            ctl_closed_ = true;
+            ctl_error_ = e;
+        }
+    }
+
+    // The first message of type `t` within `timeout_ms`, pumping; the
+    // others stay in the inbox in order.
+    bool expect(pc::Type t, std::string& out, int timeout_ms) {
+        const uint64_t end = monotonic_ns() + uint64_t(timeout_ms) * 1000000ull;
+        for (bool last = false;; ) {
+            for (auto it = inbox_.begin(); it != inbox_.end(); ++it) {
+                pc::Type got;
+                if (pc::peek_type(*it, got) && got == t) {
+                    out = std::move(*it);
+                    inbox_.erase(it);
+                    return true;
+                }
+            }
+            if (last) return false;
+            const uint64_t now = monotonic_ns();
+            if (now >= end || ctl_closed_) {
+                pump(0);  // whatever is already there
+                last = true;
+                continue;
+            }
+            pump(int(std::min<uint64_t>((end - now) / 1000000ull + 1, 50)));
+        }
+    }
+    template <class M>
+    bool expect_message(pc::Type t, M& m, int timeout_ms) {
+        std::string bytes, e;
+        if (!expect(t, bytes, timeout_ms)) return false;
+        if (!pc::decode(bytes, m, e)) {
+            std::printf("  a host message does not decode: %s\n", e.c_str());
+            return false;
+        }
+        return true;
+    }
+    // Everything received so far, in order, taken.
+    std::vector<std::string> take_inbox() {
+        pump(0);
+        std::vector<std::string> out(inbox_.begin(), inbox_.end());
+        inbox_.clear();
+        return out;
+    }
+    // A datagram past the Link, for the framing test only.
+    void send_raw_frame(const std::string& frame) {
+        std::string e;
+        if (ctl_) ctl_->send(frame, 1000, e);
+    }
+    bool control_closed() const { return ctl_closed_; }
+    const std::string& control_error() const { return ctl_error_; }
+    const pc::Loaded& loaded() const { return loaded_; }
+    const pc::Hello& hello() const { return hello_; }
+    pid_t pid() const { return pid_; }
+
+    // Wait for the host's exit, pumping its socket; the messages it sent on
+    // the way out stay in the inbox.
+    bool wait_exit_pumping(uint64_t timeout_ns) {
+        const uint64_t end = monotonic_ns() + timeout_ns;
+        while (alive() && monotonic_ns() < end) pump(5);
+        pump(0);
+        return !alive();
     }
 
     // Not RT: the engine's control thread waits for the host to come up.
@@ -417,8 +612,62 @@ public:
             const auto s = plugin::checked_state(h->state.load(std::memory_order_acquire));
             if (s != plugin::HostState::Starting) return s;
             if (!alive() || monotonic_ns() > end) return plugin::HostState::Starting;
-            wait_for_change(h->done_word, seen, 20'000'000);
+            if (ctl_) pump(20);  // the host's Hello is read meanwhile, as the engine's poll loop would
+            else wait_for_change(h->done_word, seen, 20'000'000);
         }
+    }
+
+    // --control: what the engine checks once the region has left Starting
+    // (host_control.h, Handshake 3 and ordering): a Hello naming this
+    // host's pid and the engine's versions, then Loaded or Refused agreeing
+    // with the region. False, said why, on any disagreement.
+    bool check_handshake(plugin::HostState s) {
+        if (!expect_message(pc::Type::Hello, hello_, 10000)) {
+            std::printf("  no Hello from the host%s%s\n", ctl_error_.empty() ? "" : ": ", ctl_error_.c_str());
+            return false;
+        }
+        if (hello_.wire_version != pc::kHostWireVersion || hello_.layout_version != plugin::kLayoutVersion ||
+            hello_.clock_version != plugin::kClockLayoutVersion || hello_.pid != uint64_t(pid_)) {
+            std::printf("  Hello: wire %u layout %u clock %u pid %llu; expected this engine's and pid %d\n",
+                        hello_.wire_version, hello_.layout_version, hello_.clock_version,
+                        (unsigned long long)hello_.pid, int(pid_));
+            return false;
+        }
+        if (s == plugin::HostState::Ready) {
+            if (!expect_message(pc::Type::Loaded, loaded_, pc::kLoadTimeoutMs)) {
+                std::printf("  the region says Ready and no Loaded came\n");
+                return false;
+            }
+            // The region is the truth; the message agrees with it or is wrong.
+            const uint32_t gen = h->latency_generation.load(std::memory_order_acquire);
+            const uint32_t frames = plugin::checked_latency(h->latency_frames.load(std::memory_order_relaxed));
+            if (loaded_.instances.size() != chain.size() || loaded_.latency_frames != frames ||
+                loaded_.latency_generation > gen) {
+                std::printf("  Loaded: %zu instance(s), latency %u gen %u; the region: %zu, %u gen %u\n",
+                            loaded_.instances.size(), loaded_.latency_frames, loaded_.latency_generation,
+                            chain.size(), frames, gen);
+                return false;
+            }
+            for (std::size_t i = 0; i < chain.size(); ++i)
+                if (loaded_.instances[i].params.size() != h->instance_params[i]) {
+                    std::printf("  Loaded lists %zu parameter(s) for instance %zu; the scan %u\n",
+                                loaded_.instances[i].params.size(), i, h->instance_params[i]);
+                    return false;
+                }
+            return true;
+        }
+        pc::Refused r;
+        if (!expect_message(pc::Type::Refused, r, 10000)) {
+            std::printf("  the region says %s and no Refused came\n", state_name(uint32_t(s)));
+            return false;
+        }
+        if (uint32_t(r.reason) != h->refusal.load() || r.instance != h->refusal_instance.load()) {
+            std::printf("  Refused (%u, %d) disagrees with the region (%u, %d)\n", unsigned(r.reason), r.instance,
+                        h->refusal.load(), h->refusal_instance.load());
+            return false;
+        }
+        std::printf("  Refused: %s\n", r.text.c_str());
+        return true;
     }
 
     bool alive() {
@@ -453,12 +702,19 @@ public:
     // plan that used this host is retired.
     void stop() {
         if (h && !reaped_) {
-            h->shutdown.store(1, std::memory_order_release);
-            if (clock_) clock_->wake();
-            const uint64_t end = monotonic_ns() + 2'000'000'000ull;
-            while (alive() && monotonic_ns() < end) usleep(5000);
+            if (ctl_ && !ctl_closed_) {
+                // The control thread's way (host_control.h, Shutdown).
+                queue(pc::Shutdown{});
+                wait_exit_pumping(2'000'000'000ull);
+            } else {
+                h->shutdown.store(1, std::memory_order_release);
+                if (clock_) clock_->wake();
+                const uint64_t end = monotonic_ns() + 2'000'000'000ull;
+                while (alive() && monotonic_ns() < end) usleep(5000);
+            }
             kill_now();
         }
+        ctl_.reset();
         release_region(region_);
         h = nullptr;
     }
@@ -638,6 +894,22 @@ private:
     int status_ = 0;
     bool reaped_ = false;
     uint64_t submitted_at_ = 0;
+
+    static pc::Io io(platform::IoStatus s) {
+        switch (s) {
+        case platform::IoStatus::Ok: return pc::Io::Ok;
+        case platform::IoStatus::WouldBlock: return pc::Io::WouldBlock;
+        case platform::IoStatus::Closed: return pc::Io::Closed;
+        default: return pc::Io::Error;
+        }
+    }
+    std::unique_ptr<platform::ControlChannel> ctl_;
+    pc::Link link_;
+    std::deque<std::string> inbox_;
+    bool ctl_closed_ = false;
+    std::string ctl_error_;
+    pc::Hello hello_;
+    pc::Loaded loaded_;
 };
 
 // The periodic "audio callback". Measures how long each callback ran from
@@ -717,9 +989,15 @@ int start_ready(Host& host, const Args& a, Clock& clock, const std::vector<std::
                 const Host::StartOptions& o) {
     if (!host.start(a, clock, chain, o)) return 1;
     const plugin::HostState s = host.wait_ready(30'000'000'000ull);
+    if (host.controlled() && s != plugin::HostState::Starting) {
+        const bool agreed = host.check_handshake(s);
+        check(agreed, "HostControl: Hello, then Loaded or Refused, agreeing with the region");
+        if (!agreed) return 1;
+    }
     if (s == plugin::HostState::Ready) {
         const uint32_t flags = host.h->host_flags.load();
-        std::printf("  host ready: %s wake, chain latency %u frames, host %s, memory %s, %s\n",
+        std::printf("  host ready%s: %s wake, chain latency %u frames, host %s, memory %s, %s\n",
+                    host.controlled() ? " (HostControl: Hello, Load, Loaded)" : "",
                     clock.mode == plugin::WakeMode::Futex ? "futex" : "timer",
                     plugin::checked_latency(host.h->latency_frames.load()),
                     (flags & plugin::kHostRealtime) ? "SCHED_FIFO 70" : "SCHED_OTHER (no RT allowed)",
@@ -1048,6 +1326,20 @@ int scenario_latency_change(const Args& a) {
     std::printf("  after the report settled:\n");
     const uint64_t from1 = settled + (std::max(L0, L1) + kBlock - 1) / kBlock + 16;
     check_delay(fit_delay(in, out, valid_window(got, from1, total, L1), L1), L1);
+    if (host.controlled()) {
+        // The socket's notice follows the region's bump and agrees with it
+        // (host_control.h, ordering): the control thread need not poll.
+        pc::LatencyChanged last{};
+        bool any = false;
+        for (pc::LatencyChanged m; host.expect_message(pc::Type::LatencyChanged, m, any ? 0 : 2000);) {
+            last = m;
+            any = true;
+        }
+        std::printf("  LatencyChanged: generation %u, %u frames; the region: generation %u, %u frames\n",
+                    last.latency_generation, last.latency_frames, host.h->latency_generation.load(), L1);
+        check(any && last.latency_generation == host.h->latency_generation.load() && last.latency_frames == L1,
+              "LatencyChanged came on the socket with the region's generation and figure");
+    }
     return 0;
 }
 
@@ -2044,6 +2336,489 @@ int scenario_render(const Args& a) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// HostControl scenarios (contracts/plugin host_control.h). The driver plays
+// the engine's control thread: non-blocking sends and receives through a
+// Link, polled, with a bounded wait only where it expects a reply.
+
+// A run of periodic callbacks, depth 1, the audio thread's way. Returns how
+// many blocks came back.
+uint64_t play(Host& host, Clock& clock, uint32_t channels, uint64_t callbacks, uint64_t first = 0) {
+    Signal sig(channels);
+    uint64_t collected = 0;
+    run_periodic(clock, callbacks, [&](uint64_t i) {
+        sig.sine(first + i, 440.0, 0.25f);
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, first + i) >= 0) ++collected;
+        return true;
+    });
+    return collected;
+}
+
+bool request_state(Host& host, uint32_t request, uint32_t instance, pc::State& st) {
+    host.queue(pc::GetState{request, instance});
+    if (!host.expect_message(pc::Type::State, st, pc::kReplyTimeoutMs)) return false;
+    return st.request == request && st.instance == instance;
+}
+
+// Handshake, Loaded's key table, DescribeValue, editors, GetState on a
+// plugin with no state of its own and on an instance that does not exist,
+// and Shutdown: the host leaves Stopped and exits 0.
+int scenario_control(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    const std::vector<std::string> chain = a.chain.empty() ? std::vector<std::string>{kEgAmp} : a.chain;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("control: %s over HostControl\n", join(chain, ',').c_str());
+    Host host;
+    if (int r = start_ready(host, ca, clock, chain, a.channels)) return r;
+
+    const PluginParams d = probe_params(a, chain[0]);
+    const pc::Loaded& loaded = host.loaded();
+    bool keys = loaded.instances[0].params.size() == d.keys.size();
+    for (std::size_t k = 0; keys && k < d.keys.size(); ++k)
+        keys = loaded.instances[0].params[k].key == d.keys[k] &&
+               loaded.instances[0].params[k].default_value == d.defaults[k] &&
+               loaded.instances[0].params[k].min <= loaded.instances[0].params[k].max;
+    check(keys, "Loaded lists the running instance's keys in dense order, as the scan did");
+    check(loaded.instances[0].replicas == host.h->instances[0].replicas.load(),
+          "Loaded's replicas are the region's");
+
+    const uint64_t got = play(host, clock, a.channels, 200);
+    std::printf("  %llu of 200 blocks came back while the socket was open\n", (unsigned long long)got);
+    check(got > 150, "the chain runs while HostControl is served");
+
+    if (!d.keys.empty()) {
+        host.queue(pc::DescribeValue{1, 0, 0, d.defaults[0]});
+        pc::ValueText vt;
+        check(host.expect_message(pc::Type::ValueText, vt, pc::kReplyTimeoutMs) && vt.request == 1 && vt.ok &&
+                  !vt.text.empty(),
+              "DescribeValue answers with display text");
+        std::printf("  DescribeValue(%s = %g) -> \"%s\"\n", d.keys[0].c_str(), double(d.defaults[0]), vt.text.c_str());
+    }
+    host.queue(pc::DescribeValue{2, 0, uint32_t(d.keys.size()), 0.f});
+    pc::ValueText bad;
+    check(host.expect_message(pc::Type::ValueText, bad, pc::kReplyTimeoutMs) && bad.request == 2 && !bad.ok,
+          "DescribeValue of a parameter that does not exist says so");
+
+    host.queue(pc::OpenEditor{3, 0, ""});
+    pc::EditorFailed ef;
+    check(host.expect_message(pc::Type::EditorFailed, ef, pc::kReplyTimeoutMs) && ef.request == 3 && ef.instance == 0,
+          "OpenEditor is answered (EditorFailed: this build hosts no editor)");
+    std::printf("  EditorFailed: %s\n", ef.text.c_str());
+    host.queue(pc::CloseEditor{0});
+    std::string any;
+    check(!host.expect(pc::Type::EditorClosed, any, 300), "CloseEditor of an editor that is not open is ignored");
+
+    pc::State st;
+    if (chain[0].rfind("vst3:", 0) == 0) {
+        // A VST3 component always has a state (getState).
+        pc::StateBlob blob;
+        std::string e;
+        check(request_state(host, 4, 0, st) && st.status == pc::StateStatus::Ok &&
+                  pc::decode_state_blob(st.bytes, blob, e) && blob.format == pc::Format::Vst3 &&
+                  "vst3:" + blob.id == chain[0] && blob.sections.size() == 2,
+              "GetState: a StateBlob naming this class, component and controller sections");
+    } else {
+        check(request_state(host, 4, 0, st) && st.status == pc::StateStatus::Empty && st.bytes.empty(),
+              "GetState of a plugin with no state of its own: Empty");
+    }
+    check(request_state(host, 5, 7, st) && st.status == pc::StateStatus::Failed && !st.text.empty(),
+          "GetState of an instance that does not exist: Failed, with the reason");
+
+    host.queue(pc::Shutdown{});
+    const bool exited = host.wait_exit_pumping(5'000'000'000ull);
+    check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitClean,
+          "Shutdown: the host exits 0");
+    check(plugin::checked_state(host.h->state.load()) == plugin::HostState::Stopped, "and leaves the region Stopped");
+    std::vector<std::string> rest = host.take_inbox();
+    check(rest.empty(), "and sends nothing unasked on the way out");
+    return 0;
+}
+
+// Versions and protocol errors (host_control.h, Handshake): a wire, layout
+// or clock version the host does not speak exits 3 having sent nothing and
+// written nothing; a first message that is not EngineHello exits 2 having
+// sent nothing; after the handshake, a broken contract is a Fault{Protocol}
+// and exit 2.
+int scenario_control_incompatible(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("control_incompatible\n");
+    struct Case {
+        const char* what;
+        int exit_code;
+        Host::StartOptions o;
+    };
+    std::vector<Case> silent;
+    {
+        Case c{"an EngineHello of wire 99: exit 3", plugin::kHostExitIncompatible, {}};
+        c.o.hello = [](pc::EngineHello& h) { h.wire_version = 99; };
+        silent.push_back(c);
+        Case l{"an EngineHello naming layout 7: exit 3", plugin::kHostExitIncompatible, {}};
+        l.o.hello = [](pc::EngineHello& h) { h.layout_version = 7; };
+        silent.push_back(l);
+        Case f{"a first message that is not EngineHello: exit 2", plugin::kHostExitUsage, {}};
+        pc::encode(pc::Shutdown{}, f.o.first_message);
+        silent.push_back(f);
+    }
+    for (Case& c : silent) {
+        std::printf(" %s\n", c.what);
+        Host host;
+        if (!host.start(ca, clock, {kEgAmp}, c.o)) return 1;
+        const bool exited = host.wait_exit_pumping(15'000'000'000ull);
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == c.exit_code, c.what);
+        check(host.take_inbox().empty(), "  nothing was sent on the socket");
+        check(host.h->state.load() == 0 && host.h->heartbeat.load() == 0 && host.h->latency_generation.load() == 0,
+              "  nothing was written to the region");
+    }
+
+    // After the handshake. Each forged Load is refused with Fault{Protocol}.
+    struct Bad {
+        const char* what;
+        std::function<void(pc::Load&)> load;
+    };
+    const Bad bad[] = {
+        {"a Load naming more instances than the header", [](pc::Load& l) { l.instances.push_back(l.instances[0]); }},
+        {"a Load whose dense count is not the header's", [](pc::Load& l) { l.instances[0].params += 1; }},
+        {"a Load asking for every channel as key", [](pc::Load& l) { l.key_channels = 1; }},
+    };
+    for (const Bad& b : bad) {
+        std::printf(" %s\n", b.what);
+        Host::StartOptions o;
+        o.load = b.load;
+        Host host;
+        if (!host.start(ca, clock, {kEgAmp}, o)) return 1;
+        pc::Fault f;
+        check(host.expect_message(pc::Type::Fault, f, 15000) && f.kind == pc::FaultKind::Protocol, "  Fault{Protocol}");
+        std::printf("  Fault: %s\n", f.text.c_str());
+        const bool exited = host.wait_exit_pumping(5'000'000'000ull);
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitUsage,
+              "  then exit 2");
+    }
+    {
+        std::printf(" a second Load after Loaded\n");
+        Host host;
+        if (int r = start_ready(host, ca, clock, {kEgAmp}, 1)) return r;
+        pc::Load again;
+        again.instances.push_back({pc::Format::Lv2, kEgAmp, host.h->instance_params[0], ""});
+        host.queue(again);
+        pc::Fault f;
+        check(host.expect_message(pc::Type::Fault, f, 5000) && f.kind == pc::FaultKind::Protocol,
+              "  Fault{Protocol}");
+        const bool exited = host.wait_exit_pumping(5'000'000'000ull);
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitUsage,
+              "  then exit 2");
+    }
+    {
+        std::printf(" a frame out of place after Loaded\n");
+        Host host;
+        if (int r = start_ready(host, ca, clock, {kEgAmp}, 1)) return r;
+        std::string frame(16, '\0');
+        const uint32_t total = 8, offset = 4;  // a message that does not start at 0
+        std::memcpy(&frame[0], &total, 4);
+        std::memcpy(&frame[4], &offset, 4);
+        // Straight onto the socket: a Link would never frame like this.
+        host.send_raw_frame(frame);
+        const bool gone = host.wait_exit_pumping(5'000'000'000ull);
+        check(gone && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitUsage,
+              "  the host stops with exit 2: a peer that frames wrongly cannot be resynchronised");
+    }
+    return 0;
+}
+
+// The test plugins' block counter, from a StateBlob: VST3 "SNTS" + int64 in
+// the component section; LV2 the integer after "blocks" in the Turtle.
+bool state_counter(const std::string& bytes, int64_t& n) {
+    pc::StateBlob b;
+    std::string e;
+    if (!pc::decode_state_blob(bytes, b, e) || b.sections.empty()) return false;
+    const std::string& s = b.sections[0];
+    if (b.format == pc::Format::Vst3) {
+        if (s.size() != 12 || s.compare(0, 4, "SNTS") != 0) return false;
+        std::memcpy(&n, s.data() + 4, 8);
+        return true;
+    }
+    const std::size_t at = s.find("blocks");
+    if (at == std::string::npos) return false;
+    const std::size_t d = s.find_first_of("0123456789", at + 6);
+    if (d == std::string::npos) return false;
+    n = std::strtoll(s.c_str() + d, nullptr, 10);
+    return true;
+}
+
+// State save and restore (host_control.h, State): GetState from a running
+// host, the bytes written to "Plugin State/<sha256>.state" and read back
+// through the hash check, then a NEW host loaded with them (make-before-
+// break) with the same parameter store. --expect-state counter: the test
+// plugins, whose restored instance counts on from the saved one; same: the
+// state survives the replacement byte for byte (Sonora's own bundles).
+// Then the refusals: another plugin's state, and bytes the plugin rejects.
+int scenario_state(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    if (a.chain.size() != 1) {
+        std::printf("state: needs one plugin in --chain\n");
+        return 1;
+    }
+    const std::vector<std::string>& chain = a.chain;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("state: %s, expect %s\n", chain[0].c_str(), a.expect_state.c_str());
+    Store store;
+    Host::StartOptions oa;
+    oa.channels = a.channels;
+    Host first;
+    if (int r = start_ready(first, ca, clock, chain, oa)) return r;
+    // Move a parameter away from its default first, as an operator would:
+    // the store is the engine's, and the next host is seeded from it.
+    const PluginParams d = probe_params(a, chain[0]);
+    play(first, clock, a.channels, 20);
+    if (!d.keys.empty()) {
+        const pc::ParamDesc& p = first.loaded().instances[0].params[0];
+        first.send(0, 0, 0, p.min + 0.3f * (p.max - p.min));
+    }
+    const uint64_t played = play(first, clock, a.channels, 300, 20);
+    pc::State saved;
+    check(request_state(first, 1, 0, saved), "GetState is answered");
+    if (saved.status == pc::StateStatus::Empty) {
+        std::printf("  the plugin keeps no state of its own (no LV2 state:interface): Empty\n");
+        check(a.expect_state == "same", "Empty only where the parameters are all the state there is");
+        return 0;
+    }
+    check(saved.status == pc::StateStatus::Ok && !saved.bytes.empty(), "a StateBlob came back");
+    if (saved.status != pc::StateStatus::Ok) {
+        std::printf("  State failed: %s\n", saved.text.c_str());
+        return 0;
+    }
+    int64_t counted = -1;
+    if (a.expect_state == "counter") {
+        check(state_counter(saved.bytes, counted) && counted >= int64_t(played),
+              "the saved state holds the blocks the plugin ran");
+        std::printf("  saved after %llu blocks collected: the plugin counted %lld\n", (unsigned long long)played,
+                    (long long)counted);
+    }
+
+    // The file, as the saver thread writes it and the session names it.
+    const std::string dir = a.state_dir.empty() ? "/tmp/sonora-plugin-state-" + std::to_string(getpid()) : a.state_dir;
+    ::mkdir(dir.c_str(), 0700);
+    ::mkdir((dir + "/Plugin State").c_str(), 0700);
+    const std::string sha = pc::sha256_hex(saved.bytes);
+    const std::string name = pc::state_file_name(sha);
+    const std::string path = dir + "/" + name;
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+        std::fwrite(saved.bytes.data(), 1, saved.bytes.size(), f);
+        std::fclose(f);
+    }
+    std::string reread;
+    if (std::FILE* f = std::fopen(path.c_str(), "rb")) {
+        char buf[65536];
+        for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) reread.append(buf, n);
+        std::fclose(f);
+    }
+    std::printf("  %s: %zu bytes\n", name.c_str(), reread.size());
+    check(!name.empty() && pc::state_matches(reread, sha), "the file reads back and hashes to its name");
+    first.stop();
+
+    // Make-before-break: a new host, the same store, the file's bytes.
+    Host::StartOptions ob;
+    ob.channels = a.channels;
+    ob.states = {reread};
+    Host second;
+    if (int r = start_ready(second, ca, clock, chain, ob)) return r;
+    check(second.loaded().instances[0].state == pc::StateResult::Restored, "Loaded: the state was Restored");
+    play(second, clock, a.channels, 50);
+    pc::State again;
+    check(request_state(second, 2, 0, again) && again.status == pc::StateStatus::Ok, "the new host saves too");
+    if (a.expect_state == "counter") {
+        int64_t now = -1;
+        check(state_counter(again.bytes, now) && now > counted,
+              "the restored instance counts on from the saved one, not from zero");
+        std::printf("  restored, then counted on to %lld\n", (long long)now);
+    } else {
+        check(again.bytes == saved.bytes, "the state survives the host replacement byte for byte");
+    }
+    second.stop();
+
+    // Refused, not fatal: another plugin's state, and bytes the plugin rejects.
+    pc::StateBlob blob;
+    std::string e;
+    pc::decode_state_blob(saved.bytes, blob, e);
+    pc::StateBlob other = blob;
+    other.id = other.format == pc::Format::Vst3 ? "0123456789ABCDEF0123456789ABCDEF" : "urn:sonora:test#other";
+    std::string other_bytes;
+    pc::encode_state_blob(other, other_bytes, e);
+    Host::StartOptions oc;
+    oc.channels = a.channels;
+    oc.states = {other_bytes};
+    Host third;
+    if (int r = start_ready(third, ca, clock, chain, oc)) return r;
+    check(third.loaded().instances[0].state == pc::StateResult::Refused,
+          "another plugin's state: Refused, and the chain still loads");
+    third.stop();
+    if (a.expect_state == "counter") {
+        pc::StateBlob junk = blob;
+        for (std::string& s : junk.sections) s = "not a state";
+        std::string junk_bytes;
+        pc::encode_state_blob(junk, junk_bytes, e);
+        Host::StartOptions od;
+        od.channels = a.channels;
+        od.states = {junk_bytes};
+        Host fourth;
+        if (int r = start_ready(fourth, ca, clock, chain, od)) return r;
+        check(fourth.loaded().instances[0].state == pc::StateResult::Refused,
+              "bytes the plugin rejects: Refused, and the chain still loads");
+        check(play(fourth, clock, a.channels, 50) > 30, "and runs");
+    }
+    return 0;
+}
+
+// Touches from a plugin's own controller (the VST3 touch class's "editor"
+// thread): every touch inside a gesture, a lone edit wrapped in one, the
+// read-only parameter dropped and counted, the gesture left open ended
+// before the host stops, and the host never applying a touch itself.
+int scenario_gesture(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    const std::string touch = "vst3:534F4E4F52415653543354455354000A";
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("gesture: %s\n", touch.c_str());
+    Host host;
+    if (int r = start_ready(host, ca, clock, {touch}, 1)) return r;
+    const pc::Loaded& loaded = host.loaded();
+    check(loaded.instances[0].params.size() == 1 && loaded.instances[0].params[0].key == "7",
+          "Loaded's key table: ParamID 7 only (9 is read-only)");
+    host.queue(pc::DescribeValue{1, 0, 0, 0.5f});
+    pc::ValueText vt;
+    check(host.expect_message(pc::Type::ValueText, vt, pc::kReplyTimeoutMs) && vt.ok && vt.text == "50.0 %",
+          "DescribeValue goes through the plugin's controller (\"50.0 %\")");
+
+    // The script starts 300 ms after load; play through it.
+    Signal sig(1);
+    uint64_t unchanged = 0, collected = 0;
+    run_periodic(clock, 300, [&](uint64_t i) {
+        sig.sine(i, 440.0, 0.25f);
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
+        if (from >= 0) {
+            ++collected;
+            Signal ref(1);
+            ref.sine(uint64_t(from), 440.0, 0.25f);
+            bool same = true;
+            for (uint32_t s = 0; s < kBlock; ++s) same = same && sig.obuf[0][s] == ref.buf[0][s];
+            unchanged += same;
+        }
+        host.pump(0);
+        return true;
+    });
+    check(collected > 200 && unchanged == collected,
+          "the touched values never reached the plugin's audio: only the engine applies them");
+    host.queue(pc::Shutdown{});
+    host.wait_exit_pumping(5'000'000'000ull);
+
+    struct Ev {
+        pc::Type t;
+        uint32_t instance, param;
+        float value;
+    };
+    std::vector<Ev> ev;
+    uint64_t dropped = 0;
+    for (const std::string& m : host.take_inbox()) {
+        pc::Type t;
+        std::string e;
+        pc::peek_type(m, t);
+        if (t == pc::Type::GestureBegin) {
+            pc::GestureBegin g;
+            if (pc::decode(m, g, e)) ev.push_back({t, g.instance, g.param, 0.f});
+        } else if (t == pc::Type::ParamTouched) {
+            pc::ParamTouched g;
+            if (pc::decode(m, g, e)) ev.push_back({t, g.instance, g.param, g.value});
+        } else if (t == pc::Type::GestureEnd) {
+            pc::GestureEnd g;
+            if (pc::decode(m, g, e)) ev.push_back({t, g.instance, g.param, g.value});
+        } else if (t == pc::Type::Fault) {
+            pc::Fault f;
+            if (pc::decode(m, f, e) && f.kind == pc::FaultKind::EventsDropped) dropped += f.count;
+        }
+    }
+    for (const Ev& e : ev)
+        std::printf("    %s %u/%u %g\n",
+                    e.t == pc::Type::GestureBegin ? "begin  " : e.t == pc::Type::ParamTouched ? "touched" : "end    ",
+                    e.instance, e.param, double(e.value));
+    // The first gesture: begin, 0.25, maybe the coalesced 0.5 or 0.75, end 0.75.
+    std::size_t i = 0;
+    auto is = [&](pc::Type t, float v, bool any_value = false) {
+        if (i >= ev.size() || ev[i].t != t || ev[i].instance != 0 || ev[i].param != 0) return false;
+        if (!any_value && ev[i].value != v) return false;
+        ++i;
+        return true;
+    };
+    bool ok = is(pc::Type::GestureBegin, 0, true) && is(pc::Type::ParamTouched, 0.25f);
+    while (ok && i < ev.size() && ev[i].t == pc::Type::ParamTouched) ok = ev[i].value == 0.5f || ev[i++].value == 0.75f;
+    ok = ok && is(pc::Type::GestureEnd, 0.75f);
+    check(ok, "a gesture: GestureBegin, ParamTouched 0.25, (coalesced), GestureEnd with its last value 0.75");
+    ok = is(pc::Type::GestureBegin, 0, true) && is(pc::Type::ParamTouched, 0.5f) && is(pc::Type::GestureEnd, 0.5f);
+    check(ok, "a lone edit is wrapped in a gesture of its own");
+    ok = is(pc::Type::GestureBegin, 0, true) && is(pc::Type::ParamTouched, 0.125f) &&
+         is(pc::Type::GestureEnd, 0.125f) && i == ev.size();
+    check(ok, "the gesture left open is ended, with its last value, before the host stops");
+    check(dropped == 1, "the touch on the read-only parameter is dropped and counted (Fault{EventsDropped})");
+    check(WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 0, "the host exits 0");
+    return 0;
+}
+
+// Reconfigure while running (BACKLOG N1): a latency-changing value moved
+// through the ring takes effect only at activation; Reconfigure re-activates
+// the chain on the host's main thread, and the new latency is published in
+// the region first, then in Reconfigured; the host keeps processing after.
+int scenario_reconfigure(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    if (a.chain.size() != 1 || a.change_param.empty() || a.expect_latency < 0) {
+        std::printf("reconfigure: needs one plugin, --change-param/--change-value and --expect-latency\n");
+        return 1;
+    }
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("reconfigure: %s, %s := %g while running\n", a.chain[0].c_str(), a.change_param.c_str(),
+                double(a.change_value));
+    Host host;
+    Host::StartOptions o;
+    o.channels = a.channels;
+    if (int r = start_ready(host, ca, clock, a.chain, o)) return r;
+    const PluginParams d = probe_params(a, a.chain[0]);
+    int cp = d.index_of(a.change_param);
+    if (cp < 0) cp = d.index_of_symbol(a.change_param);
+    if (cp < 0) {
+        std::printf("  no parameter %s\n", a.change_param.c_str());
+        return 1;
+    }
+    const uint32_t before = plugin::checked_latency(host.h->instances[0].latency_frames.load());
+    const uint32_t gen0 = host.h->latency_generation.load();
+    play(host, clock, a.channels, 50);
+    host.send(0, uint32_t(cp), 0, a.change_value);
+    play(host, clock, a.channels, 50, 50);
+    const uint32_t held = plugin::checked_latency(host.h->instances[0].latency_frames.load());
+    host.queue(pc::Reconfigure{9});
+    pc::Reconfigured r;
+    const bool answered = host.expect_message(pc::Type::Reconfigured, r, pc::kReconfigureTimeoutMs);
+    check(answered && r.request == 9, "Reconfigured answers Reconfigure");
+    const uint32_t after = plugin::checked_latency(host.h->instances[0].latency_frames.load());
+    const uint32_t gen = host.h->latency_generation.load(std::memory_order_acquire);
+    std::printf("  plugin latency %u at load, %u with the value held, %u after Reconfigure (expected %lld); "
+                "generation %u -> %u, Reconfigured says %u frames gen %u\n",
+                before, held, after, (long long)a.expect_latency, gen0, gen, r.latency_frames, r.latency_generation);
+    check(int64_t(after) == a.expect_latency && after != before, "the new latency is the plugin's, after re-activation");
+    check(r.latency_generation == gen && gen != gen0 &&
+              r.latency_frames == plugin::checked_latency(host.h->latency_frames.load()),
+          "published in the region first, with a new generation, and Reconfigured agrees");
+    const uint64_t got = play(host, clock, a.channels, 100, 100);
+    check(got > 70 && host.alive(), "the host processes again after Reconfigure");
+    return 0;
+}
+
 Args parse(int argc, char** argv) {
     Args a;
     const std::vector<std::string> args = expand_args(argc, argv);
@@ -2088,6 +2863,9 @@ Args parse(int argc, char** argv) {
         else if (k == "--key-channels") a.key_channels = uint32_t(std::atoi(v.c_str()));
         else if (k == "--change") a.changes.push_back(v);
         else if (k == "--reactivate") a.reactivate = v == "1";
+        else if (k == "--control") a.control = v == "1";
+        else if (k == "--expect-state") a.expect_state = v;
+        else if (k == "--state-dir") a.state_dir = v;
         else {
             std::fprintf(stderr, "plugin_driver: unknown argument %s\n", k.c_str());
             std::exit(2);
@@ -2134,6 +2912,11 @@ int main(int argc, char** argv) {
     else if (a.scenario == "list_json") r = scenario_list_json(a);
     else if (a.scenario == "render") r = scenario_render(a);
     else if (a.scenario == "key") r = scenario_key(a);
+    else if (a.scenario == "control") r = scenario_control(a);
+    else if (a.scenario == "control_incompatible") r = scenario_control_incompatible(a);
+    else if (a.scenario == "state") r = scenario_state(a);
+    else if (a.scenario == "gesture") r = scenario_gesture(a);
+    else if (a.scenario == "reconfigure") r = scenario_reconfigure(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
 
     if (r != 0) return r;

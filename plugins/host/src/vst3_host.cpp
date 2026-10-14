@@ -274,11 +274,24 @@ public:
     }
 };
 
-// Edits come from an editor this host does not open; what matters is the
-// latency notice, which can arrive on any thread.
+// The latency notice, and the controller's edits, both from any thread.
+// Edits become touches for the engine (contracts/plugin host_control.h,
+// "Parameter touches"): mapped to the dense index here, never applied to
+// the processor here, since the engine sends them back through the ring.
 class ComponentHandler final : public V::IComponentHandler {
 public:
     explicit ComponentHandler(std::atomic<bool>& latency_dirty) : latency_dirty_(latency_dirty) {}
+
+    // The main thread, once the dense list is final. Everything the plugin's
+    // threads read is written before the release store of the sink.
+    void attach(TouchSink* sink, uint32_t instance, const std::vector<std::pair<uint32_t, uint32_t>>* by_id,
+                int bypass_dense, V::IEditController* controller) {
+        instance_ = instance;
+        by_id_ = by_id;
+        bypass_dense_ = bypass_dense;
+        controller_ = controller;
+        sink_.store(sink, std::memory_order_release);
+    }
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
         if (iid_is(iid, Steinberg::FUnknown_iid) || iid_is(iid, V::IComponentHandler_iid)) {
             *obj = this;
@@ -288,9 +301,20 @@ public:
         return Steinberg::kNoInterface;
     }
     SONORA_UNCOUNTED
-    tresult PLUGIN_API beginEdit(V::ParamID) override { return Steinberg::kResultOk; }
-    tresult PLUGIN_API performEdit(V::ParamID, V::ParamValue) override { return Steinberg::kResultOk; }
-    tresult PLUGIN_API endEdit(V::ParamID) override { return Steinberg::kResultOk; }
+    // Begin and end carry the controller's current value, so a gesture with
+    // no performEdit still ends on a value.
+    tresult PLUGIN_API beginEdit(V::ParamID id) override {
+        forward(TouchKind::Begin, id, current(id));
+        return Steinberg::kResultOk;
+    }
+    tresult PLUGIN_API performEdit(V::ParamID id, V::ParamValue v) override {
+        forward(TouchKind::Perform, id, v);
+        return Steinberg::kResultOk;
+    }
+    tresult PLUGIN_API endEdit(V::ParamID id) override {
+        forward(TouchKind::End, id, current(id));
+        return Steinberg::kResultOk;
+    }
     // Only flags and wakes: the re-read happens on the host's main thread
     // (Processor::control), never here and never on the processing thread.
     tresult PLUGIN_API restartComponent(int32 flags) override {
@@ -302,7 +326,33 @@ public:
     }
 
 private:
+    V::ParamValue current(V::ParamID id) {
+        return sink_.load(std::memory_order_acquire) && controller_ ? controller_->getParamNormalized(id) : 0.0;
+    }
+    void forward(TouchKind kind, V::ParamID id, V::ParamValue v) noexcept {
+        TouchSink* sink = sink_.load(std::memory_order_acquire);
+        if (!sink) return;  // before the chain is assembled: nobody to tell
+        const auto it = std::lower_bound(by_id_->begin(), by_id_->end(), std::make_pair(uint32_t(id), 0u));
+        if (it == by_id_->end() || it->first != id || !std::isfinite(v)) {
+            sink->touch(instance_, TouchKind::Unmapped, 0, 0.f);
+            return;
+        }
+        uint32_t dense = it->second;
+        float value = static_cast<float>(std::clamp(v, 0.0, 1.0));
+        // The plugin's own bypass is the engine's bypass (kIsBypass: 1 is bypassed).
+        if (static_cast<int>(dense) == bypass_dense_) {
+            dense = plugin::kBypassParam;
+            value = value > 0.5f ? 1.f : 0.f;
+        }
+        sink->touch(instance_, kind, dense, value);
+    }
+
     std::atomic<bool>& latency_dirty_;
+    std::atomic<TouchSink*> sink_{nullptr};
+    uint32_t instance_ = 0;
+    const std::vector<std::pair<uint32_t, uint32_t>>* by_id_ = nullptr;
+    int bypass_dense_ = -1;
+    V::IEditController* controller_ = nullptr;
 };
 
 // Component state handed to the controller at load. Not RT.
@@ -346,6 +396,12 @@ public:
     tresult PLUGIN_API tell(int64* pos) override {
         if (pos) *pos = pos_;
         return Steinberg::kResultOk;
+    }
+
+    std::string bytes() const { return std::string(data_.begin(), data_.end()); }
+    void assign(const std::string& s) {
+        data_.assign(s.begin(), s.end());
+        pos_ = 0;
     }
 
 private:
@@ -1053,6 +1109,78 @@ public:
                 return true;
             }
         return false;
+    }
+
+    void set_touch_sink(TouchSink* sink, uint32_t instance) override {
+        handler_.attach(sink, instance, &by_id_, bypass_dense_, controller_);
+    }
+
+    bool current_value(uint32_t dense, float& v) const override {
+        if (!controller_ || dense >= dense_ids_.size()) return false;
+        v = static_cast<float>(std::clamp(controller_->getParamNormalized(dense_ids_[dense]), 0.0, 1.0));
+        return true;
+    }
+
+    // Section 0 is the component's state, section 1 a separate controller's
+    // (empty for a single-component plugin). Replicas are copies of
+    // instance 0, so its state is theirs.
+    SaveResult save_state(std::vector<std::string>& sections, std::string& error) override {
+        MemoryStream comp;
+        if (inst_[0].component->getState(&comp) != Steinberg::kResultOk) {
+            error = who_ + ": getState() refused";
+            return SaveResult::Failed;
+        }
+        MemoryStream ctrl;
+        if (controller_ && own_controller_ && controller_->getState(&ctrl) != Steinberg::kResultOk)
+            ctrl = MemoryStream{};
+        sections = {comp.bytes(), ctrl.bytes()};
+        return SaveResult::Saved;
+    }
+
+    // Before the processing thread starts. The component of every replica,
+    // then the controller told the component's state, then the controller's
+    // own: the order VST3 hosts use when they load a project.
+    bool restore_state(const std::vector<std::string>& sections, std::string& error) override {
+        if (sections.empty()) return true;
+        if (sections.size() > 2) {
+            error = who_ + ": a VST3 state has two sections, not " + std::to_string(sections.size());
+            return false;
+        }
+        for (Instance& i : inst_) {
+            MemoryStream comp;
+            comp.assign(sections[0]);
+            if (i.component->setState(&comp) != Steinberg::kResultOk) {
+                error = who_ + ": setState() refused the component state";
+                return false;
+            }
+        }
+        if (controller_) {
+            MemoryStream comp;
+            comp.assign(sections[0]);
+            controller_->setComponentState(&comp);
+            if (own_controller_ && sections.size() > 1 && !sections[1].empty()) {
+                MemoryStream ctrl;
+                ctrl.assign(sections[1]);
+                if (controller_->setState(&ctrl) != Steinberg::kResultOk) {
+                    error = who_ + ": the controller refused its state";
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // A controller call: the main thread (brain/research/plugin-host-vst3.md).
+    bool describe_value(uint32_t dense, float value, std::string& out) const override {
+        if (dense >= dense_ids_.size() || !controller_) return Processor::describe_value(dense, value, out);
+        Steinberg::Vst::String128 s{};
+        if (controller_->getParamStringByValue(dense_ids_[dense], std::clamp(double(value), 0.0, 1.0), s) !=
+            Steinberg::kResultOk)
+            return Processor::describe_value(dense, value, out);
+        out = utf8(s, 128);
+        const std::string& units = info_.ports[dense_ports_[dense]].units;
+        if (!out.empty() && !units.empty()) out += " " + units;
+        return true;
     }
 
     std::string param_key(uint32_t dense) const override { return std::to_string(dense_ids_[dense]); }

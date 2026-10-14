@@ -60,9 +60,9 @@ target_include_directories(sonora_plugin_loader PUBLIC src)
 target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_LIBS})
 
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h
-               src/lv2_host.cpp src/lv2_host.h)
+               src/lv2_host.cpp src/lv2_host.h src/control.cpp src/control.h)
 target_link_libraries(sonora-plugin-host PRIVATE sonora_plugin_ipc sonora_plugin_loader
-                      sonora_urid_map PkgConfig::LILV)
+                      sonora_urid_map sonora_plugin_host_control PkgConfig::LILV)
 if(VST3SDK_INCLUDE_DIR)
   target_sources(sonora-plugin-host PRIVATE src/vst3_host.cpp src/vst3_host.h)
   target_include_directories(sonora-plugin-host SYSTEM PRIVATE ${VST3SDK_INCLUDE_DIR})
@@ -70,6 +70,13 @@ if(VST3SDK_INCLUDE_DIR)
 endif()
 
 # --- tests (ADR-0007 §7: a fake engine driver plus in-tree test plugins)
+
+# The gesture rules without a plugin (rt-engineer M3 on PR #51).
+add_executable(test_gestures tests/test_gestures.cpp)
+target_include_directories(test_gestures PRIVATE src)
+target_link_libraries(test_gestures PRIVATE sonora_plugin_host_control sonora_platform)
+add_test(NAME plugin_host_gestures COMMAND test_gestures)
+set_tests_properties(plugin_host_gestures PROPERTIES LABELS plugins)
 
 add_executable(test_urid_map tests/test_urid_map.cpp)
 target_link_libraries(test_urid_map PRIVATE sonora_urid_map Threads::Threads)
@@ -89,7 +96,7 @@ configure_file(tests/lv2/manifest.ttl ${SONORA_TEST_BUNDLE}/manifest.ttl COPYONL
 configure_file(tests/lv2/sonora_test.ttl ${SONORA_TEST_BUNDLE}/sonora_test.ttl COPYONLY)
 
 add_executable(plugin_driver tests/plugin_driver.cpp)
-target_link_libraries(plugin_driver PRIVATE sonora_plugin_ipc)
+target_link_libraries(plugin_driver PRIVATE sonora_plugin_ipc sonora_plugin_host_control)
 add_dependencies(plugin_driver sonora-plugin-host sonora_test_lv2)
 
 set(_drive $<TARGET_FILE:plugin_driver> --host $<TARGET_FILE:sonora-plugin-host>
@@ -117,7 +124,7 @@ set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is n
                      LABELS plugins)
 # The versions the engine checks at start-up (ADR-0012 §5.5).
 add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
-set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1\n$"
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 1\n$"
                      LABELS plugins)
 # Hosts are timer-paced by default: the audio thread's futex wake ships gated
 # off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex
@@ -130,7 +137,23 @@ set(_plugin_tests
   plugin_host_gain_mono plugin_host_gain_stereo plugin_host_gain_futex
   plugin_host_latency_pipelined plugin_host_latency_futex plugin_host_latency_chain
   plugin_host_bypass plugin_host_bypass_latency plugin_host_bypass_lv2_enabled plugin_host_swap
-  plugin_host_rtt plugin_host_key)
+  plugin_host_rtt plugin_host_key
+  plugin_host_control plugin_host_control_incompatible plugin_host_control_gain plugin_host_control_crash
+  plugin_host_control_latency_chain plugin_host_state_lv2)
+# HostControl (contracts/plugin host_control.h, ADR-0012 §4): the socket on
+# --control-fd, with the driver as the engine's control thread. The same
+# scenarios as above through Load instead of the command line, and the
+# messages only the socket carries: the handshake and its refusals, the key
+# table, DescribeValue, editors, state save and restore through a
+# "Plugin State/<sha256>.state" file, Shutdown.
+add_test(NAME plugin_host_control COMMAND ${_drive} --scenario control)
+add_test(NAME plugin_host_control_incompatible COMMAND ${_drive} --scenario control_incompatible)
+add_test(NAME plugin_host_control_gain COMMAND ${_drive} --scenario gain --control 1)
+add_test(NAME plugin_host_control_crash COMMAND ${_drive} --scenario crash --control 1)
+add_test(NAME plugin_host_control_latency_chain COMMAND ${_drive} --scenario latency --control 1
+         --chain "http://gareus.org/oss/lv2/dpl#mono,http://lsp-plug.in/plugins/lv2/limiter_mono,http://lv2plug.in/plugins/eg-amp")
+add_test(NAME plugin_host_state_lv2 COMMAND ${_drive} --scenario state --chain "urn:sonora:test#state"
+         --expect-state counter)
 add_test(NAME plugin_host_refusals COMMAND ${_drive} --scenario refusals)
 add_test(NAME plugin_host_incompatible COMMAND ${_drive} --scenario incompatible)
 # The key channels: re-copied for every plugin, and a key input with no key
@@ -276,7 +299,18 @@ if(VST3SDK_INCLUDE_DIR)
            --chain "${_again},${_vst3_crash}")
   add_test(NAME plugin_host_vst3_crash_futex COMMAND ${_vst3_drive} --scenario crash
            --chain "${_again},${_vst3_crash}" --wake futex)
+  # HostControl with VST3: the handshake and key table on AGain, state
+  # through getState/setState, touches from a controller's own thread, and
+  # LatencyChanged on the socket after kLatencyChanged.
+  add_test(NAME plugin_host_vst3_control COMMAND ${_vst3_drive} --scenario control --chain ${_again})
+  add_test(NAME plugin_host_vst3_state COMMAND ${_vst3_drive} --scenario state
+           --chain "vst3:534F4E4F524156535433544553540009" --expect-state counter)
+  add_test(NAME plugin_host_vst3_gesture COMMAND ${_vst3_drive} --scenario gesture)
+  add_test(NAME plugin_host_vst3_latency_change_control COMMAND ${_vst3_drive} --scenario latency_change
+           --chain ${_lsp_limiter} --change-param 467309611 --change-value 0.5 --control 1)
   list(APPEND _plugin_tests
+    plugin_host_vst3_control plugin_host_vst3_state plugin_host_vst3_gesture
+    plugin_host_vst3_latency_change_control
     plugin_host_vst3_refusals
     plugin_host_vst3_gain_mono plugin_host_vst3_gain_stereo plugin_host_vst3_gain_futex
     plugin_host_vst3_latency plugin_host_vst3_latency_futex plugin_host_vst3_latency_mixed
@@ -352,6 +386,47 @@ if(_native)
         set_tests_properties(native_vst3_${n}_${_case} PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
       endif()
     endforeach()
+
+    # HostControl round trips with the bundle as a file (contracts/plugin
+    # host_control.h): its state saved, written to "Plugin State/", and
+    # restored into a new host byte for byte; and, for the two whose
+    # latency moves with a value, the golden re-activation render through
+    # Load, then Reconfigure while running.
+    get_property(_uri GLOBAL PROPERTY SONORA_NATIVE_${n}_LV2_URI)
+    get_property(_cid GLOBAL PROPERTY SONORA_NATIVE_${n}_VST3_ID)
+    set(_lv2_bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${n}.lv2)
+    set(_vst3_bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${n}.vst3)
+    set(_ctl $<TARGET_FILE:plugin_driver> --host $<TARGET_FILE:sonora-plugin-host>)
+    add_test(NAME native_lv2_${n}_control_state
+             COMMAND ${_ctl} --bundle ${_lv2_bundle} --scenario state --chain ${_uri} --channels 2
+                     --expect-state same)
+    list(APPEND _native_tests native_lv2_${n}_control_state)
+    if(VST3SDK_INCLUDE_DIR)
+      add_test(NAME native_vst3_${n}_control_state
+               COMMAND ${_ctl} --bundle ${_vst3_bundle} --scenario state --chain ${_cid} --channels 2
+                       --expect-state same)
+      list(APPEND _native_tests native_vst3_${n}_control_state)
+    endif()
+    if(n STREQUAL "limiter")
+      add_test(NAME native_lv2_limiter_control_render
+               COMMAND ${_render} --bundle ${_lv2_bundle} --chain ${_uri} --control 1
+                       --args-file ${_fixtures}/limiter-reconfigure-48000-lv2.args)
+      add_test(NAME native_lv2_limiter_control_reconfigure
+               COMMAND ${_ctl} --bundle ${_lv2_bundle} --scenario reconfigure --chain ${_uri} --channels 2
+                       --change-param lookahead --change-value 3 --expect-latency 502)
+      set_tests_properties(native_lv2_limiter_control_render PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
+      list(APPEND _native_tests native_lv2_limiter_control_render native_lv2_limiter_control_reconfigure)
+      if(VST3SDK_INCLUDE_DIR)
+        add_test(NAME native_vst3_limiter_control_render
+                 COMMAND ${_render} --bundle ${_vst3_bundle} --chain ${_cid} --control 1
+                         --args-file ${_fixtures}/limiter-reconfigure-48000-vst3.args)
+        add_test(NAME native_vst3_limiter_control_reconfigure
+                 COMMAND ${_ctl} --bundle ${_vst3_bundle} --scenario reconfigure --chain ${_cid} --channels 2
+                         --change-param Look-ahead --change-value 0.5 --expect-latency 502)
+        set_tests_properties(native_vst3_limiter_control_render PROPERTIES FIXTURES_REQUIRED native_fixture_${n})
+        list(APPEND _native_tests native_vst3_limiter_control_render native_vst3_limiter_control_reconfigure)
+      endif()
+    endif()
   endforeach()
   set_tests_properties(${_native_tests} PROPERTIES LABELS plugins)
 endif()

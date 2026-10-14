@@ -100,8 +100,24 @@ public:
     static std::unique_ptr<ControlChannel> connect(const std::string& endpoint,
                                                    std::string& error);
 
+    // A connected pair for a child process (ADR-0012 §4, one per plugin
+    // host): `parent` stays here, not inherited by any child; `child_handle`
+    // is an inheritable OS handle the spawner puts where the child expects
+    // it (descriptor 3 for a host) and then closes here with close_handle.
+    static bool pair(std::unique_ptr<ControlChannel>& parent, int& child_handle, std::string& error);
+    // The child's half: takes ownership of an inherited handle, which must
+    // be a connected message-mode socket. Marks it not inheritable.
+    static std::unique_ptr<ControlChannel> adopt(int handle, std::string& error);
+    static void close_handle(int handle);
+
     explicit ControlChannel(std::unique_ptr<Impl> impl);
     ~ControlChannel();
+
+    // For a poll set in platform-level code (the plugin host supervisor
+    // polls each host's channel beside its pidfd), never for I/O: readable
+    // means receive(..., 0) will not return WouldBlock. -1 where IPC is
+    // unsupported.
+    int native_handle() const;
     ControlChannel(const ControlChannel&) = delete;
     ControlChannel& operator=(const ControlChannel&) = delete;
 
@@ -115,8 +131,9 @@ public:
 
     // One datagram. A datagram longer than `max_bytes` is an Error, not a
     // truncated message. A region attached to it is mapped read-only into
-    // `*region` when `region` is not null, and released otherwise. One
-    // receiver at a time.
+    // `*region` when `region` is not null; when it is null, an attached
+    // descriptor is closed and the datagram is an Error (the peer sent what
+    // nobody asked for). One receiver at a time.
     IoStatus receive(std::string& datagram, std::size_t max_bytes,
                      std::unique_ptr<SharedRegion>* region, int timeout_ms,
                      std::string& error);
