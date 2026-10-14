@@ -136,26 +136,22 @@ bool place_file(model::Document& document, const std::string& session_dir,
     return apply(document, place, updates, error);
 }
 
-bool add_closed_take(model::Document& document, const Session& session, int take,
+bool add_closed_take(model::Document& document, const Session& session,
+                     const Session::ClosedTake& take,
                      std::vector<model::ReplicationUpdate>& updates, std::string& error) {
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
-    for (std::size_t i = 0; i < session.tracks().size(); ++i) {
-        // writer() has no const overload; nothing here changes the track.
-        Track& engine_track = *session.tracks()[i];
-        // Arming is fixed for a take (session_commands.cpp), so the armed
-        // tracks are the take's.
-        if (!engine_track.rec_armed() || engine_track.writer().frames_written() == 0) continue;
-        const std::string& path = engine_track.writer().path();
-        if (path.compare(0, prefix.size(), prefix) != 0) continue;
-        const std::string relative = path.substr(prefix.size());
+    for (const DiskThread::ClosedFile& f : take.files) {
+        if (f.frames == 0) continue;
+        if (f.path.compare(0, prefix.size(), prefix) != 0) continue;
+        const std::string relative = f.path.substr(prefix.size());
 
-        const model::TrackEdit* t = track_at(document, i, error);
+        const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), error);
         if (!t) return false;
         model::AddSource src;
         if (!source_of(document, dir, relative, t->channels, src.source, error)) return false;
         src.source.kind = model::SourceKind::Recorded;
-        src.source.take = take;
+        src.source.take = take.take;
         src.source.recorded_on_track = t->id;
         // Copied before the document moves on: `t` belongs to the old state.
         const model::Id track_id = t->id;

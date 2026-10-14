@@ -54,25 +54,33 @@ public:
     uint32_t overruns() const { return overruns_.load(std::memory_order_relaxed); }
     void note_overrun() { overruns_.fetch_add(1, std::memory_order_relaxed); }
 
-    // Whether the disk thread may drain this track into its writer.
+    // Two files per track, so the next take's is open before the running
+    // one closes (timeline-model.md, "Closing a take while rolling").
     //
-    // The writer's FILE* and the ring's indices are plain or relaxed state
-    // set up by the interface thread in Session::start_recording(), and read
-    // by the disk thread. This flag is how they cross: the interface thread
-    // resets the ring and opens the file, then stores true with release; the
-    // disk thread loads it with acquire and touches neither ring nor writer
-    // unless it saw true. Everything written before the store is therefore
-    // visible to the disk thread -- the open file, and read and write indices
-    // of zero rather than the last take's, which on a weakly ordered CPU
-    // could otherwise put the previous take's tail at the head of this file.
-    // It is cleared only after the disk thread has been joined, so a writer
-    // is never closed while the disk thread is using it. The audio thread
-    // never reads it and never waits on it.
-    bool draining() const { return draining_.load(std::memory_order_acquire); }
-    void set_draining(bool v) { draining_.store(v, std::memory_order_release); }
+    // A slot's take number is how its writer changes hands. 0: free, the
+    // control thread's to open. Non-zero: the control thread has opened the
+    // file for that take and published it with a release store; from then
+    // the disk thread alone writes and closes it, starting at the take's
+    // open boundary record, and stores 0 with release once the file is
+    // closed. The control thread touches a slot's writer again only after
+    // seeing 0 with acquire, or once the disk thread has been joined. The
+    // audio thread never reads either.
+    static constexpr int kWriterSlots = 2;
+    int slot_take(int slot) const { return slot_take_[slot].load(std::memory_order_acquire); }
+    void set_slot_take(int slot, int take) {
+        slot_take_[slot].store(take, std::memory_order_release);
+    }
+    WavWriter& writer(int slot) { return writers_[slot]; }
+    // The control thread's: the slot of the take it opened last, which
+    // start_recording() reuses when it is free, so a limit set on writer()
+    // between takes applies to the next one.
+    WavWriter& writer() { return writers_[current_slot_]; }
+    int current_slot() const { return current_slot_; }
+    void set_current_slot(int slot) { current_slot_ = slot; }
 
+    // Written by the audio thread, inside a take's capture window only;
+    // read by the disk thread; never reset (Session::process()).
     RingBuffer<float>& capture_ring() { return *capture_ring_; }
-    WavWriter& writer() { return writer_; }
 
 private:
     const int id_;
@@ -80,10 +88,11 @@ private:
     const uint16_t channels_;
 
     std::unique_ptr<RingBuffer<float>> capture_ring_;
-    WavWriter writer_;
+    WavWriter writers_[kWriterSlots];
+    std::atomic<int> slot_take_[kWriterSlots] = {{0}, {0}};
+    int current_slot_ = 0;
 
     std::atomic<bool> rec_armed_{false};
-    std::atomic<bool> draining_{false};
     std::atomic<bool> muted_{false};
     std::atomic<float> gain_{1.0f};
     std::atomic<float> pan_{0.0f};

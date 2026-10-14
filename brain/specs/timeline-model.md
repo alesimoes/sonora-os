@@ -284,8 +284,21 @@ band, with the audio**:
 - **The capture ring is never reset.** There is nothing to race against, so
   the take-epoch handshake is no longer needed. This replaces it; the
   regression test for the old race is still written first, and must pass.
-- The disk thread **opens the next take's files ahead**, as soon as a take
-  starts, so opening a file is never in the drain path at a boundary.
+- The next take's files are **opened ahead**, so opening a file is never in
+  the drain path at a boundary. Amended 2026-10-14 (`feature/record-while-rolling`):
+  the control thread opens them, in `start_recording()`, before the take is
+  published to the audio thread, rather than the disk thread as soon as a
+  take starts. That keeps the all-or-nothing refusal synchronous (a name
+  already on disk, a full disk: the operator is told before anything is
+  recorded) and needs no guess at the next take's tracks. Each track has
+  two writer slots, handed between the threads by the take number each
+  holds (`Track::slot_take()`); a third take started before the disk thread
+  has closed the first of two is refused after a bounded wait, with the
+  reason.
+- `stop()` stores Stopped, waits for the callback in flight (bounded, one
+  second), joins the disk thread and closes what no close record reached.
+  A callback later still writes into no file: the disk thread drops
+  samples that no open slot claims.
 - After closing a take, the disk thread reports **"take closed, length N"**
   to `engine/control`. `AddSource` and `RecordTake` are applied only then,
   with N from disk, not computed from the transport.
