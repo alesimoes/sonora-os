@@ -104,12 +104,18 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        Carried from the PR #45 reviews (ADR-0012 checklist 4):
        RT half and supervisor stub landed on `feature/plugin-client`
        (engine/plugin_client); the items below marked [x] are in it.
-       - [ ] RTSan CI job (Unverified 10): Clang 20+ (apt.llvm.org on
-             trixie; Debian's clang-19 has no `-fsanitize=realtime`). The
-             test `plugin_client_rtsan_wake` is written and registers
-             itself where the flag exists; the job builds with Clang and
-             runs it plus the plugin_client tests under RTSan, and records
-             whether the `syscall` in `wake_all` is reported.
+       - [x] RTSan CI job (Unverified 10), `ci/rtsan`: CI job `rtsan`
+             (`tools/build-rtsan.sh`, clang-22). The `syscall` in
+             `wake_all` IS reported (`plugin_client_rtsan_raw_syscall`
+             holds that); `wake_all` runs it in an `__rtsan_disable` scope
+             (A1/A3) and `plugin_client_rtsan_wake` is clean under
+             `halt_on_error=true`. The reachability test allows that pair
+             in wake.cpp's object only.
+       - [ ] RTSan over `plugin_client_host_*` and `plugins/host`: they need
+             lilv and the test plugins, which the `rtsan` image does not
+             carry (the `plugins` image builds with GCC). Add a Clang
+             RTSan configure to the plugins image, or lilv to
+             `tools/Dockerfile.rtsan`. distro-engineer.
        - [ ] Wire `PluginClient::process_chain` into the InsertChain node
              (checklist 3, `feature/plan-pdc`): once per node per callback
              with the whole block, `param_store = kNoStore` for a chain
@@ -338,13 +344,31 @@ not start or extend those items before the Complete DAW closes (owner,
       during a failed take exits 1 with the terminal restored. Only the
       `Session::take_failure()` half is unit-tested today.
 
-- [ ] RTSan CI job: `clang-22` from trixie main, its own build
+- [x] RTSan CI job: `clang-22` from trixie main, its own build
       (`-fsanitize=realtime`, which cannot be combined with ASan or TSan),
       `-Wfunction-effects` advisory. `SONORA_RT` expands to
-      `[[clang::nonblocking]]`. Most useful after M3 (fake backend). Also
-      check whether libjack calls trip RTSan inside the callback.
+      `[[clang::nonblocking]]`. CI job `rtsan`, `tools/build-rtsan.sh`,
+      `-DSONORA_RTSAN=ON`; every ctest runs under it.
+- [ ] libjack inside the callback under RTSan in CI: the `rtsan` job has
+      no PipeWire, so `JackBackend::process_cb` is only covered by the
+      2026-10-12 manual run (brain/research/adr-0007-measurements.md).
+      Run `tools/test-engine-entrypoint.sh` on an RTSan engine.
       distro-engineer with rt-engineer.
-- [ ] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s
+- [ ] `-Wfunction-effects` to an error, per module, once clean. Today (clang-22,
+      `ci/rtsan`) it reports SONORA_RT functions calling unmarked ones that
+      RTSan, at run time, finds clean: `ProcessorBase::apply_event`
+      (plugins/native/sdk), `LookaheadLimiter::set_release` and
+      `TruePeakGuard::set_release` (limiter), `Bridge::descriptor`
+      (format), `std::chrono::steady_clock::now` in `Session::process`
+      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API.
+      `ProcessorBase::on_reset` is done (auditor, PR #54): no test reached
+      process()'s non-finite-output branch, so `native_sdk` now forces a
+      NaN from inside a processor and the harness's `check_reset` runs every
+      processor's on_reset from a nonblocking function; both clean under
+      RTSan, and the hook is `SONORA_RT`. Mark the
+      ours `SONORA_RT` (the hooks are an SDK interface change, so with the
+      dsp-engineer's review), then promote the module. rt-engineer.
+- [x] In that RTSan job, run `test_playback_mix` and `test_disk_reader`'s
       reader stress test (with its deactivate cycles) at least: they drive
       `Session::process()` and the chunk-slot loads through every playback
       path (fades, crossfades, ramps, misses, locates, swaps, delay lines).
@@ -352,7 +376,8 @@ not start or extend those items before the Complete DAW closes (owner,
       PR #41's RT audit adds about ten audio-thread functions checked by
       reading only (FrameClock, PlanExchange::acquire, render_segment,
       FlushDenormals): the job should cover `test_playback_fake` and
-      `test_frame_clock` too.
+      `test_frame_clock` too. All of them run in CI job `rtsan`
+      (`ci/rtsan`), clean.
 - [x] With M4, the state publisher is paced on a fixed timer. `StateView`
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
@@ -643,9 +668,9 @@ ADR-0011 "For the owner".
 - [ ] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s,
       meeting their `quality.json`. CPU figures on the owner's laptop
       recorded in `brain/research/` (ADR-0011 Unverified 4). dsp-engineer.
-- [ ] Still missing after N0 (PR #34 review, 2026-10-13): the RTSan job
-      that runs the harness and the golden tests (ADR-0011 §2.3; the
-      ADR-0007 follow-up above), and the MSVC `portable` job that runs the
+- [ ] Still missing after N0 (PR #34 review, 2026-10-13): ~~the RTSan job
+      that runs the harness and the golden tests~~ (done in `ci/rtsan`:
+      native_* and dsp_* run under RTSan in CI job `rtsan`), and the MSVC `portable` job that runs the
       golden tests under MSVC (ADR-0011 §3.4, ADR-0008 P7 above). Until
       both exist, "RTSan-clean" and "passes under MSVC" are claims nobody
       has checked for `common/dsp` and `plugins/native`. distro-engineer

@@ -175,19 +175,28 @@ function(_sonora_native_bundle name suffix channels uid display)
     add_dependencies(sonora_native_bundles ${t})
   endforeach()
 
+  # Clang links the RTSan runtime into executables only; a bundle built
+  # under SONORA_RTSAN takes __rtsan_* from the host that loads it, so it
+  # cannot promise to have no undefined symbols.
+  if(SONORA_RTSAN)
+    set(no_undefined)
+  else()
+    set(no_undefined -Wl,--no-undefined)
+  endif()
+
   set(lv2_bundle ${SONORA_NATIVE_LV2_DIR}/sonora-${b}.lv2)
   set_target_properties(sonora-${b}-lv2 PROPERTIES
     OUTPUT_NAME sonora-${b}_dsp
     LIBRARY_OUTPUT_DIRECTORY ${lv2_bundle})
   target_link_options(sonora-${b}-lv2 PRIVATE
-    -Wl,--version-script=${SONORA_FORMAT_DIR}/src/dpf/lv2.version -Wl,--no-undefined)
+    -Wl,--version-script=${SONORA_FORMAT_DIR}/src/dpf/lv2.version ${no_undefined})
 
   set(vst3_bundle ${SONORA_NATIVE_VST3_DIR}/sonora-${b}.vst3)
   set_target_properties(sonora-${b}-vst3 PROPERTIES
     OUTPUT_NAME sonora-${b}
     LIBRARY_OUTPUT_DIRECTORY ${vst3_bundle}/Contents/${SONORA_VST3_ARCH})
   target_link_options(sonora-${b}-vst3 PRIVATE
-    -Wl,--version-script=${SONORA_DPF_DIR}/utils/symbols/vst3.version -Wl,--no-undefined)
+    -Wl,--version-script=${SONORA_DPF_DIR}/utils/symbols/vst3.version ${no_undefined})
 
   # The generated files (ADR-0011 §2.4, one table): the LV2 TTL, by DPF's
   # exporter, and the JSON descriptor the Sonora UI builds the editor from

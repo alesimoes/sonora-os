@@ -1,0 +1,7 @@
+# RealtimeSanitizer suppressions for tools/build-rtsan.sh and CI's rtsan job.
+# An entry here is an RT exception (ADR-0007, first 2026-10-12 update): it
+# needs the rt-safety-auditor's ruling, cited on the line above it. None yet.
+# wake_all's futex wake, the one audited exception so far (ADR-0012 A1/A3),
+# is not here: it is an __rtsan_disable scope around that single syscall in
+# common/platform/src/posix/wake.cpp, which a call-stack suppression could
+# not keep as narrow.

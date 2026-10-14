@@ -13,6 +13,13 @@
 
 #include "sonora/fake_backend.h"
 
+#if defined(__has_feature)
+#if __has_feature(realtime_sanitizer)
+#include <sanitizer/rtsan_interface.h>
+#define SONORA_TEST_RTSAN 1
+#endif
+#endif
+
 #define CHECK(cond)                                                      \
     do {                                                                 \
         if (!(cond)) {                                                   \
@@ -30,12 +37,17 @@ using sonora::backend::PortInfo;
 
 // Keeps every input sample it is given, per input, and the frame_time of
 // each block. Test only: it allocates in process(), which a real callback
-// must never do, but the fake runs it on this thread.
+// must never do, but the fake runs it on this thread. Under RTSan the fake's
+// period is a realtime context, so this recorder runs with RTSan off; the
+// fake's own code around the call is still checked.
 class Capture final : public sonora::backend::ProcessCallback {
 public:
     explicit Capture(uint32_t inputs) : samples(inputs), was_null(inputs, false) {}
 
     void process(const AudioBlock& b) noexcept override {
+#ifdef SONORA_TEST_RTSAN
+        const __rtsan::ScopedDisabler test_recorder_allocates;
+#endif
         times.push_back(b.frame_time);
         for (uint32_t i = 0; i < b.input_count; ++i) {
             if (b.inputs[i] == nullptr) {

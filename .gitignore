@@ -8,6 +8,8 @@ build-plugins/
 # The sanitizer builds, named as in .github/workflows/ci.yml.
 build-tsan/
 build-asan/
+# The RealtimeSanitizer build, by tools/build-rtsan.sh.
+build-rtsan/
 # Kernel, initrd and serial logs extracted by the QEMU boot test.
 build-qemu/
 # Disk images, kernel and serial logs from the USB writer test.

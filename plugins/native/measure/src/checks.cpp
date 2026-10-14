@@ -12,6 +12,7 @@
 #include "sonora/dsp/denormals.h"
 #include "sonora/measure/measure.h"
 #include "sonora/native/param.h"
+#include "sonora/rt.h"
 
 namespace sonora::measure {
 
@@ -40,6 +41,12 @@ std::unique_ptr<native::Processor> prepared(Suite& s, double fs, const Config& c
     }
     return p;
 }
+
+// ProcessorBase::process() calls on_reset() itself when the output goes
+// non-finite, so every processor's on_reset runs on the audio thread. A
+// processor cannot be made to blow up from its input (the base class
+// sanitises it), so the RTSan job reaches each on_reset this way instead.
+void reset_on_audio_thread(native::Processor& p) noexcept SONORA_RT { p.reset(); }
 
 }  // namespace
 
@@ -134,6 +141,25 @@ void check_nonfinite(Suite& s, const Config& c) {
     s.check("1e30 in: output finite", hf ? 1.0 : 0.0, 1.0, hf, "bool");
     s.check("1e30 in: from the next block on, same as silence in its place", hdiff, 0.0, hdiff == 0.0, "abs",
             "back to normal within a block");
+}
+
+void check_reset(Suite& s, const Config& c) {
+    const double fs = 48000.0;
+    Chans in = noise(fs, -12.0, 0.5, 13u);
+    band_limit_and_fade(in, fs);
+    auto p = prepared(s, fs, c);
+    auto q = prepared(s, fs, c);
+    if (!p || !q) return;
+    render(*p, in);
+    reset_on_audio_thread(*p);
+    const Chans y = render(*p, in);
+    const Chans r = render(*q, in);
+    double diff = 0.0;
+    for (std::size_t ch = 0; ch < 2; ++ch) {
+        for (std::size_t i = 0; i < y[ch].size(); ++i) diff = std::fmax(diff, std::fabs(y[ch][i] - r[ch][i]));
+    }
+    s.check("reset on the audio thread: same as freshly prepared", diff, 0.0, diff == 0.0, "abs",
+            "on_reset clears all signal state");
 }
 
 void check_denormals(Suite& s, const Config& c) {
@@ -362,6 +388,7 @@ void check_common(Suite& s, const Config& golden,
                   const Config* zipper) {
     check_latency(s, latency_configs);
     check_nonfinite(s, golden);
+    check_reset(s, golden);
     check_denormals(s, golden);
     check_zipper(s, zipper != nullptr ? *zipper : golden, "");
     check_golden(s, golden);

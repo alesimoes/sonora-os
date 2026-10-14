@@ -188,6 +188,9 @@ void check_latency(Suite& s, const std::vector<std::pair<std::string, Config>>& 
 // NaN and Inf in, finite out; identical to the run with silence instead,
 // so recovery is immediate.
 void check_nonfinite(Suite& s, const Config& c);
+// reset() from a realtime context (where ProcessorBase calls on_reset when
+// the output goes non-finite), then the same render as a fresh processor.
+void check_reset(Suite& s, const Config& c);
 // Per-block CPU after 10 s of silence following signal, against active.
 void check_denormals(Suite& s, const Config& c);
 // Full-range sweeps of each automatable parameter listed in quality.json
