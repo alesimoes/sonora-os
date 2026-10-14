@@ -383,6 +383,19 @@ material past its edge) must exist, and is checked at load and on every
 edit that creates or moves a crossfade. Without the handle the crossfade is
 refused, not shortened silently.
 
+At a region's end with a crossfade, the crossfade is what plays; the
+region's own fade at that end is kept, unheard, and the next sentence does
+not count it. **What plays at one end of a region must not overlap what
+plays at its other end**: a crossfade's part inside a region plus the
+crossfade or fade at the region's other end is at most the region's
+`length`. The renderer multiplies a fade and a crossfade that cover the same
+frames, so the file refuses it at load, and every edit that would write it
+is refused (`SetFade`, `SetCrossfade`). An edit that moves an edge instead
+shortens the fade to meet the crossfade, as a fade shortens to fit a trimmed
+region. No v2 writer could produce such a file, because the only client that
+sets fades refused it already, so the rule tightens v2 without a version
+bump. *Added 2026-10-14.*
+
 This is exactly AAF's `Transition` between two `SourceClip`s in a
 `Sequence`, and it is why a crossfade is its own object rather than an
 overlap of two regions' fades.
