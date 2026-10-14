@@ -82,15 +82,18 @@ jobs:
       # reference machine's, measured in the same step. A red is the
       # processor getting slower, not the runner. The absolute bar is
       # held on the reference machine with tools/dsp-cpu.sh, unflagged.
-      # brain/research/native-tube-n2.md, "The gate".
+      # brain/research/native-tube-n2.md, "The gate". The opto's eco
+      # (class A, 20 us) is gated the same way and for the same reason:
+      # its standard quality ships over class A beside it
+      # (brain/research/native-opto-n2.md).
       # Exit 3 is inconclusive: the runner changed speed during the run,
       # so the step neither passes nor fails it; it says so as a warning.
-      - name: Tube eco, class B, runner-calibrated (gates)
+      - name: Tube and opto eco, class bars, runner-calibrated (gates)
         run: |
           rc=0
-          tools/dsp-cpu.sh --calibrated build 60 tube || rc=$?
+          tools/dsp-cpu.sh --calibrated build 60 tube opto || rc=$?
           if [[ $rc -eq 3 ]]; then
-            echo "::warning title=Tube CPU gate inconclusive::the runner changed speed during the run (reference kernel before and after the loads differ by over 5 %); not held this night"
+            echo "::warning title=CPU gate inconclusive::the runner changed speed during the run (reference kernel before and after the loads differ by over 5 %); not held this night"
             exit 0
           fi
           exit "$rc"
