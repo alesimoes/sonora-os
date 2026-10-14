@@ -14,35 +14,53 @@ namespace {
 // copy counts only if the sequence was even and unchanged around it (see
 // StateWriter::publish for why no fence is needed).
 //
-// Bounded, and short: a few yields, then short sleeps, so a writer that was
-// preempted mid-section gets the core back, about 3 ms at worst before the
-// read is called stale. A writer that died mid-section (after M7, another
-// process) leaves the sequence odd for good; `stuck` remembers the odd value
-// a read gave up on, and a read that finds the same one gives up at once,
-// so a dead writer costs one slow read, not one per track per tick.
+// Bounded in attempts and in time. A read that finds the writer inside a
+// section waits it out, a few yields and then short sleeps so a writer
+// that was preempted there gets the core back, and gives up once it has
+// seen that same section open for kMaxReadWaitNs. A read the writer
+// overtook retries at once: the writer was running, and its next gap is
+// moments away.
+//
+// The time is that one section's, not the read's. Under load the reader is
+// descheduled too, and a read timed from its start went stale whenever the
+// reader came back past the deadline to find an ordinary section open.
+//
+// A writer that died mid-section (after M7, another process) leaves the
+// sequence odd for good; `stuck` remembers the odd value a read gave up
+// on, and a read that finds the same one gives up at once, so a dead writer
+// costs one slow read, not one per track per tick.
 template <typename Read>
-bool seqlock_read(const StateHeader& h, uint64_t& stuck, Read read) {
-    uint64_t odd = 0;
+bool seqlock_read(const StateHeader& h, uint64_t& stuck, uint64_t& retries, Read read) {
+    using Clock = std::chrono::steady_clock;
+    uint64_t open = 0;   // the odd sequence being waited out
+    Clock::time_point open_since{};
+    int waits = 0;
     for (int attempt = 0; attempt < StateView::kMaxRetries; ++attempt) {
-        if (attempt >= 16) {
-            std::this_thread::sleep_for(std::chrono::microseconds(20));
-        } else if (attempt > 0) {
-            std::this_thread::yield();
-        }
+        if (attempt > 0) ++retries;
         const uint64_t s1 = h.seq.load(std::memory_order_acquire);
-        if ((s1 & 1) != 0) {
-            if (s1 == stuck) return false;
-            odd = s1;
+        if ((s1 & 1) == 0) {
+            read();
+            if (h.seq.load(std::memory_order_relaxed) == s1) {
+                stuck = 0;
+                return true;
+            }
             continue;
         }
-        read();
-        const uint64_t s2 = h.seq.load(std::memory_order_relaxed);
-        if (s1 == s2) {
-            stuck = 0;
-            return true;
+        if (s1 == stuck) return false;
+        const Clock::time_point now = Clock::now();
+        if (s1 != open) {
+            open = s1;
+            open_since = now;
+        } else if (now - open_since >= std::chrono::nanoseconds(StateView::kMaxReadWaitNs)) {
+            break;
+        }
+        if (waits++ < 16) {
+            std::this_thread::yield();
+        } else {
+            std::this_thread::sleep_for(std::chrono::microseconds(20));
         }
     }
-    stuck = odd;
+    stuck = open;
     return false;
 }
 
@@ -153,7 +171,7 @@ TransportSnapshot StateView::transport() const {
     }
     const StateHeader& h = *header_;
     TransportSnapshot s;
-    const bool ok = seqlock_read(h, stuck_seq_, [&]() { read_transport(h, s); });
+    const bool ok = seqlock_read(h, stuck_seq_, retries_, [&]() { read_transport(h, s); });
     if (!ok) {
         ++stale_reads_;
         out.stale = true;
@@ -177,7 +195,7 @@ TrackSnapshot StateView::track(uint32_t index) const {
     }
     const TrackState& t = tracks_[index];
     TrackSnapshot s;
-    const bool ok = seqlock_read(*header_, stuck_seq_, [&]() { read_track(t, s); });
+    const bool ok = seqlock_read(*header_, stuck_seq_, retries_, [&]() { read_track(t, s); });
     if (!ok) {
         ++stale_reads_;
         out.stale = true;
@@ -203,7 +221,7 @@ void StateView::frame(StateFrame& out) const {
         return;
     }
     const StateHeader& h = *header_;
-    const bool ok = seqlock_read(h, stuck_seq_, [&]() {
+    const bool ok = seqlock_read(h, stuck_seq_, retries_, [&]() {
         read_transport(h, out.transport);
         for (uint32_t i = 0; i < n; ++i) read_track(tracks_[i], out.tracks[i]);
     });
