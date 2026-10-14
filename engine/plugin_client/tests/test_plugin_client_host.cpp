@@ -5,6 +5,11 @@
 // sonora-plugin-host process, timer-paced (the futex wake is gated off).
 // Built where lilv is (tools/build-plugins.sh, CI's plugins job).
 //
+//   async_start  begin() returns at once and poll() reports the first host
+//                Ready after its 400 ms validation; no call waits
+//   ready_timeout  a host not Ready within the bound is killed and the
+//                chain is down, noticed from poll()
+//   async_refused  a plugin refused at validation: down, named, not retried
 //   passthrough  output = the previous callback's input, bit for bit, after
 //                the first block's ramp-in; latency reported = one block
 //   params       a gain moved in callback k is heard from callback k + 1,
@@ -257,7 +262,15 @@ struct Rig {
         const uint64_t end = now_ms() + max_ms;
         while (now_ms() < end) {
             run_paced(1);
-            const SupervisedChain::Event e = chain->poll(now_ms());
+            const uint64_t t0 = now_ms();
+            const SupervisedChain::Event e = chain->poll(t0);
+            slowest_poll_ms = std::max(slowest_poll_ms, now_ms() - t0);
+            // The replacement is spawned, not waited for (L6 on #49): its
+            // Ready is a later poll.
+            if (e == SupervisedChain::Event::Restarting) {
+                ++restarting;
+                old_slot_stayed = old_slot_stayed && chain->node().channel_slot == session.ref.channel_slot;
+            }
             if (e == SupervisedChain::Event::Swapped) {
                 session.ref = chain->node();
                 fake.run_blocks(1);
@@ -269,6 +282,9 @@ struct Rig {
         }
         return SupervisedChain::Event::None;
     }
+    uint64_t slowest_poll_ms = 0;
+    int restarting = 0;
+    bool old_slot_stayed = true;  // node() keeps the old slot until Swapped
 };
 
 ChainSpec mono_spec(const Args& a, const std::string& id) {
@@ -306,6 +322,129 @@ bool plays_previous_block(const ChainSession& s, uint64_t from, uint64_t to, boo
         }
     }
     return true;
+}
+
+// ---- the supervisor never blocks its caller (code-reviewer L6 on PR #49)
+//
+// The control server's thread runs the supervisor, and it is the document
+// thread: a start that waited for Ready would freeze every client for up to
+// 10 s. begin() spawns and returns; poll() notices Ready, the refusal or the
+// timeout. Each call is timed.
+
+// Far above a poll's own work (a spawn, on a loaded shared machine), far
+// below the 400 ms validation and the 10 s bound a wait would take.
+constexpr uint64_t kPollBudgetMs = 150;
+
+struct AsyncRig {
+    PluginClient client;
+    SupervisorConfig scfg;
+    HostSupervisor sup;
+    uint64_t slowest_call_ms = 0;
+
+    AsyncRig(const Args& a, uint64_t ready_timeout_ms)
+        : client(Rig::client_config()), scfg(Rig::sup_config(a)), sup(with_timeout(scfg, ready_timeout_ms), client) {}
+    static SupervisorConfig& with_timeout(SupervisorConfig& s, uint64_t ms) {
+        s.ready_timeout_ms = ms;
+        return s;
+    }
+    // poll() every 5 ms until an event or `max_ms`; every call timed.
+    SupervisedChain::Event until_event(SupervisedChain& c, uint64_t max_ms, uint64_t& polls_before) {
+        const uint64_t end = now_ms() + max_ms;
+        polls_before = 0;
+        while (now_ms() < end) {
+            const uint64_t t0 = now_ms();
+            const SupervisedChain::Event e = c.poll(t0);
+            slowest_call_ms = std::max(slowest_call_ms, now_ms() - t0);
+            if (e != SupervisedChain::Event::None) return e;
+            ++polls_before;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return SupervisedChain::Event::None;
+    }
+};
+
+ChainSpec sleep_spec(const Args& a, float sleep_ms) {
+    ChainSpec s = mono_spec(a, kSleep);
+    if (!s.values.empty()) s.values[0] = sleep_ms;  // validation runs a block: Ready waits for it
+    return s;
+}
+
+int scenario_async_start(const Args& a) {
+    std::printf("async_start: %s takes 400 ms per block, so Ready comes after its validation\n", kSleep);
+    AsyncRig rig(a, 10000);
+    if (!rig.sup.ok()) {
+        check(false, rig.sup.why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(rig.sup, sleep_spec(a, 400.f), 0, 0);
+    std::string error;
+    const uint64_t t0 = now_ms();
+    check(chain.begin(error), "begin() spawned the host");
+    const uint64_t began = now_ms() - t0;
+    char line[160];
+    std::snprintf(line, sizeof line, "begin() returned in %llu ms, without waiting for Ready",
+                  (unsigned long long)began);
+    check(began < kPollBudgetMs, line);
+    check(chain.starting() && chain.node().channel_slot == kNoSlot, "starting, bound to no slot yet");
+    uint64_t polls = 0;
+    const SupervisedChain::Event e = rig.until_event(chain, 15000, polls);
+    const uint64_t ready_after = now_ms() - t0;
+    check(e == SupervisedChain::Event::Swapped, "poll() reports the first host Ready: put node() in a plan");
+    std::snprintf(line, sizeof line, "Ready after %llu ms, %llu polls returned None before it",
+                  (unsigned long long)ready_after, (unsigned long long)polls);
+    check(ready_after >= 400 && polls > 10, line);
+    std::snprintf(line, sizeof line, "no poll() took over %llu ms (slowest %llu)", (unsigned long long)kPollBudgetMs,
+                  (unsigned long long)rig.slowest_call_ms);
+    check(rig.slowest_call_ms < kPollBudgetMs, line);
+    check(!chain.starting() && chain.node().channel_slot != kNoSlot, "bound to a slot");
+    check(chain.latency_frames() == kBlock, "the latency is read at Ready: the IPC block");
+    check(chain.idle(), "idle: nothing submitted");
+    chain.retired();
+    return 0;
+}
+
+int scenario_ready_timeout(const Args& a) {
+    std::printf("ready_timeout: %s at 3 s per block against a 300 ms Ready bound\n", kSleep);
+    AsyncRig rig(a, 300);
+    if (!rig.sup.ok()) {
+        check(false, rig.sup.why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(rig.sup, sleep_spec(a, 3000.f), 0, 0);
+    std::string error;
+    check(chain.begin(error), "begin() spawned the host");
+    uint64_t polls = 0;
+    const uint64_t t0 = now_ms();
+    const SupervisedChain::Event e = rig.until_event(chain, 5000, polls);
+    const uint64_t after = now_ms() - t0;
+    check(e == SupervisedChain::Event::Down, "the chain is down");
+    std::printf("  why: %s (after %llu ms)\n", chain.why().c_str(), (unsigned long long)after);
+    check(chain.why().find("not ready within 300 ms") != std::string::npos, "the timeout is named");
+    check(after >= 250 && after < 2000, "noticed at the bound, from poll(), not after the plugin's block");
+    check(rig.slowest_call_ms < kPollBudgetMs, "no poll() waited");
+    check(chain.restarts() == 0, "a failed first start is not a restart");
+    check(chain.node().channel_slot == kNoSlot, "no slot was taken");
+    return 0;
+}
+
+int scenario_async_refused(const Args& a) {
+    std::printf("async_refused: urn:sonora:test#liar writes outside its buffers in validation\n");
+    AsyncRig rig(a, 10000);
+    if (!rig.sup.ok()) {
+        check(false, rig.sup.why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(rig.sup, mono_spec(a, "urn:sonora:test#liar"), 0, 0);
+    std::string error;
+    check(chain.begin(error), "begin() spawned the host");
+    uint64_t polls = 0;
+    const SupervisedChain::Event e = rig.until_event(chain, 10000, polls);
+    check(e == SupervisedChain::Event::Down, "the refusal makes the chain down, without a restart");
+    std::printf("  why: %s\n", chain.why().c_str());
+    check(chain.why().find("urn:sonora:test#liar") != std::string::npos, "the refused plugin is named");
+    check(chain.restarts() == 0, "a refusal is not retried");
+    check(rig.slowest_call_ms < kPollBudgetMs, "no poll() waited");
+    return 0;
 }
 
 int scenario_passthrough(const Args& a) {
@@ -405,6 +544,9 @@ int scenario_miss(const Args& a) {
     rig.session.send(0, 0.f);  // into the store: the new host gets it on its first submit
     rig.run_paced(1);
     check(rig.until_event(10000) == SupervisedChain::Event::Swapped, "the supervisor restarted the chain");
+    check(rig.restarting == 1 && rig.old_slot_stayed,
+          "Restarting first, the old slot still in node() until the new host was Ready (make-before-break)");
+    check(rig.slowest_poll_ms < kPollBudgetMs, "no poll() waited for the replacement");
     // Sampled by the control thread from the host's current_instance; the
     // audio thread never reads it (auditor L1 on PR #49).
     check(rig.chain->culprit() == 0, "the control thread names the culprit: instance 0, the sleeping plugin");
@@ -609,7 +751,10 @@ int main(int argc, char** argv) {
         }
     }
     int r = 2;
-    if (a.scenario == "passthrough") r = scenario_passthrough(a);
+    if (a.scenario == "async_start") r = scenario_async_start(a);
+    else if (a.scenario == "ready_timeout") r = scenario_ready_timeout(a);
+    else if (a.scenario == "async_refused") r = scenario_async_refused(a);
+    else if (a.scenario == "passthrough") r = scenario_passthrough(a);
     else if (a.scenario == "params") r = scenario_params(a);
     else if (a.scenario == "miss") r = scenario_miss(a);
     else if (a.scenario == "crash") r = scenario_crash(a);
