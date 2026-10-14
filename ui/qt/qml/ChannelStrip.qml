@@ -7,9 +7,17 @@
 // every fader starts at the same height.
 //
 // Fader: drag to ride it, Ctrl-drag for fine (a tenth of the travel),
-// Alt-click to return to 0 dB. Pan: drag sideways, Alt-click centres.
-// The taper is fader_taper.h's, asked through SessionModel, so the cap and
-// the scale marks use the same mapping the tests check.
+// Alt-click to return to 0 dB; click the readout under it to type a gain.
+// Pan: drag the bar sideways (Ctrl for fine), Alt-click centres, click the
+// value to type one. Solo and mute: Alt-click sets every track the same;
+// Ctrl-click solo asks for solo safe, refused by name until the model has
+// it (mix_model.h). The taper is fader_taper.h's, asked through
+// SessionModel, so the cap and the scale marks use the same mapping the
+// tests check.
+//
+// The meter beside a track's fader reads the track's input, which is what
+// the engine publishes (state_block.h); it says so over it. The monitor
+// bus's two have no feed yet and say that.
 import QtQuick
 import Sonora
 
@@ -17,9 +25,16 @@ Rectangle {
     id: strip
     required property ShellModel shell
     required property SessionModel session
+    // Rides, typed values and modifier clicks; null where they are not
+    // wired (the shell's routing test), and the strip then rides through
+    // SessionModel alone.
+    property MixModel mixer: null
     property int track: 0
     property string name
     property real gainDb: 0
+    // What the cap and readout show: the ride's value while this fader is
+    // being ridden, the document's otherwise.
+    readonly property real shownGain: mixer !== null && mixer.rideTrack === track ? mixer.rideGain : gainDb
     property real pan: 0
     property bool hasPan: true
     property bool selected: false
@@ -83,14 +98,24 @@ Rectangle {
                 }
                 Rectangle { x: panTrack.width / 2; width: 1; height: parent.height; color: Theme.textTertiary }
             }
-            Text {
+            ValueField {
+                id: panField
+                objectName: strip.isBus ? "" : "panValue" + strip.track
                 anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom }
+                width: Math.min(parent.width, 44)
+                height: 16
+                shell: strip.shell
                 text: strip.session.panText(strip.pan)
-                color: Theme.textSecondary
-                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+                textColour: Theme.textSecondary
+                fontPx: Theme.textCaption
+                editable: strip.mixer !== null
+                onSubmitted: (t) => { if (strip.mixer.setPanText(strip.track, t)) panField.finish() }
             }
+            // The bar and the space around it; the value below is a field.
             MouseArea {
-                anchors.fill: parent
+                objectName: strip.isBus ? "" : "panArea" + strip.track
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                height: 14
                 property real lastX: 0
                 onPressed: (m) => {
                     lastX = m.x
@@ -98,7 +123,12 @@ Rectangle {
                 }
                 onPositionChanged: (m) => {
                     if (!pressed || (m.modifiers & Qt.AltModifier)) return
-                    strip.session.panDrag(strip.track, m.x - lastX, width)
+                    if (strip.mixer !== null) {
+                        strip.mixer.panDrag(strip.track, m.x - lastX, width,
+                                            (m.modifiers & Qt.ControlModifier) !== 0)
+                    } else {
+                        strip.session.panDrag(strip.track, m.x - lastX, width)
+                    }
                     lastX = m.x
                 }
             }
@@ -116,17 +146,25 @@ Rectangle {
                 onClicked: strip.shell.invoke("track.toggle_arm", strip.track)
             }
             SButton {
+                objectName: "solo" + strip.track
                 text: "S"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
                 active: strip.soloed; activeColour: Theme.solo
-                onClicked: strip.shell.invoke("track.toggle_solo", strip.track)
+                onClicked: (m) => {
+                    if (strip.mixer === null || !strip.mixer.soloClick(strip.track, m.modifiers))
+                        strip.shell.invoke("track.toggle_solo", strip.track)
+                }
             }
             SButton {
+                objectName: "mute" + strip.track
                 text: "M"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
                 active: strip.muted; activeColour: Theme.mute
                 // Outlined in the mute colour when another track's solo
                 // is what silences it.
                 border.color: !active && strip.implicitlyMuted ? Theme.mute : Theme.borderSubtle
-                onClicked: strip.shell.invoke("track.toggle_mute", strip.track)
+                onClicked: (m) => {
+                    if (strip.mixer === null || !strip.mixer.muteClick(strip.track, m.modifiers))
+                        strip.shell.invoke("track.toggle_mute", strip.track)
+                }
             }
         }
         Item { visible: strip.isBus; width: 1; height: 18 }
@@ -215,7 +253,7 @@ Rectangle {
             width: Math.min(28, strip.width * 0.36)
             height: faderArea.capH
             x: slot.x + slot.width / 2 - width / 2
-            y: (1 - strip.session.faderPosition(strip.gainDb)) * faderArea.travel
+            y: (1 - strip.session.faderPosition(strip.shownGain)) * faderArea.travel
             radius: Theme.radius
             color: Theme.hover
             border.color: Theme.borderStrong
@@ -223,19 +261,33 @@ Rectangle {
             Rectangle { anchors.centerIn: parent; width: parent.width - 6; height: 2; color: Theme.text }
         }
         MouseArea {
+            objectName: strip.isBus ? "busFader" : "fader" + strip.track
             x: slot.x - 18; width: 36 + slot.width
             height: parent.height
             property real lastY: 0
+            property bool riding: false
             onPressed: (m) => {
                 lastY = m.y
-                if (m.modifiers & Qt.AltModifier) strip.session.resetGain(strip.track)
+                if (m.modifiers & Qt.AltModifier) {
+                    strip.session.resetGain(strip.track)
+                } else if (strip.mixer !== null) {
+                    riding = true
+                    strip.mixer.beginRide(strip.track)
+                }
             }
             onPositionChanged: (m) => {
                 if (!pressed || (m.modifiers & Qt.AltModifier)) return
-                strip.session.faderDrag(strip.track, m.y - lastY, faderArea.travel,
-                                        (m.modifiers & Qt.ControlModifier) !== 0)
+                const fine = (m.modifiers & Qt.ControlModifier) !== 0
+                if (riding) strip.mixer.ride(strip.track, m.y - lastY, faderArea.travel, fine)
+                else strip.session.faderDrag(strip.track, m.y - lastY, faderArea.travel, fine)
                 lastY = m.y
             }
+            function finish() {
+                if (riding) strip.mixer.endRide(strip.track)
+                riding = false
+            }
+            onReleased: finish()
+            onCanceled: finish()
         }
 
         Row {
@@ -258,6 +310,18 @@ Rectangle {
                 sourceComponent: Meter { objectName: "busMeterR"; channel: -1 }
             }
         }
+        // What the meter reads, over it: a track's input, or for the bus,
+        // that there is nothing to read.
+        Text {
+            objectName: strip.isBus ? "busMeterCaption" : "meterCaption" + strip.track
+            visible: strip.mixer !== null
+            anchors { right: meters.right; bottom: meters.top }
+            text: strip.mixer === null ? "" : strip.isBus ? strip.mixer.busMeterCaption
+                                                           : strip.mixer.trackMeterCaption
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold
+                   letterSpacing: 0.5 }
+        }
     }
 
     // --- readout and name ---
@@ -268,11 +332,15 @@ Rectangle {
         height: 18
         radius: Theme.radiusSmall
         color: Theme.sunken
-        Text {
-            anchors.centerIn: parent
-            text: strip.session.gainText(strip.gainDb)
-            color: strip.gainDb > 0.05 ? Theme.caution : Theme.text
-            font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
+        ValueField {
+            id: gainField
+            objectName: strip.isBus ? "busGainValue" : "gainValue" + strip.track
+            anchors.fill: parent
+            shell: strip.shell
+            text: strip.session.gainText(strip.shownGain)
+            textColour: strip.shownGain > 0.05 ? Theme.caution : Theme.text
+            editable: strip.mixer !== null
+            onSubmitted: (t) => { if (strip.mixer.setGainText(strip.track, t)) gainField.finish() }
         }
     }
     Rectangle {

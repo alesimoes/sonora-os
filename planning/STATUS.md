@@ -88,7 +88,7 @@ end of its run. Keep it short: what is true now, not a diary.
   lists refused files with the reason, and remembers the choice in
   `~/.config/sonora/keymap`. `FakeEngine::Config::planned_commands` stubs
   the engine commands the profiles bind and no engine runs (BACKLOG Track 1
-  item 9). Container-tested only; the focus behaviour Avid does not document
+  item 10). Container-tested only; the focus behaviour Avid does not document
   is listed as unverified in `keymaps/README.md`.
 - **ISO builds.** `iso/sonora.iso`, 867 MB, last built 2026-10-12. Inspected
   rather than assumed: the engine is present at mode 0755, the service is
@@ -202,6 +202,17 @@ end of its run. Keep it short: what is true now, not a diary.
   back through the fixed stereo monitor bus, driven over the M7 socket by
   `sonora-ui`, `sonora-tui` or `sonora-ctl`; `tools/run-sonora.sh` starts
   engine and UI as two processes.
+- **Mix window on the monitor bus (`feature/ui-mixer-monitor`).** A fader
+  ride is heard through ParameterChange per step and saved by one SetMix at
+  release (the bus, which has no ParamId, rides through SetMonitorBus);
+  gain and pan are typed into their readouts, with text off the travel
+  refused, not clamped; Alt-click solo/mute sets every track; Ctrl-click
+  solo (solo safe) is refused by name until the model has it. Fixed: the
+  strips read MixState by id order, so after a reorder each showed another
+  track's fader. The strips' meters are labelled IN (the state block has
+  input peaks only) and the bus's NO DATA; the line above says what is live
+  and says the fake engine plays nothing. Post-fader and bus peaks are
+  BACKLOG Track 1 item 9.
 - **ADR-0012, plugin hosting (M9), accepted in part (#42).** One host per
   insert chain, depth 1, a missed block is silence (64-frame fade-out,
   ramp-in), make-before-break restarts, inserts in the model, PDC by the
@@ -256,9 +267,24 @@ end of its run. Keep it short: what is true now, not a diary.
   and `wake_all`, and `wake_all`'s object only `syscall`; three canaries
   (another platform call, `new`, a `std::string` at -O2) must fail it. The RTSan check of
   `wake_all` is written but skipped: the toolchain is GCC 14 (BACKLOG).
-  Not yet called from `Session::process`: the InsertChain node (checklist 3)
-  and the control-server wiring with `host_control.h` (checklist 5) remain.
+  Called from `Session::process` through `PluginChainRunner` (below); the
+  control-server wiring with `host_control.h` (checklist 5) remains.
   Container only.
+- **`Session::process` runs real plugin hosts (#59, ADR-0012 checklist
+  4).** `PluginChainRunner` in engine/core (ADR-0007's edge runs core ->
+  plugin_client) maps the InsertChain node onto `PluginClient`. ctest
+  `session_plugins_*` in `tools/build-plugins.sh`: a 2048-frame chain of
+  four Debian LV2 limiters (two LSP at 20 ms, two x42-dpl; 2176 with the
+  IPC block) lands bit for bit on a dry track at the bus; the in-tree
+  look-ahead and eg-amp, a stereo chain on a stereo track (both sides),
+  AGain and the LSP limiter as VST3, and an LV2+VST3 chain in one host
+  likewise; a host stalled at 20 ms a block is removed after 8 misses while
+  the dry track plays on and no `process()` exceeds 1 ms (slowest 28 µs,
+  container); no operator new/delete, and outside the sanitizers no
+  malloc/free, on the thread inside `process()`. A binding with no slot or
+  no node state is laid out unbound, latency 0, so it is never early. Hosts are still started by hand in the test: the engine
+  binary starts none until checklist 5. No parameter events reach a chain
+  from the session yet.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays

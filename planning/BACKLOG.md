@@ -41,18 +41,41 @@ playback can follow edits; it is in flight.
        `engine/control`.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
-9. [ ] Engine commands the shipped key maps bind and no engine runs yet
-       (Track 3 item 4; the window says "not implemented" for each):
-       `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
-       `transport.toggle_loop`, `transport.play_half_speed`,
-       `track.toggle_input_monitor`. Wired in
-       the interface against `FakeEngine::Config::planned_commands`
-       (test_ui_keymaps); each needs its handler in
-       `install_session_commands()` and in `FakeEngine::engine_commands()`
-       together, and then leaves `planned_commands`. The edit operations
-       (`edit.cut`/`copy`/`paste`/`duplicate`/`repeat`/`select_all`/
-       `heal_separation`/`consolidate`) wait on Track 3 item 1's compound
-       operation.
+9. [ ] For the Mix window (Track 3 item 2, `feature/ui-mixer-monitor`):
+       - state block layout 3 with each track's post-fader peak (L/R, after
+         pan and mute) and the monitor bus's L/R peak. `Session` already
+         has `bus_peak_`; it is not published. Until then the strips' meters
+         are labelled IN and the bus's NO DATA, and pre/post-fader metering
+         cannot be offered;
+       - a `ParamId` for the monitor bus gain (and track pan), so those ride
+         through ParameterChange too instead of a SetMonitorBus / SetMix per
+         step;
+       - FakeEngine's published track gain ignores SetMix (the real engine
+         writes faders from the document when the mix changes); it should
+         follow it, as conformance would show;
+       - a Resync (and a new connection's Snapshot) should re-apply the
+         document's mix to the engine's tracks, as ADR-0009 item 3 says a
+         Snapshot does: the server's Resync path never sets `mix_changed`,
+         so ride steps a lost link stranded stay in the gain atomics. The UI
+         resends every track's gain on each new document meanwhile
+         (`MixModel::resendGains`, PR #61);
+       - `PlaybackController::apply_mix` (playback_controller.cpp:88) writes
+         only engine tracks that still map to a document track, so a solo
+         on a track that left the document (an undone AddTrack) stays set
+         and `any_solo` (session.cpp:452) silences the rest while the UI
+         shows no solo. Reset `tracks_[i]` for `i >=` the document's tracks.
+10. [ ] Engine commands the shipped key maps bind and no engine runs yet
+        (Track 3 item 4; the window says "not implemented" for each):
+        `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
+        `transport.toggle_loop`, `transport.play_half_speed`,
+        `track.toggle_input_monitor`. Wired in
+        the interface against `FakeEngine::Config::planned_commands`
+        (test_ui_keymaps); each needs its handler in
+        `install_session_commands()` and in `FakeEngine::engine_commands()`
+        together, and then leaves `planned_commands`. The edit operations
+        (`edit.cut`/`copy`/`paste`/`duplicate`/`repeat`/`select_all`/
+        `heal_separation`/`consolidate`) wait on Track 3 item 1's compound
+        operation.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -64,6 +87,9 @@ playback can follow edits; it is in flight.
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
+5. [ ] Solo safe in `TrackMix` (session format, op codec, plan builder: a
+       solo-safe track is never implicitly muted). The Mix window refuses
+       Ctrl-click on solo by name until it exists (`feature/ui-mixer-monitor`).
 
 ### Track 3: UI (ui-engineer)
 
@@ -88,6 +114,21 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              common/model (or the engine resolving the command, ADR-0009)
              comes first.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
+       - [x] `feature/ui-mixer-monitor`: fader rides heard through
+             ParameterChange and saved by one SetMix at release; typed gain
+             and pan in the readouts; Ctrl-fine pan; Alt-click solo/mute
+             all; strips read the mix by display order (they read
+             MixState's id order); meters labelled for what they read.
+       - [ ] Post-fader and bus meters, pre/post switch: Track 1 item 9.
+       - [x] Interrupted rides (PR #61 review): a ride holds its track id
+             and session and is dropped, with the reason, if either goes
+             before release; every new document resends the engine's gains;
+             live-parameter Ok replies no longer clear the status line.
+       - [ ] Alt-click on solo or mute is one SetMix per track, so one undo
+             step per track; it should be one compound undo step (needs a
+             compound op or a history group in `common/model`).
+       - [ ] Solo safe: Track 2 item 5. Solo modes (latch, X-OR,
+             momentary) and stereo pan wait for those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.
 4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy
@@ -162,12 +203,64 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              deadline tests had passed with the host halted by RTSan, so
              `tools/build-rtsan.sh` now fails any report in a passing test
              not labelled `rtsan-report`.
-       - [ ] Wire `PluginClient::process_chain` into the InsertChain node
-             (checklist 3, `feature/plan-pdc`): once per node per callback
-             with the whole block, `param_store = kNoStore` for a chain
-             without parameters, `begin_callback`/`end_callback` around the
-             plan. Then `SupervisedChain` into the control server
-             (checklist 5); pidfd instead of polling.
+       - [x] Wire `PluginClient::process_chain` into the InsertChain node:
+             `PluginChainRunner` (engine/core, PR #59; in engine/core
+             because ADR-0007 draws core -> plugin_client, not the
+             reverse). Once per node per callback with the whole block,
+             `kNoStore` passed through, a chain wider than stereo silence
+             and counted, a mono chain's side 1 set to side 0. "Unbound" is
+             the builder's: `layout_track_graph` lays out a binding with no
+             slot or no node state as no slot, latency 0 (rt-engineer
+             ruling 1), and a node that still reaches the runner at
+             `kNoNodeState` is silence, counted, never dry and early. A
+             zero-frame callback neither begins nor ends. ctest `plan_pdc`,
+             `plugin_chain_runner` (no host) and `session_plugins_*`:
+             Session::process with real hosts, LV2 and VST3, Debian's and
+             in-tree, mono and stereo, a 2048-frame chain of four Debian
+             limiters landing bit for bit on a dry track, a stalled host
+             removed while the dry track plays on and no callback waits.
+             rt-engineer co-review (ADR-0007 §6): engine/core links
+             sonora_plugin_client, which links common/platform PRIVATE.
+       - [ ] `SupervisedChain` into the control server (checklist 5),
+             with the ChainResolver filling ChainBinding from it; pidfd
+             instead of polling.
+       Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
+       out of that PR's scope and handed to checklist 5:
+       - [ ] The callback's timestamp: `Session::process` calls
+             `std::chrono::steady_clock::now()` for `runner_->begin()`
+             (session.cpp, the chain gate; auditor finding 1, the only
+             out-of-line call on the path, flagged by `-Wfunction-effects`).
+             Pass a backend-supplied cycle time instead (JACK
+             `jack_get_cycle_times`), or have the ISO's audio stack refuse
+             a clocksource other than `tsc`. Proof on the UMC1820 target:
+             `current_clocksource` reads `tsc`, and `strace -f -e
+             trace=clock_gettime` on a playing `sonora-engine` shows no call
+             from the audio thread.
+       - [ ] One block size, one policy (auditor finding 4, rt-engineer
+             item 3): pin `ClientConfig::block_frames` to the backend's
+             period and set `max_chain_channels = 2`; on a period change,
+             restart the hosts and replan (the chain latencies include the
+             IPC block). Today another period silences every chain
+             (`frame_mismatches`) while compensation still delays the dry
+             tracks. Session's gate uses the runner's block size, so a
+             mismatch is counted once, in `chain_bypassed_blocks`.
+       - [ ] Parameter events into `run()` (rt-engineer item 1): Session's
+             drain discards every non-Locate `RtCommand` uncounted, so a
+             `PluginParameterChange` vanishes. Drain it into per-node-state
+             staging preallocated at session creation (`max_nodes` x a
+             per-callback cap, overflow counted), and change the interface
+             to `run(node, in, out, frames, const ParamEvent*, uint32_t)`.
+             The runner stays stateless.
+       - [ ] `PluginFault` from the client, not the runner (rt-engineer
+             item 2): the control thread polls `slot_status(slot)` and
+             `removed(slot)` for the slots the resolver assigned, so a
+             fault names its chain. The runner's session-wide counters stay
+             diagnostics or go, never a second source.
+       - [ ] One owner for teardown (session, hosts, runner, supervisor,
+             client), and `session_plugins_*` moved to engine/control once
+             the resolver drives it, with a supervisor-level `idle()` in
+             place of the test reading `plugin::ChannelHeader` (rt-engineer
+             items 4 and 5).
        - [ ] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
              `HostSupervisor::start` blocks its caller up to 10 s waiting
              for Ready. Before it runs on the control server's thread it
@@ -227,9 +320,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
          bring an insert into the chain (rt-engineer review of #46, low 4).
        - Key an instance on (insert id, channel layout) in the plan builder.
-       - Implement `InsertChainRunner` (engine/core, PR #48) over
-         PluginClient: begin -> begin_callback, run -> process_chain,
-         end -> end_callback (the mapping is in insert_chain_runner.h);
+       - `InsertChainRunner` over PluginClient is `PluginChainRunner`
+         (done, see above). Left for checklist 5:
          the ChainResolver fills latency_frames from
          PluginClient::latency_frames(slot) and the slot, generation,
          store and node state from the supervisor. Match the explicit

@@ -2,8 +2,10 @@
 //
 // What an InsertChain node runs on the audio thread (ADR-0012 §7.2).
 //
-// engine/plugin_client implements it over its HostChannel slots; engine/core
-// only calls it, so the core links no plugin code. engine/core's tests
+// PluginChainRunner (plugin_chain_runner.h) implements it over
+// engine/plugin_client's PluginClient, in engine/core because ADR-0007 draws
+// the edge core -> plugin_client and not the reverse; the core still links
+// no plugin SDK and starts no host. engine/core's tests
 // implement it as a channel that delays by its declared latency, which is
 // how the 2048-sample alignment is checked before any host exists. With no
 // runner installed, or for a node bound to no channel slot, the session
@@ -20,9 +22,11 @@
 // depth-1 protocol submits one block per callback. A callback longer than
 // PlaybackConfig::max_block_frames is mixed in pieces, so the session calls
 // none of the three for it; every chain passes through, and
-// Session::chain_bypassed_blocks() counts it.
+// Session::chain_bypassed_blocks() counts it. A zero-frame callback calls
+// none of the three and is not counted: it has nothing to mix, so end()
+// would never come.
 //
-// The adapter over engine/plugin_client (PR #49) is direct:
+// PluginChainRunner, the adapter over engine/plugin_client (PR #49), is direct:
 //   begin(now_ns)  -> PluginClient::begin_callback(now_ns)
 //   run(node, ...) -> PluginClient::process_chain({node.channel_slot,
 //                     node.channel_generation, node.param_store,
@@ -34,9 +38,14 @@
 // node state the supervisor assigned. kNoChannelSlot is plugin_client's
 // kNoSlot and kNoParamStore its kNoStore (both 0xFFFFFFFF). InsertChainRef
 // has no "none" for node_state: every bound chain needs a valid one, so the
-// resolver assigns it per chain stable id, as a delay line is kept, and a
-// node still at kNoNodeState is passed through by the adapter rather than
-// handed to process_chain.
+// resolver assigns it per chain stable id, as a delay line is kept.
+// "Unbound" is decided by the builder, not the runner: layout_track_graph()
+// lays out a binding with no slot or no node state as kNoChannelSlot with
+// latency 0, and the session passes it through, aligned. A node that still
+// reaches run() at kNoNodeState comes from a plan the builder did not make;
+// its planned latency cannot be honoured, so the adapter plays silence,
+// counted, never the dry input (which would arrive that latency early) and
+// never process_chain.
 #pragma once
 
 #include <cstdint>
