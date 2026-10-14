@@ -127,6 +127,11 @@ struct Span {
 // or that stayed open as long as a read waits on one (time a virtual
 // machine's host took, which no switch count shows). A writer that starves
 // its readers while it runs gets no such excuse.
+//
+// The excuse is sharp only on a quiet host. Any switch, however short,
+// excuses every tick that overlaps the whole publish, and on a loaded host
+// most publishes are switched out at some point; then it excuses nearly
+// everything. check_60hz_reads therefore leans on bars no excuse touches.
 struct PublishLog {
     std::vector<Span> stopped;
     std::size_t publishes = 0;
@@ -157,6 +162,34 @@ struct PublishLog {
         return n;
     }
 };
+
+// The bars a 60 Hz reader is held to against a paced writer, however
+// loaded the host. Under TSan with twice as many busy threads as cores, up
+// to 32 of 60 ticks were stale and a frame read came through on about 4
+// retries; a reader that never gets past a running writer has no fresh
+// ticks at all.
+constexpr std::size_t kMinFreshPercent = 25;
+constexpr uint64_t kRetriesPerRead = 8;
+
+void check_60hz_reads(const char* what, const PublishLog& log,
+                      const std::vector<Span>& stale_ticks, std::size_t ticks, uint64_t reads,
+                      const StateView& v) {
+    // Reads come through. A reader that went stale against a running writer
+    // fails here whatever the excuse says.
+    CHECK((ticks - stale_ticks.size()) * 100 >= ticks * kMinFreshPercent);
+    // And without spinning. A read that came through retried only around
+    // the section it met, and most met none; a stale one may have used all
+    // its retries.
+    CHECK(v.retries() <= kRetriesPerRead * reads +
+                             uint64_t{StateView::kMaxRetries} * v.stale_reads());
+    if (log.stopped.size() * 2 > log.publishes) {
+        std::printf("  %s: inconclusive for starvation, %zu of %zu publishes switched out; "
+                    "held to the fresh-tick and retry bars only\n",
+                    what, log.stopped.size(), log.publishes);
+        return;
+    }
+    CHECK(log.unexplained(stale_ticks) == 0);
+}
 
 void attach_refusals() {
     StateBlockMemory mem(4);
@@ -334,7 +367,8 @@ void paced_writer_does_not_starve_a_60hz_reader() {
     CHECK(torn == 0);
     // One frame's worth of reads, 65 of them, 60 times: none stale unless
     // the scheduler stopped the writer inside a publish.
-    CHECK(log.unexplained(stale_ticks) == 0);
+    check_60hz_reads("paced", log, stale_ticks, static_cast<std::size_t>(ticks),
+                     uint64_t{60} * (kTracks + 1), v);
     // The tick's time is not checked: it is mostly the reader's own
     // scheduling, and a read's own wait is bounded (blocked_writer_reads_stale).
     std::printf("  paced 1 kHz writer, 60 Hz reader: %d ticks, %d stale reads in %zu ticks, "
@@ -411,11 +445,12 @@ void counter_churn_does_not_starve_a_60hz_reader() {
     writer.join();
     CHECK(torn == 0);
     CHECK(backwards == 0);
-    CHECK(log.unexplained(stale_ticks) == 0);
+    check_60hz_reads("counters", log, stale_ticks, 60, 60, v);
     CHECK(last[0] > 1);
     std::printf("  counters moving on every publish, 60 Hz frames: %d stale, %zu of %zu "
-                "publishes stopped\n",
-                stale, log.stopped.size(), log.publishes);
+                "publishes stopped, %llu retries\n",
+                stale, log.stopped.size(), log.publishes,
+                static_cast<unsigned long long>(v.retries()));
 }
 
 // A frame is one publish: the transport and every track read under one

@@ -346,6 +346,13 @@ not start or extend those items before the Complete DAW closes (owner,
       makes a bounded number of retries and reports a stale flag. Add a
       starvation regression test, and a `static_assert` for every
       shared-memory atomic type. rt-engineer.
+- [ ] Double-buffered state block (layout version bump, ADR first). Today
+      a publisher preempted mid-section makes every read stale until it runs
+      again (PR #53); with two copies and an index flipped after each
+      write, readers take the finished copy and never wait on a stopped
+      writer. Then the timing tests can hold every tick to "not stale"
+      under load, not only to "stale only while the writer was stopped".
+      rt-engineer with ui-engineer.
 - [ ] Virtual-card QEMU test: `snd-dummy model=rme9652` (26 ordered AUX
       ports) through the real ALSA → PipeWire → JACK path, with the engine
       actually recording. The count is per node. driver-engineer with

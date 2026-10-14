@@ -1786,3 +1786,7 @@ about a millisecond later, and a read of a writer stopped mid-section took
   publish the writer was switched out of (`getrusage(RUSAGE_THREAD)`) or
   that stayed open for `kMaxReadWaitNs`. Later reads against a stopped
   writer are checked by retry count, not time.
+- Known limit: a publisher preempted mid-section still makes every read
+  stale until it runs again, and on a loaded host the switch-count excuse
+  covers much of the run. A double-buffered state block (layout bump) is
+  the fix, in `planning/BACKLOG.md`.
