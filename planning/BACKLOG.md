@@ -123,12 +123,24 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              deadline tests had passed with the host halted by RTSan, so
              `tools/build-rtsan.sh` now fails any report in a passing test
              not labelled `rtsan-report`.
-       - [ ] Wire `PluginClient::process_chain` into the InsertChain node
-             (checklist 3, `feature/plan-pdc`): once per node per callback
-             with the whole block, `param_store = kNoStore` for a chain
-             without parameters, `begin_callback`/`end_callback` around the
-             plan. Then `SupervisedChain` into the control server
-             (checklist 5); pidfd instead of polling.
+       - [x] Wire `PluginClient::process_chain` into the InsertChain node:
+             `PluginChainRunner` (engine/core, `feature/session-plugin-runner`;
+             in engine/core because ADR-0007 draws core -> plugin_client,
+             not the reverse). Once per node per callback with the whole
+             block, `kNoStore` passed through, a node at `kNoNodeState`
+             played dry and counted, a chain wider than stereo silence and
+             counted, a mono chain's side 1 set to side 0. ctest
+             `plugin_chain_runner` (no host) and `session_plugins_*`:
+             Session::process with real hosts, LV2 and VST3, Debian's and
+             in-tree, a 2048-frame chain of four Debian limiters landing
+             bit for bit on a dry track, a stalled host removed while the
+             dry track plays on and no callback waits. rt-engineer
+             co-review (ADR-0007 §6): engine/core links
+             sonora_plugin_client now.
+       - [ ] `SupervisedChain` into the control server (checklist 5),
+             with the ChainResolver filling ChainBinding from it; pidfd
+             instead of polling; parameter events from RtCommand into
+             `PluginChainRunner::run` (it passes none yet).
        - [ ] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
              `HostSupervisor::start` blocks its caller up to 10 s waiting
              for Ready. Before it runs on the control server's thread it
@@ -188,9 +200,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
          bring an insert into the chain (rt-engineer review of #46, low 4).
        - Key an instance on (insert id, channel layout) in the plan builder.
-       - Implement `InsertChainRunner` (engine/core, PR #48) over
-         PluginClient: begin -> begin_callback, run -> process_chain,
-         end -> end_callback (the mapping is in insert_chain_runner.h);
+       - `InsertChainRunner` over PluginClient is `PluginChainRunner`
+         (done, see above). Left for checklist 5:
          the ChainResolver fills latency_frames from
          PluginClient::latency_frames(slot) and the slot, generation,
          store and node state from the supervisor. Match the explicit

@@ -2,8 +2,10 @@
 //
 // What an InsertChain node runs on the audio thread (ADR-0012 §7.2).
 //
-// engine/plugin_client implements it over its HostChannel slots; engine/core
-// only calls it, so the core links no plugin code. engine/core's tests
+// PluginChainRunner (plugin_chain_runner.h) implements it over
+// engine/plugin_client's PluginClient, in engine/core because ADR-0007 draws
+// the edge core -> plugin_client and not the reverse; the core still links
+// no plugin SDK and starts no host. engine/core's tests
 // implement it as a channel that delays by its declared latency, which is
 // how the 2048-sample alignment is checked before any host exists. With no
 // runner installed, or for a node bound to no channel slot, the session
@@ -22,7 +24,7 @@
 // none of the three for it; every chain passes through, and
 // Session::chain_bypassed_blocks() counts it.
 //
-// The adapter over engine/plugin_client (PR #49) is direct:
+// PluginChainRunner, the adapter over engine/plugin_client (PR #49), is direct:
 //   begin(now_ns)  -> PluginClient::begin_callback(now_ns)
 //   run(node, ...) -> PluginClient::process_chain({node.channel_slot,
 //                     node.channel_generation, node.param_store,

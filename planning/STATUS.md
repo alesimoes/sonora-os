@@ -232,9 +232,22 @@ end of its run. Keep it short: what is true now, not a diary.
   and `wake_all`, and `wake_all`'s object only `syscall`; three canaries
   (another platform call, `new`, a `std::string` at -O2) must fail it. The RTSan check of
   `wake_all` is written but skipped: the toolchain is GCC 14 (BACKLOG).
-  Not yet called from `Session::process`: the InsertChain node (checklist 3)
-  and the control-server wiring with `host_control.h` (checklist 5) remain.
+  Called from `Session::process` through `PluginChainRunner` (below); the
+  control-server wiring with `host_control.h` (checklist 5) remains.
   Container only.
+- **`Session::process` runs real plugin hosts (`feature/session-plugin-runner`,
+  ADR-0012 checklist 4).** `PluginChainRunner` in engine/core (ADR-0007's
+  edge runs core -> plugin_client) maps the InsertChain node onto
+  `PluginClient`. ctest `session_plugins_*` in `tools/build-plugins.sh`: a
+  2048-frame chain of four Debian LV2 limiters (two LSP at 20 ms, two
+  x42-dpl; 2176 with the IPC block) lands bit for bit on a dry track at the
+  bus; the in-tree look-ahead and eg-amp, AGain and the LSP limiter as
+  VST3, and an LV2+VST3 chain in one host likewise; a host stalled at
+  20 ms a block is removed after 8 misses while the dry track plays on and
+  no `process()` exceeds 1 ms (slowest 28 µs, container); no allocation in
+  `process()`. Hosts are still started by hand in the test: the engine
+  binary starts none until checklist 5. No parameter events reach a chain
+  from the session yet.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays

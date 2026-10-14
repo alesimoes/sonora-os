@@ -1,7 +1,7 @@
 # engine/plugin_client (ADR-0012 checklist 4): the engine's side of the
-# plugin boundary, on contracts/plugin layout 1. Not linked by engine/core
-# yet: the InsertChain plan node (checklist 3) and the control server's
-# wiring (checklist 5) come after PR #46.
+# plugin boundary, on contracts/plugin layout 1. engine/core links it for
+# PluginChainRunner (engine/core/include/sonora/plugin_chain_runner.h), the
+# InsertChain node's adapter; the control server's wiring is checklist 5.
 #
 # Two libraries, so the audio thread's half can be checked on its own:
 #   sonora_plugin_client_rt  src/rt.cpp only: what Session::process will
