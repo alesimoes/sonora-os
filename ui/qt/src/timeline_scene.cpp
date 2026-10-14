@@ -96,16 +96,22 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
     }
 
     // Grid: bar lines always, faintly; the grid value's lines in Grid mode.
-    const double bar = frames_per_bar(s.settings);
-    const double step = grid_lines ? grid_frames(grid, s.settings) : bar;
-    if (step / v.fpp >= 4.0) {
+    // Both follow the tempo map, as the Bars|Beats ruler above them does.
+    {
+        static thread_local std::vector<GridLine> lines;
         const double a = v.scroll, b = v.scroll + v.width * v.fpp;
-        for (int64_t k = static_cast<int64_t>(std::ceil(a / step)); k * step <= b; ++k) {
-            const double f = k * step;
-            const bool on_bar = std::fmod(f + 0.5, bar) < 1.0;
-            const uint32_t c = grid_lines ? (on_bar ? theme::kGridBar : theme::kGridBeat)
+        sonora::ui::grid_lines(a, b, grid, !grid_lines, s.settings, lines);
+        // Lines closer than 4 px are noise, not a grid: none are drawn.
+        bool dense = false;
+        for (std::size_t i = 1; i < lines.size() && !dense; ++i) {
+            dense = (lines[i].frame - lines[i - 1].frame) / v.fpp < 4.0;
+        }
+        if (lines.size() >= 4096) dense = true;
+        for (std::size_t i = 0; !dense && i < lines.size(); ++i) {
+            const GridLine& l = lines[i];
+            const uint32_t c = grid_lines ? (l.bar ? theme::kGridBar : theme::kGridBeat)
                                           : theme::kGridBeat;
-            add(out.rects, std::floor((f - v.scroll) / v.fpp), 0, 1, v.height, c);
+            add(out.rects, std::floor((l.frame - v.scroll) / v.fpp), 0, 1, v.height, c);
         }
     }
 

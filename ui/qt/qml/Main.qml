@@ -20,12 +20,16 @@ Rectangle {
     width: 1280
     height: 720
     color: Theme.window
+    // The Transport window's model; null where it is not wired, and then
+    // there is no Transport window.
+    property TransportModel transport: null
 
     TransportBar {
         id: transport
         anchors { left: parent.left; right: parent.right; top: parent.top }
         shell: root.shell
         session: root.session
+        transport: root.transport
         z: 2
         onOpenRequested: openPanel.show()
     }
@@ -90,6 +94,24 @@ Rectangle {
             font { family: Theme.fontFamily; pixelSize: Theme.textDisplay; weight: Font.Bold }
             style: Text.Outline
             styleColor: Theme.window
+        }
+    }
+
+    // --- the Transport window, floating over either window ---
+    Loader {
+        id: transportLoader
+        objectName: "transportLoader"
+        active: root.transport !== null
+        // Top right of the windows to begin with; where it is dragged after.
+        x: root.width - width - Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: TransportWindow {
+            objectName: "transportWindow"
+            shell: root.shell
+            session: root.session
+            transport: root.transport
+            mover: transportLoader
         }
     }
 

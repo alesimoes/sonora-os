@@ -8,8 +8,17 @@
 // Positions are frames from the timeline's sample 0, as everywhere in the
 // model. Audio is anchored in samples (session-format.md, "tempo"): bars and
 // beats are a reading of a position, never a position.
+//
+// Bars and beats are read through the whole tempo map. Each entry's tempo
+// and meter hold from its `at` to the next entry's. A tempo change alone
+// carries the count on, so a bar may straddle it; a meter change starts a
+// new bar where it stands, and a bar it cuts short is still counted, as a
+// bar. (The applications move a meter change to the next bar line; our map
+// holds frames, and a reading that moved the change would put the bar lines
+// somewhere the session does not.)
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,13 +33,37 @@ enum class TimeFormat { Timecode, BarsBeats, MinSec, Samples };
 std::string format_timecode(model::Frames f, const model::SessionSettings& s);
 // "5|3|480": bar, beat, ticks at 960 per beat, counting from 1|1|000.
 std::string format_bars_beats(model::Frames f, const model::SessionSettings& s);
+
+// A position read as the tempo map counts it: 1-based bar and beat, 960
+// ticks per beat (the meter's denominator note).
+struct MusicalTime {
+    int64_t bar = 1;
+    int beat = 1;
+    int tick = 0;
+    bool operator==(const MusicalTime& o) const {
+        return bar == o.bar && beat == o.beat && tick == o.tick;
+    }
+};
+MusicalTime musical_time(model::Frames f, const model::SessionSettings& s);
+// Where `t` falls, to the nearest frame. A beat a meter change cut off reads
+// as the change's own frame; a position before 1|1|000 as 0.
+model::Frames frame_of(const MusicalTime& t, const model::SessionSettings& s);
+// The tempo map entry in force at `f`, by index. An empty map (which the
+// session format forbids) reads as the default entry.
+std::size_t tempo_index_at(model::Frames f, const model::SessionSettings& s);
+const model::TempoEntry& tempo_at(model::Frames f, const model::SessionSettings& s);
+// "120.00", and "4/4".
+std::string format_bpm(float bpm);
+std::string format_meter(const model::TempoEntry& t);
 // "1:23.456"; hours appear when needed ("1:02:03.000").
 std::string format_min_sec(model::Frames f, uint32_t rate);
 std::string format_samples(model::Frames f);
 std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSettings& s);
 const char* time_format_name(TimeFormat fmt);
 
-// Frames per beat and per bar at the session's (single, Phase 2) tempo.
+// Frames per beat and per bar at the tempo map's FIRST entry. A fixed step
+// for what needs one (the nudge); anything drawn or snapped against the
+// timeline uses grid_lines(), which follows the whole map.
 double frames_per_beat(const model::SessionSettings& s);
 double frames_per_bar(const model::SessionSettings& s);
 
@@ -39,8 +72,18 @@ enum class GridValue { Bar, Beat, Eighth, Sixteenth };
 const char* grid_value_name(GridValue g);
 GridValue next_grid_value(GridValue g);
 double grid_frames(GridValue g, const model::SessionSettings& s);
-// The grid line nearest `f`, never below 0.
+// The grid line nearest `f` on the tempo map, never below 0.
 model::Frames snap_to_grid(model::Frames f, GridValue g, const model::SessionSettings& s);
+
+struct GridLine {
+    double frame = 0;
+    bool bar = false;  // a bar line, not only a line of the grid value
+};
+// The lines in [a, b] frames, in order: every bar line, and with
+// `bars_only` false every line of `g` too. At most `max` of them.
+void grid_lines(double a, double b, GridValue g, bool bars_only,
+                const model::SessionSettings& s, std::vector<GridLine>& out,
+                std::size_t max = 4096);
 
 // --- ruler ---
 struct RulerTick {

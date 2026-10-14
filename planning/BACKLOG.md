@@ -27,6 +27,16 @@ playback can follow edits; it is in flight.
        through the fixed 2-channel monitor bus (DAW 1 detail, below).
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
        locate, pre-roll; input monitoring.
+       For the Transport window (Track 3 item 3, `feature/ui-transport`),
+       which draws these unavailable and says why until they exist:
+       - handlers for `transport.rewind`, `transport.fast_forward`,
+         `transport.go_to_end` and `transport.toggle_loop`;
+       - a locate command taking a frame (`transport.locate`, argument),
+         for counter entry and memory locations;
+       - pre/post-roll from the session's `transport.pre_roll`/`post_roll`
+         (saved today, not run);
+       - the click and count-off from the tempo map (`engine.core.click`),
+         and a state-block flag saying the click is on.
 5. [x] M4: control API, wire codec, state block and `StateView` per
        ADR-0007 §3, `InProcessEngine`, `FakeEngine`; removes the illegal
        edges (`contract/api`; `engine/app` → `ui/tui` stays as the
@@ -62,6 +72,18 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        zoom; fades; clip gain; markers.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
 3. [ ] Transport window and counters; tempo map and click display.
+       - [x] `feature/ui-transport`: bars|beats through the whole tempo map
+             (counters, ruler, grid lines, snap); the Transport window
+             (`window.transport`) with every format from one reading, tempo,
+             meter, next change and the map, pre/post-roll, loop and punch;
+             click and rolls dimmed with the reason.
+       - [ ] Tempo and meter rulers in the Edit window; tempo and meter
+             editing (a SetSettings each; the conductor).
+       - [ ] Counter entry (type a position, Enter locates): needs
+             `transport.locate` from Track 1 item 4.
+       - [ ] The nudge steps by the first entry's grid value
+             (`edit_controller.cpp` `nudge`): step by the value at the
+             region instead, after `feature/ui-fades` lands there.
 4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).

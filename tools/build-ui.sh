@@ -13,7 +13,8 @@
 #                                           (-mix-browser, -mix-panel) and the
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the
-#                                           compositor itself (grim)
+#                                           compositor itself (grim); also the
+#                                           Transport window (-transport)
 #   tools/build-ui.sh --measure [SECONDS]   ... then frame time and CPU cost
 #                                           of the shell, meters on and off,
 #                                           under Xvfb and under cage
@@ -59,7 +60,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,24p' "${BASH_SOURCE[0]}"
+      sed -n '2,25p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)

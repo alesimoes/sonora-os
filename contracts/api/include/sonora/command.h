@@ -35,7 +35,7 @@ enum class CommandTarget {
 // in the session is engine state, how the operator looks at it is not.
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
-    Interface,  // tool.*, zoom.*, edit.mode.*, app.quit
+    Interface,  // tool.*, zoom.*, edit.mode.*, window.transport, app.quit
 };
 
 struct CommandSpec {
@@ -181,6 +181,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // --- windows ---
         {"window.toggle_mix_edit", CommandTarget::None,
          "Switch between the Edit and Mix windows"},
+        // How the operator looks at the session, not the session: the
+        // interface's own, so no engine is asked to run it.
+        {"window.transport", CommandTarget::None, "Show or hide the Transport window",
+         false, CommandDomain::Interface},
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},

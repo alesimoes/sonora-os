@@ -48,6 +48,7 @@ add_library(sonora_ui_qt STATIC
   src/replica_document.h src/replica_document.cpp
   src/peak_source.h src/peak_source.cpp
   src/time_format.h src/time_format.cpp
+  src/transport_model.h src/transport_model.cpp
   src/fader_taper.h src/fader_taper.cpp
   src/edit_controller.h src/edit_controller.cpp
   src/timeline_scene.h src/timeline_scene.cpp
@@ -67,7 +68,7 @@ target_link_libraries(sonora_ui_qt PUBLIC sonora_keymap sonora_model sonora_api 
 target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
 qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
-  FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/EditWindow.qml
+  FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml
 )
@@ -102,6 +103,16 @@ target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Counters, ruler, grid and snap through the whole tempo map; the Transport
+# window's model on a scripted transport; then the window in the real QML,
+# opened by Pro Tools' key and by its button.
+add_executable(test_ui_transport tests/test_transport.cpp)
+target_link_libraries(test_ui_transport PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_transport PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_transport COMMAND test_ui_transport)
+set_tests_properties(ui_transport PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The Edit window's document as the engine's, on FakeEngine (ADR-0007 M7).
 add_executable(test_ui_replica_document tests/test_replica_document.cpp)

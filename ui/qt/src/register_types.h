@@ -9,6 +9,7 @@
 #include "session_model.h"
 #include "shell_model.h"
 #include "theme_object.h"
+#include "transport_model.h"
 
 namespace sonora::ui {
 
@@ -19,6 +20,8 @@ inline void register_types() {
     qmlRegisterType<MeterItem>("Sonora", 1, 0, "Meter");
     qmlRegisterType<TimelineItem>("Sonora", 1, 0, "Timeline");
     qmlRegisterType<RulerItem>("Sonora", 1, 0, "Ruler");
+    qmlRegisterUncreatableType<TransportModel>("Sonora", 1, 0, "TransportModel",
+                                               QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<ShellModel>("Sonora", 1, 0, "ShellModel",
                                            QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<SessionModel>("Sonora", 1, 0, "SessionModel",

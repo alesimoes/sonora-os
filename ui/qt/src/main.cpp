@@ -32,6 +32,7 @@
 #include "sonora/platform/ipc.h"
 #include "theme.h"
 #include "timeline_document.h"
+#include "transport_model.h"
 
 using namespace sonora;
 using namespace sonora::ui;
@@ -40,6 +41,7 @@ namespace {
 
 struct Options {
     QString keymap;
+    bool transport_view = false;
     int tracks = 18;
     int meter_hz = 0;  // 0: 60, or 30 on a software rasteriser
     bool kiosk = false;
@@ -116,6 +118,29 @@ model::Id add_demo_inserts(model::Snapshot& s) {
     return crashed;
 }
 
+// A tempo map for the demo, for the Transport window's screenshot: 120 bpm
+// 4/4 to bar 17, 96 bpm from there, 3/4 at 96 from bar 25. Regions stay
+// where they are in samples (session-format.md, "tempo"); only the bar
+// lines move.
+void add_demo_tempo_map(model::Snapshot& s) {
+    const model::Frames rate = s.settings.sample_rate;
+    const model::Frames bar120 = rate * 2;       // 4 beats at 120 bpm
+    const model::Frames bar96 = rate * 5 / 2;    // 4 beats at 96 bpm
+    model::SetSettings op;
+    op.settings = s.settings;
+    op.settings.tempo = {model::TempoEntry{0, 120.0f, {{4, 4}}},
+                         model::TempoEntry{16 * bar120, 96.0f, {{4, 4}}},
+                         model::TempoEntry{16 * bar120 + 8 * bar96, 96.0f, {{3, 4}}}};
+    model::Snapshot after;
+    std::string why;
+    if (model::apply(s, op, after, why)) {
+        s = std::move(after);
+        s.revision = 0;
+    } else {
+        std::fprintf(stderr, "sonora-ui: the demo tempo map: %s\n", why.c_str());
+    }
+}
+
 bool parse(QGuiApplication& app, Options& o) {
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral("SonoraOS interface"));
@@ -123,6 +148,11 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption keymap({QStringLiteral("keymap")},
                                     QStringLiteral("Key map profile (JSON)."),
                                     QStringLiteral("path"));
+    const QCommandLineOption transport_view(
+        {QStringLiteral("transport-view")},
+        QStringLiteral("With --demo, a tempo map in the demo session and the Transport "
+                       "window open, for screenshots."));
+    p.addOption(transport_view);
     const QCommandLineOption tracks({QStringLiteral("tracks")},
                                     QStringLiteral("Tracks the fake engine offers (default 18)."),
                                     QStringLiteral("n"));
@@ -177,6 +207,7 @@ bool parse(QGuiApplication& app, Options& o) {
 
     o.keymap = p.value(keymap);
     if (p.isSet(tracks)) o.tracks = p.value(tracks).toInt();
+    o.transport_view = p.isSet(transport_view);
     if (p.isSet(hz)) o.meter_hz = p.value(hz).toInt();
     o.kiosk = p.isSet(kiosk);
     if (p.isSet(measure)) o.measure_s = p.value(measure).toDouble();
@@ -295,6 +326,7 @@ int main(int argc, char** argv) {
     if (a.opt.demo) {
         std::string why;
         sonora::model::Snapshot demo = make_demo_session(engine.info().track_count, rate);
+        if (a.opt.transport_view) add_demo_tempo_map(demo);
         if (fake != nullptr) {
             demo_crash = add_demo_inserts(demo);
             fake->script_plugin_latency(api::testing::fake_catalog()[2].id, 64);
@@ -344,6 +376,14 @@ int main(int argc, char** argv) {
         return true;
     });
     session.installCommands(router.local());
+    // Where the counters are, read from the same session and the same
+    // insertion point as SessionModel's.
+    TransportModel transport(
+        [&session]() -> const sonora::model::SessionSettings& {
+            return session.controller().snapshot().settings;
+        },
+        [&session]() { return session.controller().selection().insertion; });
+    transport.installCommands(router.local());
     router.setSelection([&session]() { return session.selectedTrackForCommands(); });
     const std::vector<std::string> notices =
         router.prepare(qt_device_chords(qt_scan_codes_are_xkb(QGuiApplication::platformName())));
@@ -351,8 +391,9 @@ int main(int argc, char** argv) {
     register_types();
     ShellModel model(engine, router);
     a.model = &model;
-    model.setTransportSink([&session](const TransportSnapshot& t, bool alive) {
+    model.setTransportSink([&session, &transport](const TransportSnapshot& t, bool alive) {
         session.onTransport(t, alive);
+        transport.onTransport(t, alive);
     });
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
@@ -362,6 +403,7 @@ int main(int argc, char** argv) {
     plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
     model.setPluginSinks(std::move(plugin_sinks));
     session.setWindow(a.opt.window);
+    if (a.opt.transport_view) transport.setOpen(true);
     if (!refusal.empty()) model.addNotice(QString::fromStdString(refusal));
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
     for (const auto& n : notices) {
@@ -385,6 +427,7 @@ int main(int argc, char** argv) {
         }
         return 1;
     }
+    view.rootObject()->setProperty("transport", QVariant::fromValue(&transport));
     if (a.opt.no_meters) model.hideMeters();
     model.routeKeysFrom(&view);
     model.start(a.opt.meter_hz > 0 ? a.opt.meter_hz : 60);
