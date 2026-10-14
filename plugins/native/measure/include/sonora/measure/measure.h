@@ -134,6 +134,10 @@ struct Args {
     bool regenerate_golden = false;
     bool cpu = false;          // the 60 s CPU measurement (not run in ctest)
     double cpu_seconds = 60.0;
+    // Hold the CPU bars scaled by this machine's speed against the
+    // reference machine's, measured with the reference kernel
+    // (calibrate.cpp): for a shared CI runner. Off, the bars are absolute.
+    bool cpu_calibrate = false;
 };
 
 class Suite {
@@ -213,6 +217,11 @@ void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string&
 // check_cpu's programme signal (noise with a log sweep under it, peaks
 // about -12 dBFS), raised by gain_db.
 Chans cpu_programme(double fs, double seconds, double gain_db);
+// The reference kernel's p50 per q128 stereo block on this machine
+// (per-block minimum of 5 runs over `seconds`), and on the reference
+// machine: their ratio scales the CPU bars under --cpu-calibrate.
+double reference_kernel_us(double seconds);
+double reference_kernel_reference_us();
 // Runs all of the above. The zipper sweeps run on `zipper` when given (a
 // configuration where every swept parameter is audible), else on golden.
 void check_common(Suite& s, const Config& golden,

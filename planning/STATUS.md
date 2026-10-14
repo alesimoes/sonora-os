@@ -197,6 +197,20 @@ end of its run. Keep it short: what is true now, not a diary.
   within 2.3 % of the set decay on 171 octave bands, 14 renders through
   `sonora-plugin-host` bit-exact against the reference, lv2lint and the
   VST3 validator pass. Container figures (`brain/research/native-reverb-n2.md`).
+- **Native tube drive, ADR-0011 N2 slice 2 (#52), and its gate follow-ups
+  (`fix/tube-cpu-gate`).** The SPICE reference harness (ngspice in the
+  plugins image, generated netlists checked byte for byte), a 12AX7
+  common-cathode stage (Dempwolf law, DK-reduced Newton solve) in
+  `common/dsp/triode.h`, and the tube drive as stereo and mono LV2 and
+  VST3 bundles with eco (2x), standard (4x) and high (8x) qualities.
+  Harmonics within 0.09 dB of ngspice; hot squares to +24 dBFS stay
+  finite and in range. Eco meets class B on a quiet reference machine:
+  p99.9 at most 45.8 µs over three runs on its three loads (bar 60);
+  standard and high are reported over it, as §3.5 allows. The nightly
+  gates eco with a runner-calibrated bar (a frozen reference kernel
+  scales it), the absolute bar stays the reference machine's
+  (`brain/research/native-tube-n2.md`). Transformer, sag and modelled
+  noise are later slices.
 - **Inserts in the model, protocol 3 (#46)** merged; plan nodes and PDC
   (checklist 3) are in progress on `feature/plan-pdc`.
 - **`engine/plugin_client`, the RT half (ADR-0012 checklist 4,

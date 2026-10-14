@@ -75,11 +75,16 @@ jobs:
       # drive's eco quality is the mode ADR-0011 §3.5 lets it ship with
       # over class B, so its bar (60 us p99.9 per q128 stereo block, on the
       # programme signal and on two full-drive worst cases) gates this
-      # workflow. The other processors' figures stay informative above.
-      # A runner much slower than the reference machine can fail it; that
-      # is a red nightly to look at, not a merged regression.
-      - name: Tube eco, class B (gates)
-        run: tools/dsp-cpu.sh build 60 tube
+      # workflow; the other processors' figures stay informative above.
+      # A shared runner is not the reference machine, so here
+      # the bar is runner-calibrated (merge gate of PR #52): it is scaled
+      # by this runner's cost of a frozen reference kernel over the
+      # reference machine's, measured in the same step. A red is the
+      # processor getting slower, not the runner. The absolute bar is
+      # held on the reference machine with tools/dsp-cpu.sh, unflagged.
+      # brain/research/native-tube-n2.md, "The gate".
+      - name: Tube eco, class B, runner-calibrated (gates)
+        run: tools/dsp-cpu.sh --calibrated build 60 tube
 
       - uses: actions/upload-artifact@v4
         if: always()

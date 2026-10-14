@@ -12,9 +12,17 @@
 # brain/research/native-dsp-n0-measurements.md with the CPU model.
 #
 # Usage, on Linux, after a Release build of the root (tools/build-engine.sh):
-#   tools/dsp-cpu.sh [build-dir] [seconds] [processor...]
+#   tools/dsp-cpu.sh [--calibrated] [build-dir] [seconds] [processor...]
 # build-dir defaults to build/ (build-container/ when run inside the
 # sonora-build image from Windows); seconds defaults to 60.
+#
+# Without --calibrated the class bars are absolute: the run that counts
+# is on the reference machine. --calibrated is for a machine of unknown
+# speed (the nightly's shared runner): each bar is multiplied by this
+# machine's cost of a frozen reference kernel over the reference
+# machine's (plugins/native/measure/src/calibrate.cpp), so the bar moves
+# with the runner and a red means the processor got slower, not the
+# runner. brain/research/native-tube-n2.md, "The gate".
 #
 # Each line is the harness's own: "info" is a figure, "ok"/"FAIL" a figure
 # against the class bar. "code path" is the per-block minimum over five
@@ -23,6 +31,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CALIBRATE=()
+if [[ "${1:-}" == "--calibrated" ]]; then
+  CALIBRATE=(--cpu-calibrate)
+  shift
+fi
 BUILD="${1:-$ROOT/build}"
 SECONDS_ARG="${2:-60}"
 shift $(( $# > 2 ? 2 : $# ))
@@ -44,11 +57,11 @@ for p in "${PROCESSORS[@]}"; do
   if ! "$MEASURE" --processor "$p" \
       --quality "$ROOT/plugins/native/$p/quality.json" \
       --golden "$ROOT/plugins/native/$p/tests/golden" \
-      --report "$OUT" --cpu --cpu-seconds "$SECONDS_ARG" > "$OUT/$p.log" 2>&1; then
+      --report "$OUT" --cpu --cpu-seconds "$SECONDS_ARG" "${CALIBRATE[@]}" > "$OUT/$p.log" 2>&1; then
     status=1
   fi
   echo "== $p"
-  grep -E "CPU per block|meets its bars|FAILS" "$OUT/$p.log" || true
+  grep -E "CPU per block|CPU reference kernel|CPU runner scale|meets its bars|FAILS" "$OUT/$p.log" || true
 done
 echo "dsp-cpu: $( [[ $status -eq 0 ]] && echo "every processor meets its bars" || echo "FAIL (see $OUT)" ), ${SECONDS_ARG} s renders, $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ //')"
 exit "$status"

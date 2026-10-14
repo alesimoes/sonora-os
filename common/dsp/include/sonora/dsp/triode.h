@@ -150,7 +150,9 @@ public:
     void small_signal_gain(double f_hz, double& magnitude, double& phase_deg) const;
 
     // Newton iterations of the last tick() and the most any tick took
-    // since prepare() or reset(). For tests and reports.
+    // since prepare() or reset(). For tests and reports. A sample that
+    // failed (see resets()) counts kMaxIterations, or kMaxIterations + 1
+    // when its Jacobian went non-finite; the restart it causes keeps both.
     std::uint32_t last_iterations() const noexcept { return last_iter_; }
     std::uint32_t max_iterations_seen() const noexcept { return max_iter_; }
     static constexpr std::uint32_t kMaxIterations = 12;
@@ -186,6 +188,10 @@ private:
     };
 
     void build_dc_point_matrices(double s_dc[kNodes][kNodes]) const;
+    // The state at the operating point, as reset() leaves it, without
+    // clearing the iteration counts: the solve's restart after a failed
+    // sample, which must not erase the record of that failure.
+    void restore_operating_point() noexcept SONORA_RT;
     // currents(), inlined into the solver.
     TriodeCurrents law(double vgk, double vpk) const noexcept SONORA_RT;
     // One sample of V::kLanes stages sharing their matrices (src/triode_solve.h).

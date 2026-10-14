@@ -342,6 +342,31 @@ void check_cpu(Suite& s, const Config& c, const std::string& label, bool assert_
     check_cpu_on(s, c, cpu_programme(48000.0, s.args().cpu_seconds, 0.0), label, assert_bar);
 }
 
+namespace {
+
+std::string fmt3(double x) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.3f", x);
+    return b;
+}
+
+// This machine's speed against the reference machine's, measured once per
+// run of the harness and reported with the figures it scales.
+double cpu_scale(Suite& s) {
+    static double scale = 0.0;
+    if (scale == 0.0) {
+        const double here = reference_kernel_us(std::min(20.0, s.args().cpu_seconds));
+        scale = here / reference_kernel_reference_us();
+        s.info("CPU reference kernel per block, this machine", here, "us", "p50, per-block minimum of 5 runs");
+        s.info("CPU reference kernel per block, reference machine", reference_kernel_reference_us(), "us",
+               "calibrate.cpp");
+        s.info("CPU runner scale", scale, "", "the CPU bars are multiplied by it");
+    }
+    return scale;
+}
+
+}  // namespace
+
 void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string& label, bool assert_bar) {
     if (!s.args().cpu) return;
     const double fs = 48000.0;
@@ -370,7 +395,17 @@ void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string&
     }
     const std::string what = "CPU per block, q128 48 kHz stereo" + label + ": ";
     s.info(what + "p50", percentile(best, 0.5), "us", "per-block minimum of 5 runs");
-    if (assert_bar) {
+    if (assert_bar && s.args().cpu_calibrate) {
+        // A shared runner: the bars scaled by this machine's speed against
+        // the reference machine's (calibrate.cpp). The absolute figures
+        // are reported beside them.
+        const double scale = cpu_scale(s);
+        const std::string note = "per-block minimum of 5 runs; class bar x " + fmt3(scale) +
+                                 ", this machine's reference kernel against the reference machine's";
+        s.check_le(what + "p99.9, runner-calibrated", percentile(best, 0.999), s.bar("cpu.p999_us") * scale, "us",
+                   note);
+        s.check_le(what + "max, runner-calibrated", percentile(best, 1.0), s.bar("cpu.max_us") * scale, "us", note);
+    } else if (assert_bar) {
         s.check_le(what + "p99.9", percentile(best, 0.999), s.bar("cpu.p999_us"), "us", "per-block minimum of 5 runs");
         s.check_le(what + "max", percentile(best, 1.0), s.bar("cpu.max_us"), "us", "per-block minimum of 5 runs");
     } else {

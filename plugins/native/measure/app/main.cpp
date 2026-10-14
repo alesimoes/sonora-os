@@ -4,7 +4,8 @@
 //
 //   sonora-dsp-measure --processor eq --quality plugins/native/eq/quality.json
 //       --golden plugins/native/eq/tests/golden --report build/dsp-reports
-//       [--regen-golden] [--cpu [--cpu-seconds 60]]
+//       [--regen-golden] [--cpu [--cpu-seconds 60] [--cpu-calibrate]]
+//   sonora-dsp-measure --cpu-reference-kernel   (calibrate.cpp's figure)
 //   sonora-dsp-measure --processor eq --host-fixture DIR --preroll 512
 //       [--vst3-tempo 120] [--golden plugins/native/eq/tests/golden]
 //   sonora-dsp-measure --spice-generate plugins/native/tube/tests/spice
@@ -67,6 +68,12 @@ int main(int argc, char** argv) {
         else if (a == "--regen-golden") args.regenerate_golden = true;
         else if (a == "--cpu") args.cpu = true;
         else if (a == "--cpu-seconds") args.cpu_seconds = std::atof(next().c_str());
+        else if (a == "--cpu-calibrate") args.cpu_calibrate = true;
+        else if (a == "--cpu-reference-kernel") {
+            // The figure calibrate.cpp records for the reference machine.
+            std::printf("reference kernel: %.2f us per block (p50)\n", measure::reference_kernel_us(60.0));
+            return 0;
+        }
         else if (a == "--host-fixture") fixture_dir = next();
         else if (a == "--preroll") preroll = static_cast<std::uint32_t>(std::atol(next().c_str()));
         else if (a == "--vst3-tempo") vst3_tempo = std::atof(next().c_str());

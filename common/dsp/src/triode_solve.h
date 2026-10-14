@@ -353,7 +353,9 @@ void TriodeStage::solve(TriodeStage* const* st, const double* vin_in, double* ou
                           std::isfinite(oi1[l]) && std::isfinite(ob[0][l]) && std::fabs(ov0[l]) <= supply &&
                           ov1[l] >= -supply && ov1[l] <= 2.0 * supply;
         if (!sane) {
-            s.reset();
+            // Not reset(): the iteration counts it clears are the evidence
+            // of this failure (max_iterations_seen() keeps it).
+            s.restore_operating_point();
             ++s.resets_;
             out[l] = 0.0;
             continue;
