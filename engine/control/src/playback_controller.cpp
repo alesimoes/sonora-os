@@ -94,6 +94,16 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
     }
+    // The audio thread counts every engine track's solo: one left on a track
+    // the document no longer has (an undone AddTrack) would silence the rest
+    // while every replica shows no solo.
+    for (std::size_t i = tracks.size(); i < session_.tracks().size(); ++i) {
+        Track& t = *session_.tracks()[i];
+        t.set_gain(1.0f);
+        t.set_pan(0.0f);
+        t.set_muted(false);
+        t.set_soloed(false);
+    }
     apply_monitoring(snapshot);
     session_.set_bus_gain(gain_of_db(snapshot.mix.bus.gain_db));
 }

@@ -702,6 +702,43 @@ void no_plugin_hosting_yet() {
     CHECK(real.state().track(0).gain == 0.5f);
 }
 
+// A ride the link lost mid-gesture stays in the Track atomic, a value the
+// document does not hold. A Snapshot applies the document's mix (ADR-0009
+// §4 item 3), whether the client asked for it (Resync) or got it by
+// connecting: either way the faders are what the document says.
+void resync_applies_the_mix() {
+    RealEngine real(fresh_dir("resync"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answered = [&](uint64_t seq) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == DispatchResult::Ok;
+            }
+            return false;
+        });
+    };
+    const auto gain_is = [&](float g) {
+        return until(real, in, [&]() { return real.state().track(0).gain == g; });
+    };
+    api::ParameterChange ride;
+    ride.track = 0;
+    ride.value = 0.5f;
+    CHECK(answered(real.send(ride)));
+    CHECK(gain_is(0.5f));
+    api::ModelRequest resync;
+    resync.action = api::ModelAction::Resync;
+    CHECK(answered(real.submit(resync)));
+    CHECK(gain_is(1.0f));
+
+    ride.value = 0.25f;
+    CHECK(answered(real.send(ride)));
+    CHECK(gain_is(0.25f));
+    late_greeting(real, in);
+    CHECK(gain_is(1.0f));
+}
+
 }  // namespace
 
 int main() {
@@ -719,6 +756,7 @@ int main() {
     large_snapshot_crosses_in_frames();
     housekeeping_and_early_events();
     no_plugin_hosting_yet();
+    resync_applies_the_mix();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

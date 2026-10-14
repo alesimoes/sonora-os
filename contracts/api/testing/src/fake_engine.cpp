@@ -235,6 +235,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     hello_.implemented_commands = engine_commands();
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
+    muted_.assign(cfg_.tracks, false);
     scripted_.assign(cfg_.tracks, -1.0f);
     clips_.assign(cfg_.tracks, 0);
 
@@ -288,8 +289,23 @@ bool FakeEngine::connect(std::string& error) {
     model::ReplicationUpdate snap;
     std::string why;
     if (document_->snapshot(snap, why, wire::kMaxModelBytes)) broadcast(to_wire(snap));
+    apply_mix();
     send_catalog();
     return true;
+}
+
+void FakeEngine::apply_mix() {
+    const model::Snapshot& doc = document_->current();
+    const auto& tracks = doc.edit->tracks;
+    for (std::size_t i = 0; i < gain_.size(); ++i) {
+        const model::TrackMix* m = i < tracks.size() ? doc.mix.find(tracks[i]->id) : nullptr;
+        if (i < tracks.size() && m == nullptr) continue;
+        float db = m != nullptr ? m->gain_db : 0.0f;
+        if (!(db >= model::kMinGainDb)) db = model::kMinGainDb;
+        db = std::min(db, model::kMaxGainDb);
+        gain_[i] = std::pow(10.0f, db / 20.0f);
+        muted_[i] = m != nullptr && m->mute;
+    }
 }
 
 void FakeEngine::send_catalog() {
@@ -722,12 +738,21 @@ void FakeEngine::handle(const std::string& bytes) {
         model::ReplicationUpdate u;
         std::string why;
         bool ok = false;
+        // The real engine's rule: faders are written from the document only
+        // when an update changed what they hold, so an unrelated edit leaves
+        // a ride where it is.
+        bool mix_changed = m.action == ModelAction::Resync || m.action == ModelAction::Load;
+        std::vector<model::Id> order_before;
+        for (const auto& t : document_->current().edit->tracks) order_before.push_back(t->id);
+        const model::MixState mix_before = document_->current().mix;
         switch (m.action) {
             case ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
                 why = insert_refusal(document_->current(), cfg_.plugins, op);
                 if (!why.empty()) break;
+                mix_changed = std::holds_alternative<model::SetMix>(op) ||
+                              std::holds_alternative<model::SetMonitorBus>(op);
                 ok = document_->apply(op, u, why);
                 break;
             }
@@ -748,6 +773,13 @@ void FakeEngine::handle(const std::string& bytes) {
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (!ok) return;
         broadcast(to_wire(u));
+        std::vector<model::Id> order_after;
+        for (const auto& t : document_->current().edit->tracks) order_after.push_back(t->id);
+        const model::MixState& mix_after = document_->current().mix;
+        if (mix_changed || !(mix_after.bus == mix_before.bus) ||
+            !(mix_after.tracks == mix_before.tracks) || order_after != order_before) {
+            apply_mix();
+        }
         if (m.action == ModelAction::Load) {
             // Another session, other hosts: nothing scripted for the old
             // inserts belongs to it, even where an id is the same.
@@ -874,7 +906,8 @@ void FakeEngine::publish() {
         if (peak >= 1.0f) ++clips_[i];
         peaks[i] = peak;
         tracks[i].flags =
-            (armed_[i] ? kTrackArmed : 0u) | (inputs_connected_ ? kTrackInputConnected : 0u);
+            (armed_[i] ? kTrackArmed : 0u) | (muted_[i] ? kTrackMuted : 0u) |
+            (inputs_connected_ ? kTrackInputConnected : 0u);
         tracks[i].gain = gain_[i];
         tracks[i].clip_count = clips_[i];
     }

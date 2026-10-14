@@ -378,6 +378,9 @@ void EngineControlServer::greet(Client& client) {
         api::wire::encode(to_wire(snap), bytes);
         send_to(client, bytes);
     }
+    // The faders it is about to show are the document's: a ride whose
+    // client went before its release ends here (ADR-0009 §4 item 3).
+    playback_->apply_mix(document_->current());
     // Empty until a scan exists to fill it (kNoHosting).
     api::PluginCatalog catalog;
     catalog.generation = 1;
@@ -830,6 +833,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             // A resync is the asker's alone; every other replica is in step.
             if (m.action == api::ModelAction::Resync) {
                 send_to(from, out);
+                // The asker may be resyncing after a lost link, with a ride's
+                // last step still in the gain atomics; the plan is unchanged.
+                playback_->apply_mix(document_->current());
             } else {
                 send(out);
                 // The faders' part of the mix only: an insert's bypass or
