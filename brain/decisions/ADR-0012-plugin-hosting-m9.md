@@ -796,6 +796,98 @@ updates `FakeEngine` and the conformance suite in the same PR.
 - **Protocol version 3** for the new messages; `Hello` mismatch refuses by
   name, as today.
 
+**Amendment, 2026-10-14: the control server's chains (PROPOSED, checklist
+5).** Proposed by plugin-engineer. It needs the architect's ruling and the
+rt-engineer's co-review before the control-server PR implements it. It
+settles what this ADR leaves open when §5.3 and §8 are wired into
+`engine/control`, and changes nothing already accepted. It builds on the
+rule #59 and #63 put in `engine/core`: an unbound chain is laid out with
+latency 0 and passes through, and a bound chain that is not run plays
+silence.
+
+1. **What a chain plays while it has no Ready host.** §3 says a missed
+   block is silence; §5.3 says an edit never stops what is playing. The
+   plan has to say which one applies before the first `Ready`. The resolver
+   binds an active chain as follows:
+   - *Running:* its current host's slot, generation, store, node state and
+     checked latency.
+   - *Edited while running* (an insert added, removed, moved, activated,
+     deactivated or replaced on a chain whose host is Ready): the old
+     host's binding, unchanged, until the new host is Ready (§5.3,
+     make-before-break). The document leads the audio by the load time.
+   - *New on a track that had no chain in the playing plan* (its first
+     active insert, by Apply, undo or redo): unbound, latency 0. The track
+     plays dry and aligned, as it did before the insert existed. This is
+     the only case where a chain without a running host plays dry. The
+     operator hears what was already playing, not a fault.
+   - *Starting with the session* (start-up, `ModelAction::Load`),
+     *restarting* (after a crash, a removal or a hang), or *down* (three
+     restarts in 60 s, refused, hosting disabled, every instance missing):
+     **silent.** A new constant, `kSilentChannelSlot` (0xFFFFFFFE) in
+     `playback_plan.h`, lays the node out with latency 0.
+     `Session::process` writes silence for it without calling the runner,
+     and drops its parameter events, counted. Never dry: after a limiter or
+     a cut, dry is louder (Rationale), and a session that opens must not
+     play its master unlimited for the seconds its hosts take to start.
+   - A missing plugin is left out of its chain (§6.1), and the chain runs
+     with the others. A chain whose instances are all missing is down, and
+     silent.
+
+2. **Retiring a slot by epoch, concretely (§5.4, H1).**
+   `PlaybackController` reports `oldest_live_epoch()`: the smallest epoch
+   among the playing plan, the pending plan and every retired plan not yet
+   freed. A slot, with its region and its host, leaves its chain when the
+   resolver stops naming it. The chain records the epoch of the first plan
+   built without the slot. It calls `PluginClient::retire(slot)` and
+   `SupervisedChain::retired()` only once `oldest_live_epoch()` is past
+   that epoch. A cancelled plan is never read by the audio thread, so it
+   holds no slot. The generation check (H1) remains the second guard.
+
+3. **Where a chain's spec comes from until the scan worker and catalog
+   cache exist.** A chain start is asynchronous from end to end
+   (code-reviewer L6 on #49):
+   - For each plugin not yet probed in this engine run, one
+     `sonora-plugin-host --probe` child is started (§4's rule: one process
+     per plugin). The control thread collects it from its poll and never
+     waits on it.
+   - Then the host starts with `--control-fd` and receives its chain in
+     `Load` (`host_control.h`), not on the command line. The key table
+     against which the engine resolves `PluginParameterChange{insert, key}`
+     is then the running instance's own, from `Loaded` (§8). `GetState` is
+     available for `FlushPluginState` and make-before-break.
+   - Probe results are kept for this run only. The persistent cache, keyed
+     by bundle path, size and mtime, belongs to the scan worker, in a later
+     PR.
+
+4. **One block size, one owner.** The plugin side is one object,
+   `PluginHosting` in `engine/control`. It holds `PluginClient`,
+   `HostSupervisor`, `PluginChainRunner` and every `SupervisedChain`.
+   - It is built for the backend's period: `block_frames` is the first
+     period, and `max_chain_channels` is 2.
+   - It owns the teardown order: the runner leaves the session, a callback
+     passes, the chains stop once the plans naming their slots are retired,
+     then the supervisor goes, then the client.
+   - A period change tears it down and builds it again for the new period.
+     Every chain restarts (silent while starting, item 1) and the plan is
+     rebuilt, because every chain latency includes the IPC block.
+
+5. **`PluginFault` comes from the client's per-slot status** (rt-engineer
+   item 2 on #59). One fault stands for each insert of an active chain that
+   is not running. Its text names the plugin, the track and the slot.
+   - *Starting* (session open): no fault; the state block's `restarting`
+     flag shows it. A start that fails makes the chain *down*.
+   - *Restarting:* "restarting: <why>" on every insert of the chain, with
+     the culprit named (finding 6). Cleared at `Ready`.
+   - *Down:* the culprit gets "<plugin>: <why>; 3 restarts in 60 s, the
+     chain stays down (retry, make inactive or remove)". The other inserts
+     of the chain get "down with <culprit>".
+   - *Refused:* the refusal text, on the instance that `Refused` names.
+   - *Missing:* "not installed", on that insert alone.
+   - *Hosting disabled:* as today, on every active insert.
+   - Non-finite output while the chain runs is a counter in the state
+     block's `InsertState`, not a fault: the host scrubs it and the chain
+     plays on.
+
 ## Rationale
 
 - **What each choice costs later.**
