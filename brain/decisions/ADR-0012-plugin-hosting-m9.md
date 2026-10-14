@@ -801,7 +801,7 @@ updates `FakeEngine` and the conformance suite in the same PR.
 rt-engineer's co-review before the control-server PR implements it. It
 settles what this ADR leaves open when §5.3 and §8 are wired into
 `engine/control`, and changes nothing already accepted. It builds on the
-rule #59 and #63 put in `engine/core`: an unbound chain is laid out with
+rule #59 and #68 put in `engine/core`: an unbound chain is laid out with
 latency 0 and passes through, and a bound chain that is not run plays
 silence.
 
