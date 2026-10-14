@@ -166,6 +166,69 @@ int main() {
         CHECK(slurp(path) == good);
     }
 
+    // --- a finished take another tool appended a chunk to is left alone ---
+    //
+    // BWF MetaEdit and taggers keep bext and add LIST or iXML after the
+    // data, updating the RIFF size. Read as audio, the bytes of "LIST" are a
+    // float sample of about 3.6e12: a full-scale burst on the monitor bus.
+    {
+        auto b = finished(path, 1, WavWriter::Format::Float32, 100);
+        const uint8_t list[30] = {'L', 'I', 'S', 'T', 22, 0, 0, 0, 'I', 'N', 'F', 'O',
+                                  'I', 'C', 'M', 'T', 10, 0, 0, 0, 'o', 'v', 'e', 'r',
+                                  'd', 'u', 'b', ' ', '2', 0};
+        b.insert(b.end(), list, list + sizeof list);
+        put32(b, kRiffSize, static_cast<uint32_t>(b.size() - 8));
+        spill(path, b);
+        const TakeRecovery r = sonora::recover_take(path);
+        CHECK(r.outcome == TakeRecovery::Outcome::Intact);
+        CHECK(r.frames == 100);
+        CHECK(slurp(path) == b);
+        CHECK(samples_match(path, 100, 1));
+    }
+
+    // --- a take that failed and was closed is finished, not recovered ---
+    //
+    // Mono 24-bit, odd frame count, stopped by a failure: close() writes the
+    // RIFF size with the pad byte counted. Whether or not the pad reached
+    // the file, recovery must not report it as a take the engine died
+    // recording.
+    {
+        std::remove(path.c_str());
+        WavWriter w;
+        w.set_riff_size_limit(kAudio - 8 + 16);
+        CHECK(w.open(path, 48000, 1, WavWriter::Format::Int24, 4800));
+        std::vector<float> s(6);
+        for (std::size_t i = 0; i < s.size(); ++i) s[i] = static_cast<float>(i) / 1024.0f;
+        CHECK(!w.write(s.data(), 6));
+        CHECK(w.failed());
+        w.close();
+        const auto failed = slurp(path);
+        CHECK(failed.size() == static_cast<std::size_t>(kAudio) + 15 + 1);
+        TakeRecovery r = sonora::recover_take(path);
+        CHECK(r.outcome == TakeRecovery::Outcome::Intact);
+        CHECK(r.frames == 5);
+        CHECK(slurp(path) == failed);
+        CHECK(samples_match(path, 5, 1));
+
+        // The pad's resize failed too: the RIFF size is still close()'s.
+        auto b = failed;
+        b.pop_back();
+        spill(path, b);
+        r = sonora::recover_take(path);
+        CHECK(r.outcome == TakeRecovery::Outcome::Intact);
+        CHECK(slurp(path) == b);
+    }
+
+    // --- a RIFF size neither open() nor a checkpoint writes: untouched ---
+    {
+        auto b = finished(path, 1, WavWriter::Format::Float32, 10);
+        b.insert(b.end(), 12, 0x41);
+        put32(b, kRiffSize, static_cast<uint32_t>(b.size() - 8 - 4));
+        spill(path, b);
+        CHECK(sonora::recover_take(path).outcome == TakeRecovery::Outcome::Intact);
+        CHECK(slurp(path) == b);
+    }
+
     // --- not ours: another program's file, whatever its sizes say ---
     //
     // A WAV may legally carry chunks after its data; only the engine's own
