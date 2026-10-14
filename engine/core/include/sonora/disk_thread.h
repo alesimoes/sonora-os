@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -80,6 +81,25 @@ public:
     // already closed, or take 0, which has no file. Any thread.
     uint64_t dropped_samples() const { return dropped_.load(std::memory_order_relaxed); }
 
+    // How often the running thread checkpoints every open take
+    // (WavWriter::checkpoint()). Set while the thread is not running.
+    void set_checkpoint_interval(std::chrono::nanoseconds interval) {
+        checkpoint_interval_ = interval;
+    }
+    // Checkpoints every file a slot holds, now, with a drain_once() after
+    // each. The running thread's, every interval; also the caller's, while
+    // the thread is not running.
+    void checkpoint_all();
+    // Passes of checkpoint_all() so far, and the longest one file's
+    // checkpoint took: a pass drains between files, so this is the longest
+    // the rings waited, which their depth must cover (ADR-0009 Unverified
+    // 8). sonora-engine prints it at exit and on its RESULT line. Any
+    // thread.
+    uint32_t checkpoints() const { return checkpoints_.load(std::memory_order_relaxed); }
+    uint64_t longest_checkpoint_ns() const {
+        return longest_checkpoint_ns_.load(std::memory_order_relaxed);
+    }
+
 private:
     // Only a test defines it, to reach set_pass_hook().
     friend struct DiskThreadTestAccess;
@@ -124,6 +144,9 @@ private:
     std::atomic<uint64_t> dropped_{0};
     PassHook hook_ = nullptr;
     void* hook_context_ = nullptr;
+    std::chrono::nanoseconds checkpoint_interval_{std::chrono::seconds(2)};
+    std::atomic<uint32_t> checkpoints_{0};
+    std::atomic<uint64_t> longest_checkpoint_ns_{0};
 };
 
 }  // namespace sonora

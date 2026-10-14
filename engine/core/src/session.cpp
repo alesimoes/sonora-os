@@ -112,6 +112,8 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
 
     // 64 kframes per disk write keeps syscall count low without stalling.
     disk_ = std::make_unique<DiskThread>(std::move(raw), 65536, *boundaries_);
+    disk_->set_checkpoint_interval(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(cfg_.sync_seconds)));
 
     const PlaybackConfig& pb = cfg_.playback;
     const auto tracks = static_cast<uint32_t>(cfg_.track_count);

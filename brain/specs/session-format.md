@@ -25,8 +25,9 @@ Two rules govern the relationship between the file and the audio:
 
 1. **A closed audio file is never modified.** Not by a save, not by an edit,
    not by undo. Moving a region does not rewrite the file's `bext`. The one
-   exception is Phase 5 recovery, which patches the RIFF sizes of a take
-   whose header was never finalised, and only that.
+   exception is recovery, which gives a take whose header was never
+   finalised the length on disk (its RIFF and data sizes, a trailing part of
+   a frame cut, the pad byte added), and only that.
 2. **Undo never deletes audio.** Sources are an append-only pool (see
    "Sources"). A take that is undone stays in `Audio Files/` and in the
    session's source list, marked unused. Removing unused audio is an explicit
@@ -500,19 +501,52 @@ provides them:
   `Audio Files/` that no source references is an orphan. Orphans are listed
   and offered for recovery, using `TimeReference` and `Description` to place
   them. They are never deleted.
-- **A take whose header was never finalised** (sizes still zero) gets its
-  length from the file size. That is the one write to a closed file the
-  format allows. The disk thread periodically patching the header during a
-  take (ADR-0007 Consequences) makes this shorter; it does not replace it.
+- **A take whose header was never finalised** gets its length from the
+  file size, in whole frames. That is the one write to a closed file the
+  format allows. Built (`common/audiofile` `recover_take()`): the engine
+  runs it over `Audio Files/` at startup, before anything records, and says
+  each recovered take as a Notice; the take is left unplaced. It touches
+  only files whose bext Originator is `Sonora Engine` (another program's WAV
+  may carry chunks after its data), and of those only files whose RIFF size
+  is one an unfinished take has: 0 (`open()`, no checkpoint yet) or the
+  checkpoint's, exactly the header and data with no pad. A RIFF size `close()`
+  wrote, or one a metadata tool wrote when it appended `LIST` or `iXML` to a
+  finished take, means the file is closed, and rule 1 leaves it as it is:
+  read as audio, an appended chunk is a full-scale burst. It never shortens
+  a header (a file shorter than its header is reported), and is
+  idempotent. **One engine per session folder:** the engine holds an
+  advisory lock on the folder (`common/platform` `FolderLock`, `flock` on
+  the folder itself, so nothing is written into it) from before recovery
+  until it exits, and a second engine on the same folder is refused with
+  the reason. Without it the second engine's recovery would treat the
+  first one's open takes as unfinished and cut the frame being written.
+- **The header is kept valid during a take.** At every checkpoint (below)
+  the disk thread patches the RIFF and data sizes, and the TimeReference
+  once known, to the frames written, so a take whose engine dies reads as
+  a valid file up to its last checkpoint without any recovery; recovery
+  then adds what reached the file after it. The checkpoint's header counts
+  no pad byte, which `close()` adds, so it matches the file as it is. Every
+  drain pass (10 ms) also flushes the writer's buffer to the OS, without a
+  sync, so the **loss window at `kill -9`** (the process dies, the kernel
+  lives) is only what the capture rings still held: about one pass. Tested
+  against `kill -9` of a recording process (`engine/core`
+  `tests/posix/test_take_kill.cpp`, which prints the frames lost).
 - **Audio reaches the medium on a schedule.** Written data sits in the page
   cache until the kernel flushes it, so without a sync a power cut can lose
-  tens of seconds of a take. The disk thread calls `fdatasync` on every open
-  take file every 2 s (*placeholder*), through `common/platform`, never from
-  the audio thread. The **loss window** at a power cut is then at most that
-  interval plus the capture ring's depth, per track. Until this lands
-  (backlog, rt-engineer) the format makes no claim about audio surviving a
-  power cut. *Unverified:* the `fdatasync` cost on a stick while 18 tracks
-  record, which must not cause a capture overrun; it sets the interval.
+  tens of seconds of a take. The disk thread checkpoints every open take
+  file every `SessionConfig::sync_seconds` (2 s, *placeholder*): header
+  patch, then `fdatasync` through `common/platform`, the folder `fsync`ed at
+  the first one so the file's name survives too; never from the audio
+  thread. The **loss window** at a power cut is then at most that interval
+  plus the capture ring's depth, per track. A failed `fdatasync` fails the
+  take with the reason (Linux clears the error, so a retry would claim data
+  that is gone). *Unverified:* the `fdatasync` cost on a stick while 18
+  tracks record, which must not cause a capture overrun; it sets the
+  interval. A checkpoint pass drains the rings after each file it syncs, so
+  the rings wait for the slowest single sync, never for the sum over 18
+  tracks. `DiskThread::longest_checkpoint_ns()` is that wait, the figure to
+  read: `sonora-engine` prints it at exit ("longest checkpoint") and on the
+  `--record` `RESULT` line (`checkpoint_ms=`).
 - **Punch takes are recovered by their own header.** A recovered orphan
   whose `Description` carries `punch=<A>-<B>` is offered for placement as
   that punch, over `[A, B)` with the session's punch crossfades. Without
