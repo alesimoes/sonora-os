@@ -11,12 +11,10 @@ CK k 0 2.2e-05
 RP bp p 100000
 COUT p o 2.2e-08
 RL o 0 1000000
-CGK g k 2.3e-12
 CGP g p 2.4e-12
-CPK p k 9e-13
 BIP p k I=0.002242*pow(ln(1+exp(3.4*(v(p,k)/103.2+v(g,k))))/3.4,1.26)-(0.0006177*pow(ln(1+exp(9.901*v(g,k)))/9.901,1.314)+8.025e-08)
 BIG g k I=0.0006177*pow(ln(1+exp(9.901*v(g,k)))/9.901,1.314)+8.025e-08
-.options reltol=1e-7 abstol=1e-15 vntol=1e-10 method=trap
+.options reltol=1e-7 abstol=1e-10 vntol=1e-10 method=trap
 .control
 op
 wrdata op.txt v(a) v(g) v(k) v(p)

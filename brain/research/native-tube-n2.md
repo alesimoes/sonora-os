@@ -21,7 +21,7 @@
 |---|---|---|
 | Triode law, default | K. Dempwolf and U. Zölzer, "A physically-motivated triode model for circuit simulations", DAFx-11, eqs. (10)-(12), Table 1 column RSD-1 (12AX7) | Ik, Ig with grid current, Ip = Ik - Ig. Continuously differentiable |
 | Triode law, second | N. Koren, "Improved vacuum tube models for SPICE simulations", Glass Audio 8(5), 1996, eq. (4), Table 1 (12AX7) | Ip as published; grid current through RGI (2 kΩ) above 0 V, the only form the article gives |
-| Interelectrode capacitances | The 12AX7 datasheet values both papers quote: Cgk 2.3 pF, Cgp 2.4 pF, Cpk 0.9 pF | In the stage |
+| Interelectrode capacitances | The 12AX7 datasheet values both papers quote: Cgk 2.3 pF, Cgp 2.4 pF, Cpk 0.9 pF | Cgp (the Miller capacitance) in the stage; Cgk and Cpk left out (below) |
 | Solver | Modified nodal analysis with trapezoidal companion capacitors (Chua and Lin, 1975), reduced to the two port voltages as in the DK method (Yeh, Abel and Smith, IEEE TASLP 18(4), 2010) | Newton on Vgk, Vpk per sample, at the oversampled rate |
 | Oversampling | N0's polyphase half-band FIR (`oversampling.h`) | 2x, 4x, 8x, exact integer latency |
 | Reference | ngspice (BSD-3-Clause), transient analysis of the generated netlist | `plugins/native/tube/tests/spice/` |
@@ -37,6 +37,14 @@ B+ 250 V, Rp 100 kΩ, Rk 1.5 kΩ with 22 µF, 22 nF and 1 MΩ grid leak in,
 170.449 V, cathode 1.1934 V, 0.796 mA, the same as ngspice's `.op` to
 1e-7 V. Small-signal gain 62.4 (35.9 dB) at 1 kHz.
 
+**Cgk and Cpk are left out** (review of PR #52, for CPU). Here they set
+poles at 3.1 MHz (Cgk across the 22 kΩ stopper) and 4.6 MHz (Cpk across
+the plate's ~38 kΩ), which the trapezoidal rule folds to modes near the
+oversampled Nyquist frequency rather than models. In ngspice, removing
+both moved the harmonics of the 4 V, 5 kHz case by at most 0.01 dB to
+20 kHz and 0.16 dB at 45 kHz. Each was a state of the solve. The netlists
+and `reference.json` were regenerated without them.
+
 ## The harness
 
 - The netlist is generated from the same `TriodeStageCircuit` and
@@ -46,8 +54,11 @@ B+ 250 V, Rp 100 kΩ, Rk 1.5 kΩ with 22 µF, 22 nF and 1 MΩ grid leak in,
   are byte-identical to what the model's values generate, re-runs
   ngspice, and checks the harmonics against the committed
   `reference.json` to 1e-6 of the fundamental and the operating point to
-  1e-6 V. Each of the 16 cases is its own ctest; 6 minutes of CPU, 2 in
-  parallel.
+  1e-6 V (they match to 0 on ngspice 44.2). Each of the 16 cases is its
+  own ctest; about 3.5 minutes of CPU, under 1 in parallel.
+- `abstol` is 100 pA: with Cgp the grid's only capacitance, 1 fA stopped
+  ngspice at its first time point on the Dempwolf 5 kHz cases, and 1 pA
+  the Koren ones (whose grid law has a kink at 0 V).
 - Settling 0.3 s, then 0.05 s analysed: whole periods at 100 Hz, 1 kHz and
   5 kHz. Maximum step 1/(2000 f0); reltol 1e-7. Halving the step to
   0.1 µs moved the 5 kHz, 2 V case's harmonics above -60 dBc by 0.2 dB at
@@ -66,21 +77,22 @@ Plot: `docs/images/dsp/tube-harmonics-vs-spice.png`.
 | Measure | Result | Bar |
 |---|---|---|
 | Operating point vs ngspice, both laws | ≤ 3.2e-7 V | 1e-3 V |
-| Fundamental vs ngspice, 16 cases at 176.4, 192 and 384 kHz | ≤ 0.0037 dB | 0.05 dB |
-| Harmonic levels vs ngspice, every harmonic ≤ 20 kHz and ≥ -80 dBc | ≤ 0.093 dB (Koren, 4 V, at 192 kHz); Dempwolf ≤ 0.05 dB | 0.5 dB |
-| Waveform error to 20 kHz, \|model - SPICE\| / \|H1\|, complex | ≤ -52.9 dB (Dempwolf, 4 V, 5 kHz, at 176.4 kHz); -66.5 dB at 384 kHz | -40 dB |
-| The same at 88.2 kHz (eco at 44.1 kHz), reported | -40.7 dB | — |
+| Fundamental vs ngspice, 16 cases at 176.4, 192 and 384 kHz | ≤ 0.0036 dB | 0.05 dB |
+| Harmonic levels vs ngspice, every harmonic ≤ 20 kHz and ≥ -80 dBc | ≤ 0.087 dB (Koren, 4 V, at 192 kHz); Dempwolf ≤ 0.05 dB | 0.5 dB |
+| Waveform error to 20 kHz, \|model - SPICE\| / \|H1\|, complex | ≤ -52.9 dB (Dempwolf, 4 V, 5 kHz, at 176.4 kHz) | -40 dB |
+| The same at 88.2 kHz (eco at 44.1 kHz), reported | -40.5 dB | — |
 | Processor through the oversampler, harmonic levels vs ngspice, 12 Dempwolf cases at 44.1, 48, 96 kHz | ≤ 0.054 dB | 0.5 dB |
 | Tabulated law against the exact one, through the stage | -180 dB | -120 dB |
 | Small-signal gain at 1 kHz, drive 0 dB, auto level | within 1.5e-5 dB of unity | 0.05 dB |
-| Small-signal response at 20 Hz, 100 Hz, 10 kHz, 20 kHz (the coupling capacitors and the Miller pole), reported | -1.74, -0.07, -0.21, -0.82 dB at 48 kHz | — |
+| Small-signal response at 20 Hz, 100 Hz, 10 kHz, 20 kHz (the coupling capacitors and the Miller pole), reported | -1.74, -0.07, -0.20, -0.79 dB at 48 kHz | — |
 | Latency, measured - reported, eco/standard/high at 44.1/48/96 kHz | 0 (69/39/11, 76/45/16, 78/47/18 samples) | exact |
 | Bypass = input delayed by the latency | exact | exact |
 | Non-finite and 1e30 input | finite; identical to silence in their place from the next block | §3.2 |
-| Denormals: silence after signal / active | 0.56 | 1.2 |
+| Denormals: silence after signal / active | 0.62 | 1.2 |
 | Zipper, full-range sweeps of drive, output, mix, auto level, -40 dBFS tone | ≤ -120.5 dBFS | -94 dBFS (-60 moved with the tone) |
 | Golden renders 44.1/48/96 kHz | identical | 1e-6 |
-| Newton iterations per sample, most: 1 V / 4 V / 63 V peak | 3 / 5 / 11; 12 (the cap) at 1000 V, output finite | 12 |
+| Newton iterations per sample, most: 1 V / 4 V / 63 V / 1000 V peak (7993 Hz sine) | 2 / 4 / 5 / 7 | under 12 |
+| Hot squares (0, +12, +24 dBFS at +36 dB, every quality, stereo, auto level off) | output within the stage's range (≤ 6.1 FS, bar 8.1); worst block 39-206 µs | the 2.67 ms period |
 
 The waveform error grows with frequency and drive and falls with the
 oversampling rate: it is the trapezoidal rule's frequency warping of the
@@ -100,9 +112,9 @@ choice in `quality.json`. Hotter levels are reported beside it.
 
 | Quality, worst over the tones | 44.1 kHz | 48 kHz | 96 kHz | Bar |
 |---|---|---|---|---|
-| eco (2x), nominal | -88.4 dBc | -88.7 | -150.4 | -70 dBc |
-| standard (4x), nominal | -145.2 | -146.5 | -150.5 | -90 dBc |
-| high (8x), nominal | -145.2 | -146.5 | -150.4 | -90 dBc |
+| eco (2x), nominal | -88.1 dBc | -88.4 | -150.2 | -70 dBc |
+| standard (4x), nominal | -145.1 | -146.5 | -150.4 | -90 dBc |
+| high (8x), nominal | -145.1 | -146.3 | -150.3 | -90 dBc |
 | eco, default drive at -6 dBFS (1 V), reported | -49.8 | -49.8 | -97.8 | — |
 | standard, the same, reported | -89.9 | -97.8 | -150.6 | — |
 | high, the same, reported | -134.5 | -132.1 | -150.6 | — |
@@ -113,34 +125,129 @@ The worst case is always the highest tone: at 2x and 44.1 kHz the fourth
 harmonic of 19 kHz folds to 12.2 kHz. A saturated stage is not
 band-limited at any of these factors; 8x keeps it under -55 dBc.
 
+### Hot input (the RT audit of PR #52, high 1 and 2)
+
+At 8ab60d5 an input above 0 dBFS at full drive made the solve diverge:
+- it hit its 12-iteration cap and accepted the unconverged result;
+- the capacitor histories ran away (5e37 V at the load);
+- the plugin output went to 1e34, or silence once a non-finite block
+  reset it;
+- blocks took 6.5-7.3 ms at 4x (the RT audit), against the 2.67 ms period.
+
+What fixed it:
+- **The input is bounded to ±100 V** at the stage (`kMaxInputV`). 0 dBFS
+  at +36 dB is 63 V. Past the bound the grid sits in grid current or
+  cut-off whatever the input does, and the Dempwolf law is outside the
+  range its paper fitted: DAFx-11 §6 says it is wrong for Vg > 0 with
+  Va < 20 V.
+- **No step damping.** The 50 V step bound stalled the solve. The plate
+  legitimately moves hundreds of volts on a hot edge, and with 20 V or
+  50 V bounds a 63 V square at 2x went 12 iterations unconverged. Without
+  them it converges in at most 7. The bound is now 1000 V, a guard
+  against an absurd Jacobian only.
+- **A sample that does not converge resets.** So does one that lands
+  outside |Vgk| ≤ B+, -B+ ≤ Vpk ≤ 2 B+. The stage restarts from its
+  operating point, outputs 0 V for that sample, and counts it
+  (`resets()`). No hot test triggers it; it stops a runaway rather than
+  hides one.
+- **Exact tails past the tables.** Outside the tables each law is one
+  `exp` or `pow`, exact to the last bit there. Deep cut-off (Cx < -100)
+  is 0, below anything the sums can see. The grid table reaches 12 V. A
+  hot input therefore costs no transcendental call in steady state.
+- **The table index is clamped to the last interval.** This is the code
+  review's low 2: x just under `hi` rounded to the last node.
+
+The regression test was written against the old behaviour (bounds and
+reset reverted in a copy). It fails there, on a non-finite output and on
+12 iterations, and passes now (`test_triode`, `test_hot_square_every_factor`):
+
+- **Input:** squares of 63, 250 and 1000 V through the oversampler at 2x,
+  4x and 8x.
+- **Iterations and resets:** at most 6 iterations, 0 resets.
+- **Load voltage:** within 343 V.
+- **Block time:** the worst block is 1.1-2.0x the median block of a quiet
+  square on the same build. The bar is 6x, a ratio so the test holds under
+  the sanitizers. Before the fix it was over 100x.
+
+The tube suite does the same at the processor
+(`hot_input`). The worst Release blocks there are 39-46 µs at eco, 88-114
+µs at standard and 110-206 µs at high, each inside the period. The output
+peak is 6.1 FS with auto level off; the bar is the stage's range, 8.1 FS.
+
 ### CPU (§3.5, class B: p99.9 60 µs, max 150 µs)
 
-Golden settings (drive +14 dB) on the harness's noise-and-sweep signal,
-q128, 48 kHz, stereo, single thread, 60 s, per-block minimum of 5 runs:
+All figures are q128, 48 kHz, stereo, single thread, 60 s, the per-block
+minimum of 5 runs, on a quiet host. The runs were gated on a 1-minute
+load average under 2.5; other sessions loaded this machine heavily
+between them. Three loads were measured:
+- the golden settings (drive +14 dB) on the harness's noise-and-sweep
+  programme;
+- the programme raised 12 dB at +36 dB of drive;
+- a 0 dBFS 997 Hz square at +36 dB of drive.
 
-| Quality | p50 | p99.9 | max |
+Eco, before and after:
+
+| Eco (2x), p99.9 / max | 8ab60d5 | Now, two runs |
+|---|---|---|
+| programme, drive +14 dB | 47-64 / 67-79 µs | 44.5-48.3 / 45.5-57.0 µs |
+| programme +12 dB, drive +36 dB | (diverged at +12 dBFS peaks) | 47.3-48.0 / 49.0-49.9 µs |
+| 0 dBFS square, drive +36 dB | 459 µs worst block, mean 356 µs (probe) | 40.0-46.1 / 47.0-53.0 µs |
+
+Standard and high, now (reported, not held to the bar):
+
+| Quality, p99.9 | programme | +12 dB, +36 dB | square, +36 dB |
 |---|---|---|---|
-| eco (2x) | 44-50 µs | 47-64 µs over four runs | 67-79 µs |
-| standard (4x) | 82-89 µs | 95-104 µs | 116-122 µs |
-| high (8x) | 151-155 µs | 173 µs | 189-197 µs |
+| standard (4x) | 95.8-110.0 µs | 86.2-95.7 | 71.6-72.2 |
+| high (8x) | 143.4-145.6 | 152.9-154.6 | 137.4-140.9 |
 
-- Standard and high are over class B. ADR-0011 §3.5: "a processor over
-  its class budget ships only with an eco mode that meets it." The suite
-  holds eco to the bar and reports the other two.
-- **Eco is at the bar, not under it with margin:** p99.9 read 47, 53,
-  62 and 64 µs in four runs of 10 to 60 s on this machine, so two of
-  four runs miss 60 µs. The p50 is 44-50 µs. In PR CI the figure is not asserted
-  (Amendment 1 item 4); the reference-machine run decides.
-- Where the time goes (perf, Release): about 70 % the Newton solve, 17 %
-  the oversampler. A stage sample costs about 40 ns per channel when two
-  channels are solved in lockstep (`TriodeStage::tick2`), which overlaps
-  two independent dependency chains; one channel alone costs more.
-- Ways to recover it, not done here (BACKLOG): SIMD for the lockstep
-  solve in `common/dsp/src/arch/`; a chord (fixed-Jacobian) Newton step;
-  the DK method's precomputed solution table over the two port voltages
-  (Yeh 2010), traded against accuracy to ngspice; leaving out Cgk and Cpk,
-  whose poles are above 3 MHz (measured in ngspice: ≤ 0.01 dB in band,
-  0.16 dB at the 8th harmonic of 5 kHz).
+- **Eco is held to class B on all three loads.** It now meets the bar with
+  about 20 % to spare: 48.3 µs at worst, against 47-64 µs, two runs
+  missing, before. Standard and high are over class B and reported.
+  ADR-0011 §3.5 lets them ship beside an eco that meets it; the class
+  figures are not changed.
+- **Where the time went:** perf, on cycles and instructions.
+  - The solve is about 75 % of a block, the oversampler under 15 %.
+  - A sample is one chain of dependent operations: last sample's
+    histories, the port voltages, the predictor, the law, the Newton
+    steps, the new histories. The block's cost follows the chain and
+    the number of Newton passes, not the multiply-adds. Shrinking the
+    linear part alone (the two capacitors) moved instructions little.
+  - An eco block went from about 211k cycles on the hot square to about
+    183k.
+- **What did it:**
+  - The two-channel solve shares one set of matrices. It runs as one
+    template over a lane type (`src/triode_solve.h`): SSE2 on x86-64
+    (`src/arch/x86_64/triode_pair.cpp`), two doubles elsewhere
+    (`src/arch/generic/triode_pair.cpp`). Both give the bits `tick()`
+    gives. `test_triode` checks that, and `dsp_triode_generic` runs the
+    portable lane type on x86 too. Lane loads are two 8-byte loads: a
+    16-byte load of two 8-byte stores cannot be store-forwarded and
+    stalled every pass.
+  - Tree sums instead of running sums.
+  - One division per pass, by Cramer's rule.
+  - The step bound off the common path.
+  - Exact tails without transcendental calls in cut-off.
+  - A predictor that changes linearisation across regimes. From cut-off
+    or from grid current the last Jacobian predicts badly, so a fixed
+    linearisation at the operating point, or at a point in grid current,
+    predicts instead. On full-drive programme, samples taking 5 or more
+    passes fell from 6.2 % to 1.2 %, and the mean from 1.52 to 1.34
+    passes.
+- **Tried and dropped:** a chord step reusing the first pass's Jacobian
+  (it reset on hot edges), and a quadratic-extrapolation predictor (more
+  passes).
+- **Silence at rest is rest.** A stage that has seen only 0 since
+  `reset()` keeps its state to the bit. The operating point is the
+  solve's own only to its tolerance, so a host's preroll used to move the
+  state in its last bits. The re-activation render then differed by 3e-8;
+  now it is exact.
+- **The gate.** PR CI does not measure CPU (ADR-0011 Amendment 1 item 4).
+  The nightly `cpu` job now runs `tools/dsp-cpu.sh build 60 tube` as a
+  step without `continue-on-error`, so the eco bar gates that workflow,
+  while the other processors' figures stay informative. It runs on a
+  shared runner slower than this machine, so it can turn the nightly
+  red. That is a figure to look at, decided with the coordinator on the
+  review of PR #52.
 
 ### Bundles (`tools/build-plugins.sh`)
 
@@ -151,11 +258,10 @@ q128, 48 kHz, stereo, single thread, 60 s, per-block minimum of 5 runs:
   re-activation), all with max |plugin - reference| = 0, and the
   reported latency equal to the reference's.
 - The reference after the host's 512-sample preroll differs from the
-  golden file by 1.5e-8: the stage's rest state is a Newton solution, so
-  silence leaves about 1e-8 V at the load (-210 dBFS after the
-  normalisation). Under the golden bar, and asserted by the fixture.
-- ASan and UBSan: `dsp_triode`, `native_tube`, and the bundle driver
-  tests, clean. TSan: `native_format_*_tube*`, clean.
+  golden file by 2e-14 at most: the float rounding of the rest output,
+  not the state, which silence at rest no longer moves.
+- ASan and UBSan: `dsp_triode`, `dsp_triode_generic`, `native_tube`, and
+  the bundle driver tests, clean. TSan: `native_format_*_tube*`, clean.
 
 ## Not measured, and why
 
@@ -168,6 +274,14 @@ q128, 48 kHz, stereo, single thread, 60 s, per-block minimum of 5 runs:
   reason). The arithmetic avoids FMA contraction (`-ffp-contract=off`)
   and uses only `std::exp`, `log1p` and `pow` at prepare and outside the
   tables, so differences would be in the last bits; not yet shown.
+- **Denormals on a non-x86 build.** `generic/denormals.cpp` does not flush,
+  and `ProcessorBase`'s guard is the only flush, on x86-64 (MXCSR). The
+  stage's own state does not decay to zero: every capacitor holds a DC
+  voltage at rest, and silence at rest skips the solve. But the
+  oversampler's FIR histories and the dry delay do decay to zero. On an
+  arm64 build they reach subnormals after about 16 s of silence. A flush
+  for arm64 (FPCR.FZ) in `src/arch/aarch64/` is a BACKLOG item before the
+  first ARM build.
 - **RTSan.** No Clang in the build image (`native.rtsan`). `process()`
   allocates nothing (tables, oversampler buffers and the dry delay are
   sized in `prepare()`); the rt-safety-auditor's review is the check

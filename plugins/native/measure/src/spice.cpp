@@ -136,9 +136,7 @@ std::string triode_netlist(const SpiceCase& c, const SpiceTiming& t, const dsp::
       << "RP bp p " << sp(k.r_plate) << "\n"
       << "COUT p o " << sp(k.c_out) << "\n"
       << "RL o 0 " << sp(k.r_load) << "\n"
-      << "CGK g k " << sp(d.c_gk) << "\n"
-      << "CGP g p " << sp(d.c_gp) << "\n"
-      << "CPK p k " << sp(d.c_pk) << "\n";
+      << "CGP g p " << sp(d.c_gp) << "\n";
     if (c.law == dsp::TriodeLaw::Dempwolf) {
         // Dempwolf and Zolzer, DAFx-11, eqs. (10)-(12).
         const std::string ig = sp(d.gg) + "*pow(ln(1+exp(" + sp(d.cg) + "*v(g,k)))/" + sp(d.cg) + "," + sp(d.xi) +
@@ -156,7 +154,11 @@ std::string triode_netlist(const SpiceCase& c, const SpiceTiming& t, const dsp::
         n << "BIP p k I=(" << e1 << ">0)?(2*pow(" << e1 << "," << sp(d.k_ex) << ")/" << sp(d.k_kg1) << "):0\n"
           << "BIG g k I=(v(g,k)>0)?(v(g,k)/" << sp(d.k_rgi) << "):0\n";
     }
-    n << ".options reltol=1e-7 abstol=1e-15 vntol=1e-10 method=trap\n"
+    // abstol 100 pA: with Cgp the grid's only capacitance, 1 fA stopped
+    // ngspice at its first time point ("timestep too small", node g) on
+    // the Dempwolf 5 kHz cases and 1 pA the Koren ones (whose grid law
+    // has a kink at 0 V); the plate current at rest is 0.8 mA.
+    n << ".options reltol=1e-7 abstol=1e-10 vntol=1e-10 method=trap\n"
       << ".control\n"
       << "op\n"
       << "wrdata op.txt v(a) v(g) v(k) v(p)\n"
@@ -262,8 +264,7 @@ json::Value device_json(const dsp::TriodeDevice& d) {
     const std::pair<const char*, double> v[] = {
         {"g", d.g},         {"mu", d.mu},       {"gamma", d.gamma}, {"c", d.c},         {"gg", d.gg},
         {"xi", d.xi},       {"cg", d.cg},       {"ig0", d.ig0},     {"k_mu", d.k_mu},   {"k_ex", d.k_ex},
-        {"k_kg1", d.k_kg1}, {"k_kp", d.k_kp},   {"k_kvb", d.k_kvb}, {"k_rgi", d.k_rgi}, {"c_gk", d.c_gk},
-        {"c_gp", d.c_gp},   {"c_pk", d.c_pk},
+        {"k_kg1", d.k_kg1}, {"k_kp", d.k_kp},   {"k_kvb", d.k_kvb}, {"k_rgi", d.k_rgi}, {"c_gp", d.c_gp},
     };
     for (const auto& kv : v) o.set(kv.first, jnum(kv.second));
     return o;

@@ -647,13 +647,18 @@ ADR-0011 "For the owner".
       as an output stage of the tube drive, with the supply sag an output
       stage draws (slice 2 has one preamp stage, which draws too little
       for sag to matter). dsp-engineer.
-- [ ] N2 tube follow-ups (slice 2): (a) CPU: standard (4x) is 95-104 us
-      p99.9 per q128 stereo block and eco (2x) 47-64 us against class B's
-      60 (Docker Desktop, i7-11800H); candidates are SIMD for the lockstep
-      solve in `common/dsp/src/arch/`, a chord Newton step, the DK method's
-      precomputed solution table, or leaving out Cgk and Cpk (poles above
-      3 MHz; <= 0.01 dB in band in ngspice); measure on the reference
-      machine first. (b) The triode laws against published 12AX7 plate
+- [ ] N2 tube follow-ups (slice 2): (a) CPU: eco (2x) meets class B at
+      44-48 us p99.9 per q128 stereo block on programme and full-drive
+      worst cases (Docker Desktop, i7-11800H); standard (4x) is 72-110 us
+      and high (8x) 137-155 us, over it, beside eco as ADR-0011 §3.5
+      allows. Next candidates, measured on the reference machine first:
+      the DK method's precomputed solution table over the two port
+      voltages (Yeh 2010) against accuracy to ngspice, and fewer passes on
+      regime changes (`brain/research/native-tube-n2.md`). (e) Before the
+      first arm64 build: flush-to-zero in `common/dsp/src/arch/aarch64/`
+      (FPCR.FZ); the generic arch does not flush, and the oversampler's
+      and delays' histories reach subnormals after ~16 s of silence.
+      (b) The triode laws against published 12AX7 plate
       curves or the owner's tubes (slice 2 checks the solver against SPICE
       on the same laws, not the laws against a tube). (c) The bias
       (cathode resistor) and a second stage as parameters, each with its

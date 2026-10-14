@@ -293,6 +293,58 @@ void small_signal(Suite& s) {
     }
 }
 
+// Regression (the RT audit of PR #52, high 1 and 2): squares at 0, +12 and
+// +24 dBFS, full drive, auto level off (the processor's output is then the
+// stage's own swing, unnormalised by the drive), every quality, stereo.
+// Before the fix the stage diverged at +12 dBFS and 4x: the plugin output
+// reached 1e34 and blocks took 6.5 ms. The output is held to the stage's
+// physical range (the load voltage within twice the supply, over the
+// small-signal gain), and the worst block (minimum of three runs) to the
+// 2.67 ms period.
+void hot_input(Suite& s) {
+    const double fs = 48000.0;
+    const char* names[] = {"eco (2x)", "standard (4x)", "high (8x)"};
+    // 500 V at the load over a gain of 62.4 (test_triode).
+    const double bound = 2.0 * 250.0 / 62.0;
+    for (int q = 0; q < 3; ++q) {
+        for (double dbfs : {0.0, 12.0, 24.0}) {
+            const double a = std::pow(10.0, dbfs / 20.0);
+            Chans x(2, std::vector<float>(static_cast<std::size_t>(0.5 * fs)));
+            for (std::size_t n = 0; n < x[0].size(); ++n) {
+                const float v = static_cast<float>(
+                    std::sin(dsp::kTwoPi * 997.0 * static_cast<double>(n) / fs) >= 0.0 ? a : -a);
+                x[0][n] = v;
+                x[1][n] = -v;
+            }
+            std::vector<double> worst;
+            double peak = 0.0;
+            bool finite = true;
+            for (int run = 0; run < 3; ++run) {
+                auto p = s.make();
+                measure::apply(*p, {{"quality", static_cast<float>(q)}, {"drive", 36.0f}, {"auto_level", 0.0f}});
+                p->prepare(fs, 128, 2);
+                std::vector<double> us;
+                measure::RenderOptions opt;
+                opt.block_us = &us;
+                const Chans y = measure::render(*p, x, {}, opt);
+                if (run == 0) worst = us;
+                for (std::size_t k = 0; k < us.size(); ++k) worst[k] = std::fmin(worst[k], us[k]);
+                for (const auto& ch : y) {
+                    for (float v : ch) {
+                        finite &= std::isfinite(v);
+                        peak = std::fmax(peak, std::fabs(v));
+                    }
+                }
+            }
+            const double w = *std::max_element(worst.begin() + 1, worst.end());
+            const std::string what = std::string(names[q]) + fmt(", %+.0f dBFS square, drive +36 dB", dbfs);
+            s.check(what + ": output finite", finite ? 1.0 : 0.0, 1.0, finite, "bool");
+            s.check_le(what + ": peak output (the stage's range, auto level off)", peak, bound, "FS");
+            s.check_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us", "the 128-frame period at 48 kHz");
+        }
+    }
+}
+
 // The Newton solve stays inside its iteration bound from silence to +36 dB
 // of drive on a full-scale input, and its output stays finite.
 void solver_bound(Suite& s) {
@@ -316,15 +368,34 @@ void solver_bound(Suite& s) {
 }
 
 // ADR-0011 §3.5: "a processor over its class budget ships only with an eco
-// mode that meets it". Eco is held to class B; standard and high are
-// measured and reported. All on the golden settings.
+// mode that meets it". Eco is held to class B on every load below;
+// standard and high are measured and reported. The loads: the harness's
+// programme signal at the golden settings, and two worst cases at full
+// drive (+36 dB): the programme raised 12 dB (peaks near 0 dBFS), and a
+// full-scale 997 Hz square, whose edges cost the solve the most
+// iterations and whose flat tops hold the grid in grid current or deep
+// cut-off.
 void cpu_qualities(Suite& s, const Config& golden) {
     if (!s.args().cpu) return;
+    const double fs = 48000.0;
+    const double secs = s.args().cpu_seconds;
+    const Chans programme = measure::cpu_programme(fs, secs, 0.0);
+    const Chans hot = measure::cpu_programme(fs, secs, 12.0);
+    Chans square(2, std::vector<float>(static_cast<std::size_t>(secs * fs)));
+    for (std::size_t n = 0; n < square[0].size(); ++n) {
+        const float v = std::sin(dsp::kTwoPi * 997.0 * static_cast<double>(n) / fs) >= 0.0 ? 1.0f : -1.0f;
+        square[0][n] = v;
+        square[1][n] = -v;
+    }
     const char* names[] = {", eco (2x)", ", standard (4x)", ", high (8x)"};
     for (int q = 0; q < 3; ++q) {
         Config c = golden;
         c.push_back({"quality", static_cast<float>(q)});
-        measure::check_cpu(s, c, names[q], q == 0);
+        Config full = c;
+        full.push_back({"drive", 36.0f});
+        measure::check_cpu_on(s, c, programme, names[q], q == 0);
+        measure::check_cpu_on(s, full, hot, std::string(names[q]) + ", programme +12 dB, drive +36 dB", q == 0);
+        measure::check_cpu_on(s, full, square, std::string(names[q]) + ", 0 dBFS square, drive +36 dB", q == 0);
     }
 }
 
@@ -342,6 +413,7 @@ int tube(const measure::Args& args) {
     aliasing(s);
     small_signal(s);
     solver_bound(s);
+    hot_input(s);
     const Config golden = tube_golden_config();
     // check_common() without its CPU check, which holds the golden
     // (standard) quality to the class bar: cpu_qualities() instead.

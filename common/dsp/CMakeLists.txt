@@ -20,6 +20,7 @@ add_library(sonora_dsp STATIC
   src/triode.cpp
   src/true_peak.cpp
   src/arch/${SONORA_DSP_ARCH}/denormals.cpp
+  src/arch/${SONORA_DSP_ARCH}/triode_pair.cpp
 )
 target_include_directories(sonora_dsp PUBLIC include)
 target_link_libraries(sonora_dsp PUBLIC sonora_base)
@@ -35,6 +36,18 @@ foreach(t filters oversampling loudness dynamics limiter fdn triode)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   add_test(NAME dsp_${t} COMMAND test_dsp_${t})
 endforeach()
+# The portable two-lane triode solve (src/arch/generic/triode_pair.cpp)
+# is what a non-x86 build ships; built here beside the x86-64 one, so
+# test_triode's tick2-against-tick check runs on both whatever the host.
+if(NOT SONORA_DSP_ARCH STREQUAL "generic")
+  add_executable(test_dsp_triode_generic tests/test_triode.cpp src/triode.cpp src/oversampling.cpp src/fft.cpp
+                 src/arch/generic/triode_pair.cpp src/arch/generic/denormals.cpp)
+  target_include_directories(test_dsp_triode_generic PRIVATE include)
+  target_link_libraries(test_dsp_triode_generic PRIVATE sonora_base)
+  target_compile_options(test_dsp_triode_generic PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
+  add_test(NAME dsp_triode_generic COMMAND test_dsp_triode_generic)
+endif()
 # The two slow ones (tens of seconds in Release, minutes under ASan) carry
 # the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one
 # setting), the nightly workflow runs `ctest -L slow` in full.

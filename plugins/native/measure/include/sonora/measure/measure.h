@@ -201,8 +201,15 @@ Chans zipper_tone(double fs, double seconds, double dbfs = -6.0);
 void check_golden(Suite& s, const Config& c);
 // p50, p99.9 and max per block at q128, 48 kHz, stereo (--cpu only).
 // assert_bar false: the figures are reported, not held to the class bar (a
-// quality over its class whose eco mode meets it, ADR-0011 §3.5).
+// quality over its class beside an eco mode that is held to it, ADR-0011
+// §3.5).
 void check_cpu(Suite& s, const Config& c, const std::string& label = "", bool assert_bar = true);
+// The same on a given 48 kHz stereo input (a worst case: a hot input at
+// full drive), at least a few seconds long.
+void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string& label, bool assert_bar = true);
+// check_cpu's programme signal (noise with a log sweep under it, peaks
+// about -12 dBFS), raised by gain_db.
+Chans cpu_programme(double fs, double seconds, double gain_db);
 // Runs all of the above. The zipper sweeps run on `zipper` when given (a
 // configuration where every swept parameter is audible), else on golden.
 void check_common(Suite& s, const Config& golden,

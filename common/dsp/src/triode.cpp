@@ -5,6 +5,7 @@
 #include <complex>
 
 #include "sonora/dsp/math.h"
+#include "triode_solve.h"
 
 namespace sonora::dsp {
 
@@ -60,18 +61,14 @@ constexpr Two kCapNodes[M] = {
     {kVin, TriodeStage::kA},              // Cin
     {TriodeStage::kK, kGnd},              // Ck
     {TriodeStage::kP, TriodeStage::kO},   // Cout
-    {TriodeStage::kG, TriodeStage::kK},   // Cgk
     {TriodeStage::kG, TriodeStage::kP},   // Cgp
-    {TriodeStage::kP, TriodeStage::kK},   // Cpk
 };
 
 void cap_values(const TriodeStageCircuit& c, const TriodeDevice& d, double out[M]) {
     out[0] = c.c_in;
     out[1] = c.c_cathode;
     out[2] = c.c_out;
-    out[3] = d.c_gk;
-    out[4] = d.c_gp;
-    out[5] = d.c_pk;
+    out[3] = d.c_gp;
 }
 
 // The resistors' conductance stamps, and what B+ injects.
@@ -177,40 +174,7 @@ TriodeCurrents triode_currents(TriodeLaw law, const TriodeDevice& d, double vgk,
     return r;
 }
 
-inline bool TriodeStage::Table::eval(double x, double& y, double& dy) const noexcept {
-    if (!(x >= lo && x < hi)) return false;
-    const double t = (x - lo) * inv_h;
-    const int i = static_cast<int>(t);
-    const double s = t - static_cast<double>(i);
-    const double* k = &c[static_cast<std::size_t>(i) * 4];
-    y = k[0] + s * (k[1] + s * (k[2] + s * k[3]));
-    dy = (k[1] + s * (2.0 * k[2] + s * (3.0 * k[3]))) * inv_h;
-    return true;
-}
-
-namespace {
-// The exact law where the tables end: rare (cut-off far below the bias,
-// or an absurd input), and kept out of line so the common path inlines.
-void exact_ik(const TriodeDevice& d, double u, double& y, double& dy) noexcept { dempwolf_ik(d, u, y, dy); }
-void exact_ig(const TriodeDevice& d, double v, double& y, double& dy) noexcept { dempwolf_ig(d, v, y, dy); }
-}  // namespace
-
 TriodeCurrents TriodeStage::currents(double vgk, double vpk) const noexcept { return law(vgk, vpk); }
-
-inline TriodeCurrents TriodeStage::law(double vgk, double vpk) const noexcept {
-    if (!tabulated_) return triode_currents(law_, dev_, vgk, vpk);
-    double ik, dik, ig, dig;
-    const double u = vpk * inv_mu_ + vgk;
-    if (!ik_.eval(u, ik, dik)) exact_ik(dev_, u, ik, dik);
-    if (!ig_.eval(vgk, ig, dig)) exact_ig(dev_, vgk, ig, dig);
-    TriodeCurrents r;
-    r.ip = ik - ig;
-    r.ig = ig;
-    r.dip_dvgk = dik - dig;
-    r.dip_dvpk = dik * inv_mu_;
-    r.dig_dvgk = dig;
-    return r;
-}
 
 void TriodeStage::build_dc_point_matrices(double s_dc[N][N]) const {
     double rhs[N] = {};
@@ -227,6 +191,26 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
     dev_ = device;
     fs_ = sample_rate;
     inv_mu_ = 1.0 / dev_.mu;
+    // Two stages share matrices in tick2() only when everything they are
+    // built from is equal: a hash over those values (FNV-1a over their
+    // bytes; prepare() is deterministic, so equal inputs give equal
+    // matrices).
+    {
+        std::uint64_t h = 1469598103934665603ull;
+        const auto mix = [&h](const void* p, std::size_t n) {
+            const auto* c = static_cast<const unsigned char*>(p);
+            for (std::size_t i = 0; i < n; ++i) h = (h ^ c[i]) * 1099511628211ull;
+        };
+        const double values[] = {sample_rate, circuit.supply_v, circuit.r_plate, circuit.r_cathode,
+                                 circuit.c_cathode, circuit.c_in, circuit.r_leak, circuit.r_grid,
+                                 circuit.c_out, circuit.r_load, device.g, device.mu, device.gamma, device.c,
+                                 device.gg, device.xi, device.cg, device.ig0, device.k_mu, device.k_ex,
+                                 device.k_kg1, device.k_kp, device.k_kvb, device.k_rgi, device.c_gp};
+        mix(values, sizeof values);
+        const int flags[] = {static_cast<int>(law), tabulated ? 1 : 0};
+        mix(flags, sizeof flags);
+        model_key_ = h;
+    }
     tabulated_ = tabulated && law == TriodeLaw::Dempwolf;
     if (tabulated_) {
         // 1/128 V: the error of a cubic Hermite interpolant is h^4 / 384
@@ -239,6 +223,7 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
             t.lo = lo;
             t.inv_h = per_volt;
             t.hi = lo + (n - 1) * h;
+            t.last = static_cast<int>(n) - 2;
             std::vector<double> f(n), df(n);
             for (std::uint32_t i = 0; i < n; ++i) {
                 const double x = lo + i * h;
@@ -256,11 +241,16 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
                 k[3] = 2.0 * (f0 - f1) + d0 + d1;
             }
         };
-        // u = Vpk / mu + Vgk reaches about 5.5 V and Vgk about 3 V at the
-        // drive processor's extremes; below -5 V both currents are under
-        // 1e-11 A. Outside the range the exact law is used.
-        build(ik_, -5.0, 8.0, false);
-        build(ig_, -5.0, 8.0, true);
+        // Each table spans |C x| <= 36 and a little more, the range where
+        // the softplus is neither of its asymptotes; tail_ik and tail_ig
+        // are exact beyond it.
+        // The grid table also reaches 12 V: with the input bounded to
+        // kMaxInputV the grid conducts up to about 5 V (and overshoots on
+        // a hot edge), where the tail would be a pow per pass.
+        const double ku = std::ceil(36.0 / dev_.c) + 1.0;
+        const double kg = std::ceil(36.0 / dev_.cg) + 1.0;
+        build(ik_, -ku, ku, false);
+        build(ig_, -kg, kg > 12.0 ? kg : 12.0, true);
     }
 
     // ---- the operating point: capacitors open, input at 0 V ----
@@ -428,23 +418,36 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
     double sel_o[1][N] = {{0.0, 0.0, 0.0, 0.0, 1.0}};
     double oj[M], ou, oc, oi[2];
     rows(sel_o, 1, oj, &ou, &oc, oi);
+    for (std::uint32_t a = 0; a < 2; ++a)
+        for (std::uint32_t b = 0; b < 2; ++b) dup_[kDupK + 2 * a + b][0] = dup_[kDupK + 2 * a + b][1] = k_[a][b];
 
     // Packed for tick(): rows p0, p1, out, J'0..5 (and a zero pad).
-    for (std::uint32_t col = 0; col < kCols; ++col)
+    for (std::uint32_t col = 0; col < kCols; ++col) {
         for (std::uint32_t r = 0; r < kRows; ++r) w_[col][r] = 0.0;
+    }
     for (std::uint32_t col = 0; col < kCols; ++col) {
         const auto pick = [&](const double* j_part, double u_part, double c_part) {
             return col < M ? j_part[col] : (col == M ? u_part : c_part);
         };
-        w_[col][0] = pick(pj[0], pu[0], pc[0]);
-        w_[col][1] = pick(pj[1], pu[1], pc[1]);
-        w_[col][2] = pick(oj, ou, oc);
-        for (std::uint32_t m = 0; m < M; ++m) w_[col][3 + m] = pick(aj[m], au[m], ac[m]);
+        wp_[0][col] = pick(pj[0], pu[0], pc[0]);
+        wp_[1][col] = pick(pj[1], pu[1], pc[1]);
+        w_[col][0] = pick(oj, ou, oc);
+        for (std::uint32_t m = 0; m < M; ++m) w_[col][1 + m] = pick(aj[m], au[m], ac[m]);
     }
     for (std::uint32_t r = 0; r < kRows; ++r) post_[0][r] = post_[1][r] = 0.0;
+    const auto put = [&](std::uint32_t i, double v) { dup_[i][0] = dup_[i][1] = v; };
     for (std::uint32_t c = 0; c < 2; ++c) {
-        post_[c][2] = oi[c];
-        for (std::uint32_t m = 0; m < M; ++m) post_[c][3 + m] = ai[m][c];
+        post_[c][0] = oi[c];
+        for (std::uint32_t m = 0; m < M; ++m) post_[c][1 + m] = ai[m][c];
+    }
+    for (std::uint32_t col = 0; col < kCols; ++col) {
+        put(kDupP + col, wp_[0][col]);
+        put(kDupP + kCols + col, wp_[1][col]);
+        for (std::uint32_t r = 0; r < 1 + M; ++r) put(kDupW + r * kCols + col, w_[col][r]);
+    }
+    for (std::uint32_t r = 0; r < 1 + M; ++r) {
+        put(kDupPost + 2 * r, post_[0][r]);
+        put(kDupPost + 2 * r + 1, post_[1][r]);
     }
 
     // The predictor's inverse at rest, (I - K Ji)^-1.
@@ -457,6 +460,29 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
         op_inv_[2] = -a10 * inv;
         op_inv_[3] = a00 * inv;
     }
+    // The predictor at the operating point: v = op_inv (p + K (i - J v)).
+    {
+        const double e0 = op_i_[0] - (op_ji_[0] * op_port_[0] + op_ji_[1] * op_port_[1]);
+        const double e1 = op_i_[1] - op_ji_[2] * op_port_[0];
+        const double vals[7] = {k_[0][0] * e0 + k_[0][1] * e1, k_[1][0] * e0 + k_[1][1] * e1, op_inv_[0], op_inv_[1],
+                                op_inv_[2], op_inv_[3], op_port_[0]};
+        for (std::uint32_t i = 0; i < 7; ++i) dup_[kDupOp + i][0] = dup_[kDupOp + i][1] = vals[i];
+    }
+    // ... and at a point in grid current: Vgk +0.6 V, Vpk 50 V, where the
+    // full-drive traces' solutions in grid current lie (0.4 to 0.9 V,
+    // 34 to 58 V).
+    {
+        const double vg = 0.6, vp = 50.0;
+        const TriodeCurrents g = currents(vg, vp);
+        const double a00 = 1.0 - (k_[0][0] * g.dip_dvgk + k_[0][1] * g.dig_dvgk), a01 = -k_[0][0] * g.dip_dvpk;
+        const double a10 = -(k_[1][0] * g.dip_dvgk + k_[1][1] * g.dig_dvgk), a11 = 1.0 - k_[1][0] * g.dip_dvpk;
+        const double inv = 1.0 / (a00 * a11 - a01 * a10);
+        const double e0 = g.ip - (g.dip_dvgk * vg + g.dip_dvpk * vp);
+        const double e1 = g.ig - g.dig_dvgk * vg;
+        const double vals[6] = {k_[0][0] * e0 + k_[0][1] * e1, k_[1][0] * e0 + k_[1][1] * e1, a11 * inv, -a01 * inv,
+                                -a10 * inv, a00 * inv};
+        for (std::uint32_t i = 0; i < 6; ++i) dup_[kDupGrid + i][0] = dup_[kDupGrid + i][1] = vals[i];
+    }
     // The history sources at rest: no capacitor current, J = gc v.
     for (std::uint32_t m = 0; m < M; ++m) {
         const int a = kCapNodes[m].a, b = kCapNodes[m].b;
@@ -465,10 +491,16 @@ bool TriodeStage::prepare(double sample_rate, TriodeLaw law, const TriodeStageCi
         op_j_[m] = gc[m] * (va - vb);
     }
     reset();
+    // What the stage puts out at rest: one solve of silence from the
+    // operating point, after which reset() puts the state back.
+    at_rest_ = false;
+    rest_out_ = tick(0.0);
+    reset();
     return true;
 }
 
 void TriodeStage::reset() noexcept {
+    at_rest_ = true;
     for (std::uint32_t m = 0; m < M; ++m) j_[m] = op_j_[m];
     i_[0] = op_i_[0];
     i_[1] = op_i_[1];
@@ -482,151 +514,65 @@ void TriodeStage::reset() noexcept {
 }
 
 namespace {
-// acc += w x, row by row: each row's sum keeps its own order, so packed
-// arithmetic gives the same bits as scalar.
-inline void mac_rows(double* acc, const double* w, double x) noexcept {
-    for (std::uint32_t r = 0; r < TriodeStage::kRows; ++r) acc[r] += w[r] * x;
-}
-}  // namespace
 
-// One sample of L independent stages in lockstep. Every lane does exactly
-// the arithmetic tick() does for it alone, in the same order, and a lane
-// that has converged stops changing, so a stage's output never depends on
-// the stage beside it (test_triode checks tick2 against tick to the bit).
-// What the lockstep buys is instruction-level parallelism: one sample of
-// one stage is a chain of dependent operations (sums, a division, a table
-// lookup, another division) that leaves most of a core idle.
-template <int L>
-void TriodeStage::step(TriodeStage* const* st, const double* vin, double* out) noexcept {
-    alignas(16) double base[L][kRows];
-    double p[L][2], v[L][2], i[L][2];
-    for (int l = 0; l < L; ++l) {
-        const TriodeStage& s = *st[l];
-        // base = W (J, vin, 1): column by column, each row its own sum in
-        // a fixed order, so it vectorises without changing the arithmetic.
-        for (std::uint32_t r = 0; r < kRows; ++r) base[l][r] = s.w_[M + 1][r];
-        mac_rows(base[l], s.w_[M], vin[l]);
-        for (std::uint32_t col = 0; col < M; ++col) mac_rows(base[l], s.w_[col], s.j_[col]);
-        p[l][0] = base[l][0];
-        p[l][1] = base[l][1];
-        // Predictor: one Newton step from last sample's solution with last
-        // sample's Jacobian and its inverse, which costs no evaluation of
-        // the law and no division. For a smoothly moving input it lands
-        // within millivolts.
-        const double ji00 = s.ji_[0], ji01 = s.ji_[1], ji10 = s.ji_[2];
-        const double e0 = s.i_[0] - ji00 * s.v_[0] - ji01 * s.v_[1], e1 = s.i_[1] - ji10 * s.v_[0];
-        const double r0 = p[l][0] + s.k_[0][0] * e0 + s.k_[0][1] * e1;
-        const double r1 = p[l][1] + s.k_[1][0] * e0 + s.k_[1][1] * e1;
-        // v = (I - K Ji)^-1 r, the inverse kept from last sample.
-        v[l][0] = s.inv_[0] * r0 + s.inv_[1] * r1;
-        v[l][1] = s.inv_[2] * r0 + s.inv_[3] * r1;
-    }
-    bool done[L];
-    std::uint32_t it[L];
-    TriodeCurrents c[L];
-    for (int l = 0; l < L; ++l) {
-        done[l] = false;
-        it[l] = 0;
-    }
-    for (std::uint32_t pass = 0; pass < kMaxIterations; ++pass) {
-        bool all = true;
-        for (int l = 0; l < L; ++l) {
-            if (done[l]) continue;
-            const TriodeStage& s = *st[l];
-            ++it[l];
-            c[l] = s.law(v[l][0], v[l][1]);
-            const TriodeCurrents& cc = c[l];
-            i[l][0] = cc.ip;
-            i[l][1] = cc.ig;
-            const double f0 = p[l][0] + s.k_[0][0] * i[l][0] + s.k_[0][1] * i[l][1] - v[l][0];
-            const double f1 = p[l][1] + s.k_[1][0] * i[l][0] + s.k_[1][1] * i[l][1] - v[l][1];
-            // JF = K Ji - I, and -JF = I - K Ji, whose inverse is the next
-            // sample's predictor.
-            const double j00 = s.k_[0][0] * cc.dip_dvgk + s.k_[0][1] * cc.dig_dvgk - 1.0;
-            const double j01 = s.k_[0][0] * cc.dip_dvpk;
-            const double j10 = s.k_[1][0] * cc.dip_dvgk + s.k_[1][1] * cc.dig_dvgk;
-            const double j11 = s.k_[1][0] * cc.dip_dvpk - 1.0;
-            const double det = j00 * j11 - j01 * j10;
-            if (!(std::fabs(det) > 1e-300)) {
-                done[l] = true;
-                continue;
-            }
-            const double inv = 1.0 / det;
-            double d0 = (-f0 * j11 + f1 * j01) * inv;
-            double d1 = (-f1 * j00 + f0 * j10) * inv;
-            // A bounded step: the laws are monotone, but a step of
-            // hundreds of volts from an absurd input could leave the
-            // tables' range for nothing.
-            const double a0 = std::fabs(d0), a1 = std::fabs(d1);
-            const double big = a0 > a1 ? a0 : a1;
-            if (big > 50.0) {
-                d0 *= 50.0 / big;
-                d1 *= 50.0 / big;
-            }
-            v[l][0] += d0;
-            v[l][1] += d1;
-            // The currents at the new point, to first order: the step is
-            // the Newton step, so this is exact to the square of the step.
-            i[l][0] += cc.dip_dvgk * d0 + cc.dip_dvpk * d1;
-            i[l][1] += cc.dig_dvgk * d0;
-            // Newton converges quadratically: after a step of 1e-5 V the
-            // error left is of order 1e-10 V at the grid (the laws'
-            // curvature is at most ~10 /V), under -170 dB at the
-            // processor's output. The plate moves ~100 times the grid, so
-            // its threshold is 100 times wider.
-            if (std::fabs(d0) < 1e-5 && std::fabs(d1) < 1e-3) {
-                done[l] = true;
-                // (I - K Ji)^-1 = -JF^-1
-                TriodeStage& w = *st[l];
-                w.inv_[0] = -j11 * inv;
-                w.inv_[1] = j01 * inv;
-                w.inv_[2] = j10 * inv;
-                w.inv_[3] = -j00 * inv;
-            } else {
-                all = false;
-            }
-        }
-        if (all) break;
-    }
-    for (int l = 0; l < L; ++l) {
-        TriodeStage& s = *st[l];
-        s.last_iter_ = it[l];
-        if (it[l] > s.max_iter_) s.max_iter_ = it[l];
-        if (!(std::isfinite(i[l][0]) && std::isfinite(i[l][1]) && std::isfinite(v[l][0]) &&
-              std::isfinite(v[l][1]))) {
-            // Never seen; but a non-finite state would never recover, so
-            // the stage restarts from its operating point instead.
-            s.reset();
-            out[l] = 0.0;
-            continue;
-        }
-        s.v_[0] = v[l][0];
-        s.v_[1] = v[l][1];
-        s.ji_[0] = c[l].dip_dvgk;
-        s.ji_[1] = c[l].dip_dvpk;
-        s.ji_[2] = c[l].dig_dvgk;
-        mac_rows(base[l], s.post_[0], i[l][0]);
-        mac_rows(base[l], s.post_[1], i[l][1]);
-        out[l] = base[l][2];
-        for (std::uint32_t m = 0; m < M; ++m) s.j_[m] = base[l][3 + m];
-        s.i_[0] = i[l][0];
-        s.i_[1] = i[l][1];
-    }
-}
+// One lane: tick()'s V for TriodeStage::solve (triode_solve.h). The
+// two-lane V is in src/arch/<arch>/triode_pair.cpp; both do the same
+// operations, so a stage gives the same bits alone or paired.
+struct V1 {
+    static constexpr int kLanes = 1;
+    struct Mask {
+        bool b;
+        Mask operator&(Mask o) const noexcept { return {b && o.b}; }
+        Mask operator|(Mask o) const noexcept { return {b || o.b}; }
+        Mask operator~() const noexcept { return {!b}; }
+        bool lane(int) const noexcept { return b; }
+        bool all() const noexcept { return b; }
+        bool any() const noexcept { return b; }
+    };
+    double x;
+    V1() noexcept : x(0.0) {}
+    explicit V1(double v) noexcept : x(v) {}
+    static V1 load(const double* p) noexcept { return V1(p[0]); }
+    static V1 set(const double* p) noexcept { return V1(p[0]); }
+    static V1 dup(const double* p) noexcept { return V1(p[0]); }
+    double get(int) const noexcept { return x; }
+    void store(double* p) const noexcept { p[0] = x; }
+    static Mask none() noexcept { return {false}; }
+    V1 operator+(V1 o) const noexcept { return V1(x + o.x); }
+    V1 operator-(V1 o) const noexcept { return V1(x - o.x); }
+    V1 operator*(V1 o) const noexcept { return V1(x * o.x); }
+    V1 operator/(V1 o) const noexcept { return V1(x / o.x); }
+    V1 neg() const noexcept { return V1(-x); }
+    V1 abs() const noexcept { return V1(std::fabs(x)); }
+    static V1 max(V1 a, V1 b) noexcept { return a.x > b.x ? a : b; }
+    Mask operator>(V1 o) const noexcept { return {x > o.x}; }
+    Mask operator<(V1 o) const noexcept { return {x < o.x}; }
+    Mask operator==(V1 o) const noexcept { return {x == o.x}; }
+    static V1 select(Mask m, V1 a, V1 b) noexcept { return m.b ? a : b; }
+};
+
+}  // namespace
 
 double TriodeStage::tick(double vin) noexcept {
     TriodeStage* const st[1] = {this};
     double out;
-    step<1>(st, &vin, &out);
+    solve<V1>(st, &vin, &out);
     return out;
 }
 
 void TriodeStage::tick2(TriodeStage& a, TriodeStage& b, double vin_a, double vin_b, double& out_a,
                         double& out_b) noexcept {
+    // The pair shares one set of matrices, so the two must have been
+    // prepared alike; otherwise each runs alone, with the same results.
+    if (a.model_key_ != b.model_key_) {
+        out_a = a.tick(vin_a);
+        out_b = b.tick(vin_b);
+        return;
+    }
     TriodeStage* const st[2] = {&a, &b};
     const double vin[2] = {vin_a, vin_b};
     double out[2];
-    step<2>(st, vin, out);
+    triode_tick_pair(st, vin, out);
     out_a = out[0];
     out_b = out[1];
 }

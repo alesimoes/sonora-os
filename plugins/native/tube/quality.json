@@ -1,7 +1,7 @@
 {
   "processor": "org.sonora.tube",
   "class": "B",
-  "note": "ADR-0011 §3.2 and §3.3. The triode stage is held to an ngspice simulation of the same netlist (tests/spice/, made by the SPICE reference harness): operating point, fundamental, and every harmonic up to 20 kHz at or above spice.floor_dbc, at the default quality's oversampled rates; the processor's harmonic levels through the oversampler at 44.1, 48 and 96 kHz. Aliasing (non-harmonic energy in 20 Hz-20 kHz on tones from 1 to 19 kHz at the nominal drive, the default drive with a -6 dBFS tone): §3.2's -90 dBc for the default quality, -70 dBc for eco. The zipper tone is -40 dBFS, so full drive stays clean enough that the harmonics are not read as steps; the bar moves with it (checks.cpp). Class B (colour, §3.5).",
+  "note": "ADR-0011 §3.2 and §3.3. The triode stage is held to an ngspice simulation of the same netlist (tests/spice/, made by the SPICE reference harness): operating point, fundamental, and every harmonic up to 20 kHz at or above spice.floor_dbc, at the default quality's oversampled rates; the processor's harmonic levels through the oversampler at 44.1, 48 and 96 kHz. Aliasing (non-harmonic energy in 20 Hz-20 kHz on tones from 1 to 19 kHz at the nominal drive, the default drive with a -18 dBFS tone, the EBU R68 alignment level): §3.2's -90 dBc for the default quality, -70 dBc for eco; hotter levels are reported. The zipper tone is -40 dBFS, so full drive stays clean enough that the harmonics are not read as steps; the bar moves with it (checks.cpp). Hot input (squares at 0, +12 and +24 dBFS, drive +36 dB, every quality): output within the stage's range and every block inside the 2.67 ms period (the RT audit of PR #52). Class B (colour, §3.5): with --cpu, eco is held to it on the programme signal and on two full-drive worst cases; standard and high are reported, over it.",
   "spice": {
     "floor_dbc": -80.0,
     "op_v": 1e-3,
@@ -16,7 +16,7 @@
     "high_dbc": -90.0
   },
   "small_signal_db": 0.05,
-  "max_iterations": 12,
+  "max_iterations": 11,
   "denormal_ratio": 1.2,
   "zipper_tone_dbfs": -40.0,
   "zipper_dbfs": -60.0,

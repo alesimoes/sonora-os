@@ -300,16 +300,25 @@ void check_golden(Suite& s, const Config& c) {
     }
 }
 
+Chans cpu_programme(double fs, double seconds, double gain_db) {
+    // Programme-like load: noise with a sweep under it.
+    Chans in = noise(fs, -12.0, seconds, 31u);
+    const Chans sw = log_sweep(fs, 20.0, 20000.0, -12.0, seconds, 2);
+    const float g = static_cast<float>(0.5 * std::pow(10.0, gain_db / 20.0));
+    for (std::size_t ch = 0; ch < 2; ++ch) {
+        for (std::size_t i = 0; i < in[ch].size(); ++i) in[ch][i] = g * (in[ch][i] + sw[ch][i]);
+    }
+    return in;
+}
+
 void check_cpu(Suite& s, const Config& c, const std::string& label, bool assert_bar) {
     if (!s.args().cpu) return;
+    check_cpu_on(s, c, cpu_programme(48000.0, s.args().cpu_seconds, 0.0), label, assert_bar);
+}
+
+void check_cpu_on(Suite& s, const Config& c, const Chans& in, const std::string& label, bool assert_bar) {
+    if (!s.args().cpu) return;
     const double fs = 48000.0;
-    // Programme-like load: noise with a sweep under it.
-    const double secs = s.args().cpu_seconds;
-    Chans in = noise(fs, -12.0, secs, 31u);
-    const Chans sw = log_sweep(fs, 20.0, 20000.0, -12.0, secs, 2);
-    for (std::size_t ch = 0; ch < 2; ++ch) {
-        for (std::size_t i = 0; i < in[ch].size(); ++i) in[ch][i] = 0.5f * (in[ch][i] + sw[ch][i]);
-    }
     // Five identical renders from a fresh processor. The first run's
     // figures are the raw ones, preemption and all. The per-block minimum
     // over the five is the cost of the code path itself: a deterministic
@@ -339,9 +348,8 @@ void check_cpu(Suite& s, const Config& c, const std::string& label, bool assert_
         s.check_le(what + "p99.9", percentile(best, 0.999), s.bar("cpu.p999_us"), "us", "per-block minimum of 5 runs");
         s.check_le(what + "max", percentile(best, 1.0), s.bar("cpu.max_us"), "us", "per-block minimum of 5 runs");
     } else {
-        const std::string over = "per-block minimum of 5 runs; not held to the class bar (" +
-                                 std::to_string(static_cast<int>(s.bar("cpu.p999_us"))) +
-                                 " us): its eco mode meets it, ADR-0011 §3.5";
+        const std::string over = "per-block minimum of 5 runs; reported, not held to the class bar (" +
+                                 std::to_string(static_cast<int>(s.bar("cpu.p999_us"))) + " us)";
         s.info(what + "p99.9", percentile(best, 0.999), "us", over);
         s.info(what + "max", percentile(best, 1.0), "us", over);
     }

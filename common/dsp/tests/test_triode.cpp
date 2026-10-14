@@ -3,11 +3,16 @@
 // The triode stage's own invariants. Its accuracy against ngspice is the
 // tube processor's suite (plugins/native/tube/tests/suite.cpp), which reads
 // the committed SPICE reference; this file needs nothing but common/dsp.
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <vector>
 
 #include "check.h"
 #include "sonora/dsp/math.h"
+#include "sonora/dsp/oversampling.h"
 #include "sonora/dsp/triode.h"
 
 namespace {
@@ -83,18 +88,30 @@ int test_operating_point() {
     return 0;
 }
 
-// The operating point is the discrete system's rest: silence in, silence
-// out, for as long as it runs. Not to the bit: the Newton tolerance and the
-// rounding of sums of ~100 V terms leave about 1e-8 V at the load, which
-// the processor's normalisation by the stage gain (~62) puts below
-// -210 dBFS.
+// Silence at rest is rest: it leaves every bit of the state where it is,
+// so a host's preroll of silence cannot change what follows it, and the
+// output at rest is one constant, within 1e-7 V of 0 (the solve's
+// tolerance; under -210 dBFS after the processor's normalisation by the
+// stage gain).
 int test_rest_is_silent() {
     for (TriodeLaw law : {TriodeLaw::Dempwolf, TriodeLaw::Koren}) {
-        TriodeStage st;
-        CHECK(st.prepare(96000.0, law));
-        double worst = 0.0;
-        for (int n = 0; n < 96000; ++n) worst = std::fmax(worst, std::fabs(st.tick(0.0)));
-        CHECK_LE(worst, 1e-7, "output at rest, V");
+        for (double fs : {88200.0, 192000.0, 384000.0}) {
+            TriodeStage st;
+            CHECK(st.prepare(fs, law));
+            const double first = st.tick(0.0);
+            bool constant = true;
+            for (int n = 0; n < 96000; ++n) constant = constant && st.tick(0.0) == first;
+            CHECK(constant);
+            CHECK_LE(std::fabs(first), 1e-7, "output at rest, V");
+            // Silence, then a tone, against the tone alone: identical.
+            TriodeStage a, b;
+            CHECK(a.prepare(fs, law) && b.prepare(fs, law));
+            for (int n = 0; n < 1000; ++n) a.tick(0.0);
+            for (int n = 0; n < 2000; ++n) {
+                const double x = std::sin(kTwoPi * 1000.0 * n / fs);
+                CHECK(a.tick(x) == b.tick(x));
+            }
+        }
     }
     return 0;
 }
@@ -144,6 +161,83 @@ int test_extremes() {
     return 0;
 }
 
+// Regression (the RT audit of PR #52, high 1 and 2): a full-scale square at
+// full drive and above (63 V at 0 dBFS and +36 dB, then 250 V and 1000 V),
+// band-limited by the processor's own oversampler, at every factor. Before
+// the fix the solve hit its iteration cap unconverged, the state ran away
+// to 5e37 V, and blocks took 6.5 to 7.3 ms against a 2.67 ms period, over
+// a hundred times a quiet block. Now every sample converges, nothing
+// resets, the load voltage stays within twice the supply, and the worst
+// block (two stages, the per-block minimum of three runs) stays within
+// six times the median block of a quiet square (0.25 V) on the same
+// build. A ratio, so it holds under the sanitizers and on any machine;
+// the absolute figures are printed (and measured in Release by the tube's
+// suite with --cpu).
+int test_hot_square_every_factor() {
+    const double fs = 48000.0;
+    struct Run {
+        double peak = 0.0, worst_us = 0.0, median_us = 0.0;
+        std::uint32_t most = 0;
+        std::uint64_t resets = 0;
+    };
+    const auto run = [&](std::uint32_t factor, double amp, Run& out) {
+        const std::uint32_t blocks = 375;  // 1 s
+        std::vector<double> best(blocks, 1e30);
+        for (int pass = 0; pass < 3; ++pass) {
+            sonora::dsp::Oversampler os;
+            if (!os.prepare(factor, 2, 128, 20000.0 / fs)) return false;
+            TriodeStage a, b;
+            if (!a.prepare(fs * factor) || !b.prepare(fs * factor)) return false;
+            std::vector<float> l(128), r(128), ol(128), orr(128);
+            for (std::uint32_t blk = 0; blk < blocks; ++blk) {
+                for (std::size_t k = 0; k < 128; ++k) {
+                    const double t = (blk * 128.0 + static_cast<double>(k)) / fs;
+                    const float v = static_cast<float>(std::sin(kTwoPi * 997.0 * t) >= 0.0 ? amp : -amp);
+                    l[k] = v;
+                    r[k] = -0.9f * v;
+                }
+                const auto t0 = std::chrono::steady_clock::now();
+                double* x0 = os.up(0, l.data(), 128);
+                double* x1 = os.up(1, r.data(), 128);
+                for (std::uint32_t i = 0; i < 128 * factor; ++i) {
+                    TriodeStage::tick2(a, b, x0[i], x1[i], x0[i], x1[i]);
+                    out.peak = std::fmax(out.peak, std::fmax(std::fabs(x0[i]), std::fabs(x1[i])));
+                }
+                os.down(0, ol.data(), 128);
+                os.down(1, orr.data(), 128);
+                const double us =
+                    std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+                best[blk] = std::fmin(best[blk], us);
+            }
+            out.most = std::max(out.most, std::max(a.max_iterations_seen(), b.max_iterations_seen()));
+            out.resets += a.resets() + b.resets();
+        }
+        best.erase(best.begin());  // the first block warms the caches
+        out.worst_us = *std::max_element(best.begin(), best.end());
+        std::sort(best.begin(), best.end());
+        out.median_us = best[best.size() / 2];
+        return true;
+    };
+    for (std::uint32_t factor : {2u, 4u, 8u}) {
+        Run quiet;
+        CHECK(run(factor, 0.25, quiet));
+        for (double amp : {63.0, 250.0, 1000.0}) {
+            Run hot;
+            CHECK(run(factor, amp, hot));
+            const double ratio = hot.worst_us / quiet.median_us;
+            std::printf("  %ux, %6.0f V square: peak %.0f V, %u iterations at most, %llu resets, worst block %.0f us "
+                        "(%.1f x a quiet block's median, %.0f us)\n",
+                        factor, amp, hot.peak, hot.most, static_cast<unsigned long long>(hot.resets), hot.worst_us,
+                        ratio, quiet.median_us);
+            CHECK(hot.resets == 0);
+            CHECK(hot.most < TriodeStage::kMaxIterations);
+            CHECK_LE(hot.peak, 2.0 * 250.0, "load voltage, V");
+            CHECK_LE(ratio, 6.0, "worst hot block over a quiet block's median");
+        }
+    }
+    return 0;
+}
+
 // Two stages in lockstep give each stage exactly what it gives alone, even
 // when the two need different numbers of Newton iterations (one quiet,
 // one driven into grid current).
@@ -177,6 +271,7 @@ int main() {
     failed += test_small_signal_gain();
     failed += test_extremes();
     failed += test_tick2_matches_tick();
+    failed += test_hot_square_every_factor();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);
         return 1;
