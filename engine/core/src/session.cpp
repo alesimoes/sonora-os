@@ -389,9 +389,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     const uint32_t nframes = block.nframes;
     // insert_chain_runner.h: once per callback, whole callback, or not at
-    // all.
+    // all. A zero-frame callback mixes nothing, so it would reach begin()
+    // and never end(); it is not a chain block, bypassed or otherwise.
     runner_ = nullptr;
-    if (plan_valid_ && plan->last_insert_node != kNoNode) {
+    if (plan_valid_ && plan->last_insert_node != kNoNode && nframes > 0) {
         InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
         if (r != nullptr && nframes <= max_block_) {
             runner_ = r;

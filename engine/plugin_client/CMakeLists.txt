@@ -1,7 +1,7 @@
 # engine/plugin_client (ADR-0012 checklist 4): the engine's side of the
-# plugin boundary, on contracts/plugin layout 1. Not linked by engine/core
-# yet: the InsertChain plan node (checklist 3) and the control server's
-# wiring (checklist 5) come after PR #46.
+# plugin boundary, on contracts/plugin layout 1. engine/core links it for
+# PluginChainRunner (engine/core/include/sonora/plugin_chain_runner.h), the
+# InsertChain node's adapter; the control server's wiring is checklist 5.
 #
 # Two libraries, so the audio thread's half can be checked on its own:
 #   sonora_plugin_client_rt  src/rt.cpp only: what Session::process will
@@ -14,18 +14,24 @@ add_library(sonora_plugin_client_rt OBJECT src/rt.cpp src/tables.h
             include/sonora/plugin_client/plugin_client.h)
 target_include_directories(sonora_plugin_client_rt PUBLIC include)
 # common/platform for wake_all() alone, behind kHostWakeEnabled (A3).
-target_link_libraries(sonora_plugin_client_rt PUBLIC sonora_plugin_protocol sonora_platform sonora_base)
+# PRIVATE here and below: no public header of plugin_client includes a
+# platform header, and engine/core links plugin_client, so a PUBLIC edge
+# would hand engine/core common/platform's include directory and open the
+# compile-time wall ADR-0007 §1 relies on. A user of plugin_client that
+# needs common/platform itself (its tests, engine/control) links it.
+target_link_libraries(sonora_plugin_client_rt PUBLIC sonora_plugin_protocol sonora_base
+                      PRIVATE sonora_platform)
 
 add_library(sonora_plugin_client STATIC src/client.cpp src/host_supervisor.cpp
             include/sonora/plugin_client/host_supervisor.h $<TARGET_OBJECTS:sonora_plugin_client_rt>)
 target_include_directories(sonora_plugin_client PUBLIC include)
-target_link_libraries(sonora_plugin_client PUBLIC sonora_plugin_protocol sonora_platform sonora_base
-                      Threads::Threads)
+target_link_libraries(sonora_plugin_client PUBLIC sonora_plugin_protocol sonora_base Threads::Threads
+                      PRIVATE sonora_platform)
 
 # The audio thread's half against a scripted in-process host: no process,
 # no plugin, any OS.
 add_executable(test_plugin_client tests/test_plugin_client.cpp)
-target_link_libraries(test_plugin_client PRIVATE sonora_plugin_client)
+target_link_libraries(test_plugin_client PRIVATE sonora_plugin_client sonora_platform)
 add_test(NAME plugin_client COMMAND test_plugin_client)
 
 # A3: nothing in common/platform but wake_all is reachable from the audio
@@ -41,7 +47,10 @@ if(CMAKE_NM AND NOT MSVC)
                      -DPLATFORM_INCLUDE=${CMAKE_SOURCE_DIR}/common/platform/include
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/rt_reachability.cmake)
   endfunction()
-  sonora_rt_reachability(plugin_client_rt_reachability "$<TARGET_OBJECTS:sonora_plugin_client_rt>")
+  # engine/core's PluginChainRunner is on the audio thread too (auditor
+  # finding 3 on PR #59): its object is held to the same allowlist.
+  sonora_rt_reachability(plugin_client_rt_reachability
+    "$<TARGET_OBJECTS:sonora_plugin_client_rt>;$<TARGET_OBJECTS:sonora_core_chain_runner>")
   # The check bites, one denial per canary. Each canary object must fail it
   # for its own reason; the test passes only on that reason's message.
   add_library(plugin_client_rt_canary_platform OBJECT tests/canary_platform.cpp)
@@ -97,7 +106,7 @@ endif()
 # bundle against its N0 reference render.
 if(TARGET sonora-plugin-host)
   add_executable(test_plugin_client_host tests/test_plugin_client_host.cpp)
-  target_link_libraries(test_plugin_client_host PRIVATE sonora_plugin_client sonora_backend_fake)
+  target_link_libraries(test_plugin_client_host PRIVATE sonora_plugin_client sonora_backend_fake sonora_platform)
   add_dependencies(test_plugin_client_host sonora-plugin-host sonora_test_lv2)
   set(_pc_host $<TARGET_FILE:test_plugin_client_host> --host $<TARGET_FILE:sonora-plugin-host>
                --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)

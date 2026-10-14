@@ -57,6 +57,7 @@ add_library(sonora_ui_qt STATIC
   src/session_model.h src/session_model.cpp
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
+  src/mix_model.h src/mix_model.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
@@ -70,7 +71,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
-        qml/InsertPanel.qml
+        qml/InsertPanel.qml qml/ValueField.qml
 )
 
 add_executable(sonora-ui src/main.cpp)
@@ -138,6 +139,14 @@ add_executable(test_ui_inserts tests/test_inserts.cpp)
 target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The Mix window on the monitor bus, on FakeEngine: typed gain and pan,
+# strips by display order, fader rides (ParameterChange per step, one SetMix
+# at release), Alt- and Ctrl-clicks on solo and mute; then the QML.
+add_executable(test_ui_mix tests/test_mix.cpp)
+target_link_libraries(test_ui_mix PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_mix COMMAND test_ui_mix)
+set_tests_properties(ui_mix PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)

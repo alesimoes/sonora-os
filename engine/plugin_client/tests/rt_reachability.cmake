@@ -3,8 +3,10 @@
 # and its canaries) as `cmake -P`, with:
 #
 #   NM                the toolchain's nm
-#   RT_OBJECTS        the object files of the audio thread's half (src/rt.cpp
-#                     alone, the OBJECT library sonora_plugin_client_rt)
+#   RT_OBJECTS        the object files on the audio thread's path: src/rt.cpp
+#                     (the OBJECT library sonora_plugin_client_rt) and
+#                     engine/core's PluginChainRunner, which calls it
+#                     (sonora_core_chain_runner)
 #   WAKE_OBJECTS      common/platform's objects; the one built from wake.cpp
 #                     is checked as wake_all's body
 #   CORE_LIB          engine/core's archive (Session::process)
@@ -17,12 +19,15 @@
 # the object calls inline is compiled into it, and its own references show
 # up here. One level deeper, wake_all's object may reach only the raw
 # syscall. Checks:
-#  1. rt.cpp's object: only the allowlist.
+#  1. rt.cpp's and the runner's objects: only the allowlist.
 #  2. wake.cpp's object: only syscall (and the same instrumentation), plus,
 #     in the RTSan build, the scope around that syscall (auditor A1/A3).
 #  3. engine/core references no common/platform symbol: Session::process
-#     reaches the platform only through check 1's object. Revisit if
-#     engine/core ever links common/platform for its non-RT threads.
+#     reaches the platform only through check 1's objects. engine/core links
+#     engine/plugin_client, which links common/platform PRIVATE: the link
+#     reaches the final executable, the include directory does not reach
+#     engine/core, so a platform include there fails to compile (ADR-0007
+#     §1) and this check catches what a declaration alone could still do.
 #  4. wake_all is the only SONORA_RT declaration in common/platform.
 
 cmake_minimum_required(VERSION 3.16)
@@ -56,6 +61,26 @@ endfunction()
 set(instrumentation "^__(asan|tsan|ubsan|msan|lsan|sanitizer)_" "^__stack_chk_fail$" "^__stack_chk_guard$"
     "^__rtsan_(realtime_enter|realtime_exit|ensure_initialized)$")
 
+function(defined_symbols file out)
+  execute_process(COMMAND ${NM} -C --defined-only ${file}
+                  OUTPUT_VARIABLE text ERROR_VARIABLE err RESULT_VARIABLE rc)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "${NM} -C --defined-only ${file} failed (${rc}): ${err}")
+  endif()
+  string(REPLACE ";" "," text "${text}")
+  string(REPLACE "[" "<" text "${text}")
+  string(REPLACE "]" ">" text "${text}")
+  string(REPLACE "\n" ";" lines "${text}")
+  set(symbols)
+  foreach(line IN LISTS lines)
+    string(STRIP "${line}" line)
+    if(line MATCHES "^[0-9a-fA-F]+ [TtWw] (.+)$")
+      list(APPEND symbols "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+  set(${out} "${symbols}" PARENT_SCOPE)
+endfunction()
+
 function(check_allowed obj what)
   set(allowed ${ARGN})
   undefined_symbols(${obj} symbols)
@@ -85,9 +110,42 @@ list(LENGTH RT_OBJECTS n_objects)
 if(n_objects EQUAL 0)
   message(FATAL_ERROR "RT_OBJECTS is empty")
 endif()
+# Beyond the C memory functions and wake_all: PluginClient's three
+# audio-thread entry points, whose bodies are in rt.cpp's object and held to
+# this same list (checked below, not assumed), and the RTTI vtables a polymorphic class's typeinfo names
+# (PluginChainRunner : InsertChainRunner). Those are data, never called.
+set(client_entry "^sonora::plugin_client::PluginClient::(begin_callback|process_chain|end_callback)\\(")
 foreach(obj IN LISTS RT_OBJECTS)
   check_allowed(${obj} "the audio thread"
-                "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\(")
+                "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\("
+                "${client_entry}"
+                "^vtable for __cxxabiv1::__(si_)?class_type_info$")
+endforeach()
+
+# The allowlist admits PluginClient's entry points by name only because
+# their bodies sit in an RT_OBJECTS object and so are held to it too. A name
+# proves neither: a body moved to client.cpp, or a same-named overload
+# defined there and called by the runner, would match the name and escape
+# the allowlist. So each one referenced must be defined, with that exact
+# signature, in one of RT_OBJECTS (PR #59 RT re-audit).
+set(rt_defined)
+foreach(obj IN LISTS RT_OBJECTS)
+  defined_symbols(${obj} defs)
+  list(APPEND rt_defined ${defs})
+endforeach()
+foreach(obj IN LISTS RT_OBJECTS)
+  undefined_symbols(${obj} symbols)
+  foreach(sym IN LISTS symbols)
+    if(sym MATCHES "${client_entry}")
+      list(FIND rt_defined "${sym}" at)
+      if(at EQUAL -1)
+        message(SEND_ERROR "${obj} calls '${sym}', which no RT_OBJECTS object defines: its body escapes the allowlist")
+        math(EXPR failures "${failures} + 1")
+      else()
+        message(STATUS "  ${sym}: defined in RT_OBJECTS")
+      endif()
+    endif()
+  endforeach()
 endforeach()
 
 set(found_wake FALSE)

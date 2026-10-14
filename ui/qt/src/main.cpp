@@ -359,6 +359,12 @@ int main(int argc, char** argv) {
         if (document.receive(updates, replies)) session.documentUpdated();
     });
     document.on_load_abandoned = [&session]() { session.openWasLost(); };
+    // Fader rides are heard through ParameterChange and saved at release.
+    // The fake engine plays nothing, and the Mix window says so.
+    MixModel mixer(
+        session,
+        [&engine](uint32_t track, float linear) { engine.send_track_gain(track, linear); },
+        engine.info().track_count, fake == nullptr);
     InsertModel inserts(document, session);
     inserts.controller().set_param_sender(
         [&engine](sonora::model::Id insert, const std::string& key, float value) {
@@ -425,7 +431,8 @@ int main(int argc, char** argv) {
     view.setResizeMode(QQuickView::SizeRootObjectToView);
     view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
                                {QStringLiteral("session"), QVariant::fromValue(&session)},
-                               {QStringLiteral("inserts"), QVariant::fromValue(&inserts)}});
+                               {QStringLiteral("inserts"), QVariant::fromValue(&inserts)},
+                               {QStringLiteral("mixer"), QVariant::fromValue(&mixer)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));

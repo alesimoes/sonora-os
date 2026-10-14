@@ -12,151 +12,24 @@
 // The chains run on a test runner that behaves like a host with a declared
 // latency: it returns its input latency_frames late, exactly. No host is
 // involved; engine/plugin_client is the real runner.
-#include <atomic>
 #include <cstdio>
-#include <cstdlib>
 #include <memory>
-#include <new>
 #include <vector>
 
+// The heap counter (playback_test.h): operator new/delete and, outside the
+// sanitizers, malloc and free, on the thread inside process().
+#define PLAYBACK_TEST_COUNT_HEAP 1
+#include "playback_test.h"
 #include "sonora/insert_chain_runner.h"
 #include "sonora/plan_graph.h"
+#include "sonora/plugin_chain_runner.h"
 #include "sonora/session.h"
 
-// Every way process() could reach the heap is counted on the thread that
-// calls it: each operator new and delete overload, and, outside the
-// sanitizers (whose own interceptors must keep malloc), malloc, calloc,
-// realloc, the aligned allocators and free.
-namespace {
-thread_local bool t_counting = false;
-std::atomic<long> g_allocations{0};
-std::atomic<long> g_frees{0};
-
-void note_alloc() {
-    if (t_counting) g_allocations.fetch_add(1, std::memory_order_relaxed);
-}
-void note_free(void* p) {
-    if (t_counting && p != nullptr) g_frees.fetch_add(1, std::memory_order_relaxed);
-}
-}  // namespace
-
-#if defined(__has_feature)
-#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer)
-#define PDC_TEST_SANITIZED 1
-#endif
-#endif
-#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
-#define PDC_TEST_SANITIZED 1
-#endif
-
-#if defined(__GLIBC__) && !defined(PDC_TEST_SANITIZED)
-#define PDC_TEST_COUNTS_MALLOC 1
-extern "C" {
-void* __libc_malloc(std::size_t);
-void* __libc_calloc(std::size_t, std::size_t);
-void* __libc_realloc(void*, std::size_t);
-void* __libc_memalign(std::size_t, std::size_t);
-void __libc_free(void*);
-
-void* malloc(std::size_t n) {
-    note_alloc();
-    return __libc_malloc(n);
-}
-void* calloc(std::size_t n, std::size_t size) {
-    note_alloc();
-    return __libc_calloc(n, size);
-}
-void* realloc(void* p, std::size_t n) {
-    note_alloc();
-    return __libc_realloc(p, n);
-}
-void* aligned_alloc(std::size_t align, std::size_t n) {
-    note_alloc();
-    return __libc_memalign(align, n);
-}
-void* memalign(std::size_t align, std::size_t n) {
-    note_alloc();
-    return __libc_memalign(align, n);
-}
-int posix_memalign(void** out, std::size_t align, std::size_t n) {
-    note_alloc();
-    void* p = __libc_memalign(align, n);
-    if (p == nullptr) return 12;  // ENOMEM
-    *out = p;
-    return 0;
-}
-void free(void* p) {
-    note_free(p);
-    __libc_free(p);
-}
-}
-#endif
-
-namespace {
-void* counted_new(std::size_t size) {
-    note_alloc();
-    return std::malloc(size > 0 ? size : 1);
-}
-void* counted_new_aligned(std::size_t size, std::align_val_t align) {
-    note_alloc();
-    void* p = nullptr;
-    const std::size_t a = static_cast<std::size_t>(align) < sizeof(void*)
-                              ? sizeof(void*)
-                              : static_cast<std::size_t>(align);
-    return posix_memalign(&p, a, size > 0 ? size : 1) == 0 ? p : nullptr;
-}
-void counted_delete(void* p) {
-    note_free(p);
-    std::free(p);
-}
-}  // namespace
-
-void* operator new(std::size_t size) {
-    if (void* p = counted_new(size)) return p;
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size) { return operator new(size); }
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept { return counted_new(size); }
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept { return counted_new(size); }
-void* operator new(std::size_t size, std::align_val_t a) {
-    if (void* p = counted_new_aligned(size, a)) return p;
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size, std::align_val_t a) { return operator new(size, a); }
-void* operator new(std::size_t size, std::align_val_t a, const std::nothrow_t&) noexcept {
-    return counted_new_aligned(size, a);
-}
-void* operator new[](std::size_t size, std::align_val_t a, const std::nothrow_t&) noexcept {
-    return counted_new_aligned(size, a);
-}
-void operator delete(void* p) noexcept { counted_delete(p); }
-void operator delete[](void* p) noexcept { counted_delete(p); }
-void operator delete(void* p, std::size_t) noexcept { counted_delete(p); }
-void operator delete[](void* p, std::size_t) noexcept { counted_delete(p); }
-void operator delete(void* p, std::align_val_t) noexcept { counted_delete(p); }
-void operator delete[](void* p, std::align_val_t) noexcept { counted_delete(p); }
-void operator delete(void* p, std::size_t, std::align_val_t) noexcept { counted_delete(p); }
-void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { counted_delete(p); }
-void operator delete(void* p, const std::nothrow_t&) noexcept { counted_delete(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { counted_delete(p); }
-void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept {
-    counted_delete(p);
-}
-void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept {
-    counted_delete(p);
-}
-
-#define CHECK(cond)                                                      \
-    do {                                                                 \
-        if (!(cond)) {                                                   \
-            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, \
-                         #cond);                                         \
-            return 1;                                                    \
-        }                                                                \
-    } while (0)
-
 namespace {
 
+using playback_test::heap_untouched;
+using playback_test::reset_heap_counts;
+using playback_test::t_counting;
 using sonora::ChainBinding;
 using sonora::DelayLinePool;
 using sonora::NodeKind;
@@ -167,11 +40,6 @@ using sonora::Session;
 constexpr uint32_t kBlock = 64;
 constexpr uint32_t kMaxCallback = 512;
 
-void reset_heap_counts() {
-    g_allocations.store(0);
-    g_frees.store(0);
-}
-bool heap_untouched() { return g_allocations.load() == 0 && g_frees.load() == 0; }
 // Frames of silence before the signal, so the faders' start-up ramp from 0
 // never touches a sample that is checked.
 constexpr int64_t kLeadIn = 4 * kBlock;
@@ -266,44 +134,13 @@ struct Rig {
         for (auto& t : session->tracks()) t->set_monitor(sonora::Track::Monitor::Input);
     }
 
-    // A plan with no regions over this session's tracks, chains as given,
-    // compensated against the session's own pool and maximum.
     PlaybackPlan* plan(const std::vector<ChainBinding>& chains, DelayLinePool& pool,
                        sonora::Compensation* comp = nullptr,
                        std::vector<uint32_t>* shortfall = nullptr) {
-        const auto tracks = static_cast<uint32_t>(session->tracks().size());
-        uint32_t active = 0;
-        for (const ChainBinding& c : chains) active += c.active ? 1 : 0;
-        sonora::PlanSizes sizes;
-        sizes.tracks = tracks;
-        sizes.nodes = sonora::graph_nodes(tracks, active);
-        sizes.edges = sonora::graph_edges(tracks, active);
-        PlaybackPlan* p = sonora::create_plan(sizes);
-        p->epoch = session->plans().next_epoch();
-        p->chunk_frames = 256;
-        p->pan_exponent = 0.5f;
-        for (uint32_t t = 0; t < tracks; ++t) {
-            p->tracks[t].engine_track = t;
-            p->tracks[t].channels = 1;
-        }
-        sonora::layout_track_graph(*p, chains.data());
-        if (shortfall) shortfall->assign(tracks, 0);
-        const sonora::Compensation c = sonora::compensate(
-            *p, session->max_delay_frames(), pool, shortfall ? shortfall->data() : nullptr);
-        if (comp) *comp = c;
-        return p;
+        return playback_test::chain_plan(*session, chains, pool, comp, shortfall);
     }
 
-    bool publish(PlaybackPlan* p) {
-        sonora::DiskReader& r = session->reader();
-        const uint64_t gen = r.serve(session->plans().current(), p);
-        r.run_pass();
-        if (r.resident() != gen) return false;
-        if (!session->plans().publish(p)) return false;
-        r.serve(p, nullptr);
-        r.run_pass();
-        return true;
-    }
+    bool publish(PlaybackPlan* p) { return playback_test::publish_plan(*session, p); }
 
     // One callback of signal on every input; counts any allocation or free
     // inside process().
@@ -330,6 +167,7 @@ ChainBinding chain(uint32_t slot, uint32_t latency) {
     c.chain_id = 100 + slot;
     c.channel_slot = slot;
     c.param_store = 7 + slot;
+    c.node_state = slot;
     c.latency_frames = latency;
     return c;
 }
@@ -680,12 +518,91 @@ int test_out_of_bounds_plan_is_silence() {
     return 0;
 }
 
+// Review of PR #59 (rt-engineer ruling 1): a binding that names a slot and
+// a latency but has no node state cannot be handed to a host, so the track
+// plays dry. Laid out as bound, compensate() delayed every other track by
+// its latency and the dry one reached the bus that much early. The builder
+// lays it out unbound: no slot, latency 0. So is a binding with no slot,
+// whatever latency it carries. Driven through the real PluginChainRunner,
+// which before the ruling played such a node dry with its latency planned.
+int test_no_node_state_is_unbound_and_never_early() {
+    Rig rig(3, 16384);
+    sonora::plugin_client::ClientConfig ccfg;
+    ccfg.block_frames = kBlock;
+    ccfg.max_channels = 4;
+    ccfg.max_stores = 2;
+    ccfg.store_slots = 16;
+    ccfg.max_nodes = 4;
+    sonora::plugin_client::PluginClient client(ccfg);
+    sonora::PluginChainRunner runner(client);
+    rig.session->set_insert_chains(&runner);
+    // 0 and 2 left, 1 right: aligned and dry, left is exactly twice right.
+    rig.session->tracks()[0]->set_pan(-1.0f);
+    rig.session->tracks()[1]->set_pan(1.0f);
+    rig.session->tracks()[2]->set_pan(-1.0f);
+    ChainBinding stateless = chain(0, 2048);
+    stateless.node_state = sonora::kNoNodeState;
+    ChainBinding slotless = chain(1, 512);
+    slotless.channel_slot = sonora::kNoChannelSlot;
+    DelayLinePool pool(rig.session->delay_lines());
+    sonora::Compensation comp;
+    PlaybackPlan* p = rig.plan({stateless, ChainBinding{}, slotless}, pool, &comp);
+    CHECK(p->nodes[1].kind == NodeKind::InsertChain);
+    CHECK(p->nodes[1].channel_slot == sonora::kNoChannelSlot);
+    CHECK(p->nodes[1].latency_frames == 0);
+    CHECK(p->nodes[1].node_state == sonora::kNoNodeState);
+    CHECK(p->nodes[5].kind == NodeKind::InsertChain);
+    CHECK(p->nodes[5].channel_slot == sonora::kNoChannelSlot);
+    CHECK(p->nodes[5].latency_frames == 0);
+    CHECK(comp.compensation_frames == 0);
+    CHECK(p->compensation_frames == 0);
+    CHECK(rig.publish(p));
+
+    reset_heap_counts();
+    for (int blk = 0; blk < 60; ++blk) {
+        const int64_t at = rig.frame;
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float want = signal(at + i);
+            CHECK(rig.out[1][i] == want);
+            CHECK(rig.out[0][i] == want + want);
+        }
+    }
+    CHECK(heap_untouched());
+    // The session's own pass-through played them; the client never saw them.
+    CHECK(runner.collected() + runner.missed() + runner.removed() == 0);
+    CHECK(runner.no_node_state() == 0 && runner.unsupported() == 0);
+    CHECK(client.callbacks() == 60);
+    return 0;
+}
+
+// RT audit of PR #59 (finding 2): a zero-frame callback ran begin() and
+// never end(), since the mix loop has nothing to mix. The client's
+// in_callback stayed raised and the next block counted a miss. The runner
+// sees neither for it.
+int test_zero_frame_callback_neither_begins_nor_ends() {
+    Rig rig(2, 16384);
+    DelayRunner runner(1, 4096);
+    rig.session->set_insert_chains(&runner);
+    DelayLinePool pool(rig.session->delay_lines());
+    CHECK(rig.publish(rig.plan({chain(0, 128), ChainBinding{}}, pool)));
+    rig.block();
+    CHECK(runner.begins == 1 && runner.ends == 1);
+    reset_heap_counts();
+    rig.block(0);
+    CHECK(heap_untouched());
+    CHECK(runner.begins == 1 && runner.ends == 1 && runner.calls == 1);
+    CHECK(rig.session->chain_bypassed_blocks() == 0);
+    rig.block();
+    CHECK(runner.begins == 2 && runner.ends == 2 && runner.calls == 2);
+    CHECK(runner.sequence_errors == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
-#if defined(PDC_TEST_COUNTS_MALLOC)
-    std::printf("plan_pdc: counting malloc, calloc, realloc, aligned and free too\n");
-#endif
+    std::printf("plan_pdc: heap counter covers %s\n", playback_test::heap_counter_scope());
     if (test_2048_lands_aligned()) return 1;
     if (test_over_the_maximum_is_clamped_and_reported()) return 1;
     if (test_pool_cap()) return 1;
@@ -696,6 +613,8 @@ int main() {
     if (test_stable_ids_follow_the_track()) return 1;
     if (test_long_callback_bypasses_chains()) return 1;
     if (test_out_of_bounds_plan_is_silence()) return 1;
+    if (test_zero_frame_callback_neither_begins_nor_ends()) return 1;
+    if (test_no_node_state_is_unbound_and_never_early()) return 1;
     std::printf("plan_pdc: ok\n");
     return 0;
 }

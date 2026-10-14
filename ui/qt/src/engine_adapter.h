@@ -15,6 +15,8 @@
 //   EngineAdapter::frame        StateView::frame      (one publish)
 //   EngineAdapter::take_peak    StateView::take_peak  (per-reader cursor)
 //   EngineAdapter::engine_alive StateView::engine_alive (heartbeat)
+//   EngineAdapter::send_track_gain
+//                               EngineControl::send(ParameterChange), Gain
 //   EngineAdapter::send_plugin_parameter
 //                               EngineControl::send(PluginParameterChange)
 //   EngineAdapter::take_catalog EngineControl::poll (PluginCatalog, the latest)
@@ -138,6 +140,11 @@ struct CommandOutcome {
     std::string command;  // carried back so the status line can name it
     DispatchResult result = DispatchResult::Ok;
     std::string message;  // the handler's reason when result is Failed
+    // The answer to a live parameter (a fader ride, a plugin parameter), not
+    // to a command: its Ok confirms one step of a gesture, so it must not
+    // clear what the status line is saying -- the refusal at a ride's end
+    // among others.
+    bool live = false;
 };
 
 class EngineAdapter {
@@ -166,6 +173,12 @@ public:
     // False when the heartbeat has stalled. The interface then shows meters
     // as "no data" rather than frozen values (§3).
     virtual bool engine_alive(uint64_t now_ns) const = 0;
+
+    // A fader being ridden: engine track `track`'s gain, linear 0 .. 4
+    // (api::ParamId::Gain). Heard at once and not saved; the end of the
+    // ride is saved with the model's SetMix (mix_model.h). Never blocks; a
+    // refusal comes back through poll() as a command's does.
+    virtual uint64_t send_track_gain(uint32_t track, float linear) = 0;
 
     // A plugin parameter moving (ADR-0012 §8): a drag in the generic
     // parameter panel, by insert id and stable key. Never blocks; a refusal

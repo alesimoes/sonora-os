@@ -16,6 +16,8 @@ Rectangle {
     required property SessionModel session
     // The Mix window's insert slots; null where they are not wired.
     property InsertModel inserts: null
+    // Fader rides, typed values and modifier clicks; null where not wired.
+    property MixModel mixer: null
 
     width: 1280
     height: 720
@@ -83,6 +85,7 @@ Rectangle {
             shell: root.shell
             session: root.session
             inserts: root.inserts
+            mixer: root.mixer
         }
 
         // Over the windows, not instead of them: says why the meters are empty.

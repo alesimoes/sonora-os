@@ -43,6 +43,7 @@ public:
     void frame(EngineFrame& out) const override;
     float take_peak(uint32_t index) override;
     bool engine_alive(uint64_t now_ns) const override;
+    uint64_t send_track_gain(uint32_t track, float linear) override;
     uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override;
     bool take_catalog(api::PluginCatalog& out) override;
 
@@ -77,7 +78,12 @@ private:
     uint64_t connection_ = 0;
     std::set<uint64_t> model_seqs_;             // model requests awaiting a reply
     std::vector<api::CommandReply> model_replies_;
-    std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line
+    struct Awaited {
+        std::string name;   // the command, or what a live change moved, for the status line
+        bool live = false;  // a live parameter (CommandOutcome::live)
+    };
+    std::map<uint64_t, Awaited> pending_;
+    void await(uint64_t seq, std::string name, bool live);
     api::Inbox inbox_;
     std::vector<EngineEvent> events_;   // received, not yet taken
     api::PluginCatalog catalog_;        // the latest received
