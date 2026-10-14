@@ -252,6 +252,18 @@ int test_failure_keeps_iteration_count() {
                 static_cast<unsigned long long>(st.resets()), st.max_iterations_seen());
     CHECK(st.resets() > 0);
     CHECK(st.max_iterations_seen() >= TriodeStage::kMaxIterations);
+    // A restart leaves a valid state: nothing non-finite carries over, and
+    // silence brings the output back to a fresh stage's rest value (2 s,
+    // tens of the coupling capacitors' time constants).
+    TriodeStage fresh;
+    CHECK(fresh.prepare(8000.0));
+    const double rest = fresh.tick(0.0);
+    double y = 0.0;
+    for (int n = 0; n < 2 * 8000; ++n) {
+        y = st.tick(0.0);
+        CHECK(std::isfinite(y));
+    }
+    CHECK_LE(std::fabs(y - rest), 1e-6, "output 2 s after the failures against rest, V");
     // reset() is the caller's: it clears the counts, and the resets stay.
     const std::uint64_t resets = st.resets();
     st.reset();

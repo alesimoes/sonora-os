@@ -83,8 +83,17 @@ jobs:
       # processor getting slower, not the runner. The absolute bar is
       # held on the reference machine with tools/dsp-cpu.sh, unflagged.
       # brain/research/native-tube-n2.md, "The gate".
+      # Exit 3 is inconclusive: the runner changed speed during the run,
+      # so the step neither passes nor fails it; it says so as a warning.
       - name: Tube eco, class B, runner-calibrated (gates)
-        run: tools/dsp-cpu.sh --calibrated build 60 tube
+        run: |
+          rc=0
+          tools/dsp-cpu.sh --calibrated build 60 tube || rc=$?
+          if [[ $rc -eq 3 ]]; then
+            echo "::warning title=Tube CPU gate inconclusive::the runner changed speed during the run (reference kernel before and after the loads differ by over 5 %); not held this night"
+            exit 0
+          fi
+          exit "$rc"
 
       - uses: actions/upload-artifact@v4
         if: always()

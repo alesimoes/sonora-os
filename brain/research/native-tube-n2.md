@@ -303,13 +303,41 @@ Measured on GitHub runners, the nightly dispatched on this branch:
 
 In kernels, eco's worst case costs 1.40 on the reference machine, 1.44
 on the EPYC 9V45 and 1.53 on the EPYC 7763: the kernel tracks the solve
-across three microarchitectures to within 10 %. The calibrated bar is
-60 / 32.6 = 1.84 kernels, so the slowest-tracking runner still has 20 %
-headroom (the reference machine 31 %), and the gate is green on any of
-them with the code as it is, faster runner or slower. It goes red when
-eco gets about 20-30 % slower, by the runner's draw; anything smaller is
-for the reference-machine run of `tools/dsp-cpu.sh`, which holds the
-absolute bar, to find before a figure is recorded here.
+across three microarchitectures to within 10 %. The scaled class bar is
+60 / 32.6 = 1.84 kernels, so on its own it trips on a regression of about
+20 % on a 7763 and 28 % on a 9V45 (review of PR #55): which one depends
+on the runner the job draws. Two additions make the gate the same on
+every runner:
+- **A baseline in kernels.** `quality.json` records `cpu.p999_kernels`
+  = 1.53, eco's worst p99.9 on the slowest-tracking machine measured
+  (the EPYC 7763, +12 dB programme), and each eco load's p99.9 in
+  kernels is held to it x 1.15 = 1.76. That trips on a regression of
+  about 15 % on any of the three machines; the scaled class bar stays as
+  the backstop. A deliberate change to the solve's cost re-records the
+  baseline from a nightly's report, in the same commit, and says why.
+- **The kernel is timed before and after the loads.** A neighbour that
+  slows every block, or a clock step, while the loads run is something
+  the per-block minimum cannot remove, and a kernel timed in another
+  phase would mis-scale the bar both ways (a false red, a hidden
+  regression). The harness times the kernel before the first load and
+  again at the end; when the two differ by more than 5 % the calibrated
+  checks are **inconclusive**: reported without a bar, neither passed
+  nor failed, `sonora-dsp-measure` exits 3, `tools/dsp-cpu.sh` prints
+  INCONCLUSIVE and exits 3, and the nightly step turns that into a
+  warning annotation, not a red and not a pass. Otherwise the scale is
+  the mean of the two. On a quiet reference machine the two timings
+  agree to 0.03 % (32.579 and 32.588 µs); with the load average at 3.4
+  (other sessions' containers) they differed by 6.9 % (34.87 and 32.60 µs),
+  and that run came out inconclusive, as it should.
+- The max bar is scaled too. A p50 ratio has no physical claim on a
+  tail's maximum, but the 150 µs bar is lenient enough that it adds no
+  flake; it is reported, and the p99.9 checks are the gate.
+
+Quiet reference machine, calibrated, after these changes: eco p99.9
+41.4 / 45.0 / 37.1 µs (programme, +12 dB programme, square), 1.27 /
+1.38 / 1.14 kernels against 1.76; absolute, the same build, with the
+load average at 3.4-3.7 (another session's container): 44.7 / 47.2
+/ 40.3 µs against 60.
 
 **Diagnostics kept across a restart** (merge gate, low). A failed sample
 restarted the stage through `reset()`, which also cleared
