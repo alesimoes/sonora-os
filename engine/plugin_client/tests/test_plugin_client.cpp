@@ -33,6 +33,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__has_feature)
+#if __has_feature(realtime_sanitizer)
+#include <sanitizer/rtsan_interface.h>
+#define SONORA_TEST_RTSAN 1
+#endif
+#endif
+
 #ifdef __linux__
 #include <sys/stat.h>
 #endif
@@ -84,13 +91,21 @@ public:
         if (block == h->completed_block.load()) return;
         delivered.clear();
         replaced.clear();
+        // consume_block_params is SONORA_RT, so under RTSan these test
+        // recorders, which allocate, run with RTSan off.
         plugin::consume_block_params(
             *h, plugin::value_table(base_, layout_), map_, values_, block, h->submitted_frames.load(),
             [&](uint32_t i, uint32_t p, uint32_t off, float v) {
+#ifdef SONORA_TEST_RTSAN
+                const __rtsan::ScopedDisabler test_recorder_allocates;
+#endif
                 delivered.push_back({block, i, p, off, v});
                 return true;
             },
             [&](uint32_t i, uint32_t p, float v) {
+#ifdef SONORA_TEST_RTSAN
+                const __rtsan::ScopedDisabler test_recorder_allocates;
+#endif
                 replaced.push_back({block, i, p, 0, v});
                 return true;
             });

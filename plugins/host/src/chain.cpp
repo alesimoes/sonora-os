@@ -135,7 +135,7 @@ uint64_t Chain::sanitise_stage(std::size_t stage, uint32_t frames) noexcept {
 }
 
 bool Chain::process(const float* const* in, float* const* out, uint32_t frames,
-                    plugin::ChannelHeader* report, ChainError& error) noexcept {
+                    plugin::ChannelHeader* report, ChainError& error) noexcept SONORA_RT {
     frames = std::min(frames, config_.max_frames);
     for (uint32_t c = 0; c < config_.channels; ++c)
         std::memcpy(buffer(0, c), in[c], frames * sizeof(float));
@@ -223,12 +223,12 @@ bool Chain::validate(ChainError& error) {
     return true;
 }
 
-bool Chain::set_param(uint32_t instance, uint32_t dense, float value, uint32_t offset) noexcept {
+bool Chain::set_param(uint32_t instance, uint32_t dense, float value, uint32_t offset) noexcept SONORA_RT {
     if (instance >= slots_.size()) return false;
     return slots_[instance]->set_param(dense, value, offset);
 }
 
-bool Chain::replace_param(uint32_t instance, uint32_t dense, float value) noexcept {
+bool Chain::replace_param(uint32_t instance, uint32_t dense, float value) noexcept SONORA_RT {
     if (instance >= slots_.size()) return false;
     return slots_[instance]->replace_param(dense, value);
 }
@@ -246,7 +246,7 @@ float Chain::param_default(std::size_t i, uint32_t dense) const { return slots_[
 
 bool Chain::designated_bypass(std::size_t i) const { return slots_[i]->bypass_param() >= 0; }
 
-bool Chain::set_bypass(uint32_t instance, bool bypassed, uint32_t offset) noexcept {
+bool Chain::set_bypass(uint32_t instance, bool bypassed, uint32_t offset) noexcept SONORA_RT {
     if (instance >= slots_.size()) return false;
     Processor& p = *slots_[instance];
     if (const int d = p.bypass_param(); d >= 0)
@@ -277,7 +277,7 @@ void Chain::prepare_bypass() {
 // Every block, bypassed or not, so the history is there when bypass turns
 // on. The ring is written before it is read, so a latency of 0 reads the
 // sample just written.
-void Chain::run_bypass(std::size_t k, uint32_t frames) noexcept {
+void Chain::run_bypass(std::size_t k, uint32_t frames) noexcept SONORA_RT {
     if (k >= bypass_.size() || bypass_[k].ring.empty()) return;
     BypassLine& b = bypass_[k];
     const uint32_t size = b.mask + 1;
@@ -303,9 +303,9 @@ void Chain::run_bypass(std::size_t k, uint32_t frames) noexcept {
     b.was = b.on;
 }
 
-uint32_t Chain::instance_latency(std::size_t i) const { return slots_[i]->latency(); }
+uint32_t Chain::instance_latency(std::size_t i) const noexcept SONORA_RT { return slots_[i]->latency(); }
 
-uint32_t Chain::total_latency() const {
+uint32_t Chain::total_latency() const noexcept SONORA_RT {
     uint32_t sum = 0;
     for (const auto& s : slots_) sum += s->latency();
     return sum;

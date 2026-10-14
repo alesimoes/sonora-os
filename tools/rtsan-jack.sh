@@ -108,7 +108,7 @@ record() {
   local rc=$?
   set -e
   # A take with an xrun in it has holes, and the engine says so with exit
-  # 1. RTSan's own exit is 1 too; its report on stderr tells them apart.
+  # 1. RTSan's halt exits 43, and its report on stderr is checked as well.
   local expected=0
   [[ -n "${3:-}" ]] && expected=1
   if [[ "$rc" != "$expected" ]] || grep -q "RealtimeSanitizer" "$dir.err"; then

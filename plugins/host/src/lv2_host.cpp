@@ -308,7 +308,7 @@ public:
 
     uint32_t replicas() const noexcept override { return static_cast<uint32_t>(instances_.size()); }
 
-    void run(uint32_t frames) noexcept override {
+    void run(uint32_t frames) noexcept SONORA_RT override {
         reset_atom_ports();
         for (LilvInstance* inst : instances_) lilv_instance_run(inst, frames);
         if (info_.latency_port >= 0) {
@@ -317,7 +317,7 @@ public:
         }
     }
 
-    uint32_t latency() const noexcept override { return latency_; }
+    uint32_t latency() const noexcept SONORA_RT override { return latency_; }
 
     // The latency port is an output written in run(), so the new latency is
     // read from the next block, which the caller runs (host --reactivate
@@ -334,7 +334,7 @@ public:
     // LV2 control ports are read once per run(), so a change lands at the
     // block start whatever its offset (ADR-0012 §5.1). The engine clamps to
     // the described range; so does this, against a misbehaving engine.
-    bool set_param(uint32_t dense, float value, uint32_t) noexcept override {
+    bool set_param(uint32_t dense, float value, uint32_t) noexcept SONORA_RT override {
         if (dense >= dense_.size() || !std::isfinite(value)) return false;
         const PortInfo& p = info_.ports[dense_[dense]];
         if (p.min < p.max) value = std::min(std::max(value, p.min), p.max);
@@ -354,9 +354,9 @@ public:
     std::string param_key(uint32_t dense) const override { return info_.ports[dense_[dense]].symbol; }
     std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_[dense]].symbol; }
     float param_default(uint32_t dense) const override { return info_.ports[dense_[dense]].def; }
-    int bypass_param() const noexcept override { return bypass_dense_; }
+    int bypass_param() const noexcept SONORA_RT override { return bypass_dense_; }
     // lv2:enabled is 1 while processing.
-    float bypass_value(bool bypassed) const noexcept override { return bypassed ? 0.f : 1.f; }
+    float bypass_value(bool bypassed) const noexcept SONORA_RT override { return bypassed ? 0.f : 1.f; }
 
 private:
     void reset_atom_ports() noexcept {

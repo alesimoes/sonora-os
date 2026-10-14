@@ -423,7 +423,7 @@ int refuse(plugin::ChannelHeader& h, const ChainError& err, plugin::HostState st
     return state == plugin::HostState::Refused ? plugin::kHostExitRefused : plugin::kHostExitFaulted;
 }
 
-void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_frames) {
+void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_frames) noexcept SONORA_RT {
     for (std::size_t i = 0; i < chain.size(); ++i)
         h.instances[i].latency_frames.store(chain.instance_latency(i), std::memory_order_relaxed);
     // The IPC's own delay is declared like any look-ahead (ADR-0007 §4.3).
@@ -513,11 +513,11 @@ struct Session {
 // off the RT path, since saying so allocates.
 bool run_block(Session& s, uint64_t block, uint32_t frames, ChainError& cerr) noexcept SONORA_RT {
     plugin::ChannelHeader& h = s.h;
-    auto deliver = [&](uint32_t i, uint32_t p, uint32_t offset, float v) noexcept {
+    auto deliver = [&](uint32_t i, uint32_t p, uint32_t offset, float v) noexcept SONORA_RT {
         return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, offset)
                                          : s.chain.set_param(i, p, v, offset);
     };
-    auto replace = [&](uint32_t i, uint32_t p, float v) noexcept {
+    auto replace = [&](uint32_t i, uint32_t p, float v) noexcept SONORA_RT {
         return p == plugin::kBypassParam ? s.chain.set_bypass(i, v > 0.5f, 0) : s.chain.replace_param(i, p, v);
     };
     // The ring for this block and older ones, then the table if values_seq

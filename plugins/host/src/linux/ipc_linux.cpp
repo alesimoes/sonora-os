@@ -34,7 +34,7 @@
 
 namespace sonora::plugin_host {
 
-void signal(std::atomic<uint32_t>& word) noexcept {
+void signal(std::atomic<uint32_t>& word) noexcept SONORA_RT {
     word.fetch_add(1, std::memory_order_release);
     platform::wake_all(word);
 }
@@ -43,7 +43,7 @@ void wait_for_change(const std::atomic<uint32_t>& word, uint32_t seen, uint64_t 
     platform::wait_for_change(word, seen, timeout_ns);
 }
 
-uint64_t monotonic_ns() noexcept {
+uint64_t monotonic_ns() noexcept SONORA_RT {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
