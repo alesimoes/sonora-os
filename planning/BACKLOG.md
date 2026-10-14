@@ -807,9 +807,69 @@ ADR-0011 "For the owner".
       spectra and levels, digitally silent at zero, per-instance level for
       the editor: ADR-0011 §3.3), wired into the tube, transformer and tape
       processors. Default on or off is the owner's (item 7). dsp-engineer.
-- [ ] N2 slice 6: opto levelling amplifier (LDR behavioural model from the
-      literature; SignalTrain CC BY 4.0 measurements as a reference) and
-      FET peak limiter, both against SPICE of the published circuits.
+- [x] N2 slice 6a, `feature/dsp-n2-dynamics`: the optical levelling
+      amplifier. `common/dsp` `opto.h` (the published attenuator and side
+      chain, the EL brightness law, CdS photoconductor kinetics with two
+      trap levels), its SPICE reference (`measure/spice_opto.h`, ctest
+      `spice_opto_0..5`), "Sonora Opto" (eco 1x zero latency, standard 4x,
+      high 8x; LV2 and VST3, stereo and mono, key input). Measurements:
+      `brain/research/native-opto-n2.md`. dsp-engineer.
+- [ ] N2 slice 6b: the FET peak limiter ("Sonora FET"), from the published
+      circuit of the 1960s FET limiting amplifier: the FET as the bottom
+      leg of a voltage divider ahead of the preamp (a 2N3819/2N5457-class
+      JFET in its ohmic region, Shichman-Hodges with the published
+      device parameters, solved per sample with the DK method of slice 2),
+      the feedback side chain and its detector, attack 20-800 us and
+      release 50 ms-1.1 s as published, ratios 4, 8, 12, 20 and the
+      all-buttons mode as the circuit's behaviour (the ratio network with
+      every button in, not a preset curve), the class-A output stage
+      later. SPICE reference of the published schematic through
+      `measure/spice.h` (a JFET is native to ngspice), static curve per
+      ratio, attack and release against the published ranges, THD rising
+      with reduction, aliasing at 4x (sub-millisecond attack), hot input,
+      class A or an eco mode that meets it. Sources first: the original
+      unit's published schematic and service manual (the research note's
+      §1.6 found the manual's server refusing fetches), Gerat, Eichas and
+      Zolzer (AES 143, 2017) and the Aveiro thesis (Antao, 2014) for
+      validation figures only. No product names (ADR-0011 §5).
+      dsp-engineer.
+- [ ] N2 opto follow-ups (slice 6a): (a) CPU: standard (4x) is 42-47 us
+      p99.9 per q128 stereo block over class A (20 us), beside eco at
+      9 us that meets it; candidates, measured on the reference machine
+      first: the two channels in SIMD lanes (as the triode pair), a
+      tabulated EL law (1e-4 relative is enough, under 0.001 dB), the
+      side chain at half the audio path's rate. (b) The SignalTrain LA-2A
+      recordings (Zenodo 3824876, CC BY 4.0, 20.7 GB): the gain-reduction
+      envelope at the dataset's settings against the model, and the
+      cell's constants refitted if it disagrees; the researcher confirms
+      the terms cover the refit first. (c) The original amplifier (12AX7
+      voltage amplifier, 12BH7 cathode follower, transformers) on slice
+      2's triode, with its SPICE cases, as an option (about class B).
+      (d) Unverified readings to settle on hardware: the limit/compress
+      switch (R7 shorted in compress), and the side chain not loading the
+      tap. (e) Record `cpu.p999_kernels` for the opto's eco from two
+      nightly runs, so the calibrated gate also holds its regression.
+      dsp-engineer.
+- [ ] Nightly CPU gate (PR #55 follow-up): an inconclusive calibrated run
+      (exit 3) is a warning and passes the night, so a runner that drifts
+      every night would hide a regression indefinitely. Retry the
+      calibrated step once on exit 3, and fail the workflow after N
+      consecutive inconclusive nights (the count kept as a workflow
+      artifact or cache entry), N set from the inconclusive rate the
+      nightly has seen. dsp-engineer.
+- [ ] Wall-clock bars under the sanitizers (found on the opto PR, not
+      caused by it): the tube suite's `hot_input` holds every quality's
+      worst block to the 2.67 ms period (`check_le`, 2667 us) in every
+      build, ASan/UBSan included, and with or without SONORA_DSP_QUICK.
+      It passes on the GitHub runners (CI `sanitizers`, nightly `asan`),
+      but an ASan/UBSan ctest at -j16 on the owner's laptop (Docker
+      Desktop, i7-11800H, 2026-10-14) failed high (8x) at 4.5-4.9 ms per
+      block. The opto suite has the same check (worst 0.1 ms in Release;
+      it passed in that ASan run). A sanitizer slows code by an unknown
+      factor, so the bar means nothing there: hold it in the uninstrumented
+      builds only and report the figure under a sanitizer (a CMake define
+      from the sanitizer flags, not a platform `#ifdef`). The bound on the
+      output, the point of the regression test, stays held everywhere.
       dsp-engineer.
 - [ ] N2 slice 7: the mix bus processor (console-bus colour, bus
       compressor) on slices 2 to 6. dsp-engineer.

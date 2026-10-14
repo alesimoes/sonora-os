@@ -1,0 +1,47 @@
+{
+  "processor": "org.sonora.opto",
+  "class": "A",
+  "note": "ADR-0011 §3.2 and §3.3. [M] is the reissue manual of the original unit (brain/research/native-opto-n2.md). The circuit is held to ngspice on the same equations (tests/spice/, the gain reduction through six tone bursts at 44.1, 48 and 96 kHz), and the processor in eco at 48 kHz to that circuit within 1e-7 FS (its float output); the circuit at standard's 4x rates is held to ngspice directly, and the standard processor through the static curve (rendered at standard) and its release times against eco's. The static curve is held to the model's steady state solved from the equations (1 kHz, 30 s renders); the compress ratio to 'a low compression ratio' [M], at most compress_max_ratio from 3 to 15 dB of reduction, and limit's above it. Release, after 1, 5 and 20 s at 10 dB and 5 s at 5 and 20 dB (compress, peak reduction 100): 50 % in 40-80 ms and 90 % in 0.5-5 s ([M]: 'approximately 0.06 seconds for 50% release, 0.5 to 5 seconds for complete release'; 'quickly (40-80 milliseconds) to approximately half'), lengthening with the time held and the depth (the memory [M] describes), the same at every rate within rate_tolerance. Attack ('very fast' [M]): the 63 % time of steps to 3-20 dB of reduction under t63_max_ms, and shorter on a larger step. THD at 1 kHz up to up_to_gr_db of reduction under [M]'s 0.35 %. Response below threshold flat ([M]: +-0.1 dB, 30 Hz-15 kHz). Aliasing at the nominal level (-18 dBFS, peak reduction 85, about 5 dB of reduction), per quality: eco_dbc for eco (no oversampling), §3.2's -90 dBc for standard and high; heavier settings reported. Eco at high frequencies: a tone locked to the rate is reduced within eco_hf.fs4_db of standard at fs/4 and eco_hf.f8k_db at 8 kHz over its phase against the samples, from near the threshold to 15 dB of reduction (the light pulse sampled four or six times a period). Hot input (squares to +24 dBFS, gain +40 dB): finite, the reduction no deeper than the cell's floor ([M]: up to 40 dB), the worst block (minimum of 3 runs) at most hot_block_ratio times the median block on a -60 dBFS square in the same configuration, and inside the period. Class A (channel, §3.5) on the golden configuration and on programme +12 dB at full peak reduction.",
+  "spice": {
+    "gr_db": 0.05
+  },
+  "static": {
+    "curve_db": 0.1,
+    "compress_max_ratio": 5.0
+  },
+  "release": {
+    "t50_min_ms": 40.0,
+    "t50_max_ms": 80.0,
+    "t90_min_s": 0.5,
+    "t90_max_s": 5.0,
+    "rate_tolerance": 0.02
+  },
+  "attack": {
+    "t63_max_ms": 20.0
+  },
+  "thd": {
+    "max_pct_1k": 0.35,
+    "up_to_gr_db": 20.0
+  },
+  "eco_hf": {
+    "fs4_db": 0.75,
+    "f8k_db": 0.1
+  },
+  "response_db": 0.1,
+  "aliasing": {
+    "eco_dbc": -70.0,
+    "standard_dbc": -90.0,
+    "high_dbc": -90.0
+  },
+  "deepest_gr_db": 40.5,
+  "hot_block_ratio": 6.0,
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["peak_reduction", "gain", "mode", "emphasis", "link", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0,
+    "held": ["eco"]
+  }
+}
