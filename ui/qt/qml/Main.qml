@@ -124,13 +124,39 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
-            // The keys this build answers, on one line; the profile has more.
-            Text {
+            // The profile (it opens the Keys menu), Pro Tools' a-z, lit
+            // while Commands Keyboard Focus is on, and the keys this build
+            // answers on one line; the profile has more.
+            Row {
                 width: footerColumn.width
-                elide: Text.ElideRight
-                text: root.shell.helpEntries.join("   ")
-                color: Theme.textTertiary
-                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                spacing: Theme.space2
+                SButton {
+                    id: keysButton
+                    objectName: "keysButton"
+                    text: "Keys: " + root.shell.profileName
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    active: profilePanel.visible
+                    onClicked: profilePanel.visible = !profilePanel.visible
+                }
+                SButton {
+                    id: focusButton
+                    objectName: "focusButton"
+                    visible: root.shell.focusKeys
+                    text: "a-z"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    active: root.shell.commandsFocus
+                    onClicked: root.shell.invoke("focus.commands", -1)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - keysButton.width - (focusButton.visible ? focusButton.width + parent.spacing : 0) - parent.spacing
+                    elide: Text.ElideRight
+                    text: root.shell.helpEntries.join("   ")
+                    color: Theme.textTertiary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
             }
         }
     }
@@ -221,6 +247,85 @@ Rectangle {
                 text: "Cancel"
                 implicitHeight: 24
                 onClicked: openPanel.visible = false
+            }
+        }
+    }
+
+    // --- the Keys menu: every profile in the key map folder -------------------
+    // A file that would be refused is listed with the reason, and choosing it
+    // says why on the status line, rather than being offered and then
+    // quietly ignored.
+    Rectangle {
+        id: profilePanel
+        objectName: "profilePanel"
+        visible: false
+        z: 10
+        anchors { left: parent.left; leftMargin: Theme.space4; bottom: footer.top; bottomMargin: Theme.space2 }
+        width: 440
+        height: profileColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }  // a click inside does not fall through
+
+        Column {
+            id: profileColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Keys"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "The key map the keyboard follows. The choice is kept for the next start."
+                color: Theme.textTertiary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            Repeater {
+                model: root.shell.profiles
+                Column {
+                    required property var modelData
+                    width: profileColumn.width
+                    spacing: 2
+                    SButton {
+                        width: parent.width
+                        implicitHeight: 28
+                        bold: false
+                        fontPx: Theme.textBody
+                        available: modelData.error.length === 0
+                        active: modelData.current
+                        text: modelData.name + (modelData.file.length === 0 ? "  (built in)" : "")
+                        onClicked: {
+                            root.shell.useProfile(modelData.file)
+                            if (available) profilePanel.visible = false
+                        }
+                    }
+                    Text {
+                        visible: modelData.error.length > 0
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: "refused: " + modelData.error
+                        color: Theme.caution
+                        font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                    }
+                }
+            }
+            Text {
+                visible: root.shell.focusKeys
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "a-z is Commands Keyboard Focus: while it is lit, this profile's single-letter edit keys run."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            SButton {
+                text: "Close"
+                implicitHeight: 24
+                onClicked: profilePanel.visible = false
             }
         }
     }

@@ -1358,6 +1358,8 @@ int main() {
             return 1;
         }
         CHECK(built.name() == on_disk.name());
+        // The comment too: the compiled-in copy had drifted from the file.
+        CHECK(built.comment() == on_disk.comment());
         CHECK(built.bindings().size() == on_disk.bindings().size());
         for (const Binding& b : on_disk.bindings()) {
             const Binding* m = built.resolve(b.chord);
@@ -1378,6 +1380,94 @@ int main() {
             CHECK(b != nullptr);
             CHECK(b->command == "track.toggle_arm");
             CHECK(b->ctx.target == i - 1);
+        }
+    }
+
+    // --- Commands Keyboard Focus ---
+    {
+        const auto all = [](const std::string&) { return true; };
+        KeyMap map;
+        std::string err;
+        CHECK(KeyMap::load_string(R"({"name": "t", "bindings": {
+            "a": { "command": "edit.trim_start_to_insertion", "focus": "commands" },
+            "ctrl+alt+1": "focus.commands",
+            "space": "transport.toggle_record"
+        }})", "t", map, err));
+        CHECK(needs_commands_focus(*map.resolve("a")));
+        CHECK(!needs_commands_focus(*map.resolve("space")));
+        CHECK(!needs_commands_focus(*map.resolve("ctrl+alt+1")));
+
+        // Pro Tools' other two focuses do not exist here: refused, not run
+        // as if always on.
+        CHECK(!KeyMap::load_string(R"({"name": "t", "bindings": {
+            "a": { "command": "edit.undo", "focus": "clip_list" }
+        }})", "t", map, err));
+        CHECK(mentions(err, "\"focus\" must be \"commands\""));
+        CHECK(!KeyMap::load_string(R"({"name": "t", "bindings": {
+            "a": { "command": "edit.undo", "focus": true }
+        }})", "t", map, err));
+        CHECK(mentions(err, "\"focus\" must be"));
+        // Once focus is off, a toggle that needs focus could never turn it on.
+        CHECK(!KeyMap::load_string(R"({"name": "t", "bindings": {
+            "ctrl+alt+1": { "command": "focus.commands", "focus": "commands" }
+        }})", "t", map, err));
+        CHECK(mentions(err, "never turn focus back on"));
+
+        // A key that needs focus is not a way to an essential: with focus
+        // off it does nothing that command does. The repair takes the
+        // default's q over and leaves it ungated.
+        KeyMap gated;
+        CHECK(KeyMap::load_string(R"({"name": "t", "bindings": {
+            "q": { "command": "app.quit", "focus": "commands" },
+            "1": { "command": "track.toggle_arm", "target": 1 },
+            "space": "transport.toggle_record"
+        }})", "t", gated, err));
+        const std::vector<KeyChord> tty = KeyMap::terminal_chords();
+        CHECK(!gated.reaches({"app.quit"}, tty, all));
+        const std::vector<std::string> notices = gated.ensure_essentials(tty, all);
+        CHECK(notices.size() == 1);
+        CHECK(mentions(notices[0], "app.quit"));
+        CHECK(gated.resolve("q")->command == "app.quit");
+        CHECK(!needs_commands_focus(*gated.resolve("q")));
+        CHECK(gated.reaches({"app.quit"}, tty, all));
+
+        // protools.json: Avid's Commands Keyboard Focus letters need focus,
+        // and Control+Alt+1 (Command+Option+1) toggles it.
+        KeyMap pt;
+        CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", pt, err));
+        for (const char* letter : {"a", "s", "d", "f", "g", "b", "p", "semicolon", "e",
+                                   "z", "shift+z", "x", "c", "v", "r", "t", "comma",
+                                   "period"}) {
+            const Binding* b = pt.resolve(letter);
+            if (b == nullptr || !needs_commands_focus(*b)) {
+                std::fprintf(stderr, "FAIL protools.json: %s is not a Commands Focus key\n",
+                             letter);
+                return 1;
+            }
+        }
+        const Binding* toggle = pt.resolve("ctrl+alt+1");
+        CHECK(toggle != nullptr && toggle->command == "focus.commands");
+        CHECK(!needs_commands_focus(*toggle));
+        // Avid's focus-free forms of A and S (Edit > Trim Clip).
+        CHECK(pt.resolve("alt+shift+7")->command == "edit.trim_start_to_insertion");
+        CHECK(pt.resolve("alt+shift+8")->command == "edit.trim_end_to_insertion");
+        CHECK(!needs_commands_focus(*pt.resolve("alt+shift+7")));
+        // Nothing an operator must reach depends on focus, in any profile.
+        for (const char* file : {"default.json", "protools.json", "logic.json"}) {
+            KeyMap m;
+            CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/" + file, m, err));
+            for (const Binding& b : m.bindings()) {
+                if (!needs_commands_focus(b)) continue;
+                for (const auto& group : KeyMap::essential_commands()) {
+                    for (const auto& id : group) {
+                        if (b.command == id) {
+                            std::fprintf(stderr, "FAIL %s: essential %s on focus key %s\n",
+                                         file, id.c_str(), b.spec.c_str());
+                            return 1;
+                        }
+                    }
+                }
+            }
         }
     }
 

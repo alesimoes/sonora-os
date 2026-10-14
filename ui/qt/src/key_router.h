@@ -5,9 +5,12 @@
 // vocabulary from contracts/api. This file only decides where a resolved
 // command goes and what the operator is told when it goes nowhere.
 //
-// Until M4 gives CommandSpec a domain (ADR-0007 §5), "interface" means a
-// command installed in this router's own registry, and "engine" means one
-// the engine says it implements. Neither: NotImplemented, said out loud.
+// Where a command goes is its CommandSpec::domain (ADR-0007 §5). An
+// Interface command runs in this router's own registry and never reaches the
+// engine. An Engine command goes to the engine on the control API (M4) when
+// the engine says it implements it; until it does, a handler the window
+// installed for it stands in (the Edit window's edits, through the replica's
+// model requests). Neither: NotImplemented, said out loud.
 #pragma once
 
 #include <cstdint>
@@ -26,6 +29,7 @@ struct RouteResult {
         Local,           // ran in the interface; `result` says how it went
         Sent,            // queued to the engine as `seq`; the reply says more
         NotImplemented,  // in the catalog, implemented nowhere in this build
+        FocusOff,        // a Commands Keyboard Focus key, and focus is off
     };
     Kind kind = Kind::Unbound;
     std::string command;
@@ -49,8 +53,12 @@ class KeyRouter {
 public:
     using Send = std::function<uint64_t(const std::string&, const CommandContext&)>;
 
-    // `engine_implemented` is api::Hello::implemented_commands.
+    // `engine_implemented` is api::Hello::implemented_commands. The router
+    // installs focus.commands in its own registry: the focus is its state.
     KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send);
+    // focus.commands' handler holds `this`.
+    KeyRouter(const KeyRouter&) = delete;
+    KeyRouter& operator=(const KeyRouter&) = delete;
 
     // Who a track command given no track acts on: the selected track, or -1
     // when nothing is selected (and the command then fails, as before).
@@ -64,6 +72,11 @@ public:
     // notices are returned for the operator, as the tty does.
     std::vector<std::string> prepare(const std::vector<KeyChord>& device);
 
+    // Another profile, at run time, after prepare(): the same checks and
+    // repairs against the same device, and its notices. The focus state is
+    // kept; it is the operator's, not the profile's.
+    std::vector<std::string> setMap(KeyMap map);
+
     RouteResult route(const KeyChord& chord);
     // The same entry point for a command that did not come from a key: a
     // click on an arm button goes exactly where its key would.
@@ -71,17 +84,33 @@ public:
 
     bool implemented(const std::string& id) const;
     const KeyMap& map() const { return map_; }
-    // "chord=command" entries, only for bindings the device can send and the
-    // build implements, as engine/app's build_help() does for the tty.
+    // "chord=command" entries, only for bindings the device can send, the
+    // build implements, and the focus state lets run, as engine/app's
+    // build_help() does for the tty.
     const std::vector<std::string>& help() const { return help_; }
 
+    // Pro Tools' Commands Keyboard Focus. On at start: the letters worked
+    // unconditionally before there was a toggle, and Avid does not say
+    // which state a new session opens in.
+    bool commandsFocus() const { return commands_focus_; }
+    void setCommandsFocus(bool on);
+    // Whether this profile has any key that needs focus; a profile without
+    // one has nothing for an a-z button to change.
+    bool hasFocusKeys() const;
+    // The chord that toggles focus in this profile, "" when it has none.
+    std::string focusToggleChord() const;
+
 private:
+    void buildHelp();
+
     KeyMap map_;
     std::vector<std::string> engine_;
     Send send_;
     CommandRegistry local_;
     std::vector<std::string> help_;
+    std::vector<KeyChord> device_;
     std::function<int()> selected_;
+    bool commands_focus_ = true;
 };
 
 }  // namespace sonora::ui

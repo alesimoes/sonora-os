@@ -19,11 +19,13 @@
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
+#include <QVariantList>
 #include <functional>
 #include <vector>
 
 #include "engine_adapter.h"
 #include "key_router.h"
+#include "keymap_profiles.h"
 
 class QQuickWindow;
 
@@ -41,7 +43,14 @@ class ShellModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(int trackCount READ trackCount CONSTANT)
     Q_PROPERTY(QString formatText READ formatText CONSTANT)
-    Q_PROPERTY(QString profileName READ profileName CONSTANT)
+    Q_PROPERTY(QString profileName READ profileName NOTIFY keymapChanged)
+    // The profiles the operator can switch to: {name, file, error, current}
+    // each, `error` naming why a file is refused (keymap_profiles.h).
+    Q_PROPERTY(QVariantList profiles READ profiles NOTIFY keymapChanged)
+    // Pro Tools' Commands Keyboard Focus, and whether this profile has any
+    // key it gates (the a-z button is shown only then).
+    Q_PROPERTY(bool commandsFocus READ commandsFocus NOTIFY keymapChanged)
+    Q_PROPERTY(bool focusKeys READ focusKeys NOTIFY keymapChanged)
     Q_PROPERTY(QString transportText READ transportText NOTIFY transportChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY transportChanged)
     Q_PROPERTY(QString clockText READ clockText NOTIFY transportChanged)
@@ -58,7 +67,7 @@ class ShellModel : public QObject {
     // the take stopped writing, why no input is connected. Empty when
     // nothing is wrong.
     Q_PROPERTY(QString alertText READ alertText NOTIFY alertChanged)
-    Q_PROPERTY(QStringList helpEntries READ helpEntries CONSTANT)
+    Q_PROPERTY(QStringList helpEntries READ helpEntries NOTIFY keymapChanged)
     Q_PROPERTY(QString renderPath READ renderPath NOTIFY renderPathChanged)
     Q_PROPERTY(bool softwareRendering READ softwareRendering NOTIFY renderPathChanged)
     Q_PROPERTY(bool metersAvailable READ metersAvailable NOTIFY renderPathChanged)
@@ -80,6 +89,14 @@ public:
     void setScanCodesAreXkb(bool xkb) { xkb_scan_codes_ = xkb; }
     bool scanCodesAreXkb() const { return xkb_scan_codes_; }
     void addNotice(const QString& n);
+    // The key map's own notices -- a refused profile, the essentials
+    // repaired -- which a profile switch replaces rather than piles up.
+    void setKeymapNotices(const QStringList& n);
+
+    // The profile switch. `remember` records a choice for the next start
+    // and says why it could not; empty, nothing is remembered.
+    using Remember = std::function<bool(const std::string& file, std::string& why)>;
+    void setProfiles(std::vector<ProfileEntry> entries, std::string current, Remember remember);
     // From the render-path probe, on the GUI thread.
     void setRenderPath(const QString& text, bool software, bool meters_available);
 
@@ -131,6 +148,15 @@ public:
     QStringList notices() const { return notices_; }
     QString alertText() const { return alert_text_; }
     QStringList helpEntries() const;
+    QVariantList profiles() const;
+    bool commandsFocus() const { return router_.commandsFocus(); }
+    bool focusKeys() const { return router_.hasFocusKeys(); }
+
+    // Switches to the profile in `file` ("" for the built-in default), as
+    // listed in `profiles`. A file that no longer loads is refused, loudly,
+    // and the keys stay as they were: the operator is never left on a
+    // half-loaded map, nor moved to the default behind their back.
+    Q_INVOKABLE void useProfile(const QString& file);
     QString renderPath() const { return render_path_; }
     bool softwareRendering() const { return software_; }
     bool metersAvailable() const { return meters_available_; }
@@ -170,6 +196,7 @@ signals:
     void noticesChanged();
     void alertChanged();
     void renderPathChanged();
+    void keymapChanged();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -203,6 +230,11 @@ private:
     Clock now_ns_;
     bool xkb_scan_codes_ = false;
     bool text_entry_ = false;
+    bool seen_focus_ = true;
+    QStringList keymap_notices_;
+    std::vector<ProfileEntry> profiles_;
+    std::string profile_file_;
+    Remember remember_;
 
     QString transport_text_ = QStringLiteral("STOP");
     bool recording_ = false;

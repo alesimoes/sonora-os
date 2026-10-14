@@ -41,6 +41,18 @@ playback can follow edits; it is in flight.
        `engine/control`.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
+9. [ ] Engine commands the shipped key maps bind and no engine runs yet
+       (Track 3 item 4; the window says "not implemented" for each):
+       `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
+       `transport.toggle_loop`, `transport.play_half_speed`,
+       `track.toggle_input_monitor`. Wired in
+       the interface against `FakeEngine::Config::planned_commands`
+       (test_ui_keymaps); each needs its handler in
+       `install_session_commands()` and in `FakeEngine::engine_commands()`
+       together, and then leaves `planned_commands`. The edit operations
+       (`edit.cut`/`copy`/`paste`/`duplicate`/`repeat`/`select_all`/
+       `heal_separation`/`consolidate`) wait on Track 3 item 1's compound
+       operation.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -77,8 +89,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              comes first.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
 3. [ ] Transport window and counters; tempo map and click display.
-4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
-       Focus; fix the `keymaps/default.json` comment and its embedded copy.
+4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
+       Focus; fix the `keymaps/default.json` comment and its embedded copy
+       (`feature/ui-keymaps`): routing by `CommandSpec::domain`, the engine
+       first for Engine commands it lists; `"focus": "commands"` bindings,
+       `focus.commands` on `ctrl+alt+1` and the a-z button; the Keys menu,
+       remembered in `~/.config/sonora/keymap`. Still open:
+       - [ ] Verify against Avid: Pro Tools' focus state in a new session,
+             Command+Option+1 turning focus off, letters with focus off,
+             focus in the Mix window; `comma`/`period` (nudge or
+             nudge-and-play in the ch. 3 table).
+       - [ ] The tty has no a-z indicator, so its focus keys stay live; a
+             focus toggle there needs a footer indicator first.
+       - [ ] Pro Tools' Clip List and Groups List focuses (`ctrl+alt+2`,
+             `ctrl+alt+3`) once those lists exist.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)

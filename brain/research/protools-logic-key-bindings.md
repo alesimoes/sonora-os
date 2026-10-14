@@ -382,6 +382,12 @@ this profile:
 
 ## 3. Commands Keyboard Focus — the thing that matters most
 
+**Applied 2026-10-14 (`feature/ui-keymaps`): option 2 in the Qt window, with
+option 4's focus-free trims.** Bindings carry `"focus": "commands"`,
+`focus.commands` is on `ctrl+alt+1`, and an a-z button shows and toggles the
+state. The tty keeps the letters live, having no indicator. See
+`keymaps/README.md`, "Commands Keyboard Focus".
+
 ### What Pro Tools actually does
 
 Avid, PT-A Ch.3:

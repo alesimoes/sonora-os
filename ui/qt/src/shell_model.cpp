@@ -3,6 +3,7 @@
 
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QVariantMap>
 #include <QQuickWindow>
 #include <algorithm>
 #include <chrono>
@@ -51,6 +52,7 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     replies_.reserve(16);
     events_.reserve(16);
     xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
+    seen_focus_ = router_.commandsFocus();
 }
 
 void ShellModel::start(int hz) {
@@ -85,6 +87,69 @@ QStringList ShellModel::helpEntries() const {
 void ShellModel::addNotice(const QString& n) {
     notices_ << n;
     emit noticesChanged();
+}
+
+void ShellModel::setKeymapNotices(const QStringList& n) {
+    for (const QString& old : keymap_notices_) notices_.removeOne(old);
+    keymap_notices_ = n;
+    notices_ << n;
+    emit noticesChanged();
+}
+
+void ShellModel::setProfiles(std::vector<ProfileEntry> entries, std::string current,
+                             Remember remember) {
+    profiles_ = std::move(entries);
+    profile_file_ = std::move(current);
+    remember_ = std::move(remember);
+    emit keymapChanged();
+}
+
+QVariantList ShellModel::profiles() const {
+    QVariantList out;
+    for (const ProfileEntry& e : profiles_) {
+        QVariantMap m;
+        m.insert(QStringLiteral("name"), QString::fromStdString(e.name));
+        m.insert(QStringLiteral("file"), QString::fromStdString(e.file));
+        m.insert(QStringLiteral("error"), QString::fromStdString(e.error));
+        m.insert(QStringLiteral("current"), e.file == profile_file_);
+        out << m;
+    }
+    return out;
+}
+
+void ShellModel::useProfile(const QString& qfile) {
+    const std::string file = qfile.toStdString();
+    // Loaded again, not taken from the list: the file may have changed
+    // since the list was made, and what runs must be what was checked.
+    KeyMap map;
+    std::string err;
+    if (file.empty()) {
+        map = KeyMap::built_in_default();
+    } else if (!KeyMap::load_file(file, map, err)) {
+        for (ProfileEntry& e : profiles_) {
+            if (e.file == file) e.error = err;
+        }
+        emit keymapChanged();
+        say(QStringLiteral("key map refused, keys unchanged: ") + QString::fromStdString(err));
+        return;
+    }
+    const std::vector<std::string> notices = router_.setMap(std::move(map));
+    profile_file_ = file;
+    for (ProfileEntry& e : profiles_) {
+        if (e.file == file) e.error.clear();
+    }
+    QStringList lines;
+    for (const auto& n : notices) lines << QString::fromStdString(n);
+    std::string why;
+    if (remember_ && !remember_(file, why)) {
+        lines << QStringLiteral("this key map is used until the interface restarts, and "
+                                "then the previous one again: ") +
+                     QString::fromStdString(why);
+    }
+    setKeymapNotices(lines);
+    seen_focus_ = router_.commandsFocus();
+    emit keymapChanged();
+    say(QStringLiteral("Keys: ") + profileName());
 }
 
 void ShellModel::setRenderPath(const QString& text, bool software, bool meters_available) {
@@ -167,6 +232,10 @@ QList<qreal> ShellModel::scaleMarks() const {
 }
 
 void ShellModel::report(const RouteResult& r) {
+    if (router_.commandsFocus() != seen_focus_) {
+        seen_focus_ = router_.commandsFocus();
+        emit keymapChanged();
+    }
     if (!r.message.empty()) {
         say(QString::fromStdString(r.message));
     } else if (r.kind == RouteResult::Kind::Local) {

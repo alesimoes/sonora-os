@@ -1,6 +1,6 @@
 {
   "name": "Pro Tools",
-  "comment": "Pro Tools key bindings, reproduced as an interface convention under ADR-0004, checked against Avid's Pro Tools Shortcuts Guide (12.5, 2021.6, 2025.6); see brain/research/protools-logic-key-bindings.md. Modifiers are written in the Windows/Linux spelling: ctrl here is Command on a Mac keyboard, alt is Option. Numeric-keypad bindings assume Pro Tools' Transport keypad mode. Bindings marked \"origin\": \"sonora\" are ours, for commands Pro Tools has no key for; \"verified\": false marks a Pro Tools binding nobody has confirmed - see keymaps/README.md. Nine letters (a s d f g b p ; e) are Commands Keyboard Focus bindings; this engine has no focus modes yet, so they are bound unconditionally, as if focus were always on.",
+  "comment": "Pro Tools key bindings, reproduced as an interface convention under ADR-0004, checked against Avid's Pro Tools Shortcuts Guide (12.5, 2021.6, 2025.6); see brain/research/protools-logic-key-bindings.md. Modifiers are written in the Windows/Linux spelling: ctrl here is Command on a Mac keyboard, alt is Option. Numeric-keypad bindings assume Pro Tools' Transport keypad mode. Bindings marked \"origin\": \"sonora\" are ours, for commands Pro Tools has no key for; \"verified\": false marks a Pro Tools binding nobody has confirmed - see keymaps/README.md. Single keys marked \"focus\": \"commands\" are Commands Keyboard Focus bindings (Avid, Shortcuts Guide ch. 3, Commands Keyboard Focus Shortcuts): in the Qt window they run only while Commands Keyboard Focus is on, toggled by ctrl+alt+1 (Command+Option+1) or the a-z button. A terminal has no a-z indicator, so there they are always live, as before.",
   "bindings": {
     "space": "transport.toggle_play",
     "shift+space": "transport.play_half_speed",
@@ -51,7 +51,8 @@
     },
     "e": {
       "command": "zoom.toggle",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes. The focus-free form, Mac Control+E / Windows Start+E, needs a modifier this schema cannot spell."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3). The focus-free form, Mac Control+E / Windows Start+E, needs a modifier this schema cannot spell."
     },
     "alt+f": "zoom.fit_selection",
     "alt+a": "zoom.fit_session",
@@ -85,35 +86,78 @@
 
     "a": {
       "command": "edit.trim_start_to_insertion",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3)."
     },
     "s": {
       "command": "edit.trim_end_to_insertion",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3)."
     },
     "d": {
       "command": "edit.fade_to_start",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3)."
     },
     "f": {
       "command": "edit.fade_selection",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3)."
     },
     "g": {
       "command": "edit.fade_to_end",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3)."
     },
     "b": {
       "command": "edit.separate_at_selection",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3)."
     },
     "p": {
       "command": "track.select_previous",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes. Avid's command moves the edit insertion to the previous track, which is the nearest thing the catalog has."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3). Avid's command moves the edit insertion to the previous track, which is the nearest thing the catalog has."
     },
     "semicolon": {
       "command": "track.select_next",
-      "comment": "Commands Keyboard Focus binding, bound unconditionally because the engine has no focus modes. Avid's command moves the edit insertion to the next track."
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus (Avid, Shortcuts Guide ch. 3). Avid's command moves the edit insertion to the next track."
+    },
+    "ctrl+alt+1": {
+      "command": "focus.commands",
+      "comment": "Command+Option+1 (Mac) / Control+Alt+1 (Windows): enable Commands Keyboard Focus for the Edit window (Avid, Shortcuts Guide ch. 3). Avid describes enabling it; that the same chord turns it off again, like the a-z button, is our reading."
+    },
+    "alt+shift+7": {
+      "command": "edit.trim_start_to_insertion",
+      "comment": "Edit > Trim Clip > Start to Insertion, Option+Shift+7: the focus-free form of A (brain/research/protools-logic-key-bindings.md section 1.7)."
+    },
+    "alt+shift+8": {
+      "command": "edit.trim_end_to_insertion",
+      "comment": "Edit > Trim Clip > End to Insertion, Option+Shift+8: the focus-free form of S (same note)."
+    },
+    "z": {
+      "command": "edit.undo",
+      "focus": "commands",
+      "comment": "Commands Keyboard Focus: Undo (Avid, Shortcuts Guide ch. 3; the research note's focus layout, PT-C and PT-B tables)."
+    },
+    "shift+z": { "command": "edit.redo", "focus": "commands", "comment": "Commands Keyboard Focus: Redo (same table)." },
+    "x": { "command": "edit.cut", "focus": "commands", "comment": "Commands Keyboard Focus: Cut (same table)." },
+    "c": { "command": "edit.copy", "focus": "commands", "comment": "Commands Keyboard Focus: Copy (same table)." },
+    "v": { "command": "edit.paste", "focus": "commands", "comment": "Commands Keyboard Focus: Paste (same table)." },
+    "r": { "command": "zoom.out", "focus": "commands", "comment": "Commands Keyboard Focus: Zoom Out Horizontally (same table)." },
+    "t": { "command": "zoom.in", "focus": "commands", "comment": "Commands Keyboard Focus: Zoom In Horizontally (same table)." },
+    "comma": {
+      "command": "nudge.back",
+      "focus": "commands",
+      "verified": false,
+      "comment": "Ch. 7, Editing, Nudging, and Trimming: Nudge back, Minus on the keypad or Comma in Commands Keyboard Focus. The research note's summary of the ch. 3 table calls comma a nudge-and-play key instead; unresolved until someone reads the table again."
+    },
+    "period": {
+      "command": "nudge.forward",
+      "focus": "commands",
+      "verified": false,
+      "comment": "Ch. 7: Nudge forward, Plus on the keypad or Period in Commands Keyboard Focus. Same disagreement as comma."
     },
 
     "shift+r": {

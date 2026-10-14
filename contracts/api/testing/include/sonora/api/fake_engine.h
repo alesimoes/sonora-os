@@ -77,6 +77,14 @@ public:
         bool signal = true;
         Clock clock;   // empty: std::chrono::steady_clock
         std::vector<PluginInfo> plugins = fake_catalog();
+        // Engine commands a later engine is to implement (planning/BACKLOG.md
+        // Track 1), announced in Hello so an interface can be wired to them
+        // before they land. The fake runs none of them: each is answered Ok
+        // and recorded in planned_log(), so a test sees the command arrive
+        // over the wire and nothing more. Interface commands and ids not in
+        // the catalog are not announced. Empty by default, so --fake-engine
+        // never claims a command nothing runs.
+        std::vector<std::string> planned_commands;
     };
 
     FakeEngine();
@@ -146,6 +154,12 @@ public:
     static float level_at(uint32_t ch, double t_s);
     // The Engine-domain commands this build's engine implements.
     static const std::vector<std::string>& engine_commands();
+    // Every Config::planned_commands request received, as {command, target}.
+    struct PlannedCall {
+        std::string command;
+        int32_t target;
+    };
+    const std::vector<PlannedCall>& planned_log() const { return planned_log_; }
 
 private:
     uint64_t now() const;
@@ -197,6 +211,8 @@ private:
     uint64_t moved_ns_ = 0;
     int32_t take_ = 1;
     std::vector<bool> armed_;
+    std::vector<std::string> planned_;
+    std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;
     std::vector<float> scripted_;
     std::vector<uint32_t> clips_;
