@@ -59,7 +59,8 @@ struct Selection {
     bool has_range() const { return end > start; }
 };
 
-enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd };
+// FadeIn / FadeOut: the Smart Tool's top corners, as in Pro Tools.
+enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut };
 
 struct Hit {
     int track = -1;
@@ -70,7 +71,7 @@ struct Hit {
 // A gesture in progress: interface state, drawn outside the model until the
 // release turns it into one operation (timeline-model.md).
 struct Drag {
-    enum class Kind { None, Move, TrimStart, TrimEnd, Range };
+    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut };
     Kind kind = Kind::None;
     int track = -1;
     model::Id region = kNoId;
@@ -79,6 +80,8 @@ struct Drag {
     model::Frames orig_start = 0, orig_end = 0;
     model::Frames start = 0, end = 0;  // the preview
     bool moved = false;
+    // A fade drag's length as the drop would set it; 0 removes the fade.
+    model::Frames fade = 0;
     // A trim's playlist as the drop would leave it, neighbours overwritten;
     // null when there is nothing to show beyond start and end.
     std::shared_ptr<const model::Playlist> preview;
@@ -148,6 +151,22 @@ public:
     bool trim_end_to_insertion(std::string& why);
     bool clear(std::string& why);
     bool nudge(int direction, std::string& why);
+    // Fades (Pro Tools' Fade to Start, Fade to End, and the crossfade
+    // without its dialog). Fades change no region's position, so every edit
+    // mode allows them. The shape is the last one used, as Pro Tools'
+    // no-dialog fades are; the window says which.
+    bool fade_to_start(std::string& why);
+    bool fade_to_end(std::string& why);
+    // On the selected track's time range: across one cut between two
+    // butted regions, a crossfade (centred; pre or post when the range ends
+    // or starts at the cut); over one region's start, a fade-in; over its
+    // end, a fade-out. Anything else is refused by name rather than guessed.
+    // The selection becomes what was made, so Clear takes it away again.
+    bool fade_selection(std::string& why);
+    model::FadeShape fade_shape() const { return fade_shape_; }
+    model::FadeShape crossfade_shape() const { return crossfade_shape_; }
+    void set_fade_shape(model::FadeShape s) { fade_shape_ = s; }
+    void set_crossfade_shape(model::FadeShape s) { crossfade_shape_ = s; }
     bool undo(std::string& why);
     bool redo(std::string& why);
 
@@ -172,6 +191,12 @@ private:
     // The region a command acts on: the selected one, else the one under
     // the insertion point on the selected track.
     const model::Region* target_region(int& track_index) const;
+    // A single fade on `region`'s `end`, with the refusals every fade path
+    // shares: a crossfaded end, a length past the other end's fade.
+    bool set_region_fade(model::Id region, model::FadeEnd end, model::Frames length,
+                         std::string& why);
+    // Clear on a range that is exactly one fade or crossfade removes it.
+    bool clear_fade_at_selection(bool& done, std::string& why);
 
     TimelineDocument& doc_;
     ViewState view_;
@@ -182,7 +207,32 @@ private:
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
     Drag drag_;
+    model::FadeShape fade_shape_ = model::FadeShape::Linear;
+    model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
 };
+
+// --- fades, as the engine plays them ---
+//
+// The gain at `x` (0..1 through a fade-in) for each shape: the engine's own
+// sonora::fade_in_gain() from common/base's sonora/fade_curve.h, the one
+// definition engine/core plays, so the curve the timeline draws cannot drift
+// from the gain the operator hears. engine/core's test_playback_mix pins the
+// law's values.
+float fade_gain(model::FadeShape shape, float x);
+const char* fade_shape_name(model::FadeShape shape);
+model::FadeShape next_fade_shape(model::FadeShape shape);
+
+// Where a region's own fades are heard. A crossfade at an end replaces that
+// end's fade (engine/control's plan builder), so it is 0 there and the
+// crossfade is drawn instead: drawing both would show a fade nobody hears.
+struct RegionFades {
+    model::Frames in = 0, out = 0;
+    model::FadeShape in_shape = model::FadeShape::Linear;
+    model::FadeShape out_shape = model::FadeShape::Linear;
+    const model::Crossfade* in_crossfade = nullptr;   // at the region's start
+    const model::Crossfade* out_crossfade = nullptr;  // at its end
+};
+RegionFades region_fades(const model::Playlist& p, const model::Region& r);
 
 // --- resolvers: command + snapshot -> one fully resolved operation ---
 //

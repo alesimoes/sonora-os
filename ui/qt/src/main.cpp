@@ -56,6 +56,7 @@ struct Options {
     QString engine_socket;
     bool fake_engine = false;
     QString insert_view;
+    QString edit_view;
 };
 
 // The demo session's inserts, on the fake engine's catalog (fake_catalog()):
@@ -171,8 +172,13 @@ bool parse(QGuiApplication& app, Options& o) {
                                                         "plugin chooser (browser) or a parameter "
                                                         "panel (panel), for screenshots."),
                                          QStringLiteral("browser|panel"));
+    const QCommandLineOption edit_view({QStringLiteral("edit-view")},
+                                       QStringLiteral("With --demo, zoom the Edit window in on "
+                                                      "the snare's crossfade and the fades "
+                                                      "around it (fades), for screenshots."),
+                                       QStringLiteral("fades"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions, socket, fake, insert_view});
+                  window, sessions, socket, fake, insert_view, edit_view});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -194,6 +200,11 @@ bool parse(QGuiApplication& app, Options& o) {
     if (!o.insert_view.isEmpty() && o.insert_view != QStringLiteral("browser") &&
         o.insert_view != QStringLiteral("panel")) {
         std::fprintf(stderr, "sonora-ui: --insert-view must be browser or panel\n");
+        return false;
+    }
+    o.edit_view = p.value(edit_view);
+    if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades")) {
+        std::fprintf(stderr, "sonora-ui: --edit-view must be fades\n");
         return false;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
@@ -398,7 +409,9 @@ int main(int argc, char** argv) {
 
     if (a.opt.demo) {
         for (int t = 0; t < 8 && t < a.opt.tracks; ++t) model.invoke(QStringLiteral("track.toggle_arm"), t);
-        model.invoke(QStringLiteral("transport.record"), -1);
+        // Not under --edit-view: a rolling transport pages the view to the
+        // playhead, away from what the view is meant to show.
+        if (a.opt.edit_view.isEmpty()) model.invoke(QStringLiteral("transport.record"), -1);
         // Once the window has its size: the whole session in view, and the
         // snare's second region selected, so a screenshot shows what a
         // selected region looks like.
@@ -417,6 +430,20 @@ int main(int argc, char** argv) {
                 active_playlist(session.controller().snapshot().edit->tracks[track].get());
             if (p && p->regions.size() > 1) session.controller().select_region(p->regions[1].id);
             model.invoke(QStringLiteral("track.select"), track);
+            // Zoomed in about the snare's crossfade, through the zoom keys'
+            // commands, so the fades are wide enough to read.
+            if (a.opt.edit_view == QStringLiteral("fades") && p && p->crossfades.size() == 1) {
+                EditController& c = session.controller();
+                const auto& x = p->crossfades[0];
+                const sonora::model::Region* right = nullptr;
+                for (const auto& r : p->regions) {
+                    if (r.id == x.right) right = &r;
+                }
+                if (right != nullptr) {
+                    c.set_insertion(right->position);
+                    for (int i = 0; i < 2; ++i) model.invoke(QStringLiteral("zoom.in"), -1);
+                }
+            }
         });
     }
 

@@ -175,18 +175,47 @@ Snapshot make_demo_session(uint32_t tracks, uint32_t sample_rate) {
             ++cut;
         };
         const Frames k = static_cast<Frames>(i);
-        if (i == 14) {          // lead vocal: verse and chorus phrases
+        if (i == 14) {          // lead vocal: verse and chorus phrases, faded
+            const Id verse = s.next_id;
             region(4, 4, 4);
+            const Id pre = s.next_id;
             region(9, 3, 9);
-            region(13, 6, 13);
+            const Id chorus = s.next_id;
+            region(12, 6, 12);
+            const Frames beat = bar / 4;
+            build(s, SetFade{t.playlist, verse, FadeEnd::In, {beat, FadeShape::Linear}});
+            build(s, SetFade{t.playlist, verse, FadeEnd::Out, {2 * beat, FadeShape::SCurve}});
+            build(s, SetFade{t.playlist, pre, FadeEnd::In, {beat, FadeShape::Linear}});
+            Crossfade x;
+            x.left = pre;
+            x.right = chorus;
+            x.length = 2 * beat;
+            build(s, SetCrossfade{t.playlist, x});
+            build(s, SetFade{t.playlist, chorus, FadeEnd::Out, {bar, FadeShape::EqualPower}});
         } else if (i == 17) {   // talkback: one short note
             region(1, 1, 1);
         } else if (i == 15 || i == 16) {  // backing vocals: choruses only
             region(12, 4, 12);
             region(20, 4, 20);
+        } else if (i == 1) {    // snare: an edit joined by a crossfade
+            region(0, 9, 0);
+            const Id left = s.next_id;
+            region(9, 4, 9);
+            const Id right = s.next_id;
+            region(13, 6, 13);
+            Crossfade x;
+            x.left = left;
+            x.right = right;
+            x.length = bar / 2;
+            build(s, SetCrossfade{t.playlist, x});
+            build(s, SetFade{t.playlist, right, FadeEnd::Out, {bar / 2, FadeShape::SCurve}});
         } else {
             region(0, 8 + (k % 3), 0);
+            // The short fades an edit pass leaves at the region edges.
+            const Id second = s.next_id;
             region(9 + (k % 3), 7, 9 + (k % 3));
+            build(s, SetFade{t.playlist, second, FadeEnd::In, {bar / 4, FadeShape::Linear}});
+            build(s, SetFade{t.playlist, second, FadeEnd::Out, {bar / 2, FadeShape::SCurve}});
             region(19 + (k % 2), 6, 19 + (k % 2));
         }
     }
