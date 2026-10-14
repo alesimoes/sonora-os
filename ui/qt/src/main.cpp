@@ -8,7 +8,6 @@
 // The session it edits is the engine's document, replicated here
 // (ReplicaDocument behind TimelineDocument, the model seam).
 #include <QCommandLineParser>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
 #include <QQmlEngine>
@@ -267,15 +266,12 @@ int main(int argc, char** argv) {
         keymap_dir(a.opt.keymap_dir.toStdString(), a.opt.keymap.toStdString(),
                    QCoreApplication::applicationDirPath().toStdString());
     const std::string remembered_at = remembered_profile_path();
-    std::string profile = a.opt.keymap.toStdString();
-    if (profile.empty()) profile = remembered_profile(remembered_at, profiles_dir);
-    if (!profile.empty()) profile = QFileInfo(QString::fromStdString(profile)).absoluteFilePath().toStdString();
-    std::string refusal;
-    const KeyMap keymap = keymap_or_built_in(profile, refusal);
-    if (!refusal.empty()) {
-        std::fprintf(stderr, "sonora-ui: %s\n", refusal.c_str());
-        profile.clear();
-    }
+    StartupProfile start =
+        startup_profile(a.opt.keymap.toStdString(), remembered_at, profiles_dir);
+    std::string profile = start.file;
+    const std::string refusal = start.refusal;
+    const KeyMap keymap = std::move(start.map);
+    if (!refusal.empty()) std::fprintf(stderr, "sonora-ui: %s\n", refusal.c_str());
     std::string keymap_dir_notice;
     if (!a.opt.keymap_dir.isEmpty() && profiles_dir.empty()) {
         keymap_dir_notice = "no key map folder at " + a.opt.keymap_dir.toStdString() +
@@ -424,11 +420,12 @@ int main(int argc, char** argv) {
     // A switch in the Keys menu replaces these; the engine's stay.
     QStringList keymap_notices;
     if (!refusal.empty()) keymap_notices << QString::fromStdString(refusal);
+    QStringList essentials_notices;
     for (const auto& n : notices) {
         std::fprintf(stderr, "sonora-ui: key map \"%s\": %s\n", keymap.name().c_str(), n.c_str());
-        keymap_notices << QString::fromStdString(n);
+        essentials_notices << QString::fromStdString(n);
     }
-    model.setKeymapNotices(keymap_notices);
+    model.setKeymapNotices(keymap_notices, essentials_notices);
     {
         std::vector<ProfileEntry> entries = list_profiles(profiles_dir, profile);
         // The built-in keys are listed as keymaps/default.json when that

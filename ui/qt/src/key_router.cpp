@@ -30,7 +30,10 @@ KeyMap keymap_or_built_in(const std::string& path, std::string& refusal) {
 }
 
 KeyRouter::KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send)
-    : map_(std::move(map)), engine_(std::move(engine_implemented)), send_(std::move(send)) {
+    : map_(std::move(map)),
+      profile_(map_),
+      engine_(std::move(engine_implemented)),
+      send_(std::move(send)) {
     local_.install("focus.commands", [this](const CommandContext&) {
         setCommandsFocus(!commands_focus_);
         return true;
@@ -46,6 +49,8 @@ bool KeyRouter::implemented(const std::string& id) const {
 
 std::vector<std::string> KeyRouter::prepare(const std::vector<KeyChord>& device) {
     device_ = device;
+    prepared_ = true;
+    map_ = profile_;
     const auto impl = [this](const std::string& id) { return implemented(id); };
     std::vector<std::string> notices = map_.ensure_essentials(device_, impl);
     buildHelp();
@@ -53,7 +58,13 @@ std::vector<std::string> KeyRouter::prepare(const std::vector<KeyChord>& device)
 }
 
 std::vector<std::string> KeyRouter::setMap(KeyMap map) {
-    map_ = std::move(map);
+    profile_ = std::move(map);
+    return prepare(device_);
+}
+
+std::vector<std::string> KeyRouter::setEngineCommands(std::vector<std::string> engine_implemented) {
+    engine_ = std::move(engine_implemented);
+    if (!prepared_) return {};
     return prepare(device_);
 }
 

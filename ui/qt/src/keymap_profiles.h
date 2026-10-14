@@ -18,10 +18,19 @@
 #include <string>
 #include <vector>
 
+#include "sonora/keymap.h"
+
 namespace sonora::ui {
 
+// `file` as every profile path here is compared: absolute and lexically
+// normal, so "keymaps/./protools.json" and "x/../keymaps/protools.json" name
+// the same entry. "" stays "" (the built-in default). Symlinks are not
+// resolved: two links to one file stay two entries, as list_profiles
+// deduplicates them separately (fs::equivalent).
+std::string profile_path(const std::string& file);
+
 struct ProfileEntry {
-    // Absolute path; empty for the built-in default.
+    // profile_path(); empty for the built-in default.
     std::string file;
     // The profile's "name", or the file name when it does not load.
     std::string name;
@@ -44,7 +53,9 @@ std::string keymap_dir(const std::string& given, const std::string& keymap_path,
                        const std::string& exe_dir);
 
 // The remembered choice file, under `config_home` when it is set, else
-// $XDG_CONFIG_HOME, else $HOME/.config. "" when none of them is known.
+// $XDG_CONFIG_HOME, else $HOME/.config. "" when none of them is known. A
+// relative $XDG_CONFIG_HOME is ignored, as the XDG Base Directory spec says:
+// under systemd the cwd is /, and the choice would land there.
 std::string remembered_profile_path(const std::string& config_home = "");
 
 // The profile remembered at `path`: the file it names, made absolute against
@@ -58,5 +69,18 @@ std::string remembered_profile(const std::string& path, const std::string& dir);
 // `why`, when it could not be written.
 bool remember_profile(const std::string& path, const std::string& dir, const std::string& file,
                       std::string& why);
+
+// The profile the interface starts on: `keymap_arg` (--keymap) when given;
+// else the one remembered at `remembered_at`; else the built-in default. A
+// profile that does not load is refused whole and the built-in default runs
+// instead (keymap_or_built_in), `refusal` saying which and why, and `file`
+// empty so the Keys menu does not mark a profile that is not running.
+struct StartupProfile {
+    KeyMap map;
+    std::string file;      // profile_path(); "" for the built-in default
+    std::string refusal;   // "" when nothing was refused
+};
+StartupProfile startup_profile(const std::string& keymap_arg, const std::string& remembered_at,
+                               const std::string& dir);
 
 }  // namespace sonora::ui

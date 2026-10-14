@@ -53,8 +53,9 @@ class KeyRouter {
 public:
     using Send = std::function<uint64_t(const std::string&, const CommandContext&)>;
 
-    // `engine_implemented` is api::Hello::implemented_commands. The router
-    // installs focus.commands in its own registry: the focus is its state.
+    // `engine_implemented` is api::Hello::implemented_commands, replaced by
+    // setEngineCommands() on each new Hello. The router installs
+    // focus.commands in its own registry: the focus is its state.
     KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send);
     // focus.commands' handler holds `this`.
     KeyRouter(const KeyRouter&) = delete;
@@ -76,6 +77,14 @@ public:
     // repairs against the same device, and its notices. The focus state is
     // kept; it is the operator's, not the profile's.
     std::vector<std::string> setMap(KeyMap map);
+
+    // The engine's list from a new Hello: an engine restarted as another
+    // build may run commands the first did not, or no longer run one the
+    // window has a stand-in for. The profile is checked and repaired again
+    // from the file as loaded, not from the last repair, and its notices
+    // returned, as setMap's are. Before prepare() it only stores the list.
+    std::vector<std::string> setEngineCommands(std::vector<std::string> engine_implemented);
+    const std::vector<std::string>& engineCommands() const { return engine_; }
 
     RouteResult route(const KeyChord& chord);
     // The same entry point for a command that did not come from a key: a
@@ -104,6 +113,8 @@ private:
     void buildHelp();
 
     KeyMap map_;
+    KeyMap profile_;   // map_ before ensure_essentials() repaired it
+    bool prepared_ = false;
     std::vector<std::string> engine_;
     Send send_;
     CommandRegistry local_;

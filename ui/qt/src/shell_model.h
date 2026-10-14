@@ -90,8 +90,9 @@ public:
     bool scanCodesAreXkb() const { return xkb_scan_codes_; }
     void addNotice(const QString& n);
     // The key map's own notices -- a refused profile, the essentials
-    // repaired -- which a profile switch replaces rather than piles up.
-    void setKeymapNotices(const QStringList& n);
+    // repaired -- which a profile switch replaces rather than piles up. The
+    // essentials' are kept apart: a new engine's Hello replaces those alone.
+    void setKeymapNotices(const QStringList& profile, const QStringList& essentials = {});
 
     // The profile switch. `remember` records a choice for the next start
     // and says why it could not; empty, nothing is remembered.
@@ -206,6 +207,8 @@ private:
     // `read_frame` false: tick() has just read frame_.
     void refreshState(bool read_frame = true);
     void takeEvents();
+    // A new Hello with another command list: the router follows it.
+    void followEngineCommands();
 
     EngineAdapter& engine_;
     KeyRouter& router_;
@@ -231,7 +234,9 @@ private:
     bool xkb_scan_codes_ = false;
     bool text_entry_ = false;
     bool seen_focus_ = true;
-    QStringList keymap_notices_;
+    QStringList keymap_notices_;      // profile_notices_, then essentials_notices_
+    QStringList profile_notices_;     // a refused profile, a choice not remembered
+    QStringList essentials_notices_;  // ensure_essentials(): redone on a new Hello
     std::vector<ProfileEntry> profiles_;
     std::string profile_file_;
     Remember remember_;

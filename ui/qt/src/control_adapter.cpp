@@ -103,6 +103,10 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         replies.push_back(std::move(o));
     }
     pending_.clear();
+    if (now != 0) {
+        // A new connection is a new Hello, possibly from another build.
+        info_.implemented_commands = engine_.hello().implemented_commands;
+    }
     if (link_sink_) link_sink_(now != 0);
 }
 

@@ -89,17 +89,30 @@ void ShellModel::addNotice(const QString& n) {
     emit noticesChanged();
 }
 
-void ShellModel::setKeymapNotices(const QStringList& n) {
+void ShellModel::setKeymapNotices(const QStringList& profile, const QStringList& essentials) {
     for (const QString& old : keymap_notices_) notices_.removeOne(old);
-    keymap_notices_ = n;
-    notices_ << n;
+    profile_notices_ = profile;
+    essentials_notices_ = essentials;
+    keymap_notices_ = profile + essentials;
+    notices_ << keymap_notices_;
     emit noticesChanged();
+}
+
+void ShellModel::followEngineCommands() {
+    const std::vector<std::string> notices =
+        router_.setEngineCommands(engine_.info().implemented_commands);
+    QStringList lines;
+    for (const auto& n : notices) lines << QString::fromStdString(n);
+    if (lines != essentials_notices_) setKeymapNotices(profile_notices_, lines);
+    seen_focus_ = router_.commandsFocus();
+    emit keymapChanged();
 }
 
 void ShellModel::setProfiles(std::vector<ProfileEntry> entries, std::string current,
                              Remember remember) {
     profiles_ = std::move(entries);
-    profile_file_ = std::move(current);
+    // Compared with each entry's file, which list_profiles normalised.
+    profile_file_ = profile_path(current);
     remember_ = std::move(remember);
     emit keymapChanged();
 }
@@ -118,7 +131,7 @@ QVariantList ShellModel::profiles() const {
 }
 
 void ShellModel::useProfile(const QString& qfile) {
-    const std::string file = qfile.toStdString();
+    const std::string file = profile_path(qfile.toStdString());
     // Loaded again, not taken from the list: the file may have changed
     // since the list was made, and what runs must be what was checked.
     KeyMap map;
@@ -138,15 +151,16 @@ void ShellModel::useProfile(const QString& qfile) {
     for (ProfileEntry& e : profiles_) {
         if (e.file == file) e.error.clear();
     }
+    QStringList essentials;
+    for (const auto& n : notices) essentials << QString::fromStdString(n);
     QStringList lines;
-    for (const auto& n : notices) lines << QString::fromStdString(n);
     std::string why;
     if (remember_ && !remember_(file, why)) {
         lines << QStringLiteral("this key map is used until the interface restarts, and "
                                 "then the previous one again: ") +
                      QString::fromStdString(why);
     }
-    setKeymapNotices(lines);
+    setKeymapNotices(lines, essentials);
     seen_focus_ = router_.commandsFocus();
     emit keymapChanged();
     say(QStringLiteral("Keys: ") + profileName());
@@ -262,6 +276,9 @@ void ShellModel::tick() {
 
     replies_.clear();
     engine_.poll(replies_);
+    // A handful of short strings, compared without allocating; they differ
+    // only after a reconnect to an engine that is another build.
+    if (engine_.info().implemented_commands != router_.engineCommands()) followEngineCommands();
     for (const auto& r : replies_) {
         if (r.result == DispatchResult::Ok) {
             if (!r.live && !status_.isEmpty()) say(QString());

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "key_router.h"
 #include "sonora/keymap.h"
 
 namespace fs = std::filesystem;
@@ -42,6 +43,14 @@ ProfileEntry entry_for(const std::string& file) {
 
 }  // namespace
 
+std::string profile_path(const std::string& file) {
+    if (file.empty()) return std::string();
+    std::error_code ec;
+    fs::path p = fs::absolute(file, ec);
+    if (ec) p = fs::path(file);
+    return p.lexically_normal().string();
+}
+
 std::vector<ProfileEntry> list_profiles(const std::string& dir, const std::string& extra) {
     std::vector<ProfileEntry> files;
     std::error_code ec;
@@ -50,12 +59,11 @@ std::vector<ProfileEntry> list_profiles(const std::string& dir, const std::strin
             if (it->path().extension() != ".json") continue;
             std::error_code fe;
             if (!it->is_regular_file(fe)) continue;
-            files.push_back(entry_for(fs::absolute(it->path(), fe).string()));
+            files.push_back(entry_for(profile_path(it->path().string())));
         }
     }
     if (!extra.empty()) {
-        std::error_code fe;
-        const std::string abs = fs::absolute(extra, fe).string();
+        const std::string abs = profile_path(extra);
         const bool listed = std::any_of(files.begin(), files.end(),
                                         [&](const ProfileEntry& e) {
                                             std::error_code se;
@@ -97,7 +105,10 @@ std::string keymap_dir(const std::string& given, const std::string& keymap_path,
 
 std::string remembered_profile_path(const std::string& config_home) {
     std::string base = config_home;
-    if (base.empty()) base = env("XDG_CONFIG_HOME");
+    if (base.empty()) {
+        base = env("XDG_CONFIG_HOME");
+        if (!fs::path(base).is_absolute()) base.clear();
+    }
     if (base.empty()) {
         const std::string home = env("HOME");
         if (home.empty()) return std::string();
@@ -155,6 +166,17 @@ bool remember_profile(const std::string& path, const std::string& dir, const std
         return false;
     }
     return true;
+}
+
+StartupProfile startup_profile(const std::string& keymap_arg, const std::string& remembered_at,
+                               const std::string& dir) {
+    StartupProfile s;
+    std::string file = keymap_arg;
+    if (file.empty()) file = remembered_profile(remembered_at, dir);
+    s.file = profile_path(file);
+    s.map = keymap_or_built_in(s.file, s.refusal);
+    if (!s.refusal.empty()) s.file.clear();
+    return s;
 }
 
 }  // namespace sonora::ui

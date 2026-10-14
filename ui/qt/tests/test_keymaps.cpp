@@ -11,7 +11,12 @@
 //     US, AZERTY and ABNT2 keyboards alike;
 //   - the profile switch at run time, what it repairs, what it refuses and
 //     what it remembers for the next start;
-//   - the Keys menu and the a-z button in the real QML, offscreen.
+//   - the Keys menu and the a-z button in the real QML, offscreen;
+//   - an engine restarted with another command list routes by its own
+//     Hello, not the first one;
+//   - profile paths compared normalised, a relative $XDG_CONFIG_HOME
+//     ignored, and the start-up fallback when the remembered profile no
+//     longer loads.
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
@@ -503,6 +508,189 @@ int test_shell() {
     return 0;
 }
 
+// --- a restarted engine: its Hello, not the first one, decides -------------
+
+// An engine that can be replaced under the adapter, as a restarted engine
+// is under SocketEngine: a new greeting and the new engine's Hello.
+class RestartableEngine final : public api::EngineControl {
+public:
+    explicit RestartableEngine(api::testing::FakeEngine* e) : e_(e) {}
+    void restart(api::testing::FakeEngine* e) {
+        e_ = e;
+        ++greetings;
+    }
+    bool connect(std::string& error) override { return e_->connect(error); }
+    const api::Hello& hello() const override { return e_->hello(); }
+    uint64_t send(const api::CommandRequest& r) override { return e_->send(r); }
+    uint64_t send(const api::ParameterChange& c) override { return e_->send(c); }
+    uint64_t send(const api::PluginParameterChange& c) override { return e_->send(c); }
+    uint64_t submit(const api::ModelRequest& r) override { return e_->submit(r); }
+    void poll(api::Inbox& inbox) override { e_->poll(inbox); }
+    api::StateView& state() override { return e_->state(); }
+    uint64_t greetings = 1;
+
+private:
+    api::testing::FakeEngine* e_;
+};
+
+int test_engine_restart() {
+    // The first engine runs edit.undo; the one it is restarted as does not.
+    api::testing::FakeEngine::Config with_undo;
+    with_undo.tracks = 4;
+    with_undo.planned_commands = {"edit.undo"};
+    api::testing::FakeEngine first(with_undo);
+    api::testing::FakeEngine::Config plain_cfg;
+    plain_cfg.tracks = 4;
+    api::testing::FakeEngine second(plain_cfg);
+    std::string err;
+    CHECK(second.connect(err));
+
+    RestartableEngine backend(&first);
+    ControlAdapter engine(backend);
+    CHECK(engine.connect(err));
+    CHECK(has(engine.info().implemented_commands, "edit.undo"));
+    engine.watchConnection([&backend]() { return backend.greetings; }, [](bool) {});
+    KeyRouter router(load("protools.json"), engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    int undo_here = 0;
+    router.local().install("edit.undo", [&undo_here](const CommandContext&) {
+        ++undo_here;
+        return true;
+    });
+    router.prepare(qt_device_chords(true));
+    ShellModel model(engine, router);
+
+    CHECK(router.route(chord("ctrl+z")).kind == RouteResult::Kind::Sent);
+    CHECK(undo_here == 0);
+
+    // Restarted without it: the window's stand-in runs again, instead of
+    // the key being sent to an engine that answers NotImplemented.
+    backend.restart(&second);
+    model.tick();
+    CHECK(!has(engine.info().implemented_commands, "edit.undo"));
+    const RouteResult r = router.route(chord("ctrl+z"));
+    CHECK(r.kind == RouteResult::Kind::Local && r.result == DispatchResult::Ok);
+    CHECK(undo_here == 1);
+    CHECK(has(router.help(), "ctrl+z=undo"));
+
+    // And back: the engine that runs it is again the one that does.
+    backend.restart(&first);
+    model.tick();
+    CHECK(router.route(chord("ctrl+z")).kind == RouteResult::Kind::Sent);
+    CHECK(undo_here == 1);
+    return 0;
+}
+
+// --- profile paths, the XDG folder, the start-up fallback ---------------------
+
+int test_profile_paths() {
+    // --keymap-dir with ./ and .. in it: the current profile is still marked.
+    const std::string odd_dir = kDir + "/../keymaps/.";
+    const std::string odd_file = kDir + "/./../keymaps/protools.json";
+    const std::vector<ProfileEntry> list = list_profiles(odd_dir);
+    CHECK(list.size() == 3);
+    for (const auto& e : list) {
+        CHECK(e.file.find("/./") == std::string::npos && e.file.find("/../") == std::string::npos);
+    }
+    CHECK(profile_path(odd_file) == profile_path(kDir + "/protools.json"));
+    CHECK(profile_path("").empty());
+
+    test::RecordingAdapter engine(4, api::testing::FakeEngine::engine_commands());
+    KeyRouter router(load("protools.json"), engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    router.prepare(qt_device_chords(true));
+    ShellModel model(engine, router);
+    model.setProfiles(list, odd_file, nullptr);
+    int current = 0;
+    for (const QVariant& p : model.profiles()) {
+        const QVariantMap m = p.toMap();
+        if (m.value(QStringLiteral("current")).toBool()) {
+            ++current;
+            CHECK(m.value(QStringLiteral("name")).toString() == QStringLiteral("Pro Tools"));
+        }
+    }
+    CHECK(current == 1);
+
+    // A relative $XDG_CONFIG_HOME is ignored, as the XDG spec says: under
+    // systemd it would put the choice under /.
+    QTemporaryDir tmp;
+    CHECK(tmp.isValid());
+    const QByteArray saved_xdg = qgetenv("XDG_CONFIG_HOME");
+    const QByteArray saved_home = qgetenv("HOME");
+    const bool had_xdg = qEnvironmentVariableIsSet("XDG_CONFIG_HOME");
+    const std::string home = tmp.path().toStdString();
+    qputenv("HOME", tmp.path().toUtf8());
+    qputenv("XDG_CONFIG_HOME", "relative/config");
+    const std::string from_relative = remembered_profile_path();
+    qputenv("XDG_CONFIG_HOME", (tmp.path() + QStringLiteral("/xdg")).toUtf8());
+    const std::string from_absolute = remembered_profile_path();
+    qputenv("HOME", saved_home);
+    if (had_xdg) {
+        qputenv("XDG_CONFIG_HOME", saved_xdg);
+    } else {
+        qunsetenv("XDG_CONFIG_HOME");
+    }
+    CHECK(from_relative == (std::filesystem::path(home) / ".config" / "sonora" / "keymap").string());
+    CHECK(from_absolute == (std::filesystem::path(home) / "xdg" / "sonora" / "keymap").string());
+    return 0;
+}
+
+int test_startup_fallback() {
+    QTemporaryDir tmp;
+    CHECK(tmp.isValid());
+    const std::string dir = tmp.filePath(QStringLiteral("keys")).toStdString();
+    QDir().mkpath(QString::fromStdString(dir));
+    {
+        std::ofstream(dir + "/mine.json")
+            << R"({"name": "Mine", "bindings": {"space": "transport.toggle_play"}})";
+    }
+    const std::string at =
+        remembered_profile_path(tmp.filePath(QStringLiteral("config")).toStdString());
+    std::string why;
+    CHECK(remember_profile(at, dir, dir + "/mine.json", why));
+
+    // Remembered and still loading: it is what starts.
+    StartupProfile s = startup_profile("", at, dir);
+    CHECK(s.refusal.empty());
+    CHECK(s.map.name() == "Mine");
+    CHECK(s.file == profile_path(dir + "/mine.json"));
+
+    // The remembered file no longer loads: the built-in keys, the refusal
+    // naming the reason, and no file marked as current.
+    {
+        std::ofstream(dir + "/mine.json", std::ios::trunc)
+            << R"({"name": "Mine", "bindings": {"space": "transport.gone"}})";
+    }
+    s = startup_profile("", at, dir);
+    CHECK(s.map.name() == KeyMap::built_in_default().name());
+    CHECK(s.file.empty());
+    CHECK(s.refusal.find("refused") != std::string::npos);
+    CHECK(s.refusal.find("transport.gone") != std::string::npos);
+    std::printf("  remembered, no longer loads: %s\n", s.refusal.c_str());
+
+    // Gone altogether: the same.
+    std::filesystem::remove(dir + "/mine.json");
+    s = startup_profile("", at, dir);
+    CHECK(s.map.name() == KeyMap::built_in_default().name());
+    CHECK(s.file.empty() && !s.refusal.empty());
+
+    // --keymap wins over what is remembered.
+    s = startup_profile(kDir + "/./logic.json", at, dir);
+    CHECK(s.refusal.empty() && s.map.name() == "Logic Pro");
+    CHECK(s.file == profile_path(kDir + "/logic.json"));
+
+    // Nothing remembered, no --keymap: the built-in keys, and no refusal.
+    CHECK(remember_profile(at, dir, "", why));
+    s = startup_profile("", at, dir);
+    CHECK(s.refusal.empty() && s.file.empty());
+    CHECK(s.map.name() == KeyMap::built_in_default().name());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -514,6 +702,9 @@ int main(int argc, char** argv) {
     if (test_switch() != 0) return 1;
     if (test_profiles() != 0) return 1;
     if (test_shell() != 0) return 1;
+    if (test_engine_restart() != 0) return 1;
+    if (test_profile_paths() != 0) return 1;
+    if (test_startup_fallback() != 0) return 1;
     std::printf("ui keymaps: all checks passed\n");
     return 0;
 }
