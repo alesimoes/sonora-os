@@ -65,26 +65,23 @@ else()
 endif()
 
 # ADR-0012 Unverified 10: RealtimeSanitizer on wake_all() from a
-# nonblocking function. Needs Clang 20 or later; the engine's toolchain is
-# GCC 14, so this is skipped there with one status line, and the RTSan CI
-# job is BACKLOG Track 4 item 4.
-include(CheckCXXSourceCompiles)
-set(CMAKE_REQUIRED_FLAGS -fsanitize=realtime)
-set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=realtime)
-check_cxx_source_compiles("void f() noexcept [[clang::nonblocking]] {} int main() { f(); }"
-                          SONORA_HAVE_RTSAN)
-unset(CMAKE_REQUIRED_FLAGS)
-unset(CMAKE_REQUIRED_LINK_OPTIONS)
-if(SONORA_HAVE_RTSAN)
+# nonblocking function. Only in the SONORA_RTSAN build (tools/build-rtsan.sh,
+# CI's rtsan job): wake_all's scope exists only when common/platform itself
+# is compiled with the sanitizer. Two tests: wake_all is clean under
+# halt_on_error=true, and the same syscall outside that scope is reported,
+# so the clean run means the scope works and not that RTSan missed it.
+if(SONORA_RTSAN)
   add_executable(test_rtsan_wake tests/test_rtsan_wake.cpp)
-  target_compile_options(test_rtsan_wake PRIVATE -fsanitize=realtime)
-  target_link_options(test_rtsan_wake PRIVATE -fsanitize=realtime)
   target_link_libraries(test_rtsan_wake PRIVATE sonora_platform)
   add_test(NAME plugin_client_rtsan_wake COMMAND test_rtsan_wake)
-  set_tests_properties(plugin_client_rtsan_wake PROPERTIES ENVIRONMENT RTSAN_OPTIONS=halt_on_error=false)
+  set_tests_properties(plugin_client_rtsan_wake PROPERTIES ENVIRONMENT RTSAN_OPTIONS=halt_on_error=true)
+  add_test(NAME plugin_client_rtsan_raw_syscall COMMAND test_rtsan_wake --raw-syscall)
+  set_tests_properties(plugin_client_rtsan_raw_syscall PROPERTIES
+    ENVIRONMENT RTSAN_OPTIONS=halt_on_error=true
+    PASS_REGULAR_EXPRESSION "real-time unsafe function `syscall`")
 else()
-  message(STATUS "engine/plugin_client: no -fsanitize=realtime in this compiler; the RTSan check of "
-                 "wake_all (ADR-0012 Unverified 10) is skipped")
+  message(STATUS "engine/plugin_client: not a SONORA_RTSAN build; the RTSan check of "
+                 "wake_all (ADR-0012 Unverified 10) runs in tools/build-rtsan.sh")
 endif()
 
 # End to end: drivers/fake drives the callback, the supervisor starts the

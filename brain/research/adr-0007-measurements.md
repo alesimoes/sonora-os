@@ -203,6 +203,30 @@ without that default and under jackd2.
   `audio-stack/` that allows only 48000 Hz makes this test pass without
   testing anything.
 
+### The CI job, built 2026-10-13 [measured, clang-22.1.8]
+
+`tools/build-rtsan.sh` (CI job `rtsan`, `-DSONORA_RTSAN=ON`) builds the
+whole tree as the sketch above says and runs every ctest with
+`halt_on_error=true`. What the first runs showed:
+
+- **`syscall()` is intercepted** (ADR-0012 Unverified 10). A raw
+  `syscall(SYS_futex, FUTEX_WAKE, ...)` from a nonblocking function is
+  reported as `unsafe-library-call` in `syscall`. `wake_all` now runs its
+  one call between `__rtsan_disable()` and `__rtsan_enable()`, declared
+  `noexcept` locally: `<sanitizer/rtsan_interface.h>` does not mark them
+  so, and `__rtsan::ScopedDisabler` in a noexcept function pulls
+  `std::terminate` into the object, which the A3 `nm` test refuses.
+- **A shared module cannot link with `--no-undefined`** under RTSan: Clang
+  puts the runtime in executables only, and a bundle takes `__rtsan_*` from
+  its host. The native bundles drop the flag in this build only.
+- **No violation in product code** on the paths the tests drive:
+  `Session::process` through `drivers/fake`, plugin_client's InsertChain
+  step, the Bridge in-process and through every LV2/VST3 bundle binary,
+  and the `sonora-dsp-measure` harness. The one runtime report outside
+  `wake_all` was a test recorder that allocates in its callback, by design.
+- **`-Wfunction-effects` is not clean**: about 15 warnings, all SONORA_RT
+  functions calling unmarked ones (BACKLOG, ADR-0007 follow-ups).
+
 ## 2. `std::atomic` lock-freedom (ADR item 6)
 
 [measured] `g++ 14.2.0-19 -std=c++17 -O2` printed

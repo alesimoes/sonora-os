@@ -1,0 +1,24 @@
+# RealtimeSanitizer build of the tree (ADR-0007, first 2026-10-12 update).
+# clang-22 is in trixie main (a stable update); trixie's default clang 19
+# has no -fsanitize=realtime (brain/research/adr-0007-measurements.md §1).
+# libclang-rt-22-dev carries the RTSan runtime, llvm-22 the symbolizer that
+# turns a report's addresses into our function names. GCC 14 stays the
+# compiler of the shipped build; this image is a second configuration only.
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      clang-22 \
+      libclang-rt-22-dev \
+      llvm-22 \
+      libstdc++-14-dev \
+      cmake \
+      make \
+      pkg-config \
+      libjack-jackd2-dev \
+      ca-certificates \
+      locales \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^# *de_DE.UTF-8 UTF-8/de_DE.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen
+
+CMD ["bash"]

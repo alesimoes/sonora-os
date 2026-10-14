@@ -126,6 +126,38 @@ jobs:
           SONORA_DSP_QUICK: "1"
         run: ctest --test-dir build-asan --output-on-failure -j"$(nproc)"
 
+  rtsan:
+    name: RealtimeSanitizer over the SONORA_RT call graph
+    # Its own build: -fsanitize=realtime cannot be combined with ASan or
+    # TSan, and needs Clang 20 or later (clang-22 from trixie main, in
+    # tools/Dockerfile.rtsan). Every SONORA_RT function is
+    # [[clang::nonblocking]] there, so a test that drives Session::process
+    # (drivers/fake), plugin_client's InsertChain step or a native processor
+    # through the Bridge and its bundles into malloc, a lock or a syscall
+    # fails with RTSan's report. -Wfunction-effects prints its findings as
+    # warnings; the runtime check is the gate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-rtsan image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.rtsan
+          tags: sonora-rtsan:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-rtsan
+          cache-to: type=gha,scope=sonora-rtsan,mode=max
+
+      - name: Build with clang-22 -fsanitize=realtime and run every test under RTSan
+        env:
+          SONORA_RTSAN_IMAGE_BUILT: "1"
+        run: tools/build-rtsan.sh
+
   record:
     name: Records audio against PipeWire
     runs-on: ubuntu-latest
