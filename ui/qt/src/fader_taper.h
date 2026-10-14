@@ -35,4 +35,19 @@ std::string pan_text(float pan);
 // until the drag moves back onto it.
 float fader_drag(float db, float dy, float travel, bool fine);
 
+// What the operator typed into a fader's readout: "-6", "-6.5 dB", "+3",
+// "0", "-inf" (any case, spaces allowed). The result is clamped to nothing:
+// a gain off the travel (above +12 dB) is refused with the range in `why`,
+// rather than quietly written as +12. Locale-free, so "-6.5" is the same on
+// a French desktop.
+bool parse_gain_text(const std::string& text, float& db, std::string& why);
+// A pan typed into its readout, in pan_text's own spelling ("<30", "30>",
+// "C") or as a console's ("L30", "R30") or a signed number ("-30" is left).
+// 100 is hard over; past it is refused.
+bool parse_pan_text(const std::string& text, float& pan, std::string& why);
+
+// The linear gain a ParameterChange carries for `db` (api::ParamId::Gain:
+// 0 .. 4, which is +12.04 dB). At or below the fader's -inf it is 0.
+float fader_linear_gain(float db);
+
 }  // namespace sonora::ui

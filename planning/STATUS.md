@@ -203,6 +203,17 @@ end of its run. Keep it short: what is true now, not a diary.
   callback in an insert runner, and is gone. Block-boundary only: punch
   points inside a block, the monitor ramp and a punch command are next
   (BACKLOG, DAW 1 detail). Container only: ctest, TSan, RTSan.
+- **Mix window on the monitor bus (`feature/ui-mixer-monitor`).** A fader
+  ride is heard through ParameterChange per step and saved by one SetMix at
+  release (the bus, which has no ParamId, rides through SetMonitorBus);
+  gain and pan are typed into their readouts, with text off the travel
+  refused, not clamped; Alt-click solo/mute sets every track; Ctrl-click
+  solo (solo safe) is refused by name until the model has it. Fixed: the
+  strips read MixState by id order, so after a reorder each showed another
+  track's fader. The strips' meters are labelled IN (the state block has
+  input peaks only) and the bus's NO DATA; the line above says what is live
+  and says the fake engine plays nothing. Post-fader and bus peaks are
+  BACKLOG Track 1 item 9.
 - **ADR-0012, plugin hosting (M9), accepted in part (#42).** One host per
   insert chain, depth 1, a missed block is silence (64-frame fade-out,
   ramp-in), make-before-break restarts, inserts in the model, PDC by the

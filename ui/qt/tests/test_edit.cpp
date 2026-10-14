@@ -956,6 +956,90 @@ int test_fades_against_crossfades() {
         OK(why.find("\"B\"'s fade-out") != std::string::npos);
         OK(doc.snapshot().revision == rev2);
     }
+
+    // --- the hidden fade at the other end (PR #58 review, note 1) ---
+    // P [0, 1) butts A [1, 3) butts B [3, 4). A keeps a 1.75-bar fade-in
+    // under a 1-beat Pre crossfade with P. Regression: a centred 1-bar
+    // crossfade at A's end counted only the crossfade heard at A's start, so
+    // it was accepted; clearing P|A then brought the fade-in back over it,
+    // 0.25 bar of two fades the engine multiplies.
+    {
+        Snapshot s = two_tracks();
+        {
+            auto edit = std::make_shared<EditState>(*s.edit);
+            auto t = std::make_shared<TrackEdit>(*edit->tracks[0]);
+            auto p = std::make_shared<Playlist>(*t->playlists[0]);
+            Region pr = p->regions[0];
+            pr.id = 12;
+            pr.name = "P";
+            pr.position = 0;
+            pr.length = kBar;
+            pr.source_offset = 0;
+            p->regions.insert(p->regions.begin(), pr);
+            t->playlists[0] = p;
+            edit->tracks[0] = t;
+            s.edit = edit;
+        }
+        ModelDocument doc(std::move(s));
+        OK(valid(doc.snapshot()));
+        const Id pl = playlist_of(doc.snapshot(), 0);
+        OK(doc.submit(MoveRegion{pl, 11, 3 * kBar, kNoId}, why));
+        OK(doc.submit(SetFade{pl, 10, FadeEnd::In, {kBar + 3 * kBeat, FadeShape::Linear}}, why));
+        Crossfade start;
+        start.left = 12;
+        start.right = 10;
+        start.length = kBeat;
+        start.align = Align::Pre;
+        OK(doc.submit(SetCrossfade{pl, start}, why));
+        EditController c(doc);
+        c.set_viewport(1000, 200);
+        const double th = c.view().track_height;
+        const auto range = [&](Frames a, Frames b) {
+            c.set_tool(Tool::Select);
+            std::string e;
+            const double x0 = c.view().x_of(a), x1 = c.view().x_of(b);
+            const bool ok = c.press(x0, th / 2, e) && c.release(x1, th / 2, e);
+            c.set_tool(Tool::Smart);
+            return ok;
+        };
+        const auto crossfades = [&]() {
+            return active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.size();
+        };
+        const uint64_t rev = doc.snapshot().revision;
+        OK(range(3 * kBar - half, 3 * kBar + half));
+        OK(!c.fade_selection(why));
+        OK(why.find("\"A\"'s fade-in") != std::string::npos &&
+           why.find("under its crossfade with \"P\"") != std::string::npos);
+        OK(doc.snapshot().revision == rev && crossfades() == 1);
+        // A Pre crossfade of a quarter bar fits beside the hidden fade-in.
+        OK(range(3 * kBar - kBeat, 3 * kBar) && c.fade_selection(why));
+        OK(crossfades() == 2);
+        OK(c.undo(why));
+
+        // A document that already has the overlap (made before this check,
+        // or by another interface): clearing P|A must not bring it back.
+        Crossfade end;
+        end.left = 10;
+        end.right = 11;
+        end.length = kBar;
+        end.align = Align::Centre;
+        OK(doc.submit(SetCrossfade{pl, end}, why));
+        const uint64_t rev2 = doc.snapshot().revision;
+        OK(range(kBar - kBeat, kBar));
+        OK(!c.clear(why));
+        OK(why.find("\"A\"'s fade-in") != std::string::npos &&
+           why.find("crossfade at \"A\"'s end") != std::string::npos);
+        OK(doc.snapshot().revision == rev2 && crossfades() == 2);
+        // The other way round: clearing A|B brings back nothing (A has no
+        // stored fade-out), so it is cleared; then P|A clears too.
+        OK(range(3 * kBar - half, 3 * kBar + half));
+        OK(c.clear(why));
+        OK(crossfades() == 1);
+        OK(range(kBar - kBeat, kBar));
+        OK(c.clear(why));
+        OK(crossfades() == 0 && region(doc.snapshot(), 10)->fade_in.length == kBar + 3 * kBeat);
+        OK(valid(doc.snapshot()));
+    }
     return 0;
 }
 

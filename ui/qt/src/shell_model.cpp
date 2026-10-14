@@ -195,7 +195,7 @@ void ShellModel::tick() {
     engine_.poll(replies_);
     for (const auto& r : replies_) {
         if (r.result == DispatchResult::Ok) {
-            if (!status_.isEmpty()) say(QString());
+            if (!r.live && !status_.isEmpty()) say(QString());
             continue;
         }
         const std::string why = r.message.empty() ? dispatch_result_text(r.result) : r.message;

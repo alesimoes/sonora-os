@@ -3,10 +3,11 @@
 // The Mix window: one strip per track, in the Edit window's order, and the
 // 2-channel monitor bus (session-format.md, "monitor_bus") at the right.
 //
-// The mix is session state and is kept and shown faithfully, but the engine
-// has no playback path yet, so it changes nothing anyone hears. The line
-// above the strips says so: a fader that looked live and was not would be a
-// control that lies.
+// The mix is session state, and on the engine it is what the monitor bus
+// plays (ADR-0009). The line above the strips says what is live and what
+// the meters read (MixModel::note): on the built-in fake engine nothing is
+// heard, and a fader that looked live and was not would be a control that
+// lies.
 //
 // Inserts (ADR-0012 checklist 6): each strip's slots A to J, the plugin
 // chooser, the parameter panel and the slot menu are drawn here, over the
@@ -21,15 +22,18 @@ Rectangle {
     required property ShellModel shell
     required property SessionModel session
     property InsertModel inserts: null
+    property MixModel mixer: null
     color: Theme.window
 
     Text {
         id: note
+        objectName: "mixNote"
         anchors { left: parent.left; right: compensation.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
         elide: Text.ElideRight
-        text: mix.inserts !== null && mix.inserts.pluginsDisabled
-              ? "This engine hosts no plugins yet: inserts are kept with the session and do not run."
-              : "Mix state is kept with the session. The engine has no playback path yet: faders, pan, mute and solo change nothing you hear, and the bus meters have no signal."
+        text: (mix.inserts !== null && mix.inserts.pluginsDisabled
+               ? "This engine hosts no plugins yet: inserts are kept with the session and do not run. "
+               : "")
+              + (mix.mixer !== null ? mix.mixer.note : "Mix state is kept with the session.")
         color: Theme.caution
         font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
     }
@@ -65,6 +69,7 @@ Rectangle {
                 shell: mix.shell
                 session: mix.session
                 inserts: mix.inserts
+                mixer: mix.mixer
                 dragHost: dragLayer
                 track: index
                 name: modelData
@@ -83,6 +88,7 @@ Rectangle {
         shell: mix.shell
         session: mix.session
         inserts: mix.inserts
+        mixer: mix.mixer
         track: -1
         name: "Monitor"
         hasPan: false
