@@ -717,6 +717,37 @@ int test_show_leaves_the_faders_alone() {
     return 0;
 }
 
+// The audio thread counts the solo of every engine track, document or not.
+// An undone AddTrack of a soloed track leaves its engine track holding that
+// solo, which would silence every other track while the interface shows no
+// solo at all; an engine track the document no longer has is at unity.
+int test_undone_track_leaves_no_mix() {
+    auto session = make_session(3);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    AddTrack c = track_op(300, 301, "C");
+    c.mix.solo = true;
+    c.mix.mute = true;
+    c.mix.gain_db = -12.0;
+    CHECK_APPLY(h, c);
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(s.tracks()[2]->soloed() && s.tracks()[2]->muted());
+    CHECK(h.undo());
+    CHECK(show(ctl, h.current(), error));
+    CHECK(!s.tracks()[2]->soloed());
+    CHECK(!s.tracks()[2]->muted());
+    CHECK(s.tracks()[2]->gain() == 1.0f);
+    CHECK(s.tracks()[2]->pan() == 0.0f);
+    CHECK(h.redo());
+    CHECK(show(ctl, h.current(), error));
+    CHECK(s.tracks()[2]->soloed());
+    return 0;
+}
+
 // A take at another sample rate would play at the wrong speed: refused,
 // with both rates named.
 int test_sample_rate_must_match() {
@@ -1018,6 +1049,7 @@ int main() {
     if (test_record_waits_for_residency()) return 1;
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
+    if (test_undone_track_leaves_no_mix()) return 1;
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;
     if (test_huge_gain_is_no_nan()) return 1;
