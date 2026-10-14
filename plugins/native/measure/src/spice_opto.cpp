@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "sonora/measure/spice_opto.h"
+
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+
+#include "sonora/dsp/math.h"
+#include "spice_util.h"
+
+namespace sonora::measure {
+
+namespace {
+
+using spice_util::jnum;
+using spice_util::ngspice_version;
+using spice_util::read_file;
+using spice_util::run_ngspice;
+using spice_util::sp;
+using spice_util::write_file;
+
+double amp(double dbfs) { return std::pow(10.0, dbfs / 20.0); }
+
+double get(const json::Value& o, const char* key) {
+    const json::Value* v = o.find(key);
+    double d = 0.0;
+    if (v == nullptr || !v->to_double(d)) return std::nan("");
+    return d;
+}
+
+// ngspice's time step bound: 100 points a period, so the EL panel's light
+// pulses (two a period, narrow at the peaks) are resolved.
+double max_step(const OptoSpiceCase& c) { return 1.0 / (100.0 * c.freq_hz); }
+
+double end_s(const OptoSpiceCase& c) { return c.quiet_s + c.hot_s + c.release_s; }
+
+// A value read from ngspice's wrdata rows, linear between its points.
+bool read_trajectory(const std::string& path, std::vector<double>& t, std::vector<double>& v, std::string& error) {
+    std::ifstream f(path);
+    if (!f) {
+        error = "cannot read " + path;
+        return false;
+    }
+    double a, b;
+    while (f >> a >> b) {
+        t.push_back(a);
+        v.push_back(b);
+    }
+    if (t.size() < 100) {
+        error = "ngspice output " + path + " is too short";
+        return false;
+    }
+    return true;
+}
+
+std::vector<double> sample_at(const std::vector<double>& t, const std::vector<double>& v,
+                              const std::vector<double>& times) {
+    std::vector<double> out;
+    out.reserve(times.size());
+    std::size_t i = 0;
+    for (double x : times) {
+        while (i + 2 < t.size() && t[i + 1] < x) ++i;
+        const double span = t[i + 1] - t[i];
+        const double u = span > 0.0 ? (x - t[i]) / span : 0.0;
+        out.push_back(v[i] + (v[i + 1] - v[i]) * dsp::clamp(u, 0.0, 1.0));
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<OptoSpiceCase> opto_spice_cases() {
+    // Quiet is -60 dBFS: the cell stays dark, so the release is the cell's
+    // own. 1 kHz cases: 0.2 s quiet, 1 s held, 2 s of release (the fast
+    // stage and the start of the tail). The rest exercise the 108 Hz
+    // high-pass and the ripple at 100 Hz, the pre-emphasis at 5 kHz, the
+    // driver's swing limit (+12 dBFS), the limit position and deep
+    // reduction.
+    return {
+        {"compress-pr100-1000hz-m20", 0.0, 100.0, 0.0, 1000.0, -60.0, -20.0, 0.2, 1.0, 2.0},
+        {"compress-pr100-1000hz-m6", 0.0, 100.0, 0.0, 1000.0, -60.0, -6.0, 0.2, 1.0, 2.0},
+        {"limit-pr100-1000hz-m20", 1.0, 100.0, 0.0, 1000.0, -60.0, -20.0, 0.2, 1.0, 2.0},
+        {"compress-pr60-100hz-0", 0.0, 60.0, 0.0, 100.0, -60.0, 0.0, 0.2, 1.0, 2.0},
+        {"compress-pr100-em100-5000hz-m20", 0.0, 100.0, 100.0, 5000.0, -60.0, -20.0, 0.1, 0.4, 0.6},
+        {"compress-pr100-1000hz-p12", 0.0, 100.0, 0.0, 1000.0, -60.0, 12.0, 0.1, 0.5, 1.5},
+    };
+}
+
+std::vector<double> opto_spice_times(const OptoSpiceCase& c) {
+    // In quarter milliseconds, so every grid point is exact.
+    const long q_end = std::lround(end_s(c) * 4000.0);
+    const long changes[] = {std::lround(c.quiet_s * 4000.0), std::lround((c.quiet_s + c.hot_s) * 4000.0)};
+    std::vector<double> t;
+    for (long q = 0; q <= q_end;) {
+        t.push_back(static_cast<double>(q) / 4000.0);
+        long step = 40;  // 10 ms
+        for (long ch : changes) {
+            if (q >= ch && q < ch + 160) step = 1;               // 40 ms after a step: 0.25 ms
+            else if (q >= ch && q < ch + 1200 && step > 4) step = 4;  // to 300 ms: 1 ms
+            else if (q < ch && q + step > ch) step = ch - q;     // land on the step
+        }
+        q += step;
+    }
+    return t;
+}
+
+double opto_case_input(const OptoSpiceCase& c, double t) {
+    const double a = (t >= c.quiet_s && t < c.quiet_s + c.hot_s) ? amp(c.hot_dbfs) : amp(c.quiet_dbfs);
+    return a * std::sin(dsp::kTwoPi * c.freq_hz * t);
+}
+
+double opto_gr_db(const dsp::OptoCircuit& k, const dsp::OptoCellParams& p, double limit, double n) {
+    double g, tap;
+    dsp::OptoChannel::divider(k, limit, p.dark_conductance + p.unit_conductance * n, p.dark_conductance, g, tap);
+    return -20.0 * std::log10(g);
+}
+
+std::string opto_netlist(const OptoSpiceCase& c, const dsp::OptoCircuit& k, const dsp::OptoCellParams& p) {
+    const double share = dsp::peak_reduction_share(c.peak * 0.01);
+    const double r37 = c.emphasis * 0.01 * k.r37_max;
+    const double vq = k.full_scale_v * amp(c.quiet_dbfs), vh = k.full_scale_v * amp(c.hot_dbfs);
+    const double t1 = c.quiet_s, t2 = c.quiet_s + c.hot_s, te = end_s(c);
+    const double floor_v = p.el_b * p.el_b / (700.0 * 700.0);
+    std::ostringstream n;
+    n << "* Sonora SPICE reference: optical levelling cell and circuit, " << c.name << "\n"
+      << "* Generated by sonora-dsp-measure --spice-kind opto --spice-generate from common/dsp/opto.h;\n"
+      << "* do not edit (plugins/native/measure/include/sonora/measure/spice_opto.h).\n"
+      // The tone burst: its amplitude steps on zero crossings.
+      << "VAMP amp 0 PWL(0 " << sp(vq) << " " << sp(t1) << " " << sp(vq) << " " << sp(t1 + 1e-6) << " " << sp(vh)
+      << " " << sp(t2) << " " << sp(vh) << " " << sp(t2 + 1e-6) << " " << sp(vq) << " " << sp(te) << " " << sp(vq)
+      << ")\n"
+      << "BIN in 0 V=v(amp)*sin(" << sp(dsp::kTwoPi * c.freq_hz) << "*time)\n"
+      // The attenuator: R6, R7 (shorted in compress), the photoresistor
+      // beside R1.
+      << "R6 in j1 " << sp(k.r6) << "\n";
+    if (c.limit > 0.0) n << "R7 j1 out " << sp(k.r7 * c.limit) << "\n";
+    else n << "VR7 j1 out DC 0\n";
+    n << "R1 out 0 " << sp(k.r1) << "\n"
+      << "BLDR out 0 I=v(out)*(" << sp(p.dark_conductance) << "+" << sp(p.unit_conductance) << "*v(nc))\n"
+      // The side chain, buffered from the tap: C6 into R30 and R2, the
+      // peak reduction wiper, the amplifier, R37 || C12 into R3.
+      << "EBUF jb 0 j1 0 1\n"
+      << "C6 jb s " << sp(k.c6) << "\n"
+      << "R30 s w0 " << sp(k.r30) << "\n";
+    const double top = (1.0 - share) * k.r2, bottom = share * k.r2;
+    if (top > 0.0) n << "R2T w0 w " << sp(top) << "\n";
+    else n << "VR2T w0 w DC 0\n";
+    if (bottom > 0.0) n << "R2B w 0 " << sp(bottom) << "\n";
+    else n << "VR2B w 0 DC 0\n";
+    n << "EAMP a 0 w 0 " << sp(k.amp_gain) << "\n";
+    if (r37 > 0.0) n << "R37 a g " << sp(r37) << "\nC12 a g " << sp(k.c12) << "\n";
+    else n << "VR37 a g DC 0\n";
+    n << "R3 g 0 " << sp(k.r3) << "\n"
+      << "BDRV d 0 V=min(max(v(g),-" << sp(k.drive_limit_v) << ")," << sp(k.drive_limit_v) << ")\n";
+    // The cell: [EL] and [PC] of opto.h, each state a 1 F capacitor
+    // charged by its derivative.
+    const std::string light = "((abs(v(d))>" + sp(floor_v) + ")?exp(-" + sp(p.el_b) + "/sqrt(abs(v(d)))):0)";
+    const double e1 = p.trap1_density / p.trap1_tau, e2 = p.trap2_density / p.trap2_tau;
+    n << "BN 0 nc I=" << sp(p.el_gain) << "*" << light << "+" << sp(e1) << "*v(m1)+" << sp(e2) << "*v(m2)-v(nc)/"
+      << sp(p.tau_r) << "-" << sp(p.bimolecular) << "*v(nc)*v(nc)-" << sp(p.trap1_capture) << "*v(nc)*(1-v(m1))-"
+      << sp(p.trap2_capture) << "*v(nc)*(1-v(m2))\n"
+      << "CNC nc 0 1\n"
+      << "BM1 0 m1 I=" << sp(p.trap1_capture / p.trap1_density) << "*v(nc)*(1-v(m1))-v(m1)/" << sp(p.trap1_tau)
+      << "\n"
+      << "CM1 m1 0 1\n"
+      << "BM2 0 m2 I=" << sp(p.trap2_capture / p.trap2_density) << "*v(nc)*(1-v(m2))-v(m2)/" << sp(p.trap2_tau)
+      << "\n"
+      << "CM2 m2 0 1\n"
+      << ".ic v(nc)=0 v(m1)=0 v(m2)=0\n"
+      << ".options reltol=1e-7 abstol=1e-14 vntol=1e-12 method=trap\n"
+      << ".control\n"
+      << "tran " << sp(max_step(c)) << " " << sp(te) << " 0 " << sp(max_step(c)) << " uic\n"
+      << "wrdata out.txt v(nc)\n"
+      << ".endc\n"
+      << ".end\n";
+    return n.str();
+}
+
+std::vector<double> opto_model_gr(const OptoSpiceCase& c, double rate, const std::vector<double>& times,
+                                  const dsp::OptoCircuit& k, const dsp::OptoCellParams& p) {
+    dsp::OptoChannel ch;
+    ch.prepare(rate, k, p);
+    ch.set_peak_share(dsp::peak_reduction_share(c.peak * 0.01));
+    ch.set_limit(c.limit);
+    ch.set_r37(c.emphasis * 0.01 * k.r37_max);
+    // After sample n (its input at n / fs) the state is the one at (n + 1) / fs.
+    const auto count = static_cast<std::size_t>(std::ceil(end_s(c) * rate)) + 2;
+    std::vector<double> gr(count + 1, 0.0);
+    for (std::size_t i = 0; i < count; ++i) {
+        ch.tick(opto_case_input(c, static_cast<double>(i) / rate));
+        gr[i + 1] = ch.gain_reduction_db();
+    }
+    std::vector<double> out;
+    out.reserve(times.size());
+    for (double t : times) {
+        const double x = t * rate;
+        const auto i = static_cast<std::size_t>(std::floor(x));
+        const double u = x - static_cast<double>(i);
+        out.push_back(i + 1 < gr.size() ? gr[i] + (gr[i + 1] - gr[i]) * u : gr.back());
+    }
+    return out;
+}
+
+json::Value opto_circuit_json(const dsp::OptoCircuit& k) {
+    json::Value o = json::Value::object();
+    const std::pair<const char*, double> v[] = {
+        {"r6", k.r6},   {"r7", k.r7},           {"r1", k.r1},
+        {"c6", k.c6},   {"r30", k.r30},         {"r2", k.r2},
+        {"r37_max", k.r37_max}, {"c12", k.c12}, {"r3", k.r3},
+        {"amp_gain", k.amp_gain}, {"drive_limit_v", k.drive_limit_v}, {"full_scale_v", k.full_scale_v},
+    };
+    for (const auto& kv : v) o.set(kv.first, jnum(kv.second));
+    return o;
+}
+
+json::Value opto_cell_json(const dsp::OptoCellParams& p) {
+    json::Value o = json::Value::object();
+    const std::pair<const char*, double> v[] = {
+        {"el_b", p.el_b},
+        {"el_gain", p.el_gain},
+        {"tau_r", p.tau_r},
+        {"bimolecular", p.bimolecular},
+        {"trap1_capture", p.trap1_capture},
+        {"trap1_density", p.trap1_density},
+        {"trap1_tau", p.trap1_tau},
+        {"trap2_capture", p.trap2_capture},
+        {"trap2_density", p.trap2_density},
+        {"trap2_tau", p.trap2_tau},
+        {"unit_conductance", p.unit_conductance},
+        {"dark_conductance", p.dark_conductance},
+    };
+    for (const auto& kv : v) o.set(kv.first, jnum(kv.second));
+    return o;
+}
+
+bool read_opto_spice_reference(const std::string& path, OptoSpiceReference& ref, std::string& error) {
+    std::string text;
+    if (!read_file(path, text)) {
+        error = "cannot read " + path;
+        return false;
+    }
+    json::Value root;
+    json::Error e;
+    if (!json::parse(text, root, e)) {
+        error = path + ": " + e.message;
+        return false;
+    }
+    const json::Value* ng = root.find("ngspice");
+    const json::Value* cases = root.find("cases");
+    const json::Value* circuit = root.find("circuit");
+    const json::Value* cell = root.find("cell");
+    if (ng == nullptr || cases == nullptr || circuit == nullptr || cell == nullptr || !cases->is_array()) {
+        error = path + ": missing fields";
+        return false;
+    }
+    ref.ngspice = ng->text();
+    ref.circuit = *circuit;
+    ref.cell = *cell;
+    for (const json::Value& c : cases->items()) {
+        const json::Value* name = c.find("name");
+        const json::Value* t = c.find("t_s");
+        const json::Value* g = c.find("gr_db");
+        if (name == nullptr || t == nullptr || g == nullptr || t->items().size() != g->items().size()) {
+            error = path + ": malformed case";
+            return false;
+        }
+        OptoSpiceCase oc{name->text(),     get(c, "limit"),     get(c, "peak"),    get(c, "emphasis"),
+                         get(c, "freq_hz"), get(c, "quiet_dbfs"), get(c, "hot_dbfs"), get(c, "quiet_s"),
+                         get(c, "hot_s"),   get(c, "release_s")};
+        std::vector<double> tv, gv;
+        for (const json::Value& x : t->items()) {
+            double d = 0.0;
+            x.to_double(d);
+            tv.push_back(d);
+        }
+        for (const json::Value& x : g->items()) {
+            double d = 0.0;
+            x.to_double(d);
+            gv.push_back(d);
+        }
+        ref.cases.push_back(oc);
+        ref.times.push_back(std::move(tv));
+        ref.gr_db.push_back(std::move(gv));
+    }
+    return true;
+}
+
+namespace {
+
+// One case through ngspice: the gain reduction on the case's grid.
+bool spice_gr(const OptoSpiceCase& c, const std::string& netlist, const std::string& ngspice, const std::string& work,
+              std::vector<double>& gr, std::string& err) {
+    const dsp::OptoCircuit k;
+    const dsp::OptoCellParams p;
+    std::vector<double> t, v;
+    if (!run_ngspice(ngspice, work, netlist, err) || !read_trajectory(work + "/out.txt", t, v, err)) return false;
+    const std::vector<double> n = sample_at(t, v, opto_spice_times(c));
+    gr.clear();
+    for (double x : n) gr.push_back(opto_gr_db(k, p, c.limit, x));
+    return true;
+}
+
+}  // namespace
+
+int opto_spice_generate(const std::string& dir, const std::string& ngspice, const std::string& work) {
+    const dsp::OptoCircuit k;
+    const dsp::OptoCellParams p;
+    json::Value root = json::Value::object();
+    root.set("generator", json::Value::string("sonora-dsp-measure --spice-kind opto --spice-generate"));
+    root.set("ngspice", json::Value::string(ngspice_version(ngspice, work)));
+    root.set("circuit", opto_circuit_json(k));
+    root.set("cell", opto_cell_json(p));
+    json::Value cases = json::Value::array();
+    for (const OptoSpiceCase& c : opto_spice_cases()) {
+        const std::string netlist = opto_netlist(c, k, p);
+        if (!write_file(dir + "/" + c.name + ".cir", netlist)) {
+            std::fprintf(stderr, "cannot write %s/%s.cir\n", dir.c_str(), c.name.c_str());
+            return 1;
+        }
+        std::vector<double> gr;
+        std::string err;
+        if (!spice_gr(c, netlist, ngspice, work, gr, err)) {
+            std::fprintf(stderr, "%s: %s\n", c.name.c_str(), err.c_str());
+            return 1;
+        }
+        json::Value o = json::Value::object();
+        o.set("name", json::Value::string(c.name));
+        o.set("limit", jnum(c.limit));
+        o.set("peak", jnum(c.peak));
+        o.set("emphasis", jnum(c.emphasis));
+        o.set("freq_hz", jnum(c.freq_hz));
+        o.set("quiet_dbfs", jnum(c.quiet_dbfs));
+        o.set("hot_dbfs", jnum(c.hot_dbfs));
+        o.set("quiet_s", jnum(c.quiet_s));
+        o.set("hot_s", jnum(c.hot_s));
+        o.set("release_s", jnum(c.release_s));
+        json::Value tj = json::Value::array(), gj = json::Value::array();
+        const std::vector<double> times = opto_spice_times(c);
+        double peak = 0.0;
+        for (std::size_t i = 0; i < times.size(); ++i) {
+            tj.push(jnum(times[i]));
+            // Nine significant digits: far below any bar, and a file a
+            // reviewer can open.
+            char b[32];
+            std::snprintf(b, sizeof b, "%.9g", gr[i]);
+            gj.push(json::Value::number_lexeme(b));
+            peak = std::fmax(peak, gr[i]);
+        }
+        o.set("t_s", tj);
+        o.set("gr_db", gj);
+        cases.push(o);
+        std::printf("  %-34s %zu points, deepest reduction %.3f dB\n", c.name.c_str(), times.size(), peak);
+    }
+    root.set("cases", cases);
+    std::string text, err;
+    if (!json::write(root, text, err) || !write_file(dir + "/reference.json", text + "\n")) {
+        std::fprintf(stderr, "cannot write %s/reference.json: %s\n", dir.c_str(), err.c_str());
+        return 1;
+    }
+    return 0;
+}
+
+int opto_spice_check(const std::string& dir, const std::string& ngspice, const std::string& work, int index,
+                     int expected_cases) {
+    OptoSpiceReference ref;
+    std::string err;
+    if (!read_opto_spice_reference(dir + "/reference.json", ref, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+    const auto cases = opto_spice_cases();
+    if (expected_cases != static_cast<int>(cases.size())) {
+        std::fprintf(stderr, "the build registers %d spice_opto_* tests, the harness has %zu cases; update "
+                     "plugins/native/opto/CMakeLists.txt\n", expected_cases, cases.size());
+        return 1;
+    }
+    if (index < 0 || static_cast<std::size_t>(index) >= cases.size() || ref.cases.size() != cases.size()) {
+        std::fprintf(stderr, "case %d: the reference has %zu cases, the harness %zu\n", index, ref.cases.size(),
+                     cases.size());
+        return 1;
+    }
+    const OptoSpiceCase& c = cases[static_cast<std::size_t>(index)];
+    int bad = 0;
+    const std::string netlist = opto_netlist(c, dsp::OptoCircuit{}, dsp::OptoCellParams{});
+    std::string committed;
+    if (!read_file(dir + "/" + c.name + ".cir", committed) || committed != netlist) {
+        std::fprintf(stderr, "FAIL %s.cir differs from the netlist the model's values generate; regenerate the "
+                     "references (--spice-kind opto --spice-generate) in a deliberate commit\n", c.name.c_str());
+        ++bad;
+    }
+    std::vector<double> gr;
+    if (!spice_gr(c, netlist, ngspice, work, gr, err)) {
+        std::fprintf(stderr, "FAIL %s: %s\n", c.name.c_str(), err.c_str());
+        return 1;
+    }
+    const std::vector<double>& r = ref.gr_db[static_cast<std::size_t>(index)];
+    double worst = 0.0;
+    for (std::size_t i = 0; i < r.size() && i < gr.size(); ++i) worst = std::fmax(worst, std::fabs(gr[i] - r[i]));
+    // ngspice is deterministic on one build; another version may move the
+    // last digits. 1e-5 dB is far below the model's bar.
+    std::printf("%s: %s now vs the committed reference (%s): max |dGR| = %.3g dB (bar 1e-5)\n", c.name.c_str(),
+                ngspice_version(ngspice, work).c_str(), ref.ngspice.c_str(), worst);
+    if (!(worst <= 1e-5) || gr.size() != r.size()) {
+        std::fprintf(stderr, "FAIL %s: the trajectory moved\n", c.name.c_str());
+        ++bad;
+    }
+    return bad == 0 ? 0 : 1;
+}
+
+}  // namespace sonora::measure

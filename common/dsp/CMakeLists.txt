@@ -15,6 +15,7 @@ add_library(sonora_dsp STATIC
   src/fft.cpp
   src/limiter.cpp
   src/loudness.cpp
+  src/opto.cpp
   src/oversampling.cpp
   src/reference_peak.cpp
   src/triode.cpp
@@ -31,7 +32,7 @@ target_compile_options(sonora_dsp PUBLIC
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>
   $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
 
-foreach(t filters oversampling loudness dynamics limiter fdn triode)
+foreach(t filters oversampling loudness dynamics limiter fdn triode opto)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   add_test(NAME dsp_${t} COMMAND test_dsp_${t})

@@ -3,47 +3,22 @@
 
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
 #include "sonora/dsp/math.h"
+#include "spice_util.h"
 
 namespace sonora::measure {
 
 namespace {
 
-std::string num(double v) {
-    char b[40];
-    std::snprintf(b, sizeof b, "%.17g", v);
-    return b;
-}
-
-// Numbers in a netlist: %.10g is exact for every value we use and reads
-// the same to a person.
-std::string sp(double v) {
-    char b[40];
-    std::snprintf(b, sizeof b, "%.10g", v);
-    return b;
-}
-
-json::Value jnum(double v) { return json::Value::number_lexeme(num(v)); }
-
-bool read_file(const std::string& path, std::string& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    std::ostringstream s;
-    s << f.rdbuf();
-    out = s.str();
-    return true;
-}
-
-bool write_file(const std::string& path, const std::string& text) {
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    f << text;
-    return static_cast<bool>(f);
-}
+using spice_util::jnum;
+using spice_util::ngspice_version;
+using spice_util::read_file;
+using spice_util::run_ngspice;
+using spice_util::sp;
+using spice_util::write_file;
 
 double max_step(const SpiceCase& c) { return 1.0 / (2000.0 * c.freq_hz); }
 
@@ -52,25 +27,6 @@ double get(const json::Value& o, const char* key) {
     double d = 0.0;
     if (v == nullptr || !v->to_double(d)) return std::nan("");
     return d;
-}
-
-// Runs one case in `work`; returns false with a message on failure.
-bool run_ngspice(const std::string& ngspice, const std::string& work, const std::string& netlist,
-                 std::string& error) {
-    const std::string cir = work + "/case.cir";
-    if (!write_file(cir, netlist)) {
-        error = "cannot write " + cir;
-        return false;
-    }
-    std::remove((work + "/out.txt").c_str());
-    std::remove((work + "/op.txt").c_str());
-    const std::string cmd = "cd '" + work + "' && '" + ngspice + "' -b case.cir > ngspice.log 2>&1";
-    const int rc = std::system(cmd.c_str());
-    if (rc != 0) {
-        error = "ngspice failed (" + std::to_string(rc) + "); see " + work + "/ngspice.log";
-        return false;
-    }
-    return true;
 }
 
 bool read_op(const std::string& path, std::vector<double>& op, std::string& error) {
@@ -85,18 +41,6 @@ bool read_op(const std::string& path, std::vector<double>& op, std::string& erro
     }
     op = {all[1], all[3], all[5], all[7]};
     return true;
-}
-
-std::string ngspice_version(const std::string& ngspice, const std::string& work) {
-    const std::string log = work + "/version.txt";
-    const std::string cmd = "'" + ngspice + "' --version > '" + log + "' 2>&1";
-    if (std::system(cmd.c_str()) != 0) return "unknown";
-    std::string text;
-    read_file(log, text);
-    const auto at = text.find("ngspice-");
-    if (at == std::string::npos) return "unknown";
-    const auto end = text.find_first_of(" \n:", at);
-    return text.substr(at, end - at);
 }
 
 }  // namespace

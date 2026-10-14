@@ -56,6 +56,12 @@ constexpr uint32_t kGridBeat = 0xff1d2127;
 constexpr uint32_t kRulerTick = 0xff4a525b;
 constexpr uint32_t kSelectionFill = 0x333fc1b0;  // accent at 20 %, over regions
 constexpr uint32_t kRegionSelectedOutline = kAccent;
+// Fades: the gain curve as a `text` line, the part of the region the fade
+// takes away darkened beneath it, a crossfade as a faint box over the cut.
+constexpr uint32_t kFadeLine = 0xffe8ebef;
+constexpr uint32_t kFadeShade = 0x8c000000;       // black at 55 %
+constexpr uint32_t kCrossfadeFill = 0x1fe8ebef;   // text at 12 %
+constexpr uint32_t kCrossfadeEdge = 0x80e8ebef;   // text at 50 %
 
 // Region colours, by track, cycling. Muted mid-tones so a session of 18
 // tracks reads as calm; the waveform is drawn lighter than the body.

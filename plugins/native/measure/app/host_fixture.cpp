@@ -73,6 +73,7 @@
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
 #include "sonora/native/reverb.h"
+#include "sonora/native/opto.h"
 #include "sonora/native/tube.h"
 
 namespace sonora::native::suites {
@@ -84,6 +85,7 @@ measure::Config delay_golden_config();
 measure::Config chorus_golden_config();
 measure::Config reverb_golden_config();
 measure::Config tube_golden_config();
+measure::Config opto_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -142,6 +144,9 @@ const Target kTargets[] = {
     // Quality changes the oversampling factor, and so the latency.
     {"tube", [] { return native::make_tube(); }, native::suites::tube_golden_config, true,
      {"drive", 24.0f}, {{"quality", 2.0f}}},
+    // Quality changes the oversampling factor, and so the latency.
+    {"opto", [] { return native::make_opto(); }, native::suites::opto_golden_config, true,
+     {"peak_reduction", 95.0f}, {{"quality", 0.0f}}},
 };
 
 struct Case {

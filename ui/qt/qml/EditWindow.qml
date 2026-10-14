@@ -22,8 +22,9 @@ Item {
         Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
 
         Row {
+            id: toolRow
             anchors { left: parent.left; leftMargin: Theme.space4; verticalCenter: parent.verticalCenter }
-            spacing: Theme.space6
+            spacing: Theme.space4
 
             // Edit modes, in the order an engineer's F1-F4 reach them.
             Row {
@@ -34,7 +35,7 @@ Item {
                     SButton {
                         required property var modelData
                         text: modelData[0]
-                        implicitWidth: 60
+                        implicitWidth: 54
                         active: edit.session.editMode === modelData[0]
                         onClicked: edit.shell.invoke(modelData[1], -1)
                     }
@@ -48,7 +49,7 @@ Item {
                     SButton {
                         required property var modelData
                         text: modelData[0]
-                        implicitWidth: 56
+                        implicitWidth: 50
                         active: edit.session.tool === modelData[0]
                         onClicked: edit.shell.invoke(modelData[1], -1)
                     }
@@ -67,6 +68,42 @@ Item {
                     implicitWidth: 52
                     bold: false
                     onClicked: edit.session.cycleGrid()
+                }
+            }
+            // The shapes the no-dialog fade keys make, shown because a key
+            // that makes an unseen shape would be guessing on the operator's
+            // behalf. Laid out as the selection fields are, a caption over
+            // its value, to keep the toolbar to one width at 1280 px; a
+            // click on the value picks the next shape.
+            Row {
+                spacing: Theme.space3
+                Repeater {
+                    model: [["FADE", "fadeShape"], ["X-FADE", "crossfadeShape"]]
+                    Column {
+                        id: shapeField
+                        required property var modelData
+                        width: 66   // the longest shape's name, so a click moves nothing beside it
+                        objectName: modelData[1]
+                        Text {
+                            text: shapeField.modelData[0]
+                            color: Theme.textTertiary
+                            font { family: Theme.fontFamily; pixelSize: Theme.textOverline; letterSpacing: 0.6 }
+                        }
+                        Text {
+                            text: shapeField.modelData[1] === "fadeShape" ? edit.session.fadeShape
+                                                                          : edit.session.crossfadeShape
+                            color: shapeArea.containsMouse ? Theme.accent : Theme.text
+                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall; underline: shapeArea.containsMouse }
+                            MouseArea {
+                                id: shapeArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: shapeField.modelData[1] === "fadeShape"
+                                           ? edit.session.cycleFadeShape()
+                                           : edit.session.cycleCrossfadeShape()
+                            }
+                        }
+                    }
                 }
             }
             Row {
@@ -102,8 +139,17 @@ Item {
                 }
             }
         }
+        // Elided rather than drawn under the selection fields when the
+        // window is narrow.
         Text {
-            anchors { right: parent.right; rightMargin: Theme.space4; verticalCenter: parent.verticalCenter }
+            objectName: "sessionName"
+            anchors {
+                left: toolRow.right; leftMargin: Theme.space4
+                right: parent.right; rightMargin: Theme.space4
+                verticalCenter: parent.verticalCenter
+            }
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideMiddle
             text: edit.session.sessionName
             color: edit.session.synthetic ? Theme.caution : Theme.textSecondary
             font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }

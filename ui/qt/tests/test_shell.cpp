@@ -115,6 +115,27 @@ int main(int argc, char** argv) {
     for (const auto& e : view.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));
     CHECK(view.status() == QQuickView::Ready);
     model.routeKeysFrom(&view);
+
+    // --- the Edit toolbar fits 1280 px: the fade shapes are shown and
+    // clickable, and the session name (which carries "synthetic audio") is
+    // whole, not elided under them ---
+    {
+        QQuickItem* fade = named(view.rootObject(), QStringLiteral("fadeShape"));
+        QQuickItem* xfade = named(view.rootObject(), QStringLiteral("crossfadeShape"));
+        QQuickItem* name = named(view.rootObject(), QStringLiteral("sessionName"));
+        CHECK(fade && xfade && name);
+        CHECK(session.fadeShape() == QStringLiteral("Linear"));
+        CHECK(session.crossfadeShape() == QStringLiteral("Equal power"));
+        const qreal x0 = fade->x();
+        session.cycleFadeShape();
+        CHECK(session.fadeShape() == QStringLiteral("Equal power"));
+        CHECK(fade->x() == x0 && xfade->width() == fade->width());
+        session.cycleFadeShape();
+        session.cycleFadeShape();
+        CHECK(session.fadeShape() == QStringLiteral("Linear"));
+        CHECK(!name->property("truncated").toBool());
+        CHECK(name->property("text").toString().contains(QStringLiteral("synthetic")));
+    }
     // Offscreen has no keyboard; the events below carry XKB keycodes.
     CHECK(!model.scanCodesAreXkb());
     model.setScanCodesAreXkb(true);

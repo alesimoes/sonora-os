@@ -551,8 +551,11 @@ std::vector<float> vst3_render_keyed(const char* path, v3_param_id external, Key
     for (int k = 0; k < kBlocks; ++k) {
         for (std::size_t c = 0; c < b.data[0][0].size(); ++c) {
             for (int i = 0; i < 128; ++i)
+                // In phase, at two levels: a stereo-linked processor that
+                // joins its channels' side chains (the opto) cancels
+                // anti-phase channels and would not act on them at all.
                 b.data[0][0][c][static_cast<std::size_t>(i)] =
-                    (c & 1 ? -0.25f : 0.25f) * std::sin(0.01f * static_cast<float>(128 * k + i));
+                    (c & 1 ? 0.2f : 0.25f) * std::sin(0.01f * static_cast<float>(128 * k + i));
         }
         // An inactive bus still gets buffers from most hosts; whatever is in
         // them must not be heard. A silent active bus is zeros.
