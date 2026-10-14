@@ -602,6 +602,269 @@ int test_time() {
 
 // --- what is drawn where --------------------------------------------------------
 
+// --- fades -------------------------------------------------------------------
+//
+// Fade to Start / Fade to End / the no-dialog crossfade, the Smart Tool's
+// fade corners, Clear on a fade, and the curve the timeline draws held to
+// the gain the engine plays.
+
+int test_fades() {
+    // The curve: engine/core's fade_in_gain() formula, by value. Linear and
+    // S-curve halves sum to one, equal power in power, as session.cpp says
+    // a crossfade's two sides must.
+    for (FadeShape shape : {FadeShape::Linear, FadeShape::EqualPower, FadeShape::SCurve}) {
+        OK(fade_gain(shape, -0.5f) == 0.0f && fade_gain(shape, 0.0f) == 0.0f);
+        OK(fade_gain(shape, 1.0f) == 1.0f && fade_gain(shape, 2.0f) == 1.0f);
+        for (float x : {0.1f, 0.25f, 0.5f, 0.8f}) {
+            const float a = fade_gain(shape, x), b = fade_gain(shape, 1.0f - x);
+            OK(shape == FadeShape::EqualPower ? std::abs(a * a + b * b - 1.0f) < 1e-5f
+                                              : std::abs(a + b - 1.0f) < 1e-5f);
+        }
+    }
+    OK(fade_gain(FadeShape::Linear, 0.25f) == 0.25f);
+    OK(std::abs(fade_gain(FadeShape::EqualPower, 0.5f) - 0.70710678f) < 1e-6f);
+    OK(std::abs(fade_gain(FadeShape::SCurve, 0.25f) - 0.14644661f) < 1e-6f);
+    OK(std::string(fade_shape_name(FadeShape::SCurve)) == "S-curve");
+    OK(next_fade_shape(FadeShape::SCurve) == FadeShape::Linear);
+
+    ModelDocument doc(two_tracks());
+    EditController c(doc);
+    c.set_viewport(1000, 200);
+    const double th = c.view().track_height;
+    const Id pl = playlist_of(doc.snapshot(), 0);
+    std::string why;
+    const auto x = [&](Frames f) { return c.view().x_of(f); };
+    const auto range = [&](Frames a, Frames b, int track) {
+        const Tool was = c.tool();
+        c.set_tool(Tool::Select);
+        std::string e;
+        const double y = track * th + th / 2;
+        const bool ok = c.press(x(a), y, e) && c.release(x(b), y, e);
+        c.set_tool(was);
+        return ok && c.selection().start == std::min(a, b) && c.selection().end == std::max(a, b);
+    };
+    const Frames half = kBar / 2;
+
+    // --- Fade to Start / Fade to End, at the insertion point in A [1, 3) bars ---
+    c.select_track(0);
+    c.set_insertion(kBar);
+    OK(!c.fade_to_start(why) && why.find("not inside a region") != std::string::npos);
+    c.set_insertion(kBar + half);
+    const uint64_t rev = doc.snapshot().revision;
+    OK(c.fade_to_start(why));
+    OK(region(doc.snapshot(), 10)->fade_in.length == half);
+    OK(region(doc.snapshot(), 10)->fade_in.shape == FadeShape::Linear);
+    OK(doc.snapshot().revision == rev + 1 && doc.can_undo());  // one operation, one undo step
+    c.set_insertion(3 * kBar - half);
+    c.set_fade_shape(FadeShape::SCurve);
+    OK(c.fade_to_end(why));
+    OK(region(doc.snapshot(), 10)->fade_out.length == half);
+    OK(region(doc.snapshot(), 10)->fade_out.shape == FadeShape::SCurve);  // the last shape chosen
+    // Lengthening keeps the fade's own shape.
+    c.set_insertion(2 * kBar);
+    OK(c.fade_to_start(why));
+    OK(region(doc.snapshot(), 10)->fade_in.length == kBar &&
+       region(doc.snapshot(), 10)->fade_in.shape == FadeShape::Linear);
+    // Through the fade-out: refused, not shortened.
+    c.set_insertion(3 * kBar - kBeat);
+    OK(!c.fade_to_start(why) && why.find("run into") != std::string::npos);
+    OK(region(doc.snapshot(), 10)->fade_in.length == kBar);
+    OK(c.undo(why) && c.undo(why) && c.undo(why));
+    OK(region(doc.snapshot(), 10)->fade_in.length == 0 && region(doc.snapshot(), 10)->fade_out.length == 0);
+    c.set_fade_shape(FadeShape::Linear);
+
+    // --- the selection: over A's start, over its end; refusals by name ---
+    OK(range(half, kBar + half, 0));
+    OK(c.fade_selection(why));
+    OK(region(doc.snapshot(), 10)->fade_in.length == half);
+    // The selection is now the fade, so Clear takes it away again.
+    OK(c.selection().start == kBar && c.selection().end == kBar + half);
+    OK(c.clear(why));
+    OK(region(doc.snapshot(), 10)->fade_in.length == 0);
+    OK(region(doc.snapshot(), 10) != nullptr);  // the fade went, not the region
+
+    OK(range(3 * kBar - half, 3 * kBar + half, 0));
+    OK(c.fade_selection(why) && region(doc.snapshot(), 10)->fade_out.length == half);
+    OK(c.selection().start == 3 * kBar - half && c.selection().end == 3 * kBar);
+
+    OK(range(half, 3 * kBar + half, 0));
+    OK(!c.fade_selection(why) && why.find("whole of \"A\"") != std::string::npos);
+    OK(range(kBar + half, 2 * kBar, 0));
+    OK(!c.fade_selection(why) && why.find("start or end") != std::string::npos);
+    OK(range(2 * kBar, 4 * kBar + half, 0));
+    OK(!c.fade_selection(why) && why.find("covers 2 regions") != std::string::npos);
+    OK(range(6 * kBar, 7 * kBar, 0));
+    OK(!c.fade_selection(why) && why.find("no region") != std::string::npos);
+    c.set_insertion(kBar);
+    OK(!c.fade_selection(why) && why.find("select a time range") != std::string::npos);
+    const uint64_t refused_rev = doc.snapshot().revision;
+
+    // Fades move nothing, so Shuffle allows them where it refuses a move.
+    c.set_mode(EditMode::Shuffle);
+    OK(range(half, kBar + half, 0) && c.fade_selection(why));
+    OK(doc.snapshot().revision == refused_rev + 1);
+    c.set_mode(EditMode::Slip);
+
+    // --- crossfades: A separated at 2 bars gives a cut with handles both sides ---
+    const Id a2 = doc.reserve_id();
+    OK(doc.submit(SplitRegion{pl, 10, 2 * kBar, a2}, why));
+    OK(range(2 * kBar - kBeat, 2 * kBar + kBeat, 0));
+    OK(c.fade_selection(why));
+    {
+        const Playlist& p = *active_playlist(doc.snapshot().edit->tracks[0].get());
+        OK(p.crossfades.size() == 1);
+        OK(p.crossfades[0].left == 10 && p.crossfades[0].right == a2);
+        OK(p.crossfades[0].length == 2 * kBeat && p.crossfades[0].align == Align::Centre);
+        OK(p.crossfades[0].shape == FadeShape::EqualPower);
+        OK(valid(doc.snapshot()));
+        // The crossfade replaces those ends' own fades, as the engine plays it.
+        const RegionFades left = region_fades(p, *region(doc.snapshot(), 10));
+        OK(left.out == 0 && left.out_crossfade == &p.crossfades[0] && left.in == half);
+    }
+    // A lopsided range is centred on the cut, and the selection says so.
+    OK(range(2 * kBar - kBeat, 2 * kBar + 3 * kBeat, 0));
+    OK(c.fade_selection(why));
+    OK(c.selection().start == 2 * kBar - 2 * kBeat && c.selection().end == 2 * kBar + 2 * kBeat);
+    // A crossfaded end is not faded on its own: by key and by the Smart Tool.
+    c.set_insertion(2 * kBar - kBeat);
+    OK(!c.fade_to_end(why) && why.find("crossfaded with") != std::string::npos);
+    OK(c.hit(x(2 * kBar) - 3, th * 0.1).zone == HitZone::FadeOut);
+    OK(!c.press(x(2 * kBar) - 3, th * 0.1, why) && why.find("crossfaded") != std::string::npos);
+    // Clear on exactly the crossfade removes it.
+    OK(range(2 * kBar - 2 * kBeat, 2 * kBar + 2 * kBeat, 0));
+    OK(c.clear(why));
+    OK(active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.empty());
+    // Pre and post: the range stops at the cut.
+    OK(range(2 * kBar - kBeat, 2 * kBar, 0) && c.fade_selection(why));
+    {
+        const Crossfade& xf = active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades[0];
+        OK(xf.align == Align::Pre && xf.length == kBeat);
+    }
+    OK(range(2 * kBar, 2 * kBar + kBeat, 0) && c.fade_selection(why));
+    {
+        const Crossfade& xf = active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades[0];
+        OK(xf.align == Align::Post && xf.length == kBeat);
+    }
+    // No handle: refused with the model's reason, not shortened. Track 2:
+    // C ends where its source does, D starts where its source does.
+    const Id pl2 = playlist_of(doc.snapshot(), 1);
+    Region cr;
+    cr.id = doc.reserve_id();
+    cr.name = "C";
+    cr.position = 0;
+    cr.length = kBar;
+    cr.source_offset = 19 * kBar;
+    cr.channels = {{100, 0}};
+    Region dr = cr;
+    dr.id = doc.reserve_id();
+    dr.name = "D";
+    dr.position = kBar;
+    dr.source_offset = 0;
+    OK(doc.submit(PlaceRegion{pl2, cr, kNoId}, why) && doc.submit(PlaceRegion{pl2, dr, kNoId}, why));
+    OK(range(kBar - kBeat, kBar + kBeat, 1));
+    OK(!c.fade_selection(why) && why.find("handle") != std::string::npos);
+    OK(active_playlist(doc.snapshot().edit->tracks[1].get())->crossfades.empty());
+    // Two cuts in one range: batch fades are refused by name.
+    OK(doc.submit(SplitRegion{pl, a2, 2 * kBar + half, doc.reserve_id()}, why));
+    OK(range(2 * kBar - kBeat, 2 * kBar + half + kBeat, 0));
+    const uint64_t two_cuts = doc.snapshot().revision;
+    OK(!c.fade_selection(why) && why.find("crosses 2 cuts") != std::string::npos);
+    OK(doc.snapshot().revision == two_cuts);
+
+    // --- the Smart Tool's fade corners: the top quarter at each end ---
+    ModelDocument doc2(two_tracks());
+    EditController s(doc2);
+    s.set_viewport(1000, 200);
+    const double ax0 = s.view().x_of(kBar), ax1 = s.view().x_of(3 * kBar);
+    OK(s.hit(ax0 + 3, th * 0.1).zone == HitZone::FadeIn);
+    OK(s.hit(ax1 - 3, th * 0.1).zone == HitZone::FadeOut);
+    OK(s.hit(ax0 + 3, th * 0.75).zone == HitZone::TrimStart);  // below the corner: still the trim
+    OK(s.hit(ax0 + 40, th * 0.1).zone == HitZone::Select);
+    s.set_mode(EditMode::Shuffle);  // a fade drag in Shuffle: allowed
+    OK(s.press(ax0 + 3, th * 0.1, why));
+    s.move(s.view().x_of(kBar + half), th * 0.1);
+    OK(s.drag().kind == Drag::Kind::FadeIn && s.drag().fade == half);
+    OK(doc2.snapshot().revision == 0);  // a drag in progress is not an operation
+    // The preview draws the fade in the hand.
+    {
+        FlatPeaks peaks;
+        Scene scene;
+        build_timeline_scene(doc2.snapshot(), s.view(), s.selection(), s.drag(), false,
+                             GridValue::Beat, peaks, scene);
+        const double band = theme::kRegionNameBand;
+        const double wy = 2 + band + 1, wh = th - 4 - band - 2;
+        const float col = static_cast<float>(ax0 + 10.5);  // a quarter through: gain 0.26
+        const SceneRect* r = rect_at(scene.rects, col, static_cast<float>(wy + wh * 0.1));
+        OK(r && r->argb == theme::kFadeShade);
+    }
+    OK(s.release(s.view().x_of(kBar + half), th * 0.1, why));
+    OK(region(doc2.snapshot(), 10)->fade_in.length == half && doc2.snapshot().revision == 1);
+    // Dragged past the other end: stops at the fade-out, never through it.
+    OK(s.press(ax1 - 3, th * 0.1, why));
+    s.move(ax1 - 30, th * 0.1);
+    OK(s.release(ax1 - 30, th * 0.1, why));
+    const Frames out_len = region(doc2.snapshot(), 10)->fade_out.length;
+    OK(out_len > 0);
+    OK(s.press(ax0 + 3, th * 0.1, why));
+    s.move(ax1 + 50, th * 0.1);
+    OK(s.drag().fade == 2 * kBar - out_len);
+    OK(s.release(ax1 + 50, th * 0.1, why));
+    OK(region(doc2.snapshot(), 10)->fade_in.length == 2 * kBar - out_len && valid(doc2.snapshot()));
+    // Dragged back past the start: the fade is removed.
+    OK(s.press(ax0 + 3, th * 0.1, why));
+    s.move(ax0 - 50, th * 0.1);
+    OK(s.release(ax0 - 50, th * 0.1, why));
+    OK(region(doc2.snapshot(), 10)->fade_in.length == 0);
+
+    // --- the drawing: the curve, the shade above it, the crossfade box ---
+    {
+        FlatPeaks peaks;
+        Scene scene;
+        ModelDocument d3(two_tracks());
+        OK(d3.submit(SetFade{pl, 10, FadeEnd::In, {kBar, FadeShape::Linear}}, why));
+        const Id b2 = d3.reserve_id();
+        OK(d3.submit(SplitRegion{pl, 11, 4 * kBar + half, b2}, why));
+        Crossfade xf;
+        xf.left = 11;
+        xf.right = b2;
+        xf.length = kBeat;
+        OK(d3.submit(SetCrossfade{pl, xf}, why));
+        // B's own fade-out, under the crossfade at its end: not heard, not drawn.
+        OK(d3.submit(SetFade{pl, 11, FadeEnd::Out, {half - kBeat, FadeShape::Linear}}, why));
+        EditController e(d3);
+        e.set_viewport(1000, 200);
+        build_timeline_scene(d3.snapshot(), e.view(), e.selection(), e.drag(), false,
+                             GridValue::Beat, peaks, scene);
+        const double band = theme::kRegionNameBand;
+        const double wy = 2 + band + 1, wh = th - 4 - band - 2;
+        const uint32_t palette = theme::region_colour(0);
+        // A quarter through A's linear fade-in (80 px long): shade above the
+        // curve, the waveform's colour well below it, the line on it.
+        const double col = e.view().x_of(kBar) + 20;
+        const double g = (20.5) / 80.0;
+        const double yc = wy + (1.0 - g) * wh;
+        const SceneRect* r = rect_at(scene.rects, static_cast<float>(col + 0.5), static_cast<float>(wy + 2));
+        OK(r && r->argb == theme::kFadeShade);
+        r = rect_at(scene.rects, static_cast<float>(col + 0.5), static_cast<float>(yc));
+        OK(r && r->argb == theme::kFadeLine);
+        r = rect_at(scene.rects, static_cast<float>(col + 0.5), static_cast<float>(wy + wh - 1));
+        OK(r && r->argb == theme::region_body(palette));
+        // Past the fade: no shade.
+        r = rect_at(scene.rects, static_cast<float>(e.view().x_of(2 * kBar) + 10.5), static_cast<float>(wy + 2));
+        OK(r && r->argb != theme::kFadeShade && r->argb != theme::kFadeLine);
+        // The crossfade: a box over the cut, above the name band.
+        r = rect_at(scene.rects, static_cast<float>(e.view().x_of(4 * kBar + half)) + 0.5f, 8.0f);
+        OK(r && (r->argb == theme::kCrossfadeFill || r->argb == theme::kCrossfadeEdge));
+        r = rect_at(scene.rects, static_cast<float>(e.view().x_of(4 * kBar + half) - 3.5), 8.0f);
+        OK(r && r->argb == theme::kCrossfadeFill);
+        // B's own fade-out, left of the crossfade: replaced, so not drawn.
+        r = rect_at(scene.rects, static_cast<float>(e.view().x_of(4 * kBar + half - kBeat) - 4.5),
+                    static_cast<float>(wy + 2));
+        OK(r && r->argb != theme::kFadeShade);
+    }
+    return 0;
+}
+
 int test_scene() {
     ModelDocument doc(two_tracks());
     EditController c(doc);
@@ -721,6 +984,9 @@ int test_routing() {
                                 {"a", "edit.trim_start_to_insertion"},
                                 {"s", "edit.trim_end_to_insertion"},
                                 {"ctrl+b", "edit.clear"},
+                                {"d", "edit.fade_to_start"},
+                                {"f", "edit.fade_selection"},
+                                {"g", "edit.fade_to_end"},
                                 {"ctrl+z", "edit.undo"},
                                 {"ctrl+shift+z", "edit.redo"},
                                 {"numpad_plus", "nudge.forward"},
@@ -733,6 +999,7 @@ int test_routing() {
     if (route("logic.json", {{"x", "window.toggle_mix_edit"},
                              {"cmd+t", "edit.separate_at_selection"},
                              {"delete", "edit.clear"},
+                             {"ctrl+alt+x", "edit.fade_selection"},
                              {"cmd+z", "edit.undo"},
                              {"cmd+shift+z", "edit.redo"},
                              {"cmd+right", "zoom.in"},
@@ -1127,7 +1394,8 @@ int test_pre_migration_backup() {
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    if (test_model() || test_history() || test_controller() || test_taper() || test_time() ||
+    if (test_model() || test_history() || test_controller() || test_fades() || test_taper() ||
+        test_time() ||
         test_scene() || test_routing() || test_files() || test_save_failures() ||
         test_pre_migration_backup()) {
         return 1;

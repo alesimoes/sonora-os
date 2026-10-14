@@ -127,6 +127,12 @@ void SessionModel::installCommands(CommandRegistry& local) {
            [this](const CommandContext&, Why& why) { return ctl_.trim_start_to_insertion(why); });
     simple("edit.trim_end_to_insertion",
            [this](const CommandContext&, Why& why) { return ctl_.trim_end_to_insertion(why); });
+    simple("edit.fade_to_start",
+           [this](const CommandContext&, Why& why) { return ctl_.fade_to_start(why); });
+    simple("edit.fade_to_end",
+           [this](const CommandContext&, Why& why) { return ctl_.fade_to_end(why); });
+    simple("edit.fade_selection",
+           [this](const CommandContext&, Why& why) { return ctl_.fade_selection(why); });
     simple("nudge.forward", [this](const CommandContext&, Why& why) { return ctl_.nudge(1, why); });
     simple("nudge.back", [this](const CommandContext&, Why& why) { return ctl_.nudge(-1, why); });
 
@@ -182,11 +188,14 @@ void SessionModel::sync() {
     }
     const int m = static_cast<int>(ctl_.mode()), t = static_cast<int>(ctl_.tool()),
               g = static_cast<int>(ctl_.grid());
-    if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_) {
+    const int fades = static_cast<int>(ctl_.fade_shape()) * 16 +
+                      static_cast<int>(ctl_.crossfade_shape());
+    if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_ || fades != seen_fades_) {
         content = content || m != seen_mode_ || g != seen_grid_;  // grid lines follow them
         seen_mode_ = m;
         seen_tool_ = t;
         seen_grid_ = g;
+        seen_fades_ = fades;
         emit editStateChanged();
     }
     bool overlay = false;
@@ -398,6 +407,16 @@ void SessionModel::selectTrack(int index) {
 
 void SessionModel::cycleGrid() {
     ctl_.set_grid(next_grid_value(ctl_.grid()));
+    sync();
+}
+
+void SessionModel::cycleFadeShape() {
+    ctl_.set_fade_shape(next_fade_shape(ctl_.fade_shape()));
+    sync();
+}
+
+void SessionModel::cycleCrossfadeShape() {
+    ctl_.set_crossfade_shape(next_fade_shape(ctl_.crossfade_shape()));
     sync();
 }
 

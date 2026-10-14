@@ -16,6 +16,7 @@ namespace {
 constexpr double kMinFpp = 1.0;  // one sample a pixel
 constexpr double kEdgePx = 8.0;  // the Smart Tool's trim zone at each end
 constexpr double kDragSlopPx = 3.0;
+constexpr double kFadeZonePx = 12.0;  // the Smart Tool's fade corners, in the lane's top quarter
 
 const Playlist* active(const TrackEdit* t) { return active_playlist(t); }
 
@@ -49,6 +50,95 @@ int ViewState::track_at(double y) const {
     if (track_height <= 0) return -1;
     return static_cast<int>(std::floor((y + scroll_y) / track_height));
 }
+
+// --- fades -----------------------------------------------------------------
+
+float fade_gain(FadeShape shape, float x) {
+    if (x <= 0.0f) return 0.0f;
+    if (x >= 1.0f) return 1.0f;
+    constexpr float kHalfPi = 1.57079632679489662f;
+    switch (shape) {
+        case FadeShape::EqualPower: return std::sin(kHalfPi * x);
+        case FadeShape::SCurve: return 0.5f - 0.5f * std::cos(2.0f * kHalfPi * x);
+        case FadeShape::Linear: break;
+    }
+    return x;
+}
+
+const char* fade_shape_name(FadeShape shape) {
+    switch (shape) {
+        case FadeShape::Linear: return "Linear";
+        case FadeShape::EqualPower: return "Equal power";
+        case FadeShape::SCurve: return "S-curve";
+    }
+    return "";
+}
+
+FadeShape next_fade_shape(FadeShape shape) {
+    switch (shape) {
+        case FadeShape::Linear: return FadeShape::EqualPower;
+        case FadeShape::EqualPower: return FadeShape::SCurve;
+        case FadeShape::SCurve: break;
+    }
+    return FadeShape::Linear;
+}
+
+RegionFades region_fades(const Playlist& p, const Region& r) {
+    RegionFades f;
+    f.in = r.fade_in.length;
+    f.in_shape = r.fade_in.shape;
+    f.out = r.fade_out.length;
+    f.out_shape = r.fade_out.shape;
+    for (const Crossfade& x : p.crossfades) {
+        if (x.right == r.id) {
+            f.in_crossfade = &x;
+            f.in = 0;
+        }
+        if (x.left == r.id) {
+            f.out_crossfade = &x;
+            f.out = 0;
+        }
+    }
+    return f;
+}
+
+namespace {
+
+// How far into a region the fades at each end reach, crossfades included:
+// what a new fade at the other end may not run into.
+Frames reach_in(const RegionFades& f) {
+    if (f.in_crossfade == nullptr) return f.in;
+    Frames before = 0, after = 0;
+    crossfade_extent(*f.in_crossfade, before, after);
+    return after;
+}
+
+Frames reach_out(const RegionFades& f) {
+    if (f.out_crossfade == nullptr) return f.out;
+    Frames before = 0, after = 0;
+    crossfade_extent(*f.out_crossfade, before, after);
+    return before;
+}
+
+const Region* region_on(const Playlist& p, Id id) {
+    for (const Region& r : p.regions) {
+        if (r.id == id) return &r;
+    }
+    return nullptr;
+}
+
+std::string named(const Region& r) {
+    return r.name.empty() ? "region " + std::to_string(r.id) : "\"" + r.name + "\"";
+}
+
+std::string crossfaded_refusal(const Playlist& p, const Region& r, const Crossfade& x, bool in) {
+    const Region* other = region_on(p, in ? x.left : x.right);
+    return named(r) + "'s " + (in ? "start" : "end") + " is crossfaded with " +
+           (other ? named(*other) : std::string("its neighbour")) +
+           "; select across the cut and fade the selection to change it";
+}
+
+}  // namespace
 
 // --- resolvers -------------------------------------------------------------
 
@@ -332,7 +422,11 @@ Hit EditController::hit(double x, double y) const {
     h.region = r->id;
     const double x0 = view_.x_of(r->position), x1 = view_.x_of(r->end());
     const double edge = std::min(kEdgePx, (x1 - x0) / 4);
-    if (x - x0 <= edge) h.zone = HitZone::TrimStart;
+    const double corner = std::min(kFadeZonePx, (x1 - x0) / 4);
+    const bool top = y - view_.y_of_track(i) < view_.track_height / 4;
+    if (top && x - x0 <= corner) h.zone = HitZone::FadeIn;
+    else if (top && x1 - x <= corner) h.zone = HitZone::FadeOut;
+    else if (x - x0 <= edge) h.zone = HitZone::TrimStart;
     else if (x1 - x <= edge) h.zone = HitZone::TrimEnd;
     else if (y - view_.y_of_track(i) < view_.track_height / 2) h.zone = HitZone::Select;
     else h.zone = HitZone::Body;
@@ -352,6 +446,8 @@ bool EditController::press(double x, double y, std::string& why) {
             if (h.zone == HitZone::TrimStart) kind = Drag::Kind::TrimStart;
             else if (h.zone == HitZone::TrimEnd) kind = Drag::Kind::TrimEnd;
             else if (h.zone == HitZone::Body) kind = Drag::Kind::Move;
+            else if (h.zone == HitZone::FadeIn) kind = Drag::Kind::FadeIn;
+            else if (h.zone == HitZone::FadeOut) kind = Drag::Kind::FadeOut;
             break;
         case Tool::Grab:
             if (in_region) kind = Drag::Kind::Move;
@@ -374,6 +470,28 @@ bool EditController::press(double x, double y, std::string& why) {
         set_insertion(drag_.press_frame);
         drag_.press_frame = sel_.insertion;
         drag_.start = drag_.end = sel_.insertion;
+        return true;
+    }
+    if (kind == Drag::Kind::FadeIn || kind == Drag::Kind::FadeOut) {
+        // No mode refusal: a fade moves no region, so Shuffle and Spot allow
+        // it as Slip does.
+        const TrackEdit* t = nullptr;
+        const Region* r = find_region(snapshot(), h.region, &t);
+        const RegionFades f = region_fades(*active(t), *r);
+        const bool in = kind == Drag::Kind::FadeIn;
+        if (const Crossfade* x = in ? f.in_crossfade : f.out_crossfade) {
+            why = crossfaded_refusal(*active(t), *r, *x, in);
+            drag_ = Drag{};
+            return false;
+        }
+        drag_.region = r->id;
+        drag_.orig_start = drag_.start = r->position;
+        drag_.orig_end = drag_.end = r->end();
+        drag_.fade = in ? f.in : f.out;
+        sel_.region = r->id;
+        sel_.start = r->position;
+        sel_.end = r->end();
+        sel_.insertion = r->position;
         return true;
     }
     if (refuse_in_mode(kind == Drag::Kind::Move ? "Moving a region" : "Trimming a region", why)) {
@@ -434,6 +552,23 @@ void EditController::move(double x, double /*y*/) {
             drag_.end = std::max(drag_.press_frame, f);
             break;
         }
+        case Drag::Kind::FadeIn:
+        case Drag::Kind::FadeOut: {
+            const TrackEdit* t = nullptr;
+            const Region* r = find_region(s, drag_.region, &t);
+            if (r == nullptr) break;
+            const RegionFades f = region_fades(*active(t), *r);
+            const Frames at = snapped(view_.frame_at(x));
+            // Up to the other end's fade, never through it: the model refuses
+            // fades that overlap, and a drag stops at the limit rather than
+            // ending in a refusal.
+            if (drag_.kind == Drag::Kind::FadeIn) {
+                drag_.fade = std::clamp<Frames>(at - r->position, 0, r->length - reach_out(f));
+            } else {
+                drag_.fade = std::clamp<Frames>(r->end() - at, 0, r->length - reach_in(f));
+            }
+            break;
+        }
         case Drag::Kind::None: break;
     }
 }
@@ -466,6 +601,14 @@ bool EditController::release(double x, double y, std::string& why) {
             if (!submit(op, why)) return false;
             break;
         }
+        case Drag::Kind::FadeIn:
+        case Drag::Kind::FadeOut:
+            if (!set_region_fade(d.region,
+                                 d.kind == Drag::Kind::FadeIn ? FadeEnd::In : FadeEnd::Out,
+                                 d.fade, why)) {
+                return false;
+            }
+            break;
         case Drag::Kind::None: break;
     }
     if (const Region* r = find_region(snapshot(), d.region)) {
@@ -554,6 +697,9 @@ bool EditController::trim_end_to_insertion(std::string& why) {
 }
 
 bool EditController::clear(std::string& why) {
+    bool fade = false;
+    if (!clear_fade_at_selection(fade, why)) return false;
+    if (fade) return true;
     if (refuse_in_mode("Clearing", why)) return false;
     if (sel_.region == kNoId) {
         why = sel_.has_range()
@@ -588,6 +734,167 @@ bool EditController::nudge(int direction, std::string& why) {
         sel_.start = moved->position;
         sel_.end = moved->end();
         sel_.insertion = moved->position;
+    }
+    return true;
+}
+
+// --- fades ---
+
+bool EditController::set_region_fade(Id region, FadeEnd end, Frames length, std::string& why) {
+    const TrackEdit* t = nullptr;
+    const Region* r = find_region(snapshot(), region, &t);
+    if (r == nullptr) {
+        why = "the region is gone";
+        return false;
+    }
+    const Playlist& p = *active(t);
+    const RegionFades f = region_fades(p, *r);
+    const bool in = end == FadeEnd::In;
+    if (const Crossfade* x = in ? f.in_crossfade : f.out_crossfade) {
+        why = crossfaded_refusal(p, *r, *x, in);
+        return false;
+    }
+    const Frames room = r->length - (in ? reach_out(f) : reach_in(f));
+    if (length < 0 || length > room) {
+        why = std::string("a fade-") + (in ? "in" : "out") + " that long would run into " +
+              named(*r) + "'s fade-" + (in ? "out" : "in");
+        return false;
+    }
+    const Fade& now = in ? r->fade_in : r->fade_out;
+    if (now.length == length) return true;
+    // A fade being reshaped in length keeps its curve; a new one takes the
+    // last one used.
+    const Fade fade{length, now.length > 0 ? now.shape : fade_shape_};
+    return submit(SetFade{p.id, r->id, end, fade}, why);
+}
+
+bool EditController::fade_to_start(std::string& why) {
+    int index = -1;
+    const Region* r = target_region(index);
+    if (r == nullptr || sel_.insertion <= r->position) {
+        why = "the insertion point is not inside a region on the selected track";
+        return false;
+    }
+    return set_region_fade(r->id, FadeEnd::In, sel_.insertion - r->position, why);
+}
+
+bool EditController::fade_to_end(std::string& why) {
+    int index = -1;
+    const Region* r = target_region(index);
+    if (r == nullptr || sel_.insertion <= r->position) {
+        why = "the insertion point is not inside a region on the selected track";
+        return false;
+    }
+    return set_region_fade(r->id, FadeEnd::Out, r->end() - sel_.insertion, why);
+}
+
+bool EditController::fade_selection(std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    if (t == nullptr) {
+        why = "select a track first";
+        return false;
+    }
+    if (!sel_.has_range()) {
+        why = "select a time range across a region's start, its end, or the cut between two "
+              "regions";
+        return false;
+    }
+    const Playlist& p = *active(t);
+    const Frames a = sel_.start, b = sel_.end;
+
+    // Cuts: two regions that butt, inside the range or at either end of it.
+    std::vector<std::size_t> cuts;  // the left region's index
+    for (std::size_t i = 0; i + 1 < p.regions.size(); ++i) {
+        const Frames cut = p.regions[i].end();
+        if (cut == p.regions[i + 1].position && cut >= a && cut <= b) cuts.push_back(i);
+    }
+    if (cuts.size() > 1) {
+        why = "the selection crosses " + std::to_string(cuts.size()) +
+              " cuts; batch fades are not built yet, so select across one";
+        return false;
+    }
+    if (cuts.size() == 1) {
+        const Region& l = p.regions[cuts[0]];
+        const Region& r = p.regions[cuts[0] + 1];
+        const Frames cut = l.end();
+        Crossfade x;
+        x.left = l.id;
+        x.right = r.id;
+        x.length = b - a;
+        x.shape = crossfade_shape_;
+        // Pre and post when the range stops at the cut, as Pro Tools does.
+        // Otherwise centred on the cut: the model has no other alignment, so
+        // a lopsided range becomes a centred crossfade of its length, and
+        // the selection is redrawn to show exactly what was made.
+        x.align = b == cut ? Align::Pre : a == cut ? Align::Post : Align::Centre;
+        if (!submit(SetCrossfade{p.id, x}, why)) return false;
+        Frames before = 0, after = 0;
+        crossfade_extent(x, before, after);
+        sel_.region = kNoId;
+        sel_.start = sel_.insertion = cut - before;
+        sel_.end = cut + after;
+        return true;
+    }
+
+    std::vector<const Region*> under;
+    for (const Region& r : p.regions) {
+        if (r.position < b && r.end() > a) under.push_back(&r);
+    }
+    if (under.empty()) {
+        why = "there is no region in the selection on " + t->name;
+        return false;
+    }
+    if (under.size() > 1) {
+        why = "the selection covers " + std::to_string(under.size()) +
+              " regions; batch fades are not built yet, so select across one region's start "
+              "or end";
+        return false;
+    }
+    const Region& r = *under[0];
+    const bool has_start = a <= r.position, has_end = b >= r.end();
+    if (has_start && has_end) {
+        why = "the selection covers the whole of " + named(r) +
+              "; select across its start for a fade-in or its end for a fade-out";
+        return false;
+    }
+    if (!has_start && !has_end) {
+        why = "a fade needs the selection to include " + named(r) +
+              "'s start or end, or a cut between two regions";
+        return false;
+    }
+    const Frames length = has_start ? b - r.position : r.end() - a;
+    const Frames from = has_start ? r.position : a;
+    if (!set_region_fade(r.id, has_start ? FadeEnd::In : FadeEnd::Out, length, why)) return false;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = from;
+    sel_.end = from + length;
+    return true;
+}
+
+bool EditController::clear_fade_at_selection(bool& done, std::string& why) {
+    done = false;
+    const TrackEdit* t = track(sel_.track);
+    if (t == nullptr || sel_.region != kNoId || !sel_.has_range()) return true;
+    const Playlist& p = *active(t);
+    for (const Crossfade& x : p.crossfades) {
+        const Region* r = region_on(p, x.right);
+        if (r == nullptr) continue;
+        Frames before = 0, after = 0;
+        crossfade_extent(x, before, after);
+        if (sel_.start == r->position - before && sel_.end == r->position + after) {
+            done = true;
+            return submit(RemoveCrossfade{p.id, x.left, x.right}, why);
+        }
+    }
+    for (const Region& r : p.regions) {
+        const RegionFades f = region_fades(p, r);
+        const bool in = f.in > 0 && sel_.start == r.position && sel_.end == r.position + f.in;
+        const bool out = f.out > 0 && sel_.start == r.end() - f.out && sel_.end == r.end();
+        if (!in && !out) continue;
+        done = true;
+        Fade gone = in ? r.fade_in : r.fade_out;
+        gone.length = 0;
+        return submit(SetFade{p.id, r.id, in ? FadeEnd::In : FadeEnd::Out, gone}, why);
     }
     return true;
 }

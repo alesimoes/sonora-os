@@ -60,6 +60,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
        zoom; fades; clip gain; markers.
+       - [x] Fades and crossfades (`feature/ui-fades`): keys, Smart Tool
+             corners, Clear; still open: a Fades dialog, batch fades.
+       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle need several model
+             operations as one undo step: a compound operation in
+             common/model (or the engine resolving the command, ADR-0009)
+             comes first.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
 3. [ ] Transport window and counters; tempo map and click display.
 4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
