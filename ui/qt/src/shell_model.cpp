@@ -46,9 +46,12 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     timer_.setTimerType(Qt::PreciseTimer);
     connect(&timer_, &QTimer::timeout, this, &ShellModel::tick);
     clock_.start();
-    for (uint32_t i = 0; i < engine_.info().track_count; ++i) armed_.push_back(false);
-    peaks_.assign(engine_.info().track_count, 0.0f);
-    peak_read_.assign(engine_.info().track_count, false);
+    sized_rate_ = engine_.info().sample_rate;
+    sized_buffer_ = engine_.info().buffer_frames;
+    sized_tracks_ = engine_.info().track_count;
+    for (uint32_t i = 0; i < sized_tracks_; ++i) armed_.push_back(false);
+    peaks_.assign(sized_tracks_, 0.0f);
+    peak_read_.assign(sized_tracks_, false);
     replies_.reserve(16);
     events_.reserve(16);
     xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
@@ -106,6 +109,18 @@ void ShellModel::followEngineCommands() {
     if (lines != essentials_notices_) setKeymapNotices(profile_notices_, lines);
     seen_focus_ = router_.commandsFocus();
     emit keymapChanged();
+}
+
+void ShellModel::followEngineFormat() {
+    const EngineInfo& i = engine_.info();
+    sized_rate_ = i.sample_rate;
+    sized_buffer_ = i.buffer_frames;
+    sized_tracks_ = i.track_count;
+    // A meter on a channel past the old count would otherwise read nothing,
+    // which looks exactly like silence.
+    peaks_.assign(sized_tracks_, 0.0f);
+    peak_read_.assign(sized_tracks_, false);
+    emit engineFormatChanged();
 }
 
 void ShellModel::setProfiles(std::vector<ProfileEntry> entries, std::string current,
@@ -279,6 +294,11 @@ void ShellModel::tick() {
     // A handful of short strings, compared without allocating; they differ
     // only after a reconnect to an engine that is another build.
     if (engine_.info().implemented_commands != router_.engineCommands()) followEngineCommands();
+    const EngineInfo& info = engine_.info();
+    const bool reformatted = info.sample_rate != sized_rate_ ||
+                             info.buffer_frames != sized_buffer_ ||
+                             info.track_count != sized_tracks_;
+    if (reformatted) followEngineFormat();
     for (const auto& r : replies_) {
         if (r.result == DispatchResult::Ok) {
             if (!r.live && !status_.isEmpty()) say(QString());
@@ -312,7 +332,9 @@ void ShellModel::tick() {
     }
     // One frame of the state block per tick at most, shared by the sink
     // and the refresh, so both draw the same publish.
-    const bool refresh = ++tick_count_ % kStateEvery == 0;
+    // A new format refreshes at once: the arm buttons and the clock are
+    // sized and read from it.
+    const bool refresh = ++tick_count_ % kStateEvery == 0 || reformatted;
     if (alive && (transport_sink_ || refresh)) engine_.frame(frame_);
     if (transport_sink_) transport_sink_(alive ? frame_.transport : TransportSnapshot{}, alive);
     if (refresh) refreshState(false);

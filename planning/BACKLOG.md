@@ -73,9 +73,12 @@ playback can follow edits; it is in flight.
          a client that leaves mid-ride has the gain of each track it was
          the last to ride put back, so a ride a lost link stranded does
          not stay in the gain atomics. A client attaching mid-ride leaves
-         the ride alone (PR #71, review decision). `MixModel::resendGains`
-         (PR #61) is no longer needed for that; Track 3 decides whether to
-         keep it;
+         the ride alone (PR #71, review decision). Track 3 removed
+         `MixModel::resendGains` (PR #61), which sent every gain on each
+         new document and so overrode that ride; the interface now sends
+         only a dropped ride's own index, for the one case the engine
+         cannot see (a step crossing another interface's reorder or Open,
+         `mix_model.h`);
        - [x] `PlaybackController::apply_mix` clears the solo of an engine
          track the document does not have, so an undone AddTrack of a
          soloed track no longer silences the rest. Its fader and mute stay:
@@ -145,7 +148,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] Post-fader and bus meters, pre/post switch: Track 1 item 9.
        - [x] Interrupted rides (PR #61 review): a ride holds its track id
              and session and is dropped, with the reason, if either goes
-             before release; every new document resends the engine's gains;
+             before release (since PR #71 the engine restores the mix; a
+             dropped ride resends its own index only);
              live-parameter Ok replies no longer clear the status line.
        - [ ] Alt-click on solo or mute is one SetMix per track, so one undo
              step per track; it should be one compound undo step (needs a
@@ -165,13 +169,10 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] The nudge steps by the first entry's grid value
              (`edit_controller.cpp` `nudge`): step by the value at the
              region instead, after `feature/ui-fades` lands there.
-       - [ ] A stale engine read makes the bar counter and the Transport
-             window disagree for up to 4 ticks (#62 merge gate):
-             `SessionModel::onTransport` (`session_model.cpp:246`) treats a
-             stale read while rolling as stopped and forces the insertion
-             point, and `updateCounters` republishes only when
-             `transport_ticks_ % 4 == 0`. Keep the last state on a stale
-             read, as `TransportModel` does.
+       - [x] A stale engine read no longer makes the bar counter and the
+             Transport window disagree (#62 merge gate): `SessionModel`
+             keeps the last state on a stale read, as `TransportModel`
+             does (ui_transport test_window).
 4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy
        (`feature/ui-keymaps`): routing by `CommandSpec::domain`, the engine
@@ -186,15 +187,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              focus toggle there needs a footer indicator first.
        - [ ] Pro Tools' Clip List and Groups List focuses (`ctrl+alt+2`,
              `ctrl+alt+3`) once those lists exist.
-       - [ ] On engine reconnect only the Hello's command list is re-read;
-             sample rate, buffer size and track count stay those of the
-             first Hello. Re-read the Hello's format and track count and
-             resize what was sized from them (shell_model, MixModel, arm
-             buttons, the clock). Today this shows wrong information only:
-             every read is bounds-checked and the engine refuses
-             out-of-range tracks (PR #67 review). Also add a test that the
-             startup refusal notice survives a reconnect when the
-             essentials notices change.
+       - [x] On engine reconnect the whole Hello is re-read: sample rate,
+             buffer size and track count too. ShellModel resizes its peaks
+             and arm list, refreshes the clock and emits
+             `engineFormatChanged` (trackCount, formatText); MixModel asks
+             for the track count when it uses it (PR #67 review; ui_keymaps
+             test_engine_restart_format, ui_mix live_path_follows_the_engine).
+             The start-up refusal notice survives a reconnect that changes
+             the essentials notices (test_restart_keeps_refusal). Still
+             sized from the first Hello: the synthetic waveforms' rate
+             (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)

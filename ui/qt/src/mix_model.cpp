@@ -11,69 +11,59 @@
 
 namespace sonora::ui {
 
-MixModel::MixModel(SessionModel& session, GainSender sender, uint32_t engine_tracks, bool audible,
-                   QObject* parent)
+MixModel::MixModel(SessionModel& session, GainSender sender, EngineTracks engine_tracks,
+                   bool audible, QObject* parent)
     : QObject(parent),
       session_(session),
       sender_(std::move(sender)),
-      engine_tracks_(engine_tracks),
-      audible_(audible),
-      generation_(session.sessionGeneration()) {
+      engine_tracks_(std::move(engine_tracks)),
+      audible_(audible) {
     // Every change to the document reaches the windows through
     // contentChanged (SessionModel::sync), a whole new document included.
     connect(&session_, &SessionModel::contentChanged, this, &MixModel::documentChanged);
 }
 
 void MixModel::documentChanged() {
-    const uint64_t g = session_.sessionGeneration();
-    const bool replaced = g != generation_;
-    generation_ = g;
-    if (ride_track_ != kNoRide) rideStillHolds(!replaced);
-    if (replaced) resendGains();
+    if (ride_track_ != kNoRide) rideStillHolds();
 }
 
-bool MixModel::rideStillHolds(bool restore) {
+bool MixModel::rideStillHolds() {
     if (ride_track_ == kNoRide) return false;
     if (session_.sessionGeneration() != ride_generation_) {
         dropRide("The session was replaced while a fader was being ridden: the ride was dropped "
-                 "and nothing of it was saved",
-                 restore);
+                 "and nothing of it was saved");
         return false;
     }
     if (ride_track_ < 0) return true;   // the bus is always there
     const int now = session_.trackIndex(ride_id_);
     if (now == ride_track_) return true;
     if (now < 0) {
-        dropRide("The track whose fader was being ridden is gone: the ride was dropped", restore);
+        dropRide("The track whose fader was being ridden is gone: the ride was dropped");
     } else {
         const QStringList names = session_.trackNames();
         dropRide(names[now].toStdString() +
                      " moved while its fader was being ridden: the ride was dropped, and its "
-                     "gain is the one the session holds",
-                 restore);
+                     "gain is the one the session holds");
     }
     return false;
 }
 
-void MixModel::dropRide(const std::string& why, bool restore) {
+void MixModel::dropRide(const std::string& why) {
+    const int index = ride_track_;
     const bool sent = ride_sent_live_;
     ride_track_ = kNoRide;
     ride_id_ = 0;
     ride_sent_live_ = false;
-    // The steps went to engine gain atomics by index; whichever track is
-    // at that index now, the engine plays the document's gains again.
-    if (sent && restore) resendGains();
+    // The steps went to an engine gain atomic by index, and one that
+    // crossed another interface's edit may sit on whichever track is there
+    // now (the header says why the engine cannot see it). Past the
+    // document's tracks nothing is sent: the engine keeps that fader until
+    // the plan stops rendering it.
+    if (sent && live(index) && index < session_.trackCount()) {
+        sender_(static_cast<uint32_t>(index), fader_linear_gain(session_.stripGain(index)));
+    }
     session_.reportEdit(false, why);
     emit rideChanged();
-}
-
-void MixModel::resendGains() {
-    if (!sender_) return;
-    const uint32_t n = std::min(static_cast<uint32_t>(session_.trackCount()), engine_tracks_);
-    for (uint32_t i = 0; i < n; ++i) {
-        sender_(i, fader_linear_gain(session_.stripGain(static_cast<int>(i))));
-    }
-    ++gain_resends_;
 }
 
 QString MixModel::trackMeterCaption() const { return QStringLiteral("IN"); }
@@ -94,7 +84,8 @@ QString MixModel::note() const {
 }
 
 bool MixModel::live(int track) const {
-    return sender_ && track >= 0 && static_cast<uint32_t>(track) < engine_tracks_;
+    return sender_ && engine_tracks_ && track >= 0 &&
+           static_cast<uint32_t>(track) < engine_tracks_();
 }
 
 void MixModel::sendLive(int track, float db) {
@@ -113,7 +104,7 @@ void MixModel::beginRide(int track) {
 }
 
 void MixModel::ride(int track, qreal dy, qreal travel, bool fine) {
-    if (track != ride_track_ || track == kNoRide || !rideStillHolds(true)) return;
+    if (track != ride_track_ || track == kNoRide || !rideStillHolds()) return;
     const float db = fader_drag(ride_db_, static_cast<float>(dy), static_cast<float>(travel), fine);
     if (db == ride_db_) return;
     ride_db_ = db;
@@ -127,7 +118,7 @@ void MixModel::ride(int track, qreal dy, qreal travel, bool fine) {
 }
 
 void MixModel::endRide(int track) {
-    if (track != ride_track_ || track == kNoRide || !rideStillHolds(true)) return;
+    if (track != ride_track_ || track == kNoRide || !rideStillHolds()) return;
     const float db = ride_db_;
     const bool sent = ride_sent_live_;
     ride_track_ = kNoRide;
