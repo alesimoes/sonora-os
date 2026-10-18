@@ -130,7 +130,9 @@ public:
                  const TriodeStageCircuit& circuit = {}, const TriodeDevice& device = {},
                  bool tabulated = true);
     // Back to the operating point, as if the input had always been 0 V.
-    void reset() noexcept;
+    // Copies of the operating point solved in prepare(): real-time safe,
+    // and annotated so a processor's on_reset() is checked through it.
+    void reset() noexcept SONORA_RT;
 
     // One sample: the input voltage in, the voltage across the load out.
     // Inverting: a positive input swings the plate down.

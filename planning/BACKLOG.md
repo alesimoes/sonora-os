@@ -1097,13 +1097,21 @@ ADR-0011 "For the owner".
       on a unit, and the FET in it. (d) The class-A output stage and its
       transformer, the input transformer and the preamplifier's own
       colour, after the transformer slice (3). (e) CPU, before the FET
-      enters the default insert list: eco is 20.5 us p99.9 per q128 stereo
-      block on the golden configuration (quiet host, i7-11800H), 0.5 us
-      over class A (it meets it on the hot programme, 17.6 us); standard
-      (81 us) and high (148 us) ship over the class only beside an eco
-      that meets it (§3.5). Candidates: the two channels in SIMD lanes, a
-      branch-free junction law, a tabulated exp. Then add the FET's eco to
-      the nightly gate and record `cpu.p999_kernels`.
+      enters the default insert list: margin under class A. The first
+      round (the libm calls out of the solve, bit-exact) took eco from
+      20.5 to 19.66 us p99.9 per q128 stereo block on the golden
+      configuration (quiet host at the reference kernel's speed,
+      i7-11800H; 16.6 us on the hot programme): inside class A by 1.7 %,
+      which is not margin. Measured and not kept, with figures in
+      `brain/research/native-fet-n2.md` (CPU): an error-based stop, starts
+      from the linear network, a chord second iteration, the two channels
+      in SSE2 lanes (same bits, 6-14 % slower), an inline table-driven
+      exp, looser stop tolerances. The p99.9 is blocks of two iterations
+      around slow zero crossings. Next candidates: the rectifier solved in
+      its current rather than its junction voltage; a predictor across
+      the zero crossings. Then add the FET's eco to the nightly gate and
+      record `cpu.p999_kernels`; standard (80 us) and high (147 us) ship
+      over the class only beside an eco that meets it (§3.5).
       (f) Eco under-reads high-frequency peaks (up to 2.5 dB at fs/4) and
       aliases heavily at the fastest settings (-34 dBc at 48 kHz): an
       inter-sample peak estimate for eco's rectifier, if a low-latency eco

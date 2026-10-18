@@ -5,8 +5,10 @@
 // against ngspice is the FET processor's suite (plugins/native/fet/tests/
 // suite.cpp), which reads the committed SPICE reference.
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <iterator>
 
 #include "check.h"
 #include "sonora/dsp/fet.h"
@@ -312,6 +314,95 @@ int test_link() {
     return 0;
 }
 
+// Where Newton stops, against the root. The solve stops on the corrections'
+// size (solve() says why); here it is held against the same circuit
+// iterated to round-off (set_reference_stop), so a change made for its cost
+// cannot quietly trade away its accuracy (PR #74 follow-up (e) tried
+// several, and measured each here). On programme: uniform noise with a log
+// sweep under it, peaks about -12 dBFS (the harness's CPU signal), at the
+// FET processor's golden settings (input +12 dB, 8:1, attack 0.3 ms,
+// release 150 ms, linked) and its CPU worst case (+12 dB more, 20:1,
+// fastest attack and release), at eco's rate and at standard's at 48 kHz,
+// unlinked, and all buttons in. The drain is the audio: its departure from
+// the root is held under 1e-8 of the peak drive (-160 dB), the gain
+// reduction within 5e-7 dB: the stop rule as it is measures at most 5.9e-9
+// and 2.5e-7 dB (one 3x looser read 4.8e-8 and 1.8e-6 dB).
+int test_stop_rule() {
+    struct Case {
+        const char* name;
+        double fs, input_db, position, attack_ms, release_ms, link;
+    };
+    const Case cases[] = {
+        {"golden, eco rate (48 kHz), linked", 48000.0, 12.0, 1.0, 0.3, 150.0, 1.0},
+        {"golden, standard rate (192 kHz), linked", 192000.0, 12.0, 1.0, 0.3, 150.0, 1.0},
+        {"golden, eco rate, unlinked", 48000.0, 12.0, 1.0, 0.3, 150.0, 0.0},
+        {"+12 dB, 20:1, fastest, eco rate, linked", 48000.0, 24.0, 3.0, 0.1034, 59.4, 1.0},
+        {"+12 dB, all buttons, fastest, eco rate, linked", 48000.0, 24.0, 4.0, 0.1034, 59.4, 1.0},
+    };
+    const double seconds = dsp_quick() ? 2.0 : 8.0;
+    // Every case is run and printed before any is held, so a failing run
+    // still reports the figures of all of them.
+    struct Result {
+        double drain, gr, mean;
+        std::uint64_t hits;
+    };
+    Result res[std::size(cases)];
+    for (std::size_t ci = 0; ci < std::size(cases); ++ci) {
+        const Case& k = cases[ci];
+        const FetCircuit c;
+        const double gin = std::pow(10.0, k.input_db / 20.0) * c.full_scale_v;
+        FetChannel p[2], r[2];
+        for (int i = 0; i < 2; ++i) {
+            for (FetChannel* ch : {&p[i], &r[i]}) {
+                ch->prepare(k.fs);
+                ch->set_controls(k.position, k.attack_ms * 1e-3 / c.c22 - c.r54, k.release_ms * 1e-3 / c.c22 - c.r57);
+                ch->reset();
+            }
+            r[i].set_reference_stop(true);
+        }
+        const auto n = static_cast<long>(seconds * k.fs);
+        std::uint32_t seed[2] = {31u, 32u};
+        double worst_drain = 0.0, worst_gr = 0.0, peak = 0.0, gr_max = 0.0;
+        long iterations = 0, steps = 0;
+        for (long i = 0; i < n; ++i) {
+            // The sweep 20 Hz to 20 kHz over the run (Farina), the noise
+            // uniform, each at -12 dBFS peak, halved together.
+            const double t = static_cast<double>(i) / k.fs, len = seconds;
+            const double l = std::log(20000.0 / 20.0);
+            const double sweep = 0.2512 * std::sin(kTwoPi * 20.0 * len / l * (std::exp(t / len * l) - 1.0));
+            double x[2];
+            for (int ch = 0; ch < 2; ++ch) {
+                seed[ch] ^= seed[ch] << 13;
+                seed[ch] ^= seed[ch] >> 17;
+                seed[ch] ^= seed[ch] << 5;
+                const double noise = 0.2512 * (2.0 * (seed[ch] / 4294967295.0) - 1.0);
+                x[ch] = 0.5 * (noise + sweep) * gin;
+                peak = std::fmax(peak, std::fabs(x[ch]));
+            }
+            FetChannel::step_pair(p[0], p[1], x[0], x[1], k.link);
+            FetChannel::step_pair(r[0], r[1], x[0], x[1], k.link);
+            for (int ch = 0; ch < 2; ++ch) {
+                worst_drain = std::fmax(worst_drain, std::fabs(p[ch].loop_drain() - r[ch].loop_drain()));
+                worst_gr = std::fmax(worst_gr, std::fabs(p[ch].gain_reduction_db() - r[ch].gain_reduction_db()));
+                gr_max = std::fmax(gr_max, r[ch].gain_reduction_db());
+                iterations += p[ch].last_iterations();
+                ++steps;
+            }
+        }
+        const double mean = static_cast<double>(iterations) / static_cast<double>(steps);
+        std::printf("  stop rule, %s: drain within %.3g of the peak drive, reduction within %.3g dB of the root "
+                    "(up to %.1f dB); %.3f iterations a step\n",
+                    k.name, worst_drain / peak, worst_gr, gr_max, mean);
+        res[ci] = {worst_drain / peak, worst_gr, mean, p[0].cap_hits() + p[1].cap_hits() + r[0].cap_hits() + r[1].cap_hits()};
+    }
+    for (std::size_t ci = 0; ci < std::size(cases); ++ci) {
+        CHECK(res[ci].hits == 0);
+        CHECK_LE(res[ci].drain, 1e-8, "drain against the root, of the peak drive");
+        CHECK_LE(res[ci].gr, 5e-7, "gain reduction against the root, dB");
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -323,6 +414,7 @@ int main() {
     failed += test_ratio_network();
     failed += test_bounded();
     failed += test_link();
+    failed += test_stop_rule();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);
         return 1;
