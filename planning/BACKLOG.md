@@ -28,8 +28,9 @@ playback can follow edits; it is in flight.
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
        locate, pre-roll; input monitoring. In-band boundaries, record
        while rolling and punch in/out on the fly at block boundaries:
-       `feature/record-while-rolling`. Punch points inside a block, loop,
-       pre-roll and input monitoring remain.
+       `feature/record-while-rolling`. Punch points inside a block, engine
+       side: `feature/punch-in-block`; their caller, placement and command,
+       loop, pre-roll and input monitoring remain.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,
@@ -835,11 +836,12 @@ Order and owners are in ADR-0008 §5.
       plays), and the "edit not yet audible: playback cache full" counter
       from `DiskReader::cache_full()`. The builder computes both; nothing
       shows them yet. ui-engineer.
-- [ ] A short ramp when a track's monitor source changes (input to playback
-      and back, Auto at record start and stop). Today the source switches at
-      a block boundary under a steady gain, which can click. Folds into the
-      sample-accurate auto-monitor switch of the in-band take boundary
-      below. rt-engineer.
+- [x] A short ramp when a track's monitor source changes (input to playback
+      and back, Auto at record start and stop). Every change of source now
+      ramps over `PlaybackConfig::monitor_ramp_frames` (64) from the frame it
+      takes effect (`feature/punch-in-block`, ctest `punch_points`). Not
+      ramped yet: Off to playback while rolling, which is a mute-like step
+      from silence.
 - [ ] Timeline data model: regions over sources, with an undo stack.
 - [ ] Session file format spec, then the reader and writer. Specs written
       (`brain/specs/session-format.md`, `brain/specs/timeline-model.md`,
@@ -875,6 +877,21 @@ Order and owners are in ADR-0008 §5.
       (`Session::start_recording()` while rolling, `Session::punch_out()`),
       and its vendor bindings in `keymaps/`. rt-engineer, contract owner for
       the catalogue.
+      Engine/core half landed (`feature/punch-in-block`):
+      `Session::start_punch(take, PunchRange)` opens the files when the punch
+      is armed; the audio thread opens and closes each capture window at
+      `capture_from`/`capture_to` inside a block (offsets 0, 1, nframes - 1
+      tested) and closes the file in band with the transport still Recording;
+      an armed Auto track crossfades playback to input centred on A and back
+      on B with the punch's length and shape (ctest `punch_points`).
+      Remaining: (a) the caller. Nothing calls `start_punch` yet; engine/control
+      computes `[A - H, B + H)` from the session's punch range and
+      `punch_crossfade`. (b) Placement: `add_closed_take` places a closed take
+      at its TimeReference for its whole length, so a punch take would cover
+      its handles; it must place `[A, B)` with the handles as source offset
+      and the two crossfades (timeline-model.md, "Punch in" step 3), on top
+      of #75's compounds. (c) `transport.punch` in the catalogue, under
+      ui-engineer review (ADR-0007 §6). (d) The `failed_files_` item below.
       Before it lands (PR #60, review 4): `Session::failed_files_` lasts
       until `stop()`, so after take K fails, `take_failure()` stays
       non-empty through a clean take K + 1 started while rolling.

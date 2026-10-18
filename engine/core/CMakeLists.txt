@@ -66,6 +66,13 @@ add_executable(test_take_boundaries tests/test_take_boundaries.cpp)
 target_link_libraries(test_take_boundaries PRIVATE sonora_core Threads::Threads)
 add_test(NAME take_boundaries COMMAND test_take_boundaries)
 
+# Punch points inside a block (timeline-model.md, "Punch in"): capture opened
+# and closed at the frame, Auto monitoring crossfaded at the punch points,
+# every other monitor switch ramped.
+add_executable(test_punch_points tests/test_punch_points.cpp)
+target_link_libraries(test_punch_points PRIVATE sonora_core)
+add_test(NAME punch_points COMMAND test_punch_points)
+
 # ADR-0012 checklist 5: plugin parameter changes from the control thread to
 # the InsertChain node that names their store, the backend's callback_ns as
 # the runner's clock, and the runner's block size gating the callback.

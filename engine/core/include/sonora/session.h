@@ -9,6 +9,7 @@
 
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
+#include "sonora/fade_curve.h"
 #include "sonora/insert_chain_runner.h"
 #include "sonora/plan_exchange.h"
 #include "sonora/process_callback.h"
@@ -45,6 +46,12 @@ struct PlaybackConfig {
     // ring is drained every callback, so this bounds what can be posted in
     // one period, across every chain.
     uint32_t plugin_param_capacity = 256;
+    // How long a change of a track's monitor source takes (input to
+    // playback and back, a mode switched, a take started or punched out on
+    // the fly): a ramp from the frame it takes effect, never a step at a
+    // block boundary, which clicks. A punch's own crossfade replaces it at
+    // the punch points (PunchRange). 0 switches at once.
+    uint32_t monitor_ramp_frames = 64;
     // The pan law of the plan the session starts with, before engine/control
     // publishes one: session-format.md's default. A different law in the
     // first published plan would be heard as a ramp in its first block.
@@ -65,6 +72,23 @@ struct RtCommand {
     uint32_t instance;
     uint32_t param;
     float value;
+};
+
+// Where a take records and where Auto monitoring hears it, in timeline
+// frames, sample-accurate inside a block (timeline-model.md, "Punch in"):
+// capture over [capture_from, capture_to), the punch range [A, B) plus its
+// handles; an armed Auto track switches from playback to its input at A
+// (monitor_in) and back at B (monitor_out), each a crossfade of `crossfade`
+// frames and `shape`, centred on the point: the crossfade the take will be
+// placed with, so what is heard while punching is what plays back after.
+struct PunchRange {
+    static constexpr uint64_t kOpenEnd = ~uint64_t{0};
+    uint64_t capture_from = 0;
+    uint64_t capture_to = kOpenEnd;
+    uint64_t monitor_in = 0;
+    uint64_t monitor_out = kOpenEnd;
+    uint32_t crossfade = 0;
+    FadeCurve shape = FadeCurve::Linear;
 };
 
 struct SessionConfig {
@@ -126,6 +150,16 @@ public:
     // recorded, the files this call created are removed, and `error`, if
     // given, says which file and why.
     bool start_recording(int take_number, std::string* error = nullptr);
+    // start_recording(), recording only inside `range`: the take's files
+    // are opened now, when the punch is armed, and the audio thread opens
+    // and closes each track's capture window at the range's frames. Past
+    // capture_to the files close while the transport rolls on, still
+    // Recording, until stop() or punch_out(); closed_takes() reports the
+    // take then. Refused, with nothing opened, when the range is empty,
+    // when its monitored part [monitor_in, monitor_out) is not inside what
+    // it captures, or when it ends at or before the playhead. A capture_from
+    // already passed records from the audio thread's next block.
+    bool start_punch(int take_number, const PunchRange& range, std::string* error = nullptr);
     // Ends the running take and leaves the transport rolling (punch out on
     // the fly). The audio thread ends it at its next block; the disk thread
     // closes its files after that, and closed_takes() reports it. False if
@@ -266,7 +300,27 @@ public:
     }
 
 private:
-    // The capture windows: boundary records and the frames inside them.
+    // No take: a track with no capture window, a punch record for none.
+    static constexpr uint32_t kNoWindowTake = ~uint32_t{0};
+    // A take's PunchRange as it travels to the audio thread, tagged with
+    // its take. Trivial, so the ring can hold it as bytes.
+    struct PunchRecord {
+        uint32_t take;
+        uint32_t crossfade;
+        FadeCurve shape;
+        uint64_t capture_from;
+        uint64_t capture_to;
+        uint64_t monitor_in;
+        uint64_t monitor_out;
+    };
+    // What a take started without a range records and hears: all of it.
+    static constexpr PunchRecord kWholeTake = {kNoWindowTake, 0, FadeCurve::Linear, 0,
+                                               PunchRange::kOpenEnd, 0, PunchRange::kOpenEnd};
+
+    // start_recording() and start_punch(); `range` null for a whole take.
+    bool begin_take(int take_number, const PunchRange* range, std::string* error);
+    // The capture windows: boundary records and the frames inside them,
+    // opened and closed at punch_'s frames.
     void capture(const backend::AudioBlock& block, bool recording, uint32_t take,
                  uint64_t playhead) noexcept SONORA_RT;
     // Pulls the disk thread's closed files into closing_.
@@ -334,14 +388,29 @@ private:
     std::unique_ptr<ChainParamEvent[]> node_params_;
     uint32_t params_count_ = 0;
 
+    // Punch ranges, posted by begin_take() before the take is published;
+    // drained by the audio thread at block start into punch_table_, which
+    // keeps the last two, so a take started over another finds its own.
+    std::unique_ptr<RingBuffer<PunchRecord>> punches_;
+
     // Audio-thread state, sized here and never resized.
     // Per track: the take its capture window is open for, or kNoWindow, and
     // the samples it has written to its capture ring, ever.
-    static constexpr uint32_t kNoWindow = ~uint32_t{0};
+    static constexpr uint32_t kNoWindow = kNoWindowTake;
     std::unique_ptr<uint32_t[]> window_take_;
     std::unique_ptr<uint64_t[]> captured_;
     // The take take_origin_ was set for, or kNoWindow.
     uint32_t origin_take_ = kNoWindow;
+    PunchRecord punch_table_[2] = {kWholeTake, kWholeTake};
+    uint32_t punch_next_ = 0;
+    // This block's: the running take's range, or kWholeTake.
+    const PunchRecord* punch_ = &kWholeTake;
+    // Per engine track, where its monitor source stands, 0 playback and 1
+    // input, and the callback that last moved it. A track not rendered in
+    // the callback before starts where its source is, with no ramp: it has
+    // no sound to ramp from.
+    std::unique_ptr<float[]> monitor_pos_;
+    std::unique_ptr<uint64_t[]> monitor_stamp_;
     uint32_t max_block_ = 0;
     uint32_t scratch_buffers_ = 0;           // the most nodes a plan has
     std::unique_ptr<float[]> scratch_;       // scratch_buffers x 2 x max_block

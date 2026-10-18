@@ -106,6 +106,11 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
                                  ? cfg_.boundary_records
                                  : std::max<uint32_t>(64, 8 * tracks_n);
     boundaries_ = std::make_unique<RingBuffer<CaptureBoundary>>(records);
+    // A take is started, at most, once per command the control thread
+    // handles; the audio thread drains this every block.
+    punches_ = std::make_unique<RingBuffer<PunchRecord>>(8);
+    monitor_pos_.reset(new float[tracks_n + 1]());
+    monitor_stamp_.reset(new uint64_t[tracks_n + 1]());
     window_take_.reset(new uint32_t[tracks_n + 1]);
     for (uint32_t t = 0; t <= tracks_n; ++t) window_take_[t] = kNoWindow;
     captured_.reset(new uint64_t[tracks_n + 1]());
@@ -238,6 +243,41 @@ int Session::next_free_take() const {
 }
 
 bool Session::start_recording(int take_number, std::string* error) {
+    return begin_take(take_number, nullptr, error);
+}
+
+bool Session::start_punch(int take_number, const PunchRange& range, std::string* error) {
+    const auto refuse = [error](const std::string& why) {
+        std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
+        if (error) *error = why;
+        return false;
+    };
+    const auto frame = [](uint64_t f) {
+        return f == PunchRange::kOpenEnd ? std::string("the end") : std::to_string(f);
+    };
+    if (range.capture_from >= range.capture_to) {
+        return refuse("the punch captures nothing: from frame " + frame(range.capture_from) +
+                      " to " + frame(range.capture_to));
+    }
+    // Auto monitoring hears the input only where it is recorded: what the
+    // performer hears while punching is what plays back afterwards.
+    if (range.monitor_in >= range.monitor_out || range.monitor_in < range.capture_from ||
+        range.monitor_out > range.capture_to) {
+        return refuse("the punch's monitored range [" + frame(range.monitor_in) + ", " +
+                      frame(range.monitor_out) + ") is not inside what it captures [" +
+                      frame(range.capture_from) + ", " + frame(range.capture_to) + ")");
+    }
+    // The playhead only moves forward while rolling, so a range already
+    // behind it stays behind it: the take would be files with nothing in.
+    const uint64_t playhead = transport_->playhead();
+    if (range.capture_to <= playhead) {
+        return refuse("the punch range ends at frame " + frame(range.capture_to) +
+                      ", before the playhead at " + std::to_string(playhead));
+    }
+    return begin_take(take_number, &range, error);
+}
+
+bool Session::begin_take(int take_number, const PunchRange* range, std::string* error) {
     // Provisional: the disk thread writes the frame the audio thread
     // recorded first, from the take's open boundary record.
     const uint64_t origin = transport_->playhead();
@@ -263,6 +303,17 @@ bool Session::start_recording(int take_number, std::string* error) {
         return -1;
     };
     std::vector<std::pair<Track*, int>> opened;
+    // Removing is safe: the writer creates exclusively, so every file in
+    // `opened` was made by this call and holds nothing yet, and no slot of
+    // theirs has been published to the disk thread.
+    const auto undo_open = [](const std::vector<std::pair<Track*, int>>& files) {
+        for (const auto& o : files) {
+            WavWriter& w = o.first->writer(o.second);
+            const std::string path = w.path();
+            w.close();
+            std::remove(path.c_str());
+        }
+    };
     for (auto& t : tracks_) {
         if (!t->rec_armed()) continue;
         int slot = free_slot(*t);
@@ -283,15 +334,7 @@ bool Session::start_recording(int take_number, std::string* error) {
         if (err != 0) {
             // A take missing a track is not the take that was armed, and the
             // operator would find out at playback. Undo and say so instead.
-            // Removing is safe: the writer creates exclusively, so every file
-            // in `opened` was made by this call and holds nothing yet, and no
-            // slot of theirs has been published to the disk thread.
-            for (const auto& o : opened) {
-                WavWriter& w = o.first->writer(o.second);
-                const std::string path = w.path();
-                w.close();
-                std::remove(path.c_str());
-            }
+            undo_open(opened);
             const std::string why =
                 file + ": " +
                 (err == EEXIST  ? "a take with this name is already on disk"
@@ -307,6 +350,26 @@ bool Session::start_recording(int take_number, std::string* error) {
     if (opened.empty()) {
         if (error) *error = "no track is armed";
         return false;
+    }
+    // Ahead of the take, so the audio thread has the range by the block it
+    // first sees the take in: the ring's release is ordered before the
+    // transport's store below. Never waits; a full ring is refused.
+    if (range != nullptr) {
+        PunchRecord r{};
+        r.take = static_cast<uint32_t>(take_number);
+        r.crossfade = range->crossfade;
+        r.shape = range->shape;
+        r.capture_from = range->capture_from;
+        r.capture_to = range->capture_to;
+        r.monitor_in = range->monitor_in;
+        r.monitor_out = range->monitor_out;
+        if (punches_->write(&r, 1) != 1) {
+            undo_open(opened);
+            const std::string why = "the audio thread has not taken the last punches yet";
+            std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
+            if (error) *error = why;
+            return false;
+        }
     }
     // Only now may the disk thread see these writers; until here the
     // rollback above could close them under it. See Track::slot_take().
@@ -472,6 +535,35 @@ float segment_gain(const PlanSegment& s, int64_t t) noexcept SONORA_RT {
     return g;
 }
 
+// Where a ramp of `len` frames centred on `at` stands at frame f: 0 before
+// it, 1 after. Frame i of the ramp is at i / len, as a fade's is.
+float monitor_ramp(uint64_t f, uint64_t at, uint32_t len) noexcept SONORA_RT {
+    if (at == PunchRange::kOpenEnd) return 0.0f;
+    const int64_t start = static_cast<int64_t>(at) - static_cast<int64_t>(len / 2);
+    const auto x = static_cast<int64_t>(f);
+    if (x < start) return 0.0f;
+    if (x >= start + static_cast<int64_t>(len)) return 1.0f;
+    return static_cast<float>(x - start) / static_cast<float>(len);
+}
+
+// Auto monitoring under a punch at frame f: 0 playback, 1 input, ramping
+// up around A and back down around B.
+float punch_position(uint64_t f, uint64_t a, uint64_t b, uint32_t len) noexcept SONORA_RT {
+    const float rise = monitor_ramp(f, a, len);
+    const float fall = 1.0f - monitor_ramp(f, b, len);
+    return rise < fall ? rise : fall;
+}
+
+// Whether that ramp changes anywhere in [from, from + n).
+bool monitor_ramp_touches(uint64_t at, uint32_t len, uint64_t from,
+                          uint32_t n) noexcept SONORA_RT {
+    if (at == PunchRange::kOpenEnd) return false;
+    const int64_t start = static_cast<int64_t>(at) - static_cast<int64_t>(len / 2);
+    const auto first = static_cast<int64_t>(from);
+    const int64_t last = first + static_cast<int64_t>(n) - 1;
+    return start <= last && start + static_cast<int64_t>(len) >= first;
+}
+
 }  // namespace
 
 void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
@@ -514,6 +606,15 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             reseek_ = true;
         }
         transport_->note_locate();
+    }
+    PunchRecord punch{};
+    while (punches_->read(&punch, 1) == 1) {
+        punch_table_[punch_next_] = punch;
+        punch_next_ ^= 1u;
+    }
+    punch_ = &kWholeTake;
+    for (const PunchRecord& r : punch_table_) {
+        if (recording && r.take == word.take) punch_ = &r;
     }
 
     // After the take's state is loaded and the locates applied, and before
@@ -571,7 +672,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     const uint64_t playhead = transport_->playhead();
     if (recording && !take_started) {
         origin_take_ = word.take;
-        take_origin_.store(playhead, std::memory_order_release);
+        // Its first sample: the range's start, or this block's if that has
+        // passed (capture()).
+        const uint64_t origin =
+            punch_->capture_from > playhead ? punch_->capture_from : playhead;
+        take_origin_.store(origin, std::memory_order_release);
     }
     capture(block, recording, word.take, playhead);
 
@@ -632,19 +737,25 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t take,
                       uint64_t playhead) noexcept SONORA_RT {
     const uint32_t nframes = block.nframes;
+    // The frames of this block the take records: its range, cut to the
+    // block. Empty before the range and after it.
+    const uint64_t end = playhead + nframes;
+    const uint64_t from = punch_->capture_from > playhead ? punch_->capture_from : playhead;
+    const uint64_t to = punch_->capture_to < end ? punch_->capture_to : end;
+    const bool in_range = recording && from < to;
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track& t = *tracks_[i];
         uint32_t& window = window_take_[i];
-        const bool wanted = recording && t.rec_armed();
+        const bool wanted = in_range && t.rec_armed();
         CaptureBoundary b{};
         b.track = static_cast<uint32_t>(i);
-        b.at = captured_[i];
         b.timeline = playhead;
         // A take started over another closes it and opens itself on the
         // same sample: nothing lost or repeated between the two files.
         if (window != kNoWindow && (!wanted || window != take)) {
             b.kind = CaptureBoundary::Kind::Close;
             b.take = window;
+            b.at = captured_[i];
             // Lost, the file ends where the next window opens, or at stop().
             if (boundaries_->write(&b, 1) != 1) {
                 boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
@@ -654,26 +765,43 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (wanted && window == kNoWindow) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
+            b.at = captured_[i];
+            b.timeline = from;
             if (boundaries_->write(&b, 1) == 1) {
                 window = take;
             } else {
                 // Tried again next block: the take starts late on this track.
-                // If it ends first (punch_out(), a take over it), there is
-                // no retry: the slot opened for it stays held, its file empty,
-                // and closed_takes() holds the take back, until this track's
-                // next open or stop() closes it.
+                // If it ends first (punch_out(), a take over it, its range),
+                // there is no retry: the slot opened for it stays held, its
+                // file empty, and closed_takes() holds the take back, until
+                // this track's next open or stop() closes it.
                 boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
                 t.note_overrun();
             }
         }
-        const float* in = i < block.input_count ? block.inputs[i] : nullptr;
-        if (window == kNoWindow || !in) continue;
+        if (window == kNoWindow) continue;
 
         // Capture is pre-fader by design: the fader is a monitoring decision
         // and must not be baked into the recorded file.
-        const std::size_t wrote = t.capture_ring().write(in, nframes);
-        captured_[i] += wrote;
-        if (wrote < nframes) t.note_overrun();
+        const float* in = i < block.input_count ? block.inputs[i] : nullptr;
+        if (in) {
+            const auto count = static_cast<std::size_t>(to - from);
+            const std::size_t wrote = t.capture_ring().write(in + (from - playhead), count);
+            captured_[i] += wrote;
+            if (wrote < count) t.note_overrun();
+        }
+        // The out point: the file closes at its frame, in band, and the
+        // transport rolls on.
+        if (to == punch_->capture_to) {
+            b.kind = CaptureBoundary::Kind::Close;
+            b.take = window;
+            b.at = captured_[i];
+            b.timeline = to;
+            if (boundaries_->write(&b, 1) != 1) {
+                boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
+            }
+            window = kNoWindow;
+        }
     }
 }
 
@@ -807,10 +935,26 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     const uint32_t e = pt.engine_track;
     const Track& t = *tracks_[e];
     const Track::Monitor mon = t.monitor();
-    const bool input = mon == Track::Monitor::Input ||
-                       (mon == Track::Monitor::Auto && t.rec_armed() && (!rolling || recording));
-    if (input) {
-        const float* in = e < block.input_count ? block.inputs[e] : nullptr;
+    const bool armed = t.rec_armed();
+    // Auto: the input while armed and stopped or recording, playback
+    // otherwise; in a take, the punch points say where, frame by frame.
+    const bool by_punch = mon == Track::Monitor::Auto && armed && rolling && recording;
+    const float fixed =
+        mon == Track::Monitor::Input || (mon == Track::Monitor::Auto && armed && !rolling)
+            ? 1.0f
+            : 0.0f;
+    const PunchRecord& p = *punch_;
+    const float first =
+        by_punch ? punch_position(from, p.monitor_in, p.monitor_out, p.crossfade) : fixed;
+
+    float& pos = monitor_pos_[e];
+    if (monitor_stamp_[e] == 0 || monitor_stamp_[e] + 1 < callbacks_) pos = first;
+    monitor_stamp_[e] = callbacks_;
+
+    const bool steady = !by_punch || !(monitor_ramp_touches(p.monitor_in, p.crossfade, from, n) ||
+                                       monitor_ramp_touches(p.monitor_out, p.crossfade, from, n));
+    const float* in = e < block.input_count ? block.inputs[e] : nullptr;
+    if (steady && pos == first && pos == 1.0f) {
         if (in) {
             std::memcpy(out[0], in + offset, n * sizeof(float));
         } else {
@@ -818,12 +962,44 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
         }
         return false;
     }
-    if (rolling && mon != Track::Monitor::Off) {
-        render_track(plan, node.track, from, n, out);
-        return pt.channels >= 2;
+    const bool play = rolling && mon != Track::Monitor::Off;
+    if (steady && pos == first && pos == 0.0f) {
+        if (play) {
+            render_track(plan, node.track, from, n, out);
+            return pt.channels >= 2;
+        }
+        std::memset(out[0], 0, n * sizeof(float));
+        return false;
     }
-    std::memset(out[0], 0, n * sizeof(float));
-    return false;
+
+    // A switch under way: both sources, crossfaded. The position moves at
+    // most a ramp's step a frame, so a step in the target (a mode switched,
+    // a take started on the fly) becomes a ramp, and a punch's crossfade,
+    // never steeper than the step, is followed exactly.
+    uint32_t len = cfg_.playback.monitor_ramp_frames;
+    if (by_punch && p.crossfade != 0 && (len == 0 || p.crossfade < len)) len = p.crossfade;
+    const float step = len == 0 ? 1.0f : 1.0f / static_cast<float>(len);
+    const FadeCurve shape = by_punch ? p.shape : FadeCurve::Linear;
+    bool stereo = false;
+    if (play) {
+        render_track(plan, node.track, from, n, out);
+        stereo = pt.channels >= 2;
+    } else {
+        std::memset(out[0], 0, n * sizeof(float));
+        std::memset(out[1], 0, n * sizeof(float));
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        const float goal =
+            by_punch ? punch_position(from + i, p.monitor_in, p.monitor_out, p.crossfade) : fixed;
+        const float d = goal - pos;
+        pos += d > step ? step : (d < -step ? -step : d);
+        const float g_in = fade_in_gain(shape, pos);
+        const float g_play = fade_in_gain(shape, 1.0f - pos);
+        const float x = in ? in[offset + i] : 0.0f;
+        out[0][i] = g_in * x + g_play * out[0][i];
+        if (stereo) out[1][i] = g_in * x + g_play * out[1][i];
+    }
+    return stereo;
 }
 
 void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], float* const out[2],
