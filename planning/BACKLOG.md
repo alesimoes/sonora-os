@@ -84,7 +84,14 @@ playback can follow edits; it is in flight.
          track the document does not have, so an undone AddTrack of a
          soloed track no longer silences the rest. Its fader and mute stay:
          the old plan renders it until the swap (PR #71,
-         `playback_control`, rolling and stopped).
+         `playback_control`, rolling and stopped);
+       - [ ] A UI's single-index gain restore (`MixModel::dropRide`)
+         can be stale if another UI makes two mix-changing edits within one
+         round trip. Fix engine-side: each ParameterChange carries the
+         document version it was computed against, and the engine drops
+         changes older than its last apply_mix. Not a regression; the
+         removed resendGains had the same race (#76 review,
+         #issuecomment-6249488192 item 1).
 10. [ ] Engine commands the shipped key maps bind and no engine runs yet
         (Track 3 item 4; the window says "not implemented" for each):
         `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
