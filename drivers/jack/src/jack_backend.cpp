@@ -7,15 +7,20 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <climits>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "sonora/alsa_card.h"
+#include "sonora/clock_offset.h"
 #include "sonora/fatal_reason.h"
 #include "sonora/frame_clock.h"
 #include "sonora/period_guard.h"
@@ -111,6 +116,77 @@ struct JackBackend::Impl {
     // JACK, on a notification thread under jackd2. Read by the control
     // thread.
     std::atomic<uint32_t> xruns{0};
+    // jack_get_time()'s base is the server's, not necessarily the engine's
+    // CLOCK_MONOTONIC: jackd2's is CLOCK_MONOTONIC_RAW, which lagged
+    // steady_clock by 0.8 s in the container (backend conformance,
+    // callback_ns_is_the_monotonic_clock) and would phase every timer-paced
+    // plugin host wrongly. The offset from it to steady_clock is sampled off
+    // the audio thread, every 100 ms while active, so the callback converts
+    // the cycle time with one add and reads no clock (contracts/backend,
+    // callback_ns).
+    std::atomic<int64_t> steady_minus_jack_ns{0};
+    // One word the callback reads: a lock-based atomic there would be a
+    // mutex on the audio thread (PR #77 RT audit L2).
+    static_assert(std::atomic<int64_t>::is_always_lock_free, "steady_minus_jack_ns");
+    drivers::ClockOffset time_offset;  // the sampler's: start_time_sampler, then its thread
+    std::thread time_sampler;
+    std::mutex sampler_mutex;
+    std::condition_variable sampler_wake;
+    bool sampler_stop = false;
+
+    // The tightest of three brackets around jack_get_time().
+    static drivers::ClockOffset::Bracket bracket() {
+        drivers::ClockOffset::Bracket best{0, 0, 0};
+        int64_t best_width = INT64_MAX;
+        for (int i = 0; i < 3; ++i) {
+            const auto t0 = static_cast<int64_t>(now_ns());
+            const auto j = static_cast<int64_t>(jack_get_time()) * 1000;
+            const auto t1 = static_cast<int64_t>(now_ns());
+            if (t1 - t0 < best_width) {
+                best_width = t1 - t0;
+                best = {t0, j, t1};
+            }
+        }
+        return best;
+    }
+    void publish_time_offset() {
+        if (time_offset.have()) steady_minus_jack_ns.store(time_offset.offset(), std::memory_order_relaxed);
+    }
+    // False, with `error` set, when the sampler thread cannot start: a
+    // std::system_error from std::thread, which activate() must not throw
+    // (PR #77 RT audit L3).
+    bool start_time_sampler(std::string& error) {
+        // Before the first callback, so it has an offset; a wide first
+        // bracket is retried, and kept only provisionally (ClockOffset).
+        if (!time_offset.trusted()) time_offset.first(bracket);
+        publish_time_offset();
+        {
+            std::lock_guard<std::mutex> lock(sampler_mutex);
+            sampler_stop = false;
+        }
+        try {
+            time_sampler = std::thread([this] {
+                std::unique_lock<std::mutex> lock(sampler_mutex);
+                while (!sampler_wake.wait_for(lock, std::chrono::milliseconds(100), [this] { return sampler_stop; })) {
+                    lock.unlock();
+                    if (time_offset.offer(bracket())) publish_time_offset();
+                    lock.lock();
+                }
+            });
+        } catch (const std::system_error& e) {
+            error = std::string("cannot start the clock sampler thread: ") + e.what();
+            return false;
+        }
+        return true;
+    }
+    void stop_time_sampler() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(sampler_mutex);
+            sampler_stop = true;
+        }
+        sampler_wake.notify_all();
+        if (time_sampler.joinable()) time_sampler.join();
+    }
     drivers::PeriodGuard guard;
     drivers::FrameClock clock;  // widened on the audio thread only
 
@@ -183,18 +259,20 @@ struct JackBackend::Impl {
         self->block.nframes = nframes;
         self->block.frame_time = self->clock.widen(jack_last_frame_time(self->client), nframes,
                                                    self->xruns.load(std::memory_order_relaxed));
-        // The server's own stamp of this cycle, from its shared memory: no
-        // clock read here (contracts/backend, callback_ns). Its time base
-        // is jack_get_time(), CLOCK_MONOTONIC in jackd2 and PipeWire's
-        // libjack; the conformance suite checks that against ours.
+        // The server's own stamp of this cycle, from its shared memory, in
+        // jack_get_time()'s base, moved onto steady_clock by the offset the
+        // sampler thread keeps: no clock read here (contracts/backend,
+        // callback_ns). The conformance suite checks the result against
+        // steady_clock read in the period.
         jack_nframes_t cycle_frames = 0;
         jack_time_t cycle_usecs = 0, next_usecs = 0;
         float period_usecs = 0.0f;
-        self->block.callback_ns =
-            jack_get_cycle_times(self->client, &cycle_frames, &cycle_usecs, &next_usecs,
-                                 &period_usecs) == 0
-                ? static_cast<uint64_t>(cycle_usecs) * 1000u
-                : 0;
+        int64_t stamp = 0;
+        if (jack_get_cycle_times(self->client, &cycle_frames, &cycle_usecs, &next_usecs, &period_usecs) == 0) {
+            stamp = static_cast<int64_t>(cycle_usecs) * 1000 +
+                    self->steady_minus_jack_ns.load(std::memory_order_relaxed);
+        }
+        self->block.callback_ns = stamp > 0 ? static_cast<uint64_t>(stamp) : 0;
         self->callback->process(self->block);
         return 0;
     }
@@ -374,8 +452,10 @@ bool JackBackend::activate(std::string& error) {
         return false;
     }
     if (d.active) return true;
+    if (!d.start_time_sampler(error)) return false;
     d.clock.resume();
     if (jack_activate(d.client) != 0) {
+        d.stop_time_sampler();
         error = "jack_activate failed";
         return false;
     }
@@ -457,6 +537,7 @@ void JackBackend::deactivate() noexcept {
     // Before the client is closed and before the caller frees the session,
     // so the callback cannot run against freed state.
     jack_deactivate(d.client);
+    d.stop_time_sampler();
     d.clock.finish(d.xruns.load(std::memory_order_relaxed));
     d.active = false;
 }

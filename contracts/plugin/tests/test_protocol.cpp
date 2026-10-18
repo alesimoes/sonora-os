@@ -605,6 +605,15 @@ void clock_region() {
     CHECK(next_wake_ns(1000, P, off, 1000 + 3 * P) == 1000 + off + 3 * P);
     CHECK(next_wake_ns(1000, P, off, 1000 + 3 * P + off) == 1000 + off + 4 * P);
     CHECK(next_wake_ns(1000, 0, off, 5) == 5);
+    // PR #77 RT audit B1: a stamp in the future (jackd2's cycle estimate,
+    // wound up by late cycles, measured 400 ms ahead) is followed for at
+    // most one period from now, never slept up to.
+    const uint64_t now = 5'000'000'000;
+    CHECK(next_wake_ns(now + 400'000'000, P, off, now) == now + P);
+    CHECK(next_wake_ns(now + P, P, off, now) == now + P);
+    CHECK(next_wake_ns(now + P - off, P, off, now) == now + P);
+    CHECK(next_wake_ns(now + P - off - 1, P, off, now) == now + P - 1);
+    CHECK(next_wake_ns(std::numeric_limits<uint64_t>::max() - off, P, off, now) == now + P);
 }
 
 }  // namespace

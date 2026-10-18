@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -54,6 +55,18 @@ public:
         }
         last_time_ = b.frame_time;
         last_nframes_ = b.nframes;
+        // This process's own steady_clock, read here, in the period itself.
+        const auto read = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                    std::chrono::steady_clock::now().time_since_epoch())
+                                                    .count());
+        // A callback more than half a period after its due time: the
+        // server's cycle ran late, and jackd2's estimate of a cycle's start
+        // then runs off by up to hundreds of ms (PR #77 RT audit B1).
+        if (last_read_ != 0 && rate_ != 0) {
+            const uint64_t period = uint64_t{b.nframes} * 1'000'000'000ull / rate_;
+            if (read - last_read_ > period + period / 2) bump(late_);
+        }
+        last_read_ = read;
         if (b.callback_ns == 0) {
             bump(callback_ns_zero_);
         } else {
@@ -61,11 +74,39 @@ public:
                 bump(callback_ns_decreases_);
             }
             last_callback_ns_.store(b.callback_ns, std::memory_order_relaxed);
+            // Against the read (#68 review item 1): the stamp is the
+            // period's start, so it is never ahead of the read and lags it
+            // by less than a few periods. A server on another clock
+            // (CLOCK_MONOTONIC_RAW drifts by NTP slew; CLOCK_REALTIME is
+            // decades off) shows here.
+            if (b.callback_ns > read) {
+                // A server's cycle time is an estimate (JACK's DLL) and a
+                // conversion between clocks carries its sampling error, so
+                // a stamp may sit a little after the read; past 1 ms it is
+                // another clock.
+                const uint64_t ahead = b.callback_ns - read;
+                if (ahead > worst_ahead_ns_.load(std::memory_order_relaxed)) {
+                    worst_ahead_ns_.store(ahead, std::memory_order_relaxed);
+                }
+                if (ahead > kMaxAheadNs) bump(callback_ns_ahead_);
+                min_lag_ns_.store(0, std::memory_order_relaxed);
+            } else {
+                const uint64_t lag = read - b.callback_ns;
+                if (calls - 1 < kLagsKept) lags_[calls - 1] = lag;
+                if (lag > worst_lag_ns_.load(std::memory_order_relaxed)) {
+                    worst_lag_ns_.store(lag, std::memory_order_relaxed);
+                }
+                if (lag < min_lag_ns_.load(std::memory_order_relaxed)) {
+                    min_lag_ns_.store(lag, std::memory_order_relaxed);
+                }
+            }
         }
         calls_.store(calls, std::memory_order_release);
     }
 
     void mark_fatal() { fatal_seen_.store(true, std::memory_order_release); }
+    // The server's rate, for late_callbacks(). Before activation.
+    void set_rate(uint32_t rate) { rate_ = rate; }
 
     uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
     uint32_t first_nframes() const { return first_nframes_.load(std::memory_order_relaxed); }
@@ -78,6 +119,16 @@ public:
     uint32_t callback_ns_zero() const { return get(callback_ns_zero_); }
     uint32_t callback_ns_decreases() const { return get(callback_ns_decreases_); }
     uint64_t last_callback_ns() const { return last_callback_ns_.load(std::memory_order_relaxed); }
+    uint32_t callback_ns_ahead() const { return get(callback_ns_ahead_); }
+    uint64_t worst_lag_ns() const { return worst_lag_ns_.load(std::memory_order_relaxed); }
+    uint64_t worst_ahead_ns() const { return worst_ahead_ns_.load(std::memory_order_relaxed); }
+    uint64_t min_lag_ns() const { return min_lag_ns_.load(std::memory_order_relaxed); }
+    // Callbacks more than half a period late, once set_rate() was called.
+    uint32_t late_callbacks() const { return get(late_); }
+    static constexpr uint64_t kMaxAheadNs = 1'000'000;
+    // Each period's lag, for the first kLagsKept, read after deactivate().
+    static constexpr uint64_t kLagsKept = 256;
+    uint64_t lag(uint64_t call) const { return call < kLagsKept ? lags_[call] : 0; }
 
 private:
     static void bump(std::atomic<uint32_t>& a) noexcept SONORA_RT {
@@ -101,9 +152,17 @@ private:
     std::atomic<uint32_t> callback_ns_zero_{0};
     std::atomic<uint32_t> callback_ns_decreases_{0};
     std::atomic<uint64_t> last_callback_ns_{0};
+    std::atomic<uint32_t> callback_ns_ahead_{0};
+    std::atomic<uint64_t> worst_lag_ns_{0};
+    std::atomic<uint64_t> worst_ahead_ns_{0};
+    std::atomic<uint64_t> min_lag_ns_{UINT64_MAX};
+    std::atomic<uint32_t> late_{0};
+    uint64_t lags_[kLagsKept] = {};
+    uint32_t rate_ = 0;  // set before activation
     // Audio thread only.
     uint64_t last_time_ = 0;
     uint32_t last_nframes_ = 0;
+    uint64_t last_read_ = 0;
 };
 
 // The recorder is declared first so it outlives the backend, whose
@@ -239,32 +298,69 @@ std::string frame_time_never_decreases(Rig& rig) {
 }
 
 // callback_ns is the period's start on the engine's own CLOCK_MONOTONIC
-// (steady_clock): set every period, never decreasing, and close to what this
-// process reads when the periods are over. A server whose time base is
-// another clock (CLOCK_MONOTONIC_RAW drifts; CLOCK_REALTIME is decades off)
-// fails here, and the plugin hosts paced on it would wake at the wrong time
-// (ADR-0012 §1.3).
+// (steady_clock), never decreasing. Checked per period against steady_clock
+// read inside process(): ahead of it by no more than 1 ms (a server's cycle
+// time is an estimate, and a clock conversion has its sampling error), and
+// behind it by less than four periods plus 5 ms of scheduling. A callback
+// later than that would itself be an xrun; a server on another clock fails
+// at once (CLOCK_REALTIME) or as its drift grows past a few periods
+// (CLOCK_MONOTONIC_RAW), where the plugin hosts paced on it would already
+// wake off (ADR-0012 §1.3). The least lag of the run is the wakeup latency
+// on a right base, well under a millisecond, so it must be under one period
+// plus 1 ms: that catches a base off by a few ms, which the worst lag,
+// spread by scheduling, does not (PR #77 RT audit M2).
+// The contract lets a backend send 0 for a period it could not stamp: an
+// occasional one is allowed, at most one period in 16 (#68 review item 1).
+// A server whose cycles ran late estimates their start wrongly: jackd2's
+// DLL was measured hundreds of ms off on a host with three busy loops per
+// core (PR #77 RT audit B1). A run with an xrun, a gap or a callback more
+// than half a period late cannot judge the base, so a bound it breaks is a
+// skip that says so; a run with none of those that breaks one fails.
 std::string callback_ns_is_the_monotonic_clock(Rig& rig) {
     Fixture f(rig, 2, 2);
+    f.rec.set_rate(rig.rate());
     std::string error;
     if (!f.start(rig, usable_device(rig), error)) return "start: " + error;
     if (!wait_calls(rig, f, 64)) return "no periods reached process()";
     f.b->deactivate();
-    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                               std::chrono::steady_clock::now().time_since_epoch())
-                                               .count());
-    if (f.rec.callback_ns_zero() != 0) {
-        return n(f.rec.callback_ns_zero()) + " periods of " + n(f.rec.calls()) + " had no callback_ns";
+    const uint64_t calls = f.rec.calls();
+    if (uint64_t{f.rec.callback_ns_zero()} * 16 > calls) {
+        return n(f.rec.callback_ns_zero()) + " periods of " + n(calls) + " had no callback_ns";
     }
+    if (f.rec.last_callback_ns() == 0) return "no period was stamped";
     if (f.rec.callback_ns_decreases() != 0) return n(f.rec.callback_ns_decreases()) + " decreases of callback_ns";
-    const uint64_t last = f.rec.last_callback_ns();
-    // The last period started before now, and not long before: the polls
-    // above take at most seconds.
-    if (last > now || now - last > 10'000'000'000ull) {
-        return "the last callback_ns is " + n(last) + ", steady_clock reads " + n(now) +
-               ": not the same clock";
+
+    const uint64_t period_ns = uint64_t{f.rec.first_nframes()} * 1'000'000'000ull / rig.rate();
+    const uint64_t bound = 4 * period_ns + 5'000'000;
+    const uint64_t least_bound = period_ns + 1'000'000;
+    std::string failure;
+    if (f.rec.callback_ns_ahead() != 0) {
+        failure = n(f.rec.callback_ns_ahead()) + " stamps more than 1 ms ahead of steady_clock read in the same period (worst " +
+                  n(f.rec.worst_ahead_ns()) + " ns): not the same clock";
+    } else if (f.rec.worst_lag_ns() > bound) {
+        std::string where;
+        uint64_t over = 0;
+        for (uint64_t c = 0; c < calls && c < Recorder::kLagsKept; ++c) {
+            if (f.rec.lag(c) <= bound) continue;
+            if (++over <= 8) where += " #" + n(c) + "=" + n(f.rec.lag(c) / 1000) + "us";
+        }
+        failure = "a stamp lagged steady_clock read in its own period by " + n(f.rec.worst_lag_ns()) +
+                  " ns, over the " + n(bound) + " ns bound, in " + n(over) + " of the first " +
+                  n(std::min<uint64_t>(calls, Recorder::kLagsKept)) + " periods:" + where;
+    } else if (f.rec.min_lag_ns() > least_bound) {
+        failure = "every stamp lagged steady_clock read in its own period by at least " + n(f.rec.min_lag_ns()) +
+                  " ns, over one period plus 1 ms (" + n(least_bound) + " ns): a base offset by that much";
     }
-    return "";
+    if (failure.empty()) return "";
+    const uint32_t xruns = f.b->xruns();
+    const uint32_t late = f.rec.late_callbacks();
+    const uint32_t gaps = f.rec.gaps();
+    if (xruns != 0 || late != 0 || gaps != 0) {
+        return "SKIP: the server ran late in this window (" + n(xruns) + " xruns, " + n(late) +
+               " callbacks over half a period late, " + n(gaps) + " frame_time gaps in " + n(calls) +
+               " periods), when its cycle estimate is not the period's start; would have failed: " + failure;
+    }
+    return failure;
 }
 
 std::string absent_device_is_not_an_error(Rig& rig) {

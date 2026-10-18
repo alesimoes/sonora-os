@@ -46,6 +46,10 @@ struct PlaybackConfig {
     // ring is drained every callback, so this bounds what can be posted in
     // one period, across every chain.
     uint32_t plugin_param_capacity = 256;
+    // Parameter stores a plan may name: engine/plugin_client's
+    // ClientConfig::max_stores. Sizes the store-to-node index the audio
+    // thread builds when it adopts a plan (#68 RT audit N1).
+    uint32_t max_param_stores = 256;
     // Punched takes started (start_punch()) faster than the audio thread
     // drains them: one more is refused, never waited on.
     uint32_t punch_capacity = 8;
@@ -71,6 +75,9 @@ struct RtCommand {
     // PluginParam: the chain's parameter store (the index its plan node
     // carries), the instance in the chain, the dense parameter index or
     // plugin::kBypassParam, and the format-native value (ADR-0012 §5.2).
+    // `epoch`: the plan whose `store` the change was posted for (PR #77 RT
+    // audit M1).
+    uint64_t epoch;
     uint32_t store;
     uint32_t instance;
     uint32_t param;
@@ -210,17 +217,25 @@ public:
     bool post_locate(uint64_t frame);
 
     // Queues a plugin parameter change for the audio thread (ADR-0012
-    // §5.1). At the start of the next callback it is handed, at offset 0
-    // and in the order posted, to the InsertChain node whose plan names
-    // `store`; that node keeps it in the store and tags it with the block it
-    // submits. One the plan cannot take (no bound node names the store, the
-    // callback is mixed in pieces) is dropped and counted in
-    // plugin_params_dropped(), never held for a later plan: the control
-    // thread seeds a new chain's store from the document. False when
-    // refused: no store, a value that is not finite, or the queue full.
-    // Control thread; never waits.
-    bool post_plugin_param(uint32_t store, uint32_t instance, uint32_t param, float value);
-    // Changes the audio thread drained and had no node to hand to.
+    // §5.1), for the plan published with `epoch`, whose node names `store`.
+    // At the start of the next callback that runs chains under that plan it
+    // is handed, at offset 0 and in the order posted, to that InsertChain
+    // node, which keeps it in the store and tags it with the block it
+    // submits. A callback that runs no chain (zero frames, another size,
+    // mixed in pieces, no chain in the plan, no runner) leaves it queued,
+    // and so does one still on an earlier plan than `epoch` (published,
+    // not yet adopted). Dropped and counted in plugin_params_dropped(),
+    // never handed to another plan's node: one posted for a plan the audio
+    // thread has since replaced, whose store may now be another chain's
+    // (PR #77 RT audit M1); and one no runnable node of its plan takes (no
+    // bound node names the store, or it is silent). The control thread
+    // seeds a new chain's store from the document, and re-posts or reseeds
+    // when the count moves. False when refused: epoch 0 (no plan), no
+    // store, a store past PlaybackConfig::max_param_stores, a value that is
+    // not finite, or the queue full. Control thread; never waits.
+    bool post_plugin_param(uint64_t epoch, uint32_t store, uint32_t instance, uint32_t param, float value);
+    // Changes the audio thread drained and had no node of their plan to
+    // hand to.
     uint64_t plugin_params_dropped() const {
         return params_dropped_.load(std::memory_order_relaxed);
     }
@@ -297,9 +312,16 @@ public:
     // Node blocks a bound InsertChain node played as silence because it was
     // not run: no runner installed, or a callback the runner does not take.
     // Never dry: the plan compensates for the chain's latency, so its input
-    // would be early. One per node per mixed slice.
+    // would be early. Faded by the runner's skip() when there is a runner.
+    // One per node per mixed slice.
     uint64_t unrun_chain_blocks() const {
         return unrun_chain_blocks_.load(std::memory_order_relaxed);
+    }
+    // Node blocks played silent because the plan lays the chain out at
+    // kSilentChannelSlot (down, or starting with the session). One per node
+    // per mixed slice.
+    uint64_t silent_chain_blocks() const {
+        return silent_chain_blocks_.load(std::memory_order_relaxed);
     }
     // Callbacks played silent because the plan failed the audio thread's
     // bounds check when it was adopted. A plan from the builder never does.
@@ -409,12 +431,28 @@ private:
     int64_t window_frames_ = 0;
     std::unique_ptr<RingBuffer<RtCommand>> commands_;
     std::unique_ptr<RingBuffer<RtCommand>> param_commands_;
-    // This callback's parameter changes, drained at its start (one taken by
-    // a node is marked None), and the ones gathered for the node being run.
-    // Both the ring's capacity.
+    // This callback's parameter changes as drained, and the same sorted by
+    // node: one counting pass by the store-to-node index the audio thread
+    // builds when it adopts a plan (#68 RT audit N1), so the gather costs
+    // O(ring + nodes) and keeps the posted order within each node. Both
+    // the ring's capacity.
     std::unique_ptr<RtCommand[]> params_;
     std::unique_ptr<ChainParamEvent[]> node_params_;
     uint32_t params_count_ = 0;
+    // At the front of params_: changes for a plan published but not yet
+    // adopted, kept for the callback that adopts it.
+    uint32_t params_held_ = 0;
+    uint32_t max_param_stores_ = 0;
+    std::unique_ptr<uint32_t[]> store_order_;   // max_param_stores_: chain ordinal or kNoNode
+    std::unique_ptr<uint32_t[]> node_order_;    // scratch_buffers_: chain ordinal or kNoNode
+    std::unique_ptr<uint32_t[]> order_store_;   // per ordinal: its store, to clear at adoption
+    std::unique_ptr<uint32_t[]> order_first_;   // per ordinal: first event in node_params_
+    std::unique_ptr<uint32_t[]> order_count_;   // per ordinal: events this callback
+    std::unique_ptr<uint32_t[]> order_pos_;     // per ordinal: scatter cursor
+    uint32_t order_chains_ = 0;                 // ordinals in the adopted plan
+    uint32_t max_order_ = 0;                    // the most a plan can have: tracks
+    void adopt_param_order(const PlaybackPlan& plan) noexcept SONORA_RT;
+    void gather_params() noexcept SONORA_RT;
 
     // Punch ranges, posted by begin_take() before the take is published;
     // drained by the audio thread at block start into punch_table_.
@@ -479,6 +517,9 @@ private:
     std::atomic<InsertChainRunner*> chains_{nullptr};
     // This callback's runner, when its chains run: loaded once per callback.
     InsertChainRunner* runner_ = nullptr;
+    // The runner loaded this callback whether or not it runs the chains:
+    // its skip() fades a node not run.
+    InsertChainRunner* skip_runner_ = nullptr;
     bool plan_valid_ = true;
     std::unique_ptr<uint32_t[]> cursor_;     // per plan track
     // The frame each plan track's cursor is good for: the end of what it
@@ -504,6 +545,7 @@ private:
     std::atomic<uint64_t> boundary_overruns_{0};
     std::atomic<uint64_t> params_dropped_{0};
     std::atomic<uint64_t> unrun_chain_blocks_{0};
+    std::atomic<uint64_t> silent_chain_blocks_{0};
     // Reset by start_recording() before it publishes the take; set by the
     // audio thread in the take's first block.
     std::atomic<uint64_t> take_origin_{kNoOrigin};

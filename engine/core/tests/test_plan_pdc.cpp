@@ -74,6 +74,12 @@ public:
     }
 
     uint32_t block_frames() const noexcept SONORA_RT override { return 0; }
+    // A node not run: silence (the real runner fades; plugin_client tests it).
+    void skip(const PlanNode&, float* const out[2], uint32_t frames) noexcept SONORA_RT override {
+        for (uint32_t i = 0; i < frames; ++i) out[0][i] = out[1][i] = 0.0f;
+        ++skips;
+    }
+    long skips = 0;
 
     void run(const PlanNode& node, const float* const in[2], float* const out[2], uint32_t frames,
              const sonora::ChainParamEvent*, uint32_t) noexcept SONORA_RT override {
@@ -546,6 +552,32 @@ int test_out_of_bounds_plan_is_silence() {
     rig.block();
     CHECK(rig.session->invalid_plan_blocks() == 1);
     for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == signal(at + i));
+
+    // PR #77 RT audit L4: more nodes than the session has scratch buffers,
+    // every one of them in bounds by sharing buffer 0. The builder never
+    // makes one; adopting it indexed the per-node parameter order past its
+    // end. Refused as a whole.
+    sonora::PlanSizes sizes;
+    sizes.tracks = 1;
+    sizes.nodes = sonora::graph_nodes(1, 1) + 2;
+    PlaybackPlan* shared = sonora::create_plan(sizes);
+    shared->epoch = rig.session->plans().next_epoch();
+    shared->chunk_frames = 256;
+    shared->tracks[0].engine_track = 0;
+    shared->tracks[0].channels = 1;
+    for (uint32_t ni = 0; ni < shared->node_count; ++ni) {
+        shared->nodes[ni].kind = sonora::NodeKind::BusSum;
+        shared->nodes[ni].scratch_buffer = 0;
+        shared->nodes[ni].first_input_edge = 0;
+        shared->nodes[ni].input_edge_count = 0;
+    }
+    shared->last_insert_node = sonora::kNoNode;
+    CHECK(rig.publish(shared));
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(rig.session->invalid_plan_blocks() == 2);
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == 0.0f && rig.out[1][i] == 0.0f);
     return 0;
 }
 

@@ -7,7 +7,7 @@ add_library(sonora_backend_jack STATIC src/jack_backend.cpp)
 target_include_directories(sonora_backend_jack PUBLIC include)
 target_link_libraries(sonora_backend_jack
   PUBLIC sonora_backend_api sonora_base
-  PRIVATE sonora_driver_support PkgConfig::JACK)
+  PRIVATE sonora_driver_support PkgConfig::JACK Threads::Threads)
 
 # A stand-in for onboard audio in the container test; see the file. Built
 # with the engine so the test can mount it alongside; never installed.

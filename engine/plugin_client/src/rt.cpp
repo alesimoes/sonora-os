@@ -42,10 +42,14 @@ void fade_out(PluginClient::Node& n, float* const* out, uint32_t channels, uint3
 }
 
 // The first block collected after a miss (or a channel's first) comes in
-// linearly from 0, so recovery is not a step (§3).
-void ramp_in(float* const* out, uint32_t channels, uint32_t frames) noexcept SONORA_RT {
+// linearly to unity, so recovery is not a step (§3). It starts from the gain
+// the fade-out had reached: 0 once the fade is over, but a skip shorter than
+// kFadeFrames leaves it part way, and a ramp from 0 would drop to 0 in one
+// sample (PR #77 RT audit L5).
+void ramp_in(const PluginClient::Node& n, float* const* out, uint32_t channels, uint32_t frames) noexcept SONORA_RT {
+    const float g0 = float(kFadeFrames - n.fade_pos) / float(kFadeFrames);
     for (uint32_t c = 0; c < channels; ++c)
-        for (uint32_t i = 0; i < frames; ++i) out[c][i] *= float(i) / float(frames);
+        for (uint32_t i = 0; i < frames; ++i) out[c][i] *= g0 + (1.f - g0) * (float(i) / float(frames));
 }
 
 // Into the authoritative store first, whatever happens to the channel this
@@ -71,7 +75,23 @@ void PluginClient::begin_callback(uint64_t now_ns) noexcept SONORA_RT {
     callbacks_seen_.store(callback_, std::memory_order_relaxed);
     budget_left_ = plugin::kValueCopyBudgetBytes;
     submitted_any_ = false;
-    if (cb_clock_) plugin::publish_callback_start(*cb_clock_, now_ns);
+    // 0 is a period the backend could not stamp with nothing to carry
+    // forward: published, it would phase every timer-paced host from epoch
+    // 0 (#68 RT audit N2). The clock keeps its last stamp instead.
+    if (cb_clock_ && now_ns != 0) plugin::publish_callback_start(*cb_clock_, now_ns);
+}
+
+void PluginClient::fade_node(uint32_t node_state, float* const* out, uint32_t channels,
+                             uint32_t frames) noexcept SONORA_RT {
+    if (frames == 0) return;
+    if (node_state >= config_.max_nodes || channels == 0 || channels > config_.max_chain_channels) {
+        bad_refs_.store(bad_refs_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        silence(out, channels, frames);
+        return;
+    }
+    Node& node = nodes_[node_state];
+    node.silent_blocks.bump();
+    fade_out(node, out, channels, frames);
 }
 
 void PluginClient::end_callback() noexcept SONORA_RT {
@@ -193,7 +213,7 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
     }
     Outcome outcome = Outcome::Collected;
     if (got) {
-        if (!node.playing) ramp_in(out, ref.channels, frames);
+        if (!node.playing) ramp_in(node, out, ref.channels, frames);
         node.playing = true;
         for (uint32_t c = 0; c < ref.channels; ++c) node.last[c] = out[c][frames - 1];
         s.collected.bump();

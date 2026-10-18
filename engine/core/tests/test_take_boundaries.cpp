@@ -120,6 +120,9 @@ public:
     }
     void end() noexcept SONORA_RT override {}
     uint32_t block_frames() const noexcept SONORA_RT override { return 0; }
+    void skip(const sonora::PlanNode&, float* const out[2], uint32_t frames) noexcept SONORA_RT override {
+        for (uint32_t i = 0; i < frames; ++i) out[0][i] = out[1][i] = 0.0f;
+    }
 
 private:
     static uint64_t clock_ns() noexcept SONORA_RT {

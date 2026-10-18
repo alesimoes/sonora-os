@@ -49,7 +49,17 @@ void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains) {
         // the session passes it through, and a pass-through has no latency.
         // Laid out with its latency, compensate() would delay every other
         // track for a delay this one never has, and it would arrive early.
-        const bool bound = c.channel_slot != kNoChannelSlot && c.node_state != kNoNodeState;
+        // A silent chain is laid out with its latency whatever its node
+        // state: it plays silence, delayed or not, and keeping the latency
+        // is what stops a fault from realigning the mix (amendment of
+        // 2026-10-14, change A). It names no store: no change reaches it.
+        if (c.channel_slot == kSilentChannelSlot) {
+            ch.channel_slot = kSilentChannelSlot;
+            ch.node_state = c.node_state;
+            ch.latency_frames = c.latency_frames;
+        }
+        const bool bound = c.channel_slot != kNoChannelSlot && c.channel_slot != kSilentChannelSlot &&
+                           c.node_state != kNoNodeState;
         if (bound) {
             ch.channel_slot = c.channel_slot;
             ch.channel_generation = c.channel_generation;

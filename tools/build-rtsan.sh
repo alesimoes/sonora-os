@@ -104,6 +104,9 @@ fi
 # The build directory is container-specific; keep it apart from build-container.
 # Unlimited memlock, as tools/build-engine.sh gives the same tests. jackd2
 # keeps its shared memory in /dev/shm, more than Docker's 64 MB default.
-docker run --rm --ulimit memlock=-1:-1 --shm-size=512m -e SONORA_RTSAN_CONTAINER=1 \
+# SYS_NICE and an rtprio limit: tools/rtsan-jack.sh runs jackd2 at
+# SCHED_FIFO, as the appliance runs its server (PR #77 RT audit B1).
+docker run --rm --ulimit memlock=-1:-1 --shm-size=512m \
+  --cap-add=SYS_NICE --ulimit rtprio=95:95 -e SONORA_RTSAN_CONTAINER=1 \
   -e SONORA_RTSAN_LIVE -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" \
   bash /src/tools/build-rtsan.sh --native "$@"
