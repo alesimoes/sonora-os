@@ -444,6 +444,31 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        Carried from the PR #51 rt-engineer review, for the host supervisor and
        the control-server wiring (ADR-0012 checklists 4 and 5); the contract
        text is in `host_control.h`:
+       - [x] rt-engineer co-review of #78, fixed: replies matched to the
+             requests outstanding, State's identity checked, unsolicited
+             messages held under a cap (H1); the state caps checked before
+             any copy, a state over 16 MiB that instance's refusal (M1);
+             touches by a wall-time bucket that lets a stalled pump's backlog
+             through, GestureEnd bursts coalesced and a kill only past ten
+             times the human rate (M2); the Ready bound from the Load fully
+             sent, `wants_write()`/`socket_handle()` (M3); the refusal text
+             kept, one answer to Load (L1); messages of hosts let go handed
+             over (L2); duplicate and high descriptor targets refused,
+             file-action errors checked (L5). ctest
+             `plugin_client_host_control_{rates,unsolicited,breaches,load_cap}`.
+       - [x] #72's follow-ups (#issuecomment-6246382528), done in the #78
+             round: one time base for the Ready deadline (set from the
+             caller's clock at the first poll_startup, not spawn's own);
+             `HostProcess::refused()`'s comment says what it covers and who
+             reads it; tests for a host that exits before Ready, a
+             replacement that never reaches Ready, and a chain destroyed
+             while its host starts (ctest `plugin_client_host_control_start_paths`).
+       - [ ] M3, the control server's side: poll each host's socket for
+             POLLOUT while `wants_write()` (the 50 ms loop moves a Load near
+             64 MiB slowly; the Ready bound now starts once it is sent).
+       - [ ] L6 on #78: the Hello pid check assumes no PID namespace; a
+             sandboxed host (bwrap, unshare) needs the pid as the engine sees
+             it compared another way.
        - [x] HostControl in the supervisor (`feature/plugin-host-control`):
              hosts start with `--control-fd 3 --shm-fd 4 --clock-fd 5`
              (`ChildProcess::Options::handles`), EngineHello and Load

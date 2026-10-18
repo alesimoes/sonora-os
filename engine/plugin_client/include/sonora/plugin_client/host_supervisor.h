@@ -36,6 +36,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -108,8 +109,10 @@ public:
     // implausible latency or passed ready_timeout_ms; the host is then
     // killed and reaped. Ready and Failed are final: later calls repeat them.
     Startup poll_startup(uint64_t now_ms, std::string& error);
-    // Failed because the plugin refused (Refused or Faulted at load or
-    // validation): deterministic, so not worth a restart.
+    // Failed in a way a restart cannot change: the region says Refused or
+    // Faulted at load or validation, or the latency the host reported at
+    // Ready is implausible. SupervisedChain reads it when a start fails, to
+    // go down as a refusal instead of retrying (#72 review item 2).
     bool refused() const { return refused_; }
     // The instance a refusal named, or -1 (none, or not a refusal).
     int32_t refused_instance() const { return refused_instance_; }
@@ -139,33 +142,90 @@ public:
     // client's PluginParameterChange{insert, key} resolves (§8).
     const plugin::control::Loaded& loaded() const { return loaded_; }
     // Checked host messages since the last call, in arrival order, encoded:
-    // gestures, touches, editor and state replies, LatencyChanged, Fault.
-    // For the control server, which decodes them again (they decode).
+    // gestures, touches, editor and state replies, LatencyChanged, Fault;
+    // then one GestureEnd per parameter whose gestures a burst coalesced
+    // (M2). For the control server, which decodes them again (they decode).
+    // The owner takes them every poll: what a host sends unasked is held up
+    // to kMaxHeldMessages / kMaxHeldBytes, past which the host is a fault
+    // (H1 on #78); replies are bounded by the requests outstanding.
+    // What the control server still checks itself (L3 on #78): a
+    // LatencyChanged or Reconfigured figure is re-read from the region,
+    // which wins (refresh_latency); an EditorFailed's text and a Fault's
+    // count are shown, not trusted.
     std::vector<std::string> take_messages();
-    // Queues a message for the host (GetState, DescribeValue, editors,
-    // Reconfigure). False, with `error`, when it would pass the queue cap;
-    // the caller then treats the host as not reading its socket.
+    // Queues a message for the host. A request (GetState, DescribeValue,
+    // OpenEditor, Reconfigure) is remembered with the reply type that
+    // answers it, and only that reply is then accepted. False, with
+    // `error`, for a request id already outstanding, or when the queue
+    // would pass its cap: the caller then treats the host as not reading
+    // its socket.
     bool send(const std::string& encoded, std::string& error);
+    // For a poll set (M3 on #78): the engine's end of the socket, and
+    // whether frames wait to be sent (poll it for POLLOUT then).
+    int socket_handle() const;
+    bool wants_write() const { return link_.wants_write(); }
+    // GestureEnds a burst coalesced (M2): counted, never a kill.
+    uint64_t gesture_ends_coalesced() const { return gesture_ends_coalesced_; }
+
+    static constexpr uint32_t kMaxHeldMessages = 4096;
+    static constexpr std::size_t kMaxHeldBytes = std::size_t{4} << 20;
 
 private:
     friend class HostSupervisor;
     HostProcess() = default;
     bool fault(std::string why);
     bool on_message(std::string_view m, uint64_t now_ms);
-    // M2: past either, the host is a protocol fault.
+    bool hold(std::string_view m, bool unsolicited);
+    // M2: a token bucket per parameter for touches, refilled by wall time
+    // and widened by a stalled pump; past it, a fault.
+    uint32_t touch_slot(uint32_t instance, uint32_t param) const;
     bool touch_allowed(uint32_t instance, uint32_t param, uint64_t now_ms);
-    bool gesture_end_allowed(uint64_t now_ms);
+    // M2: GestureEnd past kMaxGestureEndsPerSecond is coalesced; past
+    // gesture_kill_threshold() in one second, a fault.
+    enum class GestureVerdict { Pass, Coalesced, Kill };
+    GestureVerdict gesture_end(uint32_t instance, uint32_t param, float value, uint64_t now_ms);
+    uint32_t gesture_kill_threshold() const;
 
     std::unique_ptr<platform::ControlChannel> ctl_;
     plugin::control::Link link_;
     bool ctl_closed_ = false;
     bool hello_ = false;
     bool loaded_seen_ = false;
+    bool refused_seen_ = false;
+    bool load_sent_ = false;
     plugin::control::Loaded loaded_;
     std::string protocol_fault_;
-    std::deque<std::string> messages_;
-    std::map<std::pair<uint32_t, uint32_t>, std::deque<uint64_t>> touches_;
-    std::deque<uint64_t> gesture_ends_;
+    struct Held {
+        std::string bytes;
+        bool unsolicited = false;
+    };
+    std::deque<Held> messages_;
+    uint32_t held_unsolicited_ = 0;
+    std::size_t held_unsolicited_bytes_ = 0;
+    struct Outstanding {
+        plugin::control::Type reply = plugin::control::Type::State;
+        uint32_t instance = 0;
+    };
+    std::map<uint32_t, Outstanding> outstanding_;
+    std::set<uint32_t> open_editors_;
+    struct InstanceId {
+        plugin::control::Format format = plugin::control::Format::Lv2;
+        std::string id;
+    };
+    std::vector<InstanceId> instances_;
+    // Touch buckets, one per (instance, dense parameter or bypass).
+    std::vector<uint32_t> touch_base_;
+    std::vector<double> touch_tokens_;
+    std::vector<uint64_t> touch_ms_;
+    double ge_tokens_ = 0;
+    uint64_t ge_ms_ = 0;
+    uint64_t ge_window_start_ms_ = 0;
+    uint32_t ge_window_count_ = 0;
+    std::map<std::pair<uint32_t, uint32_t>, float> coalesced_;
+    uint64_t gesture_ends_coalesced_ = 0;
+    uint64_t last_pump_ms_ = 0;
+    uint64_t pump_stall_ms_ = 0;
+    uint64_t refused_seen_ms_ = 0;
     std::vector<uint32_t> param_counts_;
     int32_t refused_instance_ = -1;
     std::string refused_text_;
@@ -219,10 +279,18 @@ public:
     // process started. Ready (or the refusal, or the timeout,
     // ready_timeout_ms from now) is noticed with
     // HostProcess::poll_startup(). Null with `error` when it cannot even be
-    // spawned, or when its Load would pass the 64 MiB cap ("the chain's
-    // plugin states exceed the 64 MiB Load cap", host_control.h). What the
-    // control server's thread calls (code-reviewer L6 on PR #49).
-    std::unique_ptr<HostProcess> spawn(const ChainSpec& spec, std::string& error);
+    // spawned. The states are checked first, before anything is copied or
+    // started (M1 on #78): one over kMaxStateBytes names its instance in
+    // `*refused_instance` (a refusal, not a crash: retrying cannot help),
+    // and together over the Load cap they give "the chain's plugin states
+    // exceed the 64 MiB Load cap" (host_control.h). What the control
+    // server's thread calls (code-reviewer L6 on PR #49).
+    // The Ready bound (L4 on #78): ready_timeout_ms from the moment the
+    // whole Load has been sent, which covers the contract's Hello and Load
+    // timeouts (10 s each) with one, stricter bound; before the Load has
+    // left, the same bound from the spawn (a host not reading its socket).
+    std::unique_ptr<HostProcess> spawn(const ChainSpec& spec, std::string& error,
+                                       int32_t* refused_instance = nullptr);
     // spawn(), then wait for poll_startup() to settle: BLOCKS the caller up
     // to ready_timeout_ms. For harnesses and tools, never the control
     // server's thread. Null with `error` naming the plugin and the reason
@@ -294,8 +362,10 @@ public:
     // §4.1): its host is stopped, its region released, its slot freed.
     void retired();
 
-    // The bound host's checked messages (HostProcess::take_messages), for
-    // the control server; empty when none is bound.
+    // The checked messages (HostProcess::take_messages) of the chain's
+    // hosts, for the control server, which must take them every poll: those
+    // of hosts already let go first (L2 on #78), then the retiring one's,
+    // then the bound one's.
     std::vector<std::string> take_host_messages();
     // Down because the plugin refused (deterministic; ADR-0012 amendment of
     // 2026-10-14, change C: the control server leaves that instance out and
@@ -338,6 +408,8 @@ private:
     bool refused_ = false;
     int32_t refused_instance_ = -1;
     std::string why_;
+    // Messages of hosts let go, kept for take_host_messages (L2 on #78).
+    std::vector<std::string> orphans_;
 };
 
 }  // namespace sonora::plugin_client

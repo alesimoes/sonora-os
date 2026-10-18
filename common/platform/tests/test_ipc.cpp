@@ -447,6 +447,23 @@ void a_handle_is_passed_to_a_child_beside_the_regions() {
     CHECK(ChildProcess::spawn({"/bin/true"}, options, error) == nullptr && !error.empty());
     options.handles = {{3, -1}};
     CHECK(ChildProcess::spawn({"/bin/true"}, options, error) == nullptr && !error.empty());
+    // rt-engineer L5 on #78: two entries at one target, and a target at or
+    // above the staging floor (64), are refused before anything starts.
+    {
+        std::unique_ptr<ControlChannel> p2;
+        int end2 = -1;
+        CHECK(ControlChannel::pair(p2, end2, error));
+        ChildProcess::Options twice;
+        twice.handles = {{3, end2}};
+        twice.regions = {{3, channel.get(), true}};
+        error.clear();
+        CHECK(ChildProcess::spawn({"/bin/true"}, twice, error) == nullptr && error.find("two") != std::string::npos);
+        ChildProcess::Options high;
+        high.handles = {{64, end2}};
+        error.clear();
+        CHECK(ChildProcess::spawn({"/bin/true"}, high, error) == nullptr && error.find("below 64") != std::string::npos);
+        ControlChannel::close_handle(end2);
+    }
 }
 
 // The plugin host's channel (ADR-0012 §4): a pair whose child end crosses

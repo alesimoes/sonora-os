@@ -40,9 +40,11 @@ public:
         std::string stderr_path;
         // Each at its child_fd, 3 or above; nothing else is inherited.
         std::vector<PassedRegion> regions;
-        // Raw inheritable handles (ControlChannel::pair's child end), each
-        // at its child_fd, 3 or above, beside the regions. The caller keeps
-        // its own copy and closes it after spawn (close_handle).
+        // The child's end of a ControlChannel::pair (close-on-exec here),
+        // each placed at its child_fd beside the regions. Every child_fd,
+        // region or handle, is 3 to 63 and used once; spawn() refuses
+        // otherwise. The caller keeps its own copy and closes it after
+        // spawn (close_handle).
         struct PassedHandle {
             int child_fd = -1;
             int handle = -1;

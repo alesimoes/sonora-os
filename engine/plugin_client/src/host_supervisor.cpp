@@ -101,6 +101,7 @@ HostProcess::Startup HostProcess::poll_startup(uint64_t now_ms, std::string& err
         error = startup_error_;
         return startup_;
     };
+    if (ready_deadline_ms_ == 0) ready_deadline_ms_ = now_ms + ready_timeout_ms_;
     const uint32_t n = uint32_t(plugins_.size());
     std::string name;
     for (const std::string& p : plugins_) name += (name.empty() ? "" : ",") + p;
@@ -110,6 +111,15 @@ HostProcess::Startup HostProcess::poll_startup(uint64_t now_ms, std::string& err
     plugin::ChannelHeader& h = *header_;
     const plugin::HostState state = plugin::checked_state(h.state.load(std::memory_order_acquire));
     if (state == plugin::HostState::Refused || state == plugin::HostState::Faulted) {
+        // The region says it first; the Refused message with its text
+        // follows (host_control.h, "Ordering"). Give the text a moment
+        // rather than lose it (L1 on #78): a host that exited has written
+        // it already, one still running gets 200 ms.
+        if (refused_text_.empty() && !refused_seen_) {
+            if (refused_seen_ms_ == 0) refused_seen_ms_ = now_ms ? now_ms : 1;
+            if (!running()) pump(now_ms);
+            else if (now_ms - refused_seen_ms_ < 200) return Startup::Starting;
+        }
         const auto why = static_cast<plugin::Refusal>(h.refusal.load(std::memory_order_relaxed));
         const int32_t at = plugin::checked_instance(h.refusal_instance.load(std::memory_order_relaxed), n);
         refused_instance_ = at;
@@ -166,19 +176,70 @@ bool HostProcess::fault(std::string why) {
     return false;
 }
 
+uint32_t HostProcess::touch_slot(uint32_t instance, uint32_t param) const {
+    // One slot per dense parameter and one for the bypass, per instance,
+    // laid out at spawn: bounded by the chain, never grown by a host.
+    if (instance >= param_counts_.size()) return UINT32_MAX;
+    const uint32_t base = touch_base_[instance];
+    if (param == plugin::kBypassParam) return base + param_counts_[instance];
+    return param < param_counts_[instance] ? base + param : UINT32_MAX;
+}
+
 bool HostProcess::touch_allowed(uint32_t instance, uint32_t param, uint64_t now_ms) {
-    std::deque<uint64_t>& times = touches_[{instance, param}];
-    while (!times.empty() && now_ms - times.front() >= 1000) times.pop_front();
-    if (times.size() >= plugin::control::kMaxTouchesPerSecondPerParam) return false;
-    times.push_back(now_ms);
+    // M2 (rt-engineer on #78): a token bucket per parameter, refilled by
+    // wall time. Its capacity is the contract's per-second limit plus what
+    // the time since the last pump would have refilled, so the backlog of a
+    // control thread that stalled arrives whole and is not taken for a flood.
+    const uint32_t s = touch_slot(instance, param);
+    if (s == UINT32_MAX) return false;
+    const double rate = plugin::control::kMaxTouchesPerSecondPerParam;
+    const double cap = rate + rate * double(pump_stall_ms_) / 1000.0;
+    double tokens = touch_tokens_[s] + rate * double(now_ms - touch_ms_[s]) / 1000.0;
+    if (touch_ms_[s] == 0) tokens = cap;
+    tokens = std::min(tokens, cap);
+    touch_ms_[s] = now_ms;
+    if (tokens < 1.0) {
+        touch_tokens_[s] = tokens;
+        return false;
+    }
+    touch_tokens_[s] = tokens - 1.0;
     return true;
 }
 
-bool HostProcess::gesture_end_allowed(uint64_t now_ms) {
-    while (!gesture_ends_.empty() && now_ms - gesture_ends_.front() >= 1000) gesture_ends_.pop_front();
-    if (gesture_ends_.size() >= plugin::control::kMaxGestureEndsPerSecond) return false;
-    gesture_ends_.push_back(now_ms);
-    return true;
+HostProcess::GestureVerdict HostProcess::gesture_end(uint32_t instance, uint32_t param, float value,
+                                                     uint64_t now_ms) {
+    namespace pc = plugin::control;
+    // Past the human-rate kill threshold in one second: a host gone wrong.
+    if (now_ms - ge_window_start_ms_ >= 1000) {
+        ge_window_start_ms_ = now_ms;
+        ge_window_count_ = 0;
+    }
+    if (++ge_window_count_ > gesture_kill_threshold()) return GestureVerdict::Kill;
+    // Within kMaxGestureEndsPerSecond: passed on. Past it (a preset change
+    // in the plugin's own editor ends a gesture per parameter at once):
+    // coalesced, the newest value per parameter, handed over by
+    // take_messages() (M2, rt-engineer on #78). Never a kill for that.
+    const double rate = pc::kMaxGestureEndsPerSecond;
+    double tokens = ge_tokens_ + rate * double(now_ms - ge_ms_) / 1000.0;
+    if (ge_ms_ == 0) tokens = rate;
+    tokens = std::min(tokens, rate + rate * double(pump_stall_ms_) / 1000.0);
+    ge_ms_ = now_ms;
+    if (tokens >= 1.0) {
+        ge_tokens_ = tokens - 1.0;
+        return GestureVerdict::Pass;
+    }
+    ge_tokens_ = tokens;
+    coalesced_[{instance, param}] = value;
+    ++gesture_ends_coalesced_;
+    return GestureVerdict::Coalesced;
+}
+
+uint32_t HostProcess::gesture_kill_threshold() const {
+    // Ten times the human limit, or four whole preset changes (every slot
+    // of the chain) in one second, whichever is more.
+    uint32_t slots = 0;
+    for (const uint32_t c : param_counts_) slots += c + 1;
+    return std::max(10 * plugin::control::kMaxGestureEndsPerSecond, 4 * slots);
 }
 
 bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
@@ -236,9 +297,73 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
         case pc::Type::Refused: {
             pc::Refused r;
             if (!pc::decode(m, r, e)) return fault("Refused: " + e);
+            // Exactly one answer to Load (L1 on #78).
+            if (loaded_seen_ || refused_seen_) return fault("a Refused after the answer to Load");
+            refused_seen_ = true;
             refused_text_ = r.text;
             return true;
         }
+        // Replies: each matches a request this engine has outstanding, of
+        // the type that request is answered with, and is held only until
+        // taken (H1 on #78: a reply to nothing is a fault, so a host cannot
+        // make the engine hold what it never asked for).
+        case pc::Type::State: {
+            pc::State s;
+            if (!pc::decode(m, s, e)) return fault("State: " + e);
+            const auto it = outstanding_.find(s.request);
+            if (it == outstanding_.end() || it->second.reply != t || it->second.instance != s.instance)
+                return fault("a State answering no GetState");
+            outstanding_.erase(it);
+            if (s.status == pc::StateStatus::Ok) {
+                // Its identity is that instance's (host_control.h).
+                pc::StateBlob blob;
+                if (!pc::decode_state_blob(s.bytes, blob, e)) return fault("State: " + e);
+                if (s.instance >= instances_.size() || blob.format != instances_[s.instance].format ||
+                    blob.id != instances_[s.instance].id)
+                    return fault("a State of another plugin than instance " + std::to_string(s.instance));
+            }
+            return hold(m, false);
+        }
+        case pc::Type::ValueText: {
+            pc::ValueText v;
+            if (!pc::decode(m, v, e)) return fault("ValueText: " + e);
+            const auto it = outstanding_.find(v.request);
+            if (it == outstanding_.end() || it->second.reply != t) return fault("a ValueText answering no DescribeValue");
+            outstanding_.erase(it);
+            return hold(m, false);
+        }
+        case pc::Type::EditorOpened:
+        case pc::Type::EditorFailed: {
+            uint32_t request = 0, instance = 0;
+            if (t == pc::Type::EditorOpened) {
+                pc::EditorOpened o;
+                if (!pc::decode(m, o, e)) return fault("EditorOpened: " + e);
+                request = o.request;
+                instance = o.instance;
+            } else {
+                pc::EditorFailed f;
+                if (!pc::decode(m, f, e)) return fault("EditorFailed: " + e);
+                request = f.request;
+                instance = f.instance;
+            }
+            const auto it = outstanding_.find(request);
+            if (it == outstanding_.end() || it->second.reply != pc::Type::EditorOpened ||
+                it->second.instance != instance)
+                return fault("an editor reply answering no OpenEditor");
+            outstanding_.erase(it);
+            if (t == pc::Type::EditorOpened) open_editors_.insert(instance);
+            return hold(m, false);
+        }
+        case pc::Type::Reconfigured: {
+            pc::Reconfigured r;
+            if (!pc::decode(m, r, e)) return fault("Reconfigured: " + e);
+            const auto it = outstanding_.find(r.request);
+            if (it == outstanding_.end() || it->second.reply != t) return fault("a Reconfigured answering no Reconfigure");
+            outstanding_.erase(it);
+            return hold(m, false);
+        }
+        // Unsolicited: checked against the chain, rate-limited where the
+        // contract says (M2), and held under a cap.
         case pc::Type::GestureBegin: {
             pc::GestureBegin g;
             if (!pc::decode(m, g, e)) return fault("GestureBegin: " + e);
@@ -260,40 +385,22 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
             pc::GestureEnd g;
             if (!pc::decode(m, g, e)) return fault("GestureEnd: " + e);
             if (!loaded_seen_ || !in_chain(g.instance, g.param)) return fault("GestureEnd for no parameter of the chain");
-            if (!gesture_end_allowed(now_ms)) {
-                return fault("more than " + std::to_string(pc::kMaxGestureEndsPerSecond) +
-                             " GestureEnd in one second (M2)");
+            switch (gesture_end(g.instance, g.param, g.value, now_ms)) {
+                case GestureVerdict::Pass: break;
+                case GestureVerdict::Coalesced: return true;
+                case GestureVerdict::Kill:
+                    return fault("more than " + std::to_string(gesture_kill_threshold()) +
+                                 " GestureEnd in one second (M2)");
             }
             break;
         }
         case pc::Type::EditorClosed: {
             pc::EditorClosed c;
             if (!pc::decode(m, c, e)) return fault("EditorClosed: " + e);
-            if (c.instance >= param_counts_.size()) return fault("EditorClosed for no instance of the chain");
+            // Exactly once per EditorOpened (host_control.h, "Editors").
+            if (open_editors_.erase(c.instance) == 0) return fault("EditorClosed for no open editor");
             for (const pc::TouchedValue& v : c.moved)
                 if (!in_chain(c.instance, v.param)) return fault("EditorClosed moves no parameter of the chain");
-            break;
-        }
-        case pc::Type::State: {
-            pc::State s;
-            if (!pc::decode(m, s, e)) return fault("State: " + e);
-            if (s.instance >= param_counts_.size()) return fault("State for no instance of the chain");
-            break;
-        }
-        case pc::Type::ValueText: {
-            pc::ValueText v;
-            if (!pc::decode(m, v, e)) return fault("ValueText: " + e);
-            break;
-        }
-        case pc::Type::EditorOpened: {
-            pc::EditorOpened o;
-            if (!pc::decode(m, o, e)) return fault("EditorOpened: " + e);
-            if (o.instance >= param_counts_.size()) return fault("EditorOpened for no instance of the chain");
-            break;
-        }
-        case pc::Type::EditorFailed: {
-            pc::EditorFailed f;
-            if (!pc::decode(m, f, e)) return fault("EditorFailed: " + e);
             break;
         }
         case pc::Type::LatencyChanged: {
@@ -301,19 +408,30 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
             if (!pc::decode(m, l, e)) return fault("LatencyChanged: " + e);
             break;
         }
-        case pc::Type::Reconfigured: {
-            pc::Reconfigured r;
-            if (!pc::decode(m, r, e)) return fault("Reconfigured: " + e);
-            break;
-        }
         case pc::Type::Fault: {
             pc::Fault f;
             if (!pc::decode(m, f, e)) return fault("Fault: " + e);
+            if (f.instance != -1 && (f.instance < 0 || uint32_t(f.instance) >= param_counts_.size()))
+                return fault("a Fault naming no instance of the chain");
             break;
         }
         default: return fault("a message type no host sends");
     }
-    messages_.emplace_back(m);
+    return hold(m, true);
+}
+
+bool HostProcess::hold(std::string_view m, bool unsolicited) {
+    // H1 on #78: what a host sends unasked is held under a cap; the owner
+    // takes it every poll (take_messages). Replies are bounded by the
+    // requests outstanding.
+    if (unsolicited) {
+        if (held_unsolicited_ + 1 > kMaxHeldMessages || held_unsolicited_bytes_ + m.size() > kMaxHeldBytes)
+            return fault("more than " + std::to_string(kMaxHeldMessages) + " messages or " +
+                         std::to_string(kMaxHeldBytes >> 20) + " MiB held unasked (H1)");
+        ++held_unsolicited_;
+        held_unsolicited_bytes_ += m.size();
+    }
+    messages_.push_back({std::string(m), unsolicited});
     return true;
 }
 
@@ -321,14 +439,23 @@ bool HostProcess::pump(uint64_t now_ms) {
     namespace pc = plugin::control;
     if (!protocol_fault_.empty()) return false;
     if (!ctl_ || ctl_closed_) return true;
+    // How long since the last pump: the touch and gesture buckets let the
+    // backlog of that long through (M2).
+    pump_stall_ms_ = last_pump_ms_ != 0 && now_ms > last_pump_ms_ ? now_ms - last_pump_ms_ : 0;
+    last_pump_ms_ = now_ms;
     std::string error;
     const pc::Io f = link_.flush([&](std::string_view d) { return io_of(ctl_->send(d, 0, error)); });
-    if (f == pc::Io::Closed) {
-        // Gone: the process exit says why (running(), exit_text()).
-        ctl_closed_ = true;
-        return true;
-    }
+    // Closed: gone, and the process exit says why (running(), exit_text());
+    // what it sent before going is still read below.
     if (f == pc::Io::Error) return fault("cannot send: " + error);
+    // M3 on #78: the Ready bound runs from the moment the whole Load has
+    // left, not from the spawn, so a large state moving at poll cadence is
+    // not taken for a hang. (The control server can also wait for the
+    // socket to be writable: wants_write(), socket_handle().)
+    if (!load_sent_ && !link_.wants_write()) {
+        load_sent_ = true;
+        ready_deadline_ms_ = now_ms + ready_timeout_ms_;
+    }
     const uint64_t now_ns = now_ms * 1'000'000ull;
     pc::Io r = pc::Io::Ok;
     // A bounded number of datagrams per drain (fairness between hosts);
@@ -339,7 +466,7 @@ bool HostProcess::pump(uint64_t now_ms) {
     }
     if (!protocol_fault_.empty()) return false;
     if (r == pc::Io::Error) return fault(error.empty() ? "a frame out of place" : error);
-    if (r == pc::Io::Closed) ctl_closed_ = true;
+    if (r == pc::Io::Closed || f == pc::Io::Closed) ctl_closed_ = true;
     // M1: a message half received that stopped growing pins engine memory.
     if (link_.stalled(now_ns, uint64_t(pc::kStalledMessageMs) * 1'000'000ull)) {
         return fault("a message half received for " + std::to_string(pc::kStalledMessageMs) + " ms (M1)");
@@ -348,20 +475,87 @@ bool HostProcess::pump(uint64_t now_ms) {
 }
 
 std::vector<std::string> HostProcess::take_messages() {
-    std::vector<std::string> out(std::make_move_iterator(messages_.begin()), std::make_move_iterator(messages_.end()));
+    std::vector<std::string> out;
+    out.reserve(messages_.size() + coalesced_.size());
+    for (Held& h : messages_) out.push_back(std::move(h.bytes));
     messages_.clear();
+    held_unsolicited_ = 0;
+    held_unsolicited_bytes_ = 0;
+    // A burst coalesced (M2): the newest value of each parameter, as one
+    // GestureEnd each, after what passed.
+    for (const auto& [key, value] : coalesced_) {
+        std::string bytes;
+        plugin::control::encode(plugin::control::GestureEnd{key.first, key.second, value}, bytes);
+        out.push_back(std::move(bytes));
+    }
+    coalesced_.clear();
     return out;
 }
 
 bool HostProcess::send(const std::string& encoded, std::string& error) {
+    namespace pc = plugin::control;
     if (!ctl_ || ctl_closed_) {
         error = "the host's socket is closed";
         return false;
     }
+    // A request is remembered with the reply it is answered by, so the
+    // reply is checked against it and nothing else is accepted (H1 on #78).
+    pc::Type t{};
+    if (!pc::peek_type(encoded, t) || !pc::engine_to_host(t)) {
+        error = "not a message the engine sends";
+        return false;
+    }
+    Outstanding o;
+    uint32_t request = 0;
+    bool asks = true;
+    std::string e;
+    switch (t) {
+        case pc::Type::GetState: {
+            pc::GetState m;
+            if (!pc::decode(encoded, m, e)) break;
+            request = m.request;
+            o = {pc::Type::State, m.instance};
+            break;
+        }
+        case pc::Type::DescribeValue: {
+            pc::DescribeValue m;
+            if (!pc::decode(encoded, m, e)) break;
+            request = m.request;
+            o = {pc::Type::ValueText, m.instance};
+            break;
+        }
+        case pc::Type::OpenEditor: {
+            pc::OpenEditor m;
+            if (!pc::decode(encoded, m, e)) break;
+            request = m.request;
+            o = {pc::Type::EditorOpened, m.instance};
+            break;
+        }
+        case pc::Type::Reconfigure: {
+            pc::Reconfigure m;
+            if (!pc::decode(encoded, m, e)) break;
+            request = m.request;
+            o = {pc::Type::Reconfigured, 0};
+            break;
+        }
+        default: asks = false; break;
+    }
+    if (!e.empty()) {
+        error = e;
+        return false;
+    }
+    if (asks && outstanding_.count(request)) {
+        error = "request " + std::to_string(request) + " is already outstanding";
+        return false;
+    }
     // Past kMaxQueuedBytes the host is not reading its socket (M1): the
     // caller kills it.
-    return link_.queue(encoded, error);
+    if (!link_.queue(encoded, error)) return false;
+    if (asks) outstanding_[request] = o;
+    return true;
 }
+
+int HostProcess::socket_handle() const { return ctl_ ? ctl_->native_handle() : -1; }
 
 std::string HostProcess::exit_text() {
     if (!child_) return "never started";
@@ -468,8 +662,11 @@ HostSupervisor::~HostSupervisor() {
     if (!client_.detach_clock()) (void)clock_region_.release();
 }
 
-std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::string& error) {
+std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::string& error,
+                                                   int32_t* refused_instance) {
+    namespace pc = plugin::control;
     const std::string name = join(spec.plugins, ',');
+    if (refused_instance) *refused_instance = -1;
     if (!ok_) {
         error = why_;
         return nullptr;
@@ -482,6 +679,28 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     const uint32_t channels = spec.channels + spec.key_channels;
     if (spec.channels == 0 || channels > client_.config().max_chain_channels) {
         error = name + ": " + std::to_string(channels) + " channels is more than a chain carries";
+        return nullptr;
+    }
+    // M1 on #78: the states against their caps before anything is copied,
+    // encoded or started. One past kMaxStateBytes is that instance's
+    // refusal (the host's decode would refuse it, and a restart would only
+    // repeat it); together past the Load cap, the chain's.
+    std::size_t total = 0;
+    for (uint32_t i = 0; i < n && i < spec.states.size(); ++i) {
+        if (spec.states[i].size() > pc::kMaxStateBytes) {
+            if (refused_instance) *refused_instance = int32_t(i);
+            error = spec.plugins[i] + ": its state is " + std::to_string(spec.states[i].size()) +
+                    " bytes, over the " + std::to_string(pc::kMaxStateBytes >> 20) + " MiB a plugin state may be";
+            return nullptr;
+        }
+        total += spec.states[i].size();
+    }
+    // The fixed part of a Load: the ids, a few words per instance.
+    std::size_t fixed = 64;
+    for (const std::string& p : spec.plugins) fixed += p.size() + 32;
+    if (total + fixed > pc::kMaxMessageBytes) {
+        // Low item of the PR #51 review: said with the chain's names.
+        error = name + ": the chain's plugin states exceed the 64 MiB Load cap";
         return nullptr;
     }
 
@@ -514,7 +733,6 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     // HostControl (host_control.h, "Handshake"): EngineHello first, Load
     // right behind it, queued before the fork; the chain crosses the socket,
     // not the command line.
-    namespace pc = plugin::control;
     pc::Load load;
     load.key_channels = spec.key_channels;
     load.flags = spec.load_flags;
@@ -529,8 +747,17 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
         }
         li.params = spec.param_counts[i];
         if (i < spec.states.size()) li.state = spec.states[i];
+        host->instances_.push_back({li.format, li.id});
         load.instances.push_back(std::move(li));
     }
+    // The touch buckets, one per dense parameter and bypass, laid out now.
+    uint32_t slots = 0;
+    for (const uint32_t c : spec.param_counts) {
+        host->touch_base_.push_back(slots);
+        slots += c + 1;
+    }
+    host->touch_tokens_.assign(slots, 0.0);
+    host->touch_ms_.assign(slots, 0);
     std::string hello_bytes, load_bytes, queue_error;
     pc::encode(pc::EngineHello{}, hello_bytes);
     pc::encode(load, load_bytes);
@@ -561,11 +788,12 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     // the host's exit closes the pair.
     platform::ControlChannel::close_handle(child_end);
     if (!host->child_) return nullptr;
-    host->pump(steady_ms());
-    // Ready within the bound (§5.3), noticed by poll_startup().
+    // Ready within the bound (§5.3), noticed by poll_startup(), whose
+    // caller's clock sets the deadline at its first look: one time base
+    // (#72 review item 1), never this function's own.
     host->plugins_ = spec.plugins;
     host->ready_timeout_ms_ = config_.ready_timeout_ms;
-    host->ready_deadline_ms_ = steady_ms() + config_.ready_timeout_ms;
+    host->ready_deadline_ms_ = 0;
     return host;
 }
 
@@ -610,10 +838,14 @@ bool SupervisedChain::begin(std::string& error) {
     for (std::size_t i = 0; i < bypass.size() && i < spec_.bypass.size(); ++i) bypass[i] = spec_.bypass[i];
     sup_.client().reset_store(store_, map, values.data(), bypass.data());
     sup_.client().reset_node(node_);
-    starting_ = sup_.spawn(spec_, error);
+    int32_t refused = -1;
+    starting_ = sup_.spawn(spec_, error, &refused);
     if (!starting_) {
         down_ = true;
         why_ = error;
+        // A state over its cap is that instance's refusal (M1 on #78).
+        refused_ = refused >= 0;
+        refused_instance_ = refused;
         return false;
     }
     return true;
@@ -638,7 +870,18 @@ bool SupervisedChain::start(std::string& error) {
 bool SupervisedChain::idle() { return !current_ || current_->idle(); }
 
 std::vector<std::string> SupervisedChain::take_host_messages() {
-    return current_ ? current_->take_messages() : std::vector<std::string>{};
+    // L2 on #78: what a replaced or retired host sent before it went comes
+    // first (the control server closes the gestures it left open with the
+    // last ParamTouched it saw), then the retiring host's, then the bound
+    // one's.
+    std::vector<std::string> out;
+    out.swap(orphans_);
+    for (HostProcess* h : {retiring_.get(), current_.get()}) {
+        if (!h) continue;
+        std::vector<std::string> m = h->take_messages();
+        out.insert(out.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
+    }
+    return out;
 }
 
 SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {
@@ -710,6 +953,8 @@ SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
     // The bound host's socket, every poll: its messages are taken by the
     // control server, and a broken contract kills it here (crash path).
     const bool contract_kept = !current_ || current_->pump(now_ms);
+    // A retiring host's last messages are read too (L2 on #78).
+    if (retiring_) retiring_->pump(now_ms);
     if (starting_) return poll_starting(now_ms);
     if (!current_ || retiring_) return Event::None;
     if (!contract_kept) {
@@ -768,9 +1013,12 @@ SupervisedChain::Event SupervisedChain::replace(uint64_t now_ms, const std::stri
     // come from the store, copied in by the new channel's first submit.
     // Spawned, not waited for: its Ready is a later poll's Swapped.
     std::string error;
-    starting_ = sup_.spawn(spec_, error);
+    int32_t refused = -1;
+    starting_ = sup_.spawn(spec_, error, &refused);
     if (!starting_) {
         down_ = true;
+        refused_ = refused >= 0;
+        refused_instance_ = refused;
         why_ = join(spec_.plugins, ',') + ": " + reason + "; the restart failed: " + error;
         return Event::Down;
     }
@@ -785,6 +1033,9 @@ void SupervisedChain::retired() {
     sup_.client().retire(retiring_slot_);
     retiring_slot_ = kNoSlot;
     retiring_->stop();
+    // What it sent is the control server's still (L2 on #78).
+    std::vector<std::string> m = retiring_->take_messages();
+    orphans_.insert(orphans_.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
     retiring_.reset();  // the region is released only now (§5.3)
 }
 

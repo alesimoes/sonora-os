@@ -114,7 +114,8 @@ if(TARGET sonora-plugin-host)
                --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
   set(_pc_tests)
   foreach(scenario control_loaded control_refused_instance control_bad_hello control_bogus control_flood
-                   control_half async_start ready_timeout async_refused passthrough params miss crash restarts nan)
+                   control_half control_rates control_unsolicited control_breaches control_load_cap
+                   control_start_paths async_start ready_timeout async_refused passthrough params miss crash restarts nan)
     add_test(NAME plugin_client_host_${scenario} COMMAND ${_pc_host} --scenario ${scenario})
     list(APPEND _pc_tests plugin_client_host_${scenario})
   endforeach()
