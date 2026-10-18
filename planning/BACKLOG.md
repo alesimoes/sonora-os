@@ -110,10 +110,16 @@ playback can follow edits; it is in flight.
 5. [ ] Solo safe in `TrackMix` (session format, op codec, plan builder: a
        solo-safe track is never implicitly muted). The Mix window refuses
        Ctrl-click on solo by name until it exists (`feature/ui-mixer-monitor`).
-6. [ ] The mix and plug-in undo history, separate from edit undo (owner
-       decision of 2026-10-14, ADR-0009 update 2026-10-14 item 4): `SetMix`,
-       `SetInsertBypass`, `SetInsertParams`, and a compound's mix members as
-       one step. Until it exists those make no undo step.
+6. [ ] Mix and plug-in undo history, separate from the edit undo (owner
+       decision 2026-10-14, recorded in ADR-0009's 2026-10-14 update, item
+       4): `SetMix` (fader, pan, mute, solo), `SetInsertBypass` and
+       `SetInsertParams` each make a step there, and a compound's mix
+       members make one step together. Edit Ctrl+Z and the edit undo table
+       are unchanged. Needs its own design first: what a step stores and
+       restores, its bound, whether it replicates, how a step whose insert
+       or track was removed by edit undo is shown or skipped, whether
+       `SetMonitorBus` belongs in it, and its key binding. Not part of the
+       compound-operation implementation.
 7. [x] Compound operations (ADR-0009 update 2026-10-14): PR #75, with an
        interim limit of 64 members (5 to 7.5 ms on 2,000-region playlists).
 8. [ ] Raise the compound limit toward 4,096 (ADR-0009 update 2026-10-14,
@@ -132,7 +138,14 @@ playback can follow edits; it is in flight.
          touching the range), so a cut-like compound is not O(n) a member
          either.
        Measure with `measure_compound` again. Raising the limit changes what
-       a decoder accepts, so it needs a `kProtocolVersion` bump.
+       a decoder accepts, so it needs a `kProtocolVersion` bump. **Must land
+       with cut/copy/paste** (Track 3 item 1): a paste over 18 tracks with
+       a few regions each, plus its overwrite splits, passes 64 members, so
+       at the interim limit ordinary edits would be refused.
+9. [ ] FakeEngine adds its closed takes to its document, as the control
+       server does (`add_closed_take`): a "Record" compound, its notices,
+       and a refused take's TakeFailed. Then UI tests see a compound arrive
+       from the engine (PR #75 ui-engineer review, item 5). contracts/api.
 
 ### Track 3: UI (ui-engineer)
 
@@ -163,6 +176,24 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              (Track 2 item 7), within its interim 64 members until Track 2
              item 8. Shuffle on a long playlist needs a `ShiftRegions`
              operation first (ADR-0009 update 2026-10-14, item 5).
+       - [ ] The compound rule for every sender (PR #75 ui-engineer
+             review, item 4):
+             - one gesture is one compound and one undo step; the UI never
+               splits an operator's edit across compounds;
+             - over `model::kMaxCompoundMembers` (the constant, never a
+               literal) the UI refuses before sending, changes nothing and
+               says so in operator words ("Paste needs 70 changes; at most
+               64 in one edit for now. Nothing was pasted."), not the
+               model's "operation 65 of 70";
+             - build to the fewest members: Shuffle's ripple waits for
+               `ShiftRegions` (one member a playlist), and until then a
+               Shuffle edit that would ripple more than fits is refused;
+             - a `ui/qt/tests` case per sender at the limit and one past it.
+             An 18-track paste passes 64 members, so Track 2 item 8 must
+             land with cut/copy/paste.
+       - [ ] The undo and redo text: "Undo Record", "Undo Paste", from the
+             history's step labels (`History::undo_label()` /
+             `redo_label()`, PR #75), as a property and an Edit menu item.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain
@@ -224,6 +255,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              sized from the first Hello: the synthetic waveforms' rate
              (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
+6. [ ] The version refusal reaches the operator (PR #75 ui-engineer review,
+       item 3). `version_mismatch()`'s text ("the engine speaks control
+       protocol version 4 and this interface speaks version 3; install an
+       interface and an engine from the same build") goes to stderr and
+       exit 1 today, which on the appliance is a black screen restarted
+       for ever:
+       - at startup, a full-screen refusal page with the text instead of
+         exiting;
+       - on reconnect, `last_error()` shown in the engine-gone overlay;
+       - a version refusal stops the retry loop, since retrying cannot fix
+         it.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 

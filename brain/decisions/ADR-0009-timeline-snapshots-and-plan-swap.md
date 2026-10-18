@@ -1,6 +1,8 @@
 # ADR-0009 — Timeline as immutable snapshots, operations as undo and replication, residency-gated plan swap
 
-- Status: Accepted (engine owner review 2026-10-13, changes applied)
+- Status: Accepted (engine owner review 2026-10-13, changes applied). The
+  2026-10-14 update (compound operations) was accepted by the owner,
+  2026-10-18.
 - Date: 2026-10-12; revised 2026-10-13 after the engine owner's review
 - Decided by: architect. Rests on one owner decision, 2026-10-12: Phase 2
   playback starts with a fixed 2-channel monitor bus, and the full mixer
@@ -630,6 +632,354 @@ detail) to land before sessions that size are edited.
   `Notice`.** This gives the same reply timing for every command. It was
   rejected because the UI would show a take as started and give the
   refusal only as a side line.
+
+## Update, 2026-10-14: compound operations (Accepted)
+
+Status: **Accepted by the owner, 2026-10-18**, with the architect's changes
+and the owner's mix/plug-in undo decision. Implementation: PR #75.
+Author: the model track (Track 2). Revised after the architect's review
+(PR #70, "Accept with listed changes"). It amends §1 and §2. It also
+replaces the 2026-10-13 control-server update's consequence "A take on N
+tracks is N undo steps".
+
+**Context.** An operation is the unit of three things: validation, one
+revision on the wire, and one undo step. Several edits waiting in the UI
+are by nature more than one operation:
+
+- cut, copy and paste, and duplicate: a split at each edge, then the
+  regions in between removed or placed, on every selected track;
+- Shuffle: the same, with a `ShiftRegions` member (item 5) closing or
+  opening the gap;
+- dropping the fade hidden under a new crossfade, as Pro Tools does: a
+  `SetFade` of length 0, then a `SetCrossfade` (BACKLOG Track 3 item 1);
+- Alt-click on solo or mute: one `SetMix` per track;
+- a take on N tracks: `AddSource` then `RecordTake` per track, which is
+  N undo steps today where Pro Tools has one;
+- ADR-0011's mix assistant, which applies an accepted plan as one
+  operation. The compound gives that plan atomicity. Its undo follows the
+  owner's decision of 2026-10-14 (item 4): the plan's structural members
+  (`AddInsert`, sends) are one edit-undo step, and its value members
+  (`SetMix`, `SetInsertParams`) are one step in the separate mix and
+  plug-in undo history. ADR-0011 (Proposed) says "one undoable compound
+  operation" and "ordinary, undoable parameter changes". Read against
+  this update, that means two steps, one per history, from one operation.
+
+Sending these operations one at a time has three defects. A refusal
+halfway through leaves the first half applied. Every replica sees the
+intermediate states, and the plan builder may publish one, so a cut can be
+heard half done. And undo takes N presses. Grouping undo steps in
+`History` fixes only the third defect.
+
+**Decision.**
+
+1. **A new operation, `Compound{ops, label}`.** Its members are ordinary
+   operations, in order. There is no nesting and no recursion limit to
+   set. An empty compound is refused.
+   - **Type shape.** `common/model` splits the variant: `Member` is a
+     variant of today's leaf operations, and `Operation` is those same
+     alternatives plus `Compound{std::vector<Member> ops; std::string
+     label;}`. The type, not a runtime check, stops a member from being a
+     `Compound`. Every exhaustive visit (`apply`, `operation_name`,
+     `is_undoable`, the codec, the server's kind checks) gains a case.
+   - **`label`** is display-only: what the Edit menu and the Undo History
+     show ("Undo Paste", "Undo Record"), since `operation_name` would say
+     "Compound". `apply()` ignores it, and it is not part of an
+     operation's equality. It is optional on the wire; when it is absent,
+     each history shows `operation_name` of its own first member.
+   - **ADR-0007 §6 classification.** This is an **additive** change to
+     `common/model`'s public headers (`operations.h`, `op_codec.h`) and
+     to `contracts/api` (the bump in item 6). It is reviewed by
+     rt-engineer and ui-engineer under ADR-0007 §6, and `CONTRACTS.lock`
+     is regenerated in the same PR.
+2. **Validated as a whole, applied atomically.** `apply(before, Compound)`
+   applies each member, with the existing pure `apply()`, to the result of
+   the member before it. Member *k* therefore sees the ids, sources and
+   regions that the earlier members created: `AddSource` and then a
+   `RecordTake` that names that source, or `SplitRegion` and then
+   `RemoveRegion` of its right part. If any member is refused, the whole
+   compound is refused and the result is `before`. Each member's
+   `apply()` already guarantees `check_invariants()`, so every
+   intermediate result satisfies it. Only the final result is published.
+   - **Error indices.** The refusal counts members from 1, for people:
+     `operation 4 of 36 (RecordTake): <the member's own reason>`. The
+     decoder reports a JSON path, counted from 0 as JSON paths are:
+     `ops[3]: <reason>`. Both name the same member.
+   - **Ids.** Whoever builds a compound (the client's resolver today, the
+     engine for a take) gives its members strictly increasing ids,
+     starting at `next_id`, and reserves every conditional id
+     (`split_right_id` and the like) whether or not the member ends up
+     using it. `fresh()` then holds member by member against the running
+     state. Gaps in the id space are harmless. `add_closed_take()` reads
+     `document.current().next_id` between applies today; it allocates all
+     of a take's ids up front instead.
+   - **Engine checks run per member, on the intermediate state.**
+     `Document::apply` takes an optional member-check hook,
+     `(const Snapshot& at, const Member& member) -> refusal`, called before
+     each member with the state the earlier members produced. A refusal
+     from the hook refuses the compound like a model refusal, with the same
+     member-numbered error. A pre-scan against `before` would be wrong: in
+     `AddTrack` then `AddInsert` on that track, the hostable check would
+     find no track. The engine server and `FakeEngine` pass the same kind
+     of hook, so the fold lives in one place.
+   - **Atomicity covers the document only.** The plugin hosts that the
+     compound's `AddInsert` and `ReplaceInsert` members need are started
+     after the compound is published, make-before-break as in ADR-0012.
+     A host that fails to start shows as faulted, exactly as after a
+     single `AddInsert`. Nothing in the document is rolled back for it.
+3. **One revision, one update, one step.** An applied compound raises the
+   revision by one, however many members it has. It replicates as one
+   `ReplicationUpdate::Kind::Op` that carries the compound's bytes. A
+   replica applies it with the same function and never sees an
+   intermediate state. The undo floor rule is the same as for any
+   operation. **Residency (§4):** a compound publishes one plan, so it
+   costs one residency wait; §4.2's newest-wins rule is unchanged, and the
+   record gate after a take compound behaves as it does today, because
+   `show_document` already runs once per take.
+4. **Undo: at most one step per history, never one per member.**
+
+   **Decided by the owner, 2026-10-14: mixer and plug-in value changes
+   have their own undo history, separate from the edit undo,** as Pro
+   Tools keeps mix and plug-in undo apart from edit undo. Edit Ctrl+Z
+   keeps covering only edit-state operations, and the model's edit undo
+   table (`timeline-model.md` "What undo covers", ADR-0012 §6.3) stays as
+   it is: `SetMix` (fader, pan, mute, solo), `SetInsertBypass` and
+   `SetInsertParams` remain non-undoable *for the edit history*, and go to
+   the mix and plug-in history instead. `SetInsertActive` stays in the
+   edit history, as the table has it. `SetInsertState` is written at save,
+   after `GetState`, and is not an operator's gesture, so it makes no step
+   in either. The mix and plug-in history itself is a separate piece of
+   work (BACKLOG Track 2 item 6), not part of this update's
+   implementation.
+
+   **Edit history.** A compound is edit-undoable when at least one member
+   is. It then pushes one edit step, the final `EditState`, charged the
+   exclusive bytes against the previous step as any step is (§1). The
+   intermediate states are never steps. Edit undo restores the
+   `EditState` and nothing else (§3).
+
+   **A compound that mixes edit and mix members is accepted, and makes
+   one step in each history:** one edit-undo step for its edit members,
+   as above, and one mix-undo step for its mix members, both carrying the
+   compound's `label`. Each history undoes its own step independently, as
+   Pro Tools' two undos do. Refusing mixed compounds was rejected, because
+   the edits that need them most are mixed by nature: the mix
+   assistant's accepted plan (`AddInsert` and its parameter values, a send
+   and its level), and a new track or insert created with its starting
+   values. Refused, they would have to go as two operations, and replicas
+   and the plan builder would see, and could play, an insert at its
+   default values between them: the very defect the compound exists to
+   remove (Context). The split costs nothing in the model: `apply()` is
+   unchanged, and only the two histories each record what belongs to
+   them. An edit undo that removes an insert leaves its values in its
+   `InsertMix` entry (ADR-0012 §6.3), so a redo restores them; how a mix
+   step whose insert is gone is shown or skipped is for the mix history's
+   design (BACKLOG Track 2 item 6). Until that history exists, mix members
+   make no step, as today.
+
+   Therefore:
+   - a multi-track take (`AddSource`×N, `RecordTake`×N) is one edit-undo
+     step, and undoing it leaves its N sources in the pool, as undoing one
+     `RecordTake` already does;
+   - Alt-click on solo or mute (`SetMix`×N) makes **no** edit-undo step,
+     and one mix-undo step once that history exists. The compound gives it
+     atomicity and one update. Today it makes N revisions and no undo step
+     at all, since `SetMix` is not undoable. Edit Ctrl+Z must not offer to
+     undo it. When this lands, the BACKLOG line "it should be one compound
+     undo step" for Alt-click is corrected to "no edit-undo step; one
+     mix-undo step (Track 2 item 6)".
+5. **A size limit: 4,096 members as the target, 64 for now** (measured
+   below). 4,096 is about 200 members per track
+   on 18 tracks. That covers an 18-track take (36 members), Alt-click
+   (18), and a cut or paste over a selection of a few hundred regions. The
+   decoder refuses more, and so does `apply()`, each naming the limit.
+   `contracts/api`'s `kMaxMessageBytes` also caps the encoded request.
+   - **Cost, and the first remedy.** Applied naively, each member copies
+     the playlist it edits (§1), so *k* members on one *n*-region playlist
+     copy O(*k*·*n*) regions on the document thread, and `transport.stop`
+     waits behind that work (2026-10-13 update, consequences). The
+     architect's estimate for 4,096 members on one 2,000-region playlist
+     is hundreds of ms, one to two orders of magnitude over the 10 ms
+     build threshold of the 2026-10-13 update. Lowering the limit to fit
+     would leave about 100 to 200 members, below a cut over a few hundred
+     regions. So the fold copies each playlist **once per compound** and
+     edits that copy in place for the later members: until the result is
+     published, the fold is its only owner. The result is identical, and
+     `apply()` stays observably pure. The limit is lowered only if the
+     measured cost is still over 10 ms after that.
+   - **Measurement.** The implementing PR measures 4,096 members on a
+     2,000-region playlist (and an 18×2,000 session) before it merges,
+     reviewed by rt-engineer, and reports the numbers in this ADR. It is
+     not required before this update is accepted: the limit is a
+     parameter, the cost is control-thread latency and not RT safety or a
+     lost take, and a compound is never worse than the same members sent
+     one by one.
+   - **Measured, 2026-10-18** (`feature/compound-op`,
+     `common/model/tests/measure_compound.cpp`; Release, in the
+     `sonora-build:trixie` container on the owner's i7-11800H under Docker
+     Desktop; best of 5 runs). Each region is 1,000 frames with a gap after
+     it, and there are no crossfades. `Document::apply` covers encoding, the
+     fold and the history step; "one by one" is the same members sent as
+     separate operations.
+
+     | Compound | Playlists × regions | `Document::apply` | One by one | Decode |
+     |---|---|---|---|---|
+     | 4,096 members, split then remove (cut-like) | 1 × 2,000 | 1,169 ms | 1,441 ms | 2.8 ms |
+     | 4,096 `SetFade` | 1 × 2,000 | 673 ms | 978 ms | 3.9 ms |
+     | 4,096, split then remove (cut-like) | 18 × 2,000 | 1,071 ms | 1,445 ms | 3.1 ms |
+     | 4,096 `SetFade` | 18 × 2,000 | 823 ms | 1,070 ms | 4.4 ms |
+     | 1 / 16 / 64 / 256 / 1,024 `SetFade` | 1 × 2,000 | 0.21 / 2.4 / 9.1 / 38 / 190 ms | 0.21 / 3.5 / 14 / 64 / 254 ms | |
+
+     **The cost is over 10 ms after the remedy, by about 100 times at
+     4,096.** Copying each playlist once saves 19 to 31 %.
+
+     **Profile** (rt-engineer, PR #75 co-review; gprof and a component
+     benchmark on 2,000 regions with no crossfades). About 75 % of a
+     member's cost is hash maps over every region, rebuilt and thrown away
+     on each member:
+
+     | Per call | µs |
+     |---|---|
+     | `playlist_problem`, whole playlist | 181 |
+     | of which its `unordered_map` index, one node a region | 114 |
+     | of which `region_problem` × *n* | 40 |
+     | `sort_crossfades` with no crossfade to sort | 124 |
+     | the playlist copy, first member only | 110 |
+     | fold steady state, a `SetFade` member | 259 |
+
+     With no per-member validation at all, 4,096 `SetFade` members cost
+     5.2 ms, but a cut-like compound still costs 304 ms. That is because
+     `overwrite()` rebuilds the region vector for every member, and
+     `drop_broken_crossfades()` builds two maps over every region even
+     when there is no crossfade. Local validation alone is therefore not
+     enough. The operators have to be range-local too.
+
+     **The rule applied: an interim limit of 64.** This is item 5's own
+     rule. `sort_crossfades` (with fewer than 2 crossfades) and
+     `drop_broken_crossfades` (with none) now return early. With that,
+     the cost at 64 members, measured 2026-10-18 the same way, is:
+
+     | 64 members | 1 × 2,000 | 18 × 2,000 | One by one |
+     |---|---|---|---|
+     | split then remove (cut-like) | 6.4 ms | 7.5 ms | 11.7 / 11.8 ms |
+     | `SetFade` | 5.1 ms | 6.6 ms | 9.6 / 10.1 ms |
+
+     Every case is under 10 ms. 64 covers every sender that exists today:
+     a take (two members a track, and `add_closed_take()` splits a take of
+     more than 32 armed tracks into compounds in track order), Alt-click on
+     18 tracks, and a crossfade with its `SetFade`. Cut, copy and paste are
+     not built yet.
+
+     **4,096 stays the target.** It is reached by exact local validation
+     inside a fold, of the touched range ±1 and its crossfades, not deferred
+     to the fold's end, so that "fold == members one by one" holds. A test
+     checks the local verdict against `playlist_problem`'s after every
+     member. The other part is range-local `overwrite()` and
+     `drop_broken_crossfades()` (BACKLOG Track 2 item 8). The limit is
+     raised only to what that measures under 10 ms. A bound on members ×
+     regions was rejected: the same Cut would be accepted on one session
+     and refused on another, and the interface cannot know which.
+
+     **Raising the limit needs a `kProtocolVersion` bump.** The limit is
+     part of what a decoder accepts. A replica built with a lower limit
+     cannot decode a larger compound, and would resync for ever.
+   - **Shuffle.** On a long playlist it would need one `MoveRegion` per
+     later region, which can pass the limit and costs O(*n*²). When
+     Shuffle lands it adds a resolved `ShiftRegions{playlist, from,
+     delta}` operation, used as a member of Shuffle's compound.
+6. **Wire encoding and `kProtocolVersion` 4.** In `common/model`'s op
+   codec, a compound is `{"op": "Compound", "ops": [<member>, ...],
+   "label": "<text>"}`, `label` optional. Each member is encoded exactly
+   as it would be on its own, so the encoding stays canonical and reuses
+   the strict reader. `contracts/api` carries operations as opaque bytes
+   (§2), but the replica cannot apply what it cannot decode, so
+   **`kProtocolVersion` goes from 3 to 4**. A client and an engine that
+   disagree are refused at connect, before any other message, by
+   `version_mismatch()`, naming both versions ("the engine speaks control
+   protocol version 4 and this interface speaks version 3") and telling
+   the operator to install an interface and an engine from the same
+   build. The rule in `messages.h` becomes "bump on any change to a
+   message's encoding, **or a new operation kind the engine may send**",
+   and the version history there gains "4 (ADR-0009 2026-10-14):
+   `Compound`". The conformance suite and `FakeEngine` use the constant
+   and follow it.
+7. **Session file and undo window: unchanged.** Operations are not saved,
+   and the window (`encode_window`) holds states. `kWindowFormat` and
+   `sonora_session` stay as they are.
+8. **The engine.** `engine/control` decodes and applies a compound like
+   any other operation. Wherever the server checks an operation's kind, it
+   checks each member, through the hook of item 2:
+   - a member that would start a plugin host makes the whole compound
+     `NotImplemented` while hosting is off;
+   - a `SetMix` or `SetMonitorBus` member counts as a mix change.
+
+   **A take is never all-or-nothing.** `add_closed_take()` works in this
+   order:
+   1. For each armed track, `source_of()` reads the take's file. A file
+      that does not read is found here, before any operation exists, so
+      it is not a model refusal. Each failed track gets its own notice
+      naming the track and the file.
+   2. One compound is built of the tracks whose file read: each one's
+      `AddSource` and `RecordTake`, in track order, with every id
+      allocated up front (item 2). It is applied once, labelled "Record".
+   3. If `apply()` refuses that compound, which for engine-built members
+      is a model bug, each good track's `AddSource` is applied on its own.
+      That puts the audio in the session's pool, so a save records it and
+      nothing is lost. The engine then says so loudly, as an error and not
+      a side line: the take is on disk and in the pool, but not on the
+      timeline, and the refusal's reason.
+
+   One bad file therefore costs one track, never the take. Today the
+   tracks before the bad one land and the ones after it are dropped, and
+   the notice "take N is on disk but not in the session" is wrong for the
+   tracks that did land. The per-track notices replace it. `FakeEngine`
+   gets the same member checks.
+
+**Consequences.**
+
+- Each UI item listed under Context sends one operation. The client still
+  allocates the ids for every member from `next_id`, under the rule of
+  item 2. The race in the 2026-10-13 update's consequences is unchanged.
+- A refused compound costs the work of the members applied before the
+  refusal. That work is discarded and nothing is published.
+- An interface and an engine from different builds no longer connect
+  (item 6). That is the failure the product prefers to a resync loop.
+- `timeline-model.md` adds `Compound`, with this rule, to its operations
+  table.
+
+**Alternatives rejected.**
+
+- **A history group (`begin_group`/`end_group` in `History`).** It gives
+  one undo step, but N revisions and N updates. Replicas and the plan
+  builder would see every intermediate state. A refusal halfway through
+  would leave the first half applied, and the only way to roll it back
+  would be an undo that also has to be replicated.
+- **The engine resolving each command into its own operation**
+  (`Cut{...}`, `Paste{...}`, `SoloAll{...}`). `apply()` would take on edit
+  modes' logic, and every new edit would need a new operation and codec
+  entry. The compound composes the existing, tested operations. A
+  purpose-built operation is still right where cost demands it
+  (`ShiftRegions`, item 5).
+- **A multi-track `RecordTake` only.** It fixes takes and nothing else on
+  the list.
+- **No `kProtocolVersion` bump.** The encoding of every message is
+  unchanged, but an older interface's decoder refuses `Compound` as "not
+  an operation this version knows". `Replica::receive` drops sync, the
+  client resyncs from the window (which still decodes), and the next
+  compound fails again: a resync loop showing stale state between
+  resyncs. A newer interface on an older engine would have every cut,
+  paste and Alt-click refused one request at a time. Both are worse than
+  one refusal at connect.
+- **An all-or-nothing take.** One bad file would drop all N tracks,
+  whose audio is on disk but referenced by no session and not recorded
+  by a save: a lost take, the worst outcome this product has.
+- **Lowering the member limit as the first remedy for cost.** It would
+  fall below the edits the compound exists for (item 5).
+- **Pre-scanning members against `before` for the engine checks.** It
+  misjudges any member that depends on an earlier one (item 2).
+- **Refusing a compound that mixes edit and mix members.** It would keep
+  each compound in one history, but it splits the mix assistant's plans
+  and new inserts with their starting values into two operations, and so
+  brings back the intermediate state the compound exists to hide (item 4).
 
 ## Alternatives rejected
 
