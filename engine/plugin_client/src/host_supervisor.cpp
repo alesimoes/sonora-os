@@ -81,6 +81,54 @@ void HostProcess::kill() {
     child_->wait(-1);
 }
 
+HostProcess::Startup HostProcess::poll_startup(uint64_t now_ms, std::string& error) {
+    if (startup_ != Startup::Starting) {
+        error = startup_error_;
+        return startup_;
+    }
+    const auto fail = [&](std::string why, bool refused) {
+        kill();
+        startup_ = Startup::Failed;
+        startup_error_ = std::move(why);
+        refused_ = refused;
+        error = startup_error_;
+        return startup_;
+    };
+    const uint32_t n = uint32_t(plugins_.size());
+    std::string name;
+    for (const std::string& p : plugins_) name += (name.empty() ? "" : ",") + p;
+    plugin::ChannelHeader& h = *header_;
+    const plugin::HostState state = plugin::checked_state(h.state.load(std::memory_order_acquire));
+    if (state == plugin::HostState::Refused || state == plugin::HostState::Faulted) {
+        const auto why = static_cast<plugin::Refusal>(h.refusal.load(std::memory_order_relaxed));
+        const int32_t at = plugin::checked_instance(h.refusal_instance.load(std::memory_order_relaxed), n);
+        return fail((at >= 0 ? plugins_[uint32_t(at)] : name) + ": " +
+                        (why <= plugin::Refusal::ParamMismatch ? refusal_text(why) : "refused"),
+                    true);
+    }
+    if (state == plugin::HostState::Ready) {
+        // Contracts/plugin, "Latency": generation (acquire) before the figure.
+        h.latency_generation.load(std::memory_order_acquire);
+        latency_ = plugin::checked_latency(h.latency_frames.load(std::memory_order_relaxed));
+        if (latency_ == plugin::kLatencyInvalid) return fail(name + ": reported an implausible latency", true);
+        last_beat_ = h.heartbeat.load(std::memory_order_relaxed);
+        last_beat_ms_ = now_ms;
+        startup_ = Startup::Ready;
+        return startup_;
+    }
+    if (!running()) return fail(name + ": the host " + exit_text() + " before it was ready", false);
+    if (now_ms > ready_deadline_ms_) {
+        return fail(name + ": not ready within " + std::to_string(ready_timeout_ms_) + " ms", false);
+    }
+    return Startup::Starting;
+}
+
+bool HostProcess::idle() {
+    if (!running() || !header_) return true;
+    return header_->completed_block.load(std::memory_order_acquire) ==
+           header_->submitted_block.load(std::memory_order_acquire);
+}
+
 std::string HostProcess::exit_text() {
     if (!child_) return "never started";
     if (child_->running()) return "still running";
@@ -182,7 +230,7 @@ HostSupervisor::~HostSupervisor() {
     if (!client_.detach_clock()) (void)clock_region_.release();
 }
 
-std::unique_ptr<HostProcess> HostSupervisor::start(const ChainSpec& spec, std::string& error) {
+std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::string& error) {
     const std::string name = join(spec.plugins, ',');
     if (!ok_) {
         error = why_;
@@ -240,44 +288,27 @@ std::unique_ptr<HostProcess> HostSupervisor::start(const ChainSpec& spec, std::s
     o.regions = {{3, host->region_.get(), true}, {4, clock_region_.get(), false}};
     host->child_ = platform::ChildProcess::spawn(argv, o, error);
     if (!host->child_) return nullptr;
+    // Ready within the bound (§5.3), noticed by poll_startup().
+    host->plugins_ = spec.plugins;
+    host->ready_timeout_ms_ = config_.ready_timeout_ms;
+    host->ready_deadline_ms_ = steady_ms() + config_.ready_timeout_ms;
+    return host;
+}
 
-    // Ready within the bound, from done_word and the state word (§5.3).
-    plugin::ChannelHeader& h = *host->header_;
-    const uint64_t deadline = steady_ms() + config_.ready_timeout_ms;
+std::unique_ptr<HostProcess> HostSupervisor::start(const ChainSpec& spec, std::string& error) {
+    std::unique_ptr<HostProcess> host = spawn(spec, error);
+    if (!host) return nullptr;
+    plugin::ChannelHeader& h = host->header();
     for (;;) {
+        // done_word before the look, so a change in between ends the wait.
         const uint32_t seen = h.done_word.load(std::memory_order_acquire);
-        const plugin::HostState state = plugin::checked_state(h.state.load(std::memory_order_acquire));
-        if (state == plugin::HostState::Ready) break;
-        if (state == plugin::HostState::Refused || state == plugin::HostState::Faulted) {
-            const auto why = static_cast<plugin::Refusal>(h.refusal.load(std::memory_order_relaxed));
-            const int32_t at = plugin::checked_instance(h.refusal_instance.load(std::memory_order_relaxed), n);
-            error = (at >= 0 ? spec.plugins[uint32_t(at)] : name) + ": " +
-                    (why <= plugin::Refusal::ParamMismatch ? refusal_text(why) : "refused");
-            host->kill();
-            return nullptr;
-        }
-        if (!host->running()) {
-            error = name + ": the host " + host->exit_text() + " before it was ready";
-            return nullptr;
-        }
-        if (steady_ms() > deadline) {
-            error = name + ": not ready within " + std::to_string(config_.ready_timeout_ms) + " ms";
-            host->kill();
-            return nullptr;
+        switch (host->poll_startup(steady_ms(), error)) {
+            case HostProcess::Startup::Ready: return host;
+            case HostProcess::Startup::Failed: return nullptr;
+            case HostProcess::Startup::Starting: break;
         }
         platform::wait_for_change(h.done_word, seen, 20'000'000);
     }
-    // Contracts/plugin, "Latency": generation (acquire) before the figure.
-    h.latency_generation.load(std::memory_order_acquire);
-    host->latency_ = plugin::checked_latency(h.latency_frames.load(std::memory_order_relaxed));
-    if (host->latency_ == plugin::kLatencyInvalid) {
-        error = name + ": reported an implausible latency";
-        host->kill();
-        return nullptr;
-    }
-    host->last_beat_ = h.heartbeat.load(std::memory_order_relaxed);
-    host->last_beat_ms_ = steady_ms();
-    return host;
 }
 
 // ---- SupervisedChain
@@ -290,25 +321,80 @@ SupervisedChain::~SupervisedChain() {
     // The caller has retired every plan naming either slot. Each slot is
     // retired (a new generation) before its region is released.
     retired();
+    // A host still starting was never bound: no plan names it.
+    if (starting_) starting_->kill();
+    starting_.reset();
     if (slot_ != kNoSlot) sup_.client().retire(slot_);
     if (current_) current_->stop();
     current_.reset();
 }
 
-bool SupervisedChain::start(std::string& error) {
+bool SupervisedChain::begin(std::string& error) {
     const plugin::ParamMap map = plugin::make_param_map(spec_.param_counts.data(), uint32_t(spec_.param_counts.size()));
     std::vector<float> values(map.param_slots, 0.f), bypass(plugin::kMaxInstances, 0.f);
     for (std::size_t i = 0; i < values.size() && i < spec_.values.size(); ++i) values[i] = spec_.values[i];
     for (std::size_t i = 0; i < bypass.size() && i < spec_.bypass.size(); ++i) bypass[i] = spec_.bypass[i];
     sup_.client().reset_store(store_, map, values.data(), bypass.data());
     sup_.client().reset_node(node_);
-    auto host = sup_.start(spec_, error);
-    if (!host) return false;
-    if (!bind(std::move(host))) {
-        error = "no free channel slot";
+    starting_ = sup_.spawn(spec_, error);
+    if (!starting_) {
+        down_ = true;
+        why_ = error;
         return false;
     }
     return true;
+}
+
+bool SupervisedChain::start(std::string& error) {
+    if (!begin(error)) return false;
+    while (starting_) {
+        HostProcess& h = *starting_;
+        const uint32_t seen = h.header().done_word.load(std::memory_order_acquire);
+        const Event e = poll_starting(steady_ms());
+        if (e == Event::Down) {
+            error = why_;
+            return false;
+        }
+        if (e == Event::Swapped) return true;
+        platform::wait_for_change(h.header().done_word, seen, 20'000'000);
+    }
+    return true;
+}
+
+bool SupervisedChain::idle() { return !current_ || current_->idle(); }
+
+SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {
+    std::string error;
+    switch (starting_->poll_startup(now_ms, error)) {
+        case HostProcess::Startup::Starting: return Event::None;
+        case HostProcess::Startup::Failed: {
+            const bool restart = current_ != nullptr;
+            starting_.reset();
+            down_ = true;
+            // A refusal is the plugin's answer, not an accident: it is
+            // reported, never retried.
+            why_ = restart ? join(spec_.plugins, ',') + ": " + why_ + "; the restart failed: " + error : error;
+            return Event::Down;
+        }
+        case HostProcess::Startup::Ready: break;
+    }
+    // Make-before-break: the replaced host's slot stays named by the
+    // playing plan until the caller has swapped and called retired().
+    if (current_) {
+        retiring_ = std::move(current_);
+        retiring_slot_ = slot_;
+    }
+    if (!bind(std::move(starting_))) {
+        starting_.reset();
+        if (retiring_) {
+            current_ = std::move(retiring_);
+            retiring_slot_ = kNoSlot;
+        }
+        down_ = true;
+        why_ = join(spec_.plugins, ',') + ": no free channel slot";
+        return Event::Down;
+    }
+    return Event::Swapped;
 }
 
 bool SupervisedChain::bind(std::unique_ptr<HostProcess> host) {
@@ -338,7 +424,9 @@ InsertChainRef SupervisedChain::node() const {
 uint32_t SupervisedChain::latency_frames() const { return current_ ? current_->latency_frames() : 0; }
 
 SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
-    if (down_ || !current_ || retiring_) return Event::None;
+    if (down_) return Event::None;
+    if (starting_) return poll_starting(now_ms);
+    if (!current_ || retiring_) return Event::None;
     const SlotStatus st = sup_.client().slot_status(slot_);
     // The culprit is sampled here, on the control thread, while a streak
     // runs: current_instance is a control-thread word (auditor L1 on #49).
@@ -367,10 +455,10 @@ SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
     for (uint64_t& n : streak_samples_) n = 0;
     if (culprit_ >= 0 && uint32_t(culprit_) < spec_.plugins.size())
         reason += ", " + spec_.plugins[uint32_t(culprit_)] + " running";
-    return replace(now_ms, reason) ? Event::Swapped : Event::Down;
+    return replace(now_ms, reason);
 }
 
-bool SupervisedChain::replace(uint64_t now_ms, const std::string& reason) {
+SupervisedChain::Event SupervisedChain::replace(uint64_t now_ms, const std::string& reason) {
     // §3 and §4: a removed or hung host is killed; its region stays mapped
     // until the plan naming its slot is retired.
     current_->kill();
@@ -381,31 +469,23 @@ bool SupervisedChain::replace(uint64_t now_ms, const std::string& reason) {
         why_ = join(spec_.plugins, ',') + ": " + reason + "; " + std::to_string(sup_.config().max_restarts) +
                " restarts in " + std::to_string(sup_.config().restart_window_ms / 1000) +
                " s, so the chain stays down (retry, make inactive or remove)";
-        return false;
+        return Event::Down;
     }
     restart_times_.push_back(now_ms);
     ++restarts_total_;
     // Start-new-before-stop-old: the old slot stays in the plan, silent,
     // until the new host is Ready and the caller swaps (§5.3). Parameters
     // come from the store, copied in by the new channel's first submit.
+    // Spawned, not waited for: its Ready is a later poll's Swapped.
     std::string error;
-    auto host = sup_.start(spec_, error);
-    if (!host) {
+    starting_ = sup_.spawn(spec_, error);
+    if (!starting_) {
         down_ = true;
         why_ = join(spec_.plugins, ',') + ": " + reason + "; the restart failed: " + error;
-        return false;
-    }
-    retiring_ = std::move(current_);
-    retiring_slot_ = slot_;
-    if (!bind(std::move(host))) {
-        current_ = std::move(retiring_);
-        retiring_slot_ = kNoSlot;
-        down_ = true;
-        why_ = join(spec_.plugins, ',') + ": no free channel slot for the restart";
-        return false;
+        return Event::Down;
     }
     why_ = reason;
-    return true;
+    return Event::Restarting;
 }
 
 void SupervisedChain::retired() {

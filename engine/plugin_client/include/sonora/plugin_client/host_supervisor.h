@@ -90,6 +90,21 @@ public:
     bool running();
     // Ready and its heartbeat has not moved for heartbeat_timeout_ms.
     bool hung(uint64_t now_ms);
+
+    enum class Startup { Starting, Ready, Failed };
+    // Never waits (code-reviewer L6 on PR #49): one look at the region and
+    // the process. Ready once the host published Ready, with the latency
+    // read through checked_latency. Failed, with `error` naming the plugin
+    // and the reason, when it refused, faulted, exited, reported an
+    // implausible latency or passed ready_timeout_ms; the host is then
+    // killed and reaped. Ready and Failed are final: later calls repeat them.
+    Startup poll_startup(uint64_t now_ms, std::string& error);
+    // Failed because the plugin refused (Refused or Faulted at load or
+    // validation): deterministic, so not worth a restart.
+    bool refused() const { return refused_; }
+    // Every block submitted has been returned (or the host is gone). For
+    // the control thread and harnesses; never the audio thread's question.
+    bool idle();
     // shutdown word, a bounded wait, then SIGKILL; reaps it.
     void stop();
     void kill();
@@ -110,6 +125,13 @@ private:
     uint64_t last_beat_ = 0;
     uint64_t last_beat_ms_ = 0;
     uint64_t heartbeat_timeout_ms_ = 0;
+    // Start-up, for poll_startup().
+    std::vector<std::string> plugins_;
+    uint64_t ready_deadline_ms_ = 0;
+    uint64_t ready_timeout_ms_ = 0;
+    Startup startup_ = Startup::Starting;
+    std::string startup_error_;
+    bool refused_ = false;
 };
 
 class HostSupervisor {
@@ -137,13 +159,17 @@ public:
     uint64_t region_lock_failures() const { return lock_failures_; }
     bool clock_locked() const { return ok_ && !clock_unlocked_; }
 
-    // A host for `spec`, brought to Ready within ready_timeout_ms. BLOCKS
-    // the calling thread for up to that long (10 s): fine for this stub and
-    // its tests, not for the control server's thread. Checklist 5 makes it
-    // asynchronous (start, then Ready noticed from poll) before it runs
-    // there; BACKLOG Track 4 item 4 (code-reviewer L6 on PR #49). Null with
-    // `error` naming the plugin and the reason (refusal, exit code) when it
-    // does not get there.
+    // A host for `spec`, spawned and NOT waited for: its region created,
+    // seeded and locked, the process started. Ready (or the refusal, or the
+    // timeout, ready_timeout_ms from now) is noticed with
+    // HostProcess::poll_startup(). Null with `error` when it cannot even be
+    // spawned. What the control server's thread calls (code-reviewer L6 on
+    // PR #49).
+    std::unique_ptr<HostProcess> spawn(const ChainSpec& spec, std::string& error);
+    // spawn(), then wait for poll_startup() to settle: BLOCKS the caller up
+    // to ready_timeout_ms. For harnesses and tools, never the control
+    // server's thread. Null with `error` naming the plugin and the reason
+    // (refusal, exit code, timeout) when it does not get to Ready.
     std::unique_ptr<HostProcess> start(const ChainSpec& spec, std::string& error);
 
 private:
@@ -162,8 +188,16 @@ class SupervisedChain {
 public:
     enum class Event {
         None,
-        Swapped,   // a new host is bound: put node() in a new plan, then call retired()
-        Down,      // restarts exhausted (3 in 60 s): the path stays silent; why() says so
+        // A host is Ready and bound, the first or a replacement: put node()
+        // in a new plan, then call retired() once the plans naming the old
+        // slot (if any) are retired.
+        Swapped,
+        // The host was killed (exited, hung, removed) and a replacement is
+        // starting; the old slot stays in the plan, silent. why() says why.
+        Restarting,
+        // The first start failed, the plugin was refused, or restarts are
+        // exhausted (3 in 60 s): the path stays silent; why() says so.
+        Down,
     };
 
     SupervisedChain(HostSupervisor& supervisor, ChainSpec spec, uint32_t param_store, uint32_t node_state);
@@ -171,19 +205,33 @@ public:
     SupervisedChain(const SupervisedChain&) = delete;
     SupervisedChain& operator=(const SupervisedChain&) = delete;
 
-    // The first host. Resets the store from spec.values and the node state.
+    // The first host, spawned and not waited for: resets the store from
+    // spec.values and the node state, starts the host, and returns. poll()
+    // reports Swapped when it is Ready and bound, or Down. False, with
+    // `error`, only when the host could not be spawned at all.
+    bool begin(std::string& error);
+    // begin(), then poll() until it settles: BLOCKS up to the Ready bound.
+    // For harnesses, never the control server's thread. False with `error`
+    // (= why()) when the chain went down instead.
     bool start(std::string& error);
+    // A host is spawned and not yet Ready (the first, or a replacement).
+    bool starting() const { return starting_ != nullptr; }
+    // The bound host has returned every block it was given, or there is
+    // none. For harnesses and the control thread (rt-engineer item 5 on
+    // #59), in place of reading the region's header.
+    bool idle();
 
     // What the plan's InsertChain node carries now (§7.1).
     InsertChainRef node() const;
     uint32_t latency_frames() const;
     HostProcess* host() { return current_.get(); }
 
-    // Every 50 ms or so. A host that exited, hung, or whose slot the audio
-    // thread removed after 8 misses is killed, and if the policy allows a
-    // new one is started while the old slot stays in the plan
-    // (make-before-break); Swapped asks the caller to publish a plan with
-    // node(). `now_ms` is a steady clock.
+    // Every 50 ms or so; never waits. A host starting is looked at once
+    // (Swapped when it is Ready and bound, Down when it failed). A bound
+    // host that exited, hung, or whose slot the audio thread removed after
+    // 8 misses is killed, and if the policy allows a replacement is spawned
+    // (Restarting) while the old slot stays in the plan (make-before-break);
+    // its Ready is a later Swapped. `now_ms` is a steady clock.
     Event poll(uint64_t now_ms);
     // The plan that named the previous slot has been retired (ADR-0009
     // §4.1): its host is stopped, its region released, its slot freed.
@@ -199,7 +247,11 @@ public:
     const std::string& why() const { return why_; }
 
 private:
-    bool replace(uint64_t now_ms, const std::string& reason);
+    // Kills the bound host and spawns its replacement into starting_:
+    // Restarting, or Down when the policy or the spawn says no.
+    Event replace(uint64_t now_ms, const std::string& reason);
+    // starting_ looked at once.
+    Event poll_starting(uint64_t now_ms);
     bool bind(std::unique_ptr<HostProcess> host);
 
     HostSupervisor& sup_;
@@ -207,6 +259,7 @@ private:
     uint32_t store_;
     uint32_t node_;
     std::unique_ptr<HostProcess> current_;
+    std::unique_ptr<HostProcess> starting_;
     uint32_t slot_ = kNoSlot;
     uint32_t generation_ = 0;
     std::unique_ptr<HostProcess> retiring_;
