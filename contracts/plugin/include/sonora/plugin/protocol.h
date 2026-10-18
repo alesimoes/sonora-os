@@ -479,9 +479,11 @@ struct ClockHeader {
     // --- the audio thread.
     alignas(kCacheLine) std::atomic<uint32_t> tick;  // +1 per callback that submitted
     uint32_t reserved0;
-    // CLOCK_MONOTONIC at the start of the latest callback, written before
-    // any submit in it. A timestamp the callback already takes is reused;
-    // otherwise it costs a vDSO read only on a tsc clocksource (L2).
+    // CLOCK_MONOTONIC at the start of the server's latest period, as the
+    // backend stamped it (contracts/backend AudioBlock::callback_ns; JACK's
+    // cycle time), written before any submit in that callback. The callback
+    // reads no clock for it (L2). Never 0 once written: an unstamped period
+    // leaves the last stamp (ADR-0012 §1.1).
     std::atomic<uint64_t> callback_ns;
 };
 
@@ -790,7 +792,8 @@ inline bool parse_version_line(const char* line, uint32_t& layout, uint32_t& clo
     return *p == '\0' && have_layout && have_clock;
 }
 
-// Audio thread, at the start of each callback. RT-safe.
+// Audio thread, at the start of each callback, with the period's stamp.
+// RT-safe. The engine does not call it with 0 (an unstamped period).
 inline void publish_callback_start(ClockHeader& c, uint64_t now_ns) noexcept {
     c.callback_ns.store(now_ns, std::memory_order_release);
 }

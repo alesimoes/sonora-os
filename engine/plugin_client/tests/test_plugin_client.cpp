@@ -523,6 +523,69 @@ void the_clock_ticks_only_after_a_submit() {
     CHECK(clock->callback_ns.load() == 5678 && clock->tick.load() == 1);
 }
 
+// #68 RT audit N2: a period the backend could not stamp, with no earlier
+// stamp to carry forward, reaches begin_callback as 0. Published, it would
+// phase every timer-paced host from epoch 0. The clock keeps its last stamp.
+void an_unstamped_callback_publishes_nothing() {
+    Rig rig;
+    alignas(64) unsigned char clock_mem[sizeof(plugin::ClockHeader)] = {};
+    plugin::ClockHeader* clock = plugin::init_clock(clock_mem, 48000, kBlock, plugin::default_wake_mode());
+    rig.client.attach_clock(clock);
+    const uint64_t initial = clock->callback_ns.load();
+    rig.client.begin_callback(0);
+    rig.client.end_callback();
+    CHECK(clock->callback_ns.load() == initial);
+    rig.client.begin_callback(9000);
+    rig.client.end_callback();
+    CHECK(clock->callback_ns.load() == 9000);
+    rig.client.begin_callback(0);
+    rig.client.end_callback();
+    CHECK(clock->callback_ns.load() == 9000);
+    CHECK(rig.client.callbacks() == 3);
+}
+
+// #68 review item 4: a node the session does not run this callback (a
+// callback the runner does not take, a silent slot) fades its last sample
+// out instead of cutting, and the next block collected ramps in, as after
+// a miss. Nothing of the slot is touched and nothing is counted as the
+// host's miss.
+void a_node_not_run_fades_out_and_ramps_back_in() {
+    Rig rig;
+    ScriptedHost host(1, {0});
+    const InsertChainRef r = rig.bind(host, 0, 0, 1, map_of({0}));
+    Mono m;
+    m.constant(0.5f);
+    for (int i = 0; i < 4; ++i) {
+        rig.step(r, m);
+        host.complete();
+    }
+    CHECK(m.out[kBlock - 1] == 0.5f);
+    const SlotStatus before = rig.client.slot_status(r.channel_slot);
+    const uint64_t silent_before = rig.client.node_status(r.node_state).silent_blocks;
+    // Two slices of 96 and 32 frames: the fade continues across them.
+    std::vector<float> a(96, 9.f), b(32, 9.f);
+    float* pa[1] = {a.data()};
+    float* pb[1] = {b.data()};
+    rig.client.fade_node(r.node_state, pa, 1, 96);
+    rig.client.fade_node(r.node_state, pb, 1, 32);
+    for (uint32_t i = 0; i < 128; ++i) {
+        const uint32_t k = i + 1;
+        const float want = k < kFadeFrames ? 0.5f * (float(kFadeFrames - k) / float(kFadeFrames)) : 0.f;
+        CHECK((i < 96 ? a[i] : b[i - 96]) == want);
+    }
+    const SlotStatus after = rig.client.slot_status(r.channel_slot);
+    CHECK(after.misses == before.misses && after.submitted == before.submitted);
+    CHECK(rig.client.node_status(r.node_state).silent_blocks == silent_before + 2);
+    // A node state out of range writes silence and touches nothing.
+    std::vector<float> c(16, 9.f);
+    float* pc[1] = {c.data()};
+    rig.client.fade_node(9999, pc, 1, 16);
+    for (float x : c) CHECK(x == 0.f);
+    // The next block collected comes in from 0.
+    CHECK(rig.step(r, m) == Outcome::Collected);
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(m.out[i] == 0.5f * (float(i) / float(kBlock)));
+}
+
 // Code-reviewer M2 on PR #49: a caller that runs the plan per slice of a
 // split block calls a node twice in one callback. The second call must not
 // see the first's submit as a busy host (8 slices would remove the chain).
@@ -775,6 +838,8 @@ int main() {
     stores_are_addressed_by_the_node_s_index();
     a_callback_of_another_size_submits_nothing();
     the_clock_ticks_only_after_a_submit();
+    an_unstamped_callback_publishes_nothing();
+    a_node_not_run_fades_out_and_ramps_back_in();
     if (failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

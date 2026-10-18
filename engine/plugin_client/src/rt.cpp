@@ -71,7 +71,23 @@ void PluginClient::begin_callback(uint64_t now_ns) noexcept SONORA_RT {
     callbacks_seen_.store(callback_, std::memory_order_relaxed);
     budget_left_ = plugin::kValueCopyBudgetBytes;
     submitted_any_ = false;
-    if (cb_clock_) plugin::publish_callback_start(*cb_clock_, now_ns);
+    // 0 is a period the backend could not stamp with nothing to carry
+    // forward: published, it would phase every timer-paced host from epoch
+    // 0 (#68 RT audit N2). The clock keeps its last stamp instead.
+    if (cb_clock_ && now_ns != 0) plugin::publish_callback_start(*cb_clock_, now_ns);
+}
+
+void PluginClient::fade_node(uint32_t node_state, float* const* out, uint32_t channels,
+                             uint32_t frames) noexcept SONORA_RT {
+    if (frames == 0) return;
+    if (node_state >= config_.max_nodes || channels == 0 || channels > config_.max_chain_channels) {
+        bad_refs_.store(bad_refs_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        silence(out, channels, frames);
+        return;
+    }
+    Node& node = nodes_[node_state];
+    node.silent_blocks.bump();
+    fade_out(node, out, channels, frames);
 }
 
 void PluginClient::end_callback() noexcept SONORA_RT {

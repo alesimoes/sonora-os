@@ -37,6 +37,12 @@ enum class NodeKind : uint8_t {
 // An InsertChain node bound to no host channel: the chain passes its input
 // through. What every chain is until engine/plugin_client binds one.
 constexpr uint32_t kNoChannelSlot = 0xFFFFFFFFu;
+// An InsertChain node that plays silence on purpose, with the latency the
+// builder gave it: a chain that is down, or starting with the session, or
+// with hosting disabled (ADR-0012, amendment of 2026-10-14, item 1 and
+// change A). Kept at its last checked latency, a fault realigns nothing.
+// Never run; the runner's skip() fades it out. Never a real slot index.
+constexpr uint32_t kSilentChannelSlot = 0xFFFFFFFEu;
 // A chain whose parameter store, or fade state, the control thread has not
 // assigned. Explicit, never 0: index 0 is a real store and a real state.
 constexpr uint32_t kNoParamStore = 0xFFFFFFFFu;

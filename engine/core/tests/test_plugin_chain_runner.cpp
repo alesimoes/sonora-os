@@ -139,6 +139,47 @@ int test_unassigned_slot_is_a_miss_and_mono_fills_both_sides() {
 // Parameter events reach the client for a node it is handed (a node with no
 // store drops them there, counted against the node), and are dropped and
 // counted by the runner for a node it keeps from the client.
+// skip(): a node not run gets the client's fade of its node state (no
+// sample was played yet, so silence), counted on the node; a mono node's
+// side 1 is its side 0; a node with no node state, or a silent slot handed
+// to run(), is silence and never reaches a host.
+int test_skip_fades_through_the_client() {
+    pc::PluginClient client(config());
+    PluginChainRunner runner(client);
+    Buffers b;
+    b.scribble();
+    PlanNode n;
+    n.kind = sonora::NodeKind::InsertChain;
+    n.channel_slot = 1;
+    n.node_state = 1;
+    n.channels = 1;
+    runner.skip(n, b.op, kBlock);
+    for (int s = 0; s < 2; ++s)
+        for (float v : b.out[s]) CHECK(v == 0.f);
+    CHECK(client.node_status(1).silent_blocks == 1);
+
+    b.scribble();
+    PlanNode none = n;
+    none.node_state = sonora::kNoNodeState;
+    runner.skip(none, b.op, kBlock);
+    for (int s = 0; s < 2; ++s)
+        for (float v : b.out[s]) CHECK(v == 0.f);
+
+    b.scribble();
+    PlanNode silent = n;
+    silent.channel_slot = sonora::kSilentChannelSlot;
+    const sonora::ChainParamEvent ev[1] = {{0, 0, 0, 1.f}};
+    runner.begin(1);
+    runner.run(silent, b.ip, b.op, kBlock, ev, 1);
+    runner.end();
+    for (int s = 0; s < 2; ++s)
+        for (float v : b.out[s]) CHECK(v == 0.f);
+    CHECK(client.node_status(1).silent_blocks == 2);
+    CHECK(runner.events_dropped() == 1);
+    CHECK(runner.collected() + runner.missed() + runner.removed() == 0);
+    return 0;
+}
+
 int test_events_reach_the_client() {
     pc::PluginClient client(config());
     PluginChainRunner runner(client);
@@ -176,6 +217,7 @@ int main() {
     if (test_wider_than_stereo_is_silence()) return 1;
     if (test_unassigned_slot_is_a_miss_and_mono_fills_both_sides()) return 1;
     if (test_events_reach_the_client()) return 1;
+    if (test_skip_fades_through_the_client()) return 1;
     std::puts("plugin_chain_runner: ok");
     return 0;
 }

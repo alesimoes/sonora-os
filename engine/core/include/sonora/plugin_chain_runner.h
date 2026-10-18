@@ -57,6 +57,7 @@ public:
     void run(const PlanNode& node, const float* const in[2], float* const out[2], uint32_t frames,
              const ChainParamEvent* events, uint32_t event_count) noexcept SONORA_RT override;
     void end() noexcept SONORA_RT override;
+    void skip(const PlanNode& node, float* const out[2], uint32_t frames) noexcept SONORA_RT override;
     uint32_t block_frames() const noexcept SONORA_RT override { return client_.config().block_frames; }
 
     // Counters for the control thread, monotonic. One per node run.

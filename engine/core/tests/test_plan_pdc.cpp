@@ -74,6 +74,12 @@ public:
     }
 
     uint32_t block_frames() const noexcept SONORA_RT override { return 0; }
+    // A node not run: silence (the real runner fades; plugin_client tests it).
+    void skip(const PlanNode&, float* const out[2], uint32_t frames) noexcept SONORA_RT override {
+        for (uint32_t i = 0; i < frames; ++i) out[0][i] = out[1][i] = 0.0f;
+        ++skips;
+    }
+    long skips = 0;
 
     void run(const PlanNode& node, const float* const in[2], float* const out[2], uint32_t frames,
              const sonora::ChainParamEvent*, uint32_t) noexcept SONORA_RT override {

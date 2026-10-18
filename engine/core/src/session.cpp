@@ -141,6 +141,18 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
 
     // Every track with a chain: the largest graph a plan can have.
     scratch_buffers_ = graph_nodes(tracks, tracks);
+    // The store-to-node index (#68 RT audit N1). A plan has at most one
+    // InsertChain node per track.
+    max_param_stores_ = pb.max_param_stores;
+    max_order_ = tracks;
+    store_order_.reset(new uint32_t[max_param_stores_ + 1]);
+    for (uint32_t s = 0; s <= max_param_stores_; ++s) store_order_[s] = kNoNode;
+    node_order_.reset(new uint32_t[scratch_buffers_ + 1]);
+    for (uint32_t n = 0; n <= scratch_buffers_; ++n) node_order_[n] = kNoNode;
+    order_store_.reset(new uint32_t[max_order_ + 1]());
+    order_first_.reset(new uint32_t[max_order_ + 1]());
+    order_count_.reset(new uint32_t[max_order_ + 1]());
+    order_pos_.reset(new uint32_t[max_order_ + 1]());
     scratch_.reset(new float[static_cast<std::size_t>(scratch_buffers_) * 2 * max_block_]());
     track_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
     delay_len_ = pb.max_delay_frames ? pb.max_delay_frames + 1 : 0;
@@ -206,7 +218,7 @@ bool Session::post_locate(uint64_t frame) {
 bool Session::post_plugin_param(uint32_t store, uint32_t instance, uint32_t param, float value) {
     // A NaN would reach the store, every later submit and the host's
     // table; the plan never names kNoParamStore.
-    if (store == kNoParamStore || !std::isfinite(value)) return false;
+    if (store >= max_param_stores_ || !std::isfinite(value)) return false;
     RtCommand c{};
     c.kind = RtCommand::Kind::PluginParam;
     c.store = store;
@@ -488,6 +500,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         seen_epoch_ = plan->epoch;
         reseek_ = true;
         plan_valid_ = plan_in_bounds(*plan);
+        adopt_param_order(*plan);
     }
     ++callbacks_;
 
@@ -531,8 +544,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     last_callback_ns_ = callback_ns;
     last_nframes_ = nframes;
     runner_ = nullptr;
+    skip_runner_ = nullptr;
     if (plan_valid_ && plan->last_insert_node != kNoNode && nframes > 0) {
         InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
+        skip_runner_ = r;
         // A runner with a fixed block runs only callbacks of that size
         // (contracts/plugin: every block is block_frames); in any other
         // period its bound chains play silence, counted, until
@@ -547,10 +562,17 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     // Every parameter change posted before this callback, at most the
     // ring's capacity: what a producer adds meanwhile waits for the next.
-    // The InsertChain nodes take theirs in mix(); what none takes is
-    // dropped below, never carried to a later plan.
-    params_count_ = static_cast<uint32_t>(
-        param_commands_->read(params_.get(), param_commands_->capacity()));
+    // Drained only in a callback whose chains run (RT re-audit of #60's
+    // merge): a zero-frame callback, one of another size or a plan with no
+    // chain leaves them queued for the next that runs, where nothing would
+    // re-seed a change dropped here. Sorted by node; what no node of this
+    // plan runs is dropped, counted, never carried to a later plan.
+    params_count_ = 0;
+    if (runner_ != nullptr) {
+        params_count_ = static_cast<uint32_t>(
+            param_commands_->read(params_.get(), param_commands_->capacity()));
+    }
+    gather_params();
 
     // Meter every input, armed or not, so the UI shows signal before anyone
     // hits record.
@@ -608,15 +630,6 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     bus_applied_ = bus_target_;
 
-    // A taken change is marked None in mix(); the rest had no node.
-    uint32_t untaken = 0;
-    for (uint32_t i = 0; i < params_count_; ++i) {
-        if (params_[i].kind == RtCommand::Kind::PluginParam) ++untaken;
-    }
-    if (untaken != 0) {
-        params_dropped_.store(params_dropped_.load(std::memory_order_relaxed) + untaken,
-                              std::memory_order_relaxed);
-    }
     params_count_ = 0;
 
     if (rolling) transport_->advance(nframes);
@@ -675,6 +688,63 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
     }
 }
 
+void Session::adopt_param_order(const PlaybackPlan& plan) noexcept SONORA_RT {
+    // The previous plan's entries only: O(chains), never the whole table.
+    for (uint32_t o = 0; o < order_chains_; ++o) store_order_[order_store_[o]] = kNoNode;
+    order_chains_ = 0;
+    if (!plan_valid_) return;
+    for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
+        const PlanNode& node = plan.nodes[ni];
+        node_order_[ni] = kNoNode;
+        // Only a node the runner can run takes changes: unbound and silent
+        // chains drop theirs, as does a second node naming the same store
+        // (a plan the builder never makes).
+        if (node.kind != NodeKind::InsertChain || node.channel_slot == kNoChannelSlot ||
+            node.channel_slot == kSilentChannelSlot || node.param_store >= max_param_stores_ ||
+            store_order_[node.param_store] != kNoNode || order_chains_ >= max_order_) {
+            continue;
+        }
+        store_order_[node.param_store] = order_chains_;
+        order_store_[order_chains_] = node.param_store;
+        node_order_[ni] = order_chains_++;
+    }
+}
+
+void Session::gather_params() noexcept SONORA_RT {
+    uint32_t dropped = 0;
+    for (uint32_t o = 0; o < order_chains_; ++o) order_count_[o] = 0;
+    if (runner_ == nullptr) {
+        // Nothing was drained (process()): the changes wait in the ring.
+        dropped = 0;
+    } else {
+        for (uint32_t i = 0; i < params_count_; ++i) {
+            const uint32_t s = params_[i].store;
+            const uint32_t o = s < max_param_stores_ ? store_order_[s] : kNoNode;
+            if (o == kNoNode) {
+                ++dropped;
+            } else {
+                ++order_count_[o];
+            }
+        }
+        uint32_t at = 0;
+        for (uint32_t o = 0; o < order_chains_; ++o) {
+            order_first_[o] = at;
+            order_pos_[o] = at;
+            at += order_count_[o];
+        }
+        // Stable: each node's changes keep the order they were posted in.
+        for (uint32_t i = 0; i < params_count_; ++i) {
+            const RtCommand& c = params_[i];
+            const uint32_t o = c.store < max_param_stores_ ? store_order_[c.store] : kNoNode;
+            if (o != kNoNode) node_params_[order_pos_[o]++] = ChainParamEvent{c.instance, c.param, 0, c.value};
+        }
+    }
+    if (dropped != 0) {
+        params_dropped_.store(params_dropped_.load(std::memory_order_relaxed) + dropped,
+                              std::memory_order_relaxed);
+    }
+}
+
 void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
                   uint32_t n, bool rolling, bool recording, uint64_t from) noexcept SONORA_RT {
     // A backend buffer holds whatever its last cycle left; HardwareOut
@@ -712,34 +782,34 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 // edges into the bus.
                 const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
                 const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
-                if (runner_ != nullptr && node.channel_slot != kNoChannelSlot) {
+                const bool silent = node.channel_slot == kSilentChannelSlot;
+                if (runner_ != nullptr && node.channel_slot != kNoChannelSlot && !silent) {
                     // runner_ is set only for a callback mixed whole, so
-                    // this runs once per node per callback and each change
-                    // is handed once, to the first node naming its store.
-                    uint32_t k = 0;
-                    for (uint32_t i = 0; i < params_count_; ++i) {
-                        RtCommand& c = params_[i];
-                        if (c.kind != RtCommand::Kind::PluginParam || c.store != node.param_store) {
-                            continue;
-                        }
-                        node_params_[k++] = ChainParamEvent{c.instance, c.param, 0, c.value};
-                        c.kind = RtCommand::Kind::None;
-                    }
-                    runner_->run(node, in, out, n, k != 0 ? node_params_.get() : nullptr, k);
+                    // this runs once per node per callback, with the
+                    // changes gather_params() sorted to it.
+                    const uint32_t o = node_order_[ni];
+                    const uint32_t k = o < order_chains_ ? order_count_[o] : 0;
+                    runner_->run(node, in, out, n, k != 0 ? node_params_.get() + order_first_[o] : nullptr, k);
                 } else if (node.channel_slot == kNoChannelSlot) {
                     // Unbound: laid out with latency 0, so dry is aligned.
                     std::memcpy(L, in[0], n * sizeof(float));
                     std::memcpy(R, in[1], n * sizeof(float));
                 } else {
-                    // Bound, but not run this callback (no runner, or a
-                    // callback the runner does not take): the plan delays
-                    // every other path by this chain's latency, so dry
-                    // would reach the bus that much early (PR #59
-                    // re-review). Silence, as for a miss (ADR-0012 §3).
-                    std::memset(L, 0, n * sizeof(float));
-                    std::memset(R, 0, n * sizeof(float));
-                    unrun_chain_blocks_.store(unrun_chain_blocks_.load(std::memory_order_relaxed) + 1,
-                                              std::memory_order_relaxed);
+                    // Laid out silent, or bound but not run this callback
+                    // (no runner, a callback the runner does not take): the
+                    // plan delays every other path by this chain's latency,
+                    // so dry would reach the bus that much early (PR #59
+                    // re-review). Silence, as for a miss (ADR-0012 §3),
+                    // faded by the runner from the node's last sample when
+                    // there is one (#68 review item 4).
+                    if (skip_runner_ != nullptr) {
+                        skip_runner_->skip(node, out, n);
+                    } else {
+                        std::memset(L, 0, n * sizeof(float));
+                        std::memset(R, 0, n * sizeof(float));
+                    }
+                    std::atomic<uint64_t>& c = silent ? silent_chain_blocks_ : unrun_chain_blocks_;
+                    c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
                 }
                 if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
                 continue;

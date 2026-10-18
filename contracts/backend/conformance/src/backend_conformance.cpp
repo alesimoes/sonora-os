@@ -61,6 +61,31 @@ public:
                 bump(callback_ns_decreases_);
             }
             last_callback_ns_.store(b.callback_ns, std::memory_order_relaxed);
+            // Against this process's own steady_clock, read here, in the
+            // period itself (#68 review item 1): the stamp is the period's
+            // start, so it is never ahead of the read and lags it by less
+            // than a few periods. A server on another clock (CLOCK_MONOTONIC_RAW
+            // drifts by NTP slew; CLOCK_REALTIME is decades off) shows here.
+            const auto read = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                        std::chrono::steady_clock::now().time_since_epoch())
+                                                        .count());
+            if (b.callback_ns > read) {
+                // A server's cycle time is an estimate (JACK's DLL) and a
+                // conversion between clocks carries its sampling error, so
+                // a stamp may sit a little after the read; past 1 ms it is
+                // another clock.
+                const uint64_t ahead = b.callback_ns - read;
+                if (ahead > worst_ahead_ns_.load(std::memory_order_relaxed)) {
+                    worst_ahead_ns_.store(ahead, std::memory_order_relaxed);
+                }
+                if (ahead > kMaxAheadNs) bump(callback_ns_ahead_);
+            } else {
+                const uint64_t lag = read - b.callback_ns;
+                if (calls - 1 < kLagsKept) lags_[calls - 1] = lag;
+                if (lag > worst_lag_ns_.load(std::memory_order_relaxed)) {
+                    worst_lag_ns_.store(lag, std::memory_order_relaxed);
+                }
+            }
         }
         calls_.store(calls, std::memory_order_release);
     }
@@ -78,6 +103,13 @@ public:
     uint32_t callback_ns_zero() const { return get(callback_ns_zero_); }
     uint32_t callback_ns_decreases() const { return get(callback_ns_decreases_); }
     uint64_t last_callback_ns() const { return last_callback_ns_.load(std::memory_order_relaxed); }
+    uint32_t callback_ns_ahead() const { return get(callback_ns_ahead_); }
+    uint64_t worst_lag_ns() const { return worst_lag_ns_.load(std::memory_order_relaxed); }
+    uint64_t worst_ahead_ns() const { return worst_ahead_ns_.load(std::memory_order_relaxed); }
+    static constexpr uint64_t kMaxAheadNs = 1'000'000;
+    // Each period's lag, for the first kLagsKept, read after deactivate().
+    static constexpr uint64_t kLagsKept = 256;
+    uint64_t lag(uint64_t call) const { return call < kLagsKept ? lags_[call] : 0; }
 
 private:
     static void bump(std::atomic<uint32_t>& a) noexcept SONORA_RT {
@@ -101,6 +133,10 @@ private:
     std::atomic<uint32_t> callback_ns_zero_{0};
     std::atomic<uint32_t> callback_ns_decreases_{0};
     std::atomic<uint64_t> last_callback_ns_{0};
+    std::atomic<uint32_t> callback_ns_ahead_{0};
+    std::atomic<uint64_t> worst_lag_ns_{0};
+    std::atomic<uint64_t> worst_ahead_ns_{0};
+    uint64_t lags_[kLagsKept] = {};
     // Audio thread only.
     uint64_t last_time_ = 0;
     uint32_t last_nframes_ = 0;
@@ -239,30 +275,43 @@ std::string frame_time_never_decreases(Rig& rig) {
 }
 
 // callback_ns is the period's start on the engine's own CLOCK_MONOTONIC
-// (steady_clock): set every period, never decreasing, and close to what this
-// process reads when the periods are over. A server whose time base is
-// another clock (CLOCK_MONOTONIC_RAW drifts; CLOCK_REALTIME is decades off)
-// fails here, and the plugin hosts paced on it would wake at the wrong time
-// (ADR-0012 §1.3).
+// (steady_clock), never decreasing. Checked per period against steady_clock
+// read inside process(): ahead of it by no more than 1 ms (a server's cycle
+// time is an estimate, and a clock conversion has its sampling error), and
+// behind it by less than four periods plus 5 ms of scheduling. A callback later than that would itself
+// be an xrun; a server on another clock fails at once (CLOCK_REALTIME) or
+// as its drift grows past a few periods (CLOCK_MONOTONIC_RAW), where the
+// plugin hosts paced on it would already wake off (ADR-0012 §1.3).
+// The contract lets a backend send 0 for a period it could not stamp: an
+// occasional one is allowed, at most one period in 16 (#68 review item 1).
 std::string callback_ns_is_the_monotonic_clock(Rig& rig) {
     Fixture f(rig, 2, 2);
     std::string error;
     if (!f.start(rig, usable_device(rig), error)) return "start: " + error;
     if (!wait_calls(rig, f, 64)) return "no periods reached process()";
     f.b->deactivate();
-    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                               std::chrono::steady_clock::now().time_since_epoch())
-                                               .count());
-    if (f.rec.callback_ns_zero() != 0) {
-        return n(f.rec.callback_ns_zero()) + " periods of " + n(f.rec.calls()) + " had no callback_ns";
+    const uint64_t calls = f.rec.calls();
+    if (uint64_t{f.rec.callback_ns_zero()} * 16 > calls) {
+        return n(f.rec.callback_ns_zero()) + " periods of " + n(calls) + " had no callback_ns";
     }
+    if (f.rec.last_callback_ns() == 0) return "no period was stamped";
     if (f.rec.callback_ns_decreases() != 0) return n(f.rec.callback_ns_decreases()) + " decreases of callback_ns";
-    const uint64_t last = f.rec.last_callback_ns();
-    // The last period started before now, and not long before: the polls
-    // above take at most seconds.
-    if (last > now || now - last > 10'000'000'000ull) {
-        return "the last callback_ns is " + n(last) + ", steady_clock reads " + n(now) +
-               ": not the same clock";
+    if (f.rec.callback_ns_ahead() != 0) {
+        return n(f.rec.callback_ns_ahead()) + " stamps more than 1 ms ahead of steady_clock read in the same period (worst " +
+               n(f.rec.worst_ahead_ns()) + " ns): not the same clock";
+    }
+    const uint64_t period_ns = uint64_t{f.rec.first_nframes()} * 1'000'000'000ull / rig.rate();
+    const uint64_t bound = 4 * period_ns + 5'000'000;
+    if (f.rec.worst_lag_ns() > bound) {
+        std::string where;
+        uint64_t over = 0;
+        for (uint64_t c = 0; c < calls && c < Recorder::kLagsKept; ++c) {
+            if (f.rec.lag(c) <= bound) continue;
+            if (++over <= 8) where += " #" + n(c) + "=" + n(f.rec.lag(c) / 1000) + "us";
+        }
+        return "a stamp lagged steady_clock read in its own period by " + n(f.rec.worst_lag_ns()) +
+               " ns, over the " + n(bound) + " ns bound, in " + n(over) + " of the first " +
+               n(std::min<uint64_t>(calls, Recorder::kLagsKept)) + " periods:" + where;
     }
     return "";
 }

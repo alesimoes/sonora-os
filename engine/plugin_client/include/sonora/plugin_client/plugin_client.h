@@ -193,8 +193,9 @@ public:
 
     // ---- audio thread
 
-    // `now_ns`: CLOCK_MONOTONIC at the callback's start, a timestamp the
-    // callback already takes (ADR-0012 §1.1, auditor L2).
+    // `now_ns`: CLOCK_MONOTONIC at the server period's start, as the
+    // backend stamped it (AudioBlock::callback_ns; ADR-0012 §1.1, auditor
+    // L2). 0 (no stamp) is not published: the clock keeps its last one.
     void begin_callback(uint64_t now_ns) noexcept SONORA_RT;
     // One InsertChain node (ADR-0012 §7.2 steps 0-2). `in` and `out` have
     // node.channels planes of `frames`; `in[c]` may be null (silence).
@@ -219,6 +220,16 @@ public:
     // §7.2 step 3: one tick if anything was submitted, and the wake only
     // behind kHostWakeEnabled.
     void end_callback() noexcept SONORA_RT;
+    // A node the session does not run in this callback, or this slice of
+    // it (a callback the runner does not take, a chain laid out silent):
+    // `out` gets the §3 fade of the node's last sample, then silence, and
+    // the next block collected ramps in, as after a miss. No slot is read
+    // or written and no miss is counted; silent_blocks counts it. Outside
+    // begin_callback/end_callback is fine, and so is more than once per
+    // callback (the fade carries over slices). A node state out of range
+    // is silence, counted with the bad references.
+    void fade_node(uint32_t node_state, float* const* out, uint32_t channels,
+                   uint32_t frames) noexcept SONORA_RT;
 
     struct Slot;
     struct Store;

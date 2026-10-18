@@ -320,6 +320,47 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              runner stays stateless. ctest `plugin_params`,
              `plugin_chain_runner`, `session_plugins_params` (eg-amp's gain
              and its bypass, each from the callback after the post).
+       Carried from the #68 reviews (RT audit, code review), done in the
+       RT follow-ups PR (`feature/plugin-rt-followups`):
+       - [x] N1, gather cost: a store-to-node index built when the audio
+             thread adopts a plan (`PlaybackConfig::max_param_stores`), and
+             one counting pass per callback: O(ring + nodes), posted order
+             kept per node. ctest `plugin_params`
+             `gather_many_nodes_full_ring` (8 chains, scrambled stores, a
+             full ring).
+       - [x] N2: `PluginClient::begin_callback(0)` publishes nothing, so an
+             unstamped first period never phases the hosts from epoch 0
+             (ctest `plugin_client` `an_unstamped_callback_publishes_nothing`).
+       - [x] Conformance: `callback_ns` checked per period against
+             `steady_clock` read inside `process()` (never ahead, behind by
+             under 4 periods + 5 ms), and the contract's occasional 0
+             allowed (at most 1 period in 16).
+       - [x] A chain not run fades out and ramps back in:
+             `InsertChainRunner::skip` / `PluginClient::fade_node` (the §3
+             fade of the node's last sample; the next collect ramps in).
+             ctest `plugin_client` `a_node_not_run_fades_out_and_ramps_back_in`,
+             `plugin_chain_runner` `skip_fades_through_the_client`,
+             `plugin_params` `runner_block_size_gates_the_callback`.
+       - [x] `kSilentChannelSlot` (ADR-0012 amendment of 2026-10-14, item 1,
+             change A): laid out with its latency, never run, faded by
+             `skip`, its changes dropped and counted; `silent_chain_blocks`.
+             ctest `plugin_params` `silent_slot_keeps_its_latency`.
+       - [x] RT re-audit of #60's merge: the parameter ring is drained only
+             in a callback whose chains run; a zero-frame callback, one of
+             another size, a split one or a plan with no chain leaves the
+             changes queued for the next, instead of dropping what nothing
+             re-seeds. ctest `plugin_params`
+             `zero_frame_callback_keeps_changes`, `unrouted`,
+             `runner_block_size_gates_the_callback`.
+       - [ ] Re-post or reseed when `plugin_params_dropped()` moves (a store
+             no runnable node names), and coalesce-and-retry a refused post
+             (ring full, including while no chain runs): the control-server
+             PR.
+       - [ ] After a callback the runner did not take, the next collect
+             plays the host's block from before the skipped callback (one
+             period late, ramped in): the client's callback count does not
+             move on a skipped callback. Rare (period mismatch, a cleared
+             runner); a listening check decides whether it needs more.
        - [ ] `PluginFault` from the client, not the runner (rt-engineer
              item 2): the control thread polls `slot_status(slot)` and
              `removed(slot)` for the slots the resolver assigned, so a

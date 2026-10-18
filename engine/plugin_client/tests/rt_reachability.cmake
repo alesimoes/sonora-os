@@ -110,11 +110,12 @@ list(LENGTH RT_OBJECTS n_objects)
 if(n_objects EQUAL 0)
   message(FATAL_ERROR "RT_OBJECTS is empty")
 endif()
-# Beyond the C memory functions and wake_all: PluginClient's three
-# audio-thread entry points, whose bodies are in rt.cpp's object and held to
+# Beyond the C memory functions and wake_all: PluginClient's four
+# audio-thread entry points (fade_node: a node the session does not run,
+# #68 review item 4), whose bodies are in rt.cpp's object and held to
 # this same list (checked below, not assumed), and the RTTI vtables a polymorphic class's typeinfo names
 # (PluginChainRunner : InsertChainRunner). Those are data, never called.
-set(client_entry "^sonora::plugin_client::PluginClient::(begin_callback|process_chain|end_callback)\\(")
+set(client_entry "^sonora::plugin_client::PluginClient::(begin_callback|process_chain|end_callback|fade_node)\\(")
 foreach(obj IN LISTS RT_OBJECTS)
   check_allowed(${obj} "the audio thread"
                 "^memcpy$" "^memset$" "^memmove$" "^sonora::platform::wake_all\\("

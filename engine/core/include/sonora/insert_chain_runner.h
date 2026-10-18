@@ -86,6 +86,13 @@ public:
                      uint32_t event_count) noexcept SONORA_RT = 0;
     // After the last InsertChain node (§7.2 step 3: the hosts' tick).
     virtual void end() noexcept SONORA_RT = 0;
+    // A bound node the session does not run this callback, or this slice
+    // of it: a callback the runner does not take, or a chain laid out at
+    // kSilentChannelSlot. `out` gets silence, faded from the node's last
+    // sample rather than cut, so the next block run ramps back in (#68
+    // review item 4). Outside begin/end, possibly more than once per
+    // callback (slices). Nothing of a host is touched.
+    virtual void skip(const PlanNode& node, float* const out[2], uint32_t frames) noexcept SONORA_RT = 0;
     // The one callback size this runner takes, or 0 for any up to
     // PlaybackConfig::max_block_frames. A callback of another size calls
     // none of begin, run and end: its bound chains play silence, counted in
