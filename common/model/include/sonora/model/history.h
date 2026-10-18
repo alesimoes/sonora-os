@@ -52,9 +52,10 @@ public:
 
     const Snapshot& current() const { return current_; }
 
-    // Applies through model::apply(). An undoable operation discards any
-    // redo steps, pushes a step and may evict the oldest.
-    bool apply(const Operation& op, std::string& error);
+    // Applies through model::apply(), `check` included. An undoable
+    // operation discards any redo steps, pushes a step and may evict the
+    // oldest; a compound pushes at most one.
+    bool apply(const Operation& op, std::string& error, const MemberCheck& check = {});
 
     bool can_undo() const { return pos_ > 0; }
     bool can_redo() const { return pos_ + 1 < steps_.size(); }

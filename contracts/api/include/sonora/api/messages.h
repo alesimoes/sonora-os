@@ -23,14 +23,18 @@
 
 namespace sonora::api {
 
-// Bump on any change to a message's encoding. A client and an engine that
-// disagree refuse each other at connect, by name, with both numbers.
+// Bump on any change to a message's encoding, or a new operation kind the
+// engine may send: a replica cannot apply what it cannot decode, and would
+// resync for ever. A client and an engine that disagree refuse each other
+// at connect, by name, with both numbers.
 // 2 (M7): ModelAction::Load.
 // 3 (ADR-0012 §8): PluginParameterChange, PluginCatalog,
 //   EventKind::PluginFault, EngineEvent::insert,
 //   ModelAction::FlushPluginState; insert operations ride ModelRequest as
 //   before.
-constexpr uint32_t kProtocolVersion = 3;
+// 4 (ADR-0009 update 2026-10-14): Compound, in common/model's op codec. No
+//   message's encoding changes.
+constexpr uint32_t kProtocolVersion = 4;
 
 // --- client -> engine -------------------------------------------------------
 

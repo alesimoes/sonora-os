@@ -190,6 +190,14 @@ int check_version_mismatch(Rig& rig) {
             EXPECT(mentions(error, std::to_string(kProtocolVersion + 1).c_str()) &&
                        mentions(error, "protocol"),
                    "the refusal does not name the versions");
+            // An engine from before the last bump: a version-3 engine sends
+            // no Compound, but a version-4 interface would send it one.
+            error.clear();
+            auto older = rig_.make(kProtocolVersion - 1, kStateLayoutVersion);
+            EXPECT(!older->connect(error), "an older protocol was accepted");
+            EXPECT(mentions(error, std::to_string(kProtocolVersion - 1).c_str()) &&
+                       mentions(error, std::to_string(kProtocolVersion).c_str()),
+                   "the refusal of an older engine does not name both versions");
             error.clear();
             auto layout = rig_.make(kProtocolVersion, kStateLayoutVersion + 1);
             EXPECT(!layout->connect(error), "another state layout was accepted");
@@ -467,6 +475,73 @@ int check_parameters(Rig& rig) {
         }
     };
     return C(rig, "parameter changes").go();
+}
+
+// ADR-0009 update 2026-10-14: several operations as one. One reply, one
+// update, one undo step; a member refused halfway refuses the whole of it,
+// naming the member, and sends nothing.
+int check_compound(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            const model::Id track = before.edit->tracks[0]->id;
+            const std::string name = before.edit->tracks[0]->name;
+
+            model::Compound c;
+            c.label = "Paste";
+            c.ops = {model::AddMarker{model::Marker{before.next_id, 4800, "A", 0}},
+                     model::AddMarker{model::Marker{before.next_id + 1, 9600, "B", 0}},
+                     model::SetTrackName{track, "Lead"}};
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            EXPECT(model::encode_operation(model::Operation{c}, m.op, error), error);
+            const std::size_t updates = s.inbox.model.size();
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "a valid compound was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() == updates + 1; }),
+                   "no update for the compound: " + s.replica_error);
+            EXPECT(s.inbox.model.back().kind == ModelUpdateKind::Op, "not one Op update");
+            EXPECT(s.replica.current().revision == before.revision + 1,
+                   "a compound is not one revision");
+            EXPECT(s.replica.current().edit->markers->markers.size() == 2 &&
+                       s.replica.current().edit->tracks[0]->name == "Lead",
+                   "the replica does not hold every member");
+
+            // One undo takes the whole of it back.
+            m.action = ModelAction::Undo;
+            m.op.clear();
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "undo failed");
+            EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() == updates + 2; }),
+                   "no update for the undo");
+            EXPECT(s.replica.current().edit->markers->markers.empty() &&
+                       s.replica.current().edit->tracks[0]->name == name,
+                   "one undo did not take the compound back");
+
+            // Refused at its second member: nothing applied, nothing sent.
+            const model::Snapshot here = s.replica.current();
+            model::Compound bad;
+            bad.ops = {model::SetTrackName{track, "Half"}, model::RemoveMarker{999999}};
+            m.action = ModelAction::Apply;
+            EXPECT(model::encode_operation(model::Operation{bad}, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
+                   "a compound with a bad member was accepted");
+            EXPECT(mentions(r.message, "operation 2 of 2 (RemoveMarker)"),
+                   "the refusal does not name the member");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(s.inbox.model.size() == updates + 2, "a refused compound sent an update");
+            EXPECT(s.replica.current() == here, "a refused compound changed the replica");
+            return ok();
+        }
+    };
+    return C(rig, "compound operations").go();
 }
 
 int check_model(Rig& rig) {
@@ -1136,6 +1211,7 @@ int run(Rig& rig) {
     failures += check_play(rig);
     failures += check_parameters(rig);
     failures += check_model(rig);
+    failures += check_compound(rig);
     failures += check_load(rig);
     failures += check_inserts(rig);
     failures += check_plugin_faults(rig);

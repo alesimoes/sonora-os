@@ -131,9 +131,9 @@ void History::prune_insert_values() {
                  values.end());
 }
 
-bool History::apply(const Operation& op, std::string& error) {
+bool History::apply(const Operation& op, std::string& error, const MemberCheck& check) {
     Snapshot next;
-    if (!model::apply(current_, op, next, error)) return false;
+    if (!model::apply(current_, op, next, error, check)) return false;
     const bool undoable = is_undoable(op);
     current_ = std::move(next);
     if (undoable) push(current_.edit, current_.revision);

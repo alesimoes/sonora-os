@@ -121,7 +121,8 @@ std::vector<Operation> one_of_each() {
             ReplaceInsert{30, 31, vst3, {{"7", 0.5f}}, std::nullopt},
             SetInsertBypass{30, true},
             SetInsertParams{30, {{"gain", 1.5f}, {"mix", 0.25f}}},
-            SetInsertState{30, state}};
+            SetInsertState{30, state},
+            Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
 bool same_op(const Operation& a, const Operation& b) {

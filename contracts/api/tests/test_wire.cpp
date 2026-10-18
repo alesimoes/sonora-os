@@ -210,6 +210,25 @@ void version_check() {
     std::string error;
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
+
+    // Compound (ADR-0009 update 2026-10-14) is version 4. A version-3
+    // interface reads this engine's Hello and refuses it at connect, naming
+    // both numbers, before an operation it cannot decode can reach it. Its
+    // check is this function with its own constants, passed here.
+    CHECK(kProtocolVersion == 4);
+    Hello engine;
+    engine.protocol_version = kProtocolVersion;
+    engine.state_layout_version = kStateLayoutVersion;
+    wire::encode(engine, bytes);
+    CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
+    const std::string v3 = wire::version_mismatch(pv, lv, 3, kStateLayoutVersion);
+    CHECK(mentions(v3, "the engine speaks control protocol version 4 and this interface "
+                       "speaks version 3"));
+    CHECK(mentions(v3, "same build"));
+    // And this interface refuses a version-3 engine the same way.
+    CHECK(mentions(wire::version_mismatch(3, kStateLayoutVersion),
+                   "the engine speaks control protocol version 3 and this interface "
+                   "speaks version 4"));
 }
 
 void domains() {

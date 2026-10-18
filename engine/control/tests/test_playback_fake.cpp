@@ -144,9 +144,10 @@ int test_record_then_play_back() {
         CHECK(c.run("track.toggle_arm", 0));
 
         // The take is in the document every client replicates: its source
-        // and its region, one update each.
+        // and its region, as one compound and so one update (ADR-0009
+        // update 2026-10-14).
         std::size_t ops = 0;
-        for (int i = 0; i < 500 && ops < 2; ++i) {
+        for (int i = 0; i < 500 && ops < 1; ++i) {
             engine.poll(c.inbox);
             ops = 0;
             for (const auto& m : c.inbox.model) {
@@ -154,7 +155,7 @@ int test_record_then_play_back() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        CHECK(ops == 2);
+        CHECK(ops == 1);
 
         CHECK(c.run("transport.return_to_zero"));
         CHECK(c.run("transport.play"));
@@ -441,7 +442,7 @@ int test_toggle_play_stops_a_take() {
         CHECK(take_shown(take + 1));
 
         std::size_t ops = 0;
-        for (int i = 0; i < 500 && ops < 2; ++i) {
+        for (int i = 0; i < 500 && ops < 1; ++i) {
             engine.poll(c.inbox);
             ops = 0;
             for (const auto& m : c.inbox.model) {
@@ -449,7 +450,7 @@ int test_toggle_play_stops_a_take() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        CHECK(ops == 2);
+        CHECK(ops == 1);  // the take, as one compound
 
         engine.shutdown();
         audio.deactivate();

@@ -9,9 +9,9 @@ namespace sonora {
 
 namespace {
 
-// The file as a source with the next free id, its numbers read from disk.
+// The file as a source with id `id`, its numbers read from disk.
 bool source_of(const model::Document& document, const std::string& session_dir,
-               const std::string& relative_path, uint16_t track_channels,
+               const std::string& relative_path, uint16_t track_channels, model::Id id,
                model::Source& out, std::string& error) {
     WavReader file;
     if (!file.open(session_dir + "/" + relative_path, error)) return false;
@@ -33,7 +33,7 @@ bool source_of(const model::Document& document, const std::string& session_dir,
         return false;
     }
     out = model::Source{};
-    out.id = document.current().next_id;
+    out.id = id;
     out.path = relative_path;
     out.channels = file.channels();
     out.length = file.frames();
@@ -118,7 +118,8 @@ bool place_file(model::Document& document, const std::string& session_dir,
     const model::TrackEdit* t = track_at(document, track, error);
     if (!t) return false;
     model::AddSource src;
-    if (!source_of(document, session_dir, relative_path, t->channels, src.source, error)) {
+    if (!source_of(document, session_dir, relative_path, t->channels,
+                   document.current().next_id, src.source, error)) {
         return false;
     }
     src.source.kind = model::SourceKind::Imported;
@@ -136,10 +137,18 @@ bool place_file(model::Document& document, const std::string& session_dir,
     return apply(document, place, updates, error);
 }
 
-bool add_closed_take(model::Document& document, const Session& session, int take,
-                     std::vector<model::ReplicationUpdate>& updates, std::string& error) {
+ClosedTake add_closed_take(model::Document& document, const Session& session, int take) {
+    ClosedTake out;
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
+    const std::string which = "take " + std::to_string(take);
+
+    // Every file is read before any operation exists, so a file that does
+    // not read costs its own track and is not a refusal of the take.
+    // Three ids per track, reserved whether or not the overwrite splits.
+    std::vector<model::AddSource> sources;
+    std::vector<model::RecordTake> records;
+    model::Id next = document.current().next_id;
     for (std::size_t i = 0; i < session.tracks().size(); ++i) {
         // writer() has no const overload; nothing here changes the track.
         Track& engine_track = *session.tracks()[i];
@@ -150,27 +159,55 @@ bool add_closed_take(model::Document& document, const Session& session, int take
         if (path.compare(0, prefix.size(), prefix) != 0) continue;
         const std::string relative = path.substr(prefix.size());
 
-        const model::TrackEdit* t = track_at(document, i, error);
-        if (!t) return false;
+        std::string why;
+        const model::TrackEdit* t = track_at(document, i, why);
         model::AddSource src;
-        if (!source_of(document, dir, relative, t->channels, src.source, error)) return false;
+        if (t == nullptr || !source_of(document, dir, relative, t->channels, next, src.source,
+                                       why)) {
+            out.track_notices.push_back(
+                which + " on " + (t != nullptr ? t->name : engine_track.name()) +
+                " is on disk but not in the session: " + why);
+            continue;
+        }
         src.source.kind = model::SourceKind::Recorded;
         src.source.take = take;
         src.source.recorded_on_track = t->id;
-        // Copied before the document moves on: `t` belongs to the old state.
-        const model::Id track_id = t->id;
-        const model::Id playlist = t->active_playlist;
-        const uint16_t channels = t->channels;
-        if (!apply(document, src, updates, error)) return false;
-
         model::RecordTake rec;
-        rec.track = track_id;
-        rec.playlist = playlist;
-        rec.region = region_of(src.source, document.current().next_id, stem(relative), channels);
-        rec.split_right_id = rec.region.id + 1;
-        if (!apply(document, rec, updates, error)) return false;
+        rec.track = t->id;
+        rec.playlist = t->active_playlist;
+        rec.region = region_of(src.source, next + 1, stem(relative), t->channels);
+        rec.split_right_id = next + 2;
+        next += 3;
+        sources.push_back(std::move(src));
+        records.push_back(std::move(rec));
     }
-    return true;
+    if (sources.empty()) return out;
+
+    model::Compound c;
+    c.label = "Record";
+    for (std::size_t k = 0; k < sources.size(); ++k) {
+        c.ops.push_back(sources[k]);
+        c.ops.push_back(records[k]);
+    }
+    std::string why;
+    model::ReplicationUpdate u;
+    if (document.apply(model::Operation{std::move(c)}, u, why)) {
+        out.updates.push_back(std::move(u));
+        return out;
+    }
+
+    // The engine built these operations, so a refusal is a bug in one of
+    // them or in the model. The audio must not be lost to it: into the pool
+    // it goes, where a save records it, and the operator is told.
+    out.refused = which + " is on disk and in the session's audio, but not on the timeline: " +
+                  why;
+    for (model::AddSource& src : sources) {
+        std::string error;
+        if (!apply(document, src, out.updates, error)) {
+            out.refused += "; and " + src.source.path + " could not be added either: " + error;
+        }
+    }
+    return out;
 }
 
 }  // namespace sonora

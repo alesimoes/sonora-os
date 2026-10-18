@@ -88,6 +88,18 @@ playback can follow edits; it is in flight.
 5. [ ] Solo safe in `TrackMix` (session format, op codec, plan builder: a
        solo-safe track is never implicitly muted). The Mix window refuses
        Ctrl-click on solo by name until it exists (`feature/ui-mixer-monitor`).
+6. [ ] The mix and plug-in undo history, separate from edit undo (owner
+       decision of 2026-10-14, ADR-0009 update 2026-10-14 item 4): `SetMix`,
+       `SetInsertBypass`, `SetInsertParams`, and a compound's mix members as
+       one step. Until it exists those make no undo step.
+7. [x] Compound operations (ADR-0009 update 2026-10-14):
+       `feature/compound-op`.
+       - [ ] Its cost on long playlists. Each member re-validates its whole
+             playlist: measured 0.65 to 1.2 s for 4,096 members on 2,000
+             regions, against the 10 ms threshold (the numbers are in
+             ADR-0009). The remedy is to re-validate only around what a
+             member changed; or else to bound the work (members × regions)
+             rather than the member count. rt-engineer review to decide.
 
 ### Track 3: UI (ui-engineer)
 
@@ -101,16 +113,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] A crossfade keeps the fade it hides at that end, so clearing the
              crossfade brings it back, and it still takes room from the
              other end (the interface clamps and refuses against it, naming
-             it). Pro Tools drops it: crossfade plus SetFade 0 needs the
-             compound operation below.
+             it). Pro Tools drops it: crossfade plus SetFade 0, sent as one
+             `Compound` (Track 2 item 7).
        - [ ] common/model does not refuse a crossfade that overlaps the
              region's own fade at its other end (the engine multiplies
              them). The interface refuses it; the model should too, in
              `playlist_problem`, so no other client can write one.
-       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle need several model
-             operations as one undo step: a compound operation in
-             common/model (or the engine resolving the command, ADR-0009)
-             comes first.
+       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle: each one
+             `Compound` with a label ("Cut", "Paste"), now in common/model
+             (Track 2 item 7). Shuffle on a long playlist needs a
+             `ShiftRegions` operation first (ADR-0009 update 2026-10-14,
+             item 5).
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain
@@ -122,9 +135,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              and session and is dropped, with the reason, if either goes
              before release; every new document resends the engine's gains;
              live-parameter Ok replies no longer clear the status line.
-       - [ ] Alt-click on solo or mute is one SetMix per track, so one undo
-             step per track; it should be one compound undo step (needs a
-             compound op or a history group in `common/model`).
+       - [ ] Alt-click on solo or mute is one SetMix per track: N revisions
+             and no undo step, since mix state is not edit-undoable. It
+             should be one `Compound` (Track 2 item 7): one update, no
+             edit-undo step, and one mix-undo step once that history exists
+             (Track 2 item 6).
        - [ ] Solo safe: Track 2 item 5. Solo modes (latch, X-OR,
              momentary) and stereo pan wait for those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.
@@ -704,11 +719,11 @@ Order and owners are in ADR-0008 §5.
       Note (`ci/rtsan-jack`, 2026-10-14): on PipeWire 1.4's dummy driver
       in a container, SIGSTOP of the engine for 0.2 s mid-take gave
       xruns=0; jackd2 gave 2 for the same on an upstream client.
-- [ ] A take on N tracks is one undo step: a multi-track `RecordTake` (one
-      operation carrying every track's region), as Pro Tools' one undo
-      removes the whole take. Today `add_closed_take()` applies one
-      `RecordTake` per track, N undo steps. A `common/model` contract
-      change (op codec, replication). rt-engineer with ui-engineer.
+- [x] A take on N tracks is one undo step: `add_closed_take()` applies the
+      take as one `Compound` labelled "Record" (ADR-0009 update 2026-10-14,
+      item 8). A track whose file does not read costs that track, with its
+      own notice; a model refusal still puts the audio in the pool and is
+      shown as a failed take. `feature/compound-op`.
 - [ ] The end of a fader gesture written into the document as `SetMix`.
       Today a `ParameterChange` moves the Track atomic only, so the session
       file and every replica keep the old gain, and the next mix-changing

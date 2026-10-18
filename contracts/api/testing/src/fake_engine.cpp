@@ -79,7 +79,7 @@ std::string hostable(const std::vector<PluginInfo>& catalog, const model::Plugin
 // Empty when the operation is not an insert operation or can be hosted;
 // apply() names whatever else is wrong with it.
 std::string insert_refusal(const model::Snapshot& s, const std::vector<PluginInfo>& catalog,
-                           const model::Operation& op) {
+                           const model::Member& op) {
     if (const auto* a = std::get_if<model::AddInsert>(&op)) {
         const model::TrackEdit* t = track_by_id(s, a->track);
         return t == nullptr ? std::string() : hostable(catalog, a->plugin, t->channels);
@@ -726,9 +726,12 @@ void FakeEngine::handle(const std::string& bytes) {
             case ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
-                why = insert_refusal(document_->current(), cfg_.plugins, op);
-                if (!why.empty()) break;
-                ok = document_->apply(op, u, why);
+                // Per member, on the state the members before it made, as
+                // engine/control asks (ADR-0009 update 2026-10-14).
+                ok = document_->apply(op, u, why,
+                                      [&](const model::Snapshot& at, const model::Member& member) {
+                                          return insert_refusal(at, cfg_.plugins, member);
+                                      });
                 break;
             }
             case ModelAction::Undo: ok = document_->undo(u, why); break;

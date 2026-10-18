@@ -7,7 +7,9 @@
 // apply the same operations reach equal snapshots.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <variant>
@@ -235,7 +237,9 @@ struct SetInsertState {
     std::optional<StateRef> state;
 };
 
-using Operation =
+// Every operation but Compound: what a compound holds. The type, not a
+// runtime check, keeps a compound out of a compound.
+using Member =
     std::variant<AddSource, SetMix, SetMonitorBus, SetSettings, AddTrack,
                  PlaceRegion, RecordTake, MoveRegion, TrimRegion, SplitRegion,
                  RemoveRegion, SetFade, SetCrossfade, RemoveCrossfade,
@@ -244,15 +248,64 @@ using Operation =
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState>;
 
-// Whether applying the operation makes an undo step. The non-undoable ones
-// leave Snapshot::edit untouched.
+// ADR-0009 update 2026-10-14: about 200 members per track on 18 tracks.
+// The decoder and apply() both refuse more.
+constexpr std::size_t kMaxCompoundMembers = 4096;
+
+// Several operations as one: each member applied to what the members before
+// it made, all refused if one is, one revision and one update. It makes one
+// edit-undo step if any member is edit-undoable, and none otherwise.
+// Whoever builds one gives its members strictly increasing ids from
+// next_id, reserving every conditional id (split_right_id) whether or not
+// it is used.
+struct Compound {
+    std::vector<Member> ops;
+    // What the Edit menu and the undo history show ("Undo Paste"). Display
+    // only: apply() ignores it. Empty means none.
+    std::string label;
+};
+
+// The same alternatives as Member, at the same indices, then Compound.
+using Operation =
+    std::variant<AddSource, SetMix, SetMonitorBus, SetSettings, AddTrack,
+                 PlaceRegion, RecordTake, MoveRegion, TrimRegion, SplitRegion,
+                 RemoveRegion, SetFade, SetCrossfade, RemoveCrossfade,
+                 AddPlaylist, SetActivePlaylist, AddMarker, MoveMarker,
+                 RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
+                 RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
+                 SetInsertBypass, SetInsertParams, SetInsertState, Compound>;
+
+static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
+              "Operation is Member's alternatives and Compound");
+
+Operation to_operation(const Member& m);
+// False, leaving `out` alone, for a Compound.
+bool to_member(Operation op, Member& out);
+
+// Whether applying the operation makes an edit-undo step. The ones that do
+// not leave Snapshot::edit untouched. A compound makes one if any member
+// would. Mix and plug-in values make none: their own undo history is
+// BACKLOG Track 2 item 6.
 bool is_undoable(const Operation& op);
+bool member_is_undoable(const Member& m);
+
+// An engine's own refusal of a member, asked before the member is applied,
+// with the state the members before it made: whether a plugin can be
+// hosted, say, which depends on a track an earlier member added. Empty
+// accepts. It must not keep `at`: apply() edits in place what only the
+// state it is building holds.
+using MemberCheck = std::function<std::string(const Snapshot& at, const Member& member)>;
 
 // The pure function. On success `after` is the new snapshot, sharing every
 // unchanged part with `before`, with revision + 1. On failure `after` is
 // untouched and `error` says why; `before` is never modified either way.
 // A result always satisfies check_invariants().
+//
+// A compound fails as a whole, naming the member counted from 1:
+// "operation 4 of 36 (RecordTake): <the member's reason>". `check`, if set,
+// is asked before each member (or before a single operation, whose refusal
+// is then `error` as it stands).
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,
-           std::string& error);
+           std::string& error, const MemberCheck& check = {});
 
 }  // namespace sonora::model

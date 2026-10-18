@@ -85,7 +85,7 @@ static_assert(api::kInsertSlots == model::kInsertSlots,
 const char* const kNoHosting =
     "plugin hosting is not in this engine yet (engine/plugin_client, ADR-0012 checklist 4)";
 
-bool starts_a_host(const model::Operation& op) {
+bool starts_a_host(const model::Member& op) {
     return std::holds_alternative<model::AddInsert>(op) ||
            std::holds_alternative<model::ReplaceInsert>(op);
 }
@@ -246,18 +246,27 @@ void EngineControlServer::follow_transport() {
     if (!recording && was_recording_) {
         // stop() joined the disk thread: the files are closed and their
         // lengths final.
-        std::vector<model::ReplicationUpdate> updates;
-        std::string why;
-        const bool ok = add_closed_take(*document_, session_, recording_take_, updates, why);
-        for (const auto& u : updates) send_update(u);
-        if (!ok) {
+        const ClosedTake closed = add_closed_take(*document_, session_, recording_take_);
+        for (const auto& u : closed.updates) send_update(u);
+        for (const std::string& notice : closed.track_notices) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
-            e.text = "take " + std::to_string(recording_take_) +
-                     " is on disk but not in the session: " + why;
+            e.text = notice;
             post_event(e);
         }
-        if (!updates.empty()) show_document(false);
+        if (!closed.refused.empty()) {
+            // An error, not a side line: shown as a failed take, until a
+            // later take records cleanly, as a take that stopped writing is.
+            failed_take_ = recording_take_;
+            take_failed_shown_ = true;
+            publisher_->set_health(api::kHealthTakeFailed, true);
+            api::EngineEvent e;
+            e.kind = api::EventKind::TakeFailed;
+            e.frame = static_cast<uint64_t>(recording_take_);
+            e.text = closed.refused;
+            post_event(e);
+        }
+        if (!closed.updates.empty()) show_document(false);
     }
     was_recording_ = recording;
 }
@@ -794,16 +803,25 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
-                if (starts_a_host(op)) {
-                    refusal = DispatchResult::NotImplemented;
-                    why = kNoHosting;
-                    break;
-                }
-                // Even one that leaves the document as it was: it ends a
-                // ride whose last ParameterChange need not be its value.
-                mix_changed = std::holds_alternative<model::SetMix>(op) ||
-                              std::holds_alternative<model::SetMonitorBus>(op);
-                ok = document_->apply(op, u, why);
+                // Asked of each member of a compound with the state the
+                // members before it made (ADR-0009 update 2026-10-14).
+                bool no_host = false;
+                const model::MemberCheck check = [&](const model::Snapshot&,
+                                                     const model::Member& member) {
+                    if (starts_a_host(member)) {
+                        no_host = true;
+                        return std::string(kNoHosting);
+                    }
+                    // Even one that leaves the document as it was: it ends a
+                    // ride whose last ParameterChange need not be its value.
+                    if (std::holds_alternative<model::SetMix>(member) ||
+                        std::holds_alternative<model::SetMonitorBus>(member)) {
+                        mix_changed = true;
+                    }
+                    return std::string();
+                };
+                ok = document_->apply(op, u, why, check);
+                if (!ok && no_host) refusal = DispatchResult::NotImplemented;
                 break;
             }
             case api::ModelAction::Undo: ok = document_->undo(u, why); break;

@@ -40,13 +40,14 @@ bool Document::apply(std::string_view op_bytes, ReplicationUpdate& out, std::str
     return apply(op, out, error);
 }
 
-bool Document::apply(const Operation& op, ReplicationUpdate& out, std::string& error) {
+bool Document::apply(const Operation& op, ReplicationUpdate& out, std::string& error,
+                     const MemberCheck& check) {
     // Encoded before it is applied, so a value the codec cannot carry (a NaN
     // gain) is refused rather than applied here and lost on the way to the
     // replicas.
     std::string bytes;
     if (!encode_operation(op, bytes, error)) return false;
-    if (!history_.apply(op, error)) return false;
+    if (!history_.apply(op, error, check)) return false;
     out = ReplicationUpdate{};
     out.kind = ReplicationUpdate::Kind::Op;
     out.revision = history_.current().revision;

@@ -423,6 +423,16 @@ struct Encoder {
         v.set("state", state_value(o.state));
         return v;
     }
+    // Each member exactly as it would be alone; no label key when there is
+    // none, so the encoding stays canonical.
+    Value operator()(const Compound& o) const {
+        Value v = with_kind("Compound");
+        Value ops = Value::array();
+        for (const Member& m : o.ops) ops.push(std::visit(*this, m));
+        v.set("ops", std::move(ops));
+        if (!o.label.empty()) v.set("label", Value::string(o.label));
+        return v;
+    }
 };
 
 // --- reading ----------------------------------------------------------------
@@ -760,6 +770,8 @@ bool read_insert_mix_value(Reader& rd, const Value& v, const std::string& p, Ins
            read_params(rd, v, p, m.params) && read_state(rd, v, p, m.state);
 }
 
+bool decode_compound(Reader& rd, const Value& v, Operation& out);
+
 bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation& out) {
     if (kind == "AddSource") {
         AddSource o;
@@ -977,9 +989,52 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "Compound") {
+        return decode_compound(rd, v, out);
     } else {
-        return rd.fail("op", "\"" + kind + "\" is not an operation this version knows");
+        return rd.fail("", "\"" + kind + "\" is not an operation this version knows");
     }
+    return true;
+}
+
+// Members are refused by their JSON path, counted from 0 ("ops[3]: ..."),
+// as the file and every other path in this codec count.
+bool decode_compound(Reader& rd, const Value& v, Operation& out) {
+    const bool labelled = v.is_object() && v.find("label") != nullptr;
+    if (!(labelled ? rd.keys(v, "", {"op", "ops", "label"}) : rd.keys(v, "", {"op", "ops"}))) {
+        return false;
+    }
+    const Value* ops = nullptr;
+    if (!rd.array(v, "", "ops", ops)) return false;
+    const std::size_t n = ops->items().size();
+    if (n == 0) return rd.fail("ops", "a compound needs at least one operation; it is empty");
+    if (n > kMaxCompoundMembers) {
+        return rd.fail("ops", "at most " + std::to_string(kMaxCompoundMembers) +
+                                  " operations in a compound; this one has " +
+                                  std::to_string(n));
+    }
+    Compound c;
+    c.ops.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Value& item = ops->items()[i];
+        const std::string path = "ops[" + std::to_string(i) + "]";
+        const Value* kind = item.is_object() ? item.find("op") : nullptr;
+        if (kind == nullptr || !kind->is_string()) {
+            return rd.fail(path, "must be an object whose \"op\" names the operation");
+        }
+        if (kind->text() == "Compound") return rd.fail(path, "a compound cannot hold a compound");
+        std::string why;
+        Reader member_reader(why);
+        Operation op;
+        if (!decode_value(member_reader, item, kind->text(), op)) return rd.fail(path, why);
+        c.ops.emplace_back();
+        to_member(std::move(op), c.ops.back());
+    }
+    if (labelled) {
+        if (!rd.text(v, "", "label", c.label)) return false;
+        if (c.label.empty()) return rd.fail("label", "must not be empty; leave it out instead");
+    }
+    out = std::move(c);
     return true;
 }
 
@@ -1389,19 +1444,35 @@ bool decode_operation(std::string_view bytes, Operation& out, std::string& error
     return true;
 }
 
-const char* operation_name(const Operation& op) {
-    static const char* const kNames[] = {
-        "AddSource",    "SetMix",       "SetMonitorBus",   "SetSettings",
-        "AddTrack",     "PlaceRegion",  "RecordTake",      "MoveRegion",
-        "TrimRegion",   "SplitRegion",  "RemoveRegion",    "SetFade",
-        "SetCrossfade", "RemoveCrossfade", "AddPlaylist",  "SetActivePlaylist",
-        "AddMarker",    "MoveMarker",   "RemoveMarker",    "SetTrackName",
-        "ReorderTracks", "AddInsert",   "RemoveInsert",    "MoveInsert",
-        "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
-        "SetInsertState"};
-    static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
-                  "a name for every operation");
-    return kNames[op.index()];
+namespace {
+
+const char* const kNames[] = {
+    "AddSource",    "SetMix",       "SetMonitorBus",   "SetSettings",
+    "AddTrack",     "PlaceRegion",  "RecordTake",      "MoveRegion",
+    "TrimRegion",   "SplitRegion",  "RemoveRegion",    "SetFade",
+    "SetCrossfade", "RemoveCrossfade", "AddPlaylist",  "SetActivePlaylist",
+    "AddMarker",    "MoveMarker",   "RemoveMarker",    "SetTrackName",
+    "ReorderTracks", "AddInsert",   "RemoveInsert",    "MoveInsert",
+    "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
+    "SetInsertState", "Compound"};
+static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
+              "a name for every operation");
+
+}  // namespace
+
+const char* operation_name(const Operation& op) { return kNames[op.index()]; }
+
+// Member's alternatives are Operation's, at the same indices.
+const char* member_name(const Member& m) { return kNames[m.index()]; }
+
+std::string display_name(const Operation& op) {
+    const auto* c = std::get_if<Compound>(&op);
+    if (c == nullptr) return operation_name(op);
+    if (!c->label.empty()) return c->label;
+    for (const Member& m : c->ops) {
+        if (member_is_undoable(m)) return member_name(m);
+    }
+    return c->ops.empty() ? "Compound" : member_name(c->ops.front());
 }
 
 }  // namespace sonora::model
