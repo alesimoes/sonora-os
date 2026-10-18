@@ -110,6 +110,16 @@ playback can follow edits; it is in flight.
 5. [ ] Solo safe in `TrackMix` (session format, op codec, plan builder: a
        solo-safe track is never implicitly muted). The Mix window refuses
        Ctrl-click on solo by name until it exists (`feature/ui-mixer-monitor`).
+6. [ ] Mix and plug-in undo history, separate from the edit undo (owner
+       decision 2026-10-14, recorded in ADR-0009's 2026-10-14 update, item
+       4): `SetMix` (fader, pan, mute, solo), `SetInsertBypass` and
+       `SetInsertParams` each make a step there, and a compound's mix
+       members make one step together. Edit Ctrl+Z and the edit undo table
+       are unchanged. Needs its own design first: what a step stores and
+       restores, its bound, whether it replicates, how a step whose insert
+       or track was removed by edit undo is shown or skipped, whether
+       `SetMonitorBus` belongs in it, and its key binding. Not part of the
+       compound-operation implementation.
 
 ### Track 3: UI (ui-engineer)
 
