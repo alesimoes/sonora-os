@@ -142,6 +142,7 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     channels_ = channels;
     frames_written_ = 0;
     patch_time_reference_ = false;
+    folder_synced_ = false;
     failure_.clear();
     failed_.store(false, std::memory_order_release);
     if (!write_header(sample_rate, channels, time_reference)) {
@@ -241,21 +242,13 @@ bool WavWriter::write(const float* interleaved, std::size_t frames) {
     return true;
 }
 
-bool WavWriter::close() {
-    if (!file_) return true;
-    const uint64_t data_bytes = frames_written_ * bytes_per_frame();
-    // RIFF chunks start on even offsets, so odd-sized data is followed by a
-    // zero byte that the data chunk's size does not count but the RIFF size
-    // does. Mono 24-bit with an odd frame count is the case that needs it.
-    const uint64_t pad = data_bytes % 2;
-    // write() keeps this within riff_size_limit_, which is at most 2^32 - 1,
-    // so neither cast below can wrap.
-    const uint64_t riff_bytes = kRiffOverhead + data_bytes + pad;
-
-    if (pad && !failed()) {
-        std::fseek(file_, 0, SEEK_END);
-        std::fputc(0, file_);
-    }
+void WavWriter::patch_sizes(uint64_t riff_bytes, uint64_t data_bytes) {
+    // write() keeps both within riff_size_limit_, at most 2^32 - 1, so
+    // neither cast wraps. The data size first: a kill -9 between the two
+    // writes then leaves a RIFF size no larger than the data, which
+    // recover_take() takes for unfinished and corrects. The other order
+    // would leave one larger, which it takes for a chunk appended to a
+    // closed take, and leaves alone.
     std::fseek(file_, data_size_offset_, SEEK_SET);
     put_u32(file_, static_cast<uint32_t>(data_bytes));
     std::fseek(file_, riff_size_offset_, SEEK_SET);
@@ -265,6 +258,62 @@ bool WavWriter::close() {
         put_u32(file_, static_cast<uint32_t>(time_reference_ & 0xFFFFFFFFu));
         put_u32(file_, static_cast<uint32_t>(time_reference_ >> 32));
     }
+}
+
+bool WavWriter::checkpoint() {
+    if (!file_ || failed()) return false;
+    const uint64_t data_bytes = frames_written_ * bytes_per_frame();
+    patch_sizes(kRiffOverhead + data_bytes, data_bytes);
+    // The next write() appends; it must not land on the header.
+    std::fseek(file_, 0, SEEK_END);
+    if (std::ferror(file_) != 0) {
+        fail(std::strerror(errno));
+        return false;
+    }
+    // One sync for the header and the audio together. Under a power cut
+    // mid-sync the header may reach the medium without all the audio it
+    // counts; recover_take() then reports the file short, and nothing is
+    // invented. For kill -9 the page cache holds both, in order.
+    if (!(sync_ ? sync_ : &platform::sync_data)(file_)) {
+        // Linux clears the error a failed fdatasync reports, so a retry
+        // would succeed without the data: the take is lost from here.
+        if (errno != ENOSYS) {
+            fail(std::strerror(errno));
+            return false;
+        }
+    }
+    if (!folder_synced_) {
+        const std::filesystem::path folder = std::filesystem::path(path_).parent_path();
+        // Retried at the next checkpoint if it fails: the file's data is
+        // safe meanwhile, only its name is not yet.
+        folder_synced_ = platform::sync_directory(folder.empty() ? "." : folder.string());
+    }
+    return true;
+}
+
+bool WavWriter::flush() {
+    if (!file_ || failed()) return false;
+    if (std::fflush(file_) != 0) {
+        fail(std::strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool WavWriter::close() {
+    if (!file_) return true;
+    const uint64_t data_bytes = frames_written_ * bytes_per_frame();
+    // RIFF chunks start on even offsets, so odd-sized data is followed by a
+    // zero byte that the data chunk's size does not count but the RIFF size
+    // does. Mono 24-bit with an odd frame count is the case that needs it.
+    const uint64_t pad = data_bytes % 2;
+    const uint64_t riff_bytes = kRiffOverhead + data_bytes + pad;
+
+    if (pad && !failed()) {
+        std::fseek(file_, 0, SEEK_END);
+        std::fputc(0, file_);
+    }
+    patch_sizes(riff_bytes, data_bytes);
 
     bool ok = std::ferror(file_) == 0;
     ok = std::fclose(file_) == 0 && ok;

@@ -32,6 +32,7 @@
 #include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
 #include "sonora/memory_lock.h"
+#include "sonora/platform/file.h"
 #include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
 #include "sonora/quit_signals.h"
@@ -282,17 +283,22 @@ int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProces
     // A clock step puts no hole in the audio, so it is reported rather than
     // failed: the take's timestamps after it do not follow on from before.
     // A playback miss is a hole in what was heard during the take.
+    // checkpoint_ms is the longest the rings waited on one take's sync, the
+    // figure the ring's depth must cover (session-format.md, "Crash
+    // recovery"); last, so the fields before it parse as they always have.
     const uint64_t misses = session.playback_misses();
     const uint64_t dropped = session.dropped_samples();
     std::printf("RESULT files=%d connected=%d frames=%llu requested=%llu"
                 " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u misses=%llu"
-                " dropped=%llu\n",
+                " dropped=%llu checkpoints=%u checkpoint_ms=%.1f\n",
                 files, connected,
                 static_cast<unsigned long long>(frames_on_disk),
                 static_cast<unsigned long long>(target),
                 audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns,
                 static_cast<unsigned long long>(misses),
-                static_cast<unsigned long long>(dropped));
+                static_cast<unsigned long long>(dropped),
+                static_cast<unsigned>(session.disk().checkpoints()),
+                static_cast<double>(session.disk().longest_checkpoint_ns()) / 1e6);
 
     if (files == 0) {
         std::fprintf(stderr, "sonora: no audio was written.\n");
@@ -581,6 +587,34 @@ int main(int argc, char** argv) {
                      cfg.dir.c_str());
         return 1;
     }
+    // Before recovery: a second engine on the folder would treat the first
+    // one's open takes as unfinished and cut the frame being written. Held
+    // until the process exits. The control socket does not cover this:
+    // --record opens none, and --socket can name another.
+    sonora::platform::FolderLock session_lock;
+    {
+        std::string err;
+        switch (session_lock.acquire(cfg.dir, err)) {
+            case sonora::platform::FolderLock::Result::Held:
+                break;
+            case sonora::platform::FolderLock::Result::Busy:
+                std::fprintf(stderr,
+                             "sonora: %s; one session takes one engine. Stop the other"
+                             " engine first.\n",
+                             err.c_str());
+                return 1;
+            case sonora::platform::FolderLock::Result::Failed:
+                std::fprintf(stderr, "sonora: %s\n", err.c_str());
+                return 1;
+        }
+    }
+    // Before anything records: a take an earlier engine died recording
+    // (kill -9, a crash, power) gets the length that reached the disk.
+    const std::vector<std::string> recovered =
+        sonora::recover_unclosed_takes(cfg.dir, cfg.sample_rate);
+    for (const std::string& line : recovered) {
+        std::fprintf(stderr, "sonora: %s\n", line.c_str());
+    }
 
     // Declared after the session, so it is destroyed first: its destructor
     // deactivates, and the callback never outlives what it calls into.
@@ -800,6 +834,12 @@ int main(int argc, char** argv) {
         e.text = onboard_notice;
         server.post_event(e);
     }
+    for (const std::string& line : recovered) {
+        sonora::api::EngineEvent e;
+        e.kind = sonora::api::EventKind::Notice;
+        e.text = line;
+        server.post_event(e);
+    }
     server.start();
     sonora::ControlSocketServer sockets(server, *state, std::move(listener));
     sockets.start();
@@ -875,6 +915,13 @@ int main(int argc, char** argv) {
     // stop() says on stderr why a take failed, and the terminal is already
     // the operator's again.
     const bool take_ok = session.stop();
+    // To the journal on the appliance: where the sync's cost on the stick
+    // is measured while the operator records.
+    if (session.disk().checkpoints() > 0) {
+        std::printf("sonora: longest checkpoint %.1f ms over %u checkpoint passes\n",
+                    static_cast<double>(session.disk().longest_checkpoint_ns()) / 1e6,
+                    static_cast<unsigned>(session.disk().checkpoints()));
+    }
     sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
     audio->deactivate();
     server.after_deactivate();
