@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "sonora/api/messages.h"
+#include "sonora/api/state_block.h"
 
 namespace sonora::api::wire {
 
@@ -95,8 +96,12 @@ bool decode_hello_versions(std::string_view bytes, uint32_t& protocol_version,
                            uint32_t& state_layout_version, std::string& error);
 
 // The client's half of the version check, in words an operator can act on.
-// Empty when the versions match.
-std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_version);
+// Empty when the versions match. The first two are the engine's Hello's; the
+// last two are this client's, and only a test of what an older client
+// would say passes them.
+std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_version,
+                             uint32_t client_protocol_version = kProtocolVersion,
+                             uint32_t client_state_layout_version = kStateLayoutVersion);
 
 // --- frames ------------------------------------------------------------------
 //

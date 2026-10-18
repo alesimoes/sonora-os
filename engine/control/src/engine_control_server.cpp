@@ -40,6 +40,7 @@ api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
     m.bytes = u.bytes;
+    m.label = u.label;
     return m;
 }
 
@@ -85,9 +86,8 @@ static_assert(api::kInsertSlots == model::kInsertSlots,
 const char* const kNoHosting =
     "plugin hosting is not in this engine yet (engine/plugin_client, ADR-0012 checklist 4)";
 
-bool starts_a_host(const model::Operation& op) {
-    return std::holds_alternative<model::AddInsert>(op) ||
-           std::holds_alternative<model::ReplaceInsert>(op);
+bool starts_a_host(model::MemberRef op) {
+    return op.holds<model::AddInsert>() || op.holds<model::ReplaceInsert>();
 }
 
 }  // namespace
@@ -242,17 +242,33 @@ void EngineControlServer::follow_transport() {
     // Closed means every file of the take is, with its length final
     // (timeline-model.md: "take closed, length N" before RecordTake).
     for (const Session::ClosedTake& take : session_.closed_takes()) {
-        std::vector<model::ReplicationUpdate> updates;
-        std::string why;
-        const bool ok = add_closed_take(*document_, session_, take, updates, why);
-        for (const auto& u : updates) send_update(u);
-        if (!ok) {
+        const TakeAdded added = add_closed_take(*document_, session_, take);
+        for (const auto& u : added.updates) send_update(u);
+        std::vector<std::string> notices = added.track_notices;
+        if (!added.cut_short.empty()) notices.push_back(added.cut_short);
+        // A refused take is also a Notice, which stays for the session: the
+        // alert below clears on the next clean take, which while rolling can
+        // be the next tick, and this take is still not on the timeline then.
+        if (!added.refused.empty()) notices.push_back(added.refused);
+        for (const std::string& notice : notices) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
-            e.text = "take " + std::to_string(take.take) + " " + why;
+            e.text = notice;
             post_event(e);
         }
-        if (!updates.empty()) show_document(false);
+        if (!added.refused.empty()) {
+            // An error, not a side line: shown as a failed take, until a
+            // later take records cleanly, as a take that stopped writing is.
+            failed_take_ = take.take;
+            take_failed_shown_ = true;
+            publisher_->set_health(api::kHealthTakeFailed, true);
+            api::EngineEvent e;
+            e.kind = api::EventKind::TakeFailed;
+            e.frame = static_cast<uint64_t>(take.take);
+            e.text = added.refused;
+            post_event(e);
+        }
+        if (!added.updates.empty()) show_document(false);
     }
 }
 
@@ -806,16 +822,24 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
-                if (starts_a_host(op)) {
-                    refusal = DispatchResult::NotImplemented;
-                    why = kNoHosting;
-                    break;
-                }
-                // Even one that leaves the document as it was: it ends a
-                // ride whose last ParameterChange need not be its value.
-                mix_changed = std::holds_alternative<model::SetMix>(op) ||
-                              std::holds_alternative<model::SetMonitorBus>(op);
-                ok = document_->apply(op, u, why);
+                // Asked of each member of a compound with the state the
+                // members before it made (ADR-0009 update 2026-10-14).
+                bool no_host = false;
+                const model::MemberCheck check = [&](const model::Snapshot&,
+                                                     model::MemberRef member) {
+                    if (starts_a_host(member)) {
+                        no_host = true;
+                        return std::string(kNoHosting);
+                    }
+                    // Even one that leaves the document as it was: it ends a
+                    // ride whose last ParameterChange need not be its value.
+                    if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
+                        mix_changed = true;
+                    }
+                    return std::string();
+                };
+                ok = document_->apply(op, u, why, check);
+                if (!ok && no_host) refusal = DispatchResult::NotImplemented;
                 break;
             }
             case api::ModelAction::Undo: ok = document_->undo(u, why); break;

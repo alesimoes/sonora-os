@@ -8,9 +8,9 @@
 // disk").
 //
 // Each function applies resolved operations through Document::apply() and
-// appends the update every replica must be sent, in order. On failure what
-// was already applied stays applied, and is in `updates` too: the replicas
-// must hear of it all the same.
+// hands back the update every replica must be sent, in order. On failure
+// what was already applied stays applied, and is in `updates` too: the
+// replicas must hear of it all the same.
 //
 // The control thread's only, or before the server exists. They allocate
 // and read files.
@@ -38,18 +38,34 @@ bool place_file(model::Document& document, const std::string& session_dir,
                 const std::string& relative_path, std::size_t track,
                 std::vector<model::ReplicationUpdate>& updates, std::string& error);
 
-// A take the disk thread has closed (Session::closed_takes()): for every
-// file of it that holds frames, the file as a Recorded source and a
-// RecordTake on the active playlist of the track at the same display index.
-// One undo step per track. A file that failed (disk error, 4 GB limit) is
-// placed up to its last whole frame, like the rest, and the call returns
-// false with `error` naming the failed file and why. `error` reads after
-// "take N ": "was cut short: ..." for a failed file, "is on disk but not in
-// the session: track T, <file>: ..." when a file could not be placed at all,
-// followed by any earlier track's "cut short" reason.
-bool add_closed_take(model::Document& document, const Session& session,
-                     const Session::ClosedTake& take,
-                     std::vector<model::ReplicationUpdate>& updates, std::string& error);
+// What add_closed_take() did with one closed take.
+struct TakeAdded {
+    // To send to every replica, in order.
+    std::vector<model::ReplicationUpdate> updates;
+    // One per file that holds frames but could not be placed: "take N is on
+    // disk but not in the session: track T, <file>: <why>". The take's
+    // other files are placed all the same.
+    std::vector<std::string> track_notices;
+    // Set when a file failed (disk error, 4 GB limit): "take N was cut
+    // short: <file>: <why>, placed up to the failure", and how many more.
+    // Such a file is placed up to its last whole frame, like the rest.
+    std::string cut_short;
+    // Set when the model refused the take, which for operations the engine
+    // built is a model bug. The good files' sources were then added on
+    // their own, so the audio is in the pool and a save keeps it, but none
+    // of it is on the timeline. An error to show as one, not a side line.
+    std::string refused;
+};
+
+// A take the disk thread has closed (Session::closed_takes(); ADR-0009
+// update 2026-10-14, item 8). Every file of it that holds frames and reads
+// goes in as one Compound labelled "Record": the file as a Recorded source
+// and a RecordTake on the active playlist of the track at the same display
+// index, in track order, every id allocated up front. One update, one undo
+// step, up to kMaxCompoundMembers / 2 files; a larger take goes in as
+// several compounds of that many, one update and one step each.
+TakeAdded add_closed_take(model::Document& document, const Session& session,
+                          const Session::ClosedTake& take);
 
 // At open, before anything records: every take in `session_dir`'s audio
 // folder that an engine died before closing gets the length on disk
