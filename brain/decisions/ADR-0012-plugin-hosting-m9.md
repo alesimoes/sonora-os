@@ -809,8 +809,8 @@ updates `FakeEngine` and the conformance suite in the same PR.
 **Amendment, 2026-10-14: the control server's chains (PROPOSED, checklist
 5).** Proposed by plugin-engineer. The architect ruled on #64: accept
 with changes A to H, applied below; the rt-engineer's view is in the same
-ruling. Still Proposed until the owner question at the end of item 1 is
-answered. It settles what this ADR leaves open when §5.3 and §8 are wired
+ruling. The owner decided the question at the end of item 1 on
+2026-10-18; the amendment stays Proposed until the owner accepts it. It settles what this ADR leaves open when §5.3 and §8 are wired
 into `engine/control`. It **changes accepted text in three places**: the
 ADR-0007 module graph (item 4), §8's list of `PluginFault` causes (item 5),
 and the live-period assumption of the first draft of item 4, which ADR-0007
