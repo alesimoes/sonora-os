@@ -785,7 +785,8 @@ heard half done. And undo takes N presses. Grouping undo steps in
      undo it. When this lands, the BACKLOG line "it should be one compound
      undo step" for Alt-click is corrected to "no edit-undo step; one
      mix-undo step (Track 2 item 6)".
-5. **A size limit: 4,096 members.** 4,096 is about 200 members per track
+5. **A size limit: 4,096 members as the target, 64 for now** (measured
+   below). 4,096 is about 200 members per track
    on 18 tracks. That covers an 18-track take (36 members), Alt-click
    (18), and a cut or paste over a selection of a few hundred regions. The
    decoder refuses more, and so does `apply()`, each naming the limit.
@@ -826,21 +827,59 @@ heard half done. And undo takes N presses. Grouping undo steps in
      | 4,096 `SetFade` | 18 × 2,000 | 823 ms | 1,070 ms | 4.4 ms |
      | 1 / 16 / 64 / 256 / 1,024 `SetFade` | 1 × 2,000 | 0.21 / 2.4 / 9.1 / 38 / 190 ms | 0.21 / 3.5 / 14 / 64 / 254 ms | |
 
-     **The cost is over 10 ms after the remedy, by about 100 times at the
-     limit.** Copying each playlist once saves 19 to 31 %. What is left is
-     re-validating the whole playlist after every member: 160 to 290 µs a
-     member on 2,000 regions. This was not profiled; reading the code
-     points to the per-region hash maps in `playlist_problem` and
-     `sort_crossfades`. On one 2,000-region playlist the fold
-     crosses 10 ms at about 64 members. A count limit low enough for that
-     would fall below the edits this update exists for (item 5), so the
-     limit is still 4,096 and the choice goes to rt-engineer's review.
-     There are two candidates. One is to re-validate only the regions a
-     member touched and their neighbours, which removes the factor *n*.
-     The other is to bound the work (members × regions in the playlists
-     they touch) instead of the member count. Until one is decided, a
-     compound costs less than its members sent one by one: 19 to 31 % less
-     in every shape measured.
+     **The cost is over 10 ms after the remedy, by about 100 times at
+     4,096.** Copying each playlist once saves 19 to 31 %.
+
+     **Profile** (rt-engineer, PR #75 co-review; gprof and a component
+     benchmark on 2,000 regions with no crossfades). About 75 % of a
+     member's cost is hash maps over every region, rebuilt and thrown away
+     on each member:
+
+     | Per call | µs |
+     |---|---|
+     | `playlist_problem`, whole playlist | 181 |
+     | of which its `unordered_map` index, one node a region | 114 |
+     | of which `region_problem` × *n* | 40 |
+     | `sort_crossfades` with no crossfade to sort | 124 |
+     | the playlist copy, first member only | 110 |
+     | fold steady state, a `SetFade` member | 259 |
+
+     With no per-member validation at all, 4,096 `SetFade` members cost
+     5.2 ms, but a cut-like compound still costs 304 ms. That is because
+     `overwrite()` rebuilds the region vector for every member, and
+     `drop_broken_crossfades()` builds two maps over every region even
+     when there is no crossfade. Local validation alone is therefore not
+     enough. The operators have to be range-local too.
+
+     **The rule applied: an interim limit of 64.** This is item 5's own
+     rule. `sort_crossfades` (with fewer than 2 crossfades) and
+     `drop_broken_crossfades` (with none) now return early. With that,
+     the cost at 64 members, measured 2026-10-18 the same way, is:
+
+     | 64 members | 1 × 2,000 | 18 × 2,000 | One by one |
+     |---|---|---|---|
+     | split then remove (cut-like) | 6.4 ms | 7.5 ms | 11.7 / 11.8 ms |
+     | `SetFade` | 5.1 ms | 6.6 ms | 9.6 / 10.1 ms |
+
+     Every case is under 10 ms. 64 covers every sender that exists today:
+     a take (two members a track, and `add_closed_take()` splits a take of
+     more than 32 armed tracks into compounds in track order), Alt-click on
+     18 tracks, and a crossfade with its `SetFade`. Cut, copy and paste are
+     not built yet.
+
+     **4,096 stays the target.** It is reached by exact local validation
+     inside a fold, of the touched range ±1 and its crossfades, not deferred
+     to the fold's end, so that "fold == members one by one" holds. A test
+     checks the local verdict against `playlist_problem`'s after every
+     member. The other part is range-local `overwrite()` and
+     `drop_broken_crossfades()` (BACKLOG Track 2 item 8). The limit is
+     raised only to what that measures under 10 ms. A bound on members ×
+     regions was rejected: the same Cut would be accepted on one session
+     and refused on another, and the interface cannot know which.
+
+     **Raising the limit needs a `kProtocolVersion` bump.** The limit is
+     part of what a decoder accepts. A replica built with a lower limit
+     cannot decode a larger compound, and would resync for ever.
    - **Shuffle.** On a long playlist it would need one `MoveRegion` per
      later region, which can pass the limit and costs O(*n*²). When
      Shuffle lands it adds a resolved `ShiftRegions{playlist, from,
