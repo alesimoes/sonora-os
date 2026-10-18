@@ -53,18 +53,21 @@ playback can follow edits; it is in flight.
          SetMix per step. ADR-0013 §3 (protocol 4: an older engine's
          decoder refuses an unknown `ParamId` and drops the client);
        - [x] FakeEngine publishes the document's gain and mute when an
-         update changes them, on a Resync and at connect, as the real
+         update changes them, on a Resync and when it starts, as the real
          engine does; conformance check "the mix follows the document"
          holds both (PR #71);
-       - [x] a Resync and a new connection's Snapshot apply the document's
-         mix (ADR-0009 §4 item 3), so a ride a lost link stranded does not
-         stay in the gain atomics (PR #71). `MixModel::resendGains`
+       - [x] a Resync applies the document's mix (ADR-0009 §4 item 3), and
+         a client that leaves mid-ride has the gain of each track it was
+         the last to ride put back, so a ride a lost link stranded does
+         not stay in the gain atomics. A client attaching mid-ride leaves
+         the ride alone (PR #71, review decision). `MixModel::resendGains`
          (PR #61) is no longer needed for that; Track 3 decides whether to
          keep it;
-       - [x] `PlaybackController::apply_mix` puts an engine track the
-         document does not have at unity, unmuted, unsoloed and centred,
-         so an undone AddTrack of a soloed track no longer silences the
-         rest (PR #71, `playback_control`).
+       - [x] `PlaybackController::apply_mix` clears the solo of an engine
+         track the document does not have, so an undone AddTrack of a
+         soloed track no longer silences the rest. Its fader and mute stay:
+         the old plan renders it until the swap (PR #71,
+         `playback_control`, rolling and stopped).
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 

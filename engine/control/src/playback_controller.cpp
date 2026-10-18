@@ -96,16 +96,22 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
     }
     // The audio thread counts every engine track's solo: one left on a track
     // the document no longer has (an undone AddTrack) would silence the rest
-    // while every replica shows no solo.
+    // while every replica shows no solo. Only the solo: the old plan renders
+    // that track until the new one is resident and swapped in, so a fader or
+    // mute reset here would be heard (a muted track at 0 dB), and after the
+    // swap nothing renders it.
     for (std::size_t i = tracks.size(); i < session_.tracks().size(); ++i) {
-        Track& t = *session_.tracks()[i];
-        t.set_gain(1.0f);
-        t.set_pan(0.0f);
-        t.set_muted(false);
-        t.set_soloed(false);
+        session_.tracks()[i]->set_soloed(false);
     }
     apply_monitoring(snapshot);
     session_.set_bus_gain(gain_of_db(snapshot.mix.bus.gain_db));
+}
+
+void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t track) {
+    const auto& tracks = snapshot.edit->tracks;
+    if (track >= tracks.size() || track >= session_.tracks().size()) return;
+    const model::TrackMix* m = snapshot.mix.find(tracks[track]->id);
+    if (m) session_.tracks()[track]->set_gain(gain_of_db(m->gain_db));
 }
 
 void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {

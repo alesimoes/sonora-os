@@ -472,7 +472,8 @@ int check_parameters(Rig& rig) {
 // The document's mix is what the faders hold: a SetMix moves the track's
 // gain and mute, a ride sent as a ParameterChange outlives an unrelated
 // edit, and a Snapshot (here a Resync) puts the document's values back,
-// so a ride a lost link stranded does not stay (ADR-0009 §4 item 3).
+// so a ride a lost link stranded does not stay (ADR-0009 §4 item 3). An
+// engine track the document no longer has keeps its fader and mute.
 int check_mix(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -523,6 +524,41 @@ int check_mix(Rig& rig) {
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
                    "resync failed");
             EXPECT(s.until(rig_, at_doc), "a resync left the ride's gain in place");
+
+            // A session without the last track: that engine track keeps its
+            // fader and mute, since until the plan swap the old plan still
+            // plays it there, and a muted track must not come up at unity.
+            const uint32_t last = s.engine->hello().track_count - 1;
+            const model::Id last_id = s.replica.current().edit->tracks[last]->id;
+            model::SetMix quiet{*s.replica.current().mix.find(last_id)};
+            quiet.mix.gain_db = -6.0f;
+            quiet.mix.mute = true;
+            m.action = ModelAction::Apply;
+            EXPECT(model::encode_operation(quiet, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "SetMix was refused: " + r.message);
+            const auto last_quiet = [&]() {
+                const TrackSnapshot t = v.track(last);
+                return std::fabs(t.gain - doc_gain) < 1e-5f && t.muted();
+            };
+            EXPECT(s.until(rig_, last_quiet), "the last track's mix was not applied");
+            model::Snapshot fewer = s.replica.current();
+            auto edit = std::make_shared<model::EditState>(*fewer.edit);
+            edit->tracks.pop_back();
+            fewer.edit = edit;
+            model::WriteInfo info;
+            info.written_by = "conformance";
+            EXPECT(model::serialize(fewer, info, m.op, error), error);
+            m.action = ModelAction::Load;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "a session one track short was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return s.replica.synced() &&
+                              s.replica.current().edit->tracks.size() == last;
+                   }),
+                   "no snapshot of the shorter session: " + s.replica_error);
+            EXPECT(s.next_publish(rig_), "nothing published after the load");
+            EXPECT(last_quiet(), "a track the session no longer has lost its mute or fader");
             return ok();
         }
     };

@@ -297,14 +297,16 @@ bool FakeEngine::connect(std::string& error) {
 void FakeEngine::apply_mix() {
     const model::Snapshot& doc = document_->current();
     const auto& tracks = doc.edit->tracks;
-    for (std::size_t i = 0; i < gain_.size(); ++i) {
-        const model::TrackMix* m = i < tracks.size() ? doc.mix.find(tracks[i]->id) : nullptr;
-        if (i < tracks.size() && m == nullptr) continue;
-        float db = m != nullptr ? m->gain_db : 0.0f;
+    // A track past the document's end keeps its fader and mute, as the real
+    // engine's does: its old plan plays it until the swap.
+    for (std::size_t i = 0; i < gain_.size() && i < tracks.size(); ++i) {
+        const model::TrackMix* m = doc.mix.find(tracks[i]->id);
+        if (m == nullptr) continue;
+        float db = m->gain_db;
         if (!(db >= model::kMinGainDb)) db = model::kMinGainDb;
         db = std::min(db, model::kMaxGainDb);
         gain_[i] = std::pow(10.0f, db / 20.0f);
-        muted_[i] = m != nullptr && m->mute;
+        muted_[i] = m->mute;
     }
 }
 

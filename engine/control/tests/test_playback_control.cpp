@@ -720,8 +720,9 @@ int test_show_leaves_the_faders_alone() {
 // The audio thread counts the solo of every engine track, document or not.
 // An undone AddTrack of a soloed track leaves its engine track holding that
 // solo, which would silence every other track while the interface shows no
-// solo at all; an engine track the document no longer has is at unity.
-int test_undone_track_leaves_no_mix() {
+// solo at all. Only the solo goes: until the plan swap the old plan still
+// renders that track, so its fader and mute stay as they were.
+int test_undone_track_leaves_no_solo() {
     auto session = make_session(3);
     Session& s = *session;
     CHECK(write_source(1, 40 * kChunk));
@@ -739,12 +740,72 @@ int test_undone_track_leaves_no_mix() {
     CHECK(h.undo());
     CHECK(show(ctl, h.current(), error));
     CHECK(!s.tracks()[2]->soloed());
-    CHECK(!s.tracks()[2]->muted());
-    CHECK(s.tracks()[2]->gain() == 1.0f);
-    CHECK(s.tracks()[2]->pan() == 0.0f);
+    CHECK(s.tracks()[2]->muted());
+    CHECK(s.tracks()[2]->gain() == sonora::gain_of_db(-12.0f));
+    CHECK(s.tracks()[2]->pan() == -1.0f);
     CHECK(h.redo());
     CHECK(show(ctl, h.current(), error));
     CHECK(s.tracks()[2]->soloed());
+    return 0;
+}
+
+// The same, rolling. A document without track C (a session opened, an
+// AddTrack undone) is shown while the old plan still renders C on engine
+// track 2, and goes on rendering it until the reader has the new plan's
+// window and pump() publishes it. C is muted: not a sample of it may be
+// heard in that window (review of PR #71: it played at 0 dB until the
+// swap when the controller unmuted tracks past the document's end).
+int test_removed_track_stays_muted_until_the_swap() {
+    auto session = make_session(3);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History without(new_session(SessionSettings{}));
+    CHECK(two_tracks(without));
+    History with = without;
+    AddTrack c = track_op(300, 301, "C");
+    c.mix.mute = true;
+    CHECK_APPLY(with, c);
+    CHECK_APPLY(with, (PlaceRegion{301, region(310, 1, 0, 40 * kChunk, 0), 0}));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, with.current(), error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    run_block(s, o);  // ramps settle
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+
+    // Track A alone is heard, hard left, before and after; C never.
+    const auto only_a = [&]() {
+        const int64_t at = static_cast<int64_t>(s.transport().playhead());
+        run_block(s, o);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            if (o.l[i] != value(1, at + i)) {
+                std::fprintf(stderr, "  frame %lld: %f, want %f\n",
+                             static_cast<long long>(at + i), o.l[i], value(1, at + i));
+                return false;
+            }
+        }
+        return true;
+    };
+    for (int blk = 0; blk < 4; ++blk) {
+        s.reader().run_pass();
+        ctl.pump();
+        CHECK(only_a());
+    }
+    const uint64_t published = ctl.plans_published();
+    CHECK(show(ctl, without.current(), error));
+    // No reader pass, no pump: the old plan plays these.
+    for (int blk = 0; blk < 4; ++blk) CHECK(only_a());
+    CHECK(ctl.plans_published() == published);
+    for (int blk = 0; blk < 8; ++blk) {
+        s.reader().run_pass();
+        ctl.pump();
+        CHECK(only_a());
+    }
+    CHECK(ctl.plans_published() == published + 1);
+    CHECK(s.playback_misses() == 0);
     return 0;
 }
 
@@ -1049,7 +1110,8 @@ int main() {
     if (test_record_waits_for_residency()) return 1;
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
-    if (test_undone_track_leaves_no_mix()) return 1;
+    if (test_undone_track_leaves_no_solo()) return 1;
+    if (test_removed_track_stays_muted_until_the_swap()) return 1;
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;
     if (test_huge_gain_is_no_nan()) return 1;

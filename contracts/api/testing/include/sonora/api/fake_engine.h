@@ -14,7 +14,8 @@
 // What it does: the Engine-domain commands engine/control installs, with
 // the same refusals in the same words; ParamId::Gain; the model path on a
 // real common/model Document, whose faders (gain, mute) it publishes when
-// an update changes them, on a Resync and at connect, as the real one does.
+// an update changes them, on a Resync and when it starts (connect), as the
+// real one does; a track past the document's end keeps both.
 // Plugins (ADR-0012 §8) on a script: a catalog
 // (fake_catalog() unless Config::plugins says otherwise) sent after the
 // Snapshot; insert operations accepted when they name a usable catalog

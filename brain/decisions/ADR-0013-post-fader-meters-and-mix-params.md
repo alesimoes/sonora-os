@@ -89,8 +89,13 @@ and the Hello check has to name the mismatch.
 - The ride rule does not change. A ride is live parameters, then one model
   operation at release (`SetMonitorBus` for the bus, `SetMix` for pan).
   `apply_mix()` runs only when an update changed the faders' part of the
-  mix, or on a Snapshot (Resync or a new connection, BACKLOG Track 1
-  item 9). Today the server applies `ParameterChange` as a track gain
+  mix, or on a Resync (BACKLOG Track 1 item 9). A new connection does not
+  apply it, so a client attaching mid-ride leaves the ride alone. A client
+  that leaves mid-ride (detached, or dropped for a bad frame) has the
+  document's value put back on the parameters it was the last to ride,
+  and only those (PR #71). The server keeps that per-track rider record
+  for each new `ParamId`: the bus gain record is the bus's, a pan record
+  restores the track's pan. Today the server applies `ParameterChange` as a track gain
   whatever its `param`, because `Gain` is the only value. With three values
   it has to switch on `param`.
 - `FakeEngine` and the conformance suite gain the two values. The
