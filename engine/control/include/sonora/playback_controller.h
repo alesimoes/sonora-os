@@ -44,6 +44,10 @@ public:
     // pan are clamped to what the model allows, so a snapshot that never went
     // through its validator still puts no inf or NaN on the audio thread.
     void apply_mix(const model::Snapshot& snapshot);
+    // Engine track `track`'s gain alone, from the document's track there:
+    // a ride whose rider left ends without the other faders moving. Nothing
+    // for a track past the document's end.
+    void apply_gain(const model::Snapshot& snapshot, std::size_t track);
     // Each track's monitor mode alone, for when arming changed: an armed
     // track under --no-input-monitoring must stop sending its input at
     // once, without the faders being written.

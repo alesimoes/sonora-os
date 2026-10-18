@@ -52,28 +52,32 @@ playback can follow edits; it is in flight.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
 9. [ ] For the Mix window (Track 3 item 2, `feature/ui-mixer-monitor`):
-       - state block layout 3 with each track's post-fader peak (L/R, after
-         pan and mute) and the monitor bus's L/R peak. `Session` already
-         has `bus_peak_`; it is not published. Until then the strips' meters
-         are labelled IN and the bus's NO DATA, and pre/post-fader metering
-         cannot be offered;
-       - a `ParamId` for the monitor bus gain (and track pan), so those ride
-         through ParameterChange too instead of a SetMonitorBus / SetMix per
-         step;
-       - FakeEngine's published track gain ignores SetMix (the real engine
-         writes faders from the document when the mix changes); it should
-         follow it, as conformance would show;
-       - a Resync (and a new connection's Snapshot) should re-apply the
-         document's mix to the engine's tracks, as ADR-0009 item 3 says a
-         Snapshot does: the server's Resync path never sets `mix_changed`,
-         so ride steps a lost link stranded stay in the gain atomics. The UI
-         resends every track's gain on each new document meanwhile
-         (`MixModel::resendGains`, PR #61);
-       - `PlaybackController::apply_mix` (playback_controller.cpp:88) writes
-         only engine tracks that still map to a document track, so a solo
-         on a track that left the document (an undone AddTrack) stays set
-         and `any_solo` (session.cpp:452) silences the rest while the UI
-         shows no solo. Reset `tracks_[i]` for `i >=` the document's tracks.
+       - [ ] state block layout 3 with each track's post-fader peak (L/R,
+         after pan and mute) and the monitor bus's L/R peak. `Session`
+         already has `bus_peak_`; it is not published. Until then the
+         strips' meters are labelled IN and the bus's NO DATA, and
+         pre/post-fader metering cannot be offered. Proposed in ADR-0013
+         (layout 3), which needs its contract reviews before code;
+       - [ ] a `ParamId` for the monitor bus gain (and track pan), so those
+         ride through ParameterChange too instead of a SetMonitorBus /
+         SetMix per step. ADR-0013 §3 (protocol 4: an older engine's
+         decoder refuses an unknown `ParamId` and drops the client);
+       - [x] FakeEngine publishes the document's gain and mute when an
+         update changes them, on a Resync and when it starts, as the real
+         engine does; conformance check "the mix follows the document"
+         holds both (PR #71);
+       - [x] a Resync applies the document's mix (ADR-0009 §4 item 3), and
+         a client that leaves mid-ride has the gain of each track it was
+         the last to ride put back, so a ride a lost link stranded does
+         not stay in the gain atomics. A client attaching mid-ride leaves
+         the ride alone (PR #71, review decision). `MixModel::resendGains`
+         (PR #61) is no longer needed for that; Track 3 decides whether to
+         keep it;
+       - [x] `PlaybackController::apply_mix` clears the solo of an engine
+         track the document does not have, so an undone AddTrack of a
+         soloed track no longer silences the rest. Its fader and mute stay:
+         the old plan renders it until the swap (PR #71,
+         `playback_control`, rolling and stopped).
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -554,6 +558,14 @@ not start or extend those items before the Complete DAW closes (owner,
       two of five full runs, and pass alone (`playback_fake` 10 of 10).
       CI's 4-core runners have not shown it. Measure under load, or mark
       them RUN_SERIAL. rt-engineer with dsp-engineer.
+      `playback_fake` is fixed (PR #71). The 0.354 is the tone's peak
+      at the -3 dB bus gain against silence, which is a missed chunk. The
+      test ran 8 blocks per 1 ms sleep, about 21 times real time, so in one
+      5 ms reader tick it could roll 40 blocks, past the 4800-frame window.
+      With 32 busy loops on 16 cores it failed 5 of 40 runs on main, with 1
+      to 25 misses. It now waits for a whole reader pass every 8 blocks
+      (`DiskReader::passes()`): 0 of 60 under the same load, 0 of 40 idle.
+      `dsp_triode` is still open.
 - [ ] `-Wfunction-effects` to an error, per module, once clean. Today (clang-22,
       `ci/rtsan`) it reports SONORA_RT functions calling unmarked ones that
       RTSan, at run time, finds clean: `ProcessorBase::apply_event`

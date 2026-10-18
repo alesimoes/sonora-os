@@ -87,7 +87,9 @@ int test_window_becomes_resident() {
 
     const uint64_t gen = r.serve(nullptr, p);
     CHECK(r.resident() != gen);
+    CHECK(r.passes() == 0);
     r.run_pass();
+    CHECK(r.passes() == 1);
     CHECK(r.adopted() == gen);
     CHECK(r.resident() == gen);
     // [0, 8 chunks) of timeline from playhead 0 needs source frames
