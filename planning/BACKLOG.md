@@ -372,10 +372,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              are hosted.
        - [ ] FlushPluginState through GetState and the saver thread's
              durable write; today it still answers from the document.
-       - [ ] Play waits for plug-ins at session open (owner, 2026-10-18):
-             up to 10 s, "Loading plug-ins (n of m)"; record never waits.
-             `PluginHosting::loading()` counts them; the server wiring is
-             the next PR.
+       - [x] Play waits for plug-ins at session open (owner, 2026-10-18):
+             `transport.play`/`toggle_play` from a stopped transport is
+             held while `PluginHosting::loading()` is non-zero, at most
+             `Options::plugin_open_wait_ms` (10 s) from the open, with a
+             Notice "Loading plug-ins (n of m): play starts when they are
+             ready"; a second space, a stop or a take withdraws it; record
+             is never held. ctest `plugin_hosting_play_waits` (answered
+             after the plug-in's load, before the bound),
+             `plugin_hosting_play_wait_bounded` (answered at the bound,
+             800 ms in the test, with the plug-in still loading).
+             The UI showing the notice as a progress line is the UI's.
        - [x] A new chain's start that fails while the old chain still
              runs is shown as a fault on the edit's inserts, and not
              started again until the document wants another chain
