@@ -493,10 +493,19 @@ int test_cursor_after_monitor_switch() {
     const uint64_t at = s.transport().playhead();
     CHECK(at == kBlock);
     rig.block(kBlock);
-    // The gain ramp is at unity on both sides of the switch; only the
-    // source changes.
+    // The gain ramp is at unity on both sides of the switch; the source
+    // ramps from the (silent) input to playback over monitor_ramp_frames,
+    // and the playback in it is already the right frames.
+    const uint32_t ramp = s.config().playback.monitor_ramp_frames;
+    CHECK(ramp == kBlock);
     for (uint32_t i = 0; i < kBlock; ++i) {
-        CHECK(rig.out[0][i] == source_value(11, 0, static_cast<int64_t>(at + i)));
+        const float w = static_cast<float>(i + 1) / static_cast<float>(ramp);
+        CHECK(near(rig.out[0][i], w * source_value(11, 0, static_cast<int64_t>(at + i))));
+    }
+    const uint64_t next = s.transport().playhead();
+    rig.block(kBlock);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(rig.out[0][i] == source_value(11, 0, static_cast<int64_t>(next + i)));
     }
     CHECK(s.playback_misses() == 0);
     return 0;

@@ -192,6 +192,9 @@ int test_record_then_play_back() {
         CHECK(s.tracks()[0]->writer().frames_written() == uint64_t{kBlocks} * kQuantum);
         // After the stop: the take's tracks are the ones armed when it closed.
         CHECK(c.run("track.toggle_arm", 0));
+        // Disarmed, its input fades out over monitor_ramp_frames rather than
+        // stopping dead; let that pass before any output is kept.
+        CHECK(audio.run_blocks(2) == 2);
 
         // The take is in the document every client replicates: its source
         // and its region, as one compound and so one update (ADR-0009
