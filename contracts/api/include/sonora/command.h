@@ -35,7 +35,7 @@ enum class CommandTarget {
 // in the session is engine state, how the operator looks at it is not.
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
-    Interface,  // tool.*, zoom.*, edit.mode.*, window.transport, app.quit
+    Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport, app.quit
 };
 
 struct CommandSpec {
@@ -177,6 +177,13 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"plugin.editor.close", CommandTarget::Track, "Close a plugin's own editor", true},
         {"plugin.retry", CommandTarget::Track,
          "Start a track's plugin chain again after it was left down"},
+
+        // --- keyboard focus ---
+        // Pro Tools' Commands Keyboard Focus: whether the single-letter
+        // bindings a profile marks "focus": "commands" run. Which keys mean
+        // what is the interface's, never the session's.
+        {"focus.commands", CommandTarget::None, "Toggle Commands Keyboard Focus",
+         false, CommandDomain::Interface},
 
         // --- windows ---
         {"window.toggle_mix_edit", CommandTarget::None,

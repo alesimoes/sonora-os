@@ -77,6 +77,19 @@ end of its run. Keep it short: what is true now, not a diary.
   vendor bindings. Each has a regression test. Not yet exercised on tty1 or
   in QEMU; the interactive paths (Ctrl+C fallback, SIGHUP) are unit-tested
   only.
+- **Key maps in the Qt window (`feature/ui-keymaps`).** Commands go where
+  their catalog domain says: Interface commands never reach the engine, and
+  an Engine command goes to the engine once its Hello lists it, before any
+  stand-in the window has. Pro Tools' Commands Keyboard Focus is real:
+  `"focus": "commands"` bindings (the a s d f g b p ; e letters, and z x c v
+  r t , . from Avid's focus table), `focus.commands` on `ctrl+alt+1` and an
+  a-z button; with focus off a letter says so. At the tty those keys stay
+  live (no indicator there). The Keys menu switches profile at run time,
+  lists refused files with the reason, and remembers the choice in
+  `~/.config/sonora/keymap`. `FakeEngine::Config::planned_commands` stubs
+  the engine commands the profiles bind and no engine runs (BACKLOG Track 1
+  item 10). Container-tested only; the focus behaviour Avid does not document
+  is listed as unverified in `keymaps/README.md`.
 - **ISO builds.** `iso/sonora.iso`, 867 MB, last built 2026-10-12. Inspected
   rather than assumed: the engine is present at mode 0755, the service is
   enabled, the `sonora` user is in `audio`, all three tuning files are
