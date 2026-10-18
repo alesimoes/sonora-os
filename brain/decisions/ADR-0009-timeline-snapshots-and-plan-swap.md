@@ -810,6 +810,37 @@ heard half done. And undo takes N presses. Grouping undo steps in
      parameter, the cost is control-thread latency and not RT safety or a
      lost take, and a compound is never worse than the same members sent
      one by one.
+   - **Measured, 2026-10-18** (`feature/compound-op`,
+     `common/model/tests/measure_compound.cpp`; Release, in the
+     `sonora-build:trixie` container on the owner's i7-11800H under Docker
+     Desktop; best of 5 runs). Each region is 1,000 frames with a gap after
+     it, and there are no crossfades. `Document::apply` covers encoding, the
+     fold and the history step; "one by one" is the same members sent as
+     separate operations.
+
+     | Compound | Playlists × regions | `Document::apply` | One by one | Decode |
+     |---|---|---|---|---|
+     | 4,096 members, split then remove (cut-like) | 1 × 2,000 | 1,169 ms | 1,441 ms | 2.8 ms |
+     | 4,096 `SetFade` | 1 × 2,000 | 673 ms | 978 ms | 3.9 ms |
+     | 4,096, split then remove (cut-like) | 18 × 2,000 | 1,071 ms | 1,445 ms | 3.1 ms |
+     | 4,096 `SetFade` | 18 × 2,000 | 823 ms | 1,070 ms | 4.4 ms |
+     | 1 / 16 / 64 / 256 / 1,024 `SetFade` | 1 × 2,000 | 0.21 / 2.4 / 9.1 / 38 / 190 ms | 0.21 / 3.5 / 14 / 64 / 254 ms | |
+
+     **The cost is over 10 ms after the remedy, by about 100 times at the
+     limit.** Copying each playlist once saves 19 to 31 %. What is left is
+     re-validating the whole playlist after every member: 160 to 290 µs a
+     member on 2,000 regions. This was not profiled; reading the code
+     points to the per-region hash maps in `playlist_problem` and
+     `sort_crossfades`. On one 2,000-region playlist the fold
+     crosses 10 ms at about 64 members. A count limit low enough for that
+     would fall below the edits this update exists for (item 5), so the
+     limit is still 4,096 and the choice goes to rt-engineer's review.
+     There are two candidates. One is to re-validate only the regions a
+     member touched and their neighbours, which removes the factor *n*.
+     The other is to bound the work (members × regions in the playlists
+     they touch) instead of the member count. Until one is decided, a
+     compound costs less than its members sent one by one: 19 to 31 % less
+     in every shape measured.
    - **Shuffle.** On a long playlist it would need one `MoveRegion` per
      later region, which can pass the limit and costs O(*n*²). When
      Shuffle lands it adds a resolved `ShiftRegions{playlist, from,
