@@ -31,6 +31,9 @@
 //   stall         a host that takes 20 ms per block: its track fades out
 //                 and goes silent, the slot is removed after 8 misses, the
 //                 dry track plays on bit for bit, and no callback waits
+//   params        Session::post_plugin_param moves eg-amp's gain, then
+//                 bypasses it: each lands in the callback after the post
+//                 (checklist 5, ADR-0012 §5.1)
 //
 // Between callbacks the aligned cases wait for every host to return its
 // block, as the plugin_client host tests do: a harness may wait, the
@@ -335,6 +338,8 @@ struct Rig {
         b.outputs = out_ptrs;
         b.output_count = 2;
         b.nframes = kBlock;
+        // What a backend stamps: the hosts pace on it (ADR-0012 §1.3).
+        b.callback_ns = now_ns();
         const uint64_t t0 = now_ns();
         t_counting = true;
         session->process(b);
@@ -563,6 +568,79 @@ int scenario_stall(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// ADR-0012 §5.1, checklist 5: a change posted on the control thread
+// reaches the running plugin through the session's ring, the node, the
+// store and the region's parameter ring, tagged with the block the callback
+// submits. eg-amp's gain moved to -20 dB: the callback after the post plays
+// the chain's block that carried it, so its track is 0.1 times the dry one
+// from that callback on and unity before it. Then the instance is bypassed
+// (kBypassParam; eg-amp has no designated bypass port, so the host bypasses
+// it, compensated): the callback after crossfades for one block, and unity
+// follows, bit for bit and not shifted in time.
+int scenario_params(const Args& a) {
+    std::printf("params: %s gain to -20 dB, then bypassed, through Session::post_plugin_param\n", kEgAmp);
+    const Probe p = probe(a, kEgAmp);
+    std::vector<ChainSpec> specs = {chain_spec(a, {{kEgAmp, {}}}), ChainSpec{}};
+    if (g_missing || !p.ok) return kSkip;
+    const auto it = std::find(p.symbols.begin(), p.symbols.end(), "gain");
+    if (it == p.symbols.end()) {
+        check(false, "eg-amp has a parameter named gain");
+        return 1;
+    }
+    const auto gain = uint32_t(it - p.symbols.begin());
+    Rig rig(a, specs, {-1.f, 1.f});
+    if (!rig.ready) return 1;
+    const uint32_t store = rig.chains[0]->node().param_store;
+    const uint32_t slot = rig.chains[0]->node().channel_slot;
+
+    // The ratio of left (the chain) to right (dry, compensated) in one
+    // callback: 1 when bit for bit, `want` when every sample is within a
+    // float's rounding of it, -1 otherwise.
+    const auto ratio_is = [&rig](float want) {
+        bool any = false;
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float l = rig.out[0][i], r = rig.out[1][i];
+            if (r != 0.f) any = true;
+            if (want == 1.f ? l != r : std::fabs(l - want * r) > 1e-6f * std::fabs(r) + 1e-9f) return false;
+        }
+        return any;
+    };
+    bool before_ok = true, after_ok = true, bypass_ok = true;
+    const uint32_t lead = uint32_t((kLeadIn + 3 * kBlock) / kBlock);
+    for (uint32_t k = 0; k < lead + 10; ++k) {
+        rig.block();
+        rig.settle();
+        if (k >= lead) before_ok = before_ok && ratio_is(1.f);
+    }
+    check(before_ok, "at 0 dB the chain's track is the dry track, bit for bit");
+
+    check(rig.session->post_plugin_param(store, 0, gain, -20.f), "the change is queued");
+    for (uint32_t k = 0; k < 20; ++k) {
+        rig.block();
+        rig.settle();
+        // k == 0: the callback that submits the change plays the block
+        // before it, at the old gain.
+        after_ok = after_ok && ratio_is(k == 0 ? 1.f : 0.1f);
+    }
+    check(after_ok, "the callback after the post plays the chain at -20 dB (0.1), and every one after it");
+
+    check(rig.session->post_plugin_param(store, 0, plugin::kBypassParam, 1.f), "the bypass is queued");
+    for (uint32_t k = 0; k < 20; ++k) {
+        rig.block();
+        rig.settle();
+        // k == 1 is the host's one-block crossfade from wet to dry.
+        if (k != 1) bypass_ok = bypass_ok && ratio_is(k == 0 ? 0.1f : 1.f);
+    }
+    check(bypass_ok, "bypassed from the callback after the post (one block's crossfade), then unity, bit for bit");
+
+    const SlotStatus st = rig.client.slot_status(slot);
+    check(st.params_refused == 0, "no change was refused by the region's ring");
+    check(rig.session->plugin_params_dropped() == 0, "no change was dropped by the session");
+    check(st.misses == 0, "no block missed");
+    check(heap_untouched(), "process() allocated and freed nothing");
+    return failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -583,6 +661,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "aligned_stereo") rc = scenario_aligned_stereo(a);
     else if (a.scenario == "aligned_vst3") rc = scenario_aligned_vst3(a);
     else if (a.scenario == "stall") rc = scenario_stall(a);
+    else if (a.scenario == "params") rc = scenario_params(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

@@ -646,7 +646,11 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     updateCounters(true);
     sync();
     emit sessionChanged();
-    emit notice(QStringLiteral("Opened ") + file_);
+    QString said = QStringLiteral("Opened ") + file_;
+    // An older build's file can need a repair to open; the operator hears
+    // what changed, and the next save writes it.
+    for (const std::string& r : loaded.repairs) said += QStringLiteral("; ") + q(r);
+    emit notice(said);
     return true;
 }
 

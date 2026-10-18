@@ -211,7 +211,10 @@ private:
     void feed(ClientId id, Client& c, const std::string& bytes);
     // Parked clients get a slot as slots free up, oldest first.
     void unpark();
+    // The client is gone: its backlog, and any ride it left unreleased.
     void forget(ClientId id);
+    // The document's mix onto the engine's tracks; every ride ends there.
+    void apply_mix();
     // Handled frames' bytes leave their clients' backlogs.
     void release_handled();
     void greet(Client& client);
@@ -270,6 +273,10 @@ private:
 
     // The control thread's, or start()'s before that thread exists.
     std::map<ClientId, Client> clients_;
+    // By engine track, the client whose ParameterChange last set its gain
+    // since the document's faders were last applied: a rider that leaves
+    // has that track's gain put back, and no other client's ride moves.
+    std::map<uint32_t, ClientId> riders_;
     // Events that still stand, encoded, for a client that attaches later:
     // what a restarted interface must find on screen.
     std::vector<std::string> notices_;

@@ -536,10 +536,10 @@ void cpu_while_automated(Suite& s) {
     const double mx = best.back();
     s.info("CPU per block, decay and crossovers automated every block: p50", best[best.size() / 2], "us",
            "per-block minimum of 5 runs");
-    s.check_le("CPU per block, decay and crossovers automated every block: p99.9", p999, s.bar("cpu.p999_us"), "us",
-               "per-block minimum of 5 runs");
-    s.check_le("CPU per block, decay and crossovers automated every block: max", mx, s.bar("cpu.max_us"), "us",
-               "per-block minimum of 5 runs");
+    s.check_time_le("CPU per block, decay and crossovers automated every block: p99.9", p999,
+                    s.bar("cpu.p999_us"), "us", "per-block minimum of 5 runs");
+    s.check_time_le("CPU per block, decay and crossovers automated every block: max", mx, s.bar("cpu.max_us"),
+                    "us", "per-block minimum of 5 runs");
 }
 
 void stability_width_linearity(Suite& s) {

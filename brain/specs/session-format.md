@@ -399,6 +399,27 @@ material past its edge) must exist, and is checked at load and on every
 edit that creates or moves a crossfade. Without the handle the crossfade is
 refused, not shortened silently.
 
+At a region's end with a crossfade, the crossfade is what plays; the
+region's own fade at that end is kept, unheard, and the next sentence does
+not count it. **What plays at one end of a region must not overlap what
+plays at its other end**: a crossfade's part inside a region plus the
+crossfade or fade at the region's other end is at most the region's
+`length`. The renderer multiplies a fade and a crossfade that cover the same
+frames, so every edit that would write it on purpose is refused (`SetFade`,
+`SetCrossfade`). An edit that moves an edge, clears a crossfade (revealing
+the fade kept under it) or adds a take's crossfades instead shortens the
+fade to meet the crossfade, as a fade shortens to fit a trimmed region.
+
+v2 files written before this rule can hold the overlap: the interface's trim
+and crossfade clear, and any `op_codec` client such as `sonora-ctl`, could
+produce it. The loader repairs such a file rather than refuse it: a fade
+running into the crossfade at its region's other end is shortened to meet
+it, and the load reports each one by key path, old and new length, for the
+opener to show. The next save writes the repaired session. Two crossfades
+that overlap inside a region were always refused and still are. So the rule
+tightens v2 without a version bump and without breaking "Backward
+compatibility: always". *Added 2026-10-14.*
+
 This is exactly AAF's `Transition` between two `SourceClip`s in a
 `Sequence`, and it is why a crossfade is its own object rather than an
 overlap of two regions' fades.
