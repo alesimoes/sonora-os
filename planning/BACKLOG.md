@@ -173,6 +173,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              focus toggle there needs a footer indicator first.
        - [ ] Pro Tools' Clip List and Groups List focuses (`ctrl+alt+2`,
              `ctrl+alt+3`) once those lists exist.
+       - [ ] On engine reconnect only the Hello's command list is re-read;
+             sample rate, buffer size and track count stay those of the
+             first Hello. Re-read the Hello's format and track count and
+             resize what was sized from them (shell_model, MixModel, arm
+             buttons, the clock). Today this shows wrong information only:
+             every read is bounds-checked and the engine refuses
+             out-of-range tracks (PR #67 review). Also add a test that the
+             startup refusal notice survives a reconnect when the
+             essentials notices change.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
