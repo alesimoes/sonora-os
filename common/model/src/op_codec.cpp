@@ -439,10 +439,15 @@ struct Encoder {
 
 class Reader {
 public:
-    explicit Reader(std::string& error) : error_(error) {}
+    // `prefix` is where the value read sits in a larger one ("ops[3]" for a
+    // compound's member), so its errors name the whole path.
+    explicit Reader(std::string& error, std::string prefix = {})
+        : error_(error), prefix_(std::move(prefix)) {}
 
     bool fail(const std::string& path, const std::string& msg) {
-        error_ = path.empty() ? msg : path + ": " + msg;
+        const std::string full =
+            prefix_.empty() ? path : (path.empty() ? prefix_ : prefix_ + "." + path);
+        error_ = full.empty() ? msg : full + ": " + msg;
         return false;
     }
 
@@ -555,6 +560,7 @@ public:
 
 private:
     std::string& error_;
+    std::string prefix_;
 };
 
 bool read_fade(Reader& rd, const Value& obj, const std::string& path, const char* key, Fade& f) {
@@ -992,7 +998,7 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
     } else if (kind == "Compound") {
         return decode_compound(rd, v, out);
     } else {
-        return rd.fail("", "\"" + kind + "\" is not an operation this version knows");
+        return rd.fail("op", "\"" + kind + "\" is not an operation this version knows");
     }
     return true;
 }
@@ -1024,9 +1030,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
         }
         if (kind->text() == "Compound") return rd.fail(path, "a compound cannot hold a compound");
         std::string why;
-        Reader member_reader(why);
+        Reader member_reader(why, path);
         Operation op;
-        if (!decode_value(member_reader, item, kind->text(), op)) return rd.fail(path, why);
+        if (!decode_value(member_reader, item, kind->text(), op)) return rd.fail("", why);
         c.ops.emplace_back();
         to_member(std::move(op), c.ops.back());
     }

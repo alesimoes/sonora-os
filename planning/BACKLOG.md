@@ -92,13 +92,25 @@ playback can follow edits; it is in flight.
        decision of 2026-10-14, ADR-0009 update 2026-10-14 item 4): `SetMix`,
        `SetInsertBypass`, `SetInsertParams`, and a compound's mix members as
        one step. Until it exists those make no undo step.
-7. [x] Compound operations (ADR-0009 update 2026-10-14): PR #75.
-       - [ ] Its cost on long playlists. Each member re-validates its whole
-             playlist: measured 0.65 to 1.2 s for 4,096 members on 2,000
-             regions, against the 10 ms threshold (the numbers are in
-             ADR-0009). The remedy is to re-validate only around what a
-             member changed; or else to bound the work (members × regions)
-             rather than the member count. rt-engineer review to decide.
+7. [x] Compound operations (ADR-0009 update 2026-10-14): PR #75, with an
+       interim limit of 64 members (5 to 7.5 ms on 2,000-region playlists).
+8. [ ] Raise the compound limit toward 4,096 (ADR-0009 update 2026-10-14,
+       item 5, remedy (a); rt-engineer's profile on PR #75). Per member, the
+       whole-playlist hash maps are about 75 % of the cost:
+       - exact local validation inside a fold: an operator reports the
+         index range it touched, and the range ±1, with the crossfades
+         whose left or right region lies in it, is checked with
+         `region_problem`, adjacency and the crossfade rules. Not deferred
+         to the fold's end, so "fold == members one by one" holds;
+       - a test-time check in `model_compound` and `model_random_edits`
+         that the local verdict equals `playlist_problem`'s after every
+         member;
+       - range-local `overwrite()` (`lower_bound` and splice in place, no
+         new vector) and `drop_broken_crossfades()` (only the crossfades
+         touching the range), so a cut-like compound is not O(n) a member
+         either.
+       Measure with `measure_compound` again. Raising the limit changes what
+       a decoder accepts, so it needs a `kProtocolVersion` bump.
 
 ### Track 3: UI (ui-engineer)
 

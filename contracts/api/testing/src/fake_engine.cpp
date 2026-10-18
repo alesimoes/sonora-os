@@ -79,17 +79,17 @@ std::string hostable(const std::vector<PluginInfo>& catalog, const model::Plugin
 // Empty when the operation is not an insert operation or can be hosted;
 // apply() names whatever else is wrong with it.
 std::string insert_refusal(const model::Snapshot& s, const std::vector<PluginInfo>& catalog,
-                           const model::Member& op) {
-    if (const auto* a = std::get_if<model::AddInsert>(&op)) {
+                           model::MemberRef op) {
+    if (const auto* a = op.get_if<model::AddInsert>()) {
         const model::TrackEdit* t = track_by_id(s, a->track);
         return t == nullptr ? std::string() : hostable(catalog, a->plugin, t->channels);
     }
-    if (const auto* r = std::get_if<model::ReplaceInsert>(&op)) {
+    if (const auto* r = op.get_if<model::ReplaceInsert>()) {
         const model::TrackEdit* t = nullptr;
         if (find_insert(s, r->insert, &t) == nullptr) return {};
         return hostable(catalog, r->plugin, t->channels);
     }
-    if (const auto* m = std::get_if<model::MoveInsert>(&op)) {
+    if (const auto* m = op.get_if<model::MoveInsert>()) {
         const model::TrackEdit* from = nullptr;
         const model::Insert* in = find_insert(s, m->insert, &from);
         const model::TrackEdit* to = track_by_id(s, m->to_track);
@@ -729,7 +729,7 @@ void FakeEngine::handle(const std::string& bytes) {
                 // Per member, on the state the members before it made, as
                 // engine/control asks (ADR-0009 update 2026-10-14).
                 ok = document_->apply(op, u, why,
-                                      [&](const model::Snapshot& at, const model::Member& member) {
+                                      [&](const model::Snapshot& at, model::MemberRef member) {
                                           return insert_refusal(at, cfg_.plugins, member);
                                       });
                 break;

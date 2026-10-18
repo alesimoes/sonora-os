@@ -248,9 +248,13 @@ using Member =
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState>;
 
-// ADR-0009 update 2026-10-14: about 200 members per track on 18 tracks.
-// The decoder and apply() both refuse more.
-constexpr std::size_t kMaxCompoundMembers = 4096;
+// Interim, under ADR-0009 update 2026-10-14 item 5's own rule: each member
+// still re-validates its whole playlist, and 64 members on a 2,000-region
+// playlist is what fits the 10 ms control-thread budget. 4,096 is the target
+// once validation is local (BACKLOG Track 2). Raising it changes what a
+// decoder accepts, so it needs a kProtocolVersion bump. The decoder and
+// apply() both refuse more.
+constexpr std::size_t kMaxCompoundMembers = 64;
 
 // Several operations as one: each member applied to what the members before
 // it made, all refused if one is, one revision and one update. It makes one
@@ -289,12 +293,36 @@ bool to_member(Operation op, Member& out);
 bool is_undoable(const Operation& op);
 bool member_is_undoable(const Member& m);
 
+// A member of a compound, or a single operation, as a MemberCheck sees it:
+// by reference, so a large operation is never copied to be looked at.
+class MemberRef {
+public:
+    explicit MemberRef(const Member& m) : member_(&m) {}
+    // `op` is never a Compound: apply() hands over its members instead.
+    explicit MemberRef(const Operation& op) : op_(&op) {}
+
+    template <typename T>
+    const T* get_if() const {
+        return member_ != nullptr ? std::get_if<T>(member_) : std::get_if<T>(op_);
+    }
+    template <typename T>
+    bool holds() const {
+        return get_if<T>() != nullptr;
+    }
+
+private:
+    const Member* member_ = nullptr;
+    const Operation* op_ = nullptr;
+};
+
 // An engine's own refusal of a member, asked before the member is applied,
 // with the state the members before it made: whether a plugin can be
 // hosted, say, which depends on a track an earlier member added. Empty
-// accepts. It must not keep `at`: apply() edits in place what only the
-// state it is building holds.
-using MemberCheck = std::function<std::string(const Snapshot& at, const Member& member)>;
+// accepts. Keeping a copy of `at` is safe: the copy is one more owner, and
+// apply() then edits nothing in place. Keeping a reference or pointer to
+// it, or to anything in it, past the call is not: apply() edits in place
+// what only the state it is building holds.
+using MemberCheck = std::function<std::string(const Snapshot& at, MemberRef member)>;
 
 // The pure function. On success `after` is the new snapshot, sharing every
 // unchanged part with `before`, with revision + 1. On failure `after` is

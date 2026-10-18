@@ -85,9 +85,8 @@ static_assert(api::kInsertSlots == model::kInsertSlots,
 const char* const kNoHosting =
     "plugin hosting is not in this engine yet (engine/plugin_client, ADR-0012 checklist 4)";
 
-bool starts_a_host(const model::Member& op) {
-    return std::holds_alternative<model::AddInsert>(op) ||
-           std::holds_alternative<model::ReplaceInsert>(op);
+bool starts_a_host(model::MemberRef op) {
+    return op.holds<model::AddInsert>() || op.holds<model::ReplaceInsert>();
 }
 
 }  // namespace
@@ -807,15 +806,14 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 // members before it made (ADR-0009 update 2026-10-14).
                 bool no_host = false;
                 const model::MemberCheck check = [&](const model::Snapshot&,
-                                                     const model::Member& member) {
+                                                     model::MemberRef member) {
                     if (starts_a_host(member)) {
                         no_host = true;
                         return std::string(kNoHosting);
                     }
                     // Even one that leaves the document as it was: it ends a
                     // ride whose last ParameterChange need not be its value.
-                    if (std::holds_alternative<model::SetMix>(member) ||
-                        std::holds_alternative<model::SetMonitorBus>(member)) {
+                    if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
                         mix_changed = true;
                     }
                     return std::string();

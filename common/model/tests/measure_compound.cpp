@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // What a compound costs the document thread (ADR-0009 update 2026-10-14,
-// item 5): 4,096 members on one 2,000-region playlist, and on 18 tracks of
-// 2,000 regions, against the same members applied one by one. Run by hand;
+// item 5): kMaxCompoundMembers members on one 2,000-region playlist, and on
+// 18 tracks of 2,000 regions, against the same members applied one by one. Run by hand;
 // the numbers go in the ADR. Not a test: it asserts nothing about time.
 #include <algorithm>
 #include <chrono>
@@ -87,8 +87,7 @@ bool build(int tracks, int regions, Session& out) {
 }
 
 // The shape a cut makes: split a region, then remove its right part, over
-// and over, spread round-robin across the tracks. 4,096 members is 2,048
-// split-and-remove pairs.
+// and over, spread round-robin across the tracks: two members a pair.
 Compound cut_like(const Session& s, std::size_t members) {
     Compound c;
     c.label = "Cut";
@@ -211,10 +210,8 @@ int main() {
         ok = measure(tracks == 1 ? "SetFade, one playlist" : "SetFade, 18 playlists", tracks,
                      2000, fades(shape, kMaxCompoundMembers), 5) && ok;
     }
-    // Where the limit would have to sit for 10 ms on one 2,000-region
-    // playlist, if the fold alone set it.
-    for (const std::size_t n : {std::size_t{1}, std::size_t{16}, std::size_t{64},
-                                std::size_t{256}, std::size_t{1024}}) {
+    // How the cost grows with the member count, below the limit.
+    for (const std::size_t n : {std::size_t{1}, std::size_t{16}, std::size_t{32}}) {
         Session shape;
         if (!build(1, 2000, shape)) return 1;
         ok = measure("SetFade, one playlist", 1, 2000, fades(shape, n), 5) && ok;

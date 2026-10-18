@@ -3,9 +3,10 @@
 // A closed take reaches the document as one compound: one update, one undo
 // step, every armed track (ADR-0009 update 2026-10-14, item 8). A take is
 // never all-or-nothing: a track whose file does not read costs that track
-// and says so by name; and if the model refuses the take, its audio still
-// goes into the pool, so a save keeps it, and the engine says loudly that it
-// is not on the timeline.
+// and says so by name; a take larger than one compound is split into
+// compounds within the limit; and if the model refuses the take, its audio
+// still goes into the pool, so a save keeps it, and the engine says loudly
+// that it is not on the timeline.
 #include <unistd.h>
 
 #include <cstdio>
@@ -37,8 +38,11 @@ bool mentions(const std::string& haystack, const std::string& needle) {
     return false;
 }
 
+// More tracks than any test records.
+constexpr int kMaxTracks = 40;
+
 void wipe(const std::string& dir) {
-    for (int t = 1; t <= 3; ++t) {
+    for (int t = 1; t <= kMaxTracks; ++t) {
         const std::string f = dir + "/Audio Files/Audio " + std::to_string(t) + "_01.wav";
         std::remove(f.c_str());
     }
@@ -46,15 +50,15 @@ void wipe(const std::string& dir) {
     ::rmdir(dir.c_str());
 }
 
-SessionConfig config(const char* dir) {
+SessionConfig config(const char* dir, int tracks = 3) {
     SessionConfig cfg;
     cfg.dir = dir;
-    cfg.track_count = 3;
+    cfg.track_count = tracks;
     cfg.ring_seconds = 0.01;
     return cfg;
 }
 
-// Take 1 on all three tracks: 64 frames each, through the disk thread.
+// Take 1 on every track: 64 frames each, through the disk thread.
 bool record(Session& s) {
     if (!s.create_dirs()) return false;
     for (auto& t : s.tracks()) t->set_rec_armed(true);
@@ -62,10 +66,10 @@ bool record(Session& s) {
     if (!s.start_recording(1)) return false;
     float block[64];
     for (float& f : block) f = 0.125f;
-    const float* inputs[3] = {block, block, block};
+    const std::vector<const float*> inputs(s.tracks().size(), block);
     backend::AudioBlock b{};
-    b.inputs = inputs;
-    b.input_count = 3;
+    b.inputs = inputs.data();
+    b.input_count = static_cast<uint32_t>(inputs.size());
     b.nframes = 64;
     s.process(b);
     return s.stop();
@@ -174,10 +178,37 @@ int test_a_refused_take_keeps_its_audio_in_the_pool() {
     return 0;
 }
 
+// More armed tracks than one compound holds (two members a track): the take
+// is split into compounds within the limit, in track order, and every
+// track lands on the timeline. Without the split the one compound was
+// refused and every track fell back to the pool.
+int test_a_take_larger_than_one_compound_lands_whole() {
+    constexpr std::size_t kTracks = model::kMaxCompoundMembers / 2 + 2;
+    static_assert(kTracks <= static_cast<std::size_t>(kMaxTracks), "wipe() reaches every file");
+    const SessionConfig cfg = config("test_closed_take_large", static_cast<int>(kTracks));
+    wipe(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(record(s));
+        model::Document doc(engine_document(s));
+        const ClosedTake r = add_closed_take(doc, s, 1);
+        CHECK(r.track_notices.empty());
+        if (!r.refused.empty()) std::fprintf(stderr, "  refused: %s\n", r.refused.c_str());
+        CHECK(r.refused.empty());
+        CHECK(r.updates.size() == 2);   // a full compound, then 2 tracks
+        CHECK(doc.history().undo_depth() == 2);
+        for (std::size_t t = 0; t < kTracks; ++t) CHECK(regions_on(doc.current(), t) == 1);
+        CHECK(doc.current().sources->sources.size() == kTracks);
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     int failed = 0;
+    failed += test_a_take_larger_than_one_compound_lands_whole();
     failed += test_a_take_is_one_compound();
     failed += test_one_unreadable_track_costs_that_track();
     failed += test_a_refused_take_keeps_its_audio_in_the_pool();
@@ -185,6 +216,6 @@ int main() {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
     }
-    std::printf("closed_take: 3 passed\n");
+    std::printf("closed_take: 4 passed\n");
     return 0;
 }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/closed_take.h"
 
+#include <algorithm>
+
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
@@ -181,30 +183,39 @@ ClosedTake add_closed_take(model::Document& document, const Session& session, in
         sources.push_back(std::move(src));
         records.push_back(std::move(rec));
     }
-    if (sources.empty()) return out;
+    // Two members a track. Past the compound limit the take is split, in
+    // track order, one undo step per part: a take that does not fit must
+    // still land whole, not fall back to the pool for being large. The ids
+    // above rise across the parts, so each part's are still fresh.
+    constexpr std::size_t kTracksPerCompound = model::kMaxCompoundMembers / 2;
+    for (std::size_t first = 0; first < sources.size(); first += kTracksPerCompound) {
+        const std::size_t last = std::min(sources.size(), first + kTracksPerCompound);
+        model::Compound c;
+        c.label = "Record";
+        for (std::size_t k = first; k < last; ++k) {
+            c.ops.push_back(sources[k]);
+            c.ops.push_back(records[k]);
+        }
+        std::string why;
+        model::ReplicationUpdate u;
+        if (document.apply(model::Operation{std::move(c)}, u, why)) {
+            out.updates.push_back(std::move(u));
+            continue;
+        }
 
-    model::Compound c;
-    c.label = "Record";
-    for (std::size_t k = 0; k < sources.size(); ++k) {
-        c.ops.push_back(sources[k]);
-        c.ops.push_back(records[k]);
-    }
-    std::string why;
-    model::ReplicationUpdate u;
-    if (document.apply(model::Operation{std::move(c)}, u, why)) {
-        out.updates.push_back(std::move(u));
-        return out;
-    }
-
-    // The engine built these operations, so a refusal is a bug in one of
-    // them or in the model. The audio must not be lost to it: into the pool
-    // it goes, where a save records it, and the operator is told.
-    out.refused = which + " is on disk and in the session's audio, but not on the timeline: " +
-                  why;
-    for (model::AddSource& src : sources) {
-        std::string error;
-        if (!apply(document, src, out.updates, error)) {
-            out.refused += "; and " + src.source.path + " could not be added either: " + error;
+        // The engine built these operations, so a refusal is a bug in one
+        // of them or in the model. The audio must not be lost to it: into
+        // the pool it goes, where a save records it, and the operator is
+        // told.
+        if (!out.refused.empty()) out.refused += "; ";
+        out.refused += which + " is on disk and in the session's audio, but not on the timeline: " +
+                       why;
+        for (std::size_t k = first; k < last; ++k) {
+            std::string error;
+            if (!apply(document, sources[k], out.updates, error)) {
+                out.refused += "; and " + sources[k].source.path +
+                               " could not be added either: " + error;
+            }
         }
     }
     return out;

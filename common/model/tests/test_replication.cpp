@@ -170,7 +170,7 @@ int test_codec_refuses_what_is_not_an_operation() {
     const Bad bad[] = {
         {"", "line"},
         {"[]", "\"op\""},
-        {R"({"op": "Explode"})", "not an operation this version knows"},
+        {R"({"op": "Explode"})", "op: \"Explode\" is not an operation this version knows"},
         {R"({"op": "RemoveMarker"})", "missing required key \"marker\""},
         {R"({"op": "RemoveMarker", "marker": 1, "extra": 2})", "unknown key \"extra\""},
         {R"({"op": "RemoveMarker", "marker": -1})", "marker"},

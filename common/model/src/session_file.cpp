@@ -693,7 +693,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditStat
                 return false;
             }
             active = active || pl.id == t->active_playlist;
-            t->playlists.push_back(std::make_shared<const Playlist>(std::move(pl)));
+            t->playlists.push_back(std::make_shared<Playlist>(std::move(pl)));
         }
         if (!active) {
             return rd.fail(*v.find("active_playlist"), p + ".active_playlist",

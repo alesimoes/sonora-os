@@ -166,6 +166,9 @@ bool overwrite(Playlist& p, Frames a, Frames b, Id split_id, bool& used_split,
 // rule decides for every crossfade, which is what "removed or kept by the
 // same rule" asks of the overwrite.
 void drop_broken_crossfades(Playlist& p, const SourcePool& pool) {
+    // Both maps are over every region, built for nothing when there is no
+    // crossfade to keep or drop.
+    if (p.crossfades.empty()) return;
     std::unordered_map<Id, std::pair<Frames, Frames>> used;   // in_after, out_before
     std::unordered_map<Id, Frames> length;
     for (const Region& r : p.regions) length[r.id] = r.length;
@@ -773,8 +776,12 @@ private:
     // (ADR-0009 update 2026-10-14, item 5): k members on one n-region
     // playlist then copy it once, not k times. Only when the whole chain
     // from the edit state down has one owner, which is then the fold's
-    // working state: `before`, which the fold's caller holds, never does,
-    // and every object here was made by make_shared of a non-const type.
+    // working state: `before`, which the fold's caller holds, never does.
+    //
+    // The const_cast below is defined only because no Playlist, TrackEdit or
+    // EditState anywhere in common/model is created const: every one is
+    // make_shared<T>, never make_shared<const T> (the loader, the window
+    // decoder and this file). Keep it that way.
     template <typename F>
     bool edit_playlist(Id playlist, F&& f) {
         Located at;
@@ -881,7 +888,7 @@ bool fold(const Snapshot& before, const Compound& c, Snapshot& after, std::strin
     for (std::size_t i = 0; i < c.ops.size(); ++i) {
         const Member& m = c.ops[i];
         std::string why;
-        if (check) why = check(work, m);
+        if (check) why = check(work, MemberRef(m));
         bool ok = why.empty();
         if (ok) {
             Snapshot next;
@@ -917,21 +924,24 @@ Operation to_operation(const Member& m) {
 
 bool to_member(Operation op, Member& out) { return std::visit(ToMember{out}, std::move(op)); }
 
-bool member_is_undoable(const Member& m) {
-    return !(std::holds_alternative<AddSource>(m) || std::holds_alternative<SetMix>(m) ||
-             std::holds_alternative<SetMonitorBus>(m) ||
-             std::holds_alternative<SetSettings>(m) ||
-             std::holds_alternative<SetInsertBypass>(m) ||
-             std::holds_alternative<SetInsertParams>(m) ||
-             std::holds_alternative<SetInsertState>(m));
+namespace {
+
+// Mix, plug-in values, sources and settings are outside edit undo.
+bool leaf_is_undoable(MemberRef m) {
+    return !(m.holds<AddSource>() || m.holds<SetMix>() || m.holds<SetMonitorBus>() ||
+             m.holds<SetSettings>() || m.holds<SetInsertBypass>() ||
+             m.holds<SetInsertParams>() || m.holds<SetInsertState>());
 }
+
+}  // namespace
+
+bool member_is_undoable(const Member& m) { return leaf_is_undoable(MemberRef(m)); }
 
 bool is_undoable(const Operation& op) {
     if (const auto* c = std::get_if<Compound>(&op)) {
         return std::any_of(c->ops.begin(), c->ops.end(), member_is_undoable);
     }
-    Member m;
-    return to_member(op, m) && member_is_undoable(m);
+    return leaf_is_undoable(MemberRef(op));
 }
 
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,
@@ -941,9 +951,7 @@ bool apply(const Snapshot& before, const Operation& op, Snapshot& after,
         if (!fold(before, *c, result, error, check)) return false;
     } else {
         if (check) {
-            Member m;
-            to_member(op, m);
-            std::string why = check(before, m);
+            std::string why = check(before, MemberRef(op));
             if (!why.empty()) {
                 error = std::move(why);
                 return false;

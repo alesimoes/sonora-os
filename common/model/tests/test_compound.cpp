@@ -289,6 +289,7 @@ int test_codec_round_trip_and_limits() {
         many += (i == 0 ? "" : ",") + marker;
     }
     many += "]}";
+    const std::string at_most = "at most " + std::to_string(kMaxCompoundMembers);
     const Bad bad[] = {
         {R"({"op":"Compound","ops":[]})", "empty"},
         {R"({"op":"Compound"})", "missing required key \"ops\""},
@@ -299,11 +300,11 @@ int test_codec_round_trip_and_limits() {
         {R"({"op":"Compound","ops":[)" + marker + R"(,{"op":"RemoveMarker"}]})",
          "ops[1]: missing required key \"marker\""},
         {R"({"op":"Compound","ops":[)" + marker + R"(,{"op":"Explode"}]})",
-         "ops[1]: \"Explode\" is not an operation this version knows"},
+         "ops[1].op: \"Explode\" is not an operation this version knows"},
         {R"({"op":"Compound","ops":[)" + marker + R"(],"label":""})", "label"},
         {R"({"op":"Compound","ops":[)" + marker + R"(],"label":7})", "label"},
         {R"({"op":"Compound","ops":[)" + marker + R"(],"extra":1})", "unknown key \"extra\""},
-        {many, "at most 4096"},
+        {many, at_most.c_str()},
     };
     for (const Bad& x : bad) {
         Operation out = AddMarker{};
@@ -352,7 +353,7 @@ int test_check_hook_sees_the_intermediate_state() {
     c.ops = {t, SetTrackName{t.track, "Keys 2"}, SetTrackName{b.track, "Lead"}};
 
     std::vector<std::size_t> tracks_seen;
-    const MemberCheck count = [&](const Snapshot& at, const Member&) {
+    const MemberCheck count = [&](const Snapshot& at, MemberRef) {
         tracks_seen.push_back(at.edit->tracks.size());
         return std::string();
     };
@@ -363,8 +364,8 @@ int test_check_hook_sees_the_intermediate_state() {
 
     // A refusal from the hook refuses the compound like the model's own.
     const Snapshot before = doc.current();
-    const MemberCheck no_renames = [](const Snapshot&, const Member& m) {
-        return std::holds_alternative<SetTrackName>(m) ? std::string("renames are off")
+    const MemberCheck no_renames = [](const Snapshot&, MemberRef m) {
+        return m.holds<SetTrackName>() ? std::string("renames are off")
                                                        : std::string();
     };
     Compound d;

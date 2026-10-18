@@ -56,7 +56,9 @@ struct ClosedTake {
 // item 8). Every armed track that wrote frames and whose file reads goes in
 // as one Compound labelled "Record": its file as a Recorded source and a
 // RecordTake on the active playlist of the track at the same display index,
-// in track order, every id allocated up front. One update, one undo step.
+// in track order, every id allocated up front. One update, one undo step,
+// up to kMaxCompoundMembers / 2 armed tracks; a larger take goes in as
+// several compounds of that many tracks, one update and one step each.
 ClosedTake add_closed_take(model::Document& document, const Session& session, int take);
 
 }  // namespace sonora

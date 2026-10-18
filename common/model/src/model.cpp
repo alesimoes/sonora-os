@@ -316,6 +316,9 @@ std::string crossfade_problem(const Crossfade& x, const Playlist& p,
 }
 
 void sort_crossfades(Playlist& p) {
+    // The map below is over every region; a playlist with nothing to sort
+    // is most of them, and every member of a compound comes through here.
+    if (p.crossfades.size() < 2) return;
     std::unordered_map<Id, Frames> pos;
     for (const Region& r : p.regions) pos[r.id] = r.position;
     std::stable_sort(p.crossfades.begin(), p.crossfades.end(),
