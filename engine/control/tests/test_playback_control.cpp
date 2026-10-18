@@ -621,6 +621,52 @@ int test_failure_in_a_take_punched_out_is_reported() {
     return 0;
 }
 
+// PR #60 re-review: a take whose first track was cut short (and placed up
+// to the failure) and whose second track cannot be placed at all. The
+// second reason replaced the first, so the Notice lost the truncated
+// track, and it named no track for the one left out.
+int test_unplaceable_track_keeps_the_earlier_failure() {
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    auto session = make_session(2);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.tracks()[1]->set_rec_armed(true);
+    for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[0]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+    }
+    // A document with one track: the take's second file has nowhere to go.
+    auto one = make_session(1);
+    Document doc(sonora::engine_document(*one));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    std::string at_stop;
+    CHECK(!s.stop(&at_stop));
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+    std::vector<sonora::model::ReplicationUpdate> updates;
+    std::string placed;
+    CHECK(!sonora::add_closed_take(doc, s, closed[0], updates, placed));
+    CHECK(placed.find("is on disk but not in the session") != std::string::npos);
+    CHECK(placed.find("track 2") != std::string::npos);
+    CHECK(placed.find("Audio 2_") != std::string::npos);
+    // The earlier reason is still said.
+    CHECK(placed.find("Audio 1_") != std::string::npos);
+    CHECK(placed.find("4 GB") != std::string::npos);
+    CHECK(placed.find("placed up to the failure") != std::string::npos);
+    const auto& track = *doc.current().edit->tracks[0];
+    for (const auto& p : track.playlists) {
+        if (p->id != track.active_playlist) continue;
+        CHECK(p->regions.size() == 1);
+        CHECK(p->regions[0].length == 10);
+    }
+    return 0;
+}
+
 // Return to zero, then record, in one pass of the terminal loop: the take
 // starts at zero once the locate is applied, and the playhead never jumps
 // while it runs.
@@ -1243,6 +1289,7 @@ int main() {
     if (test_take_origin_is_first_recorded_frame()) return 1;
     if (test_takes_closed_while_rolling_join_the_document()) return 1;
     if (test_failure_in_a_take_punched_out_is_reported()) return 1;
+    if (test_unplaceable_track_keeps_the_earlier_failure()) return 1;
     if (test_return_to_zero_then_record()) return 1;
     if (test_pending_locate_dropped_by_a_take()) return 1;
     if (test_record_waits_for_residency()) return 1;

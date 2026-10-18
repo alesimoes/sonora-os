@@ -143,8 +143,20 @@ bool add_closed_take(model::Document& document, const Session& session,
     const std::string prefix = dir + "/";
     std::string first_failure;
     int more_failures = 0;
-    const auto not_placed = [&error](const std::string& why) {
-        error = "is on disk but not in the session: " + why;
+    const auto cut_short = [&]() {
+        std::string s = first_failure;
+        if (more_failures > 0) {
+            s += " (and " + std::to_string(more_failures) + " more track" +
+                 (more_failures == 1 ? "" : "s") + ")";
+        }
+        return s;
+    };
+    // The tracks before this one may have been placed and cut short; that
+    // is still said, after the track left out.
+    const auto not_placed = [&](const DiskThread::ClosedFile& f, const std::string& why) {
+        error = "is on disk but not in the session: track " + std::to_string(f.track + 1) +
+                ", " + f.path + ": " + why;
+        if (!first_failure.empty()) error += "; and it was cut short: " + cut_short();
         return false;
     };
     for (const DiskThread::ClosedFile& f : take.files) {
@@ -167,10 +179,10 @@ bool add_closed_take(model::Document& document, const Session& session,
 
         std::string why;
         const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), why);
-        if (!t) return not_placed(why);
+        if (!t) return not_placed(f, why);
         model::AddSource src;
         if (!source_of(document, dir, relative, t->channels, src.source, why)) {
-            return not_placed(why);
+            return not_placed(f, why);
         }
         src.source.kind = model::SourceKind::Recorded;
         src.source.take = take.take;
@@ -179,21 +191,17 @@ bool add_closed_take(model::Document& document, const Session& session,
         const model::Id track_id = t->id;
         const model::Id playlist = t->active_playlist;
         const uint16_t channels = t->channels;
-        if (!apply(document, src, updates, why)) return not_placed(why);
+        if (!apply(document, src, updates, why)) return not_placed(f, why);
 
         model::RecordTake rec;
         rec.track = track_id;
         rec.playlist = playlist;
         rec.region = region_of(src.source, document.current().next_id, stem(relative), channels);
         rec.split_right_id = rec.region.id + 1;
-        if (!apply(document, rec, updates, why)) return not_placed(why);
+        if (!apply(document, rec, updates, why)) return not_placed(f, why);
     }
     if (first_failure.empty()) return true;
-    error = "was cut short: " + first_failure;
-    if (more_failures > 0) {
-        error += " (and " + std::to_string(more_failures) + " more track" +
-                 (more_failures == 1 ? "" : "s") + ")";
-    }
+    error = "was cut short: " + cut_short();
     return false;
 }
 
