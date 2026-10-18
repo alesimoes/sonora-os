@@ -1071,25 +1071,52 @@ ADR-0011 "For the owner".
       `spice_opto_0..5`), "Sonora Opto" (eco 1x zero latency, standard 4x,
       high 8x; LV2 and VST3, stereo and mono, key input). Measurements:
       `brain/research/native-opto-n2.md`. dsp-engineer.
-- [ ] N2 slice 6b: the FET peak limiter ("Sonora FET"), from the published
-      circuit of the 1960s FET limiting amplifier: the FET as the bottom
-      leg of a voltage divider ahead of the preamp (a 2N3819/2N5457-class
-      JFET in its ohmic region, Shichman-Hodges with the published
-      device parameters, solved per sample with the DK method of slice 2),
-      the feedback side chain and its detector, attack 20-800 us and
-      release 50 ms-1.1 s as published, ratios 4, 8, 12, 20 and the
-      all-buttons mode as the circuit's behaviour (the ratio network with
-      every button in, not a preset curve), the class-A output stage
-      later. SPICE reference of the published schematic through
-      `measure/spice.h` (a JFET is native to ngspice), static curve per
-      ratio, attack and release against the published ranges, THD rising
-      with reduction, aliasing at 4x (sub-millisecond attack), hot input,
-      class A or an eco mode that meets it. Sources first: the original
-      unit's published schematic and service manual (the research note's
-      §1.6 found the manual's server refusing fetches), Gerat, Eichas and
-      Zolzer (AES 143, 2017) and the Aveiro thesis (Antao, 2014) for
-      validation figures only. No product names (ADR-0011 §5).
+- [ ] N2 slice 6b, `feature/dsp-n2-fet` (PR #74), landed; open on (e) of
+      the follow-ups below (eco's CPU): the FET peak limiter ("Sonora
+      FET") from the reissue manual's published circuit (Figs. 3 and 5):
+      the JFET as the divider's bottom leg with the LN gate, the feedback
+      side chain, ratio and bias strings, rectifier, attack (R54 || C27,
+      R55) and release (R56, R57) networks, C9, the stereo link joining the
+      C22 nodes; [SH] with the National 2N5457 model; a joint per-sample
+      Newton solve of the drain and the rectifier (`common/dsp` `fet.h`).
+      SPICE reference through `measure/spice_fet.h` (ngspice's own NJF and
+      diode), `plugins/native/fet` with LV2 and VST3, stereo and mono, with
+      the key input. Measurements: `brain/research/native-fet-n2.md`.
       dsp-engineer.
+- [ ] N2 FET follow-ups (slice 6b): (a) The all-button mode: under our
+      reading of Fig. 5's switch it gives about 3.6:1 from a threshold
+      12 dB below 4:1's, where the manual says "between 12:1 and 20:1".
+      Trace the switch's contacts on the original service schematic or a
+      unit, and model what it shows. (b) The release's slow stage: C9
+      (0.22 uF behind R6 + R7) holds half the gate's excursion for about a
+      second, so from 11 dB at the fastest release the reduction takes
+      0.36 s to halve. Confirm C9's value and the R6 arm's DC return on
+      the service schematic or a unit before anything changes. (c) The
+      ratios come out 10-24 % under the labels with the National 2N5457
+      model; measure the bias string's voltages and the side chain's gain
+      on a unit, and the FET in it. (d) The class-A output stage and its
+      transformer, the input transformer and the preamplifier's own
+      colour, after the transformer slice (3). (e) CPU, before the FET
+      enters the default insert list: eco is 20.5 us p99.9 per q128 stereo
+      block on the golden configuration (quiet host, i7-11800H), 0.5 us
+      over class A (it meets it on the hot programme, 17.6 us); standard
+      (81 us) and high (148 us) ship over the class only beside an eco
+      that meets it (§3.5). Candidates: the two channels in SIMD lanes, a
+      branch-free junction law, a tabulated exp. Then add the FET's eco to
+      the nightly gate and record `cpu.p999_kernels`.
+      (f) Eco under-reads high-frequency peaks (up to 2.5 dB at fs/4) and
+      aliases heavily at the fastest settings (-34 dBc at 48 kHz): an
+      inter-sample peak estimate for eco's rectifier, if a low-latency eco
+      is wanted. (g) The slowest attack is a third of the manual's 800 us
+      on the suite's step: settle how the manual measured it. (h) The
+      Aveiro thesis and Gerat, Eichas and Zolzer (AES 143) for
+      validation figures, not reached here. (i) A component-level
+      netlist of Figs. 3 and 5 for the SPICE reference (the transistors
+      of the preamplifier and side chain, the bias string, the switch,
+      the gate network with C3 and C6): today ngspice runs the same
+      reduced circuit as the model, with the gate, side chain, bias taps
+      and rest point as behavioural sources, so it checks the solver and
+      the device laws, not that reduction. dsp-engineer.
 - [ ] N2 opto follow-ups (slice 6a): (a) CPU: standard (4x) is 42-47 us
       p99.9 per q128 stereo block over class A (20 us), beside eco at
       9 us that meets it; candidates, measured on the reference machine

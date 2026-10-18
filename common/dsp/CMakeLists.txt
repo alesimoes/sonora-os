@@ -12,6 +12,7 @@ message(STATUS "common/dsp: architecture code from src/arch/${SONORA_DSP_ARCH}")
 add_library(sonora_dsp STATIC
   src/biquad.cpp
   src/fdn.cpp
+  src/fet.cpp
   src/fft.cpp
   src/limiter.cpp
   src/loudness.cpp
@@ -32,7 +33,7 @@ target_compile_options(sonora_dsp PUBLIC
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>
   $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
 
-foreach(t filters oversampling loudness dynamics limiter fdn triode opto)
+foreach(t filters oversampling loudness dynamics limiter fdn triode opto fet)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   add_test(NAME dsp_${t} COMMAND test_dsp_${t})
