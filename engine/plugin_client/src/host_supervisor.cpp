@@ -82,6 +82,33 @@ void HostProcess::stop() {
     }
 }
 
+void HostProcess::request_stop(uint64_t now_ms) {
+    if (stop_requested_ms_ != 0 || !child_ || !child_->running()) return;
+    stop_requested_ms_ = now_ms ? now_ms : 1;
+    if (ctl_ && !ctl_closed_) {
+        std::string bytes, error;
+        plugin::control::encode(plugin::control::Shutdown{}, bytes);
+        if (link_.queue(bytes, error)) pump(now_ms);
+    }
+    header_->shutdown.store(1, std::memory_order_release);
+}
+
+bool HostProcess::stopped(uint64_t now_ms, uint64_t grace_ms) {
+    if (!child_ || !child_->running()) return true;
+    pump(now_ms);
+    if (stop_requested_ms_ != 0 && now_ms - stop_requested_ms_ >= grace_ms) kill();
+    return !child_->running();
+}
+
+bool HostProcess::refresh_latency() {
+    if (!header_) return false;
+    header_->latency_generation.load(std::memory_order_acquire);
+    const uint32_t l = plugin::checked_latency(header_->latency_frames.load(std::memory_order_relaxed));
+    if (l == plugin::kLatencyInvalid || l == latency_) return false;
+    latency_ = l;
+    return true;
+}
+
 void HostProcess::kill() {
     if (!child_ || !child_->running()) return;
     child_->kill();
@@ -882,6 +909,22 @@ std::vector<std::string> SupervisedChain::take_host_messages() {
         out.insert(out.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
     }
     return out;
+}
+
+bool SupervisedChain::refresh_latency() { return current_ && current_->refresh_latency(); }
+
+void SupervisedChain::request_stop(uint64_t now_ms) {
+    if (starting_) starting_->kill();
+    if (current_) current_->request_stop(now_ms);
+    if (retiring_) retiring_->request_stop(now_ms);
+}
+
+bool SupervisedChain::stopped(uint64_t now_ms) {
+    bool all = true;
+    if (starting_) all = starting_->stopped(now_ms) && all;
+    if (current_) all = current_->stopped(now_ms) && all;
+    if (retiring_) all = retiring_->stopped(now_ms) && all;
+    return all;
 }
 
 SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {

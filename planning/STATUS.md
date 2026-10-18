@@ -357,9 +357,19 @@ end of its run. Keep it short: what is true now, not a diary.
   `steady_clock` by the backend conformance suite. A runner with a fixed
   block (the client's) runs only callbacks of that size; a bound chain the
   session does not run plays silence, never dry and early, and the plan
-  report shows the latency the plan carries. The control server does not
-  post any yet, nor start hosts: that is the amendment accepted in #64,
-  being built in #72 and #78, with the #68 review follow-ups in #77.
+  report shows the latency the plan carries.
+- **The engine hosts plugins (checklist 5, `feature/plugin-control-server`,
+  stacked on #77, #72 and #78).** `EngineControlServer` builds
+  `PluginHosting` once the backend's period is known: chains from the
+  document (probes, then hosts over HostControl), the ADR-0012 amendment's
+  rules (silent at open, dry for a new insert, the old host until the new
+  one is Ready, missing and refused plug-ins left out, a down chain silent
+  at its last latency), slots retired by plan epoch, one PluginFault
+  standing per insert, PluginParameterChange by the running instance's
+  keys. `plugin_hosting_server` drives it through the real server on
+  drivers/fake. Not yet: the scan worker and catalog (so a client cannot
+  add an insert, only open a session that holds them), FlushPluginState
+  through GetState, and play waiting for plug-ins at open.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays

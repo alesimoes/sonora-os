@@ -51,12 +51,14 @@
 #include "sonora/api/state_block.h"
 #include "sonora/api/wire.h"
 #include "sonora/command.h"
+#include "sonora/model/operations.h"
 #include "sonora/session_commands.h"
 #include "sonora/state_publisher.h"
 
 namespace sonora {
 
 class PlaybackController;
+class PluginHosting;
 class Session;
 namespace backend {
 class AudioBackend;
@@ -111,6 +113,14 @@ public:
         // False: an armed track sends nothing to the monitor bus, whatever
         // its mode in the document (--no-input-monitoring).
         bool input_monitoring = true;
+        // Plugin hosting (ADR-0012 checklist 5). Empty: none, and every
+        // insert shows faulted (§5.5). Otherwise the server builds
+        // PluginHosting once the backend's period is known (item 4 of the
+        // amendment of 2026-10-14), or at once with `plugin_block_frames`
+        // when there is no backend (tests).
+        std::string plugin_host;
+        std::vector<std::string> plugin_bundles;
+        uint32_t plugin_block_frames = 0;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -261,6 +271,14 @@ private:
     // Built after document_ and destroyed before it; touched only by the
     // control thread, or before start() and after stop().
     std::unique_ptr<PlaybackController> playback_;
+    // The plugin side, for one backend activation; null until the period is
+    // known, and when no host is configured. Released in after_deactivate().
+    std::unique_ptr<PluginHosting> hosting_;
+    // Builds hosting_ when it can, once (the control thread).
+    void start_hosting();
+    // Its document operations (editor gestures) applied and sent.
+    void apply_hosting_ops(std::vector<model::Operation>& ops);
+    bool hosting_tried_ = false;
     // The plans published when the state block last took the playing
     // plan's compensation.
     uint64_t compensation_shown_for_ = ~uint64_t{0};
@@ -285,6 +303,8 @@ private:
     // notices_ so a cleared fault is never replayed and faults never crowd
     // a device notice out of kMaxStandingNotices.
     std::map<uint64_t, std::string> plugin_faults_;
+    // The text of each standing fault, to say a change only once.
+    std::map<uint64_t, std::string> fault_text_;
     std::string inputs_missing_;
     std::string take_failed_;
     std::string fatal_;

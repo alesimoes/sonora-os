@@ -354,9 +354,30 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              removed while the dry track plays on and no callback waits.
              rt-engineer co-review (ADR-0007 §6): engine/core links
              sonora_plugin_client, which links common/platform PRIVATE.
-       - [ ] `SupervisedChain` into the control server (checklist 5),
-             with the ChainResolver filling ChainBinding from it; pidfd
-             instead of polling.
+       - [x] `SupervisedChain` into the control server (checklist 5),
+             with the ChainResolver filling ChainBinding from it
+             (`PluginHosting`, `feature/plugin-control-server`): chains
+             from the document diff, the amendment of 2026-10-14's item 1
+             and changes A, B, C, F, H, retiring by epoch, PluginFault from
+             the chains, PluginParameterChange by Loaded key, gestures to
+             SetInsertParams/SetInsertBypass. ctest
+             `plugin_hosting_{open_starts_silent,new_insert_dry,edit_keeps_old,undo_abandons,missing,refused,params,down_keeps_latency,gestures,server}`.
+       - [ ] pidfd instead of polling the host processes.
+       - [ ] Scan worker and catalog cache (ADR-0012 §4, §8): until then
+             the catalog is empty, so a client's AddInsert/ReplaceInsert is
+             refused (kNoCatalog) and only inserts a session already holds
+             are hosted.
+       - [ ] FlushPluginState through GetState and the saver thread's
+             durable write; today it still answers from the document.
+       - [ ] Play waits for plug-ins at session open (owner, 2026-10-18):
+             up to 10 s, "Loading plug-ins (n of m)"; record never waits.
+             `PluginHosting::loading()` counts them; the server wiring is
+             the next PR.
+       - [ ] A new chain's start that fails while the old chain still
+             runs is not shown as a fault (the old one keeps playing).
+       - [ ] `HostProcess::stop()` still blocks from SupervisedChain's
+             destructor when a host was not asked to stop first; every path
+             PluginHosting takes asks first (`request_stop`).
        Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
        out of that PR's scope and handed to checklist 5:
        - [x] The callback's timestamp (checklist 5 RT PR):
@@ -378,11 +399,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `Session::unrun_chain_blocks()`, never its dry input early
              (ctest `plan_pdc` `bound_chain_without_a_runner_is_silence`,
              `long_callback_bypasses_chains`).
-       - [ ] One block size, one policy (auditor finding 4, rt-engineer
-             item 3): pin `ClientConfig::block_frames` to the backend's
-             period and set `max_chain_channels = 2`; on a period change,
-             restart the hosts and replan (the chain latencies include the
-             IPC block). Control-server PR. Done in the RT PR: Session's
+       - [x] One block size, one policy (auditor finding 4, rt-engineer
+             item 3): `PluginHosting` is built with `block_frames` = the
+             backend's period once known and `max_chain_channels = 2`; a
+             period change is fatal to the activation (ADR-0007 §4.2;
+             amendment change D), and a reopen builds a new one. Done in the RT PR: Session's
              gate uses `InsertChainRunner::block_frames()`, so another
              period never reaches the client and is counted once, in
              `chain_bypassed_blocks` (ctest `plugin_params`).
@@ -443,26 +464,26 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `activate()` returns the thread's error (L3); `plan_in_bounds`
              refuses more nodes than scratch buffers (L4); the ramp-in
              starts from the fade's gain (L5).
-       - [ ] Re-post or reseed when `plugin_params_dropped()` moves (a store
-             no runnable node names, a change for a replaced plan), and
-             coalesce-and-retry a refused post
-             (ring full, including while no chain runs): the control-server
-             PR.
+       - [x] Re-post when `plugin_params_dropped()` moves (every running
+             chain's document values, at most every 100 ms), and
+             coalesce-and-retry a refused post, the newest value kept per
+             (store, instance, parameter): `PluginHosting`. Not tested on
+             its own (a dropped change needs a store no node names).
        - [ ] After a callback the runner did not take, the next collect
              plays the host's block from before the skipped callback (one
              period late, ramped in): the client's callback count does not
              move on a skipped callback. Rare (period mismatch, a cleared
              runner); a listening check decides whether it needs more.
-       - [ ] `PluginFault` from the client, not the runner (rt-engineer
-             item 2): the control thread polls `slot_status(slot)` and
-             `removed(slot)` for the slots the resolver assigned, so a
-             fault names its chain. The runner's session-wide counters stay
-             diagnostics or go, never a second source.
-       - [ ] One owner for teardown (session, hosts, runner, supervisor,
-             client), and `session_plugins_*` moved to engine/control once
-             the resolver drives it, with a supervisor-level `idle()` in
-             place of the test reading `plugin::ChannelHeader` (rt-engineer
-             items 4 and 5).
+       - [x] `PluginFault` from the client, not the runner (rt-engineer
+             item 2): from each SupervisedChain's state (restarting, down,
+             culprit), probes (missing, refused) and the hosts' refusals,
+             one standing per insert (`PluginHosting::faults`).
+       - [x] One owner for teardown (session, hosts, runner, supervisor,
+             client): `PluginHosting`, for one backend activation,
+             released in `EngineControlServer::after_deactivate`.
+       - [ ] `session_plugins_*` moved to engine/control (the resolver now
+             drives `plugin_hosting_*` there; the core-level ones stay
+             until then).
        - [x] Checklist 5 REQUIREMENT (code-reviewer L6 on PR #49):
              `HostSupervisor::spawn` and `SupervisedChain::begin` return at
              once; `HostProcess::poll_startup` and `SupervisedChain::poll`
@@ -564,12 +585,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              region and report a failure (auditor L3); refuse plugin
              hosting when `common/platform`'s SharedRegion could not add
              `F_SEAL_FUTURE_WRITE` (needs an accessor there; auditor L2).
-       - Start and stop hosts from the document diff (the set of active
+       - [x] Start and stop hosts from the document diff (the set of active
          insert ids before and after each change), not from the op kind:
-         today `starts_a_host()` in `engine_control_server.cpp` gates only
-         Apply of AddInsert and ReplaceInsert, but undo and redo of
-         RemoveInsert or ReplaceInsert, and `SetInsertActive{true}`, also
-         bring an insert into the chain (rt-engineer review of #46, low 4).
+         `PluginHosting::show` after every document change (undo, redo,
+         SetInsertActive included); `starts_a_host()` now only refuses
+         AddInsert/ReplaceInsert while the catalog is empty.
        - Key an instance on (insert id, channel layout) in the plan builder.
        - `InsertChainRunner` over PluginClient is `PluginChainRunner`
          (done, see above). Left for checklist 5:

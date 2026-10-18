@@ -14,6 +14,7 @@
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/playback_controller.h"
+#include "sonora/plugin_hosting.h"
 #include "sonora/session.h"
 
 namespace sonora {
@@ -86,8 +87,22 @@ static_assert(api::kInsertSlots == model::kInsertSlots,
 const char* const kNoHosting =
     "plugin hosting is not in this engine yet (engine/plugin_client, ADR-0012 checklist 4)";
 
+// With hosting up but no scan worker yet, the catalog is empty, so an insert
+// a client adds names a plugin the engine does not offer: refused, as the
+// conformance suite requires. A session that already holds inserts plays
+// them (ADR-0012 checklist 5; the scan worker and catalog are the next PR).
+const char* const kNoCatalog =
+    "the plugin catalog is empty until the scan worker lands (ADR-0012 checklist 5); inserts a "
+    "session already holds are hosted";
+
 bool starts_a_host(model::MemberRef op) {
     return op.holds<model::AddInsert>() || op.holds<model::ReplaceInsert>();
+}
+
+uint64_t steady_ms_now() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
 }
 
 }  // namespace
@@ -137,10 +152,14 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     show_document(true);
     publisher_->set_health(api::kHealthPluginsDisabled, true);
     show_inserts(true);
+    // With no backend (tests), at once; otherwise once the period is known.
+    start_hosting();
 }
 
 EngineControlServer::~EngineControlServer() {
     stop();
+    // Hosts before the plans that name their slots are freed.
+    hosting_.reset();
     // Its destructor waits for the reader to let go of the plans this side
     // still owns, so it goes while the session's reader is certainly there.
     playback_.reset();
@@ -148,7 +167,55 @@ EngineControlServer::~EngineControlServer() {
 
 void EngineControlServer::after_deactivate() {
     if (running()) return;
+    // One backend activation (amendment item 4): no callback runs now, so
+    // the runner, the hosts and their regions may go.
+    playback_->set_chain_resolver(ChainResolver());
+    hosting_.reset();
     playback_->after_deactivate();
+}
+
+void EngineControlServer::start_hosting() {
+    if (hosting_tried_ || opts_.plugin_host.empty()) return;
+    const uint32_t frames = audio_ != nullptr ? audio_->buffer_frames() : opts_.plugin_block_frames;
+    if (frames == 0) return;
+    hosting_tried_ = true;
+    PluginHostingConfig hc;
+    hc.host_path = opts_.plugin_host;
+    hc.bundles = opts_.plugin_bundles;
+    hc.session_dir = session_.config().dir;
+    hc.sample_rate = session_.config().sample_rate;
+    hc.block_frames = frames;
+    hc.max_block_frames = session_.config().playback.max_block_frames;
+    hc.max_stores = session_.config().playback.max_param_stores;
+    hosting_ = std::make_unique<PluginHosting>(session_, hc);
+    if (!hosting_->ok()) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = hosting_->why();
+        post_event(e);
+    }
+    publisher_->set_health(api::kHealthPluginsDisabled, !hosting_->ok());
+    playback_->set_chain_resolver([this](const model::TrackEdit& t, uint32_t engine_track, ChainBinding& b) {
+        hosting_->resolve(t, engine_track, b);
+    });
+    hosting_->show(document_->current(), true);
+    show_document(false);
+    show_inserts(false);
+}
+
+void EngineControlServer::apply_hosting_ops(std::vector<model::Operation>& ops) {
+    for (const model::Operation& op : ops) {
+        model::ReplicationUpdate u;
+        std::string why;
+        if (document_->apply(op, u, why)) {
+            send_update(u);
+        } else {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = "a value moved in a plugin's editor could not be recorded: " + why;
+            post_event(e);
+        }
+    }
 }
 
 void EngineControlServer::send_update(const model::ReplicationUpdate& update) {
@@ -161,7 +228,9 @@ void EngineControlServer::show_document(bool mix_changed) {
     const model::Snapshot& doc = document_->current();
     if (mix_changed) apply_mix();
     std::string why;
-    if (!playback_->show(doc, why)) {
+    if (playback_->show(doc, why)) {
+        if (hosting_) hosting_->built(playback_->last_built_epoch());
+    } else {
         // What plays does not change; the operator must know the edit is
         // not what is heard.
         api::EngineEvent e;
@@ -173,6 +242,8 @@ void EngineControlServer::show_document(bool mix_changed) {
 
 void EngineControlServer::show_inserts(bool new_session) {
     const auto say = [this](uint64_t insert, const std::string& text) {
+        if (text.empty()) fault_text_.erase(insert);
+        else fault_text_[insert] = text;
         api::EngineEvent e;
         e.kind = api::EventKind::PluginFault;
         e.insert = insert;
@@ -195,15 +266,27 @@ void EngineControlServer::show_inserts(bool new_session) {
         const auto& inserts = t < tracks.size() ? tracks[t]->inserts : kNoInserts;
         for (const model::Insert& in : inserts) {
             const model::InsertMix* m = doc.mix.find_insert(in.id);
-            flags[in.slot] = api::kInsertPresent | api::kInsertFaulted |
-                             (in.active ? api::kInsertActive : 0u) |
+            // Without hosting every insert shows faulted (§5.5); with it, an
+            // active one shows what its host says, an inactive one nothing.
+            uint32_t hosted = 0;
+            if (!hosting_) hosted = api::kInsertFaulted;
+            else if (in.active) hosted = hosting_->insert_flags(in.id);
+            flags[in.slot] = api::kInsertPresent | hosted | (in.active ? api::kInsertActive : 0u) |
                              (m != nullptr && m->bypass ? api::kInsertBypassed : 0u);
             if (!in.active) continue;
+            // One fault stands per insert, the latest replacing the last
+            // (ADR-0012 §8); from the hosts when there are any.
+            std::string text;
+            if (!hosting_) {
+                text = in.plugin.name + " (" + tracks[t]->name + ", slot " +
+                       std::string(1, static_cast<char>('A' + in.slot)) + ") is not running: " + kNoHosting;
+            } else if (auto f = hosting_->faults().find(in.id); f != hosting_->faults().end()) {
+                text = f->second;
+            }
+            if (text.empty()) continue;
             in_chain.insert(in.id);
-            if (plugin_faults_.count(in.id) != 0) continue;
-            say(in.id, in.plugin.name + " (" + tracks[t]->name + ", slot " +
-                           std::string(1, static_cast<char>('A' + in.slot)) +
-                           ") is not running: " + kNoHosting);
+            if (auto shown = fault_text_.find(in.id); shown != fault_text_.end() && shown->second == text) continue;
+            say(in.id, text);
         }
         for (uint32_t k = 0; k < api::kInsertSlots; ++k) {
             publisher_->set_insert_flags(static_cast<uint32_t>(t), k, flags[k]);
@@ -796,7 +879,14 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             refuse(from, "a plugin parameter change that does not decode: " + error);
             return;
         }
-        reply(from, c.seq, DispatchResult::NotImplemented, kNoHosting);
+        if (!hosting_) {
+            reply(from, c.seq, DispatchResult::NotImplemented, kNoHosting);
+            return;
+        }
+        // Resolved by key against the running instance's own table (§8).
+        std::string why;
+        const bool ok = hosting_->set_param(c.insert, c.key, c.value, why);
+        reply(from, c.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         return;
     }
 
@@ -829,7 +919,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                                                      model::MemberRef member) {
                     if (starts_a_host(member)) {
                         no_host = true;
-                        return std::string(kNoHosting);
+                        return std::string(hosting_ ? kNoCatalog : kNoHosting);
                     }
                     // Even one that leaves the document as it was: it ends a
                     // ride whose last ParameterChange need not be its value.
@@ -877,6 +967,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 mix_changed = mix_changed || !(mix_after.bus == mix_before.bus) ||
                               !(mix_after.tracks == mix_before.tracks) ||
                               track_order(document_->current()) != order_before;
+                // Chains from the document diff (undo, redo, active, values
+                // included), before the plan is built from it.
+                if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
                 show_document(mix_changed);
                 show_inserts(m.action == api::ModelAction::Load);
             }
@@ -892,6 +985,20 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
 
 void EngineControlServer::tick() {
     pump_playback();
+
+    // The plugin side: built once the backend's period is known, then
+    // polled every turn (probes, hosts, retiring by epoch). Never waits.
+    start_hosting();
+    if (hosting_) {
+        PluginHosting::PollResult r =
+            hosting_->poll(steady_ms_now(), document_->current(), playback_->oldest_live_epoch());
+        if (!r.ops.empty()) {
+            apply_hosting_ops(r.ops);
+            hosting_->show(document_->current(), false);
+        }
+        if (r.replan || !r.ops.empty()) show_document(false);
+        show_inserts(false);
+    }
 
     // The backend stopped calling the session. Said once; the interface
     // says why and leaves, and the wiring layer closes the take.

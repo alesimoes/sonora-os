@@ -123,6 +123,16 @@ public:
     // SIGKILL; reaps it.
     void stop();
     void kill();
+    // stop() without the wait, for the control thread: Shutdown and the
+    // word now; stopped() true once it has exited, killing it if it is
+    // still running `grace_ms` after the request.
+    void request_stop(uint64_t now_ms);
+    bool stopped(uint64_t now_ms, uint64_t grace_ms = 2000);
+    // The latency re-read from the region by contracts/plugin's rule
+    // (generation, then the figure through checked_latency), after a
+    // LatencyChanged. True when it moved; an implausible figure keeps the
+    // old one.
+    bool refresh_latency();
     // "exited with code N" / "killed by signal N", once it is not running.
     std::string exit_text();
 
@@ -229,6 +239,7 @@ private:
     std::vector<uint32_t> param_counts_;
     int32_t refused_instance_ = -1;
     std::string refused_text_;
+    uint64_t stop_requested_ms_ = 0;
 
     std::unique_ptr<platform::SharedRegion> region_;
     std::unique_ptr<platform::ChildProcess> child_;
@@ -367,6 +378,17 @@ public:
     // of hosts already let go first (L2 on #78), then the retiring one's,
     // then the bound one's.
     std::vector<std::string> take_host_messages();
+    // The bound host's latency re-read after a LatencyChanged; true when it
+    // moved (the caller builds a plan with it, §5.4).
+    bool refresh_latency();
+    // For a chain being let go, after every plan naming its slots has been
+    // retired: every host asked to stop without waiting, and stopped() true
+    // once all have exited (killed past the grace). The destructor then
+    // waits for nothing.
+    void request_stop(uint64_t now_ms);
+    bool stopped(uint64_t now_ms);
+    // A replacement is starting while the old host's slot stays bound.
+    bool restarting() const { return starting_ != nullptr && current_ != nullptr; }
     // Down because the plugin refused (deterministic; ADR-0012 amendment of
     // 2026-10-14, change C: the control server leaves that instance out and
     // starts the chain without it), and which instance, or -1.

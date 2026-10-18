@@ -147,6 +147,7 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
         return false;
     }
     report_ = report;
+    last_built_epoch_ = plan->epoch;
     pending_continuity_ = std::move(continuity);
     PlaybackPlan* const cancelled = pending_;
     pending_ = plan;
@@ -260,6 +261,14 @@ void PlaybackController::pump() {
     }
 
     reclaim();
+}
+
+uint64_t PlaybackController::oldest_live_epoch() const {
+    uint64_t oldest = UINT64_MAX;
+    if (const PlaybackPlan* p = session_.plans().current()) oldest = std::min(oldest, p->epoch);
+    if (pending_) oldest = std::min(oldest, pending_->epoch);
+    for (const Dropped& d : retired_) oldest = std::min(oldest, d.plan->epoch);
+    return oldest;
 }
 
 void PlaybackController::reclaim() {

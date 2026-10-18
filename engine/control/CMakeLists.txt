@@ -10,13 +10,19 @@ add_library(sonora_control STATIC
   src/plan_builder.cpp
   src/playback_controller.cpp
   src/closed_take.cpp
+  src/plugin_hosting.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
 # socket or mapping code in this module itself. common/model is public: the
 # plan builder and closed_take.h take a model::Document in their signatures.
+# engine/plugin_client directly, its control-thread half only (the
+# supervisor, PluginClient's control API): the edge ADR-0012's amendment of
+# 2026-10-14 (change E) draws into the ADR-0007 graph. The RT half is
+# reached only through engine/core's PluginChainRunner. common/json reads
+# the probes' answers.
 target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_platform
-  sonora_model)
+  sonora_model sonora_plugin_client PRIVATE sonora_json)
 
 # Here rather than in engine/core because it also drives the session through
 # the installed commands, and control may link core but not the reverse.
@@ -57,6 +63,26 @@ endif()
 add_executable(test_playback_control tests/test_playback_control.cpp)
 target_link_libraries(test_playback_control PRIVATE sonora_control)
 add_test(NAME playback_control COMMAND test_playback_control)
+
+# PluginHosting against real hosts (ADR-0012 checklist 5): built where the
+# host is (tools/build-plugins.sh, CI's plugins job).
+if(TARGET sonora-plugin-host)
+  add_executable(test_plugin_hosting tests/test_plugin_hosting.cpp)
+  target_link_libraries(test_plugin_hosting PRIVATE sonora_control sonora_backend_fake)
+  add_dependencies(test_plugin_hosting sonora-plugin-host sonora_test_lv2)
+  set(_ph $<TARGET_FILE:test_plugin_hosting> --host $<TARGET_FILE:sonora-plugin-host>
+          --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
+  set(_ph_tests)
+  foreach(scenario open_starts_silent new_insert_dry edit_keeps_old undo_abandons missing refused params
+                   down_keeps_latency gestures server)
+    add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
+    list(APPEND _ph_tests plugin_hosting_${scenario})
+  endforeach()
+  set_tests_properties(${_ph_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)
+  if(SONORA_PLUGIN_TESTS_ALLOW_SKIP)
+    set_tests_properties(${_ph_tests} PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+endif()
 
 # Record then play back against drivers/fake (ADR-0007 §7): a test-only
 # edge, as in engine/core; sonora_control links no driver.
