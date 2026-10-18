@@ -29,7 +29,7 @@ playback can follow edits; it is in flight.
        locate, pre-roll; input monitoring. In-band boundaries, record
        while rolling and punch in/out on the fly at block boundaries:
        `feature/record-while-rolling`. Punch points inside a block, engine
-       side: `feature/punch-in-block`; their caller, placement and command,
+       side: PR #81; their caller, placement and command,
        loop, pre-roll and input monitoring remain.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
@@ -839,7 +839,7 @@ Order and owners are in ADR-0008 §5.
 - [x] A short ramp when a track's monitor source changes (input to playback
       and back, Auto at record start and stop). Every change of source now
       ramps over `PlaybackConfig::monitor_ramp_frames` (64) from the frame it
-      takes effect (`feature/punch-in-block`, ctest `punch_points`). Not
+      takes effect (PR #81, ctest `punch_points`). Not
       ramped yet: Off to playback while rolling, which is a mute-like step
       from silence.
 - [ ] Timeline data model: regions over sources, with an undo stack.
@@ -877,7 +877,7 @@ Order and owners are in ADR-0008 §5.
       (`Session::start_recording()` while rolling, `Session::punch_out()`),
       and its vendor bindings in `keymaps/`. rt-engineer, contract owner for
       the catalogue.
-      Engine/core half landed (`feature/punch-in-block`):
+      Engine/core half landed (PR #81):
       `Session::start_punch(take, PunchRange)` opens the files when the punch
       is armed; the audio thread opens and closes each capture window at
       `capture_from`/`capture_to` inside a block (offsets 0, 1, nframes - 1
