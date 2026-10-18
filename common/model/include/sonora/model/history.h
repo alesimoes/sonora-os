@@ -42,6 +42,7 @@ public:
     struct WindowStep {
         std::shared_ptr<const EditState> edit;
         std::uint64_t revision = 0;
+        std::string label;
     };
     // A replica's history rebuilt from the engine's window: these steps,
     // oldest first, the pointer at `position`, and `current`, whose edit
@@ -80,6 +81,13 @@ public:
         return steps_[i].edit;
     }
     std::uint64_t step_revision(std::size_t i) const { return steps_[i].revision; }
+    const std::string& step_label(std::size_t i) const { return steps_[i].label; }
+
+    // What undo and redo would move over, for "Undo Paste" and "Redo
+    // Record": a compound's label, or else display_name() of the operation
+    // that made the step. Empty when there is nothing to undo or redo.
+    const std::string& undo_label() const;
+    const std::string& redo_label() const;
 
     // The engine's half of shrinking the window: evicts the oldest step if
     // undo can still reach a later one. False when nothing can go.
@@ -90,9 +98,11 @@ private:
         std::shared_ptr<const EditState> edit;
         std::uint64_t revision = 0;
         std::size_t charge = 0;   // bytes this step alone allocated
+        // Display only. Empty for the state at open.
+        std::string label;
     };
 
-    void push(std::shared_ptr<const EditState> edit, std::uint64_t revision);
+    void push(std::shared_ptr<const EditState> edit, std::uint64_t revision, std::string label);
     void pop_front();
     // An insert's values (MixState::inserts) are kept while a step in the
     // window holds the insert, so undo and redo bring it back as it was.

@@ -39,6 +39,9 @@ struct ReplicationUpdate {
     std::uint64_t undo_floor = 0;   // History::floor() after it
     std::uint64_t next_id = 0;      // Snapshot only
     std::string bytes;              // Op: encode_operation; Snapshot: encode_window
+    // Undo and Redo: the label of the step moved over, for "Undo Paste". A
+    // replica that holds another label for that step has lost track.
+    std::string label;
 };
 
 class Document {

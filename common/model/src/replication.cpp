@@ -57,6 +57,7 @@ bool Document::apply(const Operation& op, ReplicationUpdate& out, std::string& e
 }
 
 bool Document::undo(ReplicationUpdate& out, std::string& why) {
+    std::string label = history_.undo_label();
     if (!history_.undo()) {
         why = "nothing to undo";
         return false;
@@ -65,10 +66,12 @@ bool Document::undo(ReplicationUpdate& out, std::string& why) {
     out.kind = ReplicationUpdate::Kind::Undo;
     out.revision = history_.current().revision;
     out.undo_floor = history_.floor();
+    out.label = std::move(label);
     return true;
 }
 
 bool Document::redo(ReplicationUpdate& out, std::string& why) {
+    std::string label = history_.redo_label();
     if (!history_.redo()) {
         why = "nothing to redo";
         return false;
@@ -77,6 +80,7 @@ bool Document::redo(ReplicationUpdate& out, std::string& why) {
     out.kind = ReplicationUpdate::Kind::Redo;
     out.revision = history_.current().revision;
     out.undo_floor = history_.floor();
+    out.label = std::move(label);
     return true;
 }
 
@@ -165,10 +169,22 @@ bool Replica::receive(const ReplicationUpdate& u, std::string& error) {
             break;
         }
         case ReplicationUpdate::Kind::Undo:
+            // Labels are display only, but a different one means a
+            // different step: this replica has lost track.
+            if (history_->can_undo() && history_->undo_label() != u.label) {
+                error = "the engine undid \"" + u.label + "\" and this replica's step is \"" +
+                        history_->undo_label() + "\"";
+                break;
+            }
             ok = history_->undo();
             if (!ok) error = "the engine undid a step this replica does not have";
             break;
         case ReplicationUpdate::Kind::Redo:
+            if (history_->can_redo() && history_->redo_label() != u.label) {
+                error = "the engine redid \"" + u.label + "\" and this replica's step is \"" +
+                        history_->redo_label() + "\"";
+                break;
+            }
             ok = history_->redo();
             if (!ok) error = "the engine redid a step this replica does not have";
             break;

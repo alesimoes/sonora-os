@@ -135,6 +135,18 @@ void round_trips() {
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.kind == ModelUpdateKind::Snapshot && back.revision == 40 &&
               back.undo_floor == 12 && back.next_id == 99 && back.bytes == u.bytes);
+        CHECK(back.label.empty());
+    }
+    {
+        // An Undo names the step it undid (protocol 4), for "Undo Paste".
+        ModelUpdate u;
+        u.kind = ModelUpdateKind::Undo;
+        u.revision = 41;
+        u.label = "Paste \xC3\xA9";
+        wire::encode(u, bytes);
+        ModelUpdate back;
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.kind == ModelUpdateKind::Undo && back.label == u.label);
     }
 }
 

@@ -234,6 +234,7 @@ void encode(const ModelUpdate& m, std::string& out) {
     w.u64(m.undo_floor);
     w.u64(m.next_id);
     w.str(m.bytes);
+    w.str(m.label);
 }
 
 void encode(const PluginParameterChange& m, std::string& out) {
@@ -393,7 +394,7 @@ bool decode(std::string_view bytes, ModelUpdate& out, std::string& error) {
     ModelUpdate m;
     if (!r.type(Type::ModelUpdate) || !r.enumeration(m.kind, kLastUpdate) ||
         !r.u64(m.revision) || !r.u64(m.undo_floor) || !r.u64(m.next_id) ||
-        !r.str(m.bytes, kMaxModelBytes) || !r.done()) {
+        !r.str(m.bytes, kMaxModelBytes) || !r.str(m.label, kMaxModelBytes) || !r.done()) {
         return false;
     }
     out = std::move(m);

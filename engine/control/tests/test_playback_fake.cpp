@@ -355,6 +355,7 @@ sonora::model::ReplicationUpdate from_wire(const sonora::api::ModelUpdate& m) {
     u.undo_floor = m.undo_floor;
     u.next_id = m.next_id;
     u.bytes = m.bytes;
+    u.label = m.label;
     return u;
 }
 
@@ -559,6 +560,15 @@ int test_a_refused_take_is_shown_as_failed() {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         CHECK(flagged);
+        // Also a Notice, which stays for the session: the alert clears on
+        // the next clean take, which while rolling can be the next tick,
+        // and take N is still not on the timeline then.
+        bool noticed = false;
+        for (const auto& n : c.inbox.events) {
+            noticed = noticed || (n.kind == sonora::api::EventKind::Notice &&
+                                  n.text.find("not on the timeline") != std::string::npos);
+        }
+        CHECK(noticed);
         // The fallback's AddSource reached the client: the audio is in the
         // session's pool.
         const auto ops = op_updates(c.inbox);

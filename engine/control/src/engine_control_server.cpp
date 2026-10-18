@@ -40,6 +40,7 @@ api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
     m.bytes = u.bytes;
+    m.label = u.label;
     return m;
 }
 
@@ -245,6 +246,10 @@ void EngineControlServer::follow_transport() {
         for (const auto& u : added.updates) send_update(u);
         std::vector<std::string> notices = added.track_notices;
         if (!added.cut_short.empty()) notices.push_back(added.cut_short);
+        // A refused take is also a Notice, which stays for the session: the
+        // alert below clears on the next clean take, which while rolling can
+        // be the next tick, and this take is still not on the timeline then.
+        if (!added.refused.empty()) notices.push_back(added.refused);
         for (const std::string& notice : notices) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;

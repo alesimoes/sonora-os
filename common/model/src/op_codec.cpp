@@ -1047,7 +1047,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // --- the undo window ---------------------------------------------------------
 
 // 2: tracks carry their inserts, and the mix the inserts' values.
-constexpr std::int64_t kWindowFormat = 2;
+// 3: each step carries its label (ADR-0009 update 2026-10-14), for "Undo
+//    Paste" on a replica rebuilt from the window.
+constexpr std::int64_t kWindowFormat = 3;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1159,6 +1161,7 @@ bool window_value(const History& h, Value& root, std::string& error) {
         Value sv = Value::object();
         sv.set("revision", integer(static_cast<std::int64_t>(h.step_revision(i))));
         sv.set("edit", index_value(w.edit(*h.step_edit(i))));
+        sv.set("label", Value::string(h.step_label(i)));
         steps.push(std::move(sv));
     }
 
@@ -1368,8 +1371,9 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
         History::WindowStep st;
         std::int64_t rev = 0;
         std::size_t ix = 0;
-        if (!rd.keys(e, "steps", {"revision", "edit"}) ||
+        if (!rd.keys(e, "steps", {"revision", "edit", "label"}) ||
             !rd.integer(e, "steps", "revision", kMaxInteger, rev) ||
+            !rd.text(e, "steps", "label", st.label) ||
             !table_index(rd, *e.find("edit"), "steps.edit", edits.size(), ix)) {
             return false;
         }

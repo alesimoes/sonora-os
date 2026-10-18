@@ -25,6 +25,7 @@ model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
     u.undo_floor = m.undo_floor;
     u.next_id = m.next_id;
     u.bytes = m.bytes;
+    u.label = m.label;
     return u;
 }
 

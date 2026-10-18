@@ -140,6 +140,7 @@ ModelUpdate to_wire(const model::ReplicationUpdate& u) {
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
     m.bytes = u.bytes;
+    m.label = u.label;
     return m;
 }
 

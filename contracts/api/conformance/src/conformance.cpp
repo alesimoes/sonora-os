@@ -141,6 +141,7 @@ struct Session {
             u.undo_floor = m.undo_floor;
             u.next_id = m.next_id;
             u.bytes = m.bytes;
+            u.label = m.label;
             std::string why;
             if (!replica.receive(u, why)) replica_error = why;
         }
@@ -617,6 +618,9 @@ int check_compound(Rig& rig) {
                    "undo failed");
             EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() == updates + 2; }),
                    "no update for the undo");
+            EXPECT(s.inbox.model.back().kind == ModelUpdateKind::Undo &&
+                       s.inbox.model.back().label == "Paste",
+                   "the undo does not name the compound it undid");
             EXPECT(s.replica.current().edit->markers->markers.empty() &&
                        s.replica.current().edit->tracks[0]->name == name,
                    "one undo did not take the compound back");

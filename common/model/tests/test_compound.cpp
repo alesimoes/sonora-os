@@ -381,6 +381,113 @@ int test_check_hook_sees_the_intermediate_state() {
     return 0;
 }
 
+// Each undo step keeps what the Edit menu calls it: a compound's label, or
+// with none its first edit member's name; a single operation its kind's.
+// Steps that are not edits (mix) make no step and so no label.
+int test_history_steps_carry_labels() {
+    Base b;
+    CHECK(make_base(b) == 0);
+    CHECK(b.h.undo_label() == "PlaceRegion");
+    const Compound take = take_on(b.h.current(), b.track, b.playlist, 200000, 50000);
+    CHECK_APPLY(b.h, take);
+    CHECK(b.h.undo_label() == "Record");
+    CHECK_APPLY(b.h, (SetTrackName{b.track, "Lead"}));
+    CHECK(b.h.undo_label() == "SetTrackName");
+    Compound unlabelled = take_on(b.h.current(), b.track, b.playlist, 600000, 1000);
+    unlabelled.label.clear();
+    CHECK_APPLY(b.h, unlabelled);
+    CHECK(b.h.undo_label() == "RecordTake");
+
+    TrackMix m = *b.h.current().mix.find(b.track);
+    m.mute = true;
+    Compound mix_only;
+    mix_only.ops = {SetMix{m}};
+    mix_only.label = "Mute All";
+    CHECK_APPLY(b.h, mix_only);
+    CHECK(b.h.undo_label() == "RecordTake");
+
+    CHECK(b.h.undo());
+    CHECK(b.h.undo_label() == "SetTrackName" && b.h.redo_label() == "RecordTake");
+    CHECK(b.h.undo());
+    CHECK(b.h.undo_label() == "Record" && b.h.redo_label() == "SetTrackName");
+    CHECK(b.h.redo());
+    CHECK(b.h.redo_label() == "RecordTake");
+    return 0;
+}
+
+// Undo and Redo updates name the step they move over, and a replica that
+// holds another label for that step has lost track.
+int test_undo_and_redo_carry_the_label() {
+    Base b;
+    CHECK(make_base(b) == 0);
+    Document doc(b.h.current());
+    Replica replica;
+    ReplicationUpdate u;
+    std::string err;
+    CHECK(doc.snapshot(u, err));
+    CHECK(replica.receive(u, err));
+    CHECK(doc.apply(Operation{take_on(doc.current(), b.track, b.playlist, 200000, 50000)}, u,
+                    err));
+    CHECK(u.label.empty());   // an Op carries its own label inside its bytes
+    CHECK(replica.receive(u, err));
+    CHECK(replica.history()->undo_label() == "Record");
+
+    CHECK(doc.undo(u, err));
+    CHECK(u.kind == ReplicationUpdate::Kind::Undo && u.label == "Record");
+    CHECK(replica.receive(u, err));
+    CHECK(replica.history()->redo_label() == "Record");
+
+    // A second replica, in step, told that the redo is of another step.
+    Replica other;
+    ReplicationUpdate snap;
+    CHECK(doc.snapshot(snap, err));
+    CHECK(other.receive(snap, err));
+    CHECK(doc.redo(u, err));
+    CHECK(u.kind == ReplicationUpdate::Kind::Redo && u.label == "Record");
+    CHECK(replica.receive(u, err));
+    ReplicationUpdate wrong = u;
+    wrong.label = "Paste";
+    CHECK(!other.receive(wrong, err));
+    CHECK(mentions(err, "Paste") && mentions(err, "Record"));
+    CHECK(!other.synced());
+    return 0;
+}
+
+// A resync's window carries every step's label, so a replica rebuilt from
+// it names the same undo and redo as the engine.
+int test_the_window_carries_labels() {
+    Base b;
+    CHECK(make_base(b) == 0);
+    Document doc(b.h.current());
+    ReplicationUpdate u;
+    std::string err;
+    CHECK(doc.apply(Operation{take_on(doc.current(), b.track, b.playlist, 200000, 50000)}, u,
+                    err));
+    Compound paste;
+    paste.label = "Paste \xC3\xA9";
+    paste.ops = {SetTrackName{b.track, "Lead"}};
+    CHECK(doc.apply(Operation{paste}, u, err));
+    CHECK(doc.apply(Operation{SetTrackName{b.track, "Vox"}}, u, err));
+    CHECK(doc.undo(u, err));
+
+    CHECK(doc.snapshot(u, err));
+    CHECK(mentions(u.bytes, "\"label\": \"Paste"));
+    Replica replica;
+    CHECK(replica.receive(u, err));
+    const History& mine = doc.history();
+    const History& theirs = *replica.history();
+    CHECK(theirs.step_count() == mine.step_count());
+    for (std::size_t i = 0; i < mine.step_count(); ++i) {
+        CHECK(theirs.step_label(i) == mine.step_label(i));
+    }
+    CHECK(theirs.undo_label() == "Paste \xC3\xA9");
+    CHECK(theirs.redo_label() == "SetTrackName");
+    std::string again;
+    CHECK(encode_window(theirs, again, err));
+    CHECK(again == u.bytes);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -399,6 +506,9 @@ int main() {
     t(test_codec_round_trip_and_limits);
     t(test_replica_sees_one_update);
     t(test_check_hook_sees_the_intermediate_state);
+    t(test_history_steps_carry_labels);
+    t(test_undo_and_redo_carry_the_label);
+    t(test_the_window_carries_labels);
     if (failed != 0) {
         std::fprintf(stderr, "model_compound: %d of %d failed\n", failed, run);
         return 1;
