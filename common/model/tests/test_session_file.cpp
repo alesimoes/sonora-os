@@ -463,6 +463,73 @@ int test_comma_locale() {
     return 0;
 }
 
+// Before PR #69 the model accepted a fade running into the crossfade at its
+// region's other end whenever an edge edit or a crossfade clear produced it,
+// and the interface saved it. Such a v2 file must still open: the fade is
+// shortened to meet the crossfade, and the load says so.
+int test_fade_into_crossfade_is_repaired_at_load() {
+    // R [100000, 500000) butts S [500000, 600000); a centred 960 crossfade
+    // reaches 480 into each. S's fade-out met it, then S's end was trimmed
+    // to 550000: the old model kept a 50000 fade-out over 49520 frames.
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack t = add_track(ids, "Vox");
+    CHECK_APPLY(h, t);
+    const AddSource src = add_source(ids, 1'000'000, 1, t.track);
+    CHECK_APPLY(h, src);
+    const Id r = ids();
+    const Id s = ids();
+    CHECK_APPLY(h, (PlaceRegion{t.playlist, region(r, src.source.id, 100000, 400000, 200000)}));
+    CHECK_APPLY(h, (PlaceRegion{t.playlist, region(s, src.source.id, 500000, 100000, 500)}));
+    CHECK_APPLY(h, (SetFade{t.playlist, s, FadeEnd::Out, Fade{100000 - 480, FadeShape::Linear}}));
+    CHECK_APPLY(h, (SetCrossfade{t.playlist,
+                                 Crossfade{r, s, 960, Align::Centre, FadeShape::EqualPower}}));
+    CHECK_APPLY(h, (TrimRegion{t.playlist, s, Edge::End, 550000}));
+    std::string bytes, err;
+    CHECK(serialize(h.current(), WriteInfo{"sonora-ui 0.1.0", 3}, bytes, err));
+    const std::string old_file = edit(bytes, "\"length\": 49520", "\"length\": 50000");
+
+    Loaded l;
+    LoadError e;
+    CHECK(load(old_file, l, e));
+    const Region* back = find(playlist_of(l.snapshot, 0), s);
+    CHECK(back != nullptr && back->fade_out.length == 50000 - 480);
+    CHECK(l.repairs.size() == 1);
+    CHECK(mentions(l.repairs[0], "tracks[0].playlists[0].regions[1]"));
+    CHECK(mentions(l.repairs[0], "fade-out shortened from 50000 to 49520 frames"));
+    CHECK(mentions(l.repairs[0], "crossfade at its start"));
+    // What loads is what the current model would have made, and it saves.
+    std::string again;
+    CHECK(save(l, again));
+    CHECK(again == bytes);
+    // A file without the overlap loads with nothing to report.
+    CHECK(load(bytes, l, e));
+    CHECK(l.repairs.empty());
+
+    // The mirror, as a crossfade clear left it: S's fade-in, kept under a
+    // crossfade at its start, runs into the crossfade at its end.
+    std::string mirror;
+    {
+        // Swap the crossfade to S's end: S|T, with T butting at 550000.
+        History m(h.current());
+        const Id tt = m.current().next_id;
+        CHECK_APPLY(m, (RemoveCrossfade{t.playlist, r, s}));
+        CHECK_APPLY(m, (SetFade{t.playlist, s, FadeEnd::Out, Fade{0, FadeShape::Linear}}));
+        CHECK_APPLY(m, (SetFade{t.playlist, s, FadeEnd::In, Fade{50000 - 480, FadeShape::Linear}}));
+        CHECK_APPLY(m, (PlaceRegion{t.playlist, region(tt, src.source.id, 550000, 10000, 700000)}));
+        CHECK_APPLY(m, (SetCrossfade{t.playlist,
+                                     Crossfade{s, tt, 960, Align::Centre, FadeShape::EqualPower}}));
+        CHECK(serialize(m.current(), WriteInfo{"sonora-ui 0.1.0", 4}, mirror, err));
+    }
+    CHECK(load(edit(mirror, "\"length\": 49520", "\"length\": 50000"), l, e));
+    back = find(playlist_of(l.snapshot, 0), s);
+    CHECK(back != nullptr && back->fade_in.length == 50000 - 480);
+    CHECK(l.repairs.size() == 1);
+    CHECK(mentions(l.repairs[0], "fade-in shortened from 50000 to 49520 frames"));
+    CHECK(mentions(l.repairs[0], "crossfade at its end"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -480,6 +547,7 @@ int main() {
     t(test_malformed);
     t(test_malformed_inserts);
     t(test_comma_locale);
+    t(test_fade_into_crossfade_is_repaired_at_load);
     if (failed != 0) {
         std::fprintf(stderr, "model_session_file: %d of %d failed\n", failed, run);
         return 1;

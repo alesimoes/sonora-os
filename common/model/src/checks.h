@@ -10,6 +10,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "sonora/model/model.h"
 
@@ -35,6 +36,19 @@ std::string inserts_problem(const std::vector<Insert>& inserts, std::string& whe
 std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::string& where);
 // Empty when `count` values fit one insert.
 std::string insert_param_count_problem(std::size_t count);
+
+// A fade left running into the crossfade at its region's other end is
+// shortened to meet it, as clamp_fades() shortens one that outgrew its
+// region. Used by edits that move edges, clear a crossfade or add a take's
+// crossfades, and by the loader for files older builds wrote. SetFade and
+// SetCrossfade are refused instead (playlist_problem), because there the
+// operator asked for exactly that length. Returns what it shortened.
+struct FadeFit {
+    std::size_t region = 0;   // index in Playlist::regions
+    bool fade_in = false;     // else the fade-out
+    Frames from = 0, to = 0;
+};
+std::vector<FadeFit> fit_fades_to_crossfades(Playlist& p);
 
 const Region* find_region(const Playlist& p, Id id);
 // Canonical order: by the left region's position.

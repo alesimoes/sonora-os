@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "sonora/model/model.h"
 
@@ -41,6 +42,10 @@ struct Loaded {
     std::string written_by;
     std::uint64_t save_generation = 0;
     std::int64_t file_version = 0;   // before migration
+    // What the loader changed so that a file an older build wrote still
+    // opens, one sentence each with its key path, for the opener to show.
+    // Empty for a file this build would have written.
+    std::vector<std::string> repairs;
 };
 
 struct LoadError {

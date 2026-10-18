@@ -942,27 +942,10 @@ bool EditController::clear_fade_at_selection(bool& done, std::string& why) {
         if (sel_.start == r->position - before && sel_.end == r->position + after) {
             done = true;
             // Removing it brings back the fades each region keeps under it.
-            // A document can hold one that overlaps whatever is at that
-            // region's other end (made before fade_selection counted hidden
-            // fades, or by another interface); the engine would multiply the
-            // two, so the crossfade stays, and the reason says what to do.
-            const Region* l = region_on(p, x.left);
-            for (const bool in : {true, false}) {
-                const Region* n = in ? r : l;
-                if (n == nullptr) continue;
-                const RegionFades f = region_fades(p, *n);
-                const Frames back = in ? n->fade_in.length : n->fade_out.length;
-                const Frames other = in ? reach_out(f) : reach_in(f);
-                if (back <= n->length - other) continue;
-                const Crossfade* there = in ? f.out_crossfade : f.in_crossfade;
-                const char* end = in ? "end" : "start";
-                why = "clearing this crossfade would bring back " + named(*n) + "'s fade-" +
-                      (in ? "in" : "out") + ", kept under it, over " +
-                      (there != nullptr ? "the crossfade at " + named(*n) + "'s " + end
-                                        : named(*n) + "'s fade-" + (in ? "out" : "in")) +
-                      "; shorten that first";
-                return false;
-            }
+            // One that would run into what is at its region's other end
+            // comes back shortened to meet it: the model does that
+            // (RemoveCrossfade, PR #69), because the operator cannot see
+            // or edit that fade while the other end is crossfaded.
             return submit(RemoveCrossfade{p.id, x.left, x.right}, why);
         }
     }

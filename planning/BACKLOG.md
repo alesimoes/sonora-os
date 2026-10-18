@@ -103,10 +103,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              other end (the interface clamps and refuses against it, naming
              it). Pro Tools drops it: crossfade plus SetFade 0 needs the
              compound operation below.
-       - [ ] common/model does not refuse a crossfade that overlaps the
-             region's own fade at its other end (the engine multiplies
-             them). The interface refuses it; the model should too, in
-             `playlist_problem`, so no other client can write one.
+       - [x] common/model refuses a crossfade that overlaps the region's
+             own fade at its other end, in `playlist_problem`; edge-moving
+             edits, crossfade clears and punches shorten the fade instead,
+             and the loader repairs older v2 files the same way, reporting
+             each shortened fade on Open (PR #69).
+       - [ ] Once the engine sends punch crossfades (`add_closed_take` sends
+             none today), the take's report names any neighbour's fade the
+             punch shortened (`RecordTake` runs `fit_fades_to_crossfades`).
+             Pro Tools truncates the fade and never refuses the record; the
+             operator should still hear what changed (PR #69 review, note 3).
        - [ ] Cut/copy/paste/duplicate/repeat and Shuffle need several model
              operations as one undo step: a compound operation in
              common/model (or the engine resolving the command, ADR-0009)

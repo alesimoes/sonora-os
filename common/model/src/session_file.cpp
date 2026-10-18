@@ -7,6 +7,7 @@
 #include <limits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "checks.h"
 #include "sonora/json/json.h"
@@ -368,10 +369,14 @@ public:
 
     Id max_id() const { return max_id_; }
 
+    void repaired(std::string what) { repairs_.push_back(std::move(what)); }
+    std::vector<std::string> take_repairs() { return std::move(repairs_); }
+
 private:
     LoadError& error_;
     std::unordered_map<Id, std::string> ids_;
     Id max_id_ = 0;
+    std::vector<std::string> repairs_;
 };
 
 bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
@@ -554,6 +559,17 @@ bool read_playlist(Reader& rd, const Value& v, const std::string& p,
         if (!rd.choice(xv, xp, "align", kAligns, x.align)) return false;
         if (!rd.choice(xv, xp, "shape", kShapes, x.shape)) return false;
         pl.crossfades.push_back(x);
+    }
+    // Before PR #69 an edge edit or a crossfade clear could leave a fade
+    // running into the crossfade at its region's other end, and the
+    // interface saved it. The file still opens, with the fade shortened as
+    // the edits now shorten it ("Backward compatibility: always").
+    for (const detail::FadeFit& f : detail::fit_fades_to_crossfades(pl)) {
+        rd.repaired(index_path(p + ".regions", f.region) + ": its fade-" +
+                    (f.fade_in ? "in" : "out") + " shortened from " + std::to_string(f.from) +
+                    " to " + std::to_string(f.to) + " frames to meet the crossfade at its " +
+                    (f.fade_in ? "end" : "start") +
+                    ", which the engine would otherwise multiply with it");
     }
     std::string where;
     return rd.checked(detail::playlist_problem(pl, pool, channels, where), v, p, where);
@@ -928,6 +944,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
     s.settings = std::move(settings);
     s.revision = 0;
     s.next_id = rd.max_id() + 1;
+    loaded.repairs = rd.take_repairs();
     // Every check above ran with a line; this one is the net under them,
     // the same function apply() answers to.
     if (!check_invariants(s, why)) {
