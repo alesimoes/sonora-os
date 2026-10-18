@@ -106,11 +106,15 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
                                  ? cfg_.boundary_records
                                  : std::max<uint32_t>(64, 8 * tracks_n);
     boundaries_ = std::make_unique<RingBuffer<CaptureBoundary>>(records);
-    // A take is started, at most, once per command the control thread
-    // handles; the audio thread drains this every block.
-    punches_ = std::make_unique<RingBuffer<PunchRecord>>(8);
+    // One more than it holds: the ring keeps a slot empty.
+    punches_ = std::make_unique<RingBuffer<PunchRecord>>(cfg_.playback.punch_capacity + 1);
+    punch_slots_ = static_cast<uint32_t>(punches_->capacity());
+    punch_table_.reset(new PunchRecord[punch_slots_]);
+    for (uint32_t k = 0; k < punch_slots_; ++k) punch_table_[k] = kWholeTake;
+    punch_stored_.reset(new uint64_t[punch_slots_]());
     monitor_pos_.reset(new float[tracks_n + 1]());
     monitor_stamp_.reset(new uint64_t[tracks_n + 1]());
+    source_seen_.reset(new uint64_t[tracks_n + 1]());
     window_take_.reset(new uint32_t[tracks_n + 1]);
     for (uint32_t t = 0; t <= tracks_n; ++t) window_take_[t] = kNoWindow;
     captured_.reset(new uint64_t[tracks_n + 1]());
@@ -385,7 +389,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.
     take_origin_.store(kNoOrigin, std::memory_order_relaxed);
-    transport_->set_recording(static_cast<uint32_t>(take_number));
+    transport_->set_recording(static_cast<uint32_t>(take_number), range != nullptr);
     return true;
 }
 
@@ -587,6 +591,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     const uint32_t nframes = block.nframes;
     const Transport::Word word = transport_->load_word();
+    if (word_hook_ != nullptr) word_hook_(word_hook_context_);
     const bool recording = word.state == TransportState::Recording;
     const bool rolling = word.state != TransportState::Stopped;
     // A take is one contiguous span of the timeline. engine/control sends no
@@ -607,14 +612,28 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         }
         transport_->note_locate();
     }
+    // The running take's range is never overwritten, and a drain takes no
+    // more than the ring holds, so this callback's records each find a slot
+    // other than it, however many takes the control thread started since
+    // the word was loaded (PR #81 review, N1, N2).
+    const bool punched = recording && word.punched;
+    const uint32_t keep = punched ? newest_punch(word.take) : punch_slots_;
     PunchRecord punch{};
-    while (punches_->read(&punch, 1) == 1) {
+    for (uint32_t k = 0; k < punch_slots_ && punches_->read(&punch, 1) == 1; ++k) {
+        if (punch_next_ == keep) punch_next_ = punch_next_ + 1 == punch_slots_ ? 0 : punch_next_ + 1;
         punch_table_[punch_next_] = punch;
-        punch_next_ ^= 1u;
+        punch_stored_[punch_next_] = ++punch_count_;
+        punch_next_ = punch_next_ + 1 == punch_slots_ ? 0 : punch_next_ + 1;
     }
     punch_ = &kWholeTake;
-    for (const PunchRecord& r : punch_table_) {
-        if (recording && r.take == word.take) punch_ = &r;
+    if (punched) {
+        const uint32_t slot = newest_punch(word.take);
+        if (slot < punch_slots_) {
+            punch_ = &punch_table_[slot];
+        } else {
+            punch_ = &kNoCapture;
+            if (!take_started) punches_lost_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     // After the take's state is loaded and the locates applied, and before
@@ -944,15 +963,18 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
             ? 1.0f
             : 0.0f;
     const PunchRecord& p = *punch_;
+    // A punch with no crossfade still never cuts: it gets the monitor ramp,
+    // centred on A and B like any other punch crossfade.
+    const uint32_t xf = p.crossfade != 0 ? p.crossfade : cfg_.playback.monitor_ramp_frames;
     const float first =
-        by_punch ? punch_position(from, p.monitor_in, p.monitor_out, p.crossfade) : fixed;
+        by_punch ? punch_position(from, p.monitor_in, p.monitor_out, xf) : fixed;
 
     float& pos = monitor_pos_[e];
     if (monitor_stamp_[e] == 0 || monitor_stamp_[e] + 1 < callbacks_) pos = first;
     monitor_stamp_[e] = callbacks_;
 
-    const bool steady = !by_punch || !(monitor_ramp_touches(p.monitor_in, p.crossfade, from, n) ||
-                                       monitor_ramp_touches(p.monitor_out, p.crossfade, from, n));
+    const bool steady = !by_punch || !(monitor_ramp_touches(p.monitor_in, xf, from, n) ||
+                                       monitor_ramp_touches(p.monitor_out, xf, from, n));
     const float* in = e < block.input_count ? block.inputs[e] : nullptr;
     if (steady && pos == first && pos == 1.0f) {
         if (in) {
@@ -977,7 +999,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     // a take started on the fly) becomes a ramp, and a punch's crossfade,
     // never steeper than the step, is followed exactly.
     uint32_t len = cfg_.playback.monitor_ramp_frames;
-    if (by_punch && p.crossfade != 0 && (len == 0 || p.crossfade < len)) len = p.crossfade;
+    if (by_punch && xf != 0 && (len == 0 || xf < len)) len = xf;
     const float step = len == 0 ? 1.0f : 1.0f / static_cast<float>(len);
     const FadeCurve shape = by_punch ? p.shape : FadeCurve::Linear;
     bool stereo = false;
@@ -990,9 +1012,11 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     }
     for (uint32_t i = 0; i < n; ++i) {
         const float goal =
-            by_punch ? punch_position(from + i, p.monitor_in, p.monitor_out, p.crossfade) : fixed;
+            by_punch ? punch_position(from + i, p.monitor_in, p.monitor_out, xf) : fixed;
         const float d = goal - pos;
         pos += d > step ? step : (d < -step ? -step : d);
+        // Settled at 0 or 1, fade_in_gain returns before any sin or cos:
+        // the curve costs only on the ramp's own frames (PR #81 audit, N4).
         const float g_in = fade_in_gain(shape, pos);
         const float g_play = fade_in_gain(shape, 1.0f - pos);
         const float x = in ? in[offset + i] : 0.0f;
@@ -1017,7 +1041,17 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
     }
 }
 
-bool Session::plan_in_bounds(const PlaybackPlan& plan) const noexcept SONORA_RT {
+uint32_t Session::newest_punch(uint32_t take) const noexcept SONORA_RT {
+    uint32_t found = punch_slots_;
+    for (uint32_t k = 0; k < punch_slots_; ++k) {
+        if (punch_table_[k].take != take || punch_stored_[k] == 0) continue;
+        if (found == punch_slots_ || punch_stored_[k] > punch_stored_[found]) found = k;
+    }
+    return found;
+}
+
+bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
+    ++bounds_pass_;
     if (plan.last_insert_node != kNoNode &&
         (plan.last_insert_node >= plan.node_count ||
          plan.nodes[plan.last_insert_node].kind != NodeKind::InsertChain)) {
@@ -1040,9 +1074,14 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) const noexcept SONORA_RT 
         }
         switch (node.kind) {
             case NodeKind::TrackOut:
-            case NodeKind::TrackSource:
+            case NodeKind::TrackSource: {
                 if (node.track >= plan.track_count) return false;
+                // In bounds: every plan track's engine track was checked above.
+                uint64_t& seen = source_seen_[plan.tracks[node.track].engine_track];
+                if (seen == bounds_pass_) return false;
+                seen = bounds_pass_;
                 break;
+            }
             case NodeKind::TrackFader:
                 if (node.track >= plan.track_count) return false;
                 if (node.input_edge_count != 1) return false;
