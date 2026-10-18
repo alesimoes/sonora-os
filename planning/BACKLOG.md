@@ -986,8 +986,8 @@ ADR-0011 "For the owner".
       consecutive inconclusive nights (the count kept as a workflow
       artifact or cache entry), N set from the inconclusive rate the
       nightly has seen. dsp-engineer.
-- [ ] Wall-clock bars under the sanitizers (found on the opto PR, not
-      caused by it): the tube suite's `hot_input` holds every quality's
+- [x] Wall-clock bars under the sanitizers (found on the opto PR, not
+      caused by it; done in #73: Suite::check_time_le, SONORA_SANITIZED): the tube suite's `hot_input` holds every quality's
       worst block to the 2.67 ms period (`check_le`, 2667 us) in every
       build, ASan/UBSan included, and with or without SONORA_DSP_QUICK.
       It passes on the GitHub runners (CI `sanitizers`, nightly `asan`),
