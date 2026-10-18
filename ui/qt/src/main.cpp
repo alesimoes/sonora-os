@@ -400,7 +400,7 @@ int main(int argc, char** argv) {
     MixModel mixer(
         session,
         [&engine](uint32_t track, float linear) { engine.send_track_gain(track, linear); },
-        engine.info().track_count, fake == nullptr);
+        [&engine]() { return engine.info().track_count; }, fake == nullptr);
     InsertModel inserts(document, session);
     inserts.controller().set_param_sender(
         [&engine](sonora::model::Id insert, const std::string& key, float value) {

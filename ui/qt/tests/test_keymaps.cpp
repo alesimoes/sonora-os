@@ -13,7 +13,9 @@
 //     what it remembers for the next start;
 //   - the Keys menu and the a-z button in the real QML, offscreen;
 //   - an engine restarted with another command list routes by its own
-//     Hello, not the first one;
+//     Hello, not the first one; with another format and track count, what
+//     was sized from the first Hello follows, and the start-up refusal
+//     notice survives the essentials' notices changing;
 //   - profile paths compared normalised, a relative $XDG_CONFIG_HOME
 //     ignored, and the start-up fallback when the remembered profile no
 //     longer loads.
@@ -33,6 +35,7 @@
 #include "control_adapter.h"
 #include "key_router.h"
 #include "keymap_profiles.h"
+#include "meter_item.h"
 #include "peak_source.h"
 #include "qt_keys.h"
 #include "recording_adapter.h"
@@ -583,6 +586,134 @@ int test_engine_restart() {
     return 0;
 }
 
+// A restarted engine with another format and track count (PR #67 review):
+// what was sized from the first Hello follows the new one. Before, the
+// track count, the format line and the arm buttons stayed the first
+// engine's, the clock read the new playhead at the old rate, and a meter on
+// a track the first engine lacked showed nothing, which looks like silence.
+int test_engine_restart_format() {
+    uint64_t now = 1'000'000'000;
+    const auto clock = [&now]() { return now; };
+    api::testing::FakeEngine::Config small;
+    small.tracks = 4;
+    small.clock = clock;
+    api::testing::FakeEngine first(small);
+    api::testing::FakeEngine::Config big;
+    big.tracks = 8;
+    big.sample_rate = 96000;
+    big.buffer_frames = 256;
+    big.clock = clock;
+    api::testing::FakeEngine second(big);
+    std::string err;
+    CHECK(second.connect(err));
+
+    RestartableEngine backend(&first);
+    ControlAdapter engine(backend);
+    CHECK(engine.connect(err));
+    engine.watchConnection([&backend]() { return backend.greetings; }, [](bool) {});
+    KeyRouter router(load("protools.json"), engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    router.prepare(qt_device_chords(true));
+    ShellModel model(engine, router);
+    model.setClock(clock);
+    int format_signals = 0;
+    QObject::connect(&model, &ShellModel::engineFormatChanged,
+                     [&format_signals]() { ++format_signals; });
+    MeterItem meter;   // after the model: detaches before the model goes
+    meter.setChannel(6);
+    model.attachMeter(&meter);
+    const auto ticks = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            now += 10'000'000;
+            model.tick();
+        }
+    };
+    ticks(4);
+    CHECK(model.trackCount() == 4);
+    CHECK(model.formatText() == QStringLiteral("48000 Hz / 128 frames"));
+    CHECK(model.armed().size() == 4);
+    CHECK(!meter.ballistics().has_data);
+    CHECK(format_signals == 0);
+
+    backend.restart(&second);
+    ticks(4);
+    CHECK(format_signals == 1);
+    CHECK(model.trackCount() == 8);
+    CHECK(model.formatText() == QStringLiteral("96000 Hz / 256 frames"));
+    CHECK(model.armed().size() == 8);
+    CHECK(meter.ballistics().has_data);
+    // The clock reads the new engine's playhead at the new engine's rate:
+    // one second rolled is one second, not two.
+    model.invoke(QStringLiteral("transport.play"), -1);
+    ticks(1);
+    now += 1'000'000'000;   // one second after the play was handled
+    for (int i = 0; i < 4; ++i) model.tick();
+    CHECK(model.transportText() == QStringLiteral("PLAY"));
+    CHECK(model.clockText() == QStringLiteral("00:00:01.000"));
+
+    // The same Hello again (a reconnect to the same engine) is not a change.
+    backend.restart(&second);
+    ticks(4);
+    CHECK(format_signals == 1);
+    return 0;
+}
+
+// The start-up refusal ("the remembered profile no longer loads") is a
+// profile notice; a new engine's Hello replaces the essentials' notices
+// alone, so the refusal must survive a reconnect that changes them.
+int test_restart_keeps_refusal() {
+    // Arming only through track.arm on a fixed track (a key needing a
+    // selection does not count): the first engine runs it, the second does
+    // not, so the second's Hello brings an essentials repair.
+    api::testing::FakeEngine::Config with_arm;
+    with_arm.tracks = 4;
+    with_arm.planned_commands = {"track.arm"};
+    api::testing::FakeEngine first(with_arm);
+    api::testing::FakeEngine::Config plain_cfg;
+    plain_cfg.tracks = 4;
+    api::testing::FakeEngine second(plain_cfg);
+    std::string err;
+    CHECK(second.connect(err));
+
+    KeyMap map;
+    CHECK(KeyMap::load_string(R"({"name": "Arm by track.arm", "bindings": {
+        "shift+a": {"command": "track.arm", "target": 1},
+        "ctrl+space": "transport.toggle_record",
+        "space": "transport.toggle_play", "ctrl+q": "app.quit"}})",
+                              "arm.json", map, err));
+    RestartableEngine backend(&first);
+    ControlAdapter engine(backend);
+    CHECK(engine.connect(err));
+    engine.watchConnection([&backend]() { return backend.greetings; }, [](bool) {});
+    KeyRouter router(map, engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    router.local().install("app.quit", [](const CommandContext&) { return true; });
+    const std::vector<std::string> at_start = router.prepare(qt_device_chords(true));
+    ShellModel model(engine, router);
+    const QString refusal =
+        QStringLiteral("the key map remembered from last time was refused: gone.json");
+    QStringList essentials;
+    for (const auto& n : at_start) essentials << QString::fromStdString(n);
+    model.setKeymapNotices({refusal}, essentials);
+    const QStringList before = model.notices();
+    CHECK(before.contains(refusal));
+
+    backend.restart(&second);
+    model.tick();
+    CHECK(model.notices() != before);   // the essentials' notices changed
+    CHECK(model.notices().contains(refusal));
+    CHECK(model.notices().count(refusal) == 1);
+
+    backend.restart(&first);
+    model.tick();
+    CHECK(model.notices() == before);
+    return 0;
+}
+
 // --- profile paths, the XDG folder, the start-up fallback ---------------------
 
 int test_profile_paths() {
@@ -703,6 +834,8 @@ int main(int argc, char** argv) {
     if (test_profiles() != 0) return 1;
     if (test_shell() != 0) return 1;
     if (test_engine_restart() != 0) return 1;
+    if (test_engine_restart_format() != 0) return 1;
+    if (test_restart_keeps_refusal() != 0) return 1;
     if (test_profile_paths() != 0) return 1;
     if (test_startup_fallback() != 0) return 1;
     std::printf("ui keymaps: all checks passed\n");

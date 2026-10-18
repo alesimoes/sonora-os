@@ -41,8 +41,8 @@ struct TickStats {
 
 class ShellModel : public QObject {
     Q_OBJECT
-    Q_PROPERTY(int trackCount READ trackCount CONSTANT)
-    Q_PROPERTY(QString formatText READ formatText CONSTANT)
+    Q_PROPERTY(int trackCount READ trackCount NOTIFY engineFormatChanged)
+    Q_PROPERTY(QString formatText READ formatText NOTIFY engineFormatChanged)
     Q_PROPERTY(QString profileName READ profileName NOTIFY keymapChanged)
     // The profiles the operator can switch to: {name, file, error, current}
     // each, `error` naming why a file is refused (keymap_profiles.h).
@@ -190,6 +190,10 @@ public:
     void tick();
 
 signals:
+    // A new engine's Hello with another sample rate, buffer size or track
+    // count: trackCount and formatText changed, and what was sized from them
+    // here (the meters' peaks, the arm buttons, the clock) already follows.
+    void engineFormatChanged();
     void transportChanged();
     void tracksChanged();
     void engineAliveChanged();
@@ -209,6 +213,12 @@ private:
     void takeEvents();
     // A new Hello with another command list: the router follows it.
     void followEngineCommands();
+    // A new Hello with another format or track count: resize and say so.
+    void followEngineFormat();
+    // The format and track count sized for; a reconnect compares against it.
+    uint32_t sized_rate_ = 0;
+    uint32_t sized_buffer_ = 0;
+    uint32_t sized_tracks_ = 0;
 
     EngineAdapter& engine_;
     KeyRouter& router_;
