@@ -1060,7 +1060,8 @@ ADR-0011 "For the owner".
       `spice_opto_0..5`), "Sonora Opto" (eco 1x zero latency, standard 4x,
       high 8x; LV2 and VST3, stereo and mono, key input). Measurements:
       `brain/research/native-opto-n2.md`. dsp-engineer.
-- [x] N2 slice 6b, `feature/dsp-n2-fet`: the FET peak limiter ("Sonora
+- [ ] N2 slice 6b, `feature/dsp-n2-fet` (PR #74), landed; open on (e) of
+      the follow-ups below (eco's CPU): the FET peak limiter ("Sonora
       FET") from the reissue manual's published circuit (Figs. 3 and 5):
       the JFET as the divider's bottom leg with the LN gate, the feedback
       side chain, ratio and bias strings, rectifier, attack (R54 || C27,
@@ -1098,7 +1099,13 @@ ADR-0011 "For the owner".
       is wanted. (g) The slowest attack is a third of the manual's 800 us
       on the suite's step: settle how the manual measured it. (h) The
       Aveiro thesis and Gerat, Eichas and Zolzer (AES 143) for
-      validation figures, not reached here. dsp-engineer.
+      validation figures, not reached here. (i) A component-level
+      netlist of Figs. 3 and 5 for the SPICE reference (the transistors
+      of the preamplifier and side chain, the bias string, the switch,
+      the gate network with C3 and C6): today ngspice runs the same
+      reduced circuit as the model, with the gate, side chain, bias taps
+      and rest point as behavioural sources, so it checks the solver and
+      the device laws, not that reduction. dsp-engineer.
 - [ ] N2 opto follow-ups (slice 6a): (a) CPU: standard (4x) is 42-47 us
       p99.9 per q128 stereo block over class A (20 us), beside eco at
       9 us that meets it; candidates, measured on the reference machine

@@ -500,7 +500,11 @@ def main():
     reports = {n: load(report_dir, n) for n in names}
     if reports["eq"]:
         eq_responses(reports["eq"], out_dir)
-    static_curves(reports["compressor"], reports["gate"], out_dir)
+    # A plot is written only from the reports it draws: a run of one
+    # processor (the FET's, say) leaves every other processor's plot as
+    # committed, rather than redrawing it with empty axes.
+    if reports["compressor"] and reports["gate"]:
+        static_curves(reports["compressor"], reports["gate"], out_dir)
     if reports["reverb"]:
         reverb_plots(reports["reverb"], out_dir)
     if reports["tube"]:
@@ -509,7 +513,9 @@ def main():
         opto_plots(reports["opto"], out_dir)
     if reports["fet"]:
         fet_plots(reports["fet"], out_dir)
-    cpu(reports, out_dir)
+    # The CPU plot compares every processor: drawn only from a full set.
+    if all(reports.values()):
+        cpu(reports, out_dir)
     print("plots written to", out_dir)
     return 0
 

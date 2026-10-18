@@ -79,8 +79,10 @@
 // Solving them together matters: taking the drain from the gate of the
 // sample before puts a sample of delay in the loop, and against ngspice
 // that read 0.04 dB late at 192 kHz on a 1 kHz attack and 5.5 dB on the
-// fastest attack's 10 kHz burst. Against ngspice on the same circuit with
-// its own JFET and diode models: plugins/native/fet/tests/spice/.
+// fastest attack's 10 kHz burst. Against ngspice on the same reduced
+// circuit (the gate, side chain, bias taps and rest point behavioural
+// sources) with its own JFET and diode models: plugins/native/fet/tests/
+// spice/.
 //
 // Which values come from where. Every resistor and capacitor is [M]'s;
 // the devices are [J] and [D]. Assumed or fitted, because [M] gives no
@@ -92,6 +94,8 @@
 // Real time: prepare() allocates nothing; every other call is bounded
 // arithmetic, noexcept SONORA_RT. The Newton loops have fixed caps.
 #pragma once
+
+#include <cstdint>
 
 #include "sonora/rt.h"
 
@@ -190,6 +194,9 @@ public:
     // the rectifier was off and the step explicit): for the tests that
     // hold the cost flat in the drive.
     int last_iterations() const noexcept { return iterations_; }
+    // Steps whose Newton loop reached the cap without converging (they
+    // commit the last point): zero in every test, and the suite holds it.
+    std::uint64_t cap_hits() const noexcept { return cap_hits_; }
 
     // The divider's gain at rest, for normalising: 10^(-rest_loss/20).
     double rest_gain() const noexcept { return rest_gain_; }
@@ -263,6 +270,7 @@ private:
     double link_q_[3] = {0.0, 0.0, 0.0};
     double link_g_ = -1.0, link_ka_ = -1.0, link_kb_ = -1.0;
     int iterations_ = 0;
+    std::uint64_t cap_hits_ = 0;
 };
 
 }  // namespace sonora::dsp

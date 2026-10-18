@@ -14,8 +14,8 @@
 //   the gate's forward limit), the side chain's gain and swing and its
 //   phase splitter (the rectifier anodes at Vb +- s), and the rest point
 //   as a DC source at the value the model solves for. So ngspice solves
-//   the same circuit as the model, continuously, with its own trapezoidal
-//   integration and step control; what it checks is the model's
+//   the same reduced circuit as the model, continuously, with its own
+//   trapezoidal integration and step control; what it checks is the model's
 //   discretisation and its solve of the JFET and the rectifier.
 // - Each case is a tone burst: quiet, a step up for `hot_s`, quiet again
 //   for `release_s`, on whole periods so the steps fall on zero

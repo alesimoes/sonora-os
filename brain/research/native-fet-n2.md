@@ -156,7 +156,10 @@ CPU bar, each step measured:
   channel's closed form by its series in lambda, without a square root.
 
 `dsp_fet`'s step from 0.01 V to 0.5 V at 20:1 takes at most 10 iterations
-(the cap is 60).
+(the cap is 60). A step that reaches the cap commits its last point and is
+counted (`FetChannel::cap_hits`): `dsp_fet` and the suite's `newton_cap`
+hold the count at zero on hot squares, mono and linked, at every
+quality's rate.
 
 The first version took the drain from the gate of the sample before and
 solved the rectifier after it: a sample of delay in the feedback loop.
@@ -170,7 +173,14 @@ two together took those to 0.0017 and 0.10 dB.
 
 Gain reduction through six tone bursts (quiet -60 dBFS, a step up, back
 to quiet; 10 us grid for 2 ms after each step), max |model - ngspice|, dB;
-ngspice runs the same circuit with its own JFET and diode models:
+ngspice runs the same reduced circuit as the model, with its own JFET
+and diode models: R5, the JFET, the diodes and the passive networks (C22,
+C9 behind R6 + R7, R54 || C27, R55, the release resistor) are ngspice
+elements, while the gate (the LN midpoint), the side chain's gain, swing
+and phase splitter, the bias taps and the rest point are behavioural
+sources. So it checks the solver and the device laws, not our reduction
+of Figs. 3 and 5 to that circuit; a component-level netlist of the
+figures is a follow-up (BACKLOG, N2 FET follow-ups (i)).
 
 | Case | eco 44.1 / 48 kHz | standard: 176.4 / 192 / 384 kHz | bar |
 |---|---|---|---|

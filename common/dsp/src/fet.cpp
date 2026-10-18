@@ -531,7 +531,11 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
         ch[c]->vg_last_ = vg_before[c];
         ch[c]->s_last_ = std::fmin(ch[c]->sc_gain_ * a[c], ch[c]->c_.sc_swing_v);
         ch[c]->iu_last_ = Iu[c];
-        ch[c]->iterations_ = it + 1;
+        // The loop ran out (it == 60) only if no correction met the stop:
+        // the step still commits its last point, and the miss is counted
+        // for the tests to hold at zero.
+        ch[c]->iterations_ = it < 60 ? it + 1 : 60;
+        if (it >= 60) ++ch[c]->cap_hits_;
         ch[c]->commit(lin[c], I[c], vcn[c], link, sg[c] * a[c]);
     }
 }

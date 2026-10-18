@@ -1,6 +1,7 @@
 # FET (ADR-0011 N2, slice 6b): the FET stage of common/dsp as a peak
 # limiter, held to the published circuit's figures and to ngspice on the
-# same circuit with ngspice's own JFET and diode models (tests/spice/).
+# same reduced circuit with ngspice's own JFET and diode models
+# (tests/spice/; measure/spice_fet.h says what is behavioural).
 add_library(sonora_native_fet STATIC src/fet.cpp)
 target_include_directories(sonora_native_fet PUBLIC include)
 target_link_libraries(sonora_native_fet PUBLIC sonora_native_sdk PRIVATE sonora_dsp)

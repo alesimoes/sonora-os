@@ -183,9 +183,12 @@ int test_bounded() {
             for (int i = 0; i < 19200; ++i) {
                 const double v = ch.tick(i % 40 < 20 ? a : -a);
                 CHECK(std::isfinite(v) && std::fabs(v) <= a);
+                // Every step converges inside the Newton cap.
+                CHECK(ch.last_iterations() < 60);
             }
             CHECK(std::isfinite(ch.control_v()) && std::isfinite(ch.c9_v()));
         }
+        CHECK(ch.cap_hits() == 0);
         const FetCircuit& c = ch.circuit();
         const double g = 2.0 * ch.jfet().beta * (c.gate_max_v - ch.jfet().vto);
         const double deepest = 20.0 * std::log10(ch.rest_gain() * (1.0 + c.r5 * g));
@@ -193,6 +196,29 @@ int test_bounded() {
         std::printf("  hot squares, ratio position %.0f: reduction %.2f dB (gate limit %.2f dB)\n", pos,
                     ch.gain_reduction_db(), deepest);
     }
+    // The same for a linked pair (the four-unknown solve), in phase, in
+    // anti-phase and with one channel silent, every rate a quality runs at.
+    int most = 0;
+    for (double fs : {44100.0, 192000.0, 768000.0}) {
+        for (int mode = 0; mode < 3; ++mode) {
+            FetChannel l, r;
+            l.prepare(fs);
+            r.prepare(fs);
+            l.set_ratio(4.0);
+            r.set_ratio(4.0);
+            for (double a : {1.0, 100.0, 1e6}) {
+                for (int i = 0; i < 4410; ++i) {
+                    const double v = i % 40 < 20 ? a : -a;
+                    FetChannel::step_pair(l, r, v, mode == 0 ? v : (mode == 1 ? -v : 0.0), 1.0);
+                    CHECK(std::isfinite(l.loop_drain()) && std::isfinite(r.loop_drain()));
+                    CHECK(l.last_iterations() < 60 && r.last_iterations() < 60);
+                    most = l.last_iterations() > most ? l.last_iterations() : most;
+                }
+            }
+            CHECK(l.cap_hits() == 0 && r.cap_hits() == 0);
+        }
+    }
+    std::printf("  hot squares, linked pair: at most %d iterations, no cap reached\n", most);
     return 0;
 }
 

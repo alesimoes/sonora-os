@@ -3,8 +3,10 @@
 // The FET limiter against its bars (quality.json). [M] is the reissue
 // manual of the original unit, as in common/dsp fet.h; the research note
 // (brain/research/native-fet-n2.md) has the citations and the numbers.
-// - The circuit against ngspice on the same circuit with ngspice's own
-//   JFET and diode models (tests/spice/, measure/spice_fet.h): the gain
+// - The circuit against ngspice on the same reduced circuit (the gate,
+//   side chain, bias taps and rest point as behavioural sources) with
+//   ngspice's own JFET and diode models (tests/spice/,
+//   measure/spice_fet.h): the gain
 //   reduction through tone bursts, at the base rate and at 4x and 8x of
 //   44.1 to 96 kHz; and the processor in eco at 48 kHz against the circuit
 //   it wraps, within 1e-7 FS (its float output).
@@ -24,6 +26,7 @@
 // - The key input, the stereo link, hot input, and the common checks.
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
 #include <iterator>
@@ -790,6 +793,37 @@ void controls_after_prepare(Suite& s) {
 // count) no more than hot_block_ratio times the median block on a quiet
 // square (-60 dBFS) in the same configuration (the bar of the tube's and
 // the opto's reviews): the Newton loops' cost must not grow with the drive.
+// The block is also held inside the period in an uninstrumented build, and
+// reported under a sanitizer (Suite::check_time_le), as the tube's and the
+// opto's are.
+// The Newton loops never reach their cap: hot squares to +24 dBFS at input
+// +24 dB through the circuit at each quality's rate (48 kHz times 1, 4, 8),
+// every switch position at the fastest attack and release, unlinked and
+// linked, held to zero steps that ran out of iterations (FetChannel counts
+// them rather than committing them silently).
+void newton_cap(Suite& s) {
+    const dsp::FetCircuit k;
+    const double v = std::pow(10.0, 48.0 / 20.0) * k.full_scale_v;
+    std::uint64_t hits = 0;
+    int most = 0;
+    for (double rate : {48000.0, 192000.0, 384000.0}) {
+        for (int pos = 0; pos <= dsp::kFetAllButtons; ++pos) {
+            for (double g : {0.0, 1.0}) {
+                dsp::FetChannel a = channel(rate, pos, 0.1034f, 59.4f), b = channel(rate, pos, 0.1034f, 59.4f);
+                const auto n = static_cast<int>(0.1 * rate);
+                for (int i = 0; i < n; ++i) {
+                    const double x = std::sin(dsp::kTwoPi * 997.0 * i / rate) >= 0.0 ? v : -v;
+                    dsp::FetChannel::step_pair(a, b, x, -x, g);
+                    most = std::max(most, std::max(a.last_iterations(), b.last_iterations()));
+                }
+                hits += a.cap_hits() + b.cap_hits();
+            }
+        }
+    }
+    s.check("Newton loops: steps that reached the cap, hot squares at every quality's rate, position and link",
+            static_cast<double>(hits), 0.0, hits == 0, "steps", fmt("at most %.0f iterations a step (cap 60)", most));
+}
+
 void hot_input(Suite& s) {
     const double fs = 48000.0;
     const Config configs[] = {{{"ratio", 3.0f}, {"quality", 1.0f}},
@@ -833,12 +867,6 @@ void hot_input(Suite& s) {
     };
     const double in_gain = std::pow(10.0, 24.0 / 20.0);
     for (std::size_t ci = 0; ci < std::size(configs); ++ci) {
-        // Under SONORA_DSP_QUICK (PR CI and the sanitizer builds) high (8x)
-        // is left out: its hot blocks take about a tenth of the period in
-        // Release, and a sanitizer's unknown slowdown would make the period
-        // bar a test of the sanitizer (BACKLOG, wall-clock bars under the
-        // sanitizers). The nightly Release run holds it.
-        if (measure::quick() && ci == 3) continue;
         const bool anti = ci + 1 == std::size(configs);
         const Chans quiet = square(-60.0, anti);
         for (double dbfs : {0.0, 12.0, 24.0}) {
@@ -866,7 +894,8 @@ void hot_input(Suite& s) {
                        fmt("the gate's forward limit allows %.1f dB", deepest_bar));
             s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
                        fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
-            s.check_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us", "the 128-frame period at 48 kHz");
+            s.check_time_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us",
+                            "the 128-frame period at 48 kHz");
         }
     }
 }
@@ -918,6 +947,7 @@ int fet(const measure::Args& args) {
     key_and_link(s);
     controls_after_prepare(s);
     hot_input(s);
+    newton_cap(s);
     const Config golden = fet_golden_config();
     // check_common() without its CPU check, which holds the golden
     // (standard) quality to the class bar: cpu_qualities() instead.
