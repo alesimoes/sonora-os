@@ -299,8 +299,12 @@ void small_signal(Suite& s) {
 // Before the fix the stage diverged at +12 dBFS and 4x: the plugin output
 // reached 1e34 and blocks took 6.5 ms. The output is held to the stage's
 // physical range (the load voltage within twice the supply, over the
-// small-signal gain), and the worst block (minimum of three runs) to the
-// 2.67 ms period.
+// small-signal gain) in every build, and the worst block (minimum of three
+// runs) to the 2.67 ms period in an uninstrumented one; under a sanitizer
+// that figure is reported, not held (it read 3097.7 us under ASan and UBSan
+// on a GitHub runner, and 2868 us on an i7-11800H at ctest -j16, where
+// Release reads 200 us). The relative bound on the stage's cost is
+// common/dsp's test_hot_square_every_factor, held in every build.
 void hot_input(Suite& s) {
     const double fs = 48000.0;
     const char* names[] = {"eco (2x)", "standard (4x)", "high (8x)"};
@@ -340,7 +344,8 @@ void hot_input(Suite& s) {
             const std::string what = std::string(names[q]) + fmt(", %+.0f dBFS square, drive +36 dB", dbfs);
             s.check(what + ": output finite", finite ? 1.0 : 0.0, 1.0, finite, "bool");
             s.check_le(what + ": peak output (the stage's range, auto level off)", peak, bound, "FS");
-            s.check_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us", "the 128-frame period at 48 kHz");
+            s.check_time_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us",
+                            "the 128-frame period at 48 kHz");
         }
     }
 }

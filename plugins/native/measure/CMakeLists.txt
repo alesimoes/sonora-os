@@ -17,6 +17,19 @@ add_library(sonora_dsp_measure STATIC
 )
 target_include_directories(sonora_dsp_measure PUBLIC include)
 target_link_libraries(sonora_dsp_measure PUBLIC sonora_native_sdk sonora_dsp sonora_json)
+# measure::sanitized_build() (the root CMakeLists.txt sets SONORA_SANITIZED).
+if(SONORA_SANITIZED)
+  target_compile_definitions(sonora_dsp_measure PRIVATE SONORA_SANITIZED=1)
+else()
+  target_compile_definitions(sonora_dsp_measure PRIVATE SONORA_SANITIZED=0)
+endif()
+
+# The time-bar policy itself: held in an uninstrumented build, reported under
+# a sanitizer, correctness held in both.
+add_executable(test_measure_time_bars tests/test_time_bars.cpp)
+target_link_libraries(test_measure_time_bars PRIVATE sonora_dsp_measure)
+add_test(NAME measure_time_bars
+  COMMAND test_measure_time_bars ${CMAKE_CURRENT_SOURCE_DIR}/tests/time_bars_quality.json)
 
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/dsp-reports)
 
