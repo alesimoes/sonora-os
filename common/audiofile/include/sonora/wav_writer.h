@@ -83,12 +83,6 @@ public:
     // be raised past kRiffSizeLimit. Set before open().
     void set_riff_size_limit(uint64_t bytes);
 
-    // Tests only: replaces platform::sync_data() in checkpoint(), to stand
-    // in for a disk that fails or is slow. Null restores it. Same thread as
-    // checkpoint().
-    using SyncData = bool (*)(std::FILE* f);
-    void set_sync(SyncData sync) { sync_ = sync; }
-
     // Whether this take has failed, and why. Safe to ask from another thread
     // while the take runs; failure() is settled once failed() is true, and
     // stays until the next open().
@@ -99,7 +93,16 @@ public:
     uint64_t frames_written() const { return frames_written_; }
     const std::string& path() const { return path_; }
 
+    using SyncData = bool (*)(std::FILE* f);
+
 private:
+    // Only a test defines it, to reach set_sync().
+    friend struct WavWriterTestAccess;
+    // Replaces platform::sync_data() in checkpoint(), to stand in for a
+    // disk that fails or is slow. Null restores it. Same thread as
+    // checkpoint().
+    void set_sync(SyncData sync) { sync_ = sync; }
+
     bool write_header(uint32_t sample_rate, uint16_t channels,
                       uint64_t time_reference);
     // Writes the RIFF and data sizes and a pending time_reference in place.

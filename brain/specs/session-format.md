@@ -545,8 +545,14 @@ provides them:
   each recovered take as a Notice; the take is left unplaced. It touches
   only files whose bext Originator is `Sonora Engine` (another program's WAV
   may carry chunks after its data), and of those only files whose RIFF size
-  is one an unfinished take has: 0 (`open()`, no checkpoint yet) or the
-  checkpoint's, exactly the header and data with no pad. A RIFF size `close()`
+  is one an unfinished take has: 0 (`open()`, no checkpoint yet) or a
+  checkpoint's, the header and whole frames with no pad, up to the data
+  size. Up to, and not only equal: a checkpoint, and `close()`, write the
+  data size before the RIFF size, so a `kill -9` between the two leaves the
+  previous checkpoint's RIFF size (or 0) under the new data size. No audio
+  is lost there, since the audio is flushed before either write and the
+  data size counts all of it; only the RIFF size, which a reader that
+  trusts it needs, is wrong, and recovery rewrites that alone. A RIFF size `close()`
   wrote, or one a metadata tool wrote when it appended `LIST` or `iXML` to a
   finished take, means the file is closed, and rule 1 leaves it as it is:
   read as audio, an appended chunk is a full-scale burst. It never shortens

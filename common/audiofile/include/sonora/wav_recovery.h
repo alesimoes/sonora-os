@@ -22,7 +22,8 @@ struct TakeRecovery {
         // a failure, a chunk a metadata tool appended). Not touched.
         Intact,
         // Sizes rewritten to the whole frames on disk; a trailing part of
-        // a frame dropped, an odd chunk padded.
+        // a frame dropped, an odd chunk padded. Or, for a file killed
+        // between the header's two writes, the RIFF size alone.
         Repaired,
         // The header counts more audio than the file holds. Not touched:
         // what is missing cannot be recovered, and the reader plays what

@@ -28,6 +28,13 @@
         }                                                                \
     } while (0)
 
+// set_sync() is private to WavWriter; only a test defines this.
+namespace sonora {
+struct WavWriterTestAccess {
+    static void set_sync(WavWriter& w, WavWriter::SyncData sync) { w.set_sync(sync); }
+};
+}  // namespace sonora
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -171,7 +178,7 @@ int main() {
         g_syncs = 0;
         for (auto& t : s.tracks()) {
             for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
-                t->writer(slot).set_sync(&slow_sync);
+                sonora::WavWriterTestAccess::set_sync(t->writer(slot), &slow_sync);
             }
         }
         s.disk().checkpoint_all();
@@ -205,7 +212,7 @@ int main() {
         static_cast<sonora::backend::ProcessCallback&>(s).process(b);
         s.disk().drain_once();
         for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
-            s.tracks()[1]->writer(slot).set_sync(&failing_sync);
+            sonora::WavWriterTestAccess::set_sync(s.tracks()[1]->writer(slot), &failing_sync);
         }
         CHECK(s.take_failure().empty());
         s.disk().checkpoint_all();

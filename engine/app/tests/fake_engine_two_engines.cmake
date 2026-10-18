@@ -7,9 +7,11 @@
 # Two COMMANDs make a pipeline, so both start at once; each records for 3 s,
 # far longer than either takes to reach the lock. Each writes to its own
 # log, so the one refused first closing the pipe cannot SIGPIPE the other.
+# --no-memlock: what is under test is the folder lock, and a CI runner's
+# locked-memory limit would otherwise refuse both engines and skip it.
 file(REMOVE_RECURSE "${DIR}")
 file(REMOVE "${DIR}.a.log" "${DIR}.b.log")
-set(run "\"$0\" --backend fake --dir \"$1\" --tracks 2 --arm-all --record 3 >\"$2\" 2>&1")
+set(run "\"$0\" --backend fake --dir \"$1\" --tracks 2 --arm-all --record 3 --no-memlock >\"$2\" 2>&1")
 execute_process(
   COMMAND sh -c "${run}" "${ENGINE}" "${DIR}" "${DIR}.a.log"
   COMMAND sh -c "${run}" "${ENGINE}" "${DIR}" "${DIR}.b.log"
@@ -21,9 +23,6 @@ message("${a}")
 message("${b}")
 file(REMOVE_RECURSE "${DIR}")
 file(REMOVE "${DIR}.a.log" "${DIR}.b.log")
-if("${a}${b}" MATCHES "cannot lock memory")
-  return()
-endif()
 list(SORT rcs)
 if(NOT rcs STREQUAL "0;1")
   message(FATAL_ERROR "exit statuses ${rcs}: want one engine to record and one refused")

@@ -95,6 +95,38 @@ bool samples_match(const std::string& path, int64_t frames, uint16_t channels) {
     return true;
 }
 
+// The states a kill -9 between patch_sizes()'s two writes can leave, for a
+// take of `frames` frames: each must be repaired to exactly the file close()
+// writes, audio untouched, and be Intact after that.
+int killed_between_header_writes(const std::string& path, uint16_t channels,
+                                 WavWriter::Format f, std::size_t frames) {
+    const auto good = finished(path, channels, f, frames);
+    const std::size_t bpf = channels * (f == WavWriter::Format::Int24 ? 3u : 4u);
+    const std::size_t data = frames * bpf;
+    const uint32_t earlier = static_cast<uint32_t>(kAudio - 8 + 600 * bpf);
+    std::vector<uint32_t> riffs = {earlier, 0};
+    for (const bool closing : {false, true}) {
+        // close() of odd data, after a checkpoint at the same length.
+        if (closing && (data & 1)) riffs.push_back(static_cast<uint32_t>(kAudio - 8 + data));
+        for (const uint32_t riff : riffs) {
+            auto b = good;
+            // A checkpoint writes no pad byte; close() writes it first.
+            if (!closing && (data & 1)) b.pop_back();
+            CHECK(b.size() == static_cast<std::size_t>(kAudio) + data + (closing ? data & 1 : 0));
+            put32(b, kRiffSize, riff);
+            spill(path, b);
+            const TakeRecovery r = sonora::recover_take(path);
+            CHECK(r.outcome == TakeRecovery::Outcome::Repaired);
+            CHECK(r.header_frames == frames);
+            CHECK(r.frames == frames);
+            CHECK(slurp(path) == good);
+            CHECK(samples_match(path, static_cast<int64_t>(frames), channels));
+            CHECK(sonora::recover_take(path).outcome == TakeRecovery::Outcome::Intact);
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -129,6 +161,20 @@ int main() {
         CHECK(r.frames == 1000);
         CHECK(slurp(path) == good);
     }
+
+    // --- killed between the data size and the RIFF size ---
+    //
+    // patch_sizes() flushes the audio, writes the data size, then the RIFF
+    // size, and nothing reaches the file in between. A kill -9 there leaves
+    // a data size that counts every byte of audio, and the RIFF size of the
+    // checkpoint before, or 0 at the first. No audio is lost; what is wrong
+    // is the RIFF size, which a reader that trusts it takes for a broken
+    // file. Even data (Float32, Int24 stereo) and odd (Int24 mono, odd
+    // frame count); in a checkpoint's window, where no pad byte is written,
+    // and in close()'s, after its pad.
+    CHECK(killed_between_header_writes(path, 1, WavWriter::Format::Float32, 800) == 0);
+    CHECK(killed_between_header_writes(path, 2, WavWriter::Format::Int24, 800) == 0);
+    CHECK(killed_between_header_writes(path, 1, WavWriter::Format::Int24, 801) == 0);
 
     // --- part of a frame at the end is dropped; an odd chunk gets its pad ---
     //

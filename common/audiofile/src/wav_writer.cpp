@@ -244,7 +244,11 @@ bool WavWriter::write(const float* interleaved, std::size_t frames) {
 
 void WavWriter::patch_sizes(uint64_t riff_bytes, uint64_t data_bytes) {
     // write() keeps both within riff_size_limit_, at most 2^32 - 1, so
-    // neither cast wraps.
+    // neither cast wraps. The data size first: a kill -9 between the two
+    // writes then leaves a RIFF size no larger than the data, which
+    // recover_take() takes for unfinished and corrects. The other order
+    // would leave one larger, which it takes for a chunk appended to a
+    // closed take, and leaves alone.
     std::fseek(file_, data_size_offset_, SEEK_SET);
     put_u32(file_, static_cast<uint32_t>(data_bytes));
     std::fseek(file_, riff_size_offset_, SEEK_SET);

@@ -125,14 +125,20 @@ TakeRecovery recover_take(const std::string& path) {
         return r;
     }
     // Unfinished only with a RIFF size that open() (0) or a checkpoint
-    // (the sizes as they were, no pad) wrote. Any other was written by
-    // close() or by another tool: BWF MetaEdit and taggers append LIST or
-    // iXML after the data and count it, and read as audio those bytes are
-    // a full-scale burst. Rule 1: a finished file is never modified.
+    // wrote: the header and whole frames of data, no pad, and no more than
+    // the data size counts. Less, because patch_sizes() writes the data
+    // size first: killed before the RIFF size, it leaves the previous
+    // checkpoint's. Any other was written by close(), which counts the pad,
+    // or by another tool: BWF MetaEdit and taggers append LIST or iXML
+    // after the data and count it, and read as audio those bytes are a
+    // full-scale burst. Rule 1: a finished file is never modified.
     const uint64_t finished = l.data_body + l.data_bytes + (l.data_bytes & 1);
+    const uint64_t empty_riff = l.data_body - 8;
     const bool unfinished =
-        l.riff_bytes == 0 || l.riff_bytes == l.data_body - 8 + l.data_bytes;
-    if (!unfinished || size == finished) {
+        l.riff_bytes == 0 ||
+        (l.riff_bytes >= empty_riff && l.riff_bytes <= empty_riff + l.data_bytes &&
+         (l.riff_bytes - empty_riff) % l.block_align == 0);
+    if (!unfinished || (size == finished && l.riff_bytes == finished - 8)) {
         r.outcome = TakeRecovery::Outcome::Intact;
         r.frames = r.header_frames;
         return r;
@@ -148,21 +154,29 @@ TakeRecovery recover_take(const std::string& path) {
         r.why = "the file is past the 4 GB WAV limit";
         return r;
     }
+    // A file that ends where its data chunk does was killed between
+    // patch_sizes()'s two writes, in a checkpoint or in close(): the data
+    // size counts every byte of audio, and only the RIFF size, which a
+    // reader that trusts it needs, is wrong. Nothing but that is written.
+    const bool riff_only = size == finished;
     // The tail first: cut back to the audio, then grown by the pad, which
     // a resize fills with zero. Interrupted here, the header still
     // describes less than the file, and recovery runs again next time.
-    fs::resize_file(path, l.data_body + data, ec);
-    if (!ec && pad) fs::resize_file(path, l.data_body + data + pad, ec);
-    if (ec) {
-        r.why = ec.message();
-        return r;
+    if (!riff_only) {
+        fs::resize_file(path, l.data_body + data, ec);
+        if (!ec && pad) fs::resize_file(path, l.data_body + data + pad, ec);
+        if (ec) {
+            r.why = ec.message();
+            return r;
+        }
     }
     f = std::fopen(path.c_str(), "r+b");
     if (!f) {
         r.why = std::strerror(errno);
         return r;
     }
-    bool ok = put_u32(f, static_cast<long>(l.data_body - 4), data) && put_u32(f, 4, riff);
+    bool ok = (riff_only || put_u32(f, static_cast<long>(l.data_body - 4), data)) &&
+              put_u32(f, 4, riff);
     // Without a sync where the platform has none (ENOSYS): the repair is no
     // less right, only not yet durable.
     ok = ok && (platform::sync_data(f) || errno == ENOSYS);
