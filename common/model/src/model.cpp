@@ -332,6 +332,41 @@ void sort_markers(MarkerList& m) {
                      });
 }
 
+std::vector<FadeFit> fit_fades_to_crossfades(Playlist& p) {
+    struct Reach {
+        Frames in = -1;    // -1: no crossfade at that end
+        Frames out = -1;
+    };
+    std::unordered_map<Id, Reach> reach;
+    for (const Crossfade& x : p.crossfades) {
+        Frames before = 0, after = 0;
+        crossfade_extent(x, before, after);
+        reach[x.left].out = before;
+        reach[x.right].in = after;
+    }
+    std::vector<FadeFit> fits;
+    for (std::size_t i = 0; i < p.regions.size(); ++i) {
+        Region& r = p.regions[i];
+        const auto it = reach.find(r.id);
+        if (it == reach.end()) continue;
+        const Reach& x = it->second;
+        // With crossfades at both ends both fades are unheard; only a fade
+        // at an end without one can run into the other end's crossfade. A
+        // crossfade longer than the region is left for playlist_problem to
+        // refuse, not turned into a negative fade.
+        if (x.in >= 0 && x.out < 0 && x.in <= r.length &&
+            r.fade_out.length > r.length - x.in) {
+            fits.push_back({i, false, r.fade_out.length, r.length - x.in});
+            r.fade_out.length = r.length - x.in;
+        } else if (x.out >= 0 && x.in < 0 && x.out <= r.length &&
+                   r.fade_in.length > r.length - x.out) {
+            fits.push_back({i, true, r.fade_in.length, r.length - x.out});
+            r.fade_in.length = r.length - x.out;
+        }
+    }
+    return fits;
+}
+
 std::string playlist_problem(const Playlist& p, const SourcePool& pool,
                              std::uint16_t track_channels, std::string& where) {
     where.clear();

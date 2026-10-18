@@ -527,6 +527,34 @@ int test_trim_shortens_a_fade_into_the_crossfade() {
     return 0;
 }
 
+// Clearing a crossfade brings back the fade kept under it. One that runs
+// into the crossfade at the region's other end shortens to meet it, as on an
+// edge edit: the operator never saw that fade and cannot edit it while the
+// other end is crossfaded, so refusing would leave no way out (PR #69
+// review, note 2).
+int test_clearing_a_crossfade_shortens_the_fade_it_reveals() {
+    Base b;
+    Id s = 0;
+    CHECK(make_butting(b, s) == 0);
+    Ids ids(b.h.current());
+    const Id t = ids();
+    CHECK_APPLY(b.h, (PlaceRegion{b.playlist, region(t, b.source, 600000, 100000, 700000)}));
+    CHECK_APPLY(b.h, (SetFade{b.playlist, s, FadeEnd::In, Fade{99600, FadeShape::Linear}}));
+    CHECK_APPLY(b.h, (SetCrossfade{b.playlist, centre_960(b.r, s)}));
+    CHECK_APPLY(b.h, (SetCrossfade{b.playlist, centre_960(s, t)}));
+    const Snapshot before = b.h.current();
+    CHECK_APPLY(b.h, (RemoveCrossfade{b.playlist, b.r, s}));
+    const Playlist& p = playlist_of(b.h.current(), 0);
+    CHECK(p.crossfades.size() == 1 && p.crossfades[0].left == s);
+    const Region* r = find(p, s);
+    CHECK(r != nullptr && r->fade_in.length == 100000 - 480);
+    CHECK(invariants_hold(b.h.current()));
+    // One undo step: the crossfade and the full fade come back together.
+    CHECK(b.h.undo());
+    CHECK(*b.h.current().edit == *before.edit);
+    return 0;
+}
+
 // A punch near the start of a region with a long fade-in: the take's
 // crossfade wins and the fade-in shortens. Refusing would lose the take.
 int test_punch_shortens_the_fade_it_meets() {
@@ -575,6 +603,7 @@ int main() {
     t(test_crossfade_over_the_other_ends_fade_is_refused);
     t(test_trim_shortens_a_fade_into_the_crossfade);
     t(test_punch_shortens_the_fade_it_meets);
+    t(test_clearing_a_crossfade_shortens_the_fade_it_reveals);
     if (failed != 0) {
         std::fprintf(stderr, "model_apply: %d of %d failed\n", failed, run);
         return 1;

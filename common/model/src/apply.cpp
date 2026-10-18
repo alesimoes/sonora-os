@@ -159,35 +159,6 @@ bool overwrite(Playlist& p, Frames a, Frames b, Id split_id, bool& used_split,
     return true;
 }
 
-// A fade that an edit left running into the crossfade at its region's other
-// end is shortened to meet it, as clamp_fades() shortens one that outgrew
-// its region. Only for edits that move edges or add a take's crossfades:
-// SetFade and SetCrossfade are refused instead (playlist_problem), because
-// there the operator asked for exactly that length.
-void fit_fades_to_crossfades(Playlist& p) {
-    struct Reach {
-        Frames in = -1;    // -1: no crossfade at that end
-        Frames out = -1;
-    };
-    std::unordered_map<Id, Reach> reach;
-    for (const Crossfade& x : p.crossfades) {
-        Frames before = 0, after = 0;
-        crossfade_extent(x, before, after);
-        reach[x.left].out = before;
-        reach[x.right].in = after;
-    }
-    for (Region& r : p.regions) {
-        const auto it = reach.find(r.id);
-        if (it == reach.end()) continue;
-        const Reach& x = it->second;
-        if (x.in >= 0 && x.out < 0) {
-            r.fade_out.length = std::min(r.fade_out.length, r.length - x.in);
-        } else if (x.out >= 0 && x.in < 0) {
-            r.fade_in.length = std::min(r.fade_in.length, r.length - x.out);
-        }
-    }
-}
-
 // After an edit moved region edges, a crossfade stays only if it would
 // still be accepted as new: both regions there, butting, with the handle
 // it needs, and not meeting another crossfade inside a region. The same
@@ -212,7 +183,7 @@ void drop_broken_crossfades(Playlist& p, const SourcePool& pool) {
         kept.push_back(x);
     }
     p.crossfades = std::move(kept);
-    fit_fades_to_crossfades(p);
+    detail::fit_fades_to_crossfades(p);
 }
 
 class Applier {
@@ -463,6 +434,12 @@ public:
                             str(op.right));
             }
             p.crossfades.erase(it);
+            // The fades kept under it come back; one that would run into
+            // the crossfade at its region's other end shortens to meet it.
+            // The operator never saw that fade, and cannot edit it while
+            // the other end is crossfaded, so refusing would leave no way
+            // out short of clearing the other crossfade first.
+            detail::fit_fades_to_crossfades(p);
             return true;
         });
     }
@@ -787,7 +764,7 @@ private:
             }
             // A punch near a region's start must not be refused for that
             // region's fade-in: losing a take is worse than a shorter fade.
-            fit_fades_to_crossfades(p);
+            detail::fit_fades_to_crossfades(p);
             return true;
         });
         if (ok) after_.next_id = top + 1;
