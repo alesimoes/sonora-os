@@ -70,6 +70,7 @@
 #include "sonora/native/compressor.h"
 #include "sonora/native/delay.h"
 #include "sonora/native/eq.h"
+#include "sonora/native/fet.h"
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
 #include "sonora/native/reverb.h"
@@ -86,6 +87,7 @@ measure::Config chorus_golden_config();
 measure::Config reverb_golden_config();
 measure::Config tube_golden_config();
 measure::Config opto_golden_config();
+measure::Config fet_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -147,6 +149,11 @@ const Target kTargets[] = {
     // Quality changes the oversampling factor, and so the latency.
     {"opto", [] { return native::make_opto(); }, native::suites::opto_golden_config, true,
      {"peak_reduction", 95.0f}, {{"quality", 0.0f}}},
+    // Quality changes the oversampling factor, and so the latency. The
+    // rest point is an equilibrium the first steps settle to within
+    // 1e-11 V, far inside the golden bar, so the preroll is free.
+    {"fet", [] { return native::make_fet(); }, native::suites::fet_golden_config, true,
+     {"ratio", 3.0f}, {{"quality", 0.0f}}},
 };
 
 struct Case {

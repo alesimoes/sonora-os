@@ -536,9 +536,10 @@ int test_takes_closed_while_rolling_join_the_document() {
 
     const std::vector<Session::ClosedTake> closed = s.closed_takes();
     CHECK(closed.size() == 2);
-    std::vector<sonora::model::ReplicationUpdate> updates;
     for (const Session::ClosedTake& take : closed) {
-        CHECK(sonora::add_closed_take(doc, s, take, updates, error));
+        const sonora::TakeAdded added = sonora::add_closed_take(doc, s, take);
+        CHECK(added.track_notices.empty() && added.cut_short.empty() && added.refused.empty());
+        CHECK(added.updates.size() == 1);
     }
     const auto& track = *doc.current().edit->tracks[0];
     const sonora::model::Playlist* list = nullptr;
@@ -592,9 +593,10 @@ int test_failure_in_a_take_punched_out_is_reported() {
 
     const std::vector<Session::ClosedTake> closed = s.closed_takes();
     CHECK(closed.size() == 1);
-    std::vector<sonora::model::ReplicationUpdate> updates;
-    std::string placed;
-    CHECK(!sonora::add_closed_take(doc, s, closed[0], updates, placed));
+    const sonora::TakeAdded added = sonora::add_closed_take(doc, s, closed[0]);
+    CHECK(added.track_notices.empty() && added.refused.empty());
+    const std::string& placed = added.cut_short;
+    CHECK(placed.find("was cut short") != std::string::npos);
     CHECK(placed.find("Audio 2_") != std::string::npos);
     CHECK(placed.find("4 GB") != std::string::npos);
     CHECK(placed.find("placed up to the failure") != std::string::npos);
@@ -648,13 +650,16 @@ int test_unplaceable_track_keeps_the_earlier_failure() {
 
     const std::vector<Session::ClosedTake> closed = s.closed_takes();
     CHECK(closed.size() == 1);
-    std::vector<sonora::model::ReplicationUpdate> updates;
-    std::string placed;
-    CHECK(!sonora::add_closed_take(doc, s, closed[0], updates, placed));
-    CHECK(placed.find("is on disk but not in the session") != std::string::npos);
-    CHECK(placed.find("track 2") != std::string::npos);
-    CHECK(placed.find("Audio 2_") != std::string::npos);
-    // The earlier reason is still said.
+    const sonora::TakeAdded added = sonora::add_closed_take(doc, s, closed[0]);
+    CHECK(added.refused.empty());
+    // The track left out has its own notice, naming it and its file.
+    CHECK(added.track_notices.size() == 1);
+    const std::string& left_out = added.track_notices[0];
+    CHECK(left_out.find("is on disk but not in the session") != std::string::npos);
+    CHECK(left_out.find("track 2") != std::string::npos);
+    CHECK(left_out.find("Audio 2_") != std::string::npos);
+    // The earlier track's failure is still said, in its own.
+    const std::string& placed = added.cut_short;
     CHECK(placed.find("Audio 1_") != std::string::npos);
     CHECK(placed.find("4 GB") != std::string::npos);
     CHECK(placed.find("placed up to the failure") != std::string::npos);

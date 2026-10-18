@@ -863,7 +863,18 @@ heard half done. And undo takes N presses. Grouping undo steps in
      | split then remove (cut-like) | 6.4 ms | 7.5 ms | 11.7 / 11.8 ms |
      | `SetFade` | 5.1 ms | 6.6 ms | 9.6 / 10.1 ms |
 
-     Every case is under 10 ms. 64 covers every sender that exists today:
+     That table is the quietest run, and on it every case is under 10 ms.
+     The rt-engineer's re-review (PR #75) ran the same build three times
+     on a noisier host. It measured 64 members on 18 × 2,000 at 9.6 /
+     13.7 / 17.4 ms (`SetFade`) and 11.2 / 15.5 / 17.6 ms (cut-like),
+     best of 5 each. On 1 × 2,000 it measured 6.0 to 12.8 ms. **On a
+     typical run the 18-playlist case is about 10 to 11 ms**, not 7.5:
+     each of the 18 playlists is still copied once (about 110 µs) and
+     fully re-validated. Item 8's work starts from these numbers. The
+     limit stays 64 regardless, because the compound still costs about
+     half what the same members cost sent one by one.
+
+     64 covers every sender that exists today:
      a take (two members a track, and `add_closed_take()` splits a take of
      more than 32 armed tracks into compounds in track order), Alt-click on
      18 tracks, and a crossfade with its `SetFade`. Cut, copy and paste are
@@ -902,9 +913,21 @@ heard half done. And undo takes N presses. Grouping undo steps in
    and the version history there gains "4 (ADR-0009 2026-10-14):
    `Compound`". The conformance suite and `FakeEngine` use the constant
    and follow it.
-7. **Session file and undo window: unchanged.** Operations are not saved,
-   and the window (`encode_window`) holds states. `kWindowFormat` and
-   `sonora_session` stay as they are.
+
+   **The label reaches every undo history** (PR #75 ui-engineer review),
+   so "Undo Paste" needs no protocol 5 later:
+   - each `History` step keeps a label, the `display_name()` of the
+     operation that made it: a compound's `label`, or with none its first
+     edit member's kind, and a single operation's kind;
+   - `undo_label()` and `redo_label()` give the Edit menu its text;
+   - `ModelUpdate` gains `label`, set on Undo and Redo to the step moved
+     over. A replica whose own step has another label has lost track, and
+     resyncs. This is part of protocol 4.
+7. **Session file: unchanged. Undo window: format 3.** Operations are not
+   saved, and `sonora_session` stays as it is. The window
+   (`encode_window`) holds states, and from `kWindowFormat` 3 also each
+   step's label, so a replica rebuilt from a resync offers the same undo
+   and redo text as the engine. It rides on protocol 4.
 8. **The engine.** `engine/control` decodes and applies a compound like
    any other operation. Wherever the server checks an operation's kind, it
    checks each member, through the hook of item 2:
@@ -926,7 +949,11 @@ heard half done. And undo takes N presses. Grouping undo steps in
       That puts the audio in the session's pool, so a save records it and
       nothing is lost. The engine then says so loudly, as an error and not
       a side line: the take is on disk and in the pool, but not on the
-      timeline, and the refusal's reason.
+      timeline, and the refusal's reason. It goes out as `TakeFailed` with
+      the take-failed health flag, and also as a `Notice`. The alert
+      clears on the next clean take, which while recording on the roll can
+      be the next tick; the Notice stays for the session, because the take
+      is still not on the timeline then.
 
    One bad file therefore costs one track, never the take. Today the
    tracks before the bad one land and the ones after it are dropped, and

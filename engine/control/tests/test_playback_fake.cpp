@@ -109,6 +109,43 @@ struct Client {
     }
 };
 
+std::vector<const sonora::api::ModelUpdate*> op_updates(const sonora::api::Inbox& inbox) {
+    std::vector<const sonora::api::ModelUpdate*> ops;
+    for (const auto& m : inbox.model) {
+        if (m.kind == sonora::api::ModelUpdateKind::Op) ops.push_back(&m);
+    }
+    return ops;
+}
+
+// A closed take reaches every client as exactly one update: a Compound
+// labelled "Record" holding the track's AddSource and RecordTake. Polls on
+// after the first update, so a second one sent a moment later is seen too.
+bool one_take_update(Client& c) {
+    for (int i = 0; i < 500 && op_updates(c.inbox).empty(); ++i) {
+        c.engine.poll(c.inbox);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    for (int i = 0; i < 50; ++i) {
+        c.engine.poll(c.inbox);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const auto ops = op_updates(c.inbox);
+    if (ops.size() != 1) {
+        std::fprintf(stderr, "  %zu updates for one take\n", ops.size());
+        return false;
+    }
+    sonora::model::Operation op;
+    std::string error;
+    if (!sonora::model::decode_operation(ops[0]->bytes, op, error)) {
+        std::fprintf(stderr, "  the take's update does not decode: %s\n", error.c_str());
+        return false;
+    }
+    const auto* take = std::get_if<sonora::model::Compound>(&op);
+    return take != nullptr && take->label == "Record" && take->ops.size() == 2 &&
+           std::holds_alternative<sonora::model::AddSource>(take->ops[0]) &&
+           std::holds_alternative<sonora::model::RecordTake>(take->ops[1]);
+}
+
 sonora::SessionConfig config(const fs::path& dir) {
     sonora::SessionConfig cfg;
     cfg.dir = dir.string();
@@ -160,17 +197,9 @@ int test_record_then_play_back() {
         CHECK(audio.run_blocks(2) == 2);
 
         // The take is in the document every client replicates: its source
-        // and its region, one update each.
-        std::size_t ops = 0;
-        for (int i = 0; i < 500 && ops < 2; ++i) {
-            engine.poll(c.inbox);
-            ops = 0;
-            for (const auto& m : c.inbox.model) {
-                ops += m.kind == sonora::api::ModelUpdateKind::Op ? 1 : 0;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
-        CHECK(ops == 2);
+        // and its region, as one compound and so one update (ADR-0009
+        // update 2026-10-14).
+        CHECK(one_take_update(c));
 
         CHECK(c.run("transport.return_to_zero"));
         CHECK(c.run("transport.play"));
@@ -329,6 +358,7 @@ sonora::model::ReplicationUpdate from_wire(const sonora::api::ModelUpdate& m) {
     u.undo_floor = m.undo_floor;
     u.next_id = m.next_id;
     u.bytes = m.bytes;
+    u.label = m.label;
     return u;
 }
 
@@ -467,16 +497,88 @@ int test_toggle_play_stops_a_take() {
         CHECK(s.tracks()[0]->writer().frames_written() == uint64_t{16} * kQuantum);
         CHECK(take_shown(take + 1));
 
-        std::size_t ops = 0;
-        for (int i = 0; i < 500 && ops < 2; ++i) {
-            engine.poll(c.inbox);
-            ops = 0;
-            for (const auto& m : c.inbox.model) {
-                ops += m.kind == sonora::api::ModelUpdateKind::Op ? 1 : 0;
+        CHECK(one_take_update(c));
+
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+    }
+    s.reader().stop();
+    fs::remove_all(dir);
+    return 0;
+}
+
+// A take the model refuses is an error the operator sees, not a side line:
+// TakeFailed naming why, and the take-failed health flag. Its audio still
+// reaches every client's pool. The refusal is made real by recording past
+// the end of the timeline, where no RecordTake fits.
+int test_a_refused_take_is_shown_as_failed() {
+    const fs::path dir = fs::temp_directory_path() / "sonora_test_playback_fake_refused";
+    fs::remove_all(dir);
+    sonora::Session s(config(dir));
+    CHECK(s.create_dirs());
+    FakeBackend::Config fc;
+    fc.quantum = kQuantum;
+    FakeBackend audio(fc);
+    std::string error;
+    CHECK(audio.open({"sonora", 2, 2, kRate, ""}, s, error));
+    CHECK(audio.activate(error));
+    CHECK(audio.connect_inputs_in_order() == 2);
+    s.disk().start();
+    s.reader().start();
+    {
+        sonora::InProcessEngine engine(s, &audio);
+        CHECK(engine.connect(error));
+        Client c{engine, {}};
+
+        const uint64_t near_the_end = uint64_t{sonora::model::kMaxInteger} - kQuantum;
+        CHECK(s.post_locate(near_the_end));
+        CHECK(audio.run_blocks(2) == 2);
+        CHECK(s.transport().playhead() >= near_the_end);
+
+        CHECK(c.run("track.toggle_arm", 0));
+        CHECK(c.run("transport.record"));
+        CHECK(audio.run_blocks(16) == 16);
+        CHECK(c.run("transport.stop"));
+
+        const auto failed = [&]() -> const sonora::api::EngineEvent* {
+            for (const auto& e : c.inbox.events) {
+                if (e.kind == sonora::api::EventKind::TakeFailed && !e.text.empty()) return &e;
             }
+            return nullptr;
+        };
+        for (int i = 0; i < 1000 && failed() == nullptr; ++i) {
+            engine.poll(c.inbox);
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        CHECK(ops == 2);
+        const sonora::api::EngineEvent* e = failed();
+        CHECK(e != nullptr);
+        CHECK(e->text.find("not on the timeline") != std::string::npos);
+        CHECK(e->text.find("past the end of the timeline") != std::string::npos);
+        bool flagged = false;
+        for (int i = 0; i < 1000 && !flagged; ++i) {
+            engine.poll(c.inbox);
+            const auto t = engine.state().transport();
+            flagged = !t.stale && (t.health_flags & sonora::api::kHealthTakeFailed) != 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        CHECK(flagged);
+        // Also a Notice, which stays for the session: the alert clears on
+        // the next clean take, which while rolling can be the next tick,
+        // and take N is still not on the timeline then.
+        bool noticed = false;
+        for (const auto& n : c.inbox.events) {
+            noticed = noticed || (n.kind == sonora::api::EventKind::Notice &&
+                                  n.text.find("not on the timeline") != std::string::npos);
+        }
+        CHECK(noticed);
+        // The fallback's AddSource reached the client: the audio is in the
+        // session's pool.
+        const auto ops = op_updates(c.inbox);
+        CHECK(ops.size() == 1);
+        sonora::model::Operation op;
+        CHECK(sonora::model::decode_operation(ops[0]->bytes, op, error));
+        CHECK(std::holds_alternative<sonora::model::AddSource>(op));
 
         engine.shutdown();
         audio.deactivate();
@@ -494,6 +596,7 @@ int main() {
     if (test_record_replies()) return 1;
     if (test_mix_follows_the_document()) return 1;
     if (test_toggle_play_stops_a_take()) return 1;
+    if (test_a_refused_take_is_shown_as_failed()) return 1;
     std::printf("playback_fake: ok\n");
     return 0;
 }

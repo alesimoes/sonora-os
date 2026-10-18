@@ -185,6 +185,7 @@ would not do: it holds one state. In `contracts/api` that payload is
 | `SetTrackName`, `ReorderTracks` | yes | |
 | `SetMix{track, field, value}` | no | faders; also reaches the audio thread as an atomic |
 | `SetSettings{...}` | no | timecode, tempo, loop, punch range |
+| `Compound{ops, label}` | if any member is | several operations as one: each member applied to what the members before it made, all refused if one is, one revision, one update, at most one edit-undo step. At most 4,096 members, none a `Compound`. ADR-0009 update 2026-10-14 |
 
 Region moves, trims and edit modes beyond these (Shuffle, Spot, Grid,
 nudge) are Phase 3 commands that resolve into the same operations.
@@ -308,10 +309,12 @@ band, with the audio**:
   4 GB limit (`bwf-broadcast-wave.md`) leaves the file valid up to its last
   whole frame, so N is that length and the region is placed like the rest
   of the take: an operator who fills the disk keeps what was recorded. The
-  failure is not hidden. `add_closed_take()` returns
-  false naming the file and why ("placed up to the failure"), the control
-  server posts it as a Notice, and `stop()` still reports it. A failed file
-  with no frames is not placed, and is reported the same way.
+  failure is not hidden. `add_closed_take()` reports it (`cut_short`)
+  naming the file and why ("placed up to the failure"), the control server
+  posts it as a Notice, and `stop()` still reports it. A failed file with
+  no frames is not placed, and is reported the same way. A file that cannot
+  be placed at all costs only its own track, with a Notice naming it; the
+  others go in as one `Compound` (ADR-0009 update 2026-10-14, item 8).
 - "Rolling" and "recording" are separate per track: the transport rolls,
   and capture is a per-track window inside it.
 

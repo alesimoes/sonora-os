@@ -234,6 +234,7 @@ void encode(const ModelUpdate& m, std::string& out) {
     w.u64(m.undo_floor);
     w.u64(m.next_id);
     w.str(m.bytes);
+    w.str(m.label);
 }
 
 void encode(const PluginParameterChange& m, std::string& out) {
@@ -393,7 +394,7 @@ bool decode(std::string_view bytes, ModelUpdate& out, std::string& error) {
     ModelUpdate m;
     if (!r.type(Type::ModelUpdate) || !r.enumeration(m.kind, kLastUpdate) ||
         !r.u64(m.revision) || !r.u64(m.undo_floor) || !r.u64(m.next_id) ||
-        !r.str(m.bytes, kMaxModelBytes) || !r.done()) {
+        !r.str(m.bytes, kMaxModelBytes) || !r.str(m.label, kMaxModelBytes) || !r.done()) {
         return false;
     }
     out = std::move(m);
@@ -508,18 +509,20 @@ bool decode_into(std::string_view bytes, Inbox& inbox, std::string& error) {
     return false;
 }
 
-std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_version) {
+std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_version,
+                             uint32_t client_protocol_version,
+                             uint32_t client_state_layout_version) {
     std::string why;
-    if (protocol_version != kProtocolVersion) {
+    if (protocol_version != client_protocol_version) {
         why = "the engine speaks control protocol version " +
               std::to_string(protocol_version) + " and this interface speaks version " +
-              std::to_string(kProtocolVersion);
+              std::to_string(client_protocol_version);
     }
-    if (state_layout_version != kStateLayoutVersion) {
+    if (state_layout_version != client_state_layout_version) {
         if (!why.empty()) why += ", and ";
         why += "the engine's state block is layout version " +
                std::to_string(state_layout_version) + " where this interface reads version " +
-               std::to_string(kStateLayoutVersion);
+               std::to_string(client_state_layout_version);
     }
     if (!why.empty()) {
         why = "refusing to connect: " + why +

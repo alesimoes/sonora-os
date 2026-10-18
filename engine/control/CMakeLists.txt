@@ -24,6 +24,12 @@ add_executable(test_takes tests/test_takes.cpp)
 target_link_libraries(test_takes PRIVATE sonora_control)
 add_test(NAME takes COMMAND test_takes)
 
+# A closed take as one compound; a bad file costs one track (ADR-0009
+# update 2026-10-14, item 8).
+add_executable(test_closed_take tests/test_closed_take.cpp)
+target_link_libraries(test_closed_take PRIVATE sonora_control)
+add_test(NAME closed_take COMMAND test_closed_take)
+
 # The handlers on a real Session (moved here from ui/keymap's test in M4).
 add_executable(test_session_commands tests/test_session_commands.cpp)
 target_link_libraries(test_session_commands PRIVATE sonora_control)

@@ -3,24 +3,37 @@
 The single place to learn where the work stands. Any agent updates this at the
 end of its run. Keep it short: what is true now, not a diary.
 
-- **Updated:** 2026-10-14 (record while rolling, `feature/record-while-rolling`; before that PRs #41-#47 and engine/plugin_client after the PR #49 reviews)
+- **Updated:** 2026-10-18 (through #76 and #66 on `main`; open: #72, #74,
+  #75, #77, #78)
 - **Current focus:** the **Complete DAW** milestone, stage DAW 1 (engine
   core, contracts, model). Owner, 2026-10-13: the whole product first, at
   parity with the workflow Avid and Apple document for Pro Tools and Logic,
-  then OS packaging (`planning/ROADMAP.md`). Critical path: M2 → M3 fake
-  backend → playback through the monitor bus → record while rolling with
-  in-band take boundaries → M4 control API → Qt UI wired to M4. Model in
-  flight on `feature/timeline-model`. Development on the owner's laptop
-  under WSL2 with onboard audio; no ISO, QEMU, USB or installer work until
-  the product exists; the UMC1820 is connected at the end. The image work
-  below is done and parked, not abandoned.
-- **Build state:** the engine compiles clean under GCC 14 with `-Wall
-  -Wextra` and all 17 ctests pass in the Debian trixie container built by
-  `tools/build-engine.sh`. Verified 2026-10-13 on `contract/backend`, and
-  under the CI sanitizer flags (TSan; ASan+UBSan) in the same container
-  -- TSan needs `--security-opt seccomp=unconfined` and `setarch -R` there,
-  because Docker Desktop's kernel randomises more address bits than TSan
-  maps. The writer/disk-thread race TSan found is fixed in `a141e9d`.
+  then OS packaging (`planning/ROADMAP.md`). Landed on that path: M2, M3,
+  M4, M7, playback through the monitor bus, record while rolling (#60),
+  take safety (#66), the Qt UI on the engine's document. DAW 1 work left:
+  punch points inside a block with the monitor ramp, then `transport.punch`
+  and `transport.locate` in the catalogue; loop, pre-roll, input
+  monitoring; compound operations (#75, a take on N tracks as one undo
+  step); the control server's plugin chains (ADR-0012 checklist 5: #72,
+  #78, follow-ups #77). Development on the owner's laptop under WSL2 with
+  onboard audio; no ISO, QEMU, USB or installer work until the product
+  exists; the UMC1820 is connected at the end. The image work below is
+  done and parked, not abandoned.
+- **Build state (CI on `main`, run 39128280681 at `cf40568`, all 12 jobs
+  green):** engine build and tests 201/201 (GCC 13.3, Ubuntu runner);
+  TSan 67/67 (`dsp_`/`native_` excluded) plus `native_format` 115/115;
+  ASan+UBSan 201/201; RTSan over the `SONORA_RT` call graph 444/444; plugin
+  host against real LV2 and VST3 plugins 498/498; Qt interface 212/212;
+  recording against PipeWire, BWF read-back, quantum pin and shell checks
+  pass. Nightly green 2026-10-18. Since #73 the sanitizer builds report
+  wall-clock and CPU bars instead of holding them; correctness bars are
+  held in every build. Locally `tools/build-engine.sh` uses the Debian
+  trixie container (GCC 14); TSan there needs `--security-opt
+  seccomp=unconfined` and `setarch -R`.
+- **ADRs accepted by the owner 2026-10-18:** ADR-0009's compound operations
+  update (#70; implementation in #75) and ADR-0012's amendment on the
+  control server's chains (#64, checklist 5). ADR-0013 (post-fader meters,
+  state layout 3, protocol 4; filed with #71) is Proposed, not implemented.
 - **ADR-0007 M1 landed (2026-10-12, `aa4fbec`, PR #5).** The C++ is in the
   module layout of ADR-0007 §1 (`common/`, `contracts/api`, `engine/core`,
   `engine/control`, `engine/app`, `drivers/jack`, `ui/keymap`, `ui/tui`)
@@ -30,7 +43,7 @@ end of its run. Keep it short: what is true now, not a diary.
   disk, not only the tracks open now, and `WavWriter::open` flushes the
   header, so a disk that refuses it fails the take at start with the
   reason instead of in the disk thread later.
-- **ADR-0007 M2, the backend contract (`contract/backend`).** JACK only in
+- **ADR-0007 M2, the backend contract (#14).** JACK only in
   `drivers/jack/src`; `contracts/backend` holds `AudioBackend`,
   `ProcessCallback`, `AudioBlock`; `drivers/support` the shared helpers.
   Unplug, stall, rate and buffer changes are fatal and close the take; the
@@ -77,7 +90,7 @@ end of its run. Keep it short: what is true now, not a diary.
   vendor bindings. Each has a regression test. Not yet exercised on tty1 or
   in QEMU; the interactive paths (Ctrl+C fallback, SIGHUP) are unit-tested
   only.
-- **Key maps in the Qt window (`feature/ui-keymaps`).** Commands go where
+- **Key maps in the Qt window (#67).** Commands go where
   their catalog domain says: Interface commands never reach the engine, and
   an Engine command goes to the engine once its Hello lists it, before any
   stand-in the window has. Pro Tools' Commands Keyboard Focus is real:
@@ -170,7 +183,7 @@ end of its run. Keep it short: what is true now, not a diary.
   is refused before the prompt; a missing or empty device is not reported as
   "in use". Each asserted in `tools/test-write-usb.sh` (strace and seeded
   patterns). Loop devices and QEMU only, as before.
-- **Transport window and the tempo map (`feature/ui-transport`).** Bars and
+- **Transport window and the tempo map (#62; follow-ups #76).** Bars and
   beats are read through the whole tempo map (they were read from its first
   entry, so a loaded session with a tempo change had a counter, ruler and
   grid that disagreed with it after the change): counters, the Bars|Beats
@@ -183,6 +196,9 @@ end of its run. Keep it short: what is true now, not a diary.
   click are shown dimmed with the reason: the engine runs neither yet. Open:
   no tempo or meter ruler, no tempo editing, no counter entry (no locate
   command), and the nudge still steps by the first entry's grid value.
+  #76: a stale engine read while rolling no longer stops the counter, and
+  a reconnect re-reads the whole Hello (rate, block, track count,
+  commands), so a restarted engine of another shape is shown as it is.
 - **Edit and Mix windows (`ui/qt`, branch `feature/ui-arrange-mixer`).**
   Pro Tools workflow over the synthetic engine: rulers (timecode from
   01:00:00:00, bars|beats, min:secs), scene-graph timeline with waveform
@@ -200,7 +216,7 @@ end of its run. Keep it short: what is true now, not a diary.
   the waveforms are synthetic (no peak files), Shuffle and Spot refuse
   edits, Open has no key yet (no `app.open` in the catalogue), Inter is not yet in
   the ISO.
-  **Fades (`feature/ui-fades`):** Fade to Start, Fade to End and the
+  **Fades (#58, #65, #69):** Fade to Start, Fade to End and the
   no-dialog crossfade on the profiles' keys (Pro Tools d/g/f, Logic
   ctrl+alt+x), the Smart Tool's fade corners with a live preview, Clear on a
   fade's span; one `SetFade`/`SetCrossfade` each, which the engine already
@@ -215,8 +231,7 @@ end of its run. Keep it short: what is true now, not a diary.
   back through the fixed stereo monitor bus, driven over the M7 socket by
   `sonora-ui`, `sonora-tui` or `sonora-ctl`; `tools/run-sonora.sh` starts
   engine and UI as two processes.
-- **Record while rolling, in-band take boundaries
-  (`feature/record-while-rolling`, 2026-10-14).** The capture ring is never
+- **Record while rolling, in-band take boundaries (#60).** The capture ring is never
   reset: the audio thread opens and closes a per-track capture window and
   pushes a boundary record behind its samples, and the disk thread splits
   the ring there into the take's file. A take starts from a roll (punch in
@@ -229,7 +244,17 @@ end of its run. Keep it short: what is true now, not a diary.
   callback in an insert runner, and is gone. Block-boundary only: punch
   points inside a block, the monitor ramp and a punch command are next
   (BACKLOG, DAW 1 detail). Container only: ctest, TSan, RTSan.
-- **Mix window on the monitor bus (`feature/ui-mixer-monitor`).** A fader
+- **Take safety (#66).** The disk thread checkpoints every open take every
+  2 s (`SessionConfig::sync_seconds`): header patched to the frames
+  written, `fdatasync`, the folder synced at the first checkpoint; a failed
+  `fdatasync` fails the take. A take survives `kill -9` (ctest
+  `take_kill`), and `sonora-engine` repairs such headers at startup and
+  posts a Notice; recovered takes are not placed yet
+  (`engine.record.orphan_offer`). Loss windows: one disk pass on kill -9,
+  the sync interval plus the ring on a power cut. The `fdatasync` cost on a
+  stick is unmeasured (ADR-0009 Unverified 8). Nothing in `process()`
+  changed.
+- **Mix window on the monitor bus (#61; engine fixes #71).** A fader
   ride is heard through ParameterChange per step and saved by one SetMix at
   release (the bus, which has no ParamId, rides through SetMonitorBus);
   gain and pan are typed into their readouts, with text off the travel
@@ -238,8 +263,12 @@ end of its run. Keep it short: what is true now, not a diary.
   strips read MixState by id order, so after a reorder each showed another
   track's fader. The strips' meters are labelled IN (the state block has
   input peaks only) and the bus's NO DATA; the line above says what is live
-  and says the fake engine plays nothing. Post-fader and bus peaks are
-  BACKLOG Track 1 item 9.
+  and says the fake engine plays nothing. #71: a Resync and a new
+  connection apply the document's mix, so a ride stranded by a lost link
+  does not stick; a solo left on an engine track the document dropped is
+  cleared; `FakeEngine` publishes gain and mute under the real engine's
+  rule; the `playback_fake` flake (the test outran the reader) is fixed.
+  Post-fader and bus peaks wait on ADR-0013.
 - **ADR-0012, plugin hosting (M9), accepted in part (#42).** One host per
   insert chain, depth 1, a missed block is silence (64-frame fade-out,
   ramp-in), make-before-break restarts, inserts in the model, PDC by the
@@ -260,7 +289,7 @@ end of its run. Keep it short: what is true now, not a diary.
   `sonora-plugin-host` bit-exact against the reference, lv2lint and the
   VST3 validator pass. Container figures (`brain/research/native-reverb-n2.md`).
 - **Native tube drive, ADR-0011 N2 slice 2 (#52), and its gate follow-ups
-  (`fix/tube-cpu-gate`).** The SPICE reference harness (ngspice in the
+  (#55).** The SPICE reference harness (ngspice in the
   plugins image, generated netlists checked byte for byte), a 12AX7
   common-cathode stage (Dempwolf law, DK-reduced Newton solve) in
   `common/dsp/triode.h`, and the tube drive as stereo and mono LV2 and
@@ -273,10 +302,17 @@ end of its run. Keep it short: what is true now, not a diary.
   scales it), the absolute bar stays the reference machine's
   (`brain/research/native-tube-n2.md`). Transformer, sag and modelled
   noise are later slices.
-- **Inserts in the model, protocol 3 (#46)** merged; plan nodes and PDC
-  (checklist 3) are in progress on `feature/plan-pdc`.
+- **Native optical leveller "Sonora Opto", ADR-0011 N2 slice 6a (#57).**
+  Electro-optical cell, attenuator and side chain in `common/dsp/opto.h`
+  against an ngspice reference (`spice_opto_0..5`, trajectories to 1e-5
+  dB); stereo and mono LV2 and VST3, eco 1x / standard 4x / high 8x. The
+  nightly CPU gate holds its eco at the scaled class bar only (no
+  reference-kernel figure yet). `brain/research/native-opto-n2.md`. The FET
+  limiter (slice 6b) is #74, open.
+- **Inserts in the model, protocol 3 (#46)** and plan nodes with PDC
+  (ADR-0012 checklist 3) merged.
 - **`engine/plugin_client`, the RT half (ADR-0012 checklist 4,
-  `feature/plugin-client`).** `PluginClient::process_chain` per InsertChain
+  #49).** `PluginClient::process_chain` per InsertChain
   node: blocks numbered per channel from 1, depth-1 collect through
   `collect_output` (NaN/Inf a miss and a fault), fade/ramp state per node
   (M5), swap silence not counted, 8 misses remove the channel (the culprit
@@ -311,7 +347,7 @@ end of its run. Keep it short: what is true now, not a diary.
   malloc/free, on the thread inside `process()`. A binding with no slot or
   no node state is laid out unbound, latency 0, so it is never early. Hosts are still started by hand in the test: the engine
   binary starts none until checklist 5.
-- **Checklist 5, the RT side (`feature/plugin-chain-control`).** Plugin
+- **Checklist 5, the RT side (#68).** Plugin
   parameter changes reach a chain: `Session::post_plugin_param` queues an
   `RtCommand` in a ring of its own, the callback hands it to the
   InsertChain node naming that store, and `session_plugins_params` moves
@@ -322,7 +358,8 @@ end of its run. Keep it short: what is true now, not a diary.
   block (the client's) runs only callbacks of that size; a bound chain the
   session does not run plays silence, never dry and early, and the plan
   report shows the latency the plan carries. The control server does not
-  post any yet, nor start hosts.
+  post any yet, nor start hosts: that is the amendment accepted in #64,
+  being built in #72 and #78, with the #68 review follow-ups in #77.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays
@@ -336,25 +373,15 @@ end of its run. Keep it short: what is true now, not a diary.
   there is still no latency or xrun figure from hardware. Nothing has run on a
   physical machine or a physical USB stick: every claim above is a loop
   device or a QEMU usb-storage device under SeaBIOS or edk2.
-- A review of the initial commit already found three missing includes and a
-  case where losing the audio server left the engine showing REC while
-  capturing nothing (fixed in `dafebe6`). That is the expected yield from
-  uncompiled code, and the reason CI is the next task rather than features.
 
 ## In flight
 
 | Item | Owner | State |
 |---|---|---|
-| First compile and `ctest` run | distro-engineer | done, all three tests pass |
-| `live-build` configuration | distro-engineer | builds; contents verified |
-| Autostart into the engine | distro-engineer | boots and starts the engine in QEMU |
-| Container recording test | rt-engineer | passing, wired into CI |
-| QEMU boot smoke test | distro-engineer | passing, 20 checks |
-| Quantum and rate pin against clients | distro-engineer | passing in container and QEMU; real interface untested |
-| `write-usb.sh` against a disk image, five QEMU boots | distro-engineer | passing; physical stick untested |
-| ADR-0007 M2, backend contract | rt-engineer + driver-engineer | PR from `contract/backend`; reviewed by both owners, `code-reviewer` and `rt-safety-auditor`; hardware untested |
-| LV2 plugin host (`plugins/host`) and draft `contracts/plugin` | plugin-engineer | PR #26: 15 plugin ctest cases pass in `tools/build-plugins.sh` (depth 1 and poll-only); contract merged as a draft, acceptance items in BACKLOG Track 4; engine side is M4+ |
-| VST3 hosting in `plugins/host` (same chain, same protocol) | plugin-engineer | 16 VST3 ctest cases pass in `tools/build-plugins.sh` (AGain, LSP limiter, in-tree crash/mismatch/liar); `brain/research/plugin-host-vst3.md`; yabridge next (BACKLOG Track 4 item 6) |
+| Compound operations (ADR-0009 update, #70) | rt-engineer, ui-engineer review | #75 open |
+| Control server's plugin chains (ADR-0012 checklist 5, #64) | plugin-engineer + rt-engineer | #72 (supervisor never blocks), #78 (supervisor speaks HostControl), #77 (#68 review follow-ups) open |
+| FET peak limiter, N2 slice 6b | dsp | #74 open |
+| Punch points inside a block, monitor ramp (`engine.transport.punch`) | rt-engineer | next Track 1 item |
 
 ## Blocked
 
@@ -364,7 +391,10 @@ end of its run. Keep it short: what is true now, not a diary.
 
 ## Next decision needed from the owner
 
-None open. Decided 2026-10-13: the Complete DAW comes before OS packaging,
+None blocking. ADR-0013 (post-fader meters, protocol 4) waits on review
+before the bus and post-fader meters can land. Decided 2026-10-18: ADR-0009's
+compound operations (#70) and ADR-0012's chain amendment (#64) accepted.
+Decided 2026-10-13: the Complete DAW comes before OS packaging,
 and ADR-0007 §10's early-scope limit is lifted for it (dated amendment in
 that ADR). Decided 2026-10-12: Phase 2 playback starts with a fixed
 2-channel monitor bus; the full mixer comes later on the same graph

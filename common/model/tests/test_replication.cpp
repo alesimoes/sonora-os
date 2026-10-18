@@ -121,7 +121,8 @@ std::vector<Operation> one_of_each() {
             ReplaceInsert{30, 31, vst3, {{"7", 0.5f}}, std::nullopt},
             SetInsertBypass{30, true},
             SetInsertParams{30, {{"gain", 1.5f}, {"mix", 0.25f}}},
-            SetInsertState{30, state}};
+            SetInsertState{30, state},
+            Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
 bool same_op(const Operation& a, const Operation& b) {
@@ -169,7 +170,7 @@ int test_codec_refuses_what_is_not_an_operation() {
     const Bad bad[] = {
         {"", "line"},
         {"[]", "\"op\""},
-        {R"({"op": "Explode"})", "not an operation this version knows"},
+        {R"({"op": "Explode"})", "op: \"Explode\" is not an operation this version knows"},
         {R"({"op": "RemoveMarker"})", "missing required key \"marker\""},
         {R"({"op": "RemoveMarker", "marker": 1, "extra": 2})", "unknown key \"extra\""},
         {R"({"op": "RemoveMarker", "marker": -1})", "marker"},
@@ -444,8 +445,8 @@ int test_window_refuses_what_does_not_fit() {
         std::string err;
         return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 2", "\"window_format\": 1", "window_format"));
-    CHECK(refused("\"window_format\": 2", "\"window_format\": 3", "window_format"));
+    CHECK(refused("\"window_format\": 3", "\"window_format\": 2", "window_format"));
+    CHECK(refused("\"window_format\": 3", "\"window_format\": 4", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

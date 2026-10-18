@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "checks.h"
+#include "sonora/model/op_codec.h"
 #include "sonora/model/operations.h"
 
 namespace sonora::model {
@@ -165,6 +166,9 @@ bool overwrite(Playlist& p, Frames a, Frames b, Id split_id, bool& used_split,
 // rule decides for every crossfade, which is what "removed or kept by the
 // same rule" asks of the overwrite.
 void drop_broken_crossfades(Playlist& p, const SourcePool& pool) {
+    // Both maps are over every region, built for nothing when there is no
+    // crossfade to keep or drop.
+    if (p.crossfades.empty()) return;
     std::unordered_map<Id, std::pair<Frames, Frames>> used;   // in_after, out_before
     std::unordered_map<Id, Frames> length;
     for (const Region& r : p.regions) length[r.id] = r.length;
@@ -188,8 +192,11 @@ void drop_broken_crossfades(Playlist& p, const SourcePool& pool) {
 
 class Applier {
 public:
-    Applier(const Snapshot& before, Snapshot& after, std::string& error)
-        : before_(before), after_(after), error_(error) {}
+    Applier(const Snapshot& before, Snapshot& after, std::string& error, bool in_fold)
+        : before_(before), after_(after), error_(error), in_fold_(in_fold) {}
+
+    // apply() folds a compound itself; the visit never reaches here.
+    bool operator()(const Compound&) { return fail("a compound inside a compound"); }
 
     // --- not undoable ---
 
@@ -773,25 +780,59 @@ private:
 
     // Copies the one playlist, lets `f` edit the copy, checks the result
     // against every invariant, and shares everything else with `before`.
+    //
+    // Inside a compound, a playlist an earlier member already copied is
+    // edited where it is, and so are the track and edit state above it
+    // (ADR-0009 update 2026-10-14, item 5): k members on one n-region
+    // playlist then copy it once, not k times. Only when the whole chain
+    // from the edit state down has one owner, which is then the fold's
+    // working state: `before`, which the fold's caller holds, never does.
+    //
+    // The const_cast below is defined only because no Playlist, TrackEdit or
+    // EditState anywhere in common/model is created const: every one is
+    // make_shared<T>, never make_shared<const T> (the loader, the window
+    // decoder and this file). Keep it that way.
     template <typename F>
     bool edit_playlist(Id playlist, F&& f) {
         Located at;
         if (!locate_playlist(*before_.edit, playlist, at)) {
             return fail("playlist " + str(playlist) + " does not exist");
         }
-        const TrackEdit& old_track = *before_.edit->tracks[at.track];
-        Playlist p = *old_track.playlists[at.playlist];
-        if (!f(p, old_track.channels)) return false;
+        const auto& track_ptr = before_.edit->tracks[at.track];
+        const auto& playlist_ptr = track_ptr->playlists[at.playlist];
+        const bool edit_mine = in_fold_ && before_.edit.use_count() == 1;
+        const bool track_mine = edit_mine && track_ptr.use_count() == 1;
+        const bool playlist_mine = track_mine && playlist_ptr.use_count() == 1;
+        const std::uint16_t channels = track_ptr->channels;
+
+        Playlist copy;
+        if (!playlist_mine) copy = *playlist_ptr;
+        Playlist& p = playlist_mine ? const_cast<Playlist&>(*playlist_ptr) : copy;
+        if (!f(p, channels)) return false;
         detail::sort_crossfades(p);
         std::string where;
-        const std::string why =
-            detail::playlist_problem(p, *before_.sources, old_track.channels, where);
+        const std::string why = detail::playlist_problem(p, *before_.sources, channels, where);
         if (!why.empty()) {
             return fail("playlist " + str(playlist) + (where.empty() ? "" : "." + where) +
                         ": " + why);
         }
-        auto track = std::make_shared<TrackEdit>(old_track);
-        track->playlists[at.playlist] = std::make_shared<const Playlist>(std::move(p));
+        if (playlist_mine) {
+            after_ = before_;
+            return true;
+        }
+        std::shared_ptr<const Playlist> made = std::make_shared<Playlist>(std::move(copy));
+        if (track_mine) {
+            const_cast<TrackEdit&>(*track_ptr).playlists[at.playlist] = std::move(made);
+            after_ = before_;
+            return true;
+        }
+        auto track = std::make_shared<TrackEdit>(*track_ptr);
+        track->playlists[at.playlist] = std::move(made);
+        if (edit_mine) {
+            const_cast<EditState&>(*before_.edit).tracks[at.track] = std::move(track);
+            after_ = before_;
+            return true;
+        }
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks[at.track] = std::move(track);
         after_ = before_;
@@ -831,25 +872,104 @@ private:
     const Snapshot& before_;
     Snapshot& after_;
     std::string& error_;
+    const bool in_fold_;
     Id next_id_ = 0;
+};
+
+bool fold(const Snapshot& before, const Compound& c, Snapshot& after, std::string& error,
+          const MemberCheck& check) {
+    if (c.ops.empty()) {
+        error = "a compound needs at least one operation; this one is empty";
+        return false;
+    }
+    if (c.ops.size() > kMaxCompoundMembers) {
+        error = "at most " + std::to_string(kMaxCompoundMembers) +
+                " operations in a compound; this one has " + std::to_string(c.ops.size());
+        return false;
+    }
+    if (!detail::valid_text(c.label)) {
+        error = "the compound's label is not valid UTF-8";
+        return false;
+    }
+    // The fold's own state: it shares everything with `before` until a
+    // member copies something, and from then on that copy is the fold's
+    // alone (Applier::edit_playlist).
+    Snapshot work = before;
+    for (std::size_t i = 0; i < c.ops.size(); ++i) {
+        const Member& m = c.ops[i];
+        std::string why;
+        if (check) why = check(work, MemberRef(m));
+        bool ok = why.empty();
+        if (ok) {
+            Snapshot next;
+            Applier applier(work, next, why, true);
+            ok = std::visit(applier, m);
+            if (ok) work = std::move(next);
+        }
+        if (!ok) {
+            error = "operation " + std::to_string(i + 1) + " of " +
+                    std::to_string(c.ops.size()) + " (" + member_name(m) + "): " + why;
+            return false;
+        }
+    }
+    after = std::move(work);
+    return true;
+}
+
+struct ToMember {
+    Member& out;
+    template <typename T>
+    bool operator()(T&& leaf) const {
+        out = std::forward<T>(leaf);
+        return true;
+    }
+    bool operator()(Compound&&) const { return false; }
 };
 
 }  // namespace
 
+Operation to_operation(const Member& m) {
+    return std::visit([](const auto& leaf) { return Operation(leaf); }, m);
+}
+
+bool to_member(Operation op, Member& out) { return std::visit(ToMember{out}, std::move(op)); }
+
+namespace {
+
+// Mix, plug-in values, sources and settings are outside edit undo.
+bool leaf_is_undoable(MemberRef m) {
+    return !(m.holds<AddSource>() || m.holds<SetMix>() || m.holds<SetMonitorBus>() ||
+             m.holds<SetSettings>() || m.holds<SetInsertBypass>() ||
+             m.holds<SetInsertParams>() || m.holds<SetInsertState>());
+}
+
+}  // namespace
+
+bool member_is_undoable(const Member& m) { return leaf_is_undoable(MemberRef(m)); }
+
 bool is_undoable(const Operation& op) {
-    return !(std::holds_alternative<AddSource>(op) || std::holds_alternative<SetMix>(op) ||
-             std::holds_alternative<SetMonitorBus>(op) ||
-             std::holds_alternative<SetSettings>(op) ||
-             std::holds_alternative<SetInsertBypass>(op) ||
-             std::holds_alternative<SetInsertParams>(op) ||
-             std::holds_alternative<SetInsertState>(op));
+    if (const auto* c = std::get_if<Compound>(&op)) {
+        return std::any_of(c->ops.begin(), c->ops.end(), member_is_undoable);
+    }
+    return leaf_is_undoable(MemberRef(op));
 }
 
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,
-           std::string& error) {
+           std::string& error, const MemberCheck& check) {
     Snapshot result;
-    Applier applier(before, result, error);
-    if (!std::visit(applier, op)) return false;
+    if (const auto* c = std::get_if<Compound>(&op)) {
+        if (!fold(before, *c, result, error, check)) return false;
+    } else {
+        if (check) {
+            std::string why = check(before, MemberRef(op));
+            if (!why.empty()) {
+                error = std::move(why);
+                return false;
+            }
+        }
+        Applier applier(before, result, error, false);
+        if (!std::visit(applier, op)) return false;
+    }
     result.revision = before.revision + 1;
     after = std::move(result);
     return true;

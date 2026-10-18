@@ -132,6 +132,32 @@ playback can follow edits; it is in flight.
        or track was removed by edit undo is shown or skipped, whether
        `SetMonitorBus` belongs in it, and its key binding. Not part of the
        compound-operation implementation.
+7. [x] Compound operations (ADR-0009 update 2026-10-14): PR #75, with an
+       interim limit of 64 members (5 to 7.5 ms on 2,000-region playlists).
+8. [ ] Raise the compound limit toward 4,096 (ADR-0009 update 2026-10-14,
+       item 5, remedy (a); rt-engineer's profile on PR #75). Per member, the
+       whole-playlist hash maps are about 75 % of the cost:
+       - exact local validation inside a fold: an operator reports the
+         index range it touched, and the range ±1, with the crossfades
+         whose left or right region lies in it, is checked with
+         `region_problem`, adjacency and the crossfade rules. Not deferred
+         to the fold's end, so "fold == members one by one" holds;
+       - a test-time check in `model_compound` and `model_random_edits`
+         that the local verdict equals `playlist_problem`'s after every
+         member;
+       - range-local `overwrite()` (`lower_bound` and splice in place, no
+         new vector) and `drop_broken_crossfades()` (only the crossfades
+         touching the range), so a cut-like compound is not O(n) a member
+         either.
+       Measure with `measure_compound` again. Raising the limit changes what
+       a decoder accepts, so it needs a `kProtocolVersion` bump. **Must land
+       with cut/copy/paste** (Track 3 item 1): a paste over 18 tracks with
+       a few regions each, plus its overwrite splits, passes 64 members, so
+       at the interim limit ordinary edits would be refused.
+9. [ ] FakeEngine adds its closed takes to its document, as the control
+       server does (`add_closed_take`): a "Record" compound, its notices,
+       and a refused take's TakeFailed. Then UI tests see a compound arrive
+       from the engine (PR #75 ui-engineer review, item 5). contracts/api.
 
 ### Track 3: UI (ui-engineer)
 
@@ -145,8 +171,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] A crossfade keeps the fade it hides at that end, so clearing the
              crossfade brings it back, and it still takes room from the
              other end (the interface clamps and refuses against it, naming
-             it). Pro Tools drops it: crossfade plus SetFade 0 needs the
-             compound operation below.
+             it). Pro Tools drops it: crossfade plus SetFade 0, sent as one
+             `Compound` (Track 2 item 7).
        - [x] common/model refuses a crossfade that overlaps the region's
              own fade at its other end, in `playlist_problem`; edge-moving
              edits, crossfade clears and punches shorten the fade instead,
@@ -157,10 +183,29 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              punch shortened (`RecordTake` runs `fit_fades_to_crossfades`).
              Pro Tools truncates the fade and never refuses the record; the
              operator should still hear what changed (PR #69 review, note 3).
-       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle need several model
-             operations as one undo step: a compound operation in
-             common/model (or the engine resolving the command, ADR-0009)
-             comes first.
+       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle: each one
+             `Compound` with a label ("Cut", "Paste"), now in common/model
+             (Track 2 item 7), within its interim 64 members until Track 2
+             item 8. Shuffle on a long playlist needs a `ShiftRegions`
+             operation first (ADR-0009 update 2026-10-14, item 5).
+       - [ ] The compound rule for every sender (PR #75 ui-engineer
+             review, item 4):
+             - one gesture is one compound and one undo step; the UI never
+               splits an operator's edit across compounds;
+             - over `model::kMaxCompoundMembers` (the constant, never a
+               literal) the UI refuses before sending, changes nothing and
+               says so in operator words ("Paste needs 70 changes; at most
+               64 in one edit for now. Nothing was pasted."), not the
+               model's "operation 65 of 70";
+             - build to the fewest members: Shuffle's ripple waits for
+               `ShiftRegions` (one member a playlist), and until then a
+               Shuffle edit that would ripple more than fits is refused;
+             - a `ui/qt/tests` case per sender at the limit and one past it.
+             An 18-track paste passes 64 members, so Track 2 item 8 must
+             land with cut/copy/paste.
+       - [ ] The undo and redo text: "Undo Record", "Undo Paste", from the
+             history's step labels (`History::undo_label()` /
+             `redo_label()`, PR #75), as a property and an Edit menu item.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain
@@ -173,9 +218,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              before release (since PR #71 the engine restores the mix; a
              dropped ride resends its own index only);
              live-parameter Ok replies no longer clear the status line.
-       - [ ] Alt-click on solo or mute is one SetMix per track, so one undo
-             step per track; it should be one compound undo step (needs a
-             compound op or a history group in `common/model`).
+       - [ ] Alt-click on solo or mute is one SetMix per track: N revisions
+             and no undo step, since mix state is not edit-undoable. It
+             should be one `Compound` (Track 2 item 7): one update, no
+             edit-undo step, and one mix-undo step once that history exists
+             (Track 2 item 6).
        - [ ] Solo safe: Track 2 item 5. Solo modes (latch, X-OR,
              momentary) and stereo pan wait for those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.
@@ -220,6 +267,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              sized from the first Hello: the synthetic waveforms' rate
              (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
+6. [ ] The version refusal reaches the operator (PR #75 ui-engineer review,
+       item 3). `version_mismatch()`'s text ("the engine speaks control
+       protocol version 4 and this interface speaks version 3; install an
+       interface and an engine from the same build") goes to stderr and
+       exit 1 today, which on the appliance is a black screen restarted
+       for ever:
+       - at startup, a full-screen refusal page with the text instead of
+         exiting;
+       - on reconnect, `last_error()` shown in the engine-gone overlay;
+       - a version refusal stops the retry loop, since retrying cannot fix
+         it.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
@@ -804,11 +862,11 @@ Order and owners are in ADR-0008 §5.
       Note (`ci/rtsan-jack`, 2026-10-14): on PipeWire 1.4's dummy driver
       in a container, SIGSTOP of the engine for 0.2 s mid-take gave
       xruns=0; jackd2 gave 2 for the same on an upstream client.
-- [ ] A take on N tracks is one undo step: a multi-track `RecordTake` (one
-      operation carrying every track's region), as Pro Tools' one undo
-      removes the whole take. Today `add_closed_take()` applies one
-      `RecordTake` per track, N undo steps. A `common/model` contract
-      change (op codec, replication). rt-engineer with ui-engineer.
+- [x] A take on N tracks is one undo step: `add_closed_take()` applies the
+      take as one `Compound` labelled "Record" (ADR-0009 update 2026-10-14,
+      item 8). A track whose file does not read costs that track, with its
+      own notice; a model refusal still puts the audio in the pool and is
+      shown as a failed take. PR #75.
 - [ ] The end of a fader gesture written into the document as `SetMix`.
       Today a `ParameterChange` moves the Track atomic only, so the session
       file and every replica keep the old gain, and the next mix-changing
@@ -1088,25 +1146,52 @@ ADR-0011 "For the owner".
       `spice_opto_0..5`), "Sonora Opto" (eco 1x zero latency, standard 4x,
       high 8x; LV2 and VST3, stereo and mono, key input). Measurements:
       `brain/research/native-opto-n2.md`. dsp-engineer.
-- [ ] N2 slice 6b: the FET peak limiter ("Sonora FET"), from the published
-      circuit of the 1960s FET limiting amplifier: the FET as the bottom
-      leg of a voltage divider ahead of the preamp (a 2N3819/2N5457-class
-      JFET in its ohmic region, Shichman-Hodges with the published
-      device parameters, solved per sample with the DK method of slice 2),
-      the feedback side chain and its detector, attack 20-800 us and
-      release 50 ms-1.1 s as published, ratios 4, 8, 12, 20 and the
-      all-buttons mode as the circuit's behaviour (the ratio network with
-      every button in, not a preset curve), the class-A output stage
-      later. SPICE reference of the published schematic through
-      `measure/spice.h` (a JFET is native to ngspice), static curve per
-      ratio, attack and release against the published ranges, THD rising
-      with reduction, aliasing at 4x (sub-millisecond attack), hot input,
-      class A or an eco mode that meets it. Sources first: the original
-      unit's published schematic and service manual (the research note's
-      §1.6 found the manual's server refusing fetches), Gerat, Eichas and
-      Zolzer (AES 143, 2017) and the Aveiro thesis (Antao, 2014) for
-      validation figures only. No product names (ADR-0011 §5).
+- [ ] N2 slice 6b, `feature/dsp-n2-fet` (PR #74), landed; open on (e) of
+      the follow-ups below (eco's CPU): the FET peak limiter ("Sonora
+      FET") from the reissue manual's published circuit (Figs. 3 and 5):
+      the JFET as the divider's bottom leg with the LN gate, the feedback
+      side chain, ratio and bias strings, rectifier, attack (R54 || C27,
+      R55) and release (R56, R57) networks, C9, the stereo link joining the
+      C22 nodes; [SH] with the National 2N5457 model; a joint per-sample
+      Newton solve of the drain and the rectifier (`common/dsp` `fet.h`).
+      SPICE reference through `measure/spice_fet.h` (ngspice's own NJF and
+      diode), `plugins/native/fet` with LV2 and VST3, stereo and mono, with
+      the key input. Measurements: `brain/research/native-fet-n2.md`.
       dsp-engineer.
+- [ ] N2 FET follow-ups (slice 6b): (a) The all-button mode: under our
+      reading of Fig. 5's switch it gives about 3.6:1 from a threshold
+      12 dB below 4:1's, where the manual says "between 12:1 and 20:1".
+      Trace the switch's contacts on the original service schematic or a
+      unit, and model what it shows. (b) The release's slow stage: C9
+      (0.22 uF behind R6 + R7) holds half the gate's excursion for about a
+      second, so from 11 dB at the fastest release the reduction takes
+      0.36 s to halve. Confirm C9's value and the R6 arm's DC return on
+      the service schematic or a unit before anything changes. (c) The
+      ratios come out 10-24 % under the labels with the National 2N5457
+      model; measure the bias string's voltages and the side chain's gain
+      on a unit, and the FET in it. (d) The class-A output stage and its
+      transformer, the input transformer and the preamplifier's own
+      colour, after the transformer slice (3). (e) CPU, before the FET
+      enters the default insert list: eco is 20.5 us p99.9 per q128 stereo
+      block on the golden configuration (quiet host, i7-11800H), 0.5 us
+      over class A (it meets it on the hot programme, 17.6 us); standard
+      (81 us) and high (148 us) ship over the class only beside an eco
+      that meets it (§3.5). Candidates: the two channels in SIMD lanes, a
+      branch-free junction law, a tabulated exp. Then add the FET's eco to
+      the nightly gate and record `cpu.p999_kernels`.
+      (f) Eco under-reads high-frequency peaks (up to 2.5 dB at fs/4) and
+      aliases heavily at the fastest settings (-34 dBc at 48 kHz): an
+      inter-sample peak estimate for eco's rectifier, if a low-latency eco
+      is wanted. (g) The slowest attack is a third of the manual's 800 us
+      on the suite's step: settle how the manual measured it. (h) The
+      Aveiro thesis and Gerat, Eichas and Zolzer (AES 143) for
+      validation figures, not reached here. (i) A component-level
+      netlist of Figs. 3 and 5 for the SPICE reference (the transistors
+      of the preamplifier and side chain, the bias string, the switch,
+      the gate network with C3 and C6): today ngspice runs the same
+      reduced circuit as the model, with the gate, side chain, bias taps
+      and rest point as behavioural sources, so it checks the solver and
+      the device laws, not that reduction. dsp-engineer.
 - [ ] N2 opto follow-ups (slice 6a): (a) CPU: standard (4x) is 42-47 us
       p99.9 per q128 stereo block over class A (20 us), beside eco at
       9 us that meets it; candidates, measured on the reference machine
