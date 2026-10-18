@@ -92,8 +92,7 @@ playback can follow edits; it is in flight.
        decision of 2026-10-14, ADR-0009 update 2026-10-14 item 4): `SetMix`,
        `SetInsertBypass`, `SetInsertParams`, and a compound's mix members as
        one step. Until it exists those make no undo step.
-7. [x] Compound operations (ADR-0009 update 2026-10-14):
-       `feature/compound-op`.
+7. [x] Compound operations (ADR-0009 update 2026-10-14): PR #75.
        - [ ] Its cost on long playlists. Each member re-validates its whole
              playlist: measured 0.65 to 1.2 s for 4,096 members on 2,000
              regions, against the 10 ms threshold (the numbers are in
@@ -723,7 +722,7 @@ Order and owners are in ADR-0008 §5.
       take as one `Compound` labelled "Record" (ADR-0009 update 2026-10-14,
       item 8). A track whose file does not read costs that track, with its
       own notice; a model refusal still puts the audio in the pool and is
-      shown as a failed take. `feature/compound-op`.
+      shown as a failed take. PR #75.
 - [ ] The end of a fader gesture written into the document as `SetMix`.
       Today a `ParameterChange` moves the Track atomic only, so the session
       file and every replica keep the old gain, and the next mix-changing
