@@ -16,6 +16,7 @@ install(TARGETS sonora-engine RUNTIME DESTINATION bin)
 # file, and an engine/app library is not a target ADR-0007 defines.
 add_executable(test_quit_signals tests/test_quit_signals.cpp src/quit_signals.cpp)
 target_include_directories(test_quit_signals PRIVATE include)
+target_link_libraries(test_quit_signals PRIVATE Threads::Threads)
 add_test(NAME quit_signals COMMAND test_quit_signals)
 
 add_executable(test_memory_lock tests/test_memory_lock.cpp src/memory_lock.cpp)
