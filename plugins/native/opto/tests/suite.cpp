@@ -741,7 +741,10 @@ void key_and_link(Suite& s) {
 // dBFS) in the same configuration, the bar the tube's review settled on
 // (#52). The cell's cost is flat in its state (RT audit of #57): a change
 // that made it depend on the drive, an iterative cell step say, trips
-// this long before it costs the 2.67 ms period, which is also checked.
+// this long before it costs the 2.67 ms period, which is also checked in
+// an uninstrumented build (reported under a sanitizer, Suite::check_time_le).
+// The ratio is held in every build: under ASan and UBSan at ctest -j16 on
+// an i7-11800H it read 1.03 to 1.38, against 6.
 void hot_input(Suite& s) {
     const double fs = 48000.0;
     // In phase on both channels: linked, the drivers' grids are joined and
@@ -811,7 +814,8 @@ void hot_input(Suite& s) {
                        "the cell under the driver's full swing ([M]: up to 40 dB)");
             s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
                        fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
-            s.check_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us", "the 128-frame period at 48 kHz");
+            s.check_time_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us",
+                            "the 128-frame period at 48 kHz");
         }
     }
 }
