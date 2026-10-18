@@ -25,8 +25,10 @@ target_link_libraries(sonora_plugin_client_rt PUBLIC sonora_plugin_protocol sono
 add_library(sonora_plugin_client STATIC src/client.cpp src/host_supervisor.cpp
             include/sonora/plugin_client/host_supervisor.h $<TARGET_OBJECTS:sonora_plugin_client_rt>)
 target_include_directories(sonora_plugin_client PUBLIC include)
-target_link_libraries(sonora_plugin_client PUBLIC sonora_plugin_protocol sonora_base Threads::Threads
-                      PRIVATE sonora_platform)
+# contracts/plugin's HostControl codec (host_control.h): the supervisor
+# speaks it to every host, and host_supervisor.h names its types.
+target_link_libraries(sonora_plugin_client PUBLIC sonora_plugin_protocol sonora_plugin_host_control sonora_base
+                      Threads::Threads PRIVATE sonora_platform)
 
 # The audio thread's half against a scripted in-process host: no process,
 # no plugin, any OS.
@@ -111,7 +113,9 @@ if(TARGET sonora-plugin-host)
   set(_pc_host $<TARGET_FILE:test_plugin_client_host> --host $<TARGET_FILE:sonora-plugin-host>
                --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
   set(_pc_tests)
-  foreach(scenario async_start ready_timeout async_refused passthrough params miss crash restarts nan)
+  foreach(scenario control_loaded control_refused_instance control_bad_hello control_bogus control_flood
+                   control_half control_rates control_unsolicited control_breaches control_load_cap
+                   control_start_paths async_start ready_timeout async_refused passthrough params miss crash restarts nan)
     add_test(NAME plugin_client_host_${scenario} COMMAND ${_pc_host} --scenario ${scenario})
     list(APPEND _pc_tests plugin_client_host_${scenario})
   endforeach()

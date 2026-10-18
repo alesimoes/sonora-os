@@ -40,6 +40,16 @@ public:
         std::string stderr_path;
         // Each at its child_fd, 3 or above; nothing else is inherited.
         std::vector<PassedRegion> regions;
+        // The child's end of a ControlChannel::pair (close-on-exec here),
+        // each placed at its child_fd beside the regions. Every child_fd,
+        // region or handle, is 3 to 63 and used once; spawn() refuses
+        // otherwise. The caller keeps its own copy and closes it after
+        // spawn (close_handle).
+        struct PassedHandle {
+            int child_fd = -1;
+            int handle = -1;
+        };
+        std::vector<PassedHandle> handles;
     };
 
     // argv[0] is the program's path. Fails with a reason, never silently.
@@ -54,6 +64,8 @@ public:
 
     // Reaps it if it has exited; never waits.
     bool running();
+    // Its process id, as it would say in a Hello (host_control.h).
+    int64_t pid() const;
     // True once it has exited, waiting up to `timeout_ms` (-1: for ever).
     bool wait(int timeout_ms);
     // Asks it to leave (SIGTERM).

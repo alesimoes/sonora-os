@@ -29,10 +29,16 @@
 // block back (a harness may wait; the client never does). The miss, crash
 // and restarts cases run paced instead, at the period, without waiting.
 #include "sonora/fake_backend.h"
+#include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
 #include "sonora/platform/wake.h"
+#include "sonora/plugin/host_control.h"
 #include "sonora/plugin_client/host_supervisor.h"
 #include "sonora/plugin_client/plugin_client.h"
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -447,6 +453,577 @@ int scenario_async_refused(const Args& a) {
     return 0;
 }
 
+// ---- HostControl (host_control.h) between the supervisor and its hosts
+//
+// Real hosts for what a plugin does (its key table, its refusal); this
+// binary itself, run as a scripted fake host (SONORA_FAKE_HOST=<mode> in its
+// environment), for what a host must not do: a Hello with another pid, a
+// message only the engine sends, a GestureEnd flood (M2), a message half
+// sent and never finished (M1).
+
+namespace pc = sonora::plugin::control;
+
+uint64_t steady_ns() { return now_ns(); }
+
+// The fake host: --version as a real one answers it; otherwise descriptor 3
+// is its socket and 4 its channel region. Ready with the IPC block as its
+// latency, a Loaded with keys p0, p1, ..., then `mode`. It beats its
+// heartbeat until it is told to stop.
+int fake_host(int argc, char** argv, const std::string& mode) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--version") {
+            char line[128];
+            pc::format_host_version_line(line, sizeof line);
+            std::printf("%s\n", line);
+            return 0;
+        }
+    }
+    std::string err;
+    auto ctl = platform::ControlChannel::adopt(3, err);
+    struct stat st {};
+    if (!ctl || ::fstat(4, &st) != 0) return 2;
+    void* base = ::mmap(nullptr, std::size_t(st.st_size), PROT_READ | PROT_WRITE, MAP_SHARED, 4, 0);
+    if (base == MAP_FAILED) return 2;
+    plugin::ChannelHeader& h = *static_cast<plugin::ChannelHeader*>(base);
+    pc::Reassembler in(pc::kMaxMessageBytes);
+    const auto receive = [&](std::string& message) {
+        std::string datagram;
+        for (;;) {
+            if (ctl->receive(datagram, pc::kMaxFrameBytes, nullptr, 5000, err) != platform::IoStatus::Ok) return false;
+            switch (in.add(datagram, message, err)) {
+                case pc::Reassembler::Result::Complete: return true;
+                case pc::Reassembler::Result::Error: return false;
+                case pc::Reassembler::Result::Partial: break;
+            }
+        }
+    };
+    const auto send = [&](const std::string& message) {
+        std::vector<std::string> frames;
+        if (!pc::split_frames(message, frames, err)) return;
+        for (const std::string& f : frames) ctl->send(f, 1000, err);
+    };
+    const auto msg = [&](const auto& m) {
+        std::string out;
+        pc::encode(m, out);
+        send(out);
+    };
+    // n of the same GestureEnd, or ParamTouched, at once.
+    const auto burst_ends = [&](uint32_t n, uint32_t params) {
+        msg(pc::GestureBegin{0, 0});
+        for (uint32_t k = 0; k < n; ++k) msg(pc::GestureEnd{0, params ? k % params : 0, 0.5f});
+    };
+    const auto burst_touches = [&](uint32_t n) {
+        msg(pc::GestureBegin{0, 0});
+        for (uint32_t k = 0; k < n; ++k) msg(pc::ParamTouched{0, 0, float(k % 2)});
+    };
+    const auto big_state = [&](uint32_t request) {
+        pc::State s;
+        s.request = request;
+        s.status = pc::StateStatus::Ok;
+        s.bytes.assign(pc::kMaxStateBytes - 64, 'x');
+        return s;
+    };
+    std::string m;
+    pc::EngineHello ehello;
+    pc::Load load;
+    if (!receive(m) || !pc::decode(m, ehello, err) || !receive(m) || !pc::decode(m, load, err)) return 2;
+    // #72 review item 3: a host that exits before Ready; one that never gets
+    // there; one Ready the first time and then a crash, whose replacements
+    // never get there (a marker file tells the runs apart).
+    if (mode == "exit-early") return 4;
+    bool never_ready = mode == "never-ready";
+    if (mode == "ready-once") {
+        const char* marker = std::getenv("SONORA_FAKE_MARKER");
+        struct stat ms {};
+        if (marker && ::stat(marker, &ms) == 0) {
+            never_ready = true;
+        } else if (marker) {
+            std::ofstream(marker) << "ran\n";
+        }
+    }
+    if (never_ready) {
+        pc::Hello hello;
+        hello.pid = uint64_t(::getpid());
+        msg(hello);
+        std::string datagram;
+        while (h.shutdown.load(std::memory_order_acquire) == 0) {
+            if (ctl->receive(datagram, pc::kMaxFrameBytes, nullptr, 20, err) == platform::IoStatus::Closed) break;
+        }
+        return 0;
+    }
+    // Before Hello.
+    if (mode == "before-hello") msg(pc::GestureBegin{0, 0});
+    pc::Hello hello;
+    hello.pid = mode == "bad-pid" ? 1 : uint64_t(::getpid());
+    if (mode == "bad-version") hello.wire_version = 99;
+    msg(hello);
+    if (mode == "two-hellos") msg(hello);
+    // After Hello, before Loaded: an unsolicited 16 MiB State, three times
+    // (H1 on #78); the first is the fault.
+    if (mode == "state-before")
+        for (int i = 0; i < 3; ++i) msg(big_state(7));
+    h.latency_frames.store(h.block_frames, std::memory_order_relaxed);
+    h.latency_generation.store(1, std::memory_order_release);
+    h.state.store(uint32_t(plugin::HostState::Ready), std::memory_order_release);
+    pc::Loaded loaded;
+    loaded.latency_frames = h.block_frames;
+    loaded.latency_generation = 1;
+    for (const pc::LoadInstance& li : load.instances) {
+        pc::LoadedInstance i;
+        for (uint32_t p = 0; p < li.params; ++p) i.params.push_back({"p" + std::to_string(p), 0.f, 1.f, 0.f});
+        loaded.instances.push_back(std::move(i));
+    }
+    if (mode == "bad-count") loaded.instances.push_back(loaded.instances.front());
+    msg(loaded);
+    const uint32_t params = load.instances.empty() ? 0 : load.instances.front().params;
+    const uint64_t misbehave_at = steady_ns() + 300'000'000;
+    bool misbehaved = false;
+    uint64_t next_ms = 0;
+    uint32_t sent = 0;
+    while (h.shutdown.load(std::memory_order_acquire) == 0) {
+        h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t t = steady_ns();
+        if (!misbehaved && t >= misbehave_at) {
+            misbehaved = true;
+            next_ms = t / 1'000'000;
+            if (mode == "ready-once") {
+                std::_Exit(1);  // a crash, once Ready
+            } else if (mode == "bogus") {
+                msg(pc::EngineHello{});  // a type only the engine sends
+            } else if (mode == "flood") {
+                burst_ends(10 * pc::kMaxGestureEndsPerSecond + 100, 0);
+            } else if (mode == "gesture-at-limit") {
+                burst_ends(10 * pc::kMaxGestureEndsPerSecond, 0);
+            } else if (mode == "gesture-over") {
+                burst_ends(10 * pc::kMaxGestureEndsPerSecond + 1, 0);
+            } else if (mode == "preset") {
+                // A preset change in the plugin's own editor: every
+                // parameter ends a gesture at once.
+                burst_ends(params, params);
+            } else if (mode == "touch-at-limit") {
+                burst_touches(pc::kMaxTouchesPerSecondPerParam);
+            } else if (mode == "touch-over") {
+                burst_touches(pc::kMaxTouchesPerSecondPerParam + 1);
+            } else if (mode == "half") {
+                // The first frame of a two-frame message, and never the second.
+                std::string out;
+                pc::State s;
+                s.bytes.assign(pc::kMaxFrameBytes * 2, 'x');
+                pc::encode(s, out);
+                std::vector<std::string> frames;
+                pc::split_frames(out, frames, err);
+                if (!frames.empty()) ctl->send(frames.front(), 1000, err);
+            } else if (mode == "state-after") {
+                for (int i = 0; i < 3; ++i) msg(big_state(7));
+            } else if (mode == "two-loaded") {
+                msg(loaded);
+            } else if (mode == "refused-after-loaded") {
+                msg(pc::Refused{plugin::Refusal::InstantiateFailed, 0, "late"});
+            } else if (mode == "out-of-chain") {
+                msg(pc::GestureBegin{5, 0});
+            } else if (mode == "fd") {
+                auto region = platform::SharedRegion::create("sonora-fake-fd", 4096, err);
+                std::string out;
+                pc::encode(pc::LatencyChanged{2, h.block_frames}, out);
+                std::vector<std::string> frames;
+                pc::split_frames(out, frames, err);
+                if (region && !frames.empty()) ctl->send_with_region(frames.front(), *region, 1000, err);
+            } else if (mode == "big-frame") {
+                ctl->send(std::string(pc::kMaxFrameBytes + 4096, 'x'), 1000, err);
+            }
+        }
+        // The legitimate rates, paced (M2 must not kill them): a knob
+        // dragged at 100 touches a second for 2 s; 50 GestureEnd spread over
+        // a second.
+        if (misbehaved && mode == "touch-legit" && sent < 200 && t / 1'000'000 >= next_ms) {
+            if (sent == 0) msg(pc::GestureBegin{0, 0});
+            msg(pc::ParamTouched{0, 0, float(sent % 2)});
+            ++sent;
+            next_ms += 10;
+        }
+        if (misbehaved && mode == "gesture-legit" && sent < pc::kMaxGestureEndsPerSecond &&
+            t / 1'000'000 >= next_ms) {
+            msg(pc::GestureBegin{0, 0});
+            msg(pc::GestureEnd{0, 0, float(sent % 2)});
+            ++sent;
+            next_ms += 1000 / pc::kMaxGestureEndsPerSecond;
+        }
+        std::string datagram;
+        if (ctl->receive(datagram, pc::kMaxFrameBytes, nullptr, 2, err) == platform::IoStatus::Closed) break;
+    }
+    return 0;
+}
+
+struct ControlRig {
+    PluginClient client;
+    SupervisorConfig scfg;
+    std::unique_ptr<HostSupervisor> sup;
+    ControlRig(const std::string& host, const std::vector<std::string>& bundles, uint64_t ready_timeout_ms = 10000)
+        : client(Rig::client_config()) {
+        scfg.host_path = host;
+        scfg.bundles = bundles;
+        scfg.sample_rate = kRate;
+        scfg.block_frames = kBlock;
+        scfg.ready_timeout_ms = ready_timeout_ms;
+        sup = std::make_unique<HostSupervisor>(scfg, client);
+    }
+    // poll() every 5 ms until an event other than None, or `max_ms`.
+    static SupervisedChain::Event next_event(SupervisedChain& c, uint64_t max_ms) {
+        const uint64_t end = now_ms() + max_ms;
+        while (now_ms() < end) {
+            const SupervisedChain::Event e = c.poll(now_ms());
+            if (e != SupervisedChain::Event::None) return e;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return SupervisedChain::Event::None;
+    }
+};
+
+std::string self_path() {
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    return n > 0 ? std::string(buf, std::size_t(n)) : std::string();
+}
+
+ChainSpec fake_spec() {
+    ChainSpec s;
+    s.plugins = {"urn:sonora:fake#one"};
+    s.param_counts = {2};
+    s.channels = 1;
+    return s;
+}
+
+// A real host's Loaded: one entry per instance, each with the stable keys
+// the scan saw, in dense order (host_control.h, "Keys").
+int scenario_control_loaded(const Args& a) {
+    std::printf("control_loaded: %s + %s, the key table from Loaded\n", kLookahead, kCrash);
+    ControlRig rig(a.host, a.bundles);
+    check(rig.sup->ok(), "the host speaks layout, clock and wire versions");
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    const Probe look = probe(a, kLookahead), crash = probe(a, kCrash);
+    ChainSpec s;
+    s.plugins = {kLookahead, kCrash};
+    s.param_counts = {uint32_t(look.symbols.size()), uint32_t(crash.symbols.size())};
+    s.channels = 1;
+    SupervisedChain chain(*rig.sup, s, 0, 0);
+    std::string error;
+    check(chain.start(error), "the chain comes up Ready");
+    if (!chain.host()) return 1;
+    const pc::Loaded& l = chain.host()->loaded();
+    check(l.instances.size() == 2, "Loaded has one entry per instance");
+    bool keys = l.instances.size() == 2 && l.instances[0].params.size() == look.symbols.size() &&
+                l.instances[1].params.size() == crash.symbols.size();
+    for (std::size_t i = 0; keys && i < look.symbols.size(); ++i) keys = l.instances[0].params[i].key == look.symbols[i];
+    for (std::size_t i = 0; keys && i < crash.symbols.size(); ++i) keys = l.instances[1].params[i].key == crash.symbols[i];
+    check(keys, "each instance's keys are the scan's symbols, in dense order");
+    check(l.instances.size() == 2 && l.instances[0].latency_frames == 100, "the look-ahead's own latency, 100");
+    check(chain.latency_frames() == 100 + kBlock, "the region's figure: 100 + the IPC block");
+    chain.poll(now_ms());
+    check(chain.host()->protocol_fault().empty(), "no protocol fault");
+    return 0;
+}
+
+// A refusal names its instance, so the control server can leave it out and
+// start the rest (ADR-0012 amendment of 2026-10-14, change C).
+int scenario_control_refused_instance(const Args& a) {
+    std::printf("control_refused_instance: %s then urn:sonora:test#liar\n", kCrash);
+    ControlRig rig(a.host, a.bundles);
+    if (!rig.sup->ok()) return 1;
+    ChainSpec s;
+    s.plugins = {kCrash, "urn:sonora:test#liar"};
+    s.param_counts = {uint32_t(probe(a, kCrash).symbols.size()), uint32_t(probe(a, "urn:sonora:test#liar").symbols.size())};
+    s.channels = 1;
+    SupervisedChain chain(*rig.sup, s, 0, 0);
+    std::string error;
+    check(!chain.start(error), "the chain does not come up");
+    std::printf("  why: %s\n", chain.why().c_str());
+    check(chain.down() && chain.refused(), "down, as a refusal");
+    check(chain.refused_instance() == 1, "the refusal names instance 1, the liar");
+    // L1 on #78: the Refused message's own text, which follows the region's
+    // word, is kept rather than lost to the race.
+    check(chain.why().find("declares") != std::string::npos, "the host's refusal text is kept");
+    check(chain.restarts() == 0, "not retried");
+    return 0;
+}
+
+// A Hello whose pid is not the process the engine started: refused before
+// Ready (host_control.h, "What the engine checks").
+int scenario_control_bad_hello(const Args&) {
+    std::printf("control_bad_hello: a fake host says another pid\n");
+    ::setenv("SONORA_FAKE_HOST", "bad-pid", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+    std::string error;
+    check(chain.begin(error), "spawned");
+    const SupervisedChain::Event e = ControlRig::next_event(chain, 5000);
+    std::printf("  why: %s\n", chain.why().c_str());
+    check(e == SupervisedChain::Event::Down, "down at start-up");
+    check(chain.why().find("pid") != std::string::npos, "the pid is named");
+    check(!chain.refused(), "a broken contract, not the plugin's refusal");
+    return 0;
+}
+
+// A running host that breaks the contract is killed and restarted (the crash
+// path, §5.3): a type only the engine sends; a GestureEnd flood past
+// kMaxGestureEndsPerSecond (M2); a message half sent for kStalledMessageMs
+// (M1).
+int fake_misbehaves(const char* mode, const char* named, uint64_t max_ms) {
+    ::setenv("SONORA_FAKE_HOST", mode, 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+    std::string error;
+    check(chain.begin(error), "spawned");
+    check(ControlRig::next_event(chain, 5000) == SupervisedChain::Event::Swapped, "Ready and bound");
+    chain.retired();
+    const uint64_t t0 = now_ms();
+    const SupervisedChain::Event e = ControlRig::next_event(chain, max_ms);
+    std::printf("  why: %s (after %llu ms)\n", chain.why().c_str(), (unsigned long long)(now_ms() - t0));
+    check(e == SupervisedChain::Event::Restarting, "killed, and a replacement starting");
+    check(chain.why().find(named) != std::string::npos, "the fault is named");
+    return 0;
+}
+
+// A fake host that breaks the contract before it is Ready: the chain is
+// down at start-up, named, and it is not taken for the plugin's refusal.
+int fake_fails_start(const char* mode, const char* named) {
+    ::setenv("SONORA_FAKE_HOST", mode, 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+    std::string error;
+    check(chain.begin(error), "spawned");
+    const SupervisedChain::Event e = ControlRig::next_event(chain, 8000);
+    std::printf("  why: %s\n", chain.why().c_str());
+    check(e == SupervisedChain::Event::Down, "down at start-up");
+    check(chain.why().find(named) != std::string::npos, "the fault is named");
+    check(!chain.refused(), "a broken contract, not the plugin's refusal");
+    return 0;
+}
+
+// A fake host sending at a legitimate rate, or a burst at the limit: it
+// stays up for `ms` after Ready, its messages taken every poll as the
+// control server takes them. Returns what it sent.
+int fake_survives(const char* mode, uint64_t ms, ChainSpec spec, std::vector<std::string>* taken = nullptr,
+                  uint64_t* coalesced = nullptr) {
+    ::setenv("SONORA_FAKE_HOST", mode, 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(*rig.sup, std::move(spec), 0, 0);
+    std::string error;
+    check(chain.begin(error), "spawned");
+    check(ControlRig::next_event(chain, 5000) == SupervisedChain::Event::Swapped, "Ready and bound");
+    chain.retired();
+    const uint64_t end = now_ms() + ms;
+    SupervisedChain::Event e = SupervisedChain::Event::None;
+    while (now_ms() < end && e == SupervisedChain::Event::None) {
+        e = chain.poll(now_ms());
+        std::vector<std::string> m = chain.take_host_messages();
+        if (taken) taken->insert(taken->end(), m.begin(), m.end());
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (e != SupervisedChain::Event::None) std::printf("  why: %s\n", chain.why().c_str());
+    check(e == SupervisedChain::Event::None && chain.host() && chain.host()->running(), "the host is still up");
+    if (coalesced && chain.host()) *coalesced = chain.host()->gesture_ends_coalesced();
+    return 0;
+}
+
+int scenario_control_bogus(const Args&) {
+    std::printf("control_bogus: a fake host sends EngineHello once running\n");
+    return fake_misbehaves("bogus", "protocol", 3000);
+}
+
+// M2 on #78: a GestureEnd burst past ten times the human limit in one
+// second (here 600) is a host gone wrong; exactly that many (500) is not,
+// and 501 is.
+int scenario_control_flood(const Args&) {
+    std::printf("control_flood: GestureEnd bursts at, over, and far over the kill threshold\n");
+    fake_misbehaves("flood", "GestureEnd", 3000);
+    std::printf("  at the threshold, %u:\n", 10 * pc::kMaxGestureEndsPerSecond);
+    uint64_t coalesced = 0;
+    fake_survives("gesture-at-limit", 1500, fake_spec(), nullptr, &coalesced);
+    check(coalesced > 0, "the burst past the human rate was coalesced, not refused");
+    std::printf("  over it by one:\n");
+    return fake_misbehaves("gesture-over", "GestureEnd", 3000);
+}
+
+int scenario_control_half(const Args&) {
+    std::printf("control_half: a fake host sends the first frame of two and stops\n");
+    return fake_misbehaves("half", "half received", uint64_t(pc::kStalledMessageMs) + 3000);
+}
+
+// M2 on #78: the legitimate rates survive, and a preset change (every
+// parameter ending a gesture at once) is coalesced, the newest value of
+// each parameter handed over, none lost.
+int scenario_control_rates(const Args&) {
+    std::printf("control_rates: a knob at 100 touches/s for 2 s, 50 GestureEnd over 1 s, a 512-parameter preset\n");
+    fake_survives("touch-legit", 2600, fake_spec());
+    uint64_t coalesced = 0;
+    fake_survives("gesture-legit", 1600, fake_spec(), nullptr, &coalesced);
+    check(coalesced == 0, "50 GestureEnd over a second: none coalesced");
+    ChainSpec preset = fake_spec();
+    preset.param_counts = {512};
+    std::vector<std::string> taken;
+    fake_survives("preset", 1000, preset, &taken, &coalesced);
+    std::vector<int> seen(512, 0);
+    for (const std::string& m : taken) {
+        pc::GestureEnd g;
+        std::string e;
+        if (pc::decode(m, g, e) && g.instance == 0 && g.param < 512) ++seen[g.param];
+    }
+    check(std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }),
+          "every one of the 512 parameters handed over once");
+    // A burst read over a few pumps refills a token or two meanwhile.
+    check(coalesced <= 512 - pc::kMaxGestureEndsPerSecond && coalesced + 10 >= 512 - pc::kMaxGestureEndsPerSecond,
+          "past the human rate, coalesced and counted");
+    std::printf("  touches at the limit, %u:\n", pc::kMaxTouchesPerSecondPerParam);
+    fake_survives("touch-at-limit", 800, fake_spec());
+    std::printf("  touches over it by one:\n");
+    return fake_misbehaves("touch-over", "ParamTouched", 3000);
+}
+
+// H1 on #78: a 16 MiB State nobody asked for, before Loaded and after,
+// three times over: the first one is the fault, and what the engine holds
+// stays bounded (no queue of them).
+long rss_kib() {
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("VmRSS:", 0) == 0) return std::atol(line.c_str() + 6);
+    return 0;
+}
+
+int scenario_control_unsolicited(const Args&) {
+    std::printf("control_unsolicited: a 16 MiB State nobody asked for, before and after Loaded\n");
+    const long before = rss_kib();
+    fake_fails_start("state-before", "answering no GetState");
+    fake_misbehaves("state-after", "answering no GetState", 5000);
+    const long grew = rss_kib() - before;
+    char line[128];
+    std::snprintf(line, sizeof line, "memory stayed bounded: RSS grew %ld KiB for 6 x 16 MiB sent", grew);
+    check(grew < 64 * 1024, line);
+    return 0;
+}
+
+// The contract's other checks, each a few lines of the fake host (test
+// adequacy on #78).
+int scenario_control_breaches(const Args&) {
+    std::printf("control_breaches: what a host must not send\n");
+    fake_fails_start("before-hello", "before Hello");
+    fake_fails_start("two-hellos", "second Hello");
+    fake_fails_start("bad-version", "not this engine's");
+    fake_fails_start("bad-count", "instances for a chain");
+    fake_misbehaves("two-loaded", "second Loaded", 3000);
+    fake_misbehaves("refused-after-loaded", "Refused after the answer", 3000);
+    fake_misbehaves("out-of-chain", "no parameter of the chain", 3000);
+    fake_misbehaves("fd", "descriptor", 3000);
+    return fake_misbehaves("big-frame", "longer than", 3000);
+}
+
+// #72 review item 3, the async start's other ends: a host that exits before
+// Ready is a failed start, noticed from poll(); a replacement that never
+// gets to Ready leaves the chain down at the bound; a chain destroyed while
+// its host is still starting kills it at once.
+int scenario_control_start_paths(const Args&) {
+    std::printf("control_start_paths: exits before Ready, a replacement never Ready, destroyed while starting\n");
+    fake_fails_start("exit-early", "before it was ready");
+
+    const std::string marker = "/tmp/sonora-fake-marker-" + std::to_string(::getpid());
+    std::remove(marker.c_str());
+    ::setenv("SONORA_FAKE_MARKER", marker.c_str(), 1);
+    ::setenv("SONORA_FAKE_HOST", "ready-once", 1);
+    {
+        ControlRig rig(self_path(), {}, 600);
+        if (!rig.sup->ok()) return 1;
+        SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+        std::string error;
+        check(chain.begin(error), "spawned");
+        check(ControlRig::next_event(chain, 5000) == SupervisedChain::Event::Swapped, "the first host Ready");
+        chain.retired();
+        check(ControlRig::next_event(chain, 3000) == SupervisedChain::Event::Restarting, "it crashed: restarting");
+        const SupervisedChain::Event e = ControlRig::next_event(chain, 5000);
+        std::printf("  why: %s\n", chain.why().c_str());
+        check(e == SupervisedChain::Event::Down && chain.why().find("not ready within 600 ms") != std::string::npos,
+              "the replacement never Ready: down at the bound, named");
+        check(!chain.refused(), "not a refusal");
+    }
+    std::remove(marker.c_str());
+
+    ::setenv("SONORA_FAKE_HOST", "never-ready", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) return 1;
+    uint64_t took = 0;
+    {
+        auto chain = std::make_unique<SupervisedChain>(*rig.sup, fake_spec(), 0, 0);
+        std::string error;
+        check(chain->begin(error), "spawned");
+        for (int i = 0; i < 20; ++i) {
+            chain->poll(now_ms());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        check(chain->starting(), "still starting");
+        const uint64_t t0 = now_ms();
+        chain.reset();
+        took = now_ms() - t0;
+    }
+    char line[96];
+    std::snprintf(line, sizeof line, "destroyed while starting in %llu ms, its host killed, not waited for",
+                  (unsigned long long)took);
+    check(took < 1000, line);
+    return 0;
+}
+
+// M1 on #78: the state caps are checked before anything is copied, encoded
+// or spawned. One state over 16 MiB is that instance's refusal; together
+// over 64 MiB, the chain's; neither starts a host or retries.
+int scenario_control_load_cap(const Args&) {
+    std::printf("control_load_cap: states over 16 MiB, and over 64 MiB together\n");
+    ::setenv("SONORA_FAKE_HOST", "idle", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) return 1;
+    ChainSpec one;
+    one.plugins = {"urn:sonora:fake#one", "urn:sonora:fake#two"};
+    one.param_counts = {2, 2};
+    one.states = {std::string(), std::string(pc::kMaxStateBytes + 1, 'x')};
+    std::string error;
+    int32_t refused = -1;
+    uint64_t t0 = now_ms();
+    check(rig.sup->spawn(one, error, &refused) == nullptr, "a state over 16 MiB: not spawned");
+    std::printf("  why: %s (%llu ms)\n", error.c_str(), (unsigned long long)(now_ms() - t0));
+    check(refused == 1 && error.find("urn:sonora:fake#two") != std::string::npos, "its instance named");
+    ChainSpec all;
+    all.plugins = {"urn:sonora:fake#a", "urn:sonora:fake#b", "urn:sonora:fake#c", "urn:sonora:fake#d",
+                   "urn:sonora:fake#e"};
+    all.param_counts = {1, 1, 1, 1, 1};
+    all.states.assign(5, std::string(pc::kMaxStateBytes - 1024, 'x'));
+    error.clear();
+    t0 = now_ms();
+    check(rig.sup->spawn(all, error, &refused) == nullptr, "five 16 MiB states: not spawned");
+    std::printf("  why: %s (%llu ms)\n", error.c_str(), (unsigned long long)(now_ms() - t0));
+    check(refused == -1 && error.find("exceed the 64 MiB Load cap") != std::string::npos, "the chain's cap named");
+    SupervisedChain chain(*rig.sup, one, 0, 0);
+    check(!chain.begin(error) && chain.down() && chain.refused() && chain.refused_instance() == 1,
+          "a chain with it is down at once, as that instance's refusal");
+    check(chain.poll(now_ms()) == SupervisedChain::Event::None && chain.restarts() == 0, "and never retried");
+    return 0;
+}
+
 int scenario_passthrough(const Args& a) {
     std::printf("passthrough: %s, timer-paced host\n", kCrash);
     Rig rig(a, mono_spec(a, kCrash), 64);
@@ -737,6 +1314,15 @@ int scenario_native(const Args& a) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Run by a supervisor as a scripted host (the control_* scenarios).
+    if (const char* mode = std::getenv("SONORA_FAKE_HOST")) {
+        bool as_host = false;
+        for (int i = 1; i < argc; ++i) {
+            const std::string k = argv[i];
+            as_host = as_host || k == "--control-fd" || k == "--version";
+        }
+        if (as_host) return fake_host(argc, argv, mode);
+    }
     Args a;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
@@ -751,7 +1337,18 @@ int main(int argc, char** argv) {
         }
     }
     int r = 2;
-    if (a.scenario == "async_start") r = scenario_async_start(a);
+    if (a.scenario == "control_loaded") r = scenario_control_loaded(a);
+    else if (a.scenario == "control_refused_instance") r = scenario_control_refused_instance(a);
+    else if (a.scenario == "control_bad_hello") r = scenario_control_bad_hello(a);
+    else if (a.scenario == "control_bogus") r = scenario_control_bogus(a);
+    else if (a.scenario == "control_flood") r = scenario_control_flood(a);
+    else if (a.scenario == "control_half") r = scenario_control_half(a);
+    else if (a.scenario == "control_rates") r = scenario_control_rates(a);
+    else if (a.scenario == "control_unsolicited") r = scenario_control_unsolicited(a);
+    else if (a.scenario == "control_breaches") r = scenario_control_breaches(a);
+    else if (a.scenario == "control_load_cap") r = scenario_control_load_cap(a);
+    else if (a.scenario == "control_start_paths") r = scenario_control_start_paths(a);
+    else if (a.scenario == "async_start") r = scenario_async_start(a);
     else if (a.scenario == "ready_timeout") r = scenario_ready_timeout(a);
     else if (a.scenario == "async_refused") r = scenario_async_refused(a);
     else if (a.scenario == "passthrough") r = scenario_passthrough(a);

@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -64,13 +65,34 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     for (const std::string& a : argv) args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
 
-    // Each passed region is first duplicated, close-on-exec, above any
-    // child_fd, so that one dup2 into place cannot overwrite the source of
-    // another; the dup2 in the child clears close-on-exec on the target only.
+    // Each passed region or handle is first duplicated, close-on-exec, at or
+    // above kStagingFloor, so that one dup2 into place cannot overwrite the
+    // source of another; the dup2 in the child clears close-on-exec on the
+    // target only. A target at or above the floor could be a staged source,
+    // and two entries with one target would silently overwrite each other:
+    // both are refused (rt-engineer L5 on #78).
+    constexpr int kStagingFloor = 64;
     std::vector<int> staged;
     auto close_staged = [&staged] {
         for (int fd : staged) ::close(fd);
     };
+    {
+        std::vector<int> targets;
+        for (const PassedRegion& r : options.regions) targets.push_back(r.child_fd);
+        for (const Options::PassedHandle& h : options.handles) targets.push_back(h.child_fd);
+        std::sort(targets.begin(), targets.end());
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            if (targets[i] >= kStagingFloor) {
+                error = "cannot pass a descriptor to " + argv[0] + " at " + std::to_string(targets[i]) +
+                        ": targets stay below " + std::to_string(kStagingFloor);
+                return nullptr;
+            }
+            if (i > 0 && targets[i] == targets[i - 1]) {
+                error = "cannot pass two descriptors to " + argv[0] + " at " + std::to_string(targets[i]);
+                return nullptr;
+            }
+        }
+    }
     for (const PassedRegion& r : options.regions) {
         const int fd = r.region ? region_descriptor(*r.region, r.writable) : -1;
         if (r.child_fd < 3 || fd < 0) {
@@ -80,7 +102,7 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
             close_staged();
             return nullptr;
         }
-        const int high = ::fcntl(fd, F_DUPFD_CLOEXEC, 64);
+        const int high = ::fcntl(fd, F_DUPFD_CLOEXEC, kStagingFloor);
         if (high < 0) {
             error = "cannot duplicate a region descriptor: " + std::string(std::strerror(errno));
             close_staged();
@@ -88,18 +110,48 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
         }
         staged.push_back(high);
     }
+    // Raw handles the same way, after the regions.
+    for (const Options::PassedHandle& h : options.handles) {
+        if (h.child_fd < 3 || h.handle < 0) {
+            error = "cannot pass handle " + std::to_string(h.handle) + " to " + argv[0] + " at descriptor " +
+                    std::to_string(h.child_fd) + (h.handle < 0 ? ": no handle" : ": 0-2 are the streams");
+            close_staged();
+            return nullptr;
+        }
+        const int high = ::fcntl(h.handle, F_DUPFD_CLOEXEC, kStagingFloor);
+        if (high < 0) {
+            error = "cannot duplicate a handle: " + std::string(std::strerror(errno));
+            close_staged();
+            return nullptr;
+        }
+        staged.push_back(high);
+    }
 
     posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    for (std::size_t i = 0; i < staged.size(); ++i)
-        posix_spawn_file_actions_adddup2(&actions, staged[i], options.regions[i].child_fd);
-    if (!options.stdout_path.empty()) {
-        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, options.stdout_path.c_str(),
-                                         O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fa = posix_spawn_file_actions_init(&actions);
+    if (fa != 0) {
+        error = "cannot prepare to start " + argv[0] + ": " + std::strerror(fa);
+        close_staged();
+        return nullptr;
     }
-    if (!options.stderr_path.empty()) {
-        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, options.stderr_path.c_str(),
-                                         O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    for (std::size_t i = 0; i < staged.size() && fa == 0; ++i) {
+        const int target = i < options.regions.size() ? options.regions[i].child_fd
+                                                       : options.handles[i - options.regions.size()].child_fd;
+        fa = posix_spawn_file_actions_adddup2(&actions, staged[i], target);
+    }
+    if (fa == 0 && !options.stdout_path.empty()) {
+        fa = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, options.stdout_path.c_str(),
+                                              O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    }
+    if (fa == 0 && !options.stderr_path.empty()) {
+        fa = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, options.stderr_path.c_str(),
+                                              O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    }
+    if (fa != 0) {
+        error = "cannot prepare to start " + argv[0] + ": " + std::strerror(fa);
+        posix_spawn_file_actions_destroy(&actions);
+        close_staged();
+        return nullptr;
     }
     // The child starts with default signal handling and nothing blocked,
     // whatever its parent ignores or masks.
@@ -135,6 +187,8 @@ ChildProcess::~ChildProcess() {
 }
 
 bool ChildProcess::running() { return !impl_->reap(false); }
+
+int64_t ChildProcess::pid() const { return static_cast<int64_t>(impl_->pid); }
 
 bool ChildProcess::wait(int timeout_ms) {
     if (timeout_ms < 0) return impl_->reap(true);

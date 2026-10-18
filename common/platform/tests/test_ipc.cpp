@@ -413,6 +413,59 @@ void regions_are_passed_to_a_child_at_fixed_descriptors() {
     CHECK(current_process_id() == static_cast<int64_t>(::getpid()));
 }
 
+// The supervisor's way to the same (ADR-0012 checklist 5): ChildProcess
+// places the pair's child end at descriptor 3 beside the regions at 4 and 5,
+// and nowhere else. The spawned shell writes one datagram through 3 and
+// checks that 4 is its region; the parent's end receives it.
+void a_handle_is_passed_to_a_child_beside_the_regions() {
+    std::unique_ptr<ControlChannel> parent;
+    int child_end = -1;
+    std::string error;
+    CHECK(ControlChannel::pair(parent, child_end, error));
+    auto channel = SharedRegion::create_shared_writable("sonora-test-channel", 4096, error);
+    CHECK(parent && channel);
+    if (!parent || !channel) return;
+    ChildProcess::Options options;
+    options.handles = {{3, child_end}};
+    options.regions = {{4, channel.get(), true}};
+    auto child = ChildProcess::spawn(
+        {"/bin/sh", "-c", "printf child >&3 && printf SNPH >&4 && ! printf x >&6 2>/dev/null"}, options, error);
+    ControlChannel::close_handle(child_end);
+    CHECK(child != nullptr);
+    if (!child) return;
+    CHECK(child->wait(5000));
+    CHECK(child->exited_normally() && child->exit_code() == 0);
+    std::string got;
+    CHECK(parent->receive(got, 1000, nullptr, 1000, error) == IoStatus::Ok && got == "child");
+    CHECK(std::memcmp(channel->data(), "SNPH", 4) == 0);
+    // Once the child is gone and the parent's copy of the child end closed,
+    // nobody else holds it: the parent sees the peer gone.
+    CHECK(parent->receive(got, 1000, nullptr, 1000, error) == IoStatus::Closed);
+    // A handle below 3, or none, is refused before anything starts.
+    options.handles = {{2, 7}};
+    options.regions.clear();
+    CHECK(ChildProcess::spawn({"/bin/true"}, options, error) == nullptr && !error.empty());
+    options.handles = {{3, -1}};
+    CHECK(ChildProcess::spawn({"/bin/true"}, options, error) == nullptr && !error.empty());
+    // rt-engineer L5 on #78: two entries at one target, and a target at or
+    // above the staging floor (64), are refused before anything starts.
+    {
+        std::unique_ptr<ControlChannel> p2;
+        int end2 = -1;
+        CHECK(ControlChannel::pair(p2, end2, error));
+        ChildProcess::Options twice;
+        twice.handles = {{3, end2}};
+        twice.regions = {{3, channel.get(), true}};
+        error.clear();
+        CHECK(ChildProcess::spawn({"/bin/true"}, twice, error) == nullptr && error.find("two") != std::string::npos);
+        ChildProcess::Options high;
+        high.handles = {{64, end2}};
+        error.clear();
+        CHECK(ChildProcess::spawn({"/bin/true"}, high, error) == nullptr && error.find("below 64") != std::string::npos);
+        ControlChannel::close_handle(end2);
+    }
+}
+
 // The plugin host's channel (ADR-0012 §4): a pair whose child end crosses
 // exec at descriptor 3 and nowhere else, adopted there, and polled from the
 // parent's side without blocking.
@@ -498,6 +551,7 @@ int main() {
     another_user_is_refused_both_ways();
     child_processes();
     regions_are_passed_to_a_child_at_fixed_descriptors();
+    a_handle_is_passed_to_a_child_beside_the_regions();
     ::rmdir(("/tmp/sonora-test-ipc-" + std::to_string(::getpid())).c_str());
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
