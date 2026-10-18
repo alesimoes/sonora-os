@@ -16,6 +16,7 @@ install(TARGETS sonora-engine RUNTIME DESTINATION bin)
 # file, and an engine/app library is not a target ADR-0007 defines.
 add_executable(test_quit_signals tests/test_quit_signals.cpp src/quit_signals.cpp)
 target_include_directories(test_quit_signals PRIVATE include)
+target_link_libraries(test_quit_signals PRIVATE Threads::Threads)
 add_test(NAME quit_signals COMMAND test_quit_signals)
 
 add_executable(test_memory_lock tests/test_memory_lock.cpp src/memory_lock.cpp)
@@ -39,3 +40,9 @@ add_test(NAME engine_fake_record
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_engine_record.cmake)
 set_tests_properties(engine_fake_record PROPERTIES
   SKIP_REGULAR_EXPRESSION "cannot lock memory")
+
+# One session folder, one engine (the folder lock, common/platform).
+add_test(NAME engine_two_engines_one_session
+  COMMAND ${CMAKE_COMMAND} -DENGINE=$<TARGET_FILE:sonora-engine>
+          -DDIR=${CMAKE_CURRENT_BINARY_DIR}/two_engines_session
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_engine_two_engines.cmake)

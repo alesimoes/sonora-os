@@ -79,17 +79,17 @@ std::string hostable(const std::vector<PluginInfo>& catalog, const model::Plugin
 // Empty when the operation is not an insert operation or can be hosted;
 // apply() names whatever else is wrong with it.
 std::string insert_refusal(const model::Snapshot& s, const std::vector<PluginInfo>& catalog,
-                           const model::Operation& op) {
-    if (const auto* a = std::get_if<model::AddInsert>(&op)) {
+                           model::MemberRef op) {
+    if (const auto* a = op.get_if<model::AddInsert>()) {
         const model::TrackEdit* t = track_by_id(s, a->track);
         return t == nullptr ? std::string() : hostable(catalog, a->plugin, t->channels);
     }
-    if (const auto* r = std::get_if<model::ReplaceInsert>(&op)) {
+    if (const auto* r = op.get_if<model::ReplaceInsert>()) {
         const model::TrackEdit* t = nullptr;
         if (find_insert(s, r->insert, &t) == nullptr) return {};
         return hostable(catalog, r->plugin, t->channels);
     }
-    if (const auto* m = std::get_if<model::MoveInsert>(&op)) {
+    if (const auto* m = op.get_if<model::MoveInsert>()) {
         const model::TrackEdit* from = nullptr;
         const model::Insert* in = find_insert(s, m->insert, &from);
         const model::TrackEdit* to = track_by_id(s, m->to_track);
@@ -140,6 +140,7 @@ ModelUpdate to_wire(const model::ReplicationUpdate& u) {
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
     m.bytes = u.bytes;
+    m.label = u.label;
     return m;
 }
 
@@ -764,11 +765,16 @@ void FakeEngine::handle(const std::string& bytes) {
             case ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
-                why = insert_refusal(document_->current(), cfg_.plugins, op);
-                if (!why.empty()) break;
-                mix_changed = std::holds_alternative<model::SetMix>(op) ||
-                              std::holds_alternative<model::SetMonitorBus>(op);
-                ok = document_->apply(op, u, why);
+                // Per member, on the state the members before it made, as
+                // engine/control asks (ADR-0009 update 2026-10-14).
+                const model::MemberCheck check = [&](const model::Snapshot& at,
+                                                     model::MemberRef member) {
+                    if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
+                        mix_changed = true;
+                    }
+                    return insert_refusal(at, cfg_.plugins, member);
+                };
+                ok = document_->apply(op, u, why, check);
                 break;
             }
             case ModelAction::Undo: ok = document_->undo(u, why); break;

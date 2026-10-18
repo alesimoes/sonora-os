@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/model/history.h"
 
+#include "sonora/model/op_codec.h"
+
 #include <algorithm>
 #include <limits>
 #include <unordered_set>
@@ -66,7 +68,7 @@ std::size_t exclusive_bytes(const EditState& state, const EditState& previous) {
 
 History::History(Snapshot initial, std::size_t budget_bytes)
     : current_(std::move(initial)), budget_(budget_bytes) {
-    steps_.push_back(Step{current_.edit, current_.revision, 0});
+    steps_.push_back(Step{current_.edit, current_.revision, 0, {}});
 }
 
 History History::replica(Snapshot initial) {
@@ -99,7 +101,8 @@ bool History::restore(Snapshot current, std::vector<WindowStep> steps, std::size
     for (std::size_t i = 0; i < steps.size(); ++i) {
         const std::size_t charge =
             i == 0 ? 0 : exclusive_bytes(*steps[i].edit, *h.steps_.back().edit);
-        h.steps_.push_back(Step{std::move(steps[i].edit), steps[i].revision, charge});
+        h.steps_.push_back(
+            Step{std::move(steps[i].edit), steps[i].revision, charge, std::move(steps[i].label)});
         h.charged_ += charge;
     }
     h.pos_ = position;
@@ -131,16 +134,17 @@ void History::prune_insert_values() {
                  values.end());
 }
 
-bool History::apply(const Operation& op, std::string& error) {
+bool History::apply(const Operation& op, std::string& error, const MemberCheck& check) {
     Snapshot next;
-    if (!model::apply(current_, op, next, error)) return false;
+    if (!model::apply(current_, op, next, error, check)) return false;
     const bool undoable = is_undoable(op);
     current_ = std::move(next);
-    if (undoable) push(current_.edit, current_.revision);
+    if (undoable) push(current_.edit, current_.revision, display_name(op));
     return true;
 }
 
-void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision) {
+void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision,
+                   std::string label) {
     // A new edit after an undo discards the redo branch, as every editor's
     // undo does.
     bool dropped = false;
@@ -150,7 +154,7 @@ void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision
         dropped = true;
     }
     const std::size_t charge = exclusive_bytes(*edit, *steps_.back().edit);
-    steps_.push_back(Step{std::move(edit), revision, charge});
+    steps_.push_back(Step{std::move(edit), revision, charge, std::move(label)});
     charged_ += charge;
     pos_ = steps_.size() - 1;
     // Two states always stay, the newest and the one before it, so the
@@ -168,6 +172,19 @@ void History::pop_front() {
     charged_ -= steps_.front().charge;
     steps_.front().charge = 0;
     --pos_;
+}
+
+namespace {
+const std::string kNoLabel;
+}  // namespace
+
+// Undo leaves the step at the pointer; redo enters the one after it.
+const std::string& History::undo_label() const {
+    return can_undo() ? steps_[pos_].label : kNoLabel;
+}
+
+const std::string& History::redo_label() const {
+    return can_redo() ? steps_[pos_ + 1].label : kNoLabel;
 }
 
 bool History::undo() {

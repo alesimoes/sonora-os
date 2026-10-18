@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/closed_take.h"
 
+#include <algorithm>
+#include <cstdio>
+#include <filesystem>
+
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
+#include "sonora/wav_recovery.h"
 
 namespace sonora {
 
 namespace {
 
-// The file as a source with the next free id, its numbers read from disk.
+// The file as a source with id `id`, its numbers read from disk.
 bool source_of(const model::Document& document, const std::string& session_dir,
-               const std::string& relative_path, uint16_t track_channels,
+               const std::string& relative_path, uint16_t track_channels, model::Id id,
                model::Source& out, std::string& error) {
     WavReader file;
     if (!file.open(session_dir + "/" + relative_path, error)) return false;
@@ -33,7 +38,7 @@ bool source_of(const model::Document& document, const std::string& session_dir,
         return false;
     }
     out = model::Source{};
-    out.id = document.current().next_id;
+    out.id = id;
     out.path = relative_path;
     out.channels = file.channels();
     out.length = file.frames();
@@ -118,7 +123,8 @@ bool place_file(model::Document& document, const std::string& session_dir,
     const model::TrackEdit* t = track_at(document, track, error);
     if (!t) return false;
     model::AddSource src;
-    if (!source_of(document, session_dir, relative_path, t->channels, src.source, error)) {
+    if (!source_of(document, session_dir, relative_path, t->channels,
+                   document.current().next_id, src.source, error)) {
         return false;
     }
     src.source.kind = model::SourceKind::Imported;
@@ -136,29 +142,21 @@ bool place_file(model::Document& document, const std::string& session_dir,
     return apply(document, place, updates, error);
 }
 
-bool add_closed_take(model::Document& document, const Session& session,
-                     const Session::ClosedTake& take,
-                     std::vector<model::ReplicationUpdate>& updates, std::string& error) {
+TakeAdded add_closed_take(model::Document& document, const Session& session,
+                          const Session::ClosedTake& take) {
+    TakeAdded out;
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
+    const std::string which = "take " + std::to_string(take.take);
     std::string first_failure;
     int more_failures = 0;
-    const auto cut_short = [&]() {
-        std::string s = first_failure;
-        if (more_failures > 0) {
-            s += " (and " + std::to_string(more_failures) + " more track" +
-                 (more_failures == 1 ? "" : "s") + ")";
-        }
-        return s;
-    };
-    // The tracks before this one may have been placed and cut short; that
-    // is still said, after the track left out.
-    const auto not_placed = [&](const DiskThread::ClosedFile& f, const std::string& why) {
-        error = "is on disk but not in the session: track " + std::to_string(f.track + 1) +
-                ", " + f.path + ": " + why;
-        if (!first_failure.empty()) error += "; and it was cut short: " + cut_short();
-        return false;
-    };
+
+    // Every file is read before any operation exists, so a file that does
+    // not read costs its own track and is not a refusal of the take. Three
+    // ids per file, reserved whether or not the overwrite splits.
+    std::vector<model::AddSource> sources;
+    std::vector<model::RecordTake> records;
+    model::Id next = document.current().next_id;
     for (const DiskThread::ClosedFile& f : take.files) {
         // A failed file is still valid up to its last whole frame
         // (bwf-broadcast-wave.md), so what was recorded before the failure
@@ -179,30 +177,101 @@ bool add_closed_take(model::Document& document, const Session& session,
 
         std::string why;
         const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), why);
-        if (!t) return not_placed(f, why);
         model::AddSource src;
-        if (!source_of(document, dir, relative, t->channels, src.source, why)) {
-            return not_placed(f, why);
+        if (t == nullptr ||
+            !source_of(document, dir, relative, t->channels, next, src.source, why)) {
+            out.track_notices.push_back(which + " is on disk but not in the session: track " +
+                                        std::to_string(f.track + 1) + ", " + f.path + ": " +
+                                        why);
+            continue;
         }
         src.source.kind = model::SourceKind::Recorded;
         src.source.take = take.take;
         src.source.recorded_on_track = t->id;
-        // Copied before the document moves on: `t` belongs to the old state.
-        const model::Id track_id = t->id;
-        const model::Id playlist = t->active_playlist;
-        const uint16_t channels = t->channels;
-        if (!apply(document, src, updates, why)) return not_placed(f, why);
-
         model::RecordTake rec;
-        rec.track = track_id;
-        rec.playlist = playlist;
-        rec.region = region_of(src.source, document.current().next_id, stem(relative), channels);
-        rec.split_right_id = rec.region.id + 1;
-        if (!apply(document, rec, updates, why)) return not_placed(f, why);
+        rec.track = t->id;
+        rec.playlist = t->active_playlist;
+        rec.region = region_of(src.source, next + 1, stem(relative), t->channels);
+        rec.split_right_id = next + 2;
+        next += 3;
+        sources.push_back(std::move(src));
+        records.push_back(std::move(rec));
     }
-    if (first_failure.empty()) return true;
-    error = "was cut short: " + cut_short();
-    return false;
+    if (!first_failure.empty()) {
+        out.cut_short = which + " was cut short: " + first_failure;
+        if (more_failures > 0) {
+            out.cut_short += " (and " + std::to_string(more_failures) + " more track" +
+                             (more_failures == 1 ? "" : "s") + ")";
+        }
+    }
+
+    // Two members a file. Past the compound limit the take is split, in
+    // track order, one undo step per part: a take that does not fit must
+    // still land whole, not fall back to the pool for being large. The ids
+    // above rise across the parts, so each part's are still fresh.
+    constexpr std::size_t kFilesPerCompound = model::kMaxCompoundMembers / 2;
+    for (std::size_t first = 0; first < sources.size(); first += kFilesPerCompound) {
+        const std::size_t last = std::min(sources.size(), first + kFilesPerCompound);
+        model::Compound c;
+        c.label = "Record";
+        for (std::size_t k = first; k < last; ++k) {
+            c.ops.push_back(sources[k]);
+            c.ops.push_back(records[k]);
+        }
+        std::string why;
+        model::ReplicationUpdate u;
+        if (document.apply(model::Operation{std::move(c)}, u, why)) {
+            out.updates.push_back(std::move(u));
+            continue;
+        }
+
+        // The engine built these operations, so a refusal is a bug in one
+        // of them or in the model. The audio must not be lost to it: into
+        // the pool it goes, where a save records it, and the operator is
+        // told.
+        if (!out.refused.empty()) out.refused += "; ";
+        out.refused +=
+            which + " is on disk and in the session's audio, but not on the timeline: " + why;
+        for (std::size_t k = first; k < last; ++k) {
+            std::string error;
+            if (!apply(document, sources[k], out.updates, error)) {
+                out.refused += "; and " + sources[k].source.path +
+                               " could not be added either: " + error;
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> recover_unclosed_takes(const std::string& session_dir,
+                                                uint32_t sample_rate) {
+    std::vector<std::string> notices;
+    for (const TakeRecovery& r : recover_takes(session_dir + "/Audio Files")) {
+        const std::string name = std::filesystem::path(r.path).filename().string();
+        switch (r.outcome) {
+            case TakeRecovery::Outcome::Repaired: {
+                // Killed before any audio: one per armed track, up to 18,
+                // and nothing to keep. The header is repaired all the same.
+                if (r.frames == 0) break;
+                char seconds[32];
+                std::snprintf(seconds, sizeof seconds, "%.1f",
+                              sample_rate ? static_cast<double>(r.frames) / sample_rate : 0.0);
+                notices.push_back("recovered " + name +
+                                  ": the engine stopped before closing it; " + seconds +
+                                  " s were on disk and are kept. It is in Audio Files, "
+                                  "not on the timeline");
+                break;
+            }
+            case TakeRecovery::Outcome::Short:
+                notices.push_back(name + " is shorter than its header (" + r.why +
+                                  "); the part on disk plays");
+                break;
+            default:
+                notices.push_back("could not recover " + name + ": " + r.why);
+                break;
+        }
+    }
+    return notices;
 }
 
 }  // namespace sonora

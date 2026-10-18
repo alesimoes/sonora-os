@@ -42,3 +42,12 @@ add_test(NAME model_random_edits COMMAND test_model_random_edits)
 add_executable(test_model_replication tests/test_replication.cpp)
 target_link_libraries(test_model_replication PRIVATE sonora_model)
 add_test(NAME model_replication COMMAND test_model_replication)
+
+# Compound operations (ADR-0009 update 2026-10-14).
+add_executable(test_model_compound tests/test_compound.cpp)
+target_link_libraries(test_model_compound PRIVATE sonora_model)
+add_test(NAME model_compound COMMAND test_model_compound)
+
+# What a compound costs on a long playlist; run by hand, numbers in ADR-0009.
+add_executable(measure_compound tests/measure_compound.cpp)
+target_link_libraries(measure_compound PRIVATE sonora_model)

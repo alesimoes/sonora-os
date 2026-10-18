@@ -39,16 +39,24 @@ struct ReplicationUpdate {
     std::uint64_t undo_floor = 0;   // History::floor() after it
     std::uint64_t next_id = 0;      // Snapshot only
     std::string bytes;              // Op: encode_operation; Snapshot: encode_window
+    // Undo and Redo: the label of the step moved over, for "Undo Paste". A
+    // replica that holds another label for that step has lost track.
+    std::string label;
 };
 
 class Document {
 public:
     explicit Document(Snapshot initial, std::size_t budget_bytes = History::kDefaultBudget);
 
-    // On success `out` is the update to send to every replica. On failure
-    // the document is unchanged and `error` says why, for the reply.
+    // On success `out` is the update to send to every replica: one for a
+    // compound, whatever its size. On failure the document is unchanged and
+    // `error` says why, for the reply. `check` is the engine's own refusal,
+    // asked before each member with the state the members before it made
+    // (operations.h); the engine server and FakeEngine pass one, replicas
+    // never do.
     bool apply(std::string_view op_bytes, ReplicationUpdate& out, std::string& error);
-    bool apply(const Operation& op, ReplicationUpdate& out, std::string& error);
+    bool apply(const Operation& op, ReplicationUpdate& out, std::string& error,
+               const MemberCheck& check = {});
     bool undo(ReplicationUpdate& out, std::string& why);
     bool redo(ReplicationUpdate& out, std::string& why);
     // The whole document with its undo window, for a replica that is new

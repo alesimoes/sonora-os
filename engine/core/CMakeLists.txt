@@ -66,6 +66,13 @@ add_executable(test_take_boundaries tests/test_take_boundaries.cpp)
 target_link_libraries(test_take_boundaries PRIVATE sonora_core Threads::Threads)
 add_test(NAME take_boundaries COMMAND test_take_boundaries)
 
+# Punch points inside a block (timeline-model.md, "Punch in"): capture opened
+# and closed at the frame, Auto monitoring crossfaded at the punch points,
+# every other monitor switch ramped.
+add_executable(test_punch_points tests/test_punch_points.cpp)
+target_link_libraries(test_punch_points PRIVATE sonora_core)
+add_test(NAME punch_points COMMAND test_punch_points)
+
 # ADR-0012 checklist 5: plugin parameter changes from the control thread to
 # the InsertChain node that names their store, the backend's callback_ns as
 # the runner's clock, and the runner's block size gating the callback.
@@ -106,4 +113,16 @@ if(TARGET sonora-plugin-host)
   if(SONORA_PLUGIN_TESTS_ALLOW_SKIP)
     set_tests_properties(${_sp_tests} PROPERTIES SKIP_RETURN_CODE 77)
   endif()
+endif()
+
+# Take safety (BACKLOG DAW 1): the disk thread checkpoints open takes on a
+# schedule, and a take survives kill -9 of the recording process. The kill
+# needs fork (ADR-0008 V3: OS-specific tests live in tests/posix).
+add_executable(test_take_checkpoint tests/test_take_checkpoint.cpp)
+target_link_libraries(test_take_checkpoint PRIVATE sonora_core Threads::Threads)
+add_test(NAME take_checkpoint COMMAND test_take_checkpoint)
+if(UNIX)
+  add_executable(test_take_kill tests/posix/test_take_kill.cpp)
+  target_link_libraries(test_take_kill PRIVATE sonora_core sonora_audiofile Threads::Threads)
+  add_test(NAME take_kill COMMAND test_take_kill)
 endif()

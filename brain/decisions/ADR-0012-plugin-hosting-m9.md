@@ -13,6 +13,8 @@
     passes. A2 (§5.1) and A3 (Consequences) accepted with conditions.
     Findings H1, M1–M3 and L1–L4 are applied in the sections they name
     ("Rulings of the rt-safety-auditor" maps them).
+  - **Amendment of 2026-10-14** (the control server's chains, after §8):
+    accepted by the owner, 2026-10-18, with the architect's changes A–H.
   - **Two owner decisions**, each with a default this ADR builds on until
     the owner rules ("For the owner"). Neither blocks the contract.
 - Date: 2026-10-13
@@ -93,14 +95,24 @@ gate off until measured).**
   in `common/platform`, like the state block). It holds:
   - `tick`, a `uint32_t` word the audio thread increments once per callback
     in which it submitted to at least one host;
-  - `callback_ns`, the `CLOCK_MONOTONIC` time the callback started, and
-    `period_ns`. These pace the timer path (§1.3) and the host's own
-    diagnostics. `CLOCK_MONOTONIC` is a vDSO read **only when the
-    clocksource supports it** (`tsc`); with `hpet` or `acpi_pm` it is a real
-    syscall in the callback. So the engine reuses a timestamp the callback
-    already takes if there is one, and otherwise start-up reads
-    `/sys/devices/system/clocksource/clocksource0/current_clocksource` and
-    reports a non-`tsc` source in the health flags (Unverified 9).
+  - `callback_ns`, the `CLOCK_MONOTONIC` time at which the **server's
+    period** started, and `period_ns`. These pace the timer path (§1.3) and
+    the host's own diagnostics. Since #68 (#68 code review, item 2) it is
+    the backend's stamp, `contracts/backend` `AudioBlock::callback_ns`: for
+    JACK, `jack_get_cycle_times`' current_usecs, the start of the server's
+    cycle, not the moment Sonora's callback began, which is later by the
+    server's own scheduling and any client ahead of Sonora in the graph.
+    Hosts pacing on it therefore wake relative to the period, and the
+    offset of §1.3 absorbs that lead. A period the backend could not stamp
+    carries the last stamp forward by the period. The callback reads no
+    clock: `CLOCK_MONOTONIC` is a vDSO read **only when the clocksource
+    supports it** (`tsc`), and with `hpet` or `acpi_pm` it would be a real
+    syscall in the callback. The backend conformance check
+    `callback_ns_is_the_monotonic_clock` holds that the stamp is on the
+    engine's `CLOCK_MONOTONIC` (fake, jackd2, PipeWire). Start-up still
+    reads `/sys/devices/system/clocksource/clocksource0/current_clocksource`
+    and reports a non-`tsc` source in the health flags (Unverified 9), for
+    the rest of the engine.
 - **Read-only is enforced by the descriptor, not left to the host.** The
   clock region crosses `SCM_RIGHTS` as the `O_RDONLY` `/proc/self/fd`
   reopen, sealed with `F_SEAL_FUTURE_WRITE` where the kernel has it,
@@ -796,6 +808,179 @@ updates `FakeEngine` and the conformance suite in the same PR.
 - **Protocol version 3** for the new messages; `Hello` mismatch refuses by
   name, as today.
 
+**Amendment, 2026-10-14: the control server's chains (checklist 5).
+Accepted by the owner, 2026-10-18.** Proposed by plugin-engineer. The
+architect ruled on #64: accept with changes A to H, applied below; the
+rt-engineer's view is in the same ruling. The owner decided the question
+at the end of item 1 on 2026-10-18. It settles what this ADR leaves open when §5.3 and §8 are wired
+into `engine/control`. It **changes accepted text in three places**: the
+ADR-0007 module graph (item 4), §8's list of `PluginFault` causes (item 5),
+and the live-period assumption of the first draft of item 4, which ADR-0007
+§4.2 never allowed. It builds on the rule #59 and #68 put in
+`engine/core`: an unbound chain is laid out with latency 0 and passes
+through, and a bound chain that is not run plays silence.
+
+1. **What a chain plays while it has no Ready host.** One rule: *until its
+   host is Ready, a chain plays what the playing plan already played for
+   it.* After an edit that is the old host; for a chain the playing plan
+   did not have, it is dry (#59's unbound chain, latency 0); when there is
+   nothing to carry over (session open, a crash, down), it is silence.
+   Inserting a limiter never changes what is already in the monitors, and
+   opening a session never plays a mix the session never had. The resolver
+   binds an active chain as follows:
+   - *Running:* its current host's slot, generation, store, node state and
+     checked latency.
+   - *Edited while running* (an insert added, removed, moved, activated,
+     deactivated or replaced on a chain whose host is Ready): the old
+     host's binding, unchanged, until the new host is Ready (§5.3,
+     make-before-break). The document leads the audio by the load time.
+     The resolver diffs against the document on every change: a start
+     whose spec the document no longer describes (an undo before Ready, a
+     second edit) is abandoned and its host killed, while the old binding
+     keeps playing; the newest spec starts instead (change H).
+   - *Edited while silent* (restarting or down): stays silent, as below,
+     until the new host is Ready.
+   - *New on a track that had no chain in the playing plan* (its first
+     active insert, by Apply, undo or redo): unbound, latency 0. The track
+     plays dry and aligned, as it did before the insert existed. The
+     operator hears what was already playing, not a fault.
+   - *Restarting* (after a crash, a removal or a hang): the dead host's
+     binding stays named, with its checked latency, until the
+     replacement's `Swapped` (as `SupervisedChain` does, #72). The client
+     plays silence for it (§3).
+   - *Down* (three restarts in 60 s, or a start that crashed or timed out):
+     **silent**, through a new constant, `kSilentChannelSlot` (0xFFFFFFFE)
+     in `playback_plan.h`, laid out with the **last checked latency** of the
+     host it replaces (change A), so the dead slot can be retired without
+     moving any other path. `Session::process` writes silence for it
+     without calling the runner and drops its parameter events, counted.
+   - *Starting with the session* (start-up, `ModelAction::Load`) and
+     *hosting disabled* (§5.5): silent, through `kSilentChannelSlot` with
+     latency 0, since nothing is known yet. Never dry: after a limiter or a
+     cut, dry is louder (Rationale), and a session that opens must not play
+     its master unlimited for the seconds its hosts take to start.
+   - A silent chain therefore realigns nothing on a fault. The only things
+     that realign the mix after a fault are operator actions: make
+     inactive, remove, retry.
+   - *Missing* plugins are left out of their chain (§6.1, "as if
+     inactive"), and the chain runs with the others. A chain whose
+     instances are **all** missing is no chain (§2): its track plays dry,
+     with a standing "not installed" fault on each insert (change B), as
+     Pro Tools and Logic do with a missing plug-in.
+   - *Refused* instances (`Refused` at validation, a probe that crashed or
+     timed out) are treated as missing (change C): left out, with their
+     standing fault, and the chain starts without them; during an edit the
+     old binding keeps playing until that start is Ready. A refused
+     instance stays out until the document changes or the operator chooses
+     `plugin.retry`, so this cannot loop. A crash or a timeout of a host
+     during start keeps the restart policy (§5.3).
+   - **Play at session open: decided by the owner, 2026-10-18.** Play
+     from a freshly opened session waits until every starting chain is
+     Ready or has failed (down, or its instances refused or missing), for
+     at most §5.3's 10 s, and the interface shows "Loading plug-ins (n of
+     m)" meanwhile, as Pro Tools does. Past the bound, play starts and a
+     chain still starting stays silent until it arrives. Record never
+     waits: capture is pre-insert, and a take is worth more than
+     monitoring through inserts.
+
+2. **Retiring a slot by epoch, concretely (§5.4, H1).**
+   `PlaybackController` reports `oldest_live_epoch()`: the smallest epoch
+   among the playing plan, the pending plan and every retired plan not yet
+   freed. A slot, with its region and its host, leaves its chain when the
+   resolver stops naming it. The chain records the epoch of the first plan
+   built without the slot. It calls `PluginClient::retire(slot)` and
+   `SupervisedChain::retired()` only once `oldest_live_epoch()` is at or
+   past that epoch, that is, once no live plan is older than the first plan
+   built without the slot. A cancelled plan is never read by the audio thread, so it
+   holds no slot. The generation check (H1) remains the second guard.
+
+3. **Where a chain's spec comes from until the scan worker and catalog
+   cache exist.** A chain start is asynchronous from end to end
+   (code-reviewer L6 on #49):
+   - For each plugin not yet probed in this engine run, one
+     `sonora-plugin-host --probe ID` child is started (one plugin per
+     process, as the host's probe mode is built; §4 says one per bundle,
+     and the scan worker settles which). The control thread collects it from its poll and never
+     waits on it. Probes are deduplicated in flight (two chains waiting
+     on one plugin share one probe), run concurrently up to a cap
+     (placeholder: the hardware threads), and each has a timeout. A probe
+     that crashes or times out marks the plugin refused for the run (§4's
+     "blocked"; item 1, change C). The cost is unmeasured: Unverified 11.
+   - Then the host starts with `--control-fd` and receives its chain in
+     `Load` (`host_control.h`), not on the command line. The key table
+     against which the engine resolves `PluginParameterChange{insert, key}`
+     is then the running instance's own, from `Loaded` (§8). `GetState` is
+     available for `FlushPluginState` and make-before-break.
+   - Probe results are kept for this run only. The persistent cache, keyed
+     by bundle path, size and mtime, belongs to the scan worker, in a later
+     PR.
+   - **Parameter stores (change F).** A restart keeps the chain's store:
+     the dense layout is the same, so §5.1's "survives a host replacement"
+     holds. An edit is a new `SupervisedChain` with its own store and node
+     state, seeded from the document: during make-before-break the old host
+     still plays from the old layout, and the new chain's dense indices
+     differ (an insert added in slot A shifts every index), so a shared
+     store would let the old node write old indices into what the new
+     host's first submit copies. The old store is retired by epoch with
+     the old slot (item 2). A `PluginParameterChange` during the overlap
+     resolves against the **old** host's `Loaded` table; the value reaches
+     the new chain through the document (`SetInsertParams` at gesture end)
+     or the new store's seed.
+
+4. **One owner, one backend activation.** The plugin side is one object,
+   `PluginHosting` in `engine/control`, on the document thread beside
+   `PlaybackController`, with one poll set and no new thread or lock. It
+   holds `PluginClient`, `HostSupervisor`, `PluginChainRunner` and every
+   `SupervisedChain`.
+   - It lives for **one backend activation** (change D). It is built once
+     `buffer_frames()` is non-zero: `block_frames` is that period, and
+     `max_chain_channels` is 2. ADR-0007 §4.2 makes a period of another
+     size fatal: the backend goes `fatal()`, the engine closes the take and
+     says why, and `deactivate()` is the barrier. There is no live period
+     change to rebuild for. A reopen at a new period builds a new
+     `PluginHosting` after `deactivate()` has returned, and frees
+     everything retired at once (ADR-0009 §4.1). Live buffer-size changes
+     would be an ADR-0007 amendment first (hosts activated for a maximum
+     block, and a contract change to how the region's IPC latency is
+     reported); Pro Tools does not offer one during a take either.
+   - It owns the teardown order: the runner leaves the session; then
+     `blocks_` has moved past the value read at that exchange, or
+     `deactivate()` has returned (never a timeout: a stalled backend does
+     not move `blocks_`); the chains stop once the plans naming their
+     slots are retired; then the supervisor goes; then the client.
+   - **It amends the ADR-0007 module graph (change E):** a direct edge
+     `engine/control → engine/plugin_client`, restricted to the
+     control-thread half (`host_supervisor.h` and `PluginClient`'s control
+     API). The RT half is reached only through `engine/core`'s
+     `PluginChainRunner`. ADR-0012 §4 and checklist 4 already put the
+     supervisor on the control thread, and ADR-0009 §4 puts the resolver
+     and plan building in `engine/control`; today the edge would compile
+     only transitively, through `engine/core`'s public link, which the DAG
+     forbids ("anything not drawn is forbidden").
+
+5. **`PluginFault` comes from the client's per-slot status** (rt-engineer
+   item 2 on #59). One fault stands for each insert of an active chain that
+   is not running. Its text names the plugin, the track and the slot.
+   - *Starting* (session open): no fault; the state block's `restarting`
+     flag shows it. A start that crashes or times out makes the chain
+     *down*.
+   - *Restarting:* "restarting: <why>" on every insert of the chain, with
+     the culprit named (finding 6). Cleared at `Ready`.
+   - *Down:* the culprit gets "<plugin>: <why>; 3 restarts in 60 s, the
+     chain stays down (retry, make inactive or remove)". The other inserts
+     of the chain get "down with <culprit>".
+   - *Refused:* the refusal text, on the instance that `Refused` names; the
+     chain runs without it (item 1, change C).
+   - *Missing:* "not installed", on that insert alone.
+   - *Hosting disabled:* as today, on every active insert.
+   - **Non-finite output (change G, amends §8).** §8 lists non-finite output
+     as a `PluginFault`. It is not a standing one: the host scrubs it and
+     the chain plays on, so a fault that stood would describe a chain that
+     is running. Instead, the first non-finite block an insert produces in
+     a run posts one **non-standing** `Notice` naming the plugin, track and
+     slot, and the state block's `InsertState` counter carries the count
+     from then on. The operator is told once; nothing stands.
+
 ## Rationale
 
 - **What each choice costs later.**
@@ -867,6 +1052,15 @@ updates `FakeEngine` and the conformance suite in the same PR.
   remedy.
 - Locked memory grows by one host process per chain with inserts.
 - A chain edit is audible as one silent block plus any realignment.
+  **The realignment is larger than it reads** (amendment of 2026-10-14):
+  when a chain becomes Ready mid-play its latency goes from 0 (or the old
+  host's figure) to L, the builder changes `delay_frames` on every other
+  path into that sum, and because each edge keeps its `delay_line`, the
+  read point steps: about L frames of the rest of the mix repeat (or are
+  skipped, when L falls). Whether a short crossfade at a delay change is
+  needed joins Unverified 6's listening check. A fault never causes one:
+  restarting and down chains keep their last checked latency (item 1,
+  change A); only operator actions realign.
 - ADR-0009 §4.5's "refuse a plan over a maximum" has one exception
   (§7.3).
 - The session format moves to version 2, and every file written by this
@@ -964,8 +1158,9 @@ Each has the measurement that settles it and who takes it.
 8. **Default compensation maximum 16 384** is a placeholder that matches
    what Pro Tools operators expect; researcher to confirm the figure
    Avid documents for its delay compensation limit.
-9. **The target box's clocksource is `tsc`**, so `callback_ns` is a vDSO
-   read and not a syscall. Read
+9. **The target box's clocksource is `tsc`**, so clock reads elsewhere in
+   the engine are vDSO reads and not syscalls (`callback_ns` no longer
+   needs it: since #68 the backend stamps it, §1.1). Read
    `/sys/devices/system/clocksource/clocksource0/current_clocksource` on
    the bare-metal machine; the start-up check of §1.1 covers boxes we have
    never seen. Researcher, with Unverified 1.
@@ -973,6 +1168,18 @@ Each has the measurement that settles it and who takes it.
     `wake_all()` from a `[[clang::nonblocking]]` function. Decides between
     a scoped suppression and a reported known syscall (Consequences).
     rt-engineer, in the `engine/plugin_client` PR.
+11. **Probe cost and session-open time** (amendment of 2026-10-14, item
+    3). Every probe process and every serving host calls
+    `lilv_world_load_all()` (`plugins/host/src/lv2_host.cpp`), parsing every
+    installed LV2 bundle's TTL, so a session open costs K distinct probes
+    plus C hosts, each with a full world load, before the 10 s Ready bound
+    starts. Measure, in the container: probe wall time for eg-amp, x42-dpl,
+    one LSP plugin and one VST3 with Debian's `lsp-plugins-lv2` and x42
+    installed; then open-to-all-Ready for 18 chains × 4 plugins, cold and
+    warm page cache, probes serial against capped-parallel. If an open
+    passes a few seconds, the fix is the scan worker's persistent cache and
+    `lilv_world_load_bundle` for the one bundle in probe and host mode, not
+    more parallelism. plugin-engineer.
 
 ## Alternatives rejected
 

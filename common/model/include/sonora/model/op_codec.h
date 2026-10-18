@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// One Operation to bytes and back: the replication format (ADR-0009 §2).
+// One Operation to bytes and back: the replication format (ADR-0009 §2). A
+// Compound is {"op": "Compound", "ops": [<member>, ...], "label": "..."},
+// each member as it would be alone and `label` only when there is one
+// (ADR-0009 update 2026-10-14); a member is refused by its path, "ops[3]".
 //
 // contracts/api carries an operation as opaque bytes, because it may not
 // depend on this module (ADR-0007 §1). These are those bytes: one strict
@@ -41,7 +44,14 @@ bool decode_operation(std::string_view bytes, Operation& out, std::string& error
 bool encode_window(const History& history, std::string& out, std::string& error);
 bool decode_window(std::string_view bytes, std::optional<History>& out, std::string& error);
 
-// "PlaceRegion", "AddMarker", ...: for messages and the status line.
+// "PlaceRegion", "AddMarker", ..., "Compound": for messages and the status
+// line.
 const char* operation_name(const Operation& op);
+const char* member_name(const Member& m);
+
+// What the Edit menu and the undo history call it ("Undo Paste"): a
+// compound's label, or with none the name of its first edit member (of its
+// first member when none edits); any other operation's name.
+std::string display_name(const Operation& op);
 
 }  // namespace sonora::model

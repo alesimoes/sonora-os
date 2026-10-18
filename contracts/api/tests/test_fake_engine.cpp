@@ -152,6 +152,7 @@ void scripted_plugins() {
             u.undo_floor = m.undo_floor;
             u.next_id = m.next_id;
             u.bytes = m.bytes;
+            u.label = m.label;
             std::string why;
             CHECK(replica.receive(u, why));
         }

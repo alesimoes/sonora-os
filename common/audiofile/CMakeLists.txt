@@ -1,7 +1,7 @@
-add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp)
+add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
-# common/platform for the take file's exclusive, close-on-exec create
-# (ADR-0008 §3): the one OS-specific thing a writer needs.
+# common/platform for the take file's exclusive, close-on-exec create and its
+# periodic sync (ADR-0008 §3; ADR-0009 Consequences).
 target_link_libraries(sonora_audiofile PUBLIC sonora_base PRIVATE sonora_platform)
 
 add_executable(test_wav_writer tests/test_wav_writer.cpp)
@@ -19,3 +19,10 @@ if(UNIX)
   target_link_libraries(test_wav_writer_cloexec PRIVATE sonora_audiofile sonora_platform)
   add_test(NAME wav_writer_cloexec COMMAND test_wav_writer_cloexec)
 endif()
+
+# A take whose engine died before closing it gets the length on disk
+# (session-format.md, "Crash recovery"); a finished or foreign file is left
+# as it is.
+add_executable(test_wav_recovery tests/test_wav_recovery.cpp)
+target_link_libraries(test_wav_recovery PRIVATE sonora_audiofile)
+add_test(NAME wav_recovery COMMAND test_wav_recovery)

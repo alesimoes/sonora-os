@@ -16,9 +16,12 @@
 #include <string>
 #include <vector>
 
+#include "sonora/closed_take.h"
 #include "sonora/command.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
+#include "sonora/wav_reader.h"
+#include "sonora/wav_writer.h"
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -488,8 +491,93 @@ int test_take_failure_is_seen_while_recording() {
 
 }  // namespace
 
+// A take the engine died recording (kill -9 before any checkpoint: sizes
+// still zero) is recovered when the session next opens, and said once; the
+// next take still numbers after it.
+int test_unclosed_take_is_recovered_at_open() {
+    const char* dir = "/tmp/sonora_test_takes_recover";
+    wipe(dir);
+    sonora::Session s(config(dir, 1));
+    CHECK(s.create_dirs());
+    const std::string path = std::string(dir) + "/Audio Files/Audio 1_01.wav";
+    {
+        sonora::WavWriter w;
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        const std::vector<float> block(24000, 0.25f);
+        CHECK(w.write(block.data(), block.size()));
+        CHECK(w.close());
+    }
+    // What the dead engine left: the audio, both sizes zero.
+    std::string b = slurp(path);
+    std::memset(&b[4], 0, 4);
+    std::memset(&b[12 + 8 + 602 + 8 + 16 + 4], 0, 4);
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        CHECK(f != nullptr);
+        CHECK(std::fwrite(b.data(), 1, b.size(), f) == b.size());
+        std::fclose(f);
+    }
+    const std::vector<std::string> said = sonora::recover_unclosed_takes(dir, 48000);
+    CHECK(said.size() == 1);
+    CHECK(said[0].find("recovered Audio 1_01.wav") != std::string::npos);
+    CHECK(said[0].find("0.5 s") != std::string::npos);
+    sonora::WavReader r;
+    std::string error;
+    CHECK(r.open(path, error));
+    CHECK(r.frames() == 24000);
+    r.close();
+    CHECK(sonora::recover_unclosed_takes(dir, 48000).empty());
+    CHECK(s.next_free_take() == 2);
+    wipe(dir);
+    return 0;
+}
+
+// A take killed before any audio reached it (or any checkpoint ran): each
+// armed track leaves a header with both sizes zero. Recovery still gives
+// it a valid RIFF size, but there is nothing to tell the operator, and with
+// 18 tracks there would be 18 Notices for no audio. A track that did hold
+// audio is still said.
+int test_empty_unclosed_takes_are_repaired_silently() {
+    const char* dir = "/tmp/sonora_test_takes_recover_empty";
+    wipe(dir);
+    sonora::Session s(config(dir, 3));
+    CHECK(s.create_dirs());
+    const std::string audio = std::string(dir) + "/Audio Files/";
+    for (int track = 1; track <= 3; ++track) {
+        const std::string path = audio + "Audio " + std::to_string(track) + "_01.wav";
+        sonora::WavWriter w;
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        if (track == 3) {
+            const std::vector<float> block(4800, 0.25f);
+            CHECK(w.write(block.data(), block.size()));
+        }
+        CHECK(w.close());
+        // What the dead engine left: both sizes still the zeros open() wrote.
+        std::string b = slurp(path);
+        std::memset(&b[4], 0, 4);
+        std::memset(&b[12 + 8 + 602 + 8 + 16 + 4], 0, 4);
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        CHECK(f != nullptr);
+        CHECK(std::fwrite(b.data(), 1, b.size(), f) == b.size());
+        std::fclose(f);
+    }
+    const std::vector<std::string> said = sonora::recover_unclosed_takes(dir, 48000);
+    CHECK(said.size() == 1);
+    CHECK(said[0].find("recovered Audio 3_01.wav") != std::string::npos);
+    // The empty ones were repaired all the same: RIFF size = the header.
+    const std::string b = slurp(audio + "Audio 1_01.wav");
+    uint32_t riff = 0;
+    std::memcpy(&riff, &b[4], 4);
+    CHECK(riff == 4 + (8 + 602) + (8 + 16) + 8);
+    CHECK(sonora::recover_unclosed_takes(dir, 48000).empty());
+    wipe(dir);
+    return 0;
+}
+
 int main() {
     int failures = 0;
+    failures += test_unclosed_take_is_recovered_at_open();
+    failures += test_empty_unclosed_takes_are_repaired_silently();
     failures += test_next_free_take();
     failures += test_stray_files_do_not_set_the_take();
     failures += test_takes_of_tracks_not_open_still_count();

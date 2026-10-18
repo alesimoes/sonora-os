@@ -27,9 +27,14 @@ public:
     // file is opened for (tests drive the capture ring with it).
     void set_state(TransportState s) { word_.store(word(s, 0), std::memory_order_seq_cst); }
     // Recording into take `take`. One store with the state, so the audio
-    // thread never reads one take's state with another's number.
-    void set_recording(uint32_t take) {
-        word_.store(word(TransportState::Recording, take), std::memory_order_seq_cst);
+    // thread never reads one take's state with another's number. `punched`:
+    // the take records inside a range queued for the audio thread before
+    // this store (Session::start_punch()); a take without one never looks
+    // for one, so a range left from an earlier take of that number cannot
+    // apply to it.
+    void set_recording(uint32_t take, bool punched = false) {
+        word_.store(word(TransportState::Recording, take) | (punched ? kPunched : 0),
+                    std::memory_order_seq_cst);
     }
     // The take being recorded, 0 when none is.
     uint32_t take() const { return take_of(word_.load(std::memory_order_acquire)); }
@@ -40,10 +45,11 @@ public:
     struct Word {
         TransportState state;
         uint32_t take;
+        bool punched;
     };
     Word load_word() const noexcept SONORA_RT {
         const uint64_t w = word_.load(std::memory_order_seq_cst);
-        return {state_of(w), take_of(w)};
+        return {state_of(w), take_of(w), (w & kPunched) != 0};
     }
 
     uint64_t playhead() const { return playhead_.load(std::memory_order_relaxed); }
@@ -66,11 +72,14 @@ public:
     }
 
 private:
+    // In the state's byte, above every TransportState.
+    static constexpr uint64_t kPunched = 0x80;
+
     static uint64_t word(TransportState s, uint32_t take) {
         return (uint64_t{take} << 8) | static_cast<uint64_t>(s);
     }
     static TransportState state_of(uint64_t w) noexcept SONORA_RT {
-        return static_cast<TransportState>(w & 0xFF);
+        return static_cast<TransportState>(w & 0x7F);
     }
     static uint32_t take_of(uint64_t w) noexcept SONORA_RT {
         return static_cast<uint32_t>(w >> 8);
