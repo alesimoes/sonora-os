@@ -284,11 +284,34 @@ band, with the audio**:
 - **The capture ring is never reset.** There is nothing to race against, so
   the take-epoch handshake is no longer needed. This replaces it; the
   regression test for the old race is still written first, and must pass.
-- The disk thread **opens the next take's files ahead**, as soon as a take
-  starts, so opening a file is never in the drain path at a boundary.
+- The next take's files are **opened ahead**, so opening a file is never in
+  the drain path at a boundary. Amended 2026-10-14 (`feature/record-while-rolling`):
+  the control thread opens them, in `start_recording()`, before the take is
+  published to the audio thread, rather than the disk thread as soon as a
+  take starts. That keeps the all-or-nothing refusal synchronous (a name
+  already on disk, a full disk: the operator is told before anything is
+  recorded) and needs no guess at the next take's tracks. Each track has
+  two writer slots, handed between the threads by the take number each
+  holds (`Track::slot_take()`); a third take started before the disk thread
+  has closed the first of two is refused after a bounded wait, with the
+  reason.
+- `stop()` stores Stopped, waits for the callback in flight (bounded, one
+  second), joins the disk thread and closes what no close record reached.
+  A callback later still is not waited for, and what it records is
+  dropped and counted (`dropped_samples()`): its take's files are closed,
+  and the next `start_recording()` opens the next take's, whose open record
+  only a later callback pushes, so no open slot claims those samples.
 - After closing a take, the disk thread reports **"take closed, length N"**
   to `engine/control`. `AddSource` and `RecordTake` are applied only then,
   with N from disk, not computed from the transport.
+- **A file that failed is placed up to the failure.** A write error or the
+  4 GB limit (`bwf-broadcast-wave.md`) leaves the file valid up to its last
+  whole frame, so N is that length and the region is placed like the rest
+  of the take: an operator who fills the disk keeps what was recorded. The
+  failure is not hidden. `add_closed_take()` returns
+  false naming the file and why ("placed up to the failure"), the control
+  server posts it as a Notice, and `stop()` still reports it. A failed file
+  with no frames is not placed, and is reported the same way.
 - "Rolling" and "recording" are separate per track: the transport rolls,
   and capture is a per-track window inside it.
 

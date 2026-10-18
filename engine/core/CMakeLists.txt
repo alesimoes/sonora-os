@@ -59,6 +59,13 @@ add_executable(test_plan_pdc tests/test_plan_pdc.cpp)
 target_link_libraries(test_plan_pdc PRIVATE sonora_core)
 add_test(NAME plan_pdc COMMAND test_plan_pdc)
 
+# Takes closed while rolling, by in-band boundary records (timeline-model.md,
+# "Closing a take while rolling"), and the take-epoch race's regression test.
+# CI runs it under TSan.
+add_executable(test_take_boundaries tests/test_take_boundaries.cpp)
+target_link_libraries(test_take_boundaries PRIVATE sonora_core Threads::Threads)
+add_test(NAME take_boundaries COMMAND test_take_boundaries)
+
 # ADR-0012 checklist 5: plugin parameter changes from the control thread to
 # the InsertChain node that names their store, the backend's callback_ns as
 # the runner's clock, and the runner's block size gating the callback.

@@ -26,7 +26,10 @@ playback can follow edits; it is in flight.
 3. [ ] Playback: disk reader, chunk pool, residency-gated plan swap, output
        through the fixed 2-channel monitor bus (DAW 1 detail, below).
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
-       locate, pre-roll; input monitoring.
+       locate, pre-roll; input monitoring. In-band boundaries, record
+       while rolling and punch in/out on the fly at block boundaries:
+       `feature/record-while-rolling`. Punch points inside a block, loop,
+       pre-roll and input monitoring remain.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,
@@ -827,7 +830,7 @@ Order and owners are in ADR-0008 §5.
       Under `de_DE` the decimal separator is `,`, so `0.5` parses as `0`.
       Fix with `std::from_chars`; regression test that sets a comma locale
       first. ui-engineer.
-- [ ] Close a take while rolling with **in-band boundary records**
+- [x] Close a take while rolling with **in-band boundary records**
       (`brain/specs/timeline-model.md`, "Closing a take while rolling"):
       audio thread → SPSC ring → disk thread splits at exactly the frame;
       the capture ring is never reset; the next take's files opened ahead;
@@ -837,6 +840,27 @@ Order and owners are in ADR-0008 §5.
       handshake** in "Known gaps": with no ring reset there is no race. The
       race's regression test is still written first. rt-engineer, audited
       by rt-safety-auditor.
+      Landed on `feature/record-while-rolling` (2026-10-14), except the
+      sample-accurate parts: windows open and close on block boundaries, and
+      the auto-monitor switch has no ramp yet. Both go with the punch points
+      below.
+- [ ] Punch points inside a block: capture opens and closes at a frame the
+      control thread sets ahead (Pro Tools' punch range, Logic's autopunch),
+      sample-accurate, the monitor switched there with a ramp; files opened
+      when the punch is armed. Then a `transport.punch` command in the
+      `contracts/api` catalogue for punching in and out on the fly
+      (`Session::start_recording()` while rolling, `Session::punch_out()`),
+      and its vendor bindings in `keymaps/`. rt-engineer, contract owner for
+      the catalogue.
+      Before it lands (PR #60, review 4): `Session::failed_files_` lasts
+      until `stop()`, so after take K fails, `take_failure()` stays
+      non-empty through a clean take K + 1 started while rolling.
+      `engine_control_server.cpp` (the `TakeFailed` block in the transport
+      follower) would then post "take K + 1 failed" naming K's file, and the
+      health flag would never clear, though ADR-0007 says the next clean take
+      clears both. Key the failures by take, or clear them when a take's
+      close is collected. Unreachable today: `transport.record` during a
+      take does nothing.
 - [ ] Periodic `fdatasync` of every open take file from the disk thread,
       through `common/platform`, with the loss window stated in the UI and
       in `brain/specs/session-format.md` ("Crash recovery"). Measure its cost
@@ -875,6 +899,9 @@ Order and owners are in ADR-0008 §5.
   regression test first. rt-engineer, audited by rt-safety-auditor.
   **Superseded by ADR-0009:** the fix is now the in-band boundary records
   in Phase 2 ("Close a take while rolling"), which remove the ring reset.
+  **Fixed on `feature/record-while-rolling`:** the ring is never reset, and
+  `test_take_boundaries` reproduces the race on the old code (an insert
+  runner's `begin()` stalls a callback after it has loaded the take).
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.
@@ -886,6 +913,11 @@ Order and owners are in ADR-0008 §5.
   it at the edit point (`gtk2_ardour/editor_audio_import.cc:989`, tag 8.12).
   A non-zero session start would avoid that, but it is a timeline decision
   (ADR), not a writer fix. `brain/research/bwf-interop.md`, finding 2.
+- A `stop()` whose wait for the callback in flight times out (1 s, a hung
+  backend) still returns true. The block that callback records late shows
+  only on stderr and in `Session::dropped_samples()`, which the UI does not
+  surface (PR #60, review 5). Acceptable for a hung backend, but the
+  operator should see it: a Notice, or the health flag.
 - `DiskThread` polls every 10 ms. Correct, but a condition variable signalled
   by the callback would be better once there is a reason to care. It must not
   make the callback block.

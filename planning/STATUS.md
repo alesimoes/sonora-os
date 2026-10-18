@@ -3,7 +3,7 @@
 The single place to learn where the work stands. Any agent updates this at the
 end of its run. Keep it short: what is true now, not a diary.
 
-- **Updated:** 2026-10-13 (PRs #41-#47, and engine/plugin_client after the PR #49 reviews)
+- **Updated:** 2026-10-14 (record while rolling, `feature/record-while-rolling`; before that PRs #41-#47 and engine/plugin_client after the PR #49 reviews)
 - **Current focus:** the **Complete DAW** milestone, stage DAW 1 (engine
   core, contracts, model). Owner, 2026-10-13: the whole product first, at
   parity with the workflow Avid and Apple document for Pro Tools and Logic,
@@ -215,6 +215,20 @@ end of its run. Keep it short: what is true now, not a diary.
   back through the fixed stereo monitor bus, driven over the M7 socket by
   `sonora-ui`, `sonora-tui` or `sonora-ctl`; `tools/run-sonora.sh` starts
   engine and UI as two processes.
+- **Record while rolling, in-band take boundaries
+  (`feature/record-while-rolling`, 2026-10-14).** The capture ring is never
+  reset: the audio thread opens and closes a per-track capture window and
+  pushes a boundary record behind its samples, and the disk thread splits
+  the ring there into the take's file. A take starts from a roll (punch in
+  on the fly) or over the running take on the same frame, and
+  `Session::punch_out()` ends one with the transport still rolling; the
+  disk thread reports each closed file with its length on disk, and the
+  control server places takes from that report, not from a transport
+  edge. `stop()` waits (bounded) for the callback in flight. The take-epoch
+  race in "Known gaps" was reproduced first on the old code by stalling a
+  callback in an insert runner, and is gone. Block-boundary only: punch
+  points inside a block, the monitor ramp and a punch command are next
+  (BACKLOG, DAW 1 detail). Container only: ctest, TSan, RTSan.
 - **Mix window on the monitor bus (`feature/ui-mixer-monitor`).** A fader
   ride is heard through ParameterChange per step and saved by one SetMix at
   release (the bus, which has no ParamId, rides through SetMonitorBus);

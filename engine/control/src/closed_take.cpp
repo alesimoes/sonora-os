@@ -136,41 +136,73 @@ bool place_file(model::Document& document, const std::string& session_dir,
     return apply(document, place, updates, error);
 }
 
-bool add_closed_take(model::Document& document, const Session& session, int take,
+bool add_closed_take(model::Document& document, const Session& session,
+                     const Session::ClosedTake& take,
                      std::vector<model::ReplicationUpdate>& updates, std::string& error) {
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
-    for (std::size_t i = 0; i < session.tracks().size(); ++i) {
-        // writer() has no const overload; nothing here changes the track.
-        Track& engine_track = *session.tracks()[i];
-        // Arming is fixed for a take (session_commands.cpp), so the armed
-        // tracks are the take's.
-        if (!engine_track.rec_armed() || engine_track.writer().frames_written() == 0) continue;
-        const std::string& path = engine_track.writer().path();
-        if (path.compare(0, prefix.size(), prefix) != 0) continue;
-        const std::string relative = path.substr(prefix.size());
+    std::string first_failure;
+    int more_failures = 0;
+    const auto cut_short = [&]() {
+        std::string s = first_failure;
+        if (more_failures > 0) {
+            s += " (and " + std::to_string(more_failures) + " more track" +
+                 (more_failures == 1 ? "" : "s") + ")";
+        }
+        return s;
+    };
+    // The tracks before this one may have been placed and cut short; that
+    // is still said, after the track left out.
+    const auto not_placed = [&](const DiskThread::ClosedFile& f, const std::string& why) {
+        error = "is on disk but not in the session: track " + std::to_string(f.track + 1) +
+                ", " + f.path + ": " + why;
+        if (!first_failure.empty()) error += "; and it was cut short: " + cut_short();
+        return false;
+    };
+    for (const DiskThread::ClosedFile& f : take.files) {
+        // A failed file is still valid up to its last whole frame
+        // (bwf-broadcast-wave.md), so what was recorded before the failure
+        // is placed, and the failure is reported rather than hidden
+        // (timeline-model.md, "Closed takes").
+        if (!f.failure.empty()) {
+            if (first_failure.empty()) {
+                first_failure = f.path + ": " + f.failure +
+                                (f.frames == 0 ? ", with nothing recorded before it"
+                                               : ", placed up to the failure");
+            } else {
+                ++more_failures;
+            }
+        }
+        if (f.frames == 0) continue;
+        if (f.path.compare(0, prefix.size(), prefix) != 0) continue;
+        const std::string relative = f.path.substr(prefix.size());
 
-        const model::TrackEdit* t = track_at(document, i, error);
-        if (!t) return false;
+        std::string why;
+        const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), why);
+        if (!t) return not_placed(f, why);
         model::AddSource src;
-        if (!source_of(document, dir, relative, t->channels, src.source, error)) return false;
+        if (!source_of(document, dir, relative, t->channels, src.source, why)) {
+            return not_placed(f, why);
+        }
         src.source.kind = model::SourceKind::Recorded;
-        src.source.take = take;
+        src.source.take = take.take;
         src.source.recorded_on_track = t->id;
         // Copied before the document moves on: `t` belongs to the old state.
         const model::Id track_id = t->id;
         const model::Id playlist = t->active_playlist;
         const uint16_t channels = t->channels;
-        if (!apply(document, src, updates, error)) return false;
+        if (!apply(document, src, updates, why)) return not_placed(f, why);
 
         model::RecordTake rec;
         rec.track = track_id;
         rec.playlist = playlist;
         rec.region = region_of(src.source, document.current().next_id, stem(relative), channels);
         rec.split_right_id = rec.region.id + 1;
-        if (!apply(document, rec, updates, error)) return false;
+        if (!apply(document, rec, updates, why)) return not_placed(f, why);
     }
-    return true;
+    if (first_failure.empty()) return true;
+    error = "was cut short: " + cut_short();
+    return false;
 }
 
 }  // namespace sonora

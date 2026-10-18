@@ -239,27 +239,21 @@ bool EngineControlServer::flush_plugin_state(const std::string& which, std::stri
 }
 
 void EngineControlServer::follow_transport() {
-    const bool recording = session_.transport().state() == TransportState::Recording;
-    // take_ is the running take's number here: open_take() set it just
-    // before start_recording(), and finish() moves it on only after stop().
-    if (recording && !was_recording_) recording_take_ = take_;
-    if (!recording && was_recording_) {
-        // stop() joined the disk thread: the files are closed and their
-        // lengths final.
+    // Closed means every file of the take is, with its length final
+    // (timeline-model.md: "take closed, length N" before RecordTake).
+    for (const Session::ClosedTake& take : session_.closed_takes()) {
         std::vector<model::ReplicationUpdate> updates;
         std::string why;
-        const bool ok = add_closed_take(*document_, session_, recording_take_, updates, why);
+        const bool ok = add_closed_take(*document_, session_, take, updates, why);
         for (const auto& u : updates) send_update(u);
         if (!ok) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
-            e.text = "take " + std::to_string(recording_take_) +
-                     " is on disk but not in the session: " + why;
+            e.text = "take " + std::to_string(take.take) + " " + why;
             post_event(e);
         }
         if (!updates.empty()) show_document(false);
     }
-    was_recording_ = recording;
 }
 
 void EngineControlServer::resolve_records() {
@@ -739,8 +733,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
-        // Before anything else can change arming: the closed take's tracks
-        // are the armed ones.
+        // A stop just dispatched closed a take: placed now, so the reply
+        // follows its RecordTake updates. Placement comes from the disk
+        // thread's report of each file, not from arming.
         follow_transport();
         if (d == DispatchResult::Ok && changes_arming(r.command)) {
             playback_->apply_monitoring(document_->current());

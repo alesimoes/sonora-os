@@ -511,6 +511,162 @@ int test_take_origin_is_first_recorded_frame() {
     return 0;
 }
 
+// Takes closed while rolling join the document from the disk thread's
+// report: punched out, and started over another, each at its own origin and
+// length on disk, while the transport never stops. writer() names the take
+// recording now, so the report is the only thing that can name these.
+int test_takes_closed_while_rolling_join_the_document() {
+    auto session = make_session(1);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    sonora::model::Document doc(sonora::engine_document(s));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    run_block_in(s, o, in);
+    const int first = s.next_free_take();
+    CHECK(s.start_recording(first, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.start_recording(first + 1, &error));
+    for (int i = 0; i < 2; ++i) run_block_in(s, o, in);
+    CHECK(s.punch_out());
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() == sonora::TransportState::Rolling);
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 2);
+    std::vector<sonora::model::ReplicationUpdate> updates;
+    for (const Session::ClosedTake& take : closed) {
+        CHECK(sonora::add_closed_take(doc, s, take, updates, error));
+    }
+    const auto& track = *doc.current().edit->tracks[0];
+    const sonora::model::Playlist* list = nullptr;
+    for (const auto& p : track.playlists) {
+        if (p->id == track.active_playlist) list = p.get();
+    }
+    CHECK(list != nullptr);
+    CHECK(list->regions.size() == 2);
+    CHECK(list->regions[0].position == kBlock);
+    CHECK(list->regions[0].length == 3 * kBlock);
+    CHECK(list->regions[1].position == 4 * kBlock);
+    CHECK(list->regions[1].length == 2 * kBlock);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+// Code review 3 on PR #60: a take that failed (full disk, 4 GB limit) and
+// was then punched out. punch_out() forgot it, so take_failure() went
+// quiet, the next stop() said all was well, and the closed-take report
+// placed the truncated file as a good take. Now the failure is still said
+// until stop(), stop() reports it, and the failed file is placed up to its
+// last whole frame, as main did: the operator keeps what was recorded.
+int test_failure_in_a_take_punched_out_is_reported() {
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    auto session = make_session(2);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.tracks()[1]->set_rec_armed(true);
+    // Only track 2 runs out of room: 10 mono 24-bit frames, in either slot.
+    for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[1]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+    }
+    Document doc(sonora::engine_document(s));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    const int take = s.next_free_take();
+    CHECK(s.start_recording(take, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.closed_takes().empty());  // drains: track 2's writer fails here
+    const std::string why = s.take_failure();
+    CHECK(why.find("Audio 2_") != std::string::npos);
+    CHECK(why.find("4 GB") != std::string::npos);
+    CHECK(why.find("Audio 1_") == std::string::npos);
+
+    CHECK(s.punch_out());
+    CHECK(s.take_failure() == why);
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() == TransportState::Rolling);
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+    std::vector<sonora::model::ReplicationUpdate> updates;
+    std::string placed;
+    CHECK(!sonora::add_closed_take(doc, s, closed[0], updates, placed));
+    CHECK(placed.find("Audio 2_") != std::string::npos);
+    CHECK(placed.find("4 GB") != std::string::npos);
+    CHECK(placed.find("placed up to the failure") != std::string::npos);
+    CHECK(placed.find("Audio 1_") == std::string::npos);
+    const auto regions = [&](std::size_t t) -> const std::vector<sonora::model::Region>* {
+        const auto& track = *doc.current().edit->tracks[t];
+        for (const auto& p : track.playlists) {
+            if (p->id == track.active_playlist) return &p->regions;
+        }
+        return nullptr;
+    };
+    CHECK(regions(0) && regions(0)->size() == 1);
+    CHECK((*regions(0))[0].length == 3 * kBlock);
+    // Exactly the 10 frames that fit under the limit, at the take's start.
+    CHECK(regions(1) && regions(1)->size() == 1);
+    CHECK((*regions(1))[0].length == 10);
+    CHECK((*regions(1))[0].position == (*regions(0))[0].position);
+    CHECK(s.take_failure() == why);
+
+    std::string at_stop;
+    CHECK(!s.stop(&at_stop));
+    CHECK(at_stop == why);
+    CHECK(s.take_failure().empty());
+    return 0;
+}
+
+// PR #60 re-review: a take whose first track was cut short (and placed up
+// to the failure) and whose second track cannot be placed at all. The
+// second reason replaced the first, so the Notice lost the truncated
+// track, and it named no track for the one left out.
+int test_unplaceable_track_keeps_the_earlier_failure() {
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    auto session = make_session(2);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.tracks()[1]->set_rec_armed(true);
+    for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[0]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+    }
+    // A document with one track: the take's second file has nowhere to go.
+    auto one = make_session(1);
+    Document doc(sonora::engine_document(*one));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    std::string at_stop;
+    CHECK(!s.stop(&at_stop));
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+    std::vector<sonora::model::ReplicationUpdate> updates;
+    std::string placed;
+    CHECK(!sonora::add_closed_take(doc, s, closed[0], updates, placed));
+    CHECK(placed.find("is on disk but not in the session") != std::string::npos);
+    CHECK(placed.find("track 2") != std::string::npos);
+    CHECK(placed.find("Audio 2_") != std::string::npos);
+    // The earlier reason is still said.
+    CHECK(placed.find("Audio 1_") != std::string::npos);
+    CHECK(placed.find("4 GB") != std::string::npos);
+    CHECK(placed.find("placed up to the failure") != std::string::npos);
+    const auto& track = *doc.current().edit->tracks[0];
+    for (const auto& p : track.playlists) {
+        if (p->id != track.active_playlist) continue;
+        CHECK(p->regions.size() == 1);
+        CHECK(p->regions[0].length == 10);
+    }
+    return 0;
+}
+
 // Return to zero, then record, in one pass of the terminal loop: the take
 // starts at zero once the locate is applied, and the playhead never jumps
 // while it runs.
@@ -1131,6 +1287,9 @@ int main() {
     if (test_locate_and_cancel()) return 1;
     if (test_transport_commands()) return 1;
     if (test_take_origin_is_first_recorded_frame()) return 1;
+    if (test_takes_closed_while_rolling_join_the_document()) return 1;
+    if (test_failure_in_a_take_punched_out_is_reported()) return 1;
+    if (test_unplaceable_track_keeps_the_earlier_failure()) return 1;
     if (test_return_to_zero_then_record()) return 1;
     if (test_pending_locate_dropped_by_a_take()) return 1;
     if (test_record_waits_for_residency()) return 1;
