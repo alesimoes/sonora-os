@@ -702,6 +702,84 @@ void no_plugin_hosting_yet() {
     CHECK(real.state().track(0).gain == 0.5f);
 }
 
+// A ride the link lost mid-gesture stays in the Track atomic, a value the
+// document does not hold. A Resync applies the document's mix (ADR-0009 §4
+// item 3), and so does the rider leaving, for the tracks it rode; another
+// client attaching mid-ride leaves the ride alone.
+void resync_applies_the_mix() {
+    RealEngine real(fresh_dir("resync"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answered = [&](uint64_t seq) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == DispatchResult::Ok;
+            }
+            return false;
+        });
+    };
+    const auto gain_is = [&](float g) {
+        return until(real, in, [&]() { return real.state().track(0).gain == g; });
+    };
+    api::ParameterChange ride;
+    ride.track = 0;
+    ride.value = 0.5f;
+    CHECK(answered(real.send(ride)));
+    CHECK(gain_is(0.5f));
+    api::ModelRequest resync;
+    resync.action = api::ModelAction::Resync;
+    CHECK(answered(real.submit(resync)));
+    CHECK(gain_is(1.0f));
+
+    // Everything delivered so far handled, and a publish begun and ended
+    // since: what the block says is the server's state after it.
+    const auto settled = [&]() {
+        api::CommandRequest probe;
+        probe.command = "no.such.command";
+        const uint64_t seq = real.send(probe);
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return true;
+            }
+            return false;
+        });
+        const uint64_t hb = real.state().transport().heartbeat;
+        return got && until(real, in, [&]() {
+                   return real.state().transport().heartbeat >= hb + 2;
+               });
+    };
+
+    // Another interface attaching mid-ride does not snap the ride back,
+    // nor does its leaving: it never rode (review of PR #71).
+    ride.value = 0.25f;
+    CHECK(answered(real.send(ride)));
+    CHECK(gain_is(0.25f));
+    late_greeting(real, in);
+    CHECK(settled());
+    CHECK(real.state().track(0).gain == 0.25f);
+
+    // The rider leaving mid-ride ends its ride: the document's gain is put
+    // back. Here a second client rides track 1 and goes with no release.
+    EngineControlServer& server = real.engine().server();
+    const auto rider = server.attach([](std::string) {}, {});
+    api::ParameterChange stranded;
+    stranded.seq = 1;
+    stranded.track = 1;
+    stranded.value = 0.75f;
+    std::string bytes;
+    api::wire::encode(stranded, bytes);
+    std::vector<std::string> frames;
+    CHECK(api::wire::split_frames(bytes, frames, error));
+    for (std::string& f : frames) server.deliver(rider, std::move(f));
+    CHECK(until(real, in, [&]() { return real.state().track(1).gain == 0.75f; }));
+    server.detach(rider);
+    CHECK(until(real, in, [&]() { return real.state().track(1).gain == 1.0f; }));
+    // Only the tracks it rode: track 0's ride, the first client's, stays.
+    CHECK(settled());
+    CHECK(real.state().track(0).gain == 0.25f);
+}
+
 }  // namespace
 
 int main() {
@@ -719,6 +797,7 @@ int main() {
     large_snapshot_crosses_in_frames();
     housekeeping_and_early_events();
     no_plugin_hosting_yet();
+    resync_applies_the_mix();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

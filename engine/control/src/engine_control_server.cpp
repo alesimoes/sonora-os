@@ -159,7 +159,7 @@ void EngineControlServer::send_update(const model::ReplicationUpdate& update) {
 
 void EngineControlServer::show_document(bool mix_changed) {
     const model::Snapshot& doc = document_->current();
-    if (mix_changed) playback_->apply_mix(doc);
+    if (mix_changed) apply_mix();
     std::string why;
     if (!playback_->show(doc, why)) {
         // What plays does not change; the operator must know the edit is
@@ -503,7 +503,23 @@ EngineControlServer::Room EngineControlServer::wait_for_room(ClientId client, in
     return Room::Ok;
 }
 
+void EngineControlServer::apply_mix() {
+    playback_->apply_mix(document_->current());
+    riders_.clear();
+}
+
 void EngineControlServer::forget(ClientId id) {
+    // A ride its client left before releasing (ADR-0009 §4 item 3): only
+    // the tracks it was the last to ride, so a ride another client holds
+    // stays where it is.
+    for (auto it = riders_.begin(); it != riders_.end();) {
+        if (it->second == id) {
+            playback_->apply_gain(document_->current(), it->first);
+            it = riders_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     large_.erase(id);
     handled_.erase(id);
     {
@@ -753,6 +769,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             return;
         }
         session_.tracks()[c.track]->set_gain(c.value);
+        riders_[c.track] = from;
         reply(from, c.seq, DispatchResult::Ok, "");
         return;
     }
@@ -825,6 +842,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             // A resync is the asker's alone; every other replica is in step.
             if (m.action == api::ModelAction::Resync) {
                 send_to(from, out);
+                // The asker may be resyncing after a lost link, with a ride's
+                // last step still in the gain atomics; the plan is unchanged.
+                apply_mix();
             } else {
                 send(out);
                 // The faders' part of the mix only: an insert's bypass or

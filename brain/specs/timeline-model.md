@@ -297,11 +297,10 @@ band, with the audio**:
   reason.
 - `stop()` stores Stopped, waits for the callback in flight (bounded, one
   second), joins the disk thread and closes what no close record reached.
-  A callback later still is not waited for. Its samples follow its own
-  boundary records, so they land in their take while a file is open for it
-  (the next `start_recording()` may reopen before they drain). Only
-  samples that no open slot claims are dropped, and counted
-  (`dropped_samples()`).
+  A callback later still is not waited for, and what it records is
+  dropped and counted (`dropped_samples()`): its take's files are closed,
+  and the next `start_recording()` opens the next take's, whose open record
+  only a later callback pushes, so no open slot claims those samples.
 - After closing a take, the disk thread reports **"take closed, length N"**
   to `engine/control`. `AddSource` and `RecordTake` are applied only then,
   with N from disk, not computed from the transport.

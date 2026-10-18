@@ -472,6 +472,8 @@ void DiskReader::pass(const Request& req) {
              window_resident(pending_, req.locate_target);
     }
     if (ok) resident_.store(req.generation, std::memory_order_release);
+    // Release: what this pass linked is visible to whoever sees the count.
+    passes_.fetch_add(1, std::memory_order_release);
 }
 
 }  // namespace sonora

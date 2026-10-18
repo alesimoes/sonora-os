@@ -56,6 +56,19 @@ std::size_t drain(FakeBackend& audio, uint32_t index, std::vector<float>* into =
     }
 }
 
+// Waits for a whole reader pass that started after the call, so the window
+// from the playhead now is linked. Two counted passes: the first may have
+// begun, and read the playhead, before the wake.
+bool reader_turn(sonora::Session& s) {
+    const uint64_t before = s.reader().passes();
+    s.reader().wake();
+    for (int i = 0; i < 20000; ++i) {
+        if (s.reader().passes() >= before + 2) return true;
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    return false;
+}
+
 // A client of the server, as an interface's tick is: everything that
 // arrives is kept.
 struct Client {
@@ -172,12 +185,15 @@ int test_record_then_play_back() {
         CHECK(s.transport().state() == TransportState::Rolling);
         CHECK(s.transport().playhead() <= kQuantum);
 
-        // The whole take and a little past its end, at the pace the
-        // reader's thread keeps up with.
+        // The whole take and a little past its end. The blocks run faster
+        // than real time, so the reader is given what real time gives it:
+        // in 8 blocks (21 ms) its 5 ms tick passes about four times; here at
+        // least one whole pass. A sleep instead outran the reader on a loaded
+        // host, and a chunk it had not linked yet played as silence.
         constexpr uint32_t kPlayBlocks = kBlocks + 20;
         for (uint32_t b = 0; b < kPlayBlocks; ++b) {
+            if (b % 8 == 0) CHECK(reader_turn(s));
             CHECK(audio.run_blocks(1) == 1);
-            if (b % 8 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         drain(audio, 0, &left);
         drain(audio, 1, &right);
@@ -190,16 +206,24 @@ int test_record_then_play_back() {
         const float gain = std::pow(10.0f, -3.0f / 20.0f);
         const uint64_t take = uint64_t{kBlocks} * kQuantum;
         double worst = 0.0;
+        int64_t worst_at = 0;   // in frames rolled
         for (std::size_t i = 0; i < left.size(); ++i) {
             const uint64_t t = i - first;
             const float want =
                 i < first ? 0.0f : (t < take ? FakeBackend::tone(0, t, kRate) * gain : 0.0f);
-            worst = std::max(worst, static_cast<double>(std::fabs(left[i] - want)));
-            worst = std::max(worst, static_cast<double>(std::fabs(right[i] - want)));
+            const double e = std::max(std::fabs(left[i] - want), std::fabs(right[i] - want));
+            if (e > worst) {
+                worst = e;
+                worst_at = static_cast<int64_t>(i) - static_cast<int64_t>(first);
+            }
         }
+        // A chunk missed plays silence, and the residual is then the tone's
+        // peak at the bus gain, 0.354: the misses say which it was.
         std::printf("playback through the server on drivers/fake: %llu frames rolled,"
-                    " worst residual %.3g\n",
-                    static_cast<unsigned long long>(rolled), worst);
+                    " worst residual %.3g at frame %lld, %llu chunk misses\n",
+                    static_cast<unsigned long long>(rolled), worst,
+                    static_cast<long long>(worst_at),
+                    static_cast<unsigned long long>(s.playback_misses()));
         CHECK(worst < 1e-6);
         CHECK(s.playback_misses() == 0);
         CHECK(audio.unwritten_output_periods() == 0);

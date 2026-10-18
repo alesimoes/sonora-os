@@ -252,6 +252,11 @@ struct FakeBackend::Impl {
 
         block.nframes = nframes;
         block.frame_time = frame_time;
+        // A test backend: it reads the clock its server would have read.
+        block.callback_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
         callback->process(block);
         process_calls.fetch_add(1, std::memory_order_relaxed);
 
@@ -384,7 +389,7 @@ bool FakeBackend::open(const backend::BackendConfig& config,
         }
     }
     d.block = backend::AudioBlock{
-        d.in_bufs.data(),  config.inputs, d.out_bufs.data(), config.outputs, 0, 0,
+        d.in_bufs.data(),  config.inputs, d.out_bufs.data(), config.outputs, 0, 0, 0,
     };
     d.callback = &callback;
     d.guard.expect_rate(rate);

@@ -28,6 +28,21 @@ if(SONORA_RTSAN)
   add_link_options(-fsanitize=realtime)
 endif()
 
+# Any sanitizer build: SONORA_RTSAN, or -fsanitize= (/fsanitize= on MSVC) in
+# the flags, as CI's TSan and ASan/UBSan jobs and the nightly asan build pass
+# them. A sanitizer slows code by a factor nobody knows, so the native
+# suites' wall-clock and CPU bars are reported there, not held (the measure
+# harness's Suite::check_time_le); every correctness bar is held. A CMake
+# define rather than the compiler's macros alone: GCC announces UBSan with
+# none.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" SONORA_BUILD_TYPE_UPPER)
+if(SONORA_RTSAN OR "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${SONORA_BUILD_TYPE_UPPER}}" MATCHES "(^| )[-/]fsanitize=")
+  set(SONORA_SANITIZED ON)
+else()
+  set(SONORA_SANITIZED OFF)
+endif()
+message(STATUS "Sanitizer build (time bars reported, not held): ${SONORA_SANITIZED}")
+
 # Every executable lands in the build root, so build/sonora-engine stays where
 # tools/build-iso.sh and tools/test-engine-docker.sh look for it.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

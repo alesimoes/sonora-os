@@ -875,10 +875,10 @@ int test_fades() {
 }
 
 // A crossfade replaces the fade at the end it joins, but the model keeps that
-// fade and still counts it (fade_in + fade_out <= length). And the model
-// does not stop a crossfade from overlapping the region's own fade at its
-// other end, which the engine would multiply. Both are settled here, where
-// the operator acts, so a refusal names something they can see.
+// fade and still counts it (fade_in + fade_out <= length). And a crossfade
+// must not overlap the region's own fade at its other end, which the engine
+// would multiply. The model refuses that too (PR #69); it is checked here
+// first, where the operator acts, so a refusal names something they can see.
 int test_fades_against_crossfades() {
     const Frames half = kBar / 2;
     std::string why;
@@ -1017,19 +1017,23 @@ int test_fades_against_crossfades() {
         OK(c.undo(why));
 
         // A document that already has the overlap (made before this check,
-        // or by another interface): clearing P|A must not bring it back.
+        // or by another interface): clearing P|A brings A's fade-in back
+        // shortened to meet the crossfade at A's end, as the model does on
+        // an edge edit (PR #69). Refusing would block the operator over a
+        // fade they cannot see or edit while A's end is crossfaded.
         Crossfade end;
         end.left = 10;
         end.right = 11;
         end.length = kBar;
         end.align = Align::Centre;
         OK(doc.submit(SetCrossfade{pl, end}, why));
-        const uint64_t rev2 = doc.snapshot().revision;
         OK(range(kBar - kBeat, kBar));
-        OK(!c.clear(why));
-        OK(why.find("\"A\"'s fade-in") != std::string::npos &&
-           why.find("crossfade at \"A\"'s end") != std::string::npos);
-        OK(doc.snapshot().revision == rev2 && crossfades() == 2);
+        OK(c.clear(why));
+        OK(crossfades() == 1 && region(doc.snapshot(), 10)->fade_in.length == 2 * kBar - half);
+        OK(valid(doc.snapshot()));
+        // Undo brings back the crossfade and the full hidden fade-in.
+        OK(c.undo(why));
+        OK(crossfades() == 2 && region(doc.snapshot(), 10)->fade_in.length == kBar + 3 * kBeat);
         // The other way round: clearing A|B brings back nothing (A has no
         // stored fade-out), so it is cleared; then P|A clears too.
         OK(range(3 * kBar - half, 3 * kBar + half));
@@ -1371,6 +1375,40 @@ int test_files() {
     slow_session2.setSessionsDir(dir.path());
     OK(slow_session2.saveSession(why));
     OK(slow2.snapshot().settings.name == "Untitled 2");  // never over another session
+
+    // A file an older build saved with a fade running into the crossfade at
+    // its region's other end (PR #69): it opens, the fade shortened, and the
+    // notice says so. Made here as that build's trim left it: B's fade-out
+    // met a centred 1-bar crossfade with A, then grew past it.
+    {
+        ModelDocument old(two_tracks());
+        const Id pl = playlist_of(old.snapshot(), 0);
+        OK(old.submit(MoveRegion{pl, 11, 3 * kBar, kNoId}, why));
+        OK(old.submit(SetFade{pl, 11, FadeEnd::Out, {kBar / 2, FadeShape::Linear}}, why));
+        Crossfade xf;
+        xf.left = 10;
+        xf.right = 11;
+        xf.length = kBar;
+        xf.align = Align::Centre;
+        OK(old.submit(SetCrossfade{pl, xf}, why));
+        std::string bytes, err;
+        OK(serialize(old.snapshot(), WriteInfo{"sonora-ui", 1}, bytes, err));
+        QByteArray text = QByteArray::fromStdString(bytes);
+        OK(text.count("\"length\": 48000") == 1);
+        text.replace("\"length\": 48000", "\"length\": 72000");
+        QDir(dir.path()).mkpath(QStringLiteral("Old"));
+        QFile f(dir.filePath(QStringLiteral("Old/Old.sonora")));
+        CHECK(f.open(QIODevice::WriteOnly));
+        f.write(text);
+        f.close();
+        QStringList said;
+        QObject::connect(&opener, &SessionModel::notice, [&said](const QString& t) { said << t; });
+        OK(opener.openSessionFile(f.fileName(), true, why));
+        OK(region(other.snapshot(), 11)->fade_out.length == kBar / 2);
+        OK(valid(other.snapshot()));
+        OK(!said.isEmpty() && said.back().startsWith(QStringLiteral("Opened ")) &&
+           said.back().contains(QStringLiteral("fade-out shortened from 72000 to 48000")));
+    }
 
     // Not while a take is open.
     TransportSnapshot rec;

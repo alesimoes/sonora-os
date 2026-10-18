@@ -98,7 +98,9 @@ public:
     bool stalled() const { return stalled_.load(std::memory_order_acquire); }
     bool stalled_once() const { return stalled_once_.load(std::memory_order_acquire); }
 
-    void begin(uint64_t now_ns) noexcept SONORA_RT override {
+    // The test's blocks carry no callback_ns, so the stall times itself.
+    void begin(uint64_t) noexcept SONORA_RT override {
+        const uint64_t now_ns = clock_ns();
         if (!armed_.exchange(false, std::memory_order_acq_rel)) {
             spin_until(now_ns + load_ns_.load(std::memory_order_relaxed));
             return;
@@ -109,25 +111,26 @@ public:
         stalled_once_.store(true, std::memory_order_release);
     }
     void run(const sonora::PlanNode&, const float* const in[2], float* const out[2],
-             uint32_t frames) noexcept SONORA_RT override {
+             uint32_t frames, const sonora::ChainParamEvent*,
+             uint32_t) noexcept SONORA_RT override {
         for (uint32_t i = 0; i < frames; ++i) {
             out[0][i] = in[0][i];
             out[1][i] = in[1][i];
         }
     }
     void end() noexcept SONORA_RT override {}
+    uint32_t block_frames() const noexcept SONORA_RT override { return 0; }
 
 private:
+    static uint64_t clock_ns() noexcept SONORA_RT {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+    }
     // A spin, not a sleep: what is under test is a callback descheduled for
     // this long, and the RTSan build must not see a blocking call.
     static void spin_until(uint64_t until_ns) noexcept SONORA_RT {
-        for (;;) {
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
-            if (static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()) >=
-                until_ns) {
-                return;
-            }
+        while (clock_ns() < until_ns) {
         }
     }
 
