@@ -93,14 +93,24 @@ gate off until measured).**
   in `common/platform`, like the state block). It holds:
   - `tick`, a `uint32_t` word the audio thread increments once per callback
     in which it submitted to at least one host;
-  - `callback_ns`, the `CLOCK_MONOTONIC` time the callback started, and
-    `period_ns`. These pace the timer path (§1.3) and the host's own
-    diagnostics. `CLOCK_MONOTONIC` is a vDSO read **only when the
-    clocksource supports it** (`tsc`); with `hpet` or `acpi_pm` it is a real
-    syscall in the callback. So the engine reuses a timestamp the callback
-    already takes if there is one, and otherwise start-up reads
-    `/sys/devices/system/clocksource/clocksource0/current_clocksource` and
-    reports a non-`tsc` source in the health flags (Unverified 9).
+  - `callback_ns`, the `CLOCK_MONOTONIC` time at which the **server's
+    period** started, and `period_ns`. These pace the timer path (§1.3) and
+    the host's own diagnostics. Since #68 (#68 code review, item 2) it is
+    the backend's stamp, `contracts/backend` `AudioBlock::callback_ns`: for
+    JACK, `jack_get_cycle_times`' current_usecs, the start of the server's
+    cycle, not the moment Sonora's callback began, which is later by the
+    server's own scheduling and any client ahead of Sonora in the graph.
+    Hosts pacing on it therefore wake relative to the period, and the
+    offset of §1.3 absorbs that lead. A period the backend could not stamp
+    carries the last stamp forward by the period. The callback reads no
+    clock: `CLOCK_MONOTONIC` is a vDSO read **only when the clocksource
+    supports it** (`tsc`), and with `hpet` or `acpi_pm` it would be a real
+    syscall in the callback. The backend conformance check
+    `callback_ns_is_the_monotonic_clock` holds that the stamp is on the
+    engine's `CLOCK_MONOTONIC` (fake, jackd2, PipeWire). Start-up still
+    reads `/sys/devices/system/clocksource/clocksource0/current_clocksource`
+    and reports a non-`tsc` source in the health flags (Unverified 9), for
+    the rest of the engine.
 - **Read-only is enforced by the descriptor, not left to the host.** The
   clock region crosses `SCM_RIGHTS` as the `O_RDONLY` `/proc/self/fd`
   reopen, sealed with `F_SEAL_FUTURE_WRITE` where the kernel has it,
@@ -862,13 +872,14 @@ through, and a bound chain that is not run plays silence.
      instance stays out until the document changes or the operator chooses
      `plugin.retry`, so this cannot loop. A crash or a timeout of a host
      during start keeps the restart policy (§5.3).
-   - **Owner decision pending: does play wait for plug-ins at session
-     open?** The architect recommends that play from a freshly opened
-     session waits until every starting chain is Ready or down, bounded by
-     §5.3's 10 s, with "Loading plug-ins (n of m)" shown, as Pro Tools does;
-     record never waits (capture is pre-insert). Until the owner rules,
-     play starts at once, chained tracks are silent, and each realigns as
-     its chain arrives.
+   - **Play at session open: decided by the owner, 2026-10-18.** Play
+     from a freshly opened session waits until every starting chain is
+     Ready or has failed (down, or its instances refused or missing), for
+     at most §5.3's 10 s, and the interface shows "Loading plug-ins (n of
+     m)" meanwhile, as Pro Tools does. Past the bound, play starts and a
+     chain still starting stays silent until it arrives. Record never
+     waits: capture is pre-insert, and a take is worth more than
+     monitoring through inserts.
 
 2. **Retiring a slot by epoch, concretely (§5.4, H1).**
    `PlaybackController` reports `oldest_live_epoch()`: the smallest epoch
@@ -1145,8 +1156,9 @@ Each has the measurement that settles it and who takes it.
 8. **Default compensation maximum 16 384** is a placeholder that matches
    what Pro Tools operators expect; researcher to confirm the figure
    Avid documents for its delay compensation limit.
-9. **The target box's clocksource is `tsc`**, so `callback_ns` is a vDSO
-   read and not a syscall. Read
+9. **The target box's clocksource is `tsc`**, so clock reads elsewhere in
+   the engine are vDSO reads and not syscalls (`callback_ns` no longer
+   needs it: since #68 the backend stamps it, §1.1). Read
    `/sys/devices/system/clocksource/clocksource0/current_clocksource` on
    the bare-metal machine; the start-up check of §1.1 covers boxes we have
    never seen. Researcher, with Unverified 1.
