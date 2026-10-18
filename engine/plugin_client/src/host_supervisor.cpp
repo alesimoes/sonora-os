@@ -66,6 +66,13 @@ bool HostProcess::hung(uint64_t now_ms) {
 
 void HostProcess::stop() {
     if (!child_ || !child_->running()) return;
+    // Shutdown on the socket (host_control.h, "Shutdown") and the region's
+    // word, for a host whose main thread is not reading.
+    if (ctl_ && !ctl_closed_) {
+        std::string bytes, error;
+        plugin::control::encode(plugin::control::Shutdown{}, bytes);
+        if (link_.queue(bytes, error)) pump(steady_ms());
+    }
     header_->shutdown.store(1, std::memory_order_release);
     // A timer-paced host sees it within its stale sleep (10 ms); one in a
     // plugin that never returns does not, hence the bound.
@@ -97,16 +104,23 @@ HostProcess::Startup HostProcess::poll_startup(uint64_t now_ms, std::string& err
     const uint32_t n = uint32_t(plugins_.size());
     std::string name;
     for (const std::string& p : plugins_) name += (name.empty() ? "" : ",") + p;
+    // The socket first: a Hello or Loaded that disagrees is a broken
+    // contract, never a refusal.
+    if (!pump(now_ms)) return fail(name + ": " + protocol_fault_, false);
     plugin::ChannelHeader& h = *header_;
     const plugin::HostState state = plugin::checked_state(h.state.load(std::memory_order_acquire));
     if (state == plugin::HostState::Refused || state == plugin::HostState::Faulted) {
         const auto why = static_cast<plugin::Refusal>(h.refusal.load(std::memory_order_relaxed));
         const int32_t at = plugin::checked_instance(h.refusal_instance.load(std::memory_order_relaxed), n);
-        return fail((at >= 0 ? plugins_[uint32_t(at)] : name) + ": " +
-                        (why <= plugin::Refusal::ParamMismatch ? refusal_text(why) : "refused"),
-                    true);
+        refused_instance_ = at;
+        std::string text = (at >= 0 ? plugins_[uint32_t(at)] : name) + ": " +
+                           (why <= plugin::Refusal::ParamMismatch ? refusal_text(why) : "refused");
+        if (!refused_text_.empty()) text += " (" + refused_text_ + ")";
+        return fail(text, true);
     }
-    if (state == plugin::HostState::Ready) {
+    // Ready is the region's word, and Loaded (sent after it) carries the key
+    // tables: both, before the chain is bound (host_control.h, "Ordering").
+    if (state == plugin::HostState::Ready && loaded_seen_) {
         // Contracts/plugin, "Latency": generation (acquire) before the figure.
         h.latency_generation.load(std::memory_order_acquire);
         latency_ = plugin::checked_latency(h.latency_frames.load(std::memory_order_relaxed));
@@ -127,6 +141,226 @@ bool HostProcess::idle() {
     if (!running() || !header_) return true;
     return header_->completed_block.load(std::memory_order_acquire) ==
            header_->submitted_block.load(std::memory_order_acquire);
+}
+
+// ---- HostProcess: HostControl (host_control.h)
+
+namespace {
+
+plugin::control::Io io_of(platform::IoStatus s) {
+    switch (s) {
+        case platform::IoStatus::Ok: return plugin::control::Io::Ok;
+        case platform::IoStatus::WouldBlock: return plugin::control::Io::WouldBlock;
+        case platform::IoStatus::Closed: return plugin::control::Io::Closed;
+        case platform::IoStatus::Error: return plugin::control::Io::Error;
+    }
+    return plugin::control::Io::Error;
+}
+
+}  // namespace
+
+bool HostProcess::fault(std::string why) {
+    if (protocol_fault_.empty()) protocol_fault_ = "protocol fault: " + why;
+    ctl_closed_ = true;
+    kill();
+    return false;
+}
+
+bool HostProcess::touch_allowed(uint32_t instance, uint32_t param, uint64_t now_ms) {
+    std::deque<uint64_t>& times = touches_[{instance, param}];
+    while (!times.empty() && now_ms - times.front() >= 1000) times.pop_front();
+    if (times.size() >= plugin::control::kMaxTouchesPerSecondPerParam) return false;
+    times.push_back(now_ms);
+    return true;
+}
+
+bool HostProcess::gesture_end_allowed(uint64_t now_ms) {
+    while (!gesture_ends_.empty() && now_ms - gesture_ends_.front() >= 1000) gesture_ends_.pop_front();
+    if (gesture_ends_.size() >= plugin::control::kMaxGestureEndsPerSecond) return false;
+    gesture_ends_.push_back(now_ms);
+    return true;
+}
+
+bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
+    namespace pc = plugin::control;
+    pc::Type t{};
+    std::string e;
+    // Untrusted (host_control.h): only what a host may send, each decoded
+    // whole and checked against the chain the engine built.
+    if (!pc::peek_type(m, t) || !pc::host_to_engine(t)) return fault("a message type no host sends");
+    if (!hello_ && t != pc::Type::Hello) return fault("a message before Hello");
+    const auto in_chain = [this](uint32_t instance, uint32_t param) {
+        return pc::param_in_chain(map_, instance, param) ||
+               (instance < param_counts_.size() && param < param_counts_[instance]);
+    };
+    switch (t) {
+        case pc::Type::Hello: {
+            pc::Hello h;
+            if (!pc::decode(m, h, e)) return fault("Hello: " + e);
+            if (hello_) return fault("a second Hello");
+            if (h.wire_version != pc::kHostWireVersion || h.layout_version != plugin::kLayoutVersion ||
+                h.clock_version != plugin::kClockLayoutVersion) {
+                return fault("Hello names wire " + std::to_string(h.wire_version) + " layout " +
+                             std::to_string(h.layout_version) + " clock " + std::to_string(h.clock_version) +
+                             ", not this engine's: the host binary changed since start-up");
+            }
+            if (!child_ || int64_t(h.pid) != child_->pid()) {
+                return fault("Hello names pid " + std::to_string(h.pid) + ", not the host the engine started");
+            }
+            hello_ = true;
+            return true;
+        }
+        case pc::Type::Loaded: {
+            pc::Loaded l;
+            if (!pc::decode(m, l, e)) return fault("Loaded: " + e);
+            if (loaded_seen_) return fault("a second Loaded");
+            if (l.instances.size() != param_counts_.size()) {
+                return fault("Loaded lists " + std::to_string(l.instances.size()) + " instances for a chain of " +
+                             std::to_string(param_counts_.size()));
+            }
+            for (std::size_t i = 0; i < l.instances.size(); ++i) {
+                if (l.instances[i].params.size() != param_counts_[i]) {
+                    return fault("Loaded instance " + std::to_string(i) + " has " +
+                                 std::to_string(l.instances[i].params.size()) + " parameters; the scan saw " +
+                                 std::to_string(param_counts_[i]));
+                }
+                if (plugin::checked_latency(l.instances[i].latency_frames) == plugin::kLatencyInvalid)
+                    return fault("Loaded instance " + std::to_string(i) + " reports an implausible latency");
+            }
+            if (plugin::checked_latency(l.latency_frames) == plugin::kLatencyInvalid)
+                return fault("Loaded reports an implausible latency");
+            loaded_ = std::move(l);
+            loaded_seen_ = true;
+            return true;
+        }
+        case pc::Type::Refused: {
+            pc::Refused r;
+            if (!pc::decode(m, r, e)) return fault("Refused: " + e);
+            refused_text_ = r.text;
+            return true;
+        }
+        case pc::Type::GestureBegin: {
+            pc::GestureBegin g;
+            if (!pc::decode(m, g, e)) return fault("GestureBegin: " + e);
+            if (!loaded_seen_ || !in_chain(g.instance, g.param)) return fault("GestureBegin for no parameter of the chain");
+            break;
+        }
+        case pc::Type::ParamTouched: {
+            pc::ParamTouched p;
+            if (!pc::decode(m, p, e)) return fault("ParamTouched: " + e);
+            if (!loaded_seen_ || !in_chain(p.instance, p.param)) return fault("ParamTouched for no parameter of the chain");
+            if (!touch_allowed(p.instance, p.param, now_ms)) {
+                return fault("more than " + std::to_string(pc::kMaxTouchesPerSecondPerParam) +
+                             " ParamTouched per second for instance " + std::to_string(p.instance) + " parameter " +
+                             std::to_string(p.param) + " (M2)");
+            }
+            break;
+        }
+        case pc::Type::GestureEnd: {
+            pc::GestureEnd g;
+            if (!pc::decode(m, g, e)) return fault("GestureEnd: " + e);
+            if (!loaded_seen_ || !in_chain(g.instance, g.param)) return fault("GestureEnd for no parameter of the chain");
+            if (!gesture_end_allowed(now_ms)) {
+                return fault("more than " + std::to_string(pc::kMaxGestureEndsPerSecond) +
+                             " GestureEnd in one second (M2)");
+            }
+            break;
+        }
+        case pc::Type::EditorClosed: {
+            pc::EditorClosed c;
+            if (!pc::decode(m, c, e)) return fault("EditorClosed: " + e);
+            if (c.instance >= param_counts_.size()) return fault("EditorClosed for no instance of the chain");
+            for (const pc::TouchedValue& v : c.moved)
+                if (!in_chain(c.instance, v.param)) return fault("EditorClosed moves no parameter of the chain");
+            break;
+        }
+        case pc::Type::State: {
+            pc::State s;
+            if (!pc::decode(m, s, e)) return fault("State: " + e);
+            if (s.instance >= param_counts_.size()) return fault("State for no instance of the chain");
+            break;
+        }
+        case pc::Type::ValueText: {
+            pc::ValueText v;
+            if (!pc::decode(m, v, e)) return fault("ValueText: " + e);
+            break;
+        }
+        case pc::Type::EditorOpened: {
+            pc::EditorOpened o;
+            if (!pc::decode(m, o, e)) return fault("EditorOpened: " + e);
+            if (o.instance >= param_counts_.size()) return fault("EditorOpened for no instance of the chain");
+            break;
+        }
+        case pc::Type::EditorFailed: {
+            pc::EditorFailed f;
+            if (!pc::decode(m, f, e)) return fault("EditorFailed: " + e);
+            break;
+        }
+        case pc::Type::LatencyChanged: {
+            pc::LatencyChanged l;
+            if (!pc::decode(m, l, e)) return fault("LatencyChanged: " + e);
+            break;
+        }
+        case pc::Type::Reconfigured: {
+            pc::Reconfigured r;
+            if (!pc::decode(m, r, e)) return fault("Reconfigured: " + e);
+            break;
+        }
+        case pc::Type::Fault: {
+            pc::Fault f;
+            if (!pc::decode(m, f, e)) return fault("Fault: " + e);
+            break;
+        }
+        default: return fault("a message type no host sends");
+    }
+    messages_.emplace_back(m);
+    return true;
+}
+
+bool HostProcess::pump(uint64_t now_ms) {
+    namespace pc = plugin::control;
+    if (!protocol_fault_.empty()) return false;
+    if (!ctl_ || ctl_closed_) return true;
+    std::string error;
+    const pc::Io f = link_.flush([&](std::string_view d) { return io_of(ctl_->send(d, 0, error)); });
+    if (f == pc::Io::Closed) {
+        // Gone: the process exit says why (running(), exit_text()).
+        ctl_closed_ = true;
+        return true;
+    }
+    if (f == pc::Io::Error) return fault("cannot send: " + error);
+    const uint64_t now_ns = now_ms * 1'000'000ull;
+    pc::Io r = pc::Io::Ok;
+    // A bounded number of datagrams per drain (fairness between hosts);
+    // a few drains per pump so a startup's Hello and Loaded land together.
+    for (int pass = 0; pass < 4 && r == pc::Io::Ok; ++pass) {
+        r = link_.drain([&](std::string& d) { return io_of(ctl_->receive(d, pc::kMaxFrameBytes, nullptr, 0, error)); },
+                        [&](std::string_view m) { return on_message(m, now_ms); }, error, now_ns);
+    }
+    if (!protocol_fault_.empty()) return false;
+    if (r == pc::Io::Error) return fault(error.empty() ? "a frame out of place" : error);
+    if (r == pc::Io::Closed) ctl_closed_ = true;
+    // M1: a message half received that stopped growing pins engine memory.
+    if (link_.stalled(now_ns, uint64_t(pc::kStalledMessageMs) * 1'000'000ull)) {
+        return fault("a message half received for " + std::to_string(pc::kStalledMessageMs) + " ms (M1)");
+    }
+    return true;
+}
+
+std::vector<std::string> HostProcess::take_messages() {
+    std::vector<std::string> out(std::make_move_iterator(messages_.begin()), std::make_move_iterator(messages_.end()));
+    messages_.clear();
+    return out;
+}
+
+bool HostProcess::send(const std::string& encoded, std::string& error) {
+    if (!ctl_ || ctl_closed_) {
+        error = "the host's socket is closed";
+        return false;
+    }
+    // Past kMaxQueuedBytes the host is not reading its socket (M1): the
+    // caller kills it.
+    return link_.queue(encoded, error);
 }
 
 std::string HostProcess::exit_text() {
@@ -201,20 +435,24 @@ HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& cli
         std::getline(f, line);
     }
     std::remove(out.c_str());
-    uint32_t layout = 0, clock_version = 0;
+    uint32_t layout = 0, clock_version = 0, wire = 0;
     if (!exited) {
         why_ = "plugin hosting is disabled: " + config.host_path + " --version did not exit within 5 s";
         return;
     }
+    // Layout, clock and wire, each once (host_control.h, ADR-0012 §5.5).
     if (!child->exited_normally() || child->exit_code() != 0 ||
-        !plugin::parse_version_line(line.c_str(), layout, clock_version)) {
+        !plugin::control::parse_host_version_line(line.c_str(), layout, clock_version, wire)) {
         why_ = "plugin hosting is disabled: " + config.host_path + " --version did not answer (" + line + ")";
         return;
     }
-    if (layout != plugin::kLayoutVersion || clock_version != plugin::kClockLayoutVersion) {
+    if (layout != plugin::kLayoutVersion || clock_version != plugin::kClockLayoutVersion ||
+        wire != plugin::control::kHostWireVersion) {
         why_ = "plugin hosting is disabled: " + config.host_path + " speaks layout " + std::to_string(layout) +
-               " clock " + std::to_string(clock_version) + "; this engine speaks layout " +
-               std::to_string(plugin::kLayoutVersion) + " clock " + std::to_string(plugin::kClockLayoutVersion);
+               " clock " + std::to_string(clock_version) + " wire " + std::to_string(wire) +
+               "; this engine speaks layout " + std::to_string(plugin::kLayoutVersion) + " clock " +
+               std::to_string(plugin::kClockLayoutVersion) + " wire " +
+               std::to_string(plugin::control::kHostWireVersion);
         return;
     }
     client_.attach_clock(clock);
@@ -273,21 +511,57 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     for (uint32_t i = 0; i < n && i < spec.bypass.size(); ++i)
         host->header_->bypass[i].store(spec.bypass[i], std::memory_order_relaxed);
 
-    std::vector<std::string> argv = {config_.host_path, "--shm-fd", "3", "--clock-fd", "4", "--chain", name,
+    // HostControl (host_control.h, "Handshake"): EngineHello first, Load
+    // right behind it, queued before the fork; the chain crosses the socket,
+    // not the command line.
+    namespace pc = plugin::control;
+    pc::Load load;
+    load.key_channels = spec.key_channels;
+    load.flags = spec.load_flags;
+    for (uint32_t i = 0; i < n; ++i) {
+        pc::LoadInstance li;
+        const bool vst3 = spec.plugins[i].rfind("vst3:", 0) == 0;
+        li.format = vst3 ? pc::Format::Vst3 : pc::Format::Lv2;
+        li.id = vst3 ? spec.plugins[i].substr(5) : spec.plugins[i];
+        if (!pc::valid_plugin_id(li.format, li.id)) {
+            error = spec.plugins[i] + ": not a plugin id";
+            return nullptr;
+        }
+        li.params = spec.param_counts[i];
+        if (i < spec.states.size()) li.state = spec.states[i];
+        load.instances.push_back(std::move(li));
+    }
+    std::string hello_bytes, load_bytes, queue_error;
+    pc::encode(pc::EngineHello{}, hello_bytes);
+    pc::encode(load, load_bytes);
+    if (!host->link_.queue(hello_bytes, queue_error)) {
+        error = name + ": " + queue_error;
+        return nullptr;
+    }
+    if (load_bytes.size() > pc::kMaxMessageBytes || !host->link_.queue(load_bytes, queue_error)) {
+        // Low item of the PR #51 review: said with the insert's name.
+        error = name + ": the chain's plugin states exceed the 64 MiB Load cap";
+        return nullptr;
+    }
+    int child_end = -1;
+    if (!platform::ControlChannel::pair(host->ctl_, child_end, error)) return nullptr;
+    host->param_counts_ = spec.param_counts;
+
+    std::vector<std::string> argv = {config_.host_path, "--control-fd", "3", "--shm-fd", "4", "--clock-fd", "5",
                                      "--engine-pid", std::to_string(platform::current_process_id())};
     for (const std::string& b : config_.bundles) {
         argv.push_back("--bundle");
         argv.push_back(b);
     }
-    if (spec.key_channels) {
-        argv.push_back("--sidechain");
-        argv.push_back(std::to_string(spec.key_channels));
-    }
-    argv.insert(argv.end(), spec.extra_args.begin(), spec.extra_args.end());
     platform::ChildProcess::Options o;
-    o.regions = {{3, host->region_.get(), true}, {4, clock_region_.get(), false}};
+    o.handles = {{3, child_end}};
+    o.regions = {{4, host->region_.get(), true}, {5, clock_region_.get(), false}};
     host->child_ = platform::ChildProcess::spawn(argv, o, error);
+    // The child's copy is in place (or there is no child): ours goes now, so
+    // the host's exit closes the pair.
+    platform::ControlChannel::close_handle(child_end);
     if (!host->child_) return nullptr;
+    host->pump(steady_ms());
     // Ready within the bound (§5.3), noticed by poll_startup().
     host->plugins_ = spec.plugins;
     host->ready_timeout_ms_ = config_.ready_timeout_ms;
@@ -363,16 +637,24 @@ bool SupervisedChain::start(std::string& error) {
 
 bool SupervisedChain::idle() { return !current_ || current_->idle(); }
 
+std::vector<std::string> SupervisedChain::take_host_messages() {
+    return current_ ? current_->take_messages() : std::vector<std::string>{};
+}
+
 SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {
     std::string error;
     switch (starting_->poll_startup(now_ms, error)) {
         case HostProcess::Startup::Starting: return Event::None;
         case HostProcess::Startup::Failed: {
             const bool restart = current_ != nullptr;
+            // A refusal is the plugin's answer, not an accident: it is
+            // reported, never retried. The control server leaves the named
+            // instance out and starts the rest (amendment of 2026-10-14,
+            // change C).
+            refused_ = starting_->refused();
+            refused_instance_ = starting_->refused_instance();
             starting_.reset();
             down_ = true;
-            // A refusal is the plugin's answer, not an accident: it is
-            // reported, never retried.
             why_ = restart ? join(spec_.plugins, ',') + ": " + why_ + "; the restart failed: " + error : error;
             return Event::Down;
         }
@@ -425,8 +707,16 @@ uint32_t SupervisedChain::latency_frames() const { return current_ ? current_->l
 
 SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
     if (down_) return Event::None;
+    // The bound host's socket, every poll: its messages are taken by the
+    // control server, and a broken contract kills it here (crash path).
+    const bool contract_kept = !current_ || current_->pump(now_ms);
     if (starting_) return poll_starting(now_ms);
     if (!current_ || retiring_) return Event::None;
+    if (!contract_kept) {
+        culprit_ = -1;
+        for (uint64_t& n : streak_samples_) n = 0;
+        return replace(now_ms, current_->protocol_fault());
+    }
     const SlotStatus st = sup_.client().slot_status(slot_);
     // The culprit is sampled here, on the control thread, while a streak
     // runs: current_instance is a control-thread word (auditor L1 on #49).

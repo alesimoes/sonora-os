@@ -29,10 +29,16 @@
 // block back (a harness may wait; the client never does). The miss, crash
 // and restarts cases run paced instead, at the period, without waiting.
 #include "sonora/fake_backend.h"
+#include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
 #include "sonora/platform/wake.h"
+#include "sonora/plugin/host_control.h"
 #include "sonora/plugin_client/host_supervisor.h"
 #include "sonora/plugin_client/plugin_client.h"
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -447,6 +453,265 @@ int scenario_async_refused(const Args& a) {
     return 0;
 }
 
+// ---- HostControl (host_control.h) between the supervisor and its hosts
+//
+// Real hosts for what a plugin does (its key table, its refusal); this
+// binary itself, run as a scripted fake host (SONORA_FAKE_HOST=<mode> in its
+// environment), for what a host must not do: a Hello with another pid, a
+// message only the engine sends, a GestureEnd flood (M2), a message half
+// sent and never finished (M1).
+
+namespace pc = sonora::plugin::control;
+
+uint64_t steady_ns() { return now_ns(); }
+
+// The fake host: --version as a real one answers it; otherwise descriptor 3
+// is its socket and 4 its channel region. Ready with the IPC block as its
+// latency, a Loaded with keys p0, p1, ..., then `mode`. It beats its
+// heartbeat until it is told to stop.
+int fake_host(int argc, char** argv, const std::string& mode) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--version") {
+            char line[128];
+            pc::format_host_version_line(line, sizeof line);
+            std::printf("%s\n", line);
+            return 0;
+        }
+    }
+    std::string err;
+    auto ctl = platform::ControlChannel::adopt(3, err);
+    struct stat st {};
+    if (!ctl || ::fstat(4, &st) != 0) return 2;
+    void* base = ::mmap(nullptr, std::size_t(st.st_size), PROT_READ | PROT_WRITE, MAP_SHARED, 4, 0);
+    if (base == MAP_FAILED) return 2;
+    plugin::ChannelHeader& h = *static_cast<plugin::ChannelHeader*>(base);
+    pc::Reassembler in(pc::kMaxMessageBytes);
+    const auto receive = [&](std::string& message) {
+        std::string datagram;
+        for (;;) {
+            if (ctl->receive(datagram, pc::kMaxFrameBytes, nullptr, 5000, err) != platform::IoStatus::Ok) return false;
+            switch (in.add(datagram, message, err)) {
+                case pc::Reassembler::Result::Complete: return true;
+                case pc::Reassembler::Result::Error: return false;
+                case pc::Reassembler::Result::Partial: break;
+            }
+        }
+    };
+    const auto send = [&](const std::string& message) {
+        std::vector<std::string> frames;
+        if (!pc::split_frames(message, frames, err)) return;
+        for (const std::string& f : frames) ctl->send(f, 1000, err);
+    };
+    std::string m;
+    pc::EngineHello ehello;
+    pc::Load load;
+    if (!receive(m) || !pc::decode(m, ehello, err) || !receive(m) || !pc::decode(m, load, err)) return 2;
+    pc::Hello hello;
+    hello.pid = mode == "bad-pid" ? 1 : uint64_t(::getpid());
+    std::string out;
+    pc::encode(hello, out);
+    send(out);
+    h.latency_frames.store(h.block_frames, std::memory_order_relaxed);
+    h.latency_generation.store(1, std::memory_order_release);
+    h.state.store(uint32_t(plugin::HostState::Ready), std::memory_order_release);
+    pc::Loaded loaded;
+    loaded.latency_frames = h.block_frames;
+    loaded.latency_generation = 1;
+    for (const pc::LoadInstance& li : load.instances) {
+        pc::LoadedInstance i;
+        for (uint32_t p = 0; p < li.params; ++p) i.params.push_back({"p" + std::to_string(p), 0.f, 1.f, 0.f});
+        loaded.instances.push_back(std::move(i));
+    }
+    out.clear();
+    pc::encode(loaded, out);
+    send(out);
+    const uint64_t misbehave_at = steady_ns() + 300'000'000;
+    bool misbehaved = false;
+    while (h.shutdown.load(std::memory_order_acquire) == 0) {
+        h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+        if (!misbehaved && steady_ns() >= misbehave_at) {
+            misbehaved = true;
+            if (mode == "bogus") {
+                out.clear();
+                pc::encode(pc::EngineHello{}, out);  // a type only the engine sends
+                send(out);
+            } else if (mode == "flood") {
+                out.clear();
+                pc::encode(pc::GestureBegin{0, 0}, out);
+                send(out);
+                for (uint32_t k = 0; k < pc::kMaxGestureEndsPerSecond + 10; ++k) {
+                    out.clear();
+                    pc::encode(pc::GestureEnd{0, 0, 0.5f}, out);
+                    send(out);
+                }
+            } else if (mode == "half") {
+                // The first frame of a two-frame message, and never the second.
+                out.clear();
+                pc::State s;
+                s.bytes.assign(pc::kMaxFrameBytes * 2, 'x');
+                pc::encode(s, out);
+                std::vector<std::string> frames;
+                pc::split_frames(out, frames, err);
+                if (!frames.empty()) ctl->send(frames.front(), 1000, err);
+            }
+        }
+        std::string datagram;
+        if (ctl->receive(datagram, pc::kMaxFrameBytes, nullptr, 20, err) == platform::IoStatus::Closed) break;
+    }
+    return 0;
+}
+
+struct ControlRig {
+    PluginClient client;
+    SupervisorConfig scfg;
+    std::unique_ptr<HostSupervisor> sup;
+    ControlRig(const std::string& host, const std::vector<std::string>& bundles)
+        : client(Rig::client_config()) {
+        scfg.host_path = host;
+        scfg.bundles = bundles;
+        scfg.sample_rate = kRate;
+        scfg.block_frames = kBlock;
+        sup = std::make_unique<HostSupervisor>(scfg, client);
+    }
+    // poll() every 5 ms until an event other than None, or `max_ms`.
+    static SupervisedChain::Event next_event(SupervisedChain& c, uint64_t max_ms) {
+        const uint64_t end = now_ms() + max_ms;
+        while (now_ms() < end) {
+            const SupervisedChain::Event e = c.poll(now_ms());
+            if (e != SupervisedChain::Event::None) return e;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return SupervisedChain::Event::None;
+    }
+};
+
+std::string self_path() {
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    return n > 0 ? std::string(buf, std::size_t(n)) : std::string();
+}
+
+ChainSpec fake_spec() {
+    ChainSpec s;
+    s.plugins = {"urn:sonora:fake#one"};
+    s.param_counts = {2};
+    s.channels = 1;
+    return s;
+}
+
+// A real host's Loaded: one entry per instance, each with the stable keys
+// the scan saw, in dense order (host_control.h, "Keys").
+int scenario_control_loaded(const Args& a) {
+    std::printf("control_loaded: %s + %s, the key table from Loaded\n", kLookahead, kCrash);
+    ControlRig rig(a.host, a.bundles);
+    check(rig.sup->ok(), "the host speaks layout, clock and wire versions");
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    const Probe look = probe(a, kLookahead), crash = probe(a, kCrash);
+    ChainSpec s;
+    s.plugins = {kLookahead, kCrash};
+    s.param_counts = {uint32_t(look.symbols.size()), uint32_t(crash.symbols.size())};
+    s.channels = 1;
+    SupervisedChain chain(*rig.sup, s, 0, 0);
+    std::string error;
+    check(chain.start(error), "the chain comes up Ready");
+    if (!chain.host()) return 1;
+    const pc::Loaded& l = chain.host()->loaded();
+    check(l.instances.size() == 2, "Loaded has one entry per instance");
+    bool keys = l.instances.size() == 2 && l.instances[0].params.size() == look.symbols.size() &&
+                l.instances[1].params.size() == crash.symbols.size();
+    for (std::size_t i = 0; keys && i < look.symbols.size(); ++i) keys = l.instances[0].params[i].key == look.symbols[i];
+    for (std::size_t i = 0; keys && i < crash.symbols.size(); ++i) keys = l.instances[1].params[i].key == crash.symbols[i];
+    check(keys, "each instance's keys are the scan's symbols, in dense order");
+    check(l.instances.size() == 2 && l.instances[0].latency_frames == 100, "the look-ahead's own latency, 100");
+    check(chain.latency_frames() == 100 + kBlock, "the region's figure: 100 + the IPC block");
+    chain.poll(now_ms());
+    check(chain.host()->protocol_fault().empty(), "no protocol fault");
+    return 0;
+}
+
+// A refusal names its instance, so the control server can leave it out and
+// start the rest (ADR-0012 amendment of 2026-10-14, change C).
+int scenario_control_refused_instance(const Args& a) {
+    std::printf("control_refused_instance: %s then urn:sonora:test#liar\n", kCrash);
+    ControlRig rig(a.host, a.bundles);
+    if (!rig.sup->ok()) return 1;
+    ChainSpec s;
+    s.plugins = {kCrash, "urn:sonora:test#liar"};
+    s.param_counts = {uint32_t(probe(a, kCrash).symbols.size()), uint32_t(probe(a, "urn:sonora:test#liar").symbols.size())};
+    s.channels = 1;
+    SupervisedChain chain(*rig.sup, s, 0, 0);
+    std::string error;
+    check(!chain.start(error), "the chain does not come up");
+    std::printf("  why: %s\n", chain.why().c_str());
+    check(chain.down() && chain.refused(), "down, as a refusal");
+    check(chain.refused_instance() == 1, "the refusal names instance 1, the liar");
+    check(chain.restarts() == 0, "not retried");
+    return 0;
+}
+
+// A Hello whose pid is not the process the engine started: refused before
+// Ready (host_control.h, "What the engine checks").
+int scenario_control_bad_hello(const Args&) {
+    std::printf("control_bad_hello: a fake host says another pid\n");
+    ::setenv("SONORA_FAKE_HOST", "bad-pid", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+    std::string error;
+    check(chain.begin(error), "spawned");
+    const SupervisedChain::Event e = ControlRig::next_event(chain, 5000);
+    std::printf("  why: %s\n", chain.why().c_str());
+    check(e == SupervisedChain::Event::Down, "down at start-up");
+    check(chain.why().find("pid") != std::string::npos, "the pid is named");
+    check(!chain.refused(), "a broken contract, not the plugin's refusal");
+    return 0;
+}
+
+// A running host that breaks the contract is killed and restarted (the crash
+// path, §5.3): a type only the engine sends; a GestureEnd flood past
+// kMaxGestureEndsPerSecond (M2); a message half sent for kStalledMessageMs
+// (M1).
+int fake_misbehaves(const char* mode, const char* named, uint64_t max_ms) {
+    ::setenv("SONORA_FAKE_HOST", mode, 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) {
+        std::printf("  %s\n", rig.sup->why().c_str());
+        return 1;
+    }
+    SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+    std::string error;
+    check(chain.begin(error), "spawned");
+    check(ControlRig::next_event(chain, 5000) == SupervisedChain::Event::Swapped, "Ready and bound");
+    chain.retired();
+    const uint64_t t0 = now_ms();
+    const SupervisedChain::Event e = ControlRig::next_event(chain, max_ms);
+    std::printf("  why: %s (after %llu ms)\n", chain.why().c_str(), (unsigned long long)(now_ms() - t0));
+    check(e == SupervisedChain::Event::Restarting, "killed, and a replacement starting");
+    check(chain.why().find(named) != std::string::npos, "the fault is named");
+    return 0;
+}
+
+int scenario_control_bogus(const Args&) {
+    std::printf("control_bogus: a fake host sends EngineHello once running\n");
+    return fake_misbehaves("bogus", "protocol", 3000);
+}
+
+int scenario_control_flood(const Args&) {
+    std::printf("control_flood: a fake host sends %u GestureEnd in one burst\n", pc::kMaxGestureEndsPerSecond + 10);
+    return fake_misbehaves("flood", "GestureEnd", 3000);
+}
+
+int scenario_control_half(const Args&) {
+    std::printf("control_half: a fake host sends the first frame of two and stops\n");
+    return fake_misbehaves("half", "half received", uint64_t(pc::kStalledMessageMs) + 3000);
+}
+
 int scenario_passthrough(const Args& a) {
     std::printf("passthrough: %s, timer-paced host\n", kCrash);
     Rig rig(a, mono_spec(a, kCrash), 64);
@@ -737,6 +1002,15 @@ int scenario_native(const Args& a) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Run by a supervisor as a scripted host (the control_* scenarios).
+    if (const char* mode = std::getenv("SONORA_FAKE_HOST")) {
+        bool as_host = false;
+        for (int i = 1; i < argc; ++i) {
+            const std::string k = argv[i];
+            as_host = as_host || k == "--control-fd" || k == "--version";
+        }
+        if (as_host) return fake_host(argc, argv, mode);
+    }
     Args a;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
@@ -751,7 +1025,13 @@ int main(int argc, char** argv) {
         }
     }
     int r = 2;
-    if (a.scenario == "async_start") r = scenario_async_start(a);
+    if (a.scenario == "control_loaded") r = scenario_control_loaded(a);
+    else if (a.scenario == "control_refused_instance") r = scenario_control_refused_instance(a);
+    else if (a.scenario == "control_bad_hello") r = scenario_control_bad_hello(a);
+    else if (a.scenario == "control_bogus") r = scenario_control_bogus(a);
+    else if (a.scenario == "control_flood") r = scenario_control_flood(a);
+    else if (a.scenario == "control_half") r = scenario_control_half(a);
+    else if (a.scenario == "async_start") r = scenario_async_start(a);
     else if (a.scenario == "ready_timeout") r = scenario_ready_timeout(a);
     else if (a.scenario == "async_refused") r = scenario_async_refused(a);
     else if (a.scenario == "passthrough") r = scenario_passthrough(a);

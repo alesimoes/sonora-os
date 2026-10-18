@@ -444,12 +444,26 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        Carried from the PR #51 rt-engineer review, for the host supervisor and
        the control-server wiring (ADR-0012 checklists 4 and 5); the contract
        text is in `host_control.h`:
-       - [ ] M2: the engine enforces the touch rates itself: at most
+       - [x] HostControl in the supervisor (`feature/plugin-host-control`):
+             hosts start with `--control-fd 3 --shm-fd 4 --clock-fd 5`
+             (`ChildProcess::Options::handles`), EngineHello and Load
+             queued before the spawn, Hello checked (versions, pid),
+             Loaded checked (one entry per instance, each table the scan's
+             size, latencies plausible) and required with the region's
+             Ready before the chain binds; every later message decoded
+             and checked (instance, dense parameter) and handed to the
+             control server (`take_host_messages`); Shutdown on the socket;
+             `--version` must name the wire version too. A refusal names
+             its instance (`refused_instance`, for change C). ctest
+             `plugin_client_host_control_{loaded,refused_instance,bad_hello,bogus,flood,half}`
+             (a scripted fake host for the contract breaches),
+             `platform_ipc` `a_handle_is_passed_to_a_child_beside_the_regions`.
+       - [x] M2: the engine enforces the touch rates itself: at most
              `kMaxTouchesPerSecondPerParam` ParamTouched per (instance, param)
              and `kMaxGestureEndsPerSecond` GestureEnd per host in any
              one-second window. Past either, the host is a protocol fault
-             (kill, PluginFault naming the insert). Test it with a host that
-             floods GestureBegin/GestureEnd.
+             (kill, crash path); ctest `plugin_client_host_control_flood`.
+             The PluginFault naming the insert is the control-server PR.
        - [ ] M4: before Reconfigure, an RtCommand sets the node's slot
              "excused" flag. Misses while it is set are played (fade,
              silence) and counted, but never count toward the 8-miss
@@ -457,12 +471,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `latency_generation` is swapped in, or with the kill on
              timeout. The window after resume plays misaligned, not silent,
              until that swap (ADR-0012 §5.4). Test both edges.
-       - [ ] M1: kill a host when `Link::stalled(now, kStalledMessageMs)`
-             (checked in the 50 ms poll) or when `Link::queue` refuses
-             (`kMaxQueuedBytes`).
-       - [ ] Low: a Load that passes `kMaxMessageBytes` (more than about 3
-             large states in one chain) becomes a PluginFault naming the
-             insert: "the chain's plugin states exceed the 64 MiB Load cap".
+       - [x] M1: kill a host when `Link::stalled(now, kStalledMessageMs)`
+             (checked in every poll; ctest `plugin_client_host_control_half`).
+             `HostProcess::send` refuses past `kMaxQueuedBytes`; the caller
+             (control server) kills on that refusal.
+       - [x] Low: a Load that passes `kMaxMessageBytes` is refused at spawn
+             with "<chain>: the chain's plugin states exceed the 64 MiB Load
+             cap"; the control server turns it into the PluginFault. Not
+             tested with a 64 MiB state (unverified).
        - [ ] Use the contract's helpers: `EngineChannel` per slot,
              `collect_output` (count is a miss and a fault), `hold_param`,
              `submit_block`; `parse_version_line` at start-up; `mlock` each

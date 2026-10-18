@@ -88,11 +88,30 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
         }
         staged.push_back(high);
     }
+    // Raw handles the same way, after the regions.
+    for (const Options::PassedHandle& h : options.handles) {
+        if (h.child_fd < 3 || h.handle < 0) {
+            error = "cannot pass handle " + std::to_string(h.handle) + " to " + argv[0] + " at descriptor " +
+                    std::to_string(h.child_fd) + (h.handle < 0 ? ": no handle" : ": 0-2 are the streams");
+            close_staged();
+            return nullptr;
+        }
+        const int high = ::fcntl(h.handle, F_DUPFD_CLOEXEC, 64);
+        if (high < 0) {
+            error = "cannot duplicate a handle: " + std::string(std::strerror(errno));
+            close_staged();
+            return nullptr;
+        }
+        staged.push_back(high);
+    }
 
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
-    for (std::size_t i = 0; i < staged.size(); ++i)
-        posix_spawn_file_actions_adddup2(&actions, staged[i], options.regions[i].child_fd);
+    for (std::size_t i = 0; i < staged.size(); ++i) {
+        const int target = i < options.regions.size() ? options.regions[i].child_fd
+                                                       : options.handles[i - options.regions.size()].child_fd;
+        posix_spawn_file_actions_adddup2(&actions, staged[i], target);
+    }
     if (!options.stdout_path.empty()) {
         posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, options.stdout_path.c_str(),
                                          O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -135,6 +154,8 @@ ChildProcess::~ChildProcess() {
 }
 
 bool ChildProcess::running() { return !impl_->reap(false); }
+
+int64_t ChildProcess::pid() const { return static_cast<int64_t>(impl_->pid); }
 
 bool ChildProcess::wait(int timeout_ms) {
     if (timeout_ms < 0) return impl_->reap(true);

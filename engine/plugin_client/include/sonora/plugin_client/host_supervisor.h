@@ -6,36 +6,43 @@
 // break. Never on the audio thread: everything here allocates, starts
 // processes or waits.
 //
-// A STUB of the supervisor ADR-0012 checklist 4 describes, on what the host
-// has today:
-//   - the host is told its chain on the command line (--chain, --bundle,
-//     --set) and finds its regions at descriptors 3 and 4 (--shm-fd 3
-//     --clock-fd 4), because contracts/plugin/host_control.h is not written.
-//     TODO(host_control.h, BACKLOG Track 4 item 4): the fd-3 SOCK_SEQPACKET
-//     channel (Hello with the wire version, Load, Loaded/Refused, GetState
-//     for make-before-break state, Shutdown), the regions crossing it with
-//     SCM_RIGHTS, and `wire N` in the --version line.
+// The host speaks contracts/plugin/host_control.h (wire 1) on descriptor 3,
+// with its regions at 4 and 5 (--control-fd 3 --shm-fd 4 --clock-fd 5; the
+// 2026-10-13 amendment of ADR-0012 §4): the engine writes EngineHello and
+// Load first, checks the host's Hello (versions, pid) and its Loaded (one
+// entry per instance, each parameter table the size the scan said, the
+// latency plausible), and from then on takes only what a host may send,
+// each message checked (instance, dense parameter, rates). A host that
+// breaks the contract is killed and follows the crash path (§5.3). The
+// region stays the truth for Ready and latency; a message is a wake-up and
+// the text. Every socket operation is non-blocking (HostProcess::pump).
+//
+// Still open:
 //   - the host is watched by polling (ChildProcess, waitpid WNOHANG) from
 //     poll(); TODO(pidfd): a pidfd in the control server's poll set.
-//   - the state of the instances that carry over a restart or an edit is
-//     not fetched (no GetState without host_control.h): a restarted host
-//     starts from its seeded parameters.
+//   - GetState for the instances that carry over an edit is the control
+//     server's (request_state); a restart starts from the store and the
+//     last state the server holds in spec.states.
 // Hosts must be started from the control server's long-lived thread: the
 // host's death signal follows the thread that started it (plugins/host
 // ipc.h, die_with_parent).
 #pragma once
 
+#include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
 #include "sonora/plugin_client/plugin_client.h"
 
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sonora::platform {
 class ChildProcess;
+class ControlChannel;
 class SharedRegion;
 }  // namespace sonora::platform
 
@@ -67,9 +74,11 @@ struct ChainSpec {
     // instance. Empty: zeros.
     std::vector<float> values;
     std::vector<float> bypass;
-    // Extra host arguments until host_control.h's Load carries them
-    // (--set INDEX:SYMBOL=VALUE, --reactivate).
-    std::vector<std::string> extra_args;
+    // Per instance, a StateBlob from an earlier GetState to restore in Load
+    // (host_control.h); empty or short: none.
+    std::vector<std::string> states;
+    // Load's flags (kLoadReactivate).
+    uint32_t load_flags = 0;
 };
 
 // One running host and its channel region. Owned by a SupervisedChain.
@@ -102,18 +111,64 @@ public:
     // Failed because the plugin refused (Refused or Faulted at load or
     // validation): deterministic, so not worth a restart.
     bool refused() const { return refused_; }
+    // The instance a refusal named, or -1 (none, or not a refusal).
+    int32_t refused_instance() const { return refused_instance_; }
     // Every block submitted has been returned (or the host is gone). For
     // the control thread and harnesses; never the audio thread's question.
     bool idle();
-    // shutdown word, a bounded wait, then SIGKILL; reaps it.
+    // Shutdown on the socket and the shutdown word, a bounded wait, then
+    // SIGKILL; reaps it.
     void stop();
     void kill();
     // "exited with code N" / "killed by signal N", once it is not running.
     std::string exit_text();
 
+    // ---- HostControl (host_control.h), control thread, never waits.
+
+    // Sends what is queued and takes what has arrived, each message checked
+    // against the contract. False when the host broke it (a message it may
+    // not send, out of order, a Hello or Loaded that disagrees, an instance
+    // or parameter not in its chain, a touch rate past M2, a message half
+    // received for kStalledMessageMs, frames the engine cannot queue): the
+    // host is then killed, and protocol_fault() says why. poll_startup()
+    // calls it; a running host's owner calls it every poll.
+    bool pump(uint64_t now_ms);
+    const std::string& protocol_fault() const { return protocol_fault_; }
+    // The host's Loaded, once Ready: per instance its latency, bypass and
+    // its dense parameters' stable keys and ranges, against which a
+    // client's PluginParameterChange{insert, key} resolves (§8).
+    const plugin::control::Loaded& loaded() const { return loaded_; }
+    // Checked host messages since the last call, in arrival order, encoded:
+    // gestures, touches, editor and state replies, LatencyChanged, Fault.
+    // For the control server, which decodes them again (they decode).
+    std::vector<std::string> take_messages();
+    // Queues a message for the host (GetState, DescribeValue, editors,
+    // Reconfigure). False, with `error`, when it would pass the queue cap;
+    // the caller then treats the host as not reading its socket.
+    bool send(const std::string& encoded, std::string& error);
+
 private:
     friend class HostSupervisor;
     HostProcess() = default;
+    bool fault(std::string why);
+    bool on_message(std::string_view m, uint64_t now_ms);
+    // M2: past either, the host is a protocol fault.
+    bool touch_allowed(uint32_t instance, uint32_t param, uint64_t now_ms);
+    bool gesture_end_allowed(uint64_t now_ms);
+
+    std::unique_ptr<platform::ControlChannel> ctl_;
+    plugin::control::Link link_;
+    bool ctl_closed_ = false;
+    bool hello_ = false;
+    bool loaded_seen_ = false;
+    plugin::control::Loaded loaded_;
+    std::string protocol_fault_;
+    std::deque<std::string> messages_;
+    std::map<std::pair<uint32_t, uint32_t>, std::deque<uint64_t>> touches_;
+    std::deque<uint64_t> gesture_ends_;
+    std::vector<uint32_t> param_counts_;
+    int32_t refused_instance_ = -1;
+    std::string refused_text_;
 
     std::unique_ptr<platform::SharedRegion> region_;
     std::unique_ptr<platform::ChildProcess> child_;
@@ -160,11 +215,13 @@ public:
     bool clock_locked() const { return ok_ && !clock_unlocked_; }
 
     // A host for `spec`, spawned and NOT waited for: its region created,
-    // seeded and locked, the process started. Ready (or the refusal, or the
-    // timeout, ready_timeout_ms from now) is noticed with
+    // seeded and locked, EngineHello and Load queued on its socket, the
+    // process started. Ready (or the refusal, or the timeout,
+    // ready_timeout_ms from now) is noticed with
     // HostProcess::poll_startup(). Null with `error` when it cannot even be
-    // spawned. What the control server's thread calls (code-reviewer L6 on
-    // PR #49).
+    // spawned, or when its Load would pass the 64 MiB cap ("the chain's
+    // plugin states exceed the 64 MiB Load cap", host_control.h). What the
+    // control server's thread calls (code-reviewer L6 on PR #49).
     std::unique_ptr<HostProcess> spawn(const ChainSpec& spec, std::string& error);
     // spawn(), then wait for poll_startup() to settle: BLOCKS the caller up
     // to ready_timeout_ms. For harnesses and tools, never the control
@@ -237,6 +294,15 @@ public:
     // §4.1): its host is stopped, its region released, its slot freed.
     void retired();
 
+    // The bound host's checked messages (HostProcess::take_messages), for
+    // the control server; empty when none is bound.
+    std::vector<std::string> take_host_messages();
+    // Down because the plugin refused (deterministic; ADR-0012 amendment of
+    // 2026-10-14, change C: the control server leaves that instance out and
+    // starts the chain without it), and which instance, or -1.
+    bool refused() const { return refused_; }
+    int32_t refused_instance() const { return refused_instance_; }
+
     uint32_t restarts() const { return restarts_total_; }
     // The chain index named for the last removal or hang: the instance the
     // host reported running (checked_instance) most often in this thread's
@@ -269,6 +335,8 @@ private:
     int32_t culprit_ = -1;
     uint32_t restarts_total_ = 0;
     bool down_ = false;
+    bool refused_ = false;
+    int32_t refused_instance_ = -1;
     std::string why_;
 };
 
