@@ -40,7 +40,9 @@ public:
     bool prepare(std::uint32_t factor, std::uint32_t channels,
                  std::uint32_t max_frames, double passband_ratio = 0.4535,
                  double stopband_db = 100.0);
-    void reset() noexcept;
+    // Zeroes the histories prepare() sized: no allocation, callable from a
+    // processor's on_reset() on the audio thread.
+    void reset() noexcept SONORA_RT;
 
     std::uint32_t factor() const noexcept { return factor_; }
     // Round-trip delay (up then down), in base-rate samples.

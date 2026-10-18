@@ -38,11 +38,25 @@
   "hot_block_ratio": 6.0,
   "denormal_ratio": 1.2,
   "zipper_dbfs": -60.0,
-  "zipper": ["input", "output", "attack", "release", "ratio", "link", "mix"],
-  "golden_abs": 1e-6,
+  "zipper": [
+    "input",
+    "output",
+    "attack",
+    "release",
+    "ratio",
+    "link",
+    "mix"
+  ],
+  "golden_abs": 1e-06,
   "cpu": {
     "p999_us": 20.0,
     "max_us": 50.0,
-    "held": ["eco"]
+    "held": [
+      "eco"
+    ]
+  },
+  "newton": {
+    "max_iterations": 16.0,
+    "mean_iterations": 2.0
   }
 }

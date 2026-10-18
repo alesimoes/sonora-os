@@ -796,32 +796,52 @@ void controls_after_prepare(Suite& s) {
 // The block is also held inside the period in an uninstrumented build, and
 // reported under a sanitizer (Suite::check_time_le), as the tube's and the
 // opto's are.
-// The Newton loops never reach their cap: hot squares to +24 dBFS at input
-// +24 dB through the circuit at each quality's rate (48 kHz times 1, 4, 8),
-// every switch position at the fastest attack and release, unlinked and
-// linked, held to zero steps that ran out of iterations (FetChannel counts
-// them rather than committing them silently).
+// The Newton loops' cost stays flat in the drive, up to the processor's
+// input ceiling: ProcessorBase accepts up to 1e6 FS, so with Input at +24 dB
+// the circuit sees about 2e5 V at R5. Hot squares at +48 dB (3.2 V, the
+// hottest the other checks drive) and at that ceiling, through the circuit
+// at each quality's rate (48 kHz times 1, 4, 8), every switch position at
+// the fastest attack and release, unlinked and linked: no step reaches the
+// cap (FetChannel counts them rather than committing them silently), and
+// the iterations a step, at most and on average, stay under
+// newton.max_iterations and newton.mean_iterations. RT audit of #74, B1:
+// before the fix the count grew with the log of the drive, about 16 a step
+// at the ceiling, and high (8x) missed the period at 96 and 192 kHz.
 void newton_cap(Suite& s) {
     const dsp::FetCircuit k;
-    const double v = std::pow(10.0, 48.0 / 20.0) * k.full_scale_v;
-    std::uint64_t hits = 0;
-    int most = 0;
-    for (double rate : {48000.0, 192000.0, 384000.0}) {
-        for (int pos = 0; pos <= dsp::kFetAllButtons; ++pos) {
-            for (double g : {0.0, 1.0}) {
-                dsp::FetChannel a = channel(rate, pos, 0.1034f, 59.4f), b = channel(rate, pos, 0.1034f, 59.4f);
-                const auto n = static_cast<int>(0.1 * rate);
-                for (int i = 0; i < n; ++i) {
-                    const double x = std::sin(dsp::kTwoPi * 997.0 * i / rate) >= 0.0 ? v : -v;
-                    dsp::FetChannel::step_pair(a, b, x, -x, g);
-                    most = std::max(most, std::max(a.last_iterations(), b.last_iterations()));
+    const double in24 = std::pow(10.0, 24.0 / 20.0);
+    struct Drive {
+        const char* name;
+        double volts;
+    };
+    const Drive drives[] = {{"+48 dB (3.2 V at R5)", std::pow(10.0, 48.0 / 20.0) * k.full_scale_v},
+                            {"999999 FS at Input +24 dB (the ceiling)", 999999.0 * in24 * k.full_scale_v}};
+    const double max_bar = s.bar("newton.max_iterations"), mean_bar = s.bar("newton.mean_iterations");
+    for (const Drive& d : drives) {
+        std::uint64_t hits = 0, steps = 0, total = 0;
+        int most = 0;
+        for (double rate : {48000.0, 192000.0, 384000.0}) {
+            for (int pos = 0; pos <= dsp::kFetAllButtons; ++pos) {
+                for (double g : {0.0, 1.0}) {
+                    dsp::FetChannel a = channel(rate, pos, 0.1034f, 59.4f), b = channel(rate, pos, 0.1034f, 59.4f);
+                    const auto n = static_cast<int>(0.05 * rate);
+                    for (int i = 0; i < n; ++i) {
+                        const double x = std::sin(dsp::kTwoPi * 997.0 * i / rate) >= 0.0 ? d.volts : -d.volts;
+                        dsp::FetChannel::step_pair(a, b, x, -x, g);
+                        most = std::max(most, std::max(a.last_iterations(), b.last_iterations()));
+                        total += static_cast<std::uint64_t>(a.last_iterations());
+                        ++steps;
+                    }
+                    hits += a.cap_hits() + b.cap_hits();
                 }
-                hits += a.cap_hits() + b.cap_hits();
             }
         }
+        const std::string at = std::string(", hot squares at ") + d.name + ", every quality's rate, position and link";
+        s.check("Newton loops: steps that reached the cap" + at, static_cast<double>(hits), 0.0, hits == 0, "steps");
+        s.check_le("Newton loops: most iterations a step" + at, most, max_bar, "iterations", "the cap is 60");
+        s.check_le("Newton loops: mean iterations a step" + at, static_cast<double>(total) / static_cast<double>(steps),
+                   mean_bar, "iterations");
     }
-    s.check("Newton loops: steps that reached the cap, hot squares at every quality's rate, position and link",
-            static_cast<double>(hits), 0.0, hits == 0, "steps", fmt("at most %.0f iterations a step (cap 60)", most));
 }
 
 void hot_input(Suite& s) {
@@ -838,8 +858,9 @@ void hot_input(Suite& s) {
     const dsp::JfetParams j;
     const double deepest_bar = 20.0 * std::log10(std::pow(10.0, -k.rest_loss_db / 20.0) *
                                                  (1.0 + k.r5 * 2.0 * j.beta * (k.gate_max_v - j.vto)));
-    auto square = [&](double dbfs, bool anti) {
-        const double a = std::pow(10.0, dbfs / 20.0);
+    // An amplitude in FS (the processor's ceiling is 999999, under
+    // ProcessorBase's 1e6).
+    auto square = [&](double a, bool anti) {
         Chans x(2, std::vector<float>(static_cast<std::size_t>(1.0 * fs)));
         for (std::size_t n = 0; n < x[0].size(); ++n) {
             const float v =
@@ -868,9 +889,13 @@ void hot_input(Suite& s) {
     const double in_gain = std::pow(10.0, 24.0 / 20.0);
     for (std::size_t ci = 0; ci < std::size(configs); ++ci) {
         const bool anti = ci + 1 == std::size(configs);
-        const Chans quiet = square(-60.0, anti);
-        for (double dbfs : {0.0, 12.0, 24.0}) {
-            const Chans x = square(dbfs, anti);
+        const Chans quiet = square(1e-3, anti);
+        // 0, +12, +24 dBFS, and the input ceiling (999999 FS, about
+        // +120 dBFS: RT audit of #74, B1, where high missed the period).
+        for (double amp : {1.0, std::pow(10.0, 12.0 / 20.0), std::pow(10.0, 24.0 / 20.0), 999999.0}) {
+            const double dbfs = 20.0 * std::log10(amp);
+            const bool ceiling = amp > 1e5;
+            const Chans x = square(amp, anti);
             std::vector<double> worst, calm;
             double deepest = 0.0;
             bool finite = true;
@@ -890,8 +915,11 @@ void hot_input(Suite& s) {
             const double median = sorted[sorted.size() / 2];
             const std::string what = std::string(names[ci]) + fmt(", %+.0f dBFS square, input +24 dB", dbfs);
             s.check(what + ": output finite", finite ? 1.0 : 0.0, 1.0, finite, "bool");
-            s.check_le(what + ": deepest reduction, second half", deepest, deepest_bar + 0.5, "dB",
-                       fmt("the gate's forward limit allows %.1f dB", deepest_bar));
+            // At the ceiling the input is bounded at R5 (fet.h), so the
+            // output against the input is that bound, not a reduction.
+            if (!ceiling)
+                s.check_le(what + ": deepest reduction, second half", deepest, deepest_bar + 0.5, "dB",
+                           fmt("the gate's forward limit allows %.1f dB", deepest_bar));
             s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
                        fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
             s.check_time_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us",

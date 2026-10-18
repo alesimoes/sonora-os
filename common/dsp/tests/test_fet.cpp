@@ -219,6 +219,52 @@ int test_bounded() {
         }
     }
     std::printf("  hot squares, linked pair: at most %d iterations, no cap reached\n", most);
+
+    // The input is bounded at R5 (input_limit_v): a drive past it solves as
+    // the limit does. With the limit lifted, drives that overflowed the
+    // solve before the saturated start (from about 3e16 V, RT audit of
+    // #74, N1) stay finite; and a step that does go non-finite (forced
+    // here with a NaN device parameter, which reset() does not use) is
+    // never committed: the channels reset to rest and the step is counted.
+    {
+        FetChannel at, past;
+        at.prepare(192000.0);
+        past.prepare(192000.0);
+        const double lim = at.circuit().input_limit_v;
+        for (int i = 0; i < 1920; ++i) {
+            const double sgn = i % 40 < 20 ? 1.0 : -1.0;
+            CHECK(at.tick(sgn * lim) == past.tick(sgn * 1e9));
+        }
+        FetCircuit open;
+        open.input_limit_v = 1e300;
+        FetChannel l, r;
+        l.prepare(192000.0, open);
+        r.prepare(192000.0, open);
+        for (double v0 : {1e17, 1e300}) {
+            for (int i = 0; i < 200; ++i) {
+                const double v = i % 40 < 20 ? v0 : -v0;
+                FetChannel::step_pair(l, r, v, -v, 1.0);
+                CHECK(std::isfinite(l.control_v()) && std::isfinite(r.control_v()));
+                // Finite, though the solve may run to the cap here: the
+                // bound at R5 is what keeps a processor out of this range.
+                CHECK(std::isfinite(l.loop_drain()) && std::isfinite(r.loop_drain()));
+            }
+        }
+        JfetParams bad;
+        bad.lambda = std::nan("");
+        FetChannel n1, n2;
+        n1.prepare(192000.0, FetCircuit{}, bad);
+        n2.prepare(192000.0, FetCircuit{}, bad);
+        for (int i = 0; i < 100; ++i) {
+            FetChannel::step_pair(n1, n2, 0.5, -0.5, 1.0);
+            CHECK(std::isfinite(n1.control_v()) && std::isfinite(n2.control_v()) && std::isfinite(n1.c9_v()));
+            CHECK(n1.loop_drain() == 0.0 && n2.loop_drain() == 0.0);
+        }
+        std::printf("  past the input limit: same as at it; 1e17 and 1e300 V with no limit finite; a forced "
+                    "non-finite step reset %llu times, state finite\n",
+                    static_cast<unsigned long long>(n1.cap_hits()));
+        CHECK(n1.cap_hits() == 100 && n2.cap_hits() == 100);
+    }
     return 0;
 }
 

@@ -135,6 +135,12 @@ protected:
             mix_[n] = smoother(kMix).next() * 0.01;
         }
         double* const* y = x;
+        // Never a silent clamp (ProcessorBase): a block in which the input
+        // reached the circuit's limit at R5, or a solve step ran out of
+        // iterations or was not finite, is reported as bounded.
+        const std::uint64_t hits_before = ch_[0].cap_hits() + ch_[1].cap_hits();
+        const double limit = k.input_limit_v;
+        double peak = 0.0;
         for (std::uint32_t pos = 0; pos < frames; pos += kControl) {
             const std::uint32_t m = frames - pos < kControl ? frames - pos : kControl;
             // Settled controls leave the circuit as it is: the smoothers
@@ -159,8 +165,11 @@ protected:
                     // key through a second divider on the same gate (fet.h,
                     // External key), whose drain the solve finds with it.
                     double loop[kMaxCh] = {0.0, 0.0};
-                    for (std::uint32_t c = 0; c < chs; ++c)
+                    for (std::uint32_t c = 0; c < chs; ++c) {
                         loop[c] = (keyed ? (f > 1 ? key[c][j] : sc[c][n]) : y[c][j]) * gi;
+                        peak = std::fmax(peak, std::fabs(loop[c]));
+                        if (keyed) peak = std::fmax(peak, std::fabs(y[c][j] * gi));
+                    }
                     if (chs == 2) dsp::FetChannel::step_pair(ch_[0], ch_[1], loop[0], loop[1], gl);
                     else ch_[0].step(loop[0]);
                     for (std::uint32_t c = 0; c < chs; ++c)
@@ -168,6 +177,7 @@ protected:
                 }
             }
         }
+        if (peak > limit || ch_[0].cap_hits() + ch_[1].cap_hits() != hits_before) note_bounded();
         for (std::uint32_t c = 0; c < chs; ++c) {
             if (f > 1) os_.down(c, wet_.data(), frames);
             for (std::uint32_t n = 0; n < frames; ++n) {

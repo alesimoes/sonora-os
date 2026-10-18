@@ -38,6 +38,32 @@ inline double ohmic_drain(double b, double g0, double gch, double lambda) noexce
     return ohmic_drain_with(b, g0, gch, lambda, 1.0 / (g0 + gch));
 }
 
+// The drain's start for Newton: the ohmic channel's closed form while it
+// holds (a < 2 v0), else the saturated law's, (b - a) g0 = beta (v0 +
+// a/2)^2, a quadratic in t = v0 + a/2 (lambda left out of a start). At a
+// large drive the root sits on the saturated law near sqrt(b), and an
+// ohmic start, proportional to b, left Newton halving its error for 16
+// iterations at the processor's ceiling (RT audit of #74, B1); from this
+// start the count stays flat. With v0 <= 0 the channel is off until the
+// drain lifts its gate past pinch-off, b + 2 v0 > 0.
+inline double start_drain(double b, double g0, double beta, double lambda, double v0) noexcept {
+    if (v0 > 0.0) {
+        const double a = ohmic_drain(b, g0, 2.0 * beta * v0, lambda);
+        if (a < 2.0 * v0) return a;
+    }
+    const double c = g0 * (b + 2.0 * v0);
+    if (!(c > 0.0)) return b;
+    const double t = c / (g0 + std::sqrt(g0 * g0 + beta * c));
+    const double a = 2.0 * (t - v0);
+    return a < 0.0 ? 0.0 : (a > b ? b : a);
+}
+
+// |vin| at R5 bounded at the circuit's input limit; NaN is no input.
+inline double bounded_input(double vin, double limit) noexcept {
+    const double b = std::fabs(vin);
+    return b <= limit ? b : (b > limit ? limit : 0.0);
+}
+
 // SPICE's junction step limit (pnjlim, Nagel 1975): a forward step that
 // would multiply the current by more than e^(step / nVt) is taken on a log
 // scale instead, so Newton walks up an exponential rather than overshooting.
@@ -220,12 +246,12 @@ double FetChannel::drain(double vin) const noexcept {
     // Stops on the residual relative to R5's current: a step-based stop
     // let 2e-8 through at deep reduction, where the channel's slope is a
     // hundred times R5's.
-    const double b = std::fabs(vin);
+    const double b = bounded_input(vin, c_.input_limit_v);
     if (!(b > 0.0)) return 0.0;
     const double vg0 = std::fmin(0.5 * (vc_ + vq_), c_.gate_max_v);
     const double v0 = vg0 - j_.vto;
     const double g0 = 1.0 / c_.r5;
-    double a = v0 > 0.0 ? b / (1.0 + c_.r5 * 2.0 * j_.beta * v0) : b;
+    double a = start_drain(b, g0, j_.beta, j_.lambda, v0);
     const double tol = 1e-13 * b * g0;
     double lo = 0.0, hi = b;
     for (int it = 0; it < 40; ++it) {
@@ -338,10 +364,10 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
     for (int c = 0; c < N; ++c) {
         const FetChannel& f = *ch[c];
         for (int j = 0; j < N; ++j) R[c][j] = Q[c][j] + (c == j ? f.r_att_ : 0.0);
-        b[c] = std::fabs(vin[c]);
+        // Bounded at the circuit's input limit (FetCircuit::input_limit_v);
         // NaN is no input: a sanitising caller never sends one, and here it
         // must not reach a state.
-        if (!(b[c] < 1e300)) b[c] = 0.0;
+        b[c] = bounded_input(vin[c], f.c_.input_limit_v);
         sg[c] = vin[c] < 0.0 ? -1.0 : 1.0;
         // Starts. The divider: the ohmic channel with lambda, solved in
         // closed form, g a (1 + lambda a) = (b - a) / R5, at the gate
@@ -355,7 +381,7 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
         const double vg_now = 0.5 * (f.vc_ + f.vq_);
         vg_before[c] = vg_now;
         const double v0 = std::fmin(2.0 * vg_now - f.vg_last_, f.c_.gate_max_v) - f.j_.vto;
-        a[c] = v0 > 0.0 ? ohmic_drain(b[c], f.g0_, 2.0 * f.j_.beta * v0, f.j_.lambda) : b[c];
+        a[c] = start_drain(b[c], f.g0_, f.j_.beta, f.j_.lambda, v0);
         // Bounded at SPICE's critical junction voltage: from a junction far
         // forward Newton walks down one nVt an iteration (a jump of the
         // drive predicted 12 V and ran into the 60-iteration cap).
@@ -524,6 +550,21 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
     for (int c = 0; c < N; ++c) {
         vcn[c] = P[c];
         for (int j = 0; j < N; ++j) vcn[c] += Q[c][j] * I[j];
+    }
+    // A non-finite point is never committed: NaN never meets the stop, so
+    // every later step would run to the cap until a reset (RT audit of
+    // #74, N1). The input bound keeps the solve far from it; if it happens
+    // all the same, the channels solved together start again from rest and
+    // the step is counted with the cap hits.
+    bool finite = true;
+    for (int c = 0; c < N; ++c) finite &= std::isfinite(vcn[c]) && std::isfinite(a[c]) && std::isfinite(u[c]);
+    if (!finite) {
+        for (int c = 0; c < N; ++c) {
+            ch[c]->reset();
+            ++ch[c]->cap_hits_;
+            ch[c]->iterations_ = it < 60 ? it + 1 : 60;
+        }
+        return;
     }
     for (int c = 0; c < N; ++c) {
         const double link = N == 2 ? -g_link * (vcn[c] - vcn[N - 1 - c]) : 0.0;

@@ -161,6 +161,28 @@ counted (`FetChannel::cap_hits`): `dsp_fet` and the suite's `newton_cap`
 hold the count at zero on hot squares, mono and linked, at every
 quality's rate.
 
+**The cost at the input ceiling (RT audit of #74, B1).** ProcessorBase
+accepts input up to 1e6 FS, which with Input at +24 dB is about 2e5 V at
+R5. There the drain's ohmic start, proportional to the drive, sat far
+above the saturated channel's root (near its square root), and Newton
+halved its error each iteration: 16 a step on average at the ceiling,
+and high (8x) missed the period at 96 and 192 kHz. Two fixes, both
+measured by the suite's `newton_cap` and `hot_input`, which now drive to
+999999 FS at Input +24 dB at every quality:
+- the start uses the saturated law's closed form whenever the ohmic one
+  breaks a < 2 v0, so the count stays flat in the drive (at the ceiling
+  a mean of 1.03 iterations a step, at most 9);
+- |vin| at R5 is bounded at 30 V (`FetCircuit::input_limit_v`, an
+  assumption: no voltage in the unit exceeds its supply), ten times the
+  hottest the other checks drive, so nothing inside the tested range
+  changes (the goldens and the SPICE comparison are bit-exact). The
+  processor reports a block that reached it, or a step that hit the cap,
+  as bounded (ProcessorBase's `note_bounded`).
+
+A step whose point is not finite (a NaN device parameter is the only way
+the tests find to force one) is never committed: the channels solved
+together reset to rest, and the step is counted with the cap hits.
+
 The first version took the drain from the gate of the sample before and
 solved the rectifier after it: a sample of delay in the feedback loop.
 Against ngspice it read late on every attack, 0.04 dB at 192 kHz on a

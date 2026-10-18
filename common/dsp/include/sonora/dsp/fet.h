@@ -76,7 +76,9 @@
 // leaves two unknowns per channel, the drain voltage and the rectifier's
 // junction voltage, and one Newton solve of the two together (four for a
 // linked pair), with SPICE's junction step limit and the drain bracketed.
-// Solving them together matters: taking the drain from the gate of the
+// Its cost is flat in the drive: the input is bounded at R5
+// (input_limit_v), and the drain starts from whichever law, ohmic or
+// saturated, holds there. Solving them together matters: taking the drain from the gate of the
 // sample before puts a sample of delay in the loop, and against ngspice
 // that read 0.04 dB late at 192 kHz on a 1 kHz attack and 5.5 dB on the
 // fastest attack's 10 kHz burst. Against ngspice on the same reduced
@@ -144,6 +146,15 @@ struct FetCircuit {
     double bias_drive_v = 10.0;
     double sc_swing_v = 12.0;
     double gate_max_v = 0.5;
+    // Assumed: the most the input stage delivers at R5, |vin| bounded
+    // there. No voltage in the unit exceeds its supply, so 30 V is a
+    // physical ceiling, not a figure of [M]'s; it is ten times the
+    // hottest the suite's checks drive (3.2 V: +24 dBFS at Input +24 dB),
+    // so nothing inside that range changes. Beyond it, a processor's
+    // input up to its 1e6 FS ceiling (2e5 V here at Input +24) would only
+    // grow the Newton solve's cost (RT audit of #74, B1), and far beyond,
+    // overflow it.
+    double input_limit_v = 30.0;
     // Volts at R5 for a full-scale sample at the input control's 0 dB:
     // our alignment, set so 4:1 reduces by 1 dB at -20 dBFS at the
     // defaults: [M]'s getting-started level, 0 VU (+4 dBu, -14 dBFS under
@@ -195,7 +206,10 @@ public:
     // hold the cost flat in the drive.
     int last_iterations() const noexcept { return iterations_; }
     // Steps whose Newton loop reached the cap without converging (they
-    // commit the last point): zero in every test, and the suite holds it.
+    // commit the last point), or whose point was not finite (the channels
+    // solved together reset to rest instead): zero in every test, and the
+    // suite holds it. A processor reports a rise as a bounded block. Read
+    // on the audio thread only.
     std::uint64_t cap_hits() const noexcept { return cap_hits_; }
 
     // The divider's gain at rest, for normalising: 10^(-rest_loss/20).
@@ -214,25 +228,25 @@ public:
 
     // The ratio string's tap and the bias string's offset below the rest
     // node at a switch position (fractional positions interpolate).
-    static void ratio_network(const FetCircuit& c, double position, double& tap, double& offset_v) noexcept;
+    static void ratio_network(const FetCircuit& c, double position, double& tap, double& offset_v) noexcept SONORA_RT;
     // [SH] symmetric, with the LN gate (vg0 + vds / 2): the drain current
     // for a drain voltage; its slopes in vds and in vg0.
     static double channel_current(const JfetParams& j, double vg0, double vds, double* slope = nullptr,
-                                  double* slope_gate = nullptr) noexcept;
+                                  double* slope_gate = nullptr) noexcept SONORA_RT;
     // The rest voltage for which the quiet equilibrium of C22 (rectifier
     // leakage against the release resistor) is `target`.
-    static double rest_for(const DiodeParams& d, double target, double offset_v, double ra, double rr) noexcept;
+    static double rest_for(const DiodeParams& d, double target, double offset_v, double ra, double rr) noexcept SONORA_RT;
 
 private:
     struct Linear;
     void update() noexcept SONORA_RT;
-    void linear_step(Linear& l) const noexcept;
+    void linear_step(Linear& l) const noexcept SONORA_RT;
     // The diode pair's current at junction voltage u (the higher anode's)
     // and drive |s|; its slopes in u and in |s|.
-    double pair_current(double u, double s_abs, double* du, double* ds) const noexcept;
-    void commit(const Linear& l, double i_det, double vc_new, double link_i, double vd) noexcept;
+    double pair_current(double u, double s_abs, double* du, double* ds) const noexcept SONORA_RT;
+    void commit(const Linear& l, double i_det, double vc_new, double link_i, double vd) noexcept SONORA_RT;
     template <int N>
-    static void solve(FetChannel* const* ch, const double* vin, double g_link) noexcept;
+    static void solve(FetChannel* const* ch, const double* vin, double g_link) noexcept SONORA_RT;
 
     FetCircuit c_;
     JfetParams j_;
