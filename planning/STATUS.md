@@ -3,7 +3,7 @@
 The single place to learn where the work stands. Any agent updates this at the
 end of its run. Keep it short: what is true now, not a diary.
 
-- **Updated:** 2026-10-13 (PRs #41-#47, and engine/plugin_client after the PR #49 reviews)
+- **Updated:** 2026-10-14 (record while rolling, `feature/record-while-rolling`; before that PRs #41-#47 and engine/plugin_client after the PR #49 reviews)
 - **Current focus:** the **Complete DAW** milestone, stage DAW 1 (engine
   core, contracts, model). Owner, 2026-10-13: the whole product first, at
   parity with the workflow Avid and Apple document for Pro Tools and Logic,
@@ -77,6 +77,19 @@ end of its run. Keep it short: what is true now, not a diary.
   vendor bindings. Each has a regression test. Not yet exercised on tty1 or
   in QEMU; the interactive paths (Ctrl+C fallback, SIGHUP) are unit-tested
   only.
+- **Key maps in the Qt window (`feature/ui-keymaps`).** Commands go where
+  their catalog domain says: Interface commands never reach the engine, and
+  an Engine command goes to the engine once its Hello lists it, before any
+  stand-in the window has. Pro Tools' Commands Keyboard Focus is real:
+  `"focus": "commands"` bindings (the a s d f g b p ; e letters, and z x c v
+  r t , . from Avid's focus table), `focus.commands` on `ctrl+alt+1` and an
+  a-z button; with focus off a letter says so. At the tty those keys stay
+  live (no indicator there). The Keys menu switches profile at run time,
+  lists refused files with the reason, and remembers the choice in
+  `~/.config/sonora/keymap`. `FakeEngine::Config::planned_commands` stubs
+  the engine commands the profiles bind and no engine runs (BACKLOG Track 1
+  item 10). Container-tested only; the focus behaviour Avid does not document
+  is listed as unverified in `keymaps/README.md`.
 - **ISO builds.** `iso/sonora.iso`, 867 MB, last built 2026-10-12. Inspected
   rather than assumed: the engine is present at mode 0755, the service is
   enabled, the `sonora` user is in `audio`, all three tuning files are
@@ -202,6 +215,20 @@ end of its run. Keep it short: what is true now, not a diary.
   back through the fixed stereo monitor bus, driven over the M7 socket by
   `sonora-ui`, `sonora-tui` or `sonora-ctl`; `tools/run-sonora.sh` starts
   engine and UI as two processes.
+- **Record while rolling, in-band take boundaries
+  (`feature/record-while-rolling`, 2026-10-14).** The capture ring is never
+  reset: the audio thread opens and closes a per-track capture window and
+  pushes a boundary record behind its samples, and the disk thread splits
+  the ring there into the take's file. A take starts from a roll (punch in
+  on the fly) or over the running take on the same frame, and
+  `Session::punch_out()` ends one with the transport still rolling; the
+  disk thread reports each closed file with its length on disk, and the
+  control server places takes from that report, not from a transport
+  edge. `stop()` waits (bounded) for the callback in flight. The take-epoch
+  race in "Known gaps" was reproduced first on the old code by stalling a
+  callback in an insert runner, and is gone. Block-boundary only: punch
+  points inside a block, the monitor ramp and a punch command are next
+  (BACKLOG, DAW 1 detail). Container only: ctest, TSan, RTSan.
 - **Mix window on the monitor bus (`feature/ui-mixer-monitor`).** A fader
   ride is heard through ParameterChange per step and saved by one SetMix at
   release (the bus, which has no ParamId, rides through SetMonitorBus);
@@ -283,8 +310,19 @@ end of its run. Keep it short: what is true now, not a diary.
   container); no operator new/delete, and outside the sanitizers no
   malloc/free, on the thread inside `process()`. A binding with no slot or
   no node state is laid out unbound, latency 0, so it is never early. Hosts are still started by hand in the test: the engine
-  binary starts none until checklist 5. No parameter events reach a chain
-  from the session yet.
+  binary starts none until checklist 5.
+- **Checklist 5, the RT side (`feature/plugin-chain-control`).** Plugin
+  parameter changes reach a chain: `Session::post_plugin_param` queues an
+  `RtCommand` in a ring of its own, the callback hands it to the
+  InsertChain node naming that store, and `session_plugins_params` moves
+  eg-amp's gain to -20 dB and then bypasses it, each heard from the
+  callback after the post. `Session::process` reads no clock: the backend
+  stamps `AudioBlock::callback_ns` (JACK's cycle time), checked against
+  `steady_clock` by the backend conformance suite. A runner with a fixed
+  block (the client's) runs only callbacks of that size; a bound chain the
+  session does not run plays silence, never dry and early, and the plan
+  report shows the latency the plan carries. The control server does not
+  post any yet, nor start hosts.
 - **The DAW on the owner's Windows laptop (`tools/dev-wsl.sh`, #44).** Debian trixie under WSL2: packages, build, PipeWire with
   pulse-tunnels to WSLg's PulseAudio (Windows speakers and mic), engine +
   Qt UI through WSLg; `selftest` records from the mic (or `--tone`), plays

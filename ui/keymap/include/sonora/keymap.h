@@ -45,6 +45,13 @@ struct KeyChord {
 // the command, and so has nothing to be verified against.
 enum class BindingOrigin { Vendor, Sonora };
 
+// When a binding runs. Pro Tools' single-letter edit keys (Trim Start is A,
+// Separate is B) run only while Commands Keyboard Focus is on; with it off
+// the same letters are not those commands. An interface that has a focus
+// toggle (focus.commands) asks needs_commands_focus() before running one; a
+// tty, which has no a-z indicator, keeps them live as it always did.
+enum class BindingFocus { Always, Commands };
+
 struct Binding {
     KeyChord chord;
     std::string spec;     // the chord as written in the file, for messages
@@ -54,6 +61,7 @@ struct Binding {
     // False where we are reproducing a vendor binding we could not confirm
     // against the real application. See keymaps/README.md.
     bool verified = true;
+    BindingFocus focus = BindingFocus::Always;
     std::string comment;
     int line = 0;
 };
@@ -62,6 +70,12 @@ struct Binding {
 // no target. There is no track selection in this build, so such a key can
 // only fail: it must not count as a way to arm, nor be advertised as one.
 bool needs_selection(const Binding& b);
+
+// True when the binding only runs with Commands Keyboard Focus on. Such a key
+// never counts as a way to reach an essential command: focus can be off.
+inline bool needs_commands_focus(const Binding& b) {
+    return b.focus == BindingFocus::Commands;
+}
 
 class KeyMap {
 public:

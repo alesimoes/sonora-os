@@ -477,6 +477,102 @@ int check_parameters(Rig& rig) {
     return C(rig, "parameter changes").go();
 }
 
+// The document's mix is what the faders hold: a SetMix moves the track's
+// gain and mute, a ride sent as a ParameterChange outlives an unrelated
+// edit, and a Snapshot (here a Resync) puts the document's values back,
+// so a ride a lost link stranded does not stay (ADR-0009 §4 item 3). An
+// engine track the document no longer has keeps its fader and mute.
+int check_mix(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            StateView& v = s.engine->state();
+            const model::TrackMix* before =
+                s.replica.current().mix.find(s.replica.current().edit->tracks[0]->id);
+            EXPECT(before != nullptr, "track 1 has no mix");
+            model::SetMix set{*before};
+            set.mix.gain_db = -6.0f;
+            set.mix.mute = true;
+            const float doc_gain = static_cast<float>(std::pow(10.0, -6.0 / 20.0));
+            const auto at_doc = [&]() {
+                const TrackSnapshot t = v.track(0);
+                return std::fabs(t.gain - doc_gain) < 1e-5f && t.muted();
+            };
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            EXPECT(model::encode_operation(set, m.op, error), error);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "SetMix was refused: " + r.message);
+            EXPECT(s.until(rig_, at_doc), "the state block does not show the document's mix");
+
+            ParameterChange p;
+            p.track = 0;
+            p.value = 0.5f;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Ok,
+                   "a gain change failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.track(0).gain == 0.5f; }),
+                   "the state block never showed the ride");
+            model::AddMarker add;
+            add.marker.id = s.replica.current().next_id;
+            add.marker.name = "Ride";
+            EXPECT(model::encode_operation(add, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "a marker was refused: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published after the marker");
+            EXPECT(v.track(0).gain == 0.5f, "an unrelated edit snapped the ride back");
+
+            m.action = ModelAction::Resync;
+            m.op.clear();
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "resync failed");
+            EXPECT(s.until(rig_, at_doc), "a resync left the ride's gain in place");
+
+            // A session without the last track: that engine track keeps its
+            // fader and mute, since until the plan swap the old plan still
+            // plays it there, and a muted track must not come up at unity.
+            const uint32_t last = s.engine->hello().track_count - 1;
+            const model::Id last_id = s.replica.current().edit->tracks[last]->id;
+            model::SetMix quiet{*s.replica.current().mix.find(last_id)};
+            quiet.mix.gain_db = -6.0f;
+            quiet.mix.mute = true;
+            m.action = ModelAction::Apply;
+            EXPECT(model::encode_operation(quiet, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "SetMix was refused: " + r.message);
+            const auto last_quiet = [&]() {
+                const TrackSnapshot t = v.track(last);
+                return std::fabs(t.gain - doc_gain) < 1e-5f && t.muted();
+            };
+            EXPECT(s.until(rig_, last_quiet), "the last track's mix was not applied");
+            model::Snapshot fewer = s.replica.current();
+            auto edit = std::make_shared<model::EditState>(*fewer.edit);
+            edit->tracks.pop_back();
+            fewer.edit = edit;
+            model::WriteInfo info;
+            info.written_by = "conformance";
+            EXPECT(model::serialize(fewer, info, m.op, error), error);
+            m.action = ModelAction::Load;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "a session one track short was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return s.replica.synced() &&
+                              s.replica.current().edit->tracks.size() == last;
+                   }),
+                   "no snapshot of the shorter session: " + s.replica_error);
+            EXPECT(s.next_publish(rig_), "nothing published after the load");
+            EXPECT(last_quiet(), "a track the session no longer has lost its mute or fader");
+            return ok();
+        }
+    };
+    return C(rig, "the mix follows the document").go();
+}
+
 // ADR-0009 update 2026-10-14: several operations as one. One reply, one
 // update, one undo step; a member refused halfway refuses the whole of it,
 // naming the member, and sends nothing.
@@ -1210,6 +1306,7 @@ int run(Rig& rig) {
     failures += check_take(rig);
     failures += check_play(rig);
     failures += check_parameters(rig);
+    failures += check_mix(rig);
     failures += check_model(rig);
     failures += check_compound(rig);
     failures += check_load(rig);

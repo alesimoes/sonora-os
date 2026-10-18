@@ -1,6 +1,6 @@
 {
   "name": "Default",
-  "comment": "Matches what the engine and the terminal interface implement today. Phase 1 only.",
+  "comment": "Sonora's own keys, for when no profile is chosen: the terminal and the Qt window both start on it, and both repair a profile that cannot arm, record, stop or quit from it (keymaps/README.md). Space starts a take or stops it, 1 to 8 arm a track, A arms every track, Q leaves the interface. Compiled into ui/keymap as built_in_default(), which test_keymap holds equal to this file.",
   "bindings": {
     "space": "transport.toggle_record",
     "1": { "command": "track.toggle_arm", "target": 1 },

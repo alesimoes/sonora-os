@@ -139,40 +139,51 @@ bool place_file(model::Document& document, const std::string& session_dir,
     return apply(document, place, updates, error);
 }
 
-ClosedTake add_closed_take(model::Document& document, const Session& session, int take) {
-    ClosedTake out;
+TakeAdded add_closed_take(model::Document& document, const Session& session,
+                          const Session::ClosedTake& take) {
+    TakeAdded out;
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
-    const std::string which = "take " + std::to_string(take);
+    const std::string which = "take " + std::to_string(take.take);
+    std::string first_failure;
+    int more_failures = 0;
 
     // Every file is read before any operation exists, so a file that does
-    // not read costs its own track and is not a refusal of the take.
-    // Three ids per track, reserved whether or not the overwrite splits.
+    // not read costs its own track and is not a refusal of the take. Three
+    // ids per file, reserved whether or not the overwrite splits.
     std::vector<model::AddSource> sources;
     std::vector<model::RecordTake> records;
     model::Id next = document.current().next_id;
-    for (std::size_t i = 0; i < session.tracks().size(); ++i) {
-        // writer() has no const overload; nothing here changes the track.
-        Track& engine_track = *session.tracks()[i];
-        // Arming is fixed for a take (session_commands.cpp), so the armed
-        // tracks are the take's.
-        if (!engine_track.rec_armed() || engine_track.writer().frames_written() == 0) continue;
-        const std::string& path = engine_track.writer().path();
-        if (path.compare(0, prefix.size(), prefix) != 0) continue;
-        const std::string relative = path.substr(prefix.size());
+    for (const DiskThread::ClosedFile& f : take.files) {
+        // A failed file is still valid up to its last whole frame
+        // (bwf-broadcast-wave.md), so what was recorded before the failure
+        // is placed, and the failure is reported rather than hidden
+        // (timeline-model.md, "Closed takes").
+        if (!f.failure.empty()) {
+            if (first_failure.empty()) {
+                first_failure = f.path + ": " + f.failure +
+                                (f.frames == 0 ? ", with nothing recorded before it"
+                                               : ", placed up to the failure");
+            } else {
+                ++more_failures;
+            }
+        }
+        if (f.frames == 0) continue;
+        if (f.path.compare(0, prefix.size(), prefix) != 0) continue;
+        const std::string relative = f.path.substr(prefix.size());
 
         std::string why;
-        const model::TrackEdit* t = track_at(document, i, why);
+        const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), why);
         model::AddSource src;
-        if (t == nullptr || !source_of(document, dir, relative, t->channels, next, src.source,
-                                       why)) {
-            out.track_notices.push_back(
-                which + " on " + (t != nullptr ? t->name : engine_track.name()) +
-                " is on disk but not in the session: " + why);
+        if (t == nullptr ||
+            !source_of(document, dir, relative, t->channels, next, src.source, why)) {
+            out.track_notices.push_back(which + " is on disk but not in the session: track " +
+                                        std::to_string(f.track + 1) + ", " + f.path + ": " +
+                                        why);
             continue;
         }
         src.source.kind = model::SourceKind::Recorded;
-        src.source.take = take;
+        src.source.take = take.take;
         src.source.recorded_on_track = t->id;
         model::RecordTake rec;
         rec.track = t->id;
@@ -183,13 +194,21 @@ ClosedTake add_closed_take(model::Document& document, const Session& session, in
         sources.push_back(std::move(src));
         records.push_back(std::move(rec));
     }
-    // Two members a track. Past the compound limit the take is split, in
+    if (!first_failure.empty()) {
+        out.cut_short = which + " was cut short: " + first_failure;
+        if (more_failures > 0) {
+            out.cut_short += " (and " + std::to_string(more_failures) + " more track" +
+                             (more_failures == 1 ? "" : "s") + ")";
+        }
+    }
+
+    // Two members a file. Past the compound limit the take is split, in
     // track order, one undo step per part: a take that does not fit must
     // still land whole, not fall back to the pool for being large. The ids
     // above rise across the parts, so each part's are still fresh.
-    constexpr std::size_t kTracksPerCompound = model::kMaxCompoundMembers / 2;
-    for (std::size_t first = 0; first < sources.size(); first += kTracksPerCompound) {
-        const std::size_t last = std::min(sources.size(), first + kTracksPerCompound);
+    constexpr std::size_t kFilesPerCompound = model::kMaxCompoundMembers / 2;
+    for (std::size_t first = 0; first < sources.size(); first += kFilesPerCompound) {
+        const std::size_t last = std::min(sources.size(), first + kFilesPerCompound);
         model::Compound c;
         c.label = "Record";
         for (std::size_t k = first; k < last; ++k) {
@@ -208,8 +227,8 @@ ClosedTake add_closed_take(model::Document& document, const Session& session, in
         // the pool it goes, where a save records it, and the operator is
         // told.
         if (!out.refused.empty()) out.refused += "; ";
-        out.refused += which + " is on disk and in the session's audio, but not on the timeline: " +
-                       why;
+        out.refused +=
+            which + " is on disk and in the session's audio, but not on the timeline: " + why;
         for (std::size_t k = first; k < last; ++k) {
             std::string error;
             if (!apply(document, sources[k], out.updates, error)) {

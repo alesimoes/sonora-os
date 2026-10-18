@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QQmlEngine>
+#include <QQuickItem>
 #include <QQuickView>
 #include <QTimer>
 #include <chrono>
@@ -19,6 +20,7 @@
 
 #include "control_adapter.h"
 #include "key_router.h"
+#include "keymap_profiles.h"
 #include "measure.h"
 #include "peak_source.h"
 #include "qt_keys.h"
@@ -41,6 +43,8 @@ namespace {
 
 struct Options {
     QString keymap;
+    QString keymap_dir;
+    QString keys_view;
     bool transport_view = false;
     int tracks = 18;
     int meter_hz = 0;  // 0: 60, or 30 on a software rasteriser
@@ -149,6 +153,17 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption keymap({QStringLiteral("keymap")},
                                     QStringLiteral("Key map profile (JSON)."),
                                     QStringLiteral("path"));
+    const QCommandLineOption keymap_dir_opt(
+        {QStringLiteral("keymap-dir")},
+        QStringLiteral("Folder of key map profiles the Keys menu offers (default "
+                       "$SONORA_KEYMAP_DIR, else --keymap's folder, else "
+                       "share/sonora/keymaps)."),
+        QStringLiteral("path"));
+    const QCommandLineOption keys_view({QStringLiteral("keys-view")},
+                                       QStringLiteral("Open the Keys menu (profiles), for "
+                                                      "screenshots."),
+                                       QStringLiteral("profiles"));
+    p.addOptions({keymap_dir_opt, keys_view});
     const QCommandLineOption transport_view(
         {QStringLiteral("transport-view")},
         QStringLiteral("With --demo, a tempo map in the demo session and the Transport "
@@ -212,6 +227,12 @@ bool parse(QGuiApplication& app, Options& o) {
     p.process(app);
 
     o.keymap = p.value(keymap);
+    o.keymap_dir = p.value(keymap_dir_opt);
+    o.keys_view = p.value(keys_view);
+    if (!o.keys_view.isEmpty() && o.keys_view != QStringLiteral("profiles")) {
+        std::fprintf(stderr, "sonora-ui: --keys-view must be profiles\n");
+        return false;
+    }
     if (p.isSet(tracks)) o.tracks = p.value(tracks).toInt();
     o.transport_view = p.isSet(transport_view);
     if (p.isSet(hz)) o.meter_hz = p.value(hz).toInt();
@@ -270,9 +291,24 @@ int main(int argc, char** argv) {
     App a;
     if (!parse(app, a.opt)) return 2;
 
-    std::string refusal;
-    const KeyMap keymap = keymap_or_built_in(a.opt.keymap.toStdString(), refusal);
+    // --keymap wins; else the profile chosen in the Keys menu last time;
+    // else the built-in default.
+    const std::string profiles_dir =
+        keymap_dir(a.opt.keymap_dir.toStdString(), a.opt.keymap.toStdString(),
+                   QCoreApplication::applicationDirPath().toStdString());
+    const std::string remembered_at = remembered_profile_path();
+    StartupProfile start =
+        startup_profile(a.opt.keymap.toStdString(), remembered_at, profiles_dir);
+    std::string profile = start.file;
+    const std::string refusal = start.refusal;
+    const KeyMap keymap = std::move(start.map);
     if (!refusal.empty()) std::fprintf(stderr, "sonora-ui: %s\n", refusal.c_str());
+    std::string keymap_dir_notice;
+    if (!a.opt.keymap_dir.isEmpty() && profiles_dir.empty()) {
+        keymap_dir_notice = "no key map folder at " + a.opt.keymap_dir.toStdString() +
+                            ": the Keys menu offers the built-in keys only";
+        std::fprintf(stderr, "sonora-ui: %s\n", keymap_dir_notice.c_str());
+    }
 
     // The real engine when one listens; the fake otherwise, said on screen,
     // so nobody mistakes the fake's synthetic tones for their inputs.
@@ -364,7 +400,7 @@ int main(int argc, char** argv) {
     MixModel mixer(
         session,
         [&engine](uint32_t track, float linear) { engine.send_track_gain(track, linear); },
-        engine.info().track_count, fake == nullptr);
+        [&engine]() { return engine.info().track_count; }, fake == nullptr);
     InsertModel inserts(document, session);
     inserts.controller().set_param_sender(
         [&engine](sonora::model::Id insert, const std::string& key, float value) {
@@ -418,11 +454,30 @@ int main(int argc, char** argv) {
     model.setPluginSinks(std::move(plugin_sinks));
     session.setWindow(a.opt.window);
     if (a.opt.transport_view) transport.setOpen(true);
-    if (!refusal.empty()) model.addNotice(QString::fromStdString(refusal));
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
+    if (!keymap_dir_notice.empty()) model.addNotice(QString::fromStdString(keymap_dir_notice));
+    // A switch in the Keys menu replaces these; the engine's stay.
+    QStringList keymap_notices;
+    if (!refusal.empty()) keymap_notices << QString::fromStdString(refusal);
+    QStringList essentials_notices;
     for (const auto& n : notices) {
         std::fprintf(stderr, "sonora-ui: key map \"%s\": %s\n", keymap.name().c_str(), n.c_str());
-        model.addNotice(QString::fromStdString(n));
+        essentials_notices << QString::fromStdString(n);
+    }
+    model.setKeymapNotices(keymap_notices, essentials_notices);
+    {
+        std::vector<ProfileEntry> entries = list_profiles(profiles_dir, profile);
+        // The built-in keys are listed as keymaps/default.json when that
+        // file is there; it is the same map (test_keymap holds them equal).
+        if (profile.empty()) {
+            for (const ProfileEntry& e : entries) {
+                if (e.error.empty() && e.name == KeyMap::built_in_default().name()) profile = e.file;
+            }
+        }
+        model.setProfiles(std::move(entries), profile,
+                          [remembered_at, profiles_dir](const std::string& file, std::string& why) {
+                              return remember_profile(remembered_at, profiles_dir, file, why);
+                          });
     }
 
     QQuickView view;
@@ -445,6 +500,11 @@ int main(int argc, char** argv) {
     view.rootObject()->setProperty("transport", QVariant::fromValue(&transport));
     if (a.opt.no_meters) model.hideMeters();
     model.routeKeysFrom(&view);
+    if (a.opt.keys_view == QStringLiteral("profiles")) {
+        if (QObject* panel = view.rootObject()->findChild<QObject*>(QStringLiteral("profilePanel"))) {
+            panel->setProperty("visible", true);
+        }
+    }
     model.start(a.opt.meter_hz > 0 ? a.opt.meter_hz : 60);
 
     if (a.opt.kiosk) {

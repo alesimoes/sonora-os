@@ -26,7 +26,10 @@ playback can follow edits; it is in flight.
 3. [ ] Playback: disk reader, chunk pool, residency-gated plan swap, output
        through the fixed 2-channel monitor bus (DAW 1 detail, below).
 4. [ ] Record while rolling with in-band take boundaries; punch, loop,
-       locate, pre-roll; input monitoring.
+       locate, pre-roll; input monitoring. In-band boundaries, record
+       while rolling and punch in/out on the fly at block boundaries:
+       `feature/record-while-rolling`. Punch points inside a block, loop,
+       pre-roll and input monitoring remain.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,
@@ -52,28 +55,47 @@ playback can follow edits; it is in flight.
 8. [ ] Parallel processing graph, buses, sends, VCA, automation in the plan
        (DAW 4).
 9. [ ] For the Mix window (Track 3 item 2, `feature/ui-mixer-monitor`):
-       - state block layout 3 with each track's post-fader peak (L/R, after
-         pan and mute) and the monitor bus's L/R peak. `Session` already
-         has `bus_peak_`; it is not published. Until then the strips' meters
-         are labelled IN and the bus's NO DATA, and pre/post-fader metering
-         cannot be offered;
-       - a `ParamId` for the monitor bus gain (and track pan), so those ride
-         through ParameterChange too instead of a SetMonitorBus / SetMix per
-         step;
-       - FakeEngine's published track gain ignores SetMix (the real engine
-         writes faders from the document when the mix changes); it should
-         follow it, as conformance would show;
-       - a Resync (and a new connection's Snapshot) should re-apply the
-         document's mix to the engine's tracks, as ADR-0009 item 3 says a
-         Snapshot does: the server's Resync path never sets `mix_changed`,
-         so ride steps a lost link stranded stay in the gain atomics. The UI
-         resends every track's gain on each new document meanwhile
-         (`MixModel::resendGains`, PR #61);
-       - `PlaybackController::apply_mix` (playback_controller.cpp:88) writes
-         only engine tracks that still map to a document track, so a solo
-         on a track that left the document (an undone AddTrack) stays set
-         and `any_solo` (session.cpp:452) silences the rest while the UI
-         shows no solo. Reset `tracks_[i]` for `i >=` the document's tracks.
+       - [ ] state block layout 3 with each track's post-fader peak (L/R,
+         after pan and mute) and the monitor bus's L/R peak. `Session`
+         already has `bus_peak_`; it is not published. Until then the
+         strips' meters are labelled IN and the bus's NO DATA, and
+         pre/post-fader metering cannot be offered. Proposed in ADR-0013
+         (layout 3), which needs its contract reviews before code;
+       - [ ] a `ParamId` for the monitor bus gain (and track pan), so those
+         ride through ParameterChange too instead of a SetMonitorBus /
+         SetMix per step. ADR-0013 §3 (protocol 4: an older engine's
+         decoder refuses an unknown `ParamId` and drops the client);
+       - [x] FakeEngine publishes the document's gain and mute when an
+         update changes them, on a Resync and when it starts, as the real
+         engine does; conformance check "the mix follows the document"
+         holds both (PR #71);
+       - [x] a Resync applies the document's mix (ADR-0009 §4 item 3), and
+         a client that leaves mid-ride has the gain of each track it was
+         the last to ride put back, so a ride a lost link stranded does
+         not stay in the gain atomics. A client attaching mid-ride leaves
+         the ride alone (PR #71, review decision). Track 3 removed
+         `MixModel::resendGains` (PR #61), which sent every gain on each
+         new document and so overrode that ride; the interface now sends
+         only a dropped ride's own index, for the one case the engine
+         cannot see (a step crossing another interface's reorder or Open,
+         `mix_model.h`);
+       - [x] `PlaybackController::apply_mix` clears the solo of an engine
+         track the document does not have, so an undone AddTrack of a
+         soloed track no longer silences the rest. Its fader and mute stay:
+         the old plan renders it until the swap (PR #71,
+         `playback_control`, rolling and stopped).
+10. [ ] Engine commands the shipped key maps bind and no engine runs yet
+        (Track 3 item 4; the window says "not implemented" for each):
+        `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
+        `transport.toggle_loop`, `transport.play_half_speed`,
+        `track.toggle_input_monitor`. Wired in
+        the interface against `FakeEngine::Config::planned_commands`
+        (test_ui_keymaps); each needs its handler in
+        `install_session_commands()` and in `FakeEngine::engine_commands()`
+        together, and then leaves `planned_commands`. The edit operations
+        (`edit.cut`/`copy`/`paste`/`duplicate`/`repeat`/`select_all`/
+        `heal_separation`/`consolidate`) wait on Track 3 item 1's compound
+        operation.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -126,15 +148,21 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              other end (the interface clamps and refuses against it, naming
              it). Pro Tools drops it: crossfade plus SetFade 0, sent as one
              `Compound` (Track 2 item 7).
-       - [ ] common/model does not refuse a crossfade that overlaps the
-             region's own fade at its other end (the engine multiplies
-             them). The interface refuses it; the model should too, in
-             `playlist_problem`, so no other client can write one.
+       - [x] common/model refuses a crossfade that overlaps the region's
+             own fade at its other end, in `playlist_problem`; edge-moving
+             edits, crossfade clears and punches shorten the fade instead,
+             and the loader repairs older v2 files the same way, reporting
+             each shortened fade on Open (PR #69).
+       - [ ] Once the engine sends punch crossfades (`add_closed_take` sends
+             none today), the take's report names any neighbour's fade the
+             punch shortened (`RecordTake` runs `fit_fades_to_crossfades`).
+             Pro Tools truncates the fade and never refuses the record; the
+             operator should still hear what changed (PR #69 review, note 3).
        - [ ] Cut/copy/paste/duplicate/repeat and Shuffle: each one
              `Compound` with a label ("Cut", "Paste"), now in common/model
-             (Track 2 item 7). Shuffle on a long playlist needs a
-             `ShiftRegions` operation first (ADR-0009 update 2026-10-14,
-             item 5).
+             (Track 2 item 7), within its interim 64 members until Track 2
+             item 8. Shuffle on a long playlist needs a `ShiftRegions`
+             operation first (ADR-0009 update 2026-10-14, item 5).
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain
@@ -144,7 +172,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] Post-fader and bus meters, pre/post switch: Track 1 item 9.
        - [x] Interrupted rides (PR #61 review): a ride holds its track id
              and session and is dropped, with the reason, if either goes
-             before release; every new document resends the engine's gains;
+             before release (since PR #71 the engine restores the mix; a
+             dropped ride resends its own index only);
              live-parameter Ok replies no longer clear the status line.
        - [ ] Alt-click on solo or mute is one SetMix per track: N revisions
              and no undo step, since mix state is not edit-undoable. It
@@ -166,8 +195,34 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] The nudge steps by the first entry's grid value
              (`edit_controller.cpp` `nudge`): step by the value at the
              region instead, after `feature/ui-fades` lands there.
-4. [ ] Key maps driving M4 commands, profile switch, Commands Keyboard
-       Focus; fix the `keymaps/default.json` comment and its embedded copy.
+       - [x] A stale engine read no longer makes the bar counter and the
+             Transport window disagree (#62 merge gate): `SessionModel`
+             keeps the last state on a stale read, as `TransportModel`
+             does (ui_transport test_window).
+4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
+       Focus; fix the `keymaps/default.json` comment and its embedded copy
+       (`feature/ui-keymaps`): routing by `CommandSpec::domain`, the engine
+       first for Engine commands it lists; `"focus": "commands"` bindings,
+       `focus.commands` on `ctrl+alt+1` and the a-z button; the Keys menu,
+       remembered in `~/.config/sonora/keymap`. Still open:
+       - [ ] Verify against Avid: Pro Tools' focus state in a new session,
+             Command+Option+1 turning focus off, letters with focus off,
+             focus in the Mix window; `comma`/`period` (nudge or
+             nudge-and-play in the ch. 3 table).
+       - [ ] The tty has no a-z indicator, so its focus keys stay live; a
+             focus toggle there needs a footer indicator first.
+       - [ ] Pro Tools' Clip List and Groups List focuses (`ctrl+alt+2`,
+             `ctrl+alt+3`) once those lists exist.
+       - [x] On engine reconnect the whole Hello is re-read: sample rate,
+             buffer size and track count too. ShellModel resizes its peaks
+             and arm list, refreshes the clock and emits
+             `engineFormatChanged` (trackCount, formatText); MixModel asks
+             for the track count when it uses it (PR #67 review; ui_keymaps
+             test_engine_restart_format, ui_mix live_path_follows_the_engine).
+             The start-up refusal notice survives a reconnect that changes
+             the essentials notices (test_restart_keeps_refusal). Still
+             sized from the first Hello: the synthetic waveforms' rate
+             (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
@@ -250,31 +305,47 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              instead of polling.
        Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
        out of that PR's scope and handed to checklist 5:
-       - [ ] The callback's timestamp: `Session::process` calls
-             `std::chrono::steady_clock::now()` for `runner_->begin()`
-             (session.cpp, the chain gate; auditor finding 1, the only
-             out-of-line call on the path, flagged by `-Wfunction-effects`).
-             Pass a backend-supplied cycle time instead (JACK
-             `jack_get_cycle_times`), or have the ISO's audio stack refuse
-             a clocksource other than `tsc`. Proof on the UMC1820 target:
-             `current_clocksource` reads `tsc`, and `strace -f -e
-             trace=clock_gettime` on a playing `sonora-engine` shows no call
-             from the audio thread.
+       - [x] The callback's timestamp (checklist 5 RT PR):
+             `contracts/backend` `AudioBlock::callback_ns`, stamped by the
+             backend (JACK: `jack_get_cycle_times`' current_usecs; the fake:
+             its thread's steady_clock), carried forward by the period when
+             0; `Session::process` reads no clock. ctest `plugin_params`
+             (`callback_ns_from_the_backend`) and the conformance check
+             `callback_ns_is_the_monotonic_clock` (fake in ctest; jackd2
+             and PipeWire in `tools/rtsan-jack.sh`). Still open on the
+             UMC1820 target: `strace -f -e trace=clock_gettime` on a playing
+             `sonora-engine` shows no call from the audio thread.
+       - [x] From the #59 re-review (checklist 5 RT PR): the builder's
+             `PlanReport::track_latency` is the latency the plan carries,
+             not the resolver's figure, so an unbound chain shows 0 (ctest
+             `playback_control` `report_shows_the_planned_latency`); and a
+             bound chain the session does not run (no runner, a callback the
+             runner does not take) plays silence, counted in
+             `Session::unrun_chain_blocks()`, never its dry input early
+             (ctest `plan_pdc` `bound_chain_without_a_runner_is_silence`,
+             `long_callback_bypasses_chains`).
        - [ ] One block size, one policy (auditor finding 4, rt-engineer
              item 3): pin `ClientConfig::block_frames` to the backend's
              period and set `max_chain_channels = 2`; on a period change,
              restart the hosts and replan (the chain latencies include the
-             IPC block). Today another period silences every chain
-             (`frame_mismatches`) while compensation still delays the dry
-             tracks. Session's gate uses the runner's block size, so a
-             mismatch is counted once, in `chain_bypassed_blocks`.
-       - [ ] Parameter events into `run()` (rt-engineer item 1): Session's
-             drain discards every non-Locate `RtCommand` uncounted, so a
-             `PluginParameterChange` vanishes. Drain it into per-node-state
-             staging preallocated at session creation (`max_nodes` x a
-             per-callback cap, overflow counted), and change the interface
-             to `run(node, in, out, frames, const ParamEvent*, uint32_t)`.
-             The runner stays stateless.
+             IPC block). Control-server PR. Done in the RT PR: Session's
+             gate uses `InsertChainRunner::block_frames()`, so another
+             period never reaches the client and is counted once, in
+             `chain_bypassed_blocks` (ctest `plugin_params`).
+       - [x] Parameter events into `run()` (rt-engineer item 1; checklist 5
+             RT PR): `Session::post_plugin_param(store, instance, param,
+             value)` into a ring of its own (`plugin_param_capacity`, so a
+             drag never holds a locate back), drained at block start and
+             handed to the InsertChain node naming that store as
+             `run(node, in, out, frames, const ParamEvent*, n)`, in posted
+             order, offset 0; what no node takes is dropped and counted
+             (`plugin_params_dropped`). Gathered per node from one array the
+             ring's capacity rather than per-node-state staging: the
+             session then needs no `max_nodes` of the client's, and the
+             cost is bounded (capacity x InsertChain nodes compares). The
+             runner stays stateless. ctest `plugin_params`,
+             `plugin_chain_runner`, `session_plugins_params` (eg-amp's gain
+             and its bypass, each from the callback after the post).
        - [ ] `PluginFault` from the client, not the runner (rt-engineer
              item 2): the control thread polls `slot_status(slot)` and
              `removed(slot)` for the slots the resolver assigned, so a
@@ -558,13 +629,20 @@ not start or extend those items before the Complete DAW closes (owner,
       two of five full runs, and pass alone (`playback_fake` 10 of 10).
       CI's 4-core runners have not shown it. Measure under load, or mark
       them RUN_SERIAL. rt-engineer with dsp-engineer.
+      `playback_fake` is fixed (PR #71). The 0.354 is the tone's peak
+      at the -3 dB bus gain against silence, which is a missed chunk. The
+      test ran 8 blocks per 1 ms sleep, about 21 times real time, so in one
+      5 ms reader tick it could roll 40 blocks, past the 4800-frame window.
+      With 32 busy loops on 16 cores it failed 5 of 40 runs on main, with 1
+      to 25 misses. It now waits for a whole reader pass every 8 blocks
+      (`DiskReader::passes()`): 0 of 60 under the same load, 0 of 40 idle.
+      `dsp_triode` is still open.
 - [ ] `-Wfunction-effects` to an error, per module, once clean. Today (clang-22,
       `ci/rtsan`) it reports SONORA_RT functions calling unmarked ones that
       RTSan, at run time, finds clean: `ProcessorBase::apply_event`
       (plugins/native/sdk), `LookaheadLimiter::set_release` and
       `TruePeakGuard::set_release` (limiter), `Bridge::descriptor`
-      (format), `std::chrono::steady_clock::now` in `Session::process`
-      (the vDSO read, ADR-0012 Unverified 9), and libjack's C API (clean
+      (format), and libjack's C API (clean
       at run time on jackd2 and pipewire-jack, `tools/rtsan-jack.sh`).
       `ProcessorBase::on_reset` is done (auditor, PR #54): no test reached
       process()'s non-finite-output branch, so `native_sdk` now forces a
@@ -780,7 +858,7 @@ Order and owners are in ADR-0008 §5.
       Under `de_DE` the decimal separator is `,`, so `0.5` parses as `0`.
       Fix with `std::from_chars`; regression test that sets a comma locale
       first. ui-engineer.
-- [ ] Close a take while rolling with **in-band boundary records**
+- [x] Close a take while rolling with **in-band boundary records**
       (`brain/specs/timeline-model.md`, "Closing a take while rolling"):
       audio thread → SPSC ring → disk thread splits at exactly the frame;
       the capture ring is never reset; the next take's files opened ahead;
@@ -790,6 +868,27 @@ Order and owners are in ADR-0008 §5.
       handshake** in "Known gaps": with no ring reset there is no race. The
       race's regression test is still written first. rt-engineer, audited
       by rt-safety-auditor.
+      Landed on `feature/record-while-rolling` (2026-10-14), except the
+      sample-accurate parts: windows open and close on block boundaries, and
+      the auto-monitor switch has no ramp yet. Both go with the punch points
+      below.
+- [ ] Punch points inside a block: capture opens and closes at a frame the
+      control thread sets ahead (Pro Tools' punch range, Logic's autopunch),
+      sample-accurate, the monitor switched there with a ramp; files opened
+      when the punch is armed. Then a `transport.punch` command in the
+      `contracts/api` catalogue for punching in and out on the fly
+      (`Session::start_recording()` while rolling, `Session::punch_out()`),
+      and its vendor bindings in `keymaps/`. rt-engineer, contract owner for
+      the catalogue.
+      Before it lands (PR #60, review 4): `Session::failed_files_` lasts
+      until `stop()`, so after take K fails, `take_failure()` stays
+      non-empty through a clean take K + 1 started while rolling.
+      `engine_control_server.cpp` (the `TakeFailed` block in the transport
+      follower) would then post "take K + 1 failed" naming K's file, and the
+      health flag would never clear, though ADR-0007 says the next clean take
+      clears both. Key the failures by take, or clear them when a take's
+      close is collected. Unreachable today: `transport.record` during a
+      take does nothing.
 - [ ] Periodic `fdatasync` of every open take file from the disk thread,
       through `common/platform`, with the loss window stated in the UI and
       in `brain/specs/session-format.md` ("Crash recovery"). Measure its cost
@@ -828,6 +927,9 @@ Order and owners are in ADR-0008 §5.
   regression test first. rt-engineer, audited by rt-safety-auditor.
   **Superseded by ADR-0009:** the fix is now the in-band boundary records
   in Phase 2 ("Close a take while rolling"), which remove the ring reset.
+  **Fixed on `feature/record-while-rolling`:** the ring is never reset, and
+  `test_take_boundaries` reproduces the race on the old code (an insert
+  runner's `begin()` stalls a callback after it has loaded the take).
 
 - RF64 for files over 4 GB. The 32-bit RIFF size field overflows at about
   8 hours of 24-bit mono at 48 kHz. See `brain/specs/bwf-broadcast-wave.md`.
@@ -839,6 +941,11 @@ Order and owners are in ADR-0008 §5.
   it at the edit point (`gtk2_ardour/editor_audio_import.cc:989`, tag 8.12).
   A non-zero session start would avoid that, but it is a timeline decision
   (ADR), not a writer fix. `brain/research/bwf-interop.md`, finding 2.
+- A `stop()` whose wait for the callback in flight times out (1 s, a hung
+  backend) still returns true. The block that callback records late shows
+  only on stderr and in `Session::dropped_samples()`, which the UI does not
+  surface (PR #60, review 5). Acceptable for a hung backend, but the
+  operator should see it: a Notice, or the health flag.
 - `DiskThread` polls every 10 ms. Correct, but a condition variable signalled
   by the callback would be better once there is a reason to care. It must not
   make the callback block.
@@ -1012,8 +1119,8 @@ ADR-0011 "For the owner".
       consecutive inconclusive nights (the count kept as a workflow
       artifact or cache entry), N set from the inconclusive rate the
       nightly has seen. dsp-engineer.
-- [ ] Wall-clock bars under the sanitizers (found on the opto PR, not
-      caused by it): the tube suite's `hot_input` holds every quality's
+- [x] Wall-clock bars under the sanitizers (found on the opto PR, not
+      caused by it; done in #73: Suite::check_time_le, SONORA_SANITIZED): the tube suite's `hot_input` holds every quality's
       worst block to the 2.67 ms period (`check_le`, 2667 us) in every
       build, ASan/UBSan included, and with or without SONORA_DSP_QUICK.
       It passes on the GitHub runners (CI `sanitizers`, nightly `asan`),

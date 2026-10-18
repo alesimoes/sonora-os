@@ -511,6 +511,167 @@ int test_take_origin_is_first_recorded_frame() {
     return 0;
 }
 
+// Takes closed while rolling join the document from the disk thread's
+// report: punched out, and started over another, each at its own origin and
+// length on disk, while the transport never stops. writer() names the take
+// recording now, so the report is the only thing that can name these.
+int test_takes_closed_while_rolling_join_the_document() {
+    auto session = make_session(1);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    sonora::model::Document doc(sonora::engine_document(s));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    run_block_in(s, o, in);
+    const int first = s.next_free_take();
+    CHECK(s.start_recording(first, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.start_recording(first + 1, &error));
+    for (int i = 0; i < 2; ++i) run_block_in(s, o, in);
+    CHECK(s.punch_out());
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() == sonora::TransportState::Rolling);
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 2);
+    for (const Session::ClosedTake& take : closed) {
+        const sonora::TakeAdded added = sonora::add_closed_take(doc, s, take);
+        CHECK(added.track_notices.empty() && added.cut_short.empty() && added.refused.empty());
+        CHECK(added.updates.size() == 1);
+    }
+    const auto& track = *doc.current().edit->tracks[0];
+    const sonora::model::Playlist* list = nullptr;
+    for (const auto& p : track.playlists) {
+        if (p->id == track.active_playlist) list = p.get();
+    }
+    CHECK(list != nullptr);
+    CHECK(list->regions.size() == 2);
+    CHECK(list->regions[0].position == kBlock);
+    CHECK(list->regions[0].length == 3 * kBlock);
+    CHECK(list->regions[1].position == 4 * kBlock);
+    CHECK(list->regions[1].length == 2 * kBlock);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+// Code review 3 on PR #60: a take that failed (full disk, 4 GB limit) and
+// was then punched out. punch_out() forgot it, so take_failure() went
+// quiet, the next stop() said all was well, and the closed-take report
+// placed the truncated file as a good take. Now the failure is still said
+// until stop(), stop() reports it, and the failed file is placed up to its
+// last whole frame, as main did: the operator keeps what was recorded.
+int test_failure_in_a_take_punched_out_is_reported() {
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    auto session = make_session(2);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.tracks()[1]->set_rec_armed(true);
+    // Only track 2 runs out of room: 10 mono 24-bit frames, in either slot.
+    for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[1]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+    }
+    Document doc(sonora::engine_document(s));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    const int take = s.next_free_take();
+    CHECK(s.start_recording(take, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.closed_takes().empty());  // drains: track 2's writer fails here
+    const std::string why = s.take_failure();
+    CHECK(why.find("Audio 2_") != std::string::npos);
+    CHECK(why.find("4 GB") != std::string::npos);
+    CHECK(why.find("Audio 1_") == std::string::npos);
+
+    CHECK(s.punch_out());
+    CHECK(s.take_failure() == why);
+    run_block_in(s, o, in);
+    CHECK(s.transport().state() == TransportState::Rolling);
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+    const sonora::TakeAdded added = sonora::add_closed_take(doc, s, closed[0]);
+    CHECK(added.track_notices.empty() && added.refused.empty());
+    const std::string& placed = added.cut_short;
+    CHECK(placed.find("was cut short") != std::string::npos);
+    CHECK(placed.find("Audio 2_") != std::string::npos);
+    CHECK(placed.find("4 GB") != std::string::npos);
+    CHECK(placed.find("placed up to the failure") != std::string::npos);
+    CHECK(placed.find("Audio 1_") == std::string::npos);
+    const auto regions = [&](std::size_t t) -> const std::vector<sonora::model::Region>* {
+        const auto& track = *doc.current().edit->tracks[t];
+        for (const auto& p : track.playlists) {
+            if (p->id == track.active_playlist) return &p->regions;
+        }
+        return nullptr;
+    };
+    CHECK(regions(0) && regions(0)->size() == 1);
+    CHECK((*regions(0))[0].length == 3 * kBlock);
+    // Exactly the 10 frames that fit under the limit, at the take's start.
+    CHECK(regions(1) && regions(1)->size() == 1);
+    CHECK((*regions(1))[0].length == 10);
+    CHECK((*regions(1))[0].position == (*regions(0))[0].position);
+    CHECK(s.take_failure() == why);
+
+    std::string at_stop;
+    CHECK(!s.stop(&at_stop));
+    CHECK(at_stop == why);
+    CHECK(s.take_failure().empty());
+    return 0;
+}
+
+// PR #60 re-review: a take whose first track was cut short (and placed up
+// to the failure) and whose second track cannot be placed at all. The
+// second reason replaced the first, so the Notice lost the truncated
+// track, and it named no track for the one left out.
+int test_unplaceable_track_keeps_the_earlier_failure() {
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    auto session = make_session(2);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.tracks()[1]->set_rec_armed(true);
+    for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[0]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+    }
+    // A document with one track: the take's second file has nowhere to go.
+    auto one = make_session(1);
+    Document doc(sonora::engine_document(*one));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    std::string at_stop;
+    CHECK(!s.stop(&at_stop));
+
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+    const sonora::TakeAdded added = sonora::add_closed_take(doc, s, closed[0]);
+    CHECK(added.refused.empty());
+    // The track left out has its own notice, naming it and its file.
+    CHECK(added.track_notices.size() == 1);
+    const std::string& left_out = added.track_notices[0];
+    CHECK(left_out.find("is on disk but not in the session") != std::string::npos);
+    CHECK(left_out.find("track 2") != std::string::npos);
+    CHECK(left_out.find("Audio 2_") != std::string::npos);
+    // The earlier track's failure is still said, in its own.
+    const std::string& placed = added.cut_short;
+    CHECK(placed.find("Audio 1_") != std::string::npos);
+    CHECK(placed.find("4 GB") != std::string::npos);
+    CHECK(placed.find("placed up to the failure") != std::string::npos);
+    const auto& track = *doc.current().edit->tracks[0];
+    for (const auto& p : track.playlists) {
+        if (p->id != track.active_playlist) continue;
+        CHECK(p->regions.size() == 1);
+        CHECK(p->regions[0].length == 10);
+    }
+    return 0;
+}
+
 // Return to zero, then record, in one pass of the terminal loop: the take
 // starts at zero once the locate is applied, and the playhead never jumps
 // while it runs.
@@ -714,6 +875,98 @@ int test_show_leaves_the_faders_alone() {
     CHECK(s.tracks()[0]->gain() == 0.25f);
     ctl.apply_mix(h.current());
     CHECK(s.tracks()[0]->gain() == 1.0f);
+    return 0;
+}
+
+// The audio thread counts the solo of every engine track, document or not.
+// An undone AddTrack of a soloed track leaves its engine track holding that
+// solo, which would silence every other track while the interface shows no
+// solo at all. Only the solo goes: until the plan swap the old plan still
+// renders that track, so its fader and mute stay as they were.
+int test_undone_track_leaves_no_solo() {
+    auto session = make_session(3);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    AddTrack c = track_op(300, 301, "C");
+    c.mix.solo = true;
+    c.mix.mute = true;
+    c.mix.gain_db = -12.0;
+    CHECK_APPLY(h, c);
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(s.tracks()[2]->soloed() && s.tracks()[2]->muted());
+    CHECK(h.undo());
+    CHECK(show(ctl, h.current(), error));
+    CHECK(!s.tracks()[2]->soloed());
+    CHECK(s.tracks()[2]->muted());
+    CHECK(s.tracks()[2]->gain() == sonora::gain_of_db(-12.0f));
+    CHECK(s.tracks()[2]->pan() == -1.0f);
+    CHECK(h.redo());
+    CHECK(show(ctl, h.current(), error));
+    CHECK(s.tracks()[2]->soloed());
+    return 0;
+}
+
+// The same, rolling. A document without track C (a session opened, an
+// AddTrack undone) is shown while the old plan still renders C on engine
+// track 2, and goes on rendering it until the reader has the new plan's
+// window and pump() publishes it. C is muted: not a sample of it may be
+// heard in that window (review of PR #71: it played at 0 dB until the
+// swap when the controller unmuted tracks past the document's end).
+int test_removed_track_stays_muted_until_the_swap() {
+    auto session = make_session(3);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History without(new_session(SessionSettings{}));
+    CHECK(two_tracks(without));
+    History with = without;
+    AddTrack c = track_op(300, 301, "C");
+    c.mix.mute = true;
+    CHECK_APPLY(with, c);
+    CHECK_APPLY(with, (PlaceRegion{301, region(310, 1, 0, 40 * kChunk, 0), 0}));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, with.current(), error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    run_block(s, o);  // ramps settle
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+
+    // Track A alone is heard, hard left, before and after; C never.
+    const auto only_a = [&]() {
+        const int64_t at = static_cast<int64_t>(s.transport().playhead());
+        run_block(s, o);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            if (o.l[i] != value(1, at + i)) {
+                std::fprintf(stderr, "  frame %lld: %f, want %f\n",
+                             static_cast<long long>(at + i), o.l[i], value(1, at + i));
+                return false;
+            }
+        }
+        return true;
+    };
+    for (int blk = 0; blk < 4; ++blk) {
+        s.reader().run_pass();
+        ctl.pump();
+        CHECK(only_a());
+    }
+    const uint64_t published = ctl.plans_published();
+    CHECK(show(ctl, without.current(), error));
+    // No reader pass, no pump: the old plan plays these.
+    for (int blk = 0; blk < 4; ++blk) CHECK(only_a());
+    CHECK(ctl.plans_published() == published);
+    for (int blk = 0; blk < 8; ++blk) {
+        s.reader().run_pass();
+        ctl.pump();
+        CHECK(only_a());
+    }
+    CHECK(ctl.plans_published() == published + 1);
+    CHECK(s.playback_misses() == 0);
     return 0;
 }
 
@@ -1000,6 +1253,32 @@ int test_latency_change_is_a_new_plan() {
     return 0;
 }
 
+// PR #59 re-review (1): the report shows the latency the plan carries. A
+// binding with a slot but no node state is laid out unbound, latency 0, so
+// the state block must say 0 for its track, not the 256 the resolver gave.
+int test_report_shows_the_planned_latency() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, track_op(102, 103, "B"));
+    CHECK_APPLY(h, insert_op(100, 500, 0));
+    CHECK_APPLY(h, insert_op(102, 501, 0));
+    PlaybackController ctl(s, kDir);
+    ctl.set_chain_resolver([](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
+        b.channel_slot = engine_track;
+        b.latency_frames = 256;
+        if (engine_track == 1) b.node_state = engine_track;
+    });
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    CHECK(ctl.playing_report().track_latency[0] == 0);
+    CHECK(ctl.playing_report().track_latency[1] == 256);
+    CHECK(ctl.playing_report().compensation_frames == 256);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1013,16 +1292,22 @@ int main() {
     if (test_locate_and_cancel()) return 1;
     if (test_transport_commands()) return 1;
     if (test_take_origin_is_first_recorded_frame()) return 1;
+    if (test_takes_closed_while_rolling_join_the_document()) return 1;
+    if (test_failure_in_a_take_punched_out_is_reported()) return 1;
+    if (test_unplaceable_track_keeps_the_earlier_failure()) return 1;
     if (test_return_to_zero_then_record()) return 1;
     if (test_pending_locate_dropped_by_a_take()) return 1;
     if (test_record_waits_for_residency()) return 1;
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
+    if (test_undone_track_leaves_no_solo()) return 1;
+    if (test_removed_track_stays_muted_until_the_swap()) return 1;
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;
     if (test_huge_gain_is_no_nan()) return 1;
     if (test_build_with_chains()) return 1;
     if (test_latency_change_is_a_new_plan()) return 1;
+    if (test_report_shows_the_planned_latency()) return 1;
     if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");

@@ -443,6 +443,143 @@ int test_purity_and_sharing() {
     return 0;
 }
 
+// R = [100000, 500000) and S = [500000, 600000) butting, S 500 frames into
+// the source: room for a centred 960-frame crossfade, 480 frames each side.
+int make_butting(Base& b, Id& s) {
+    if (make_base(b) != 0) return 1;
+    s = b.h.current().next_id;
+    CHECK_APPLY(b.h, (PlaceRegion{b.playlist, region(s, b.source, 500000, 100000, 500)}));
+    return 0;
+}
+
+const Crossfade kCentre960{0, 0, 960, Align::Centre, FadeShape::EqualPower};
+
+Crossfade centre_960(Id left, Id right) {
+    Crossfade x = kCentre960;
+    x.left = left;
+    x.right = right;
+    return x;
+}
+
+// The engine multiplies a fade and a crossfade that cover the same frames,
+// so a crossfade reaching into the fade at its region's other end is
+// refused, from either side and in either order (BACKLOG Track 3 item 1).
+int test_crossfade_over_the_other_ends_fade_is_refused() {
+    Base b;
+    Id s = 0;
+    CHECK(make_butting(b, s) == 0);
+    std::string err;
+
+    // S's fade-out leaves 400 frames at its start; the crossfade needs 480.
+    CHECK_APPLY(b.h, (SetFade{b.playlist, s, FadeEnd::Out, Fade{100000 - 400, FadeShape::Linear}}));
+    Snapshot before = b.h.current();
+    CHECK(!b.h.apply(SetCrossfade{b.playlist, centre_960(b.r, s)}, err));
+    CHECK(mentions(err, "fade-out overlaps the crossfade at its start"));
+    CHECK(b.h.current() == before);
+    // Exactly meeting it is not an overlap.
+    CHECK_APPLY(b.h, (SetFade{b.playlist, s, FadeEnd::Out, Fade{100000 - 480, FadeShape::Linear}}));
+    CHECK_APPLY(b.h, (SetCrossfade{b.playlist, centre_960(b.r, s)}));
+    CHECK(invariants_hold(b.h.current()));
+    // The fade cannot then grow into it either.
+    before = b.h.current();
+    CHECK(!b.h.apply(SetFade{b.playlist, s, FadeEnd::Out, Fade{100000 - 479, FadeShape::Linear}},
+                     err));
+    CHECK(mentions(err, "fade-out overlaps the crossfade at its start"));
+    CHECK(b.h.current() == before);
+
+    // The left region's fade-in against the crossfade at its end.
+    CHECK_APPLY(b.h, (RemoveCrossfade{b.playlist, b.r, s}));
+    CHECK_APPLY(b.h, (SetFade{b.playlist, b.r, FadeEnd::In, Fade{400000 - 400, FadeShape::Linear}}));
+    before = b.h.current();
+    CHECK(!b.h.apply(SetCrossfade{b.playlist, centre_960(b.r, s)}, err));
+    CHECK(mentions(err, "fade-in overlaps the crossfade at its end"));
+    CHECK(b.h.current() == before);
+
+    // No client can write it either: the invariant the loader checks.
+    Snapshot bad = b.h.current();
+    auto edit = std::make_shared<EditState>(*bad.edit);
+    auto track = std::make_shared<TrackEdit>(*edit->tracks[0]);
+    Playlist p = *track->playlists[0];
+    p.crossfades.push_back(centre_960(b.r, s));
+    track->playlists[0] = std::make_shared<const Playlist>(std::move(p));
+    edit->tracks[0] = std::move(track);
+    bad.edit = std::move(edit);
+    CHECK(!check_invariants(bad, err));
+    CHECK(mentions(err, "fade-in overlaps the crossfade at its end"));
+    return 0;
+}
+
+// A fade the crossfade leaves room for is not refused later by an edit that
+// shrinks the region: the fade shortens to meet the crossfade, as a fade
+// shortens to fit a trimmed region.
+int test_trim_shortens_a_fade_into_the_crossfade() {
+    Base b;
+    Id s = 0;
+    CHECK(make_butting(b, s) == 0);
+    CHECK_APPLY(b.h, (SetFade{b.playlist, s, FadeEnd::Out, Fade{100000 - 480, FadeShape::Linear}}));
+    CHECK_APPLY(b.h, (SetCrossfade{b.playlist, centre_960(b.r, s)}));
+    CHECK_APPLY(b.h, (TrimRegion{b.playlist, s, Edge::End, 550000}));
+    const Playlist& p = playlist_of(b.h.current(), 0);
+    CHECK(p.crossfades.size() == 1);
+    const Region* r = find(p, s);
+    CHECK(r != nullptr && r->length == 50000 && r->fade_out.length == 50000 - 480);
+    CHECK(invariants_hold(b.h.current()));
+    return 0;
+}
+
+// Clearing a crossfade brings back the fade kept under it. One that runs
+// into the crossfade at the region's other end shortens to meet it, as on an
+// edge edit: the operator never saw that fade and cannot edit it while the
+// other end is crossfaded, so refusing would leave no way out (PR #69
+// review, note 2).
+int test_clearing_a_crossfade_shortens_the_fade_it_reveals() {
+    Base b;
+    Id s = 0;
+    CHECK(make_butting(b, s) == 0);
+    Ids ids(b.h.current());
+    const Id t = ids();
+    CHECK_APPLY(b.h, (PlaceRegion{b.playlist, region(t, b.source, 600000, 100000, 700000)}));
+    CHECK_APPLY(b.h, (SetFade{b.playlist, s, FadeEnd::In, Fade{99600, FadeShape::Linear}}));
+    CHECK_APPLY(b.h, (SetCrossfade{b.playlist, centre_960(b.r, s)}));
+    CHECK_APPLY(b.h, (SetCrossfade{b.playlist, centre_960(s, t)}));
+    const Snapshot before = b.h.current();
+    CHECK_APPLY(b.h, (RemoveCrossfade{b.playlist, b.r, s}));
+    const Playlist& p = playlist_of(b.h.current(), 0);
+    CHECK(p.crossfades.size() == 1 && p.crossfades[0].left == s);
+    const Region* r = find(p, s);
+    CHECK(r != nullptr && r->fade_in.length == 100000 - 480);
+    CHECK(invariants_hold(b.h.current()));
+    // One undo step: the crossfade and the full fade come back together.
+    CHECK(b.h.undo());
+    CHECK(*b.h.current().edit == *before.edit);
+    return 0;
+}
+
+// A punch near the start of a region with a long fade-in: the take's
+// crossfade wins and the fade-in shortens. Refusing would lose the take.
+int test_punch_shortens_the_fade_it_meets() {
+    Base b;
+    CHECK(make_base(b) == 0);
+    CHECK_APPLY(b.h, (SetFade{b.playlist, b.r, FadeEnd::In, Fade{150000, FadeShape::Linear}}));
+    const Frames A = 200000, B = 300000, H = 48000, X = 240;
+    Ids ids(b.h.current());
+    const AddSource take = add_source(ids, (B - A) + 2 * H, 1, b.track);
+    CHECK_APPLY(b.h, take);
+    const Id n = ids();
+    RecordTake op;
+    op.track = b.track;
+    op.playlist = b.playlist;
+    op.region = region(n, take.source.id, A, B - A, H);
+    op.split_right_id = ids();
+    op.crossfades = {Crossfade{b.r, n, X, Align::Centre, FadeShape::EqualPower}};
+    CHECK_APPLY(b.h, op);
+    const Region* r = find(playlist_of(b.h.current(), 0), b.r);
+    CHECK(r != nullptr && r->length == A - 100000);
+    CHECK(r->fade_in.length == (A - 100000) - X / 2);
+    CHECK(invariants_hold(b.h.current()));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -463,6 +600,10 @@ int main() {
     t(test_mix_and_settings_are_not_edits);
     t(test_ids_and_sources);
     t(test_purity_and_sharing);
+    t(test_crossfade_over_the_other_ends_fade_is_refused);
+    t(test_trim_shortens_a_fade_into_the_crossfade);
+    t(test_punch_shortens_the_fade_it_meets);
+    t(test_clearing_a_crossfade_shortens_the_fade_it_reveals);
     if (failed != 0) {
         std::fprintf(stderr, "model_apply: %d of %d failed\n", failed, run);
         return 1;

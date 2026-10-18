@@ -243,7 +243,11 @@ void SessionModel::documentUpdated() {
 }
 
 void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
-    const bool rolling = alive && !t.stale && t.state != TransportMode::Stopped;
+    // A stale read is a seqlock miss, not a stop (ADR-0007 §3): keep what is
+    // shown, as TransportModel does, or the bar counter drops to the
+    // insertion point while the Transport window keeps the playhead.
+    if (alive && t.stale) return;
+    const bool rolling = alive && t.state != TransportMode::Stopped;
     const bool recording = rolling && t.state == TransportMode::Recording;
     const auto playhead = static_cast<Frames>(t.playhead_frames);
     const bool changed = rolling != overlay_.rolling || recording != overlay_.recording ||
@@ -646,7 +650,11 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     updateCounters(true);
     sync();
     emit sessionChanged();
-    emit notice(QStringLiteral("Opened ") + file_);
+    QString said = QStringLiteral("Opened ") + file_;
+    // An older build's file can need a repair to open; the operator hears
+    // what changed, and the next save writes it.
+    for (const std::string& r : loaded.repairs) said += QStringLiteral("; ") + q(r);
+    emit notice(said);
     return true;
 }
 

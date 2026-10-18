@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "denormals.h"
@@ -98,8 +99,19 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
         raw.push_back(tracks_.back().get());
     }
 
+    const auto tracks_n = static_cast<uint32_t>(cfg_.track_count);
+    // timeline-model.md: at least four records per track; a take started
+    // over another pushes two at once, and the disk thread wakes every 10 ms.
+    const uint32_t records = cfg_.boundary_records
+                                 ? cfg_.boundary_records
+                                 : std::max<uint32_t>(64, 8 * tracks_n);
+    boundaries_ = std::make_unique<RingBuffer<CaptureBoundary>>(records);
+    window_take_.reset(new uint32_t[tracks_n + 1]);
+    for (uint32_t t = 0; t <= tracks_n; ++t) window_take_[t] = kNoWindow;
+    captured_.reset(new uint64_t[tracks_n + 1]());
+
     // 64 kframes per disk write keeps syscall count low without stalling.
-    disk_ = std::make_unique<DiskThread>(std::move(raw), 65536);
+    disk_ = std::make_unique<DiskThread>(std::move(raw), 65536, *boundaries_);
 
     const PlaybackConfig& pb = cfg_.playback;
     const auto tracks = static_cast<uint32_t>(cfg_.track_count);
@@ -122,6 +134,10 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
     plans_ = std::make_unique<PlanExchange>();
     reader_ = std::make_unique<DiskReader>(rc, *plans_, *transport_);
     commands_ = std::make_unique<RingBuffer<RtCommand>>(pb.command_capacity);
+    param_commands_ = std::make_unique<RingBuffer<RtCommand>>(
+        pb.plugin_param_capacity ? pb.plugin_param_capacity : 1);
+    params_.reset(new RtCommand[param_commands_->capacity()]());
+    node_params_.reset(new ChainParamEvent[param_commands_->capacity()]());
 
     // Every track with a chain: the largest graph a plan can have.
     scratch_buffers_ = graph_nodes(tracks, tracks);
@@ -187,6 +203,19 @@ bool Session::post_locate(uint64_t frame) {
     return commands_->write(&c, 1) == 1;
 }
 
+bool Session::post_plugin_param(uint32_t store, uint32_t instance, uint32_t param, float value) {
+    // A NaN would reach the store, every later submit and the host's
+    // table; the plan never names kNoParamStore.
+    if (store == kNoParamStore || !std::isfinite(value)) return false;
+    RtCommand c{};
+    c.kind = RtCommand::Kind::PluginParam;
+    c.store = store;
+    c.instance = instance;
+    c.param = param;
+    c.value = value;
+    return param_commands_->write(&c, 1) == 1;
+}
+
 bool Session::create_dirs() {
     if (!make_dir(cfg_.dir)) return false;
     return make_dir(audio_dir(cfg_.dir));
@@ -207,9 +236,9 @@ int Session::next_free_take() const {
 }
 
 bool Session::start_recording(int take_number, std::string* error) {
-    // Provisional: stop() writes the frame the audio thread recorded first.
+    // Provisional: the disk thread writes the frame the audio thread
+    // recorded first, from the take's open boundary record.
     const uint64_t origin = transport_->playhead();
-    std::vector<Track*> opened;
 
     if (take_number < 1 || take_number > kMaxTake) {
         const std::string why =
@@ -221,45 +250,56 @@ bool Session::start_recording(int take_number, std::string* error) {
         return false;
     }
 
+    // A free slot per armed track. A running take holds one; the other is
+    // free unless the take before that is still being closed, which the
+    // disk thread finishes within a pass or two.
+    const auto free_slot = [](const Track& t) {
+        if (t.slot_take(t.current_slot()) == 0) return t.current_slot();
+        for (int s = 0; s < Track::kWriterSlots; ++s) {
+            if (t.slot_take(s) == 0) return s;
+        }
+        return -1;
+    };
+    std::vector<std::pair<Track*, int>> opened;
     for (auto& t : tracks_) {
         if (!t->rec_armed()) continue;
+        int slot = free_slot(*t);
+        for (int i = 0; slot < 0 && i < 1000; ++i) {
+            if (!disk_->running()) disk_->drain_once();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            slot = free_slot(*t);
+        }
         const std::string file =
             audio_dir(cfg_.dir) + "/" + take_file_name(t->name(), take_number);
-        // The disk thread reads this ring only once the track is published
-        // below, a release store that comes after this reset. The audio
-        // thread is not fenced off the same way. process() loads the
-        // transport state once per block and writes the ring later, so a
-        // callback that loaded Recording for the previous take and was then
-        // descheduled can still write while this runs: a data race on the
-        // indices, and old samples at the head of the new take. Reaching
-        // that needs the RT thread stalled across all of stop() (setting
-        // Stopped, joining the disk thread, closing every file) and the
-        // operator's next record command, ~100 ms at the least, dozens of
-        // missed periods. It is not ruled out, only made implausible; a
-        // handshake with the callback (it acknowledges a take epoch) is
-        // what would rule it out.
-        t->capture_ring().reset();
-        if (!t->writer().open(file, cfg_.sample_rate, t->channels(),
-                              cfg_.format, origin)) {
-            const int err = errno;
+        int err = 0;
+        if (slot < 0) {
+            err = EBUSY;
+        } else if (!t->writer(slot).open(file, cfg_.sample_rate, t->channels(), cfg_.format,
+                                         origin)) {
+            err = errno;
+        }
+        if (err != 0) {
             // A take missing a track is not the take that was armed, and the
             // operator would find out at playback. Undo and say so instead.
             // Removing is safe: the writer creates exclusively, so every file
-            // in `opened` was made by this call and holds nothing yet.
-            for (Track* o : opened) {
-                const std::string path = o->writer().path();
-                o->writer().close();
+            // in `opened` was made by this call and holds nothing yet, and no
+            // slot of theirs has been published to the disk thread.
+            for (const auto& o : opened) {
+                WavWriter& w = o.first->writer(o.second);
+                const std::string path = w.path();
+                w.close();
                 std::remove(path.c_str());
             }
             const std::string why =
                 file + ": " +
-                (err == EEXIST ? "a take with this name is already on disk"
-                               : std::strerror(err));
+                (err == EEXIST  ? "a take with this name is already on disk"
+                 : err == EBUSY ? "the take before it is still being closed"
+                                : std::strerror(err));
             std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
             if (error) *error = why;
             return false;
         }
-        opened.push_back(t.get());
+        opened.emplace_back(t.get(), slot);
     }
 
     if (opened.empty()) {
@@ -267,12 +307,68 @@ bool Session::start_recording(int take_number, std::string* error) {
         return false;
     }
     // Only now may the disk thread see these writers; until here the
-    // rollback above could close them under it. See Track::set_draining().
-    for (Track* t : opened) t->set_draining(true);
-    // Ordered before the audio thread can see Recording by the release
-    // store below, so the take's first block finds no origin and sets it.
+    // rollback above could close them under it. See Track::slot_take().
+    for (const auto& o : opened) {
+        o.first->set_current_slot(o.second);
+        o.first->set_slot_take(o.second, take_number);
+    }
+    Closing& c = closing_[take_number];
+    c.expected = opened.size();
+    c.take.take = take_number;
+    c.take.files.clear();
+    recording_take_ = take_number;
+    // Ordered before the audio thread can see the take by the store below,
+    // so the take's first block finds no origin and sets it.
     take_origin_.store(kNoOrigin, std::memory_order_relaxed);
-    transport_->set_state(TransportState::Recording);
+    transport_->set_recording(static_cast<uint32_t>(take_number));
+    return true;
+}
+
+bool Session::punch_out() {
+    if (transport_->state() != TransportState::Recording) return false;
+    transport_->set_state(TransportState::Rolling);
+    recording_take_ = 0;
+    return true;
+}
+
+void Session::collect_closed() {
+    if (!disk_->running()) disk_->drain_once();
+    for (DiskThread::ClosedFile& f : disk_->take_closed()) {
+        if (!f.failure.empty()) failed_files_.push_back(f.path + ": " + f.failure);
+        const auto it = closing_.find(f.take);
+        if (it != closing_.end()) it->second.take.files.push_back(std::move(f));
+    }
+}
+
+std::vector<Session::ClosedTake> Session::closed_takes() {
+    collect_closed();
+    std::vector<ClosedTake> out;
+    for (auto it = closing_.begin(); it != closing_.end();) {
+        if (it->first != recording_take_ && it->second.take.files.size() >= it->second.expected) {
+            out.push_back(std::move(it->second.take));
+            it = closing_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return out;
+}
+
+bool Session::wait_for_callback() const {
+    // The other half of process()'s entry store: either that callback loads
+    // Stopped, or this load sees it in flight.
+    const uint64_t seq = callback_seq_.load(std::memory_order_seq_cst);
+    if ((seq & 1) == 0) return true;
+    // A callback lasts a period; a second is a backend that has hung. What
+    // it writes after this is dropped and counted: stop() closes its take's
+    // files below, and the next start_recording() opens the next take's,
+    // whose open record only a later callback pushes, so no slot claims
+    // those samples (test_callback_stalled_past_the_bound).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (callback_seq_.load(std::memory_order_acquire) == seq) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
     return true;
 }
 
@@ -289,16 +385,27 @@ std::string describe_failures(const std::string& first, int more) {
 }  // namespace
 
 std::string Session::take_failure() const {
-    std::string first;
-    int more = 0;
+    std::string first = failed_files_.empty() ? std::string() : failed_files_.front();
+    int more = failed_files_.empty() ? 0 : static_cast<int>(failed_files_.size()) - 1;
     for (const auto& t : tracks_) {
-        // failed() is an acquire load, so failure() is settled once it is
-        // true, while the disk thread goes on writing the other tracks.
-        if (!t->writer().is_open() || !t->writer().failed()) continue;
-        if (first.empty()) {
-            first = t->writer().path() + ": " + t->writer().failure();
-        } else {
-            ++more;
+        for (int slot = 0; slot < Track::kWriterSlots; ++slot) {
+            // The disk thread owns the writer while the slot holds a take.
+            // failed() is an acquire load, so failure() is settled once it
+            // is true; path() was set by this thread when it opened the file.
+            if (t->slot_take(slot) == 0) continue;
+            WavWriter& w = t->writer(slot);
+            if (!w.failed()) continue;
+            const std::string said = w.path() + ": " + w.failure();
+            // Closed and collected, but its slot not yet given back.
+            if (std::find(failed_files_.begin(), failed_files_.end(), said) !=
+                failed_files_.end()) {
+                continue;
+            }
+            if (first.empty()) {
+                first = said;
+            } else {
+                ++more;
+            }
         }
     }
     return first.empty() ? first : describe_failures(first, more);
@@ -306,32 +413,24 @@ std::string Session::take_failure() const {
 
 bool Session::stop(std::string* error) {
     transport_->set_state(TransportState::Stopped);
-    // Let the disk thread flush what is still buffered before we close files.
-    // stop() joins it, so after this line nothing else uses the writers.
-    if (disk_) disk_->stop();
-    // A take stopped before any block recorded keeps the provisional
-    // origin; it holds no audio either.
-    const uint64_t origin = take_origin_.load(std::memory_order_acquire);
-    std::string first_failure;
-    int more_failures = 0;
-    for (auto& t : tracks_) {
-        t->set_draining(false);
-        if (origin != kNoOrigin && t->writer().is_open()) {
-            t->writer().set_time_reference(origin);
-        }
-        // Only a take this call ends is reported; a writer keeps its last
-        // failure after closing, and ~Session() stops again.
-        const bool was_open = t->writer().is_open();
-        t->writer().close();
-        if (!was_open || !t->writer().failed()) continue;
-        if (first_failure.empty()) {
-            first_failure = t->writer().path() + ": " + t->writer().failure();
-        } else {
-            ++more_failures;
-        }
+    if (!wait_for_callback()) {
+        std::fprintf(stderr,
+                     "sonora: the audio callback did not return within 1 s of the"
+                     " stop; what it still records is dropped\n");
     }
-    if (first_failure.empty()) return true;
-    const std::string why = describe_failures(first_failure, more_failures);
+    // Joins the disk thread and drains what is left, close records
+    // included. After this line nothing else uses the writers.
+    disk_->stop();
+    // Files no close record reached: no callback ran after the store above.
+    disk_->close_all();
+    collect_closed();
+    recording_take_ = 0;
+
+    std::vector<std::string> failed;
+    failed.swap(failed_files_);
+    if (failed.empty()) return true;
+    const std::string why =
+        describe_failures(failed.front(), static_cast<int>(failed.size()) - 1);
     std::fprintf(stderr, "sonora: take failed, %s\n", why.c_str());
     if (error) *error = why;
     return false;
@@ -377,6 +476,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // Per thread, and a backend may call from a new thread after a
     // reactivation, so it is checked every block.
     const FlushDenormals flush_denormals;
+    // Odd from here. Before the transport is read, and seq_cst: with stop()'s
+    // seq_cst store of Stopped and its seq_cst load of this count, either
+    // this callback loads Stopped or stop() sees it in flight
+    // (Transport::load_word). Weakened, both could miss.
+    callback_seq_.fetch_add(1, std::memory_order_seq_cst);
     // ADR-0009 §4.1: the block count, then the plan, before anything reads
     // either. A new plan is told by its epoch, never its address.
     const PlaybackPlan* plan = plans_->acquire();
@@ -388,30 +492,15 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     ++callbacks_;
 
     const uint32_t nframes = block.nframes;
-    // insert_chain_runner.h: once per callback, whole callback, or not at
-    // all. A zero-frame callback mixes nothing, so it would reach begin()
-    // and never end(); it is not a chain block, bypassed or otherwise.
-    runner_ = nullptr;
-    if (plan_valid_ && plan->last_insert_node != kNoNode && nframes > 0) {
-        InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
-        if (r != nullptr && nframes <= max_block_) {
-            runner_ = r;
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
-            runner_->begin(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()));
-        } else if (r != nullptr) {
-            chain_bypassed_.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-    const TransportState state = transport_->state();
-    const bool recording = state == TransportState::Recording;
-    const bool rolling = state != TransportState::Stopped;
+    const Transport::Word word = transport_->load_word();
+    const bool recording = word.state == TransportState::Recording;
+    const bool rolling = word.state != TransportState::Stopped;
     // A take is one contiguous span of the timeline. engine/control sends no
     // locate during one, but one it posted just before the take began can
     // still be queued. Once the take has its first frame such a locate is
     // acknowledged, so nothing waits on it, and dropped.
-    const bool take_started =
-        recording && take_origin_.load(std::memory_order_relaxed) != kNoOrigin;
+    if (!recording) origin_take_ = kNoWindow;
+    const bool take_started = recording && origin_take_ == word.take;
 
     RtCommand cmd{};
     while (commands_->read(&cmd, 1) == 1) {
@@ -425,27 +514,64 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         transport_->note_locate();
     }
 
+    // After the take's state is loaded and the locates applied, and before
+    // the capture: a runner that stalls here is the callback descheduled
+    // across stop() and the next take (test_take_boundaries).
+    // insert_chain_runner.h: once per callback, whole callback, or not at
+    // all. A zero-frame callback mixes nothing, so it would reach begin()
+    // and never end(); it is not a chain block, bypassed or otherwise.
+    // The period's start as the backend's server stamped it: the callback
+    // reads no clock (contracts/backend, callback_ns). A period it could not
+    // stamp carries the last stamp forward by the last period.
+    uint64_t callback_ns = block.callback_ns;
+    if (callback_ns == 0 && last_callback_ns_ != 0 && cfg_.sample_rate != 0) {
+        callback_ns = last_callback_ns_ +
+                      static_cast<uint64_t>(last_nframes_) * 1'000'000'000ull / cfg_.sample_rate;
+    }
+    last_callback_ns_ = callback_ns;
+    last_nframes_ = nframes;
+    runner_ = nullptr;
+    if (plan_valid_ && plan->last_insert_node != kNoNode && nframes > 0) {
+        InsertChainRunner* const r = chains_.load(std::memory_order_acquire);
+        // A runner with a fixed block runs only callbacks of that size
+        // (contracts/plugin: every block is block_frames); in any other
+        // period its bound chains play silence, counted, until
+        // engine/control has rebuilt the client for the new period.
+        const uint32_t fixed = r != nullptr ? r->block_frames() : 0;
+        if (r != nullptr && nframes <= max_block_ && (fixed == 0 || nframes == fixed)) {
+            runner_ = r;
+            runner_->begin(callback_ns);
+        } else if (r != nullptr) {
+            chain_bypassed_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    // Every parameter change posted before this callback, at most the
+    // ring's capacity: what a producer adds meanwhile waits for the next.
+    // The InsertChain nodes take theirs in mix(); what none takes is
+    // dropped below, never carried to a later plan.
+    params_count_ = static_cast<uint32_t>(
+        param_commands_->read(params_.get(), param_commands_->capacity()));
+
+    // Meter every input, armed or not, so the UI shows signal before anyone
+    // hits record.
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
-        Track* t = tracks_[i].get();
         const float* in = i < block.input_count ? block.inputs[i] : nullptr;
         if (!in) continue;
-
-        // Meter every input, armed or not, so the UI shows signal before
-        // anyone hits record.
         float peak = 0.0f;
         for (uint32_t f = 0; f < nframes; ++f) {
             const float a = in[f] < 0.0f ? -in[f] : in[f];
             if (a > peak) peak = a;
         }
-        t->report_peak(peak);
-
-        if (!recording || !t->rec_armed()) continue;
-
-        // Capture is pre-fader by design: the fader is a monitoring decision
-        // and must not be baked into the recorded file.
-        const std::size_t wrote = t->capture_ring().write(in, nframes);
-        if (wrote < nframes) t->note_overrun();
+        tracks_[i]->report_peak(peak);
     }
+
+    // Settled for the block once the locates are applied.
+    const uint64_t playhead = transport_->playhead();
+    if (recording && !take_started) {
+        origin_take_ = word.take;
+        take_origin_.store(playhead, std::memory_order_release);
+    }
+    capture(block, recording, word.take, playhead);
 
     // Mix state, read once per block and ramped across it from what the
     // last block ended on (ADR-0009 §4.5). Solo, mute and gain fold into one
@@ -464,8 +590,6 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     bus_target_ = bus_gain_.load(std::memory_order_relaxed);
 
-    const uint64_t playhead = transport_->playhead();
-    if (recording && !take_started) take_origin_.store(playhead, std::memory_order_release);
     if (playhead != expected_playhead_) reseek_ = true;
     block_frames_ = nframes;
     if (!plan_valid_) {
@@ -484,8 +608,71 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     bus_applied_ = bus_target_;
 
+    // A taken change is marked None in mix(); the rest had no node.
+    uint32_t untaken = 0;
+    for (uint32_t i = 0; i < params_count_; ++i) {
+        if (params_[i].kind == RtCommand::Kind::PluginParam) ++untaken;
+    }
+    if (untaken != 0) {
+        params_dropped_.store(params_dropped_.load(std::memory_order_relaxed) + untaken,
+                              std::memory_order_relaxed);
+    }
+    params_count_ = 0;
+
     if (rolling) transport_->advance(nframes);
     expected_playhead_ = playhead + (rolling ? nframes : 0);
+    // Release is enough here, not at entry: a stop() whose load reads this
+    // value reads it before the next callback's seq_cst entry in the single
+    // total order, so that callback's transport load sees Stopped.
+    callback_seq_.fetch_add(1, std::memory_order_release);
+}
+
+void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t take,
+                      uint64_t playhead) noexcept SONORA_RT {
+    const uint32_t nframes = block.nframes;
+    for (std::size_t i = 0; i < tracks_.size(); ++i) {
+        Track& t = *tracks_[i];
+        uint32_t& window = window_take_[i];
+        const bool wanted = recording && t.rec_armed();
+        CaptureBoundary b{};
+        b.track = static_cast<uint32_t>(i);
+        b.at = captured_[i];
+        b.timeline = playhead;
+        // A take started over another closes it and opens itself on the
+        // same sample: nothing lost or repeated between the two files.
+        if (window != kNoWindow && (!wanted || window != take)) {
+            b.kind = CaptureBoundary::Kind::Close;
+            b.take = window;
+            // Lost, the file ends where the next window opens, or at stop().
+            if (boundaries_->write(&b, 1) != 1) {
+                boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
+            }
+            window = kNoWindow;
+        }
+        if (wanted && window == kNoWindow) {
+            b.kind = CaptureBoundary::Kind::Open;
+            b.take = take;
+            if (boundaries_->write(&b, 1) == 1) {
+                window = take;
+            } else {
+                // Tried again next block: the take starts late on this track.
+                // If it ends first (punch_out(), a take over it), there is
+                // no retry: the slot opened for it stays held, its file empty,
+                // and closed_takes() holds the take back, until this track's
+                // next open or stop() closes it.
+                boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
+                t.note_overrun();
+            }
+        }
+        const float* in = i < block.input_count ? block.inputs[i] : nullptr;
+        if (window == kNoWindow || !in) continue;
+
+        // Capture is pre-fader by design: the fader is a monitoring decision
+        // and must not be baked into the recorded file.
+        const std::size_t wrote = t.capture_ring().write(in, nframes);
+        captured_[i] += wrote;
+        if (wrote < nframes) t.note_overrun();
+    }
 }
 
 void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
@@ -526,10 +713,33 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
                 const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot) {
-                    runner_->run(node, in, out, n);
-                } else {
+                    // runner_ is set only for a callback mixed whole, so
+                    // this runs once per node per callback and each change
+                    // is handed once, to the first node naming its store.
+                    uint32_t k = 0;
+                    for (uint32_t i = 0; i < params_count_; ++i) {
+                        RtCommand& c = params_[i];
+                        if (c.kind != RtCommand::Kind::PluginParam || c.store != node.param_store) {
+                            continue;
+                        }
+                        node_params_[k++] = ChainParamEvent{c.instance, c.param, 0, c.value};
+                        c.kind = RtCommand::Kind::None;
+                    }
+                    runner_->run(node, in, out, n, k != 0 ? node_params_.get() : nullptr, k);
+                } else if (node.channel_slot == kNoChannelSlot) {
+                    // Unbound: laid out with latency 0, so dry is aligned.
                     std::memcpy(L, in[0], n * sizeof(float));
                     std::memcpy(R, in[1], n * sizeof(float));
+                } else {
+                    // Bound, but not run this callback (no runner, or a
+                    // callback the runner does not take): the plan delays
+                    // every other path by this chain's latency, so dry
+                    // would reach the bus that much early (PR #59
+                    // re-review). Silence, as for a miss (ADR-0012 §3).
+                    std::memset(L, 0, n * sizeof(float));
+                    std::memset(R, 0, n * sizeof(float));
+                    unrun_chain_blocks_.store(unrun_chain_blocks_.load(std::memory_order_relaxed) + 1,
+                                              std::memory_order_relaxed);
                 }
                 if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
                 continue;

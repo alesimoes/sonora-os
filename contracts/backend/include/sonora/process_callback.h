@@ -31,6 +31,15 @@ struct AudioBlock {
     // decreases. Equals the previous frame_time + nframes unless frames were
     // lost or the clock source changed.
     uint64_t frame_time;
+    // CLOCK_MONOTONIC (std::chrono::steady_clock on Linux), in nanoseconds,
+    // at the start of this period as the backend's server measured it: for
+    // JACK, jack_get_cycle_times' current_usecs. The engine stamps the
+    // plugin hosts' clock with it (ADR-0012 §1.1, auditor L2), so the
+    // callback never reads a clock itself; on a machine whose clocksource
+    // is not tsc that read would be a real syscall. Never decreases. 0 when
+    // the backend could not tell for this period; the engine then carries
+    // the last one forward by the period.
+    uint64_t callback_ns;
 };
 
 // Implemented by the engine (engine/core's Session); called by a backend.

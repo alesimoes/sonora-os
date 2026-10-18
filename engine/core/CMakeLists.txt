@@ -59,6 +59,20 @@ add_executable(test_plan_pdc tests/test_plan_pdc.cpp)
 target_link_libraries(test_plan_pdc PRIVATE sonora_core)
 add_test(NAME plan_pdc COMMAND test_plan_pdc)
 
+# Takes closed while rolling, by in-band boundary records (timeline-model.md,
+# "Closing a take while rolling"), and the take-epoch race's regression test.
+# CI runs it under TSan.
+add_executable(test_take_boundaries tests/test_take_boundaries.cpp)
+target_link_libraries(test_take_boundaries PRIVATE sonora_core Threads::Threads)
+add_test(NAME take_boundaries COMMAND test_take_boundaries)
+
+# ADR-0012 checklist 5: plugin parameter changes from the control thread to
+# the InsertChain node that names their store, the backend's callback_ns as
+# the runner's clock, and the runner's block size gating the callback.
+add_executable(test_plugin_params tests/test_plugin_params.cpp)
+target_link_libraries(test_plugin_params PRIVATE sonora_core)
+add_test(NAME plugin_params COMMAND test_plugin_params)
+
 # PluginChainRunner's own cases, no host: a node with no node state is
 # silence, a chain wider than stereo is silence, a mono chain fills both
 # sides.
@@ -80,7 +94,7 @@ if(TARGET sonora-plugin-host)
   set(_sp $<TARGET_FILE:test_session_plugins> --host $<TARGET_FILE:sonora-plugin-host>
           --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
   set(_sp_tests)
-  foreach(scenario aligned_lv2 aligned_2048 aligned_stereo stall)
+  foreach(scenario aligned_lv2 aligned_2048 aligned_stereo stall params)
     add_test(NAME session_plugins_${scenario} COMMAND ${_sp} --scenario ${scenario})
     list(APPEND _sp_tests session_plugins_${scenario})
   endforeach()

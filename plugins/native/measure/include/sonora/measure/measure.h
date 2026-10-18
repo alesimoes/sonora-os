@@ -120,6 +120,11 @@ double meter_true_peak(const std::vector<float>& y);
 // builds set it; the nightly workflow does not.
 bool quick();
 
+// True in a sanitizer build (ASan, TSan, UBSan, RTSan: the root
+// CMakeLists.txt's SONORA_SANITIZED), where Suite::check_time_le reports a
+// time bar instead of holding it.
+bool sanitized_build();
+
 // ---- golden files ------------------------------------------------------------
 
 bool write_wav_f32(const std::string& path, const Chans& x, double fs);
@@ -160,6 +165,12 @@ public:
                   const std::string& note = {}) {
         check(what, value, bar, value <= bar, unit, note);
     }
+    // A wall-clock or CPU-time bar: check_le in an uninstrumented build;
+    // under a sanitizer (sanitized_build()) the figure and its bar are
+    // reported, not held, since the instrumentation's slowdown is unknown.
+    // Bounds on the output stay on check/check_le, held in every build.
+    void check_time_le(const std::string& what, double value, double bar, const std::string& unit,
+                       const std::string& note = {});
     void info(const std::string& what, double value, const std::string& unit,
               const std::string& note = {});
     void fail(const std::string& why);

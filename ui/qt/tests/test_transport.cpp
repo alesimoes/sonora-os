@@ -531,6 +531,25 @@ void test_window() {
         OK(session.mainCounter() == transport.barsBeats());
         OK(text("transportCounter") == session.mainCounter());
     }
+    // A stale read is one tick's seqlock miss, not a stop (#62 merge gate):
+    // the bar counter used to drop to the insertion point while the window
+    // kept the playhead, and to stay there up to four ticks after the
+    // reads came back.
+    const QString before_stale = session.mainCounter();
+    engine.snapshot.stale = true;
+    for (int i = 0; i < 3; ++i) {
+        model.tick();
+        OK(session.transportOverlay().rolling);
+        OK(session.mainCounter() == before_stale);
+        OK(session.mainCounter() == transport.barsBeats());
+    }
+    engine.snapshot.stale = false;
+    for (int i = 1; i <= 8; ++i) {
+        engine.snapshot.playhead_frames += 700;
+        model.tick();
+        OK(session.mainCounter() == transport.barsBeats());
+        OK(text("transportCounter") == session.mainCounter());
+    }
 
     // The click is not in this build: a press says so, nothing lights.
     QQuickItem* click_button = named(root, QStringLiteral("transportClick"));

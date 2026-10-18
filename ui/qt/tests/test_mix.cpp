@@ -14,9 +14,11 @@
 //     one SetMix at release; the bus, and a track the engine lacks, ride
 //     through the document instead;
 //   - an interrupted ride never leaves the engine and the document apart:
-//     a lost link is put right by the next connection's Snapshot, the
-//     refusal at release stays said, and a ride whose track moved or left,
-//     or whose session was replaced, is dropped with the reason;
+//     a lost link is put right by the engine (PR #71), a step that crossed
+//     another interface's reorder by the interface, which otherwise sends
+//     no gain of its own accord; the refusal at release stays said, and a
+//     ride whose track moved or left, or whose session was replaced, is
+//     dropped with the reason;
 //   - Alt-click solo and mute set every track; Ctrl-click solo (solo safe)
 //     is refused, loudly, and changes nothing;
 //   - the QML: what the meters read is written on them, a drag on a fader
@@ -42,6 +44,7 @@
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/model/op_codec.h"
 #include "timeline_document.h"
 
 using namespace sonora;
@@ -77,6 +80,10 @@ struct Rig {
     // False while the connection is down: what the sender sends then is
     // dropped unsent, as SocketEngine drops it before a new Hello.
     bool link = true;
+    // ParameterChanges that reached the engine, rides' steps or not.
+    int gain_sends = 0;
+    // The engine's track count as the latest Hello says it.
+    uint32_t engine_tracks = 4;
 
     static api::testing::FakeEngine::Config config() {
         api::testing::FakeEngine::Config c;
@@ -90,9 +97,12 @@ struct Rig {
         : mixer(session,
                 live_tracks < 0 ? MixModel::GainSender()
                                 : [this](uint32_t t, float g) {
-                                      if (link) engine.send_track_gain(t, g);
+                                      if (!link) return;
+                                      engine.send_track_gain(t, g);
+                                      ++gain_sends;
                                   },
-                live_tracks < 0 ? 0u : static_cast<uint32_t>(live_tracks), true) {
+                [this]() { return engine_tracks; }, true),
+          engine_tracks(live_tracks < 0 ? 0u : static_cast<uint32_t>(live_tracks)) {
         engine.setModelSink([this](const std::vector<api::ModelUpdate>& u,
                                    const std::vector<api::CommandReply>& r) {
             if (doc.receive(u, r)) session.documentUpdated();
@@ -305,8 +315,11 @@ void resync(Rig& r) {
 int ride_across_a_lost_link() {
     // Regression: the link went mid-ride. The steps already delivered set
     // the engine's gain; the document refused the release while offline and
-    // the restoring change was dropped unsent; a Resync does not re-apply
-    // the mix, so the engine kept the ride's gain with nothing to say so.
+    // the restoring change was dropped unsent, so the engine kept the ride's
+    // gain with nothing to say so. Since PR #71 the engine puts it back
+    // itself: a Resync applies the document's mix, and a client that leaves
+    // has the tracks it was the last to ride restored. The interface sends
+    // nothing for it.
     Rig r;
     CHECK(r.connect());
     r.mixer.beginRide(1);
@@ -325,10 +338,12 @@ int ride_across_a_lost_link() {
     // Resync here): the engine is put back to what that document holds.
     r.link = true;
     r.doc.set_link(true);
+    const int sends = r.gain_sends;
     resync(r);
     r.settle();
     CHECK(near(r.session.stripGain(1), 0.0));
     for (uint32_t i = 0; i < 4; ++i) CHECK(near(r.engine_gain(i), 1.0));
+    CHECK(r.gain_sends == sends);
     std::printf("  a ride cut by a lost link is undone on the next Snapshot: ok\n");
     return 0;
 }
@@ -451,6 +466,92 @@ int ride_follows_its_track() {
         CHECK(near(r.engine_gain(0), 1.0));
     }
     std::printf("  a ride is its track's, and is dropped when it goes: ok\n");
+    return 0;
+}
+
+// --- gains sent of the interface's own accord (PR #61, PR #71) ----------------
+
+int no_gain_sent_without_a_ride() {
+    // Regression: every new document (the Snapshot that greets a
+    // connection, a Resync, another interface's Open) sent every engine
+    // track's gain again. Since PR #71 the engine applies the mix on a
+    // Resync and on every Open, and on purpose leaves a ride alone when a
+    // client attaches mid-ride. The resend overrode another interface's
+    // ride, and made this interface the track's last rider, so the engine
+    // no longer put the track back if the real rider then left.
+    Rig r;
+    CHECK(r.connect());
+    CHECK(r.gain_sends == 0);
+    resync(r);
+    r.settle();
+    CHECK(r.gain_sends == 0);
+    std::string why;
+    CHECK(r.doc.reset(make_empty_session(4, 48000), why));
+    r.settle();
+    CHECK(r.gain_sends == 0);
+    for (uint32_t i = 0; i < 4; ++i) CHECK(near(r.engine_gain(i), 1.0));
+    std::printf("  a new document sends no gain: ok\n");
+    return 0;
+}
+
+int ride_step_crossing_another_edit() {
+    // What the engine cannot cover: a step sent before this interface has
+    // seen another interface's reorder reaches the engine after the engine
+    // applied that reorder's mix, and lands on whichever track is now at
+    // the ride's index. Nothing on the engine says it is stale; the
+    // interface drops the ride when the update arrives and puts that one
+    // index back to the document.
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.session.controller().set_gain(1, -6.0f, why));
+    r.settle();
+    r.mixer.beginRide(1);
+    r.mixer.ride(1, -40, 200, false);
+    r.settle();
+    // Sent as another interface sends it: past this one's replica.
+    std::vector<model::Id> order;
+    for (const auto& t : r.doc.snapshot().edit->tracks) order.push_back(t->id);
+    std::reverse(order.begin(), order.end());
+    api::ModelRequest q;
+    q.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::ReorderTracks{order}, q.op, why));
+    r.engine.submitModel(q);
+    r.mixer.ride(1, 20, 200, false);   // in flight behind the reorder
+    CHECK(r.mixer.rideTrack() == 1);
+    const int sends = r.gain_sends;
+    r.settle();
+    CHECK(r.mixer.rideTrack() == MixModel::kNoRide);
+    CHECK(!r.refused.empty() && r.refused.back().find("moved") != std::string::npos);
+    CHECK(r.gain_sends == sends + 1);   // that index alone
+    const QList<qreal> g = r.session.gains();
+    CHECK(near(g[1], 0.0) && near(g[2], -6.0));
+    for (int i = 0; i < 4; ++i) {
+        CHECK(near(r.engine_gain(static_cast<uint32_t>(i)),
+                   fader_linear_gain(static_cast<float>(g[i]))));
+    }
+    std::printf("  a step crossing another interface's reorder is put back: ok\n");
+    return 0;
+}
+
+int live_path_follows_the_engine() {
+    // The engine's track count is the latest Hello's (PR #67 review): a
+    // restarted engine with more tracks gives those tracks a live path.
+    Rig r(2);
+    CHECK(r.connect());
+    r.mixer.beginRide(3);
+    r.mixer.ride(3, -30, 200, false);
+    CHECK(r.mixer.liveSteps() == 0);
+    r.mixer.endRide(3);
+    r.settle();
+    r.engine_tracks = 4;
+    r.mixer.beginRide(3);
+    r.mixer.ride(3, 30, 200, false);
+    CHECK(r.mixer.liveSteps() == 1);
+    r.mixer.endRide(3);
+    r.settle();
+    CHECK(near(r.engine_gain(3), fader_linear_gain(r.session.stripGain(3))));
+    std::printf("  the live path follows the engine's track count: ok\n");
     return 0;
 }
 
@@ -620,6 +721,9 @@ int main(int argc, char** argv) {
     if (ride_across_a_lost_link() != 0) return 1;
     if (ride_refusal_stays_said() != 0) return 1;
     if (ride_follows_its_track() != 0) return 1;
+    if (no_gain_sent_without_a_ride() != 0) return 1;
+    if (ride_step_crossing_another_edit() != 0) return 1;
+    if (live_path_follows_the_engine() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (qml() != 0) return 1;

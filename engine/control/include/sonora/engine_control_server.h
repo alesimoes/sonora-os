@@ -211,7 +211,10 @@ private:
     void feed(ClientId id, Client& c, const std::string& bytes);
     // Parked clients get a slot as slots free up, oldest first.
     void unpark();
+    // The client is gone: its backlog, and any ride it left unreleased.
     void forget(ClientId id);
+    // The document's mix onto the engine's tracks; every ride ends there.
+    void apply_mix();
     // Handled frames' bytes leave their clients' backlogs.
     void release_handled();
     void greet(Client& client);
@@ -236,7 +239,8 @@ private:
     void show_inserts(bool new_session);
     // A FlushPluginState: which inserts, and whether they can be flushed.
     bool flush_plugin_state(const std::string& which, std::string& why);
-    // A take that has just closed joins the document.
+    // Every take the disk thread has closed joins the document: at a stop,
+    // a punch-out, or a take started over another.
     void follow_transport();
     // Held record replies, once the controller no longer waits to start.
     void resolve_records();
@@ -270,6 +274,10 @@ private:
 
     // The control thread's, or start()'s before that thread exists.
     std::map<ClientId, Client> clients_;
+    // By engine track, the client whose ParameterChange last set its gain
+    // since the document's faders were last applied: a rider that leaves
+    // has that track's gain put back, and no other client's ride moves.
+    std::map<uint32_t, ClientId> riders_;
     // Events that still stand, encoded, for a client that attaches later:
     // what a restarted interface must find on screen.
     std::vector<std::string> notices_;
@@ -309,8 +317,6 @@ private:
     };
     // Record requests waiting for the residency gate, answered together.
     std::vector<HeldReply> held_records_;
-    bool was_recording_ = false;
-    int recording_take_ = 0;
 
     uint64_t next_housekeeping_ns_ = 0;
     bool fatal_said_ = false;

@@ -13,7 +13,10 @@
 //
 // What it does: the Engine-domain commands engine/control installs, with
 // the same refusals in the same words; ParamId::Gain; the model path on a
-// real common/model Document. Plugins (ADR-0012 §8) on a script: a catalog
+// real common/model Document, whose faders (gain, mute) it publishes when
+// an update changes them, on a Resync and when it starts (connect), as the
+// real one does; a track past the document's end keeps both.
+// Plugins (ADR-0012 §8) on a script: a catalog
 // (fake_catalog() unless Config::plugins says otherwise) sent after the
 // Snapshot; insert operations accepted when they name a usable catalog
 // plugin with the track's channel count; PluginParameterChange checked
@@ -77,6 +80,14 @@ public:
         bool signal = true;
         Clock clock;   // empty: std::chrono::steady_clock
         std::vector<PluginInfo> plugins = fake_catalog();
+        // Engine commands a later engine is to implement (planning/BACKLOG.md
+        // Track 1), announced in Hello so an interface can be wired to them
+        // before they land. The fake runs none of them: each is answered Ok
+        // and recorded in planned_log(), so a test sees the command arrive
+        // over the wire and nothing more. Interface commands and ids not in
+        // the catalog are not announced. Empty by default, so --fake-engine
+        // never claims a command nothing runs.
+        std::vector<std::string> planned_commands;
     };
 
     FakeEngine();
@@ -146,6 +157,12 @@ public:
     static float level_at(uint32_t ch, double t_s);
     // The Engine-domain commands this build's engine implements.
     static const std::vector<std::string>& engine_commands();
+    // Every Config::planned_commands request received, as {command, target}.
+    struct PlannedCall {
+        std::string command;
+        int32_t target;
+    };
+    const std::vector<PlannedCall>& planned_log() const { return planned_log_; }
 
 private:
     uint64_t now() const;
@@ -173,6 +190,9 @@ private:
     // sent to the replica.
     bool apply_own(const std::string& op, std::string& why);
     void insert_fields(TrackFields* tracks, uint32_t count, TransportFields& tf) const;
+    // As engine/control's PlaybackController::apply_mix: the document's
+    // faders onto the published tracks, track i being the document's i-th.
+    void apply_mix();
 
     Config cfg_;
     Hello hello_;
@@ -197,7 +217,10 @@ private:
     uint64_t moved_ns_ = 0;
     int32_t take_ = 1;
     std::vector<bool> armed_;
+    std::vector<std::string> planned_;
+    std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;
+    std::vector<bool> muted_;
     std::vector<float> scripted_;
     std::vector<uint32_t> clips_;
     uint32_t health_ = 0;

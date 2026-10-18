@@ -68,6 +68,21 @@ void Suite::check(const std::string& what, double value, double b, bool pass,
     if (!pass) ++failures_;
 }
 
+bool sanitized_build() { return SONORA_SANITIZED != 0; }
+
+void Suite::check_time_le(const std::string& what, double value, double b, const std::string& unit,
+                          const std::string& note) {
+    if (!sanitized_build()) {
+        check_le(what, value, b, unit, note);
+        return;
+    }
+    // The bar stays in the note, so the report still says what the figure
+    // would have been held to.
+    char held[96];
+    std::snprintf(held, sizeof held, "reported, not held: sanitizer build (bar %g %s)", b, unit.c_str());
+    info(what, value, unit, note.empty() ? std::string(held) : note + "; " + held);
+}
+
 void Suite::info(const std::string& what, double value, const std::string& unit,
                  const std::string& note) {
     Value o = Value::object();
@@ -136,16 +151,16 @@ void Suite::finish_cpu_calibration() {
                   scale);
     const bool baseline = quality("cpu.p999_kernels") != nullptr;
     for (const auto& c : calibrated_) {
-        check_le(c.what + "p99.9, runner-calibrated", c.p999_us, bar("cpu.p999_us") * scale, "us", note);
-        check_le(c.what + "max, runner-calibrated", c.max_us, bar("cpu.max_us") * scale, "us", note);
+        check_time_le(c.what + "p99.9, runner-calibrated", c.p999_us, bar("cpu.p999_us") * scale, "us", note);
+        check_time_le(c.what + "max, runner-calibrated", c.max_us, bar("cpu.max_us") * scale, "us", note);
         // The scaled class bar alone trips on a regression of 20 % on one
         // runner and 28 % on another (review of PR #55). The recorded
         // worst case in kernels, the most any measured machine gave,
         // trips on 15 % on any of them.
         if (baseline) {
-            check_le(c.what + "p99.9 in reference kernels", c.p999_us / kernel,
-                     bar("cpu.p999_kernels") * kKernelRegression, "kernels",
-                     "cpu.p999_kernels x 1.15: the recorded worst case, plus 15 %");
+            check_time_le(c.what + "p99.9 in reference kernels", c.p999_us / kernel,
+                          bar("cpu.p999_kernels") * kKernelRegression, "kernels",
+                          "cpu.p999_kernels x 1.15: the recorded worst case, plus 15 %");
         }
     }
 }

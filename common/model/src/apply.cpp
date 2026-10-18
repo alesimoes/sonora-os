@@ -187,6 +187,7 @@ void drop_broken_crossfades(Playlist& p, const SourcePool& pool) {
         kept.push_back(x);
     }
     p.crossfades = std::move(kept);
+    detail::fit_fades_to_crossfades(p);
 }
 
 class Applier {
@@ -440,6 +441,12 @@ public:
                             str(op.right));
             }
             p.crossfades.erase(it);
+            // The fades kept under it come back; one that would run into
+            // the crossfade at its region's other end shortens to meet it.
+            // The operator never saw that fade, and cannot edit it while
+            // the other end is crossfaded, so refusing would leave no way
+            // out short of clearing the other crossfade first.
+            detail::fit_fades_to_crossfades(p);
             return true;
         });
     }
@@ -762,6 +769,9 @@ private:
                 if (!bad.empty()) return fail("crossfade: " + bad);
                 p.crossfades.push_back(x);
             }
+            // A punch near a region's start must not be refused for that
+            // region's fade-in: losing a take is worse than a shorter fade.
+            detail::fit_fades_to_crossfades(p);
             return true;
         });
         if (ok) after_.next_id = top + 1;

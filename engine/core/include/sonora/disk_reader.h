@@ -114,6 +114,9 @@ public:
     uint64_t max_read_us() const { return max_read_us_.load(std::memory_order_relaxed); }
     // Buffers linked by a plan slot now; the rest are free or cached.
     uint32_t linked_buffers() const { return linked_.load(std::memory_order_relaxed); }
+    // Passes finished: a test running blocks faster than real time waits on
+    // it to give the reader the turns real time would.
+    uint64_t passes() const { return passes_.load(std::memory_order_acquire); }
 
 private:
     struct Source {
@@ -213,6 +216,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> adopted_{0};
     std::atomic<uint64_t> resident_{0};
+    std::atomic<uint64_t> passes_{0};
     std::atomic<uint64_t> cache_full_{0};
     std::atomic<uint64_t> chunks_read_{0};
     std::atomic<uint64_t> reads_{0};

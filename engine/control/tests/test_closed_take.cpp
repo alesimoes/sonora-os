@@ -75,6 +75,12 @@ bool record(Session& s) {
     return s.stop();
 }
 
+// The one take record() closed, as the disk thread reports it.
+Session::ClosedTake the_take(Session& s) {
+    std::vector<Session::ClosedTake> closed = s.closed_takes();
+    return closed.size() == 1 ? closed[0] : Session::ClosedTake{};
+}
+
 std::string file_of(const SessionConfig& cfg, int track) {
     return cfg.dir + "/Audio Files/Audio " + std::to_string(track) + "_01.wav";
 }
@@ -95,7 +101,7 @@ int test_a_take_is_one_compound() {
         CHECK(record(s));
         model::Document doc(engine_document(s));
         const std::uint64_t rev = doc.current().revision;
-        const ClosedTake r = add_closed_take(doc, s, 1);
+        const TakeAdded r = add_closed_take(doc, s, the_take(s));
         CHECK(r.track_notices.empty() && r.refused.empty());
         CHECK(r.updates.size() == 1);
         CHECK(r.updates[0].revision == rev + 1);
@@ -128,7 +134,7 @@ int test_one_unreadable_track_costs_that_track() {
         CHECK(std::fclose(f) == 0);
 
         model::Document doc(engine_document(s));
-        const ClosedTake r = add_closed_take(doc, s, 1);
+        const TakeAdded r = add_closed_take(doc, s, the_take(s));
         CHECK(r.refused.empty());
         CHECK(r.track_notices.size() == 1);
         CHECK(mentions(r.track_notices[0], "Audio 2"));
@@ -164,7 +170,7 @@ int test_a_refused_take_keeps_its_audio_in_the_pool() {
             CHECK(w.close());
         }
         model::Document doc(engine_document(s));
-        const ClosedTake r = add_closed_take(doc, s, 1);
+        const TakeAdded r = add_closed_take(doc, s, the_take(s));
         CHECK(r.track_notices.empty());
         CHECK(!r.refused.empty());
         CHECK(mentions(r.refused, "not on the timeline"));
@@ -191,7 +197,7 @@ int test_a_take_larger_than_one_compound_lands_whole() {
         Session s(cfg);
         CHECK(record(s));
         model::Document doc(engine_document(s));
-        const ClosedTake r = add_closed_take(doc, s, 1);
+        const TakeAdded r = add_closed_take(doc, s, the_take(s));
         CHECK(r.track_notices.empty());
         if (!r.refused.empty()) std::fprintf(stderr, "  refused: %s\n", r.refused.c_str());
         CHECK(r.refused.empty());

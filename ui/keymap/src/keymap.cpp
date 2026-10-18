@@ -366,7 +366,9 @@ namespace {
 bool runs_member(const Binding& b, const std::vector<std::string>& group,
                  const std::vector<KeyChord>& device,
                  const std::function<bool(const std::string&)>& implemented) {
-    if (needs_selection(b) || !implemented(b.command) ||
+    // A focus-gated key works only while the operator has focus on, so it
+    // is not a way to reach anything the operator must always reach.
+    if (needs_selection(b) || needs_commands_focus(b) || !implemented(b.command) ||
         !contains_chord(device, b.chord)) {
         return false;
     }
@@ -783,6 +785,18 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
                     }
                     b.origin = f.second.text() == "sonora" ? BindingOrigin::Sonora
                                                         : BindingOrigin::Vendor;
+                } else if (f.first == "focus") {
+                    // One focus exists in this build. "clip_list" and
+                    // "groups_list" would be Pro Tools' other two, and a
+                    // file naming one is refused rather than run as if it
+                    // were always on.
+                    if (!f.second.is_string() || f.second.text() != "commands") {
+                        error = at(origin, f.second.line()) + "key \"" + spec +
+                                "\": \"focus\" must be \"commands\", the only"
+                                " keyboard focus this build has";
+                        return false;
+                    }
+                    b.focus = BindingFocus::Commands;
                 } else if (f.first == "comment") {
                     if (!f.second.is_string()) {
                         error = at(origin, f.second.line()) + "key \"" + spec +
@@ -823,6 +837,14 @@ bool KeyMap::load_string(const std::string& text, const std::string& origin,
             // operator discovers that mid-take.
             error = at(origin, line) + "key \"" + spec +
                     "\": unknown command \"" + b.command + "\"";
+            return false;
+        }
+        // The key that turns focus on cannot itself need focus: once off,
+        // nothing on the keyboard could turn it on again.
+        if (b.focus == BindingFocus::Commands && b.command == "focus.commands") {
+            error = at(origin, line) + "key \"" + spec +
+                    "\": the focus.commands key cannot need Commands Keyboard"
+                    " Focus to run, or it could never turn focus back on";
             return false;
         }
         if (has_argument && !cmd->takes_argument) {
@@ -1058,7 +1080,7 @@ KeyMap KeyMap::built_in_default() {
     // Kept identical to keymaps/default.json, which test_keymap enforces.
     static const char* const kDefault = R"JSON({
   "name": "Default",
-  "comment": "Matches what the engine and the terminal interface implement today. Phase 1 only.",
+  "comment": "Sonora's own keys, for when no profile is chosen: the terminal and the Qt window both start on it, and both repair a profile that cannot arm, record, stop or quit from it (keymaps/README.md). Space starts a take or stops it, 1 to 8 arm a track, A arms every track, Q leaves the interface. Compiled into ui/keymap as built_in_default(), which test_keymap holds equal to this file.",
   "bindings": {
     "space": "transport.toggle_record",
     "1": { "command": "track.toggle_arm", "target": 1 },

@@ -283,13 +283,16 @@ int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProces
     // failed: the take's timestamps after it do not follow on from before.
     // A playback miss is a hole in what was heard during the take.
     const uint64_t misses = session.playback_misses();
+    const uint64_t dropped = session.dropped_samples();
     std::printf("RESULT files=%d connected=%d frames=%llu requested=%llu"
-                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u misses=%llu\n",
+                " rate=%u buffer=%u xruns=%u clock_steps=%u overruns=%u misses=%llu"
+                " dropped=%llu\n",
                 files, connected,
                 static_cast<unsigned long long>(frames_on_disk),
                 static_cast<unsigned long long>(target),
                 audio.sample_rate(), audio.buffer_frames(), xruns, steps, overruns,
-                static_cast<unsigned long long>(misses));
+                static_cast<unsigned long long>(misses),
+                static_cast<unsigned long long>(dropped));
 
     if (files == 0) {
         std::fprintf(stderr, "sonora: no audio was written.\n");
@@ -299,6 +302,13 @@ int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProces
         std::fprintf(stderr,
                      "sonora: %llu playback chunks were not resident when played.\n",
                      static_cast<unsigned long long>(misses));
+        return 1;
+    }
+    if (dropped > 0) {
+        std::fprintf(stderr,
+                     "sonora: %llu recorded samples reached no file; the audio"
+                     " callback outlasted the stop.\n",
+                     static_cast<unsigned long long>(dropped));
         return 1;
     }
     if (xruns > 0 || overruns > 0) {

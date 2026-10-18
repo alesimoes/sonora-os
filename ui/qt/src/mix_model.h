@@ -27,12 +27,19 @@
 //     before release, the ride is dropped with the reason on the status
 //     line and saves nothing; the steps a release would have saved onto
 //     whatever now sits under the hand are never written.
-//   - Whenever a whole document arrives (the Snapshot that greets every
-//     connection, a Resync, another interface's Open), every engine track's
-//     gain is sent again from it. The steps of a ride cut by a lost link
-//     went to the engine's gain atomics and nothing in the document holds
-//     them; the engine does not re-apply its mix on a Resync (BACKLOG
-//     Track 1), so the interface puts the atomics back to the document.
+//   - A ride dropped after its steps reached the engine puts that one
+//     engine track back to the document. The engine covers the rest since
+//     PR #71: it applies the document's mix on a Resync and on any change
+//     of the mix, the track order or the session, and when a client leaves
+//     (a lost link, an interface that crashed) it puts back the tracks that
+//     client was the last to ride. What it cannot see is a step sent before
+//     this interface saw another interface's reorder or Open: the step
+//     arrives after the engine applied that mix and lands on whichever
+//     track is now at its index, and the engine has nothing to say it is
+//     stale. Only the dropped ride's index is sent: sending every gain on
+//     each new document (PR #61) overrode another interface's ride, which
+//     the engine deliberately leaves alone when a client attaches, and made
+//     this interface that track's last rider.
 //
 // Modifier clicks, as the Pro Tools Reference Guide documents them for
 // Windows:
@@ -75,10 +82,13 @@ public:
     // Sends a ParameterChange (ParamId::Gain, linear 0..4) for an engine
     // track. Empty: there is no live path, and every step is a SetMix.
     using GainSender = std::function<void(uint32_t track, float linear)>;
+    // The engine's track count, as its latest Hello says: asked when used,
+    // so a restarted engine with another count is followed (PR #67 review).
+    using EngineTracks = std::function<uint32_t()>;
 
     // `audible`: the engine plays the monitor bus (the real engine, ADR-0009);
     // false on the built-in fake engine, which plays nothing.
-    MixModel(SessionModel& session, GainSender sender, uint32_t engine_tracks, bool audible,
+    MixModel(SessionModel& session, GainSender sender, EngineTracks engine_tracks, bool audible,
              QObject* parent = nullptr);
 
     int rideTrack() const { return ride_track_; }
@@ -88,8 +98,6 @@ public:
     QString note() const;
     // ParameterChanges sent by rides, for the tests.
     uint64_t liveSteps() const { return live_steps_; }
-    // Times every engine track's gain was sent again from a new document.
-    uint64_t gainResends() const { return gain_resends_; }
 
     // --- a fader ride: press, moves, release ---
     Q_INVOKABLE void beginRide(int track);
@@ -118,27 +126,23 @@ private:
     void sendLive(int track, float db);
     // Every track's solo (or mute) to `on`, one SetMix per track that differs.
     void setAll(bool solo, bool on);
-    // The document changed: a new one resends the gains, and a ride whose
-    // track or session is not there any more is dropped.
+    // The document changed: a ride whose track or session is not there any
+    // more is dropped.
     void documentChanged();
     // False, with the ride dropped and the reason said, when the ride's
     // track is no longer the strip it began on or its session was replaced.
-    // `restore`: put the engine back to the document if the ride reached it
-    // (false when the caller resends every gain anyway).
-    bool rideStillHolds(bool restore);
-    void dropRide(const std::string& why, bool restore);
-    // Every engine track's gain, as the document holds it.
-    void resendGains();
+    bool rideStillHolds();
+    // If the ride's steps reached the engine, its index goes back to the
+    // gain the document holds for the track now there.
+    void dropRide(const std::string& why);
 
     SessionModel& session_;
     GainSender sender_;
-    uint32_t engine_tracks_;
+    EngineTracks engine_tracks_;
     bool audible_;
-    uint64_t generation_ = 0;     // the document's session generation, last seen
     int ride_track_ = kNoRide;
     model::Id ride_id_ = 0;       // the ridden track; 0 for the bus
     uint64_t ride_generation_ = 0;
-    uint64_t gain_resends_ = 0;
     float ride_db_ = 0.0f;
     float ride_from_db_ = 0.0f;
     bool ride_sent_live_ = false;

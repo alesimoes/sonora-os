@@ -158,7 +158,7 @@ void EngineControlServer::send_update(const model::ReplicationUpdate& update) {
 
 void EngineControlServer::show_document(bool mix_changed) {
     const model::Snapshot& doc = document_->current();
-    if (mix_changed) playback_->apply_mix(doc);
+    if (mix_changed) apply_mix();
     std::string why;
     if (!playback_->show(doc, why)) {
         // What plays does not change; the operator must know the edit is
@@ -238,36 +238,33 @@ bool EngineControlServer::flush_plugin_state(const std::string& which, std::stri
 }
 
 void EngineControlServer::follow_transport() {
-    const bool recording = session_.transport().state() == TransportState::Recording;
-    // take_ is the running take's number here: open_take() set it just
-    // before start_recording(), and finish() moves it on only after stop().
-    if (recording && !was_recording_) recording_take_ = take_;
-    if (!recording && was_recording_) {
-        // stop() joined the disk thread: the files are closed and their
-        // lengths final.
-        const ClosedTake closed = add_closed_take(*document_, session_, recording_take_);
-        for (const auto& u : closed.updates) send_update(u);
-        for (const std::string& notice : closed.track_notices) {
+    // Closed means every file of the take is, with its length final
+    // (timeline-model.md: "take closed, length N" before RecordTake).
+    for (const Session::ClosedTake& take : session_.closed_takes()) {
+        const TakeAdded added = add_closed_take(*document_, session_, take);
+        for (const auto& u : added.updates) send_update(u);
+        std::vector<std::string> notices = added.track_notices;
+        if (!added.cut_short.empty()) notices.push_back(added.cut_short);
+        for (const std::string& notice : notices) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
             e.text = notice;
             post_event(e);
         }
-        if (!closed.refused.empty()) {
+        if (!added.refused.empty()) {
             // An error, not a side line: shown as a failed take, until a
             // later take records cleanly, as a take that stopped writing is.
-            failed_take_ = recording_take_;
+            failed_take_ = take.take;
             take_failed_shown_ = true;
             publisher_->set_health(api::kHealthTakeFailed, true);
             api::EngineEvent e;
             e.kind = api::EventKind::TakeFailed;
-            e.frame = static_cast<uint64_t>(recording_take_);
-            e.text = closed.refused;
+            e.frame = static_cast<uint64_t>(take.take);
+            e.text = added.refused;
             post_event(e);
         }
-        if (!closed.updates.empty()) show_document(false);
+        if (!added.updates.empty()) show_document(false);
     }
-    was_recording_ = recording;
 }
 
 void EngineControlServer::resolve_records() {
@@ -517,7 +514,23 @@ EngineControlServer::Room EngineControlServer::wait_for_room(ClientId client, in
     return Room::Ok;
 }
 
+void EngineControlServer::apply_mix() {
+    playback_->apply_mix(document_->current());
+    riders_.clear();
+}
+
 void EngineControlServer::forget(ClientId id) {
+    // A ride its client left before releasing (ADR-0009 §4 item 3): only
+    // the tracks it was the last to ride, so a ride another client holds
+    // stays where it is.
+    for (auto it = riders_.begin(); it != riders_.end();) {
+        if (it->second == id) {
+            playback_->apply_gain(document_->current(), it->first);
+            it = riders_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     large_.erase(id);
     handled_.erase(id);
     {
@@ -731,8 +744,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
-        // Before anything else can change arming: the closed take's tracks
-        // are the armed ones.
+        // A stop just dispatched closed a take: placed now, so the reply
+        // follows its RecordTake updates. Placement comes from the disk
+        // thread's report of each file, not from arming.
         follow_transport();
         if (d == DispatchResult::Ok && changes_arming(r.command)) {
             playback_->apply_monitoring(document_->current());
@@ -766,6 +780,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             return;
         }
         session_.tracks()[c.track]->set_gain(c.value);
+        riders_[c.track] = from;
         reply(from, c.seq, DispatchResult::Ok, "");
         return;
     }
@@ -846,6 +861,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             // A resync is the asker's alone; every other replica is in step.
             if (m.action == api::ModelAction::Resync) {
                 send_to(from, out);
+                // The asker may be resyncing after a lost link, with a ride's
+                // last step still in the gain atomics; the plan is unchanged.
+                apply_mix();
             } else {
                 send(out);
                 // The faders' part of the mix only: an insert's bypass or
