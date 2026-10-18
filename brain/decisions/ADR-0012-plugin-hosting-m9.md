@@ -839,16 +839,18 @@ silence.
    freed. A slot, with its region and its host, leaves its chain when the
    resolver stops naming it. The chain records the epoch of the first plan
    built without the slot. It calls `PluginClient::retire(slot)` and
-   `SupervisedChain::retired()` only once `oldest_live_epoch()` is past
-   that epoch. A cancelled plan is never read by the audio thread, so it
+   `SupervisedChain::retired()` only once `oldest_live_epoch()` is at or
+   past that epoch, that is, once no live plan is older than the first plan
+   built without the slot. A cancelled plan is never read by the audio thread, so it
    holds no slot. The generation check (H1) remains the second guard.
 
 3. **Where a chain's spec comes from until the scan worker and catalog
    cache exist.** A chain start is asynchronous from end to end
    (code-reviewer L6 on #49):
    - For each plugin not yet probed in this engine run, one
-     `sonora-plugin-host --probe` child is started (§4's rule: one process
-     per plugin). The control thread collects it from its poll and never
+     `sonora-plugin-host --probe ID` child is started (one plugin per
+     process, as the host's probe mode is built; §4 says one per bundle,
+     and the scan worker settles which). The control thread collects it from its poll and never
      waits on it.
    - Then the host starts with `--control-fd` and receives its chain in
      `Load` (`host_control.h`), not on the command line. The key table
