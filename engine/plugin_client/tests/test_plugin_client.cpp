@@ -586,6 +586,32 @@ void a_node_not_run_fades_out_and_ramps_back_in() {
     for (uint32_t i = 0; i < kBlock; ++i) CHECK(m.out[i] == 0.5f * (float(i) / float(kBlock)));
 }
 
+// PR #77 RT audit L5: a skip shorter than the fade, then a block collected.
+// The fade got to 48/64 of the last sample; the ramp-in starts from that
+// gain, not from 0, so the output does not drop to 0 in one sample.
+void a_short_skip_ramps_in_from_where_the_fade_got_to() {
+    Rig rig;
+    ScriptedHost host(1, {0});
+    const InsertChainRef r = rig.bind(host, 0, 0, 1, map_of({0}));
+    Mono m;
+    m.constant(0.5f);
+    for (int i = 0; i < 4; ++i) {
+        rig.step(r, m);
+        host.complete();
+    }
+    CHECK(m.out[kBlock - 1] == 0.5f);
+    std::vector<float> a(16, 9.f);
+    float* pa[1] = {a.data()};
+    rig.client.fade_node(r.node_state, pa, 1, 16);
+    const float g0 = float(kFadeFrames - 16) / float(kFadeFrames);
+    CHECK(a[15] == 0.5f * g0);
+    CHECK(rig.step(r, m) == Outcome::Collected);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(m.out[i] == 0.5f * (g0 + (1.f - g0) * (float(i) / float(kBlock))));
+    }
+    CHECK(m.out[0] == a[15]);
+}
+
 // Code-reviewer M2 on PR #49: a caller that runs the plan per slice of a
 // split block calls a node twice in one callback. The second call must not
 // see the first's submit as a busy host (8 slices would remove the chain).
@@ -840,6 +866,7 @@ int main() {
     the_clock_ticks_only_after_a_submit();
     an_unstamped_callback_publishes_nothing();
     a_node_not_run_fades_out_and_ramps_back_in();
+    a_short_skip_ramps_in_from_where_the_fade_got_to();
     if (failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

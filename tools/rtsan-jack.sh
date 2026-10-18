@@ -136,9 +136,13 @@ JACK_RUN=""
 DEVICE_NAME=$DEVICE_CLIENT
 # No playback or capture ports of its own: the one capture device is the
 # fake, so the device policy picks it and the unplug can take it away.
-# --no-realtime: the container has no RT limits; RTSan's realtime context is
-# the function attribute, not the thread's scheduling class.
-jackd --no-realtime -d dummy -r "$RATE" -p 128 -C 0 -P 0 >/tmp/jackd.log 2>&1 &
+# Realtime, as the appliance runs its server: SCHED_FIFO, which
+# tools/build-rtsan.sh lets the container use (SYS_NICE, an rtprio limit).
+# Without it a busy host makes jackd2's cycles late, and its estimate of a
+# cycle's start then runs hundreds of ms off (PR #77 RT audit B1), which the
+# conformance suite's callback_ns check measures. RTSan's realtime context
+# is the function attribute, not the scheduling class, either way.
+jackd -R -P 70 -d dummy -r "$RATE" -p 128 -C 0 -P 0 >/tmp/jackd.log 2>&1 &
 SERVER_PID=$!
 PIDS+=("$SERVER_PID")
 for _ in $(seq 1 50); do
@@ -146,6 +150,24 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 jack_lsp >/dev/null 2>&1 || { tail -20 /tmp/jackd.log >&2; fail "jackd never came up"; }
+# Said, not required: where the host refuses SCHED_FIFO, jackd2 runs on
+# without it, and the callback_ns check skips, saying why, if late cycles
+# move the estimate.
+fifo_threads() {
+  local n=0 st
+  for st in /proc/"$1"/task/*/stat; do
+    # Field 41, the policy, is the 39th after the parenthesised name; 1 is
+    # SCHED_FIFO.
+    [[ "$(sed 's/^.*) //' "$st" 2>/dev/null | awk '{print $39}')" == "1" ]] && n=$((n + 1))
+  done
+  echo "$n"
+}
+FIFO="$(fifo_threads "$SERVER_PID")"
+if [[ "$FIFO" -gt 0 ]]; then
+  echo "jackd2: $FIFO threads at SCHED_FIFO"
+else
+  echo "WARNING: jackd2 runs without SCHED_FIFO here (see /tmp/jackd.log); its cycles can run late under load" >&2
+fi
 start_device
 canary jackd2
 # The xrun: the device's client stopped for a few periods, a cycle jackd2

@@ -540,6 +540,9 @@ int scenario_stall(const Args& a) {
     const uint32_t comp = rig.comp.compensation_frames;
     check(comp == kBlock, "the sleeping chain reports the IPC block");
     const uint32_t slot = rig.chains[0]->node().channel_slot;
+    // The plan the store belongs to: a change for it is dropped once the
+    // audio thread has adopted another (PR #77 RT audit M1).
+    const uint64_t epoch = rig.session->plans().current()->epoch;
     bool dry_exact = true;
     bool silent_after = true;
     uint64_t removed_at = 0;
@@ -592,6 +595,9 @@ int scenario_params(const Args& a) {
     if (!rig.ready) return 1;
     const uint32_t store = rig.chains[0]->node().param_store;
     const uint32_t slot = rig.chains[0]->node().channel_slot;
+    // The plan the store belongs to: a change for it is dropped once the
+    // audio thread has adopted another (PR #77 RT audit M1).
+    const uint64_t epoch = rig.session->plans().current()->epoch;
 
     // The ratio of left (the chain) to right (dry, compensated) in one
     // callback: 1 when bit for bit, `want` when every sample is within a
@@ -614,7 +620,7 @@ int scenario_params(const Args& a) {
     }
     check(before_ok, "at 0 dB the chain's track is the dry track, bit for bit");
 
-    check(rig.session->post_plugin_param(store, 0, gain, -20.f), "the change is queued");
+    check(rig.session->post_plugin_param(epoch, store, 0, gain, -20.f), "the change is queued");
     for (uint32_t k = 0; k < 20; ++k) {
         rig.block();
         rig.settle();
@@ -624,7 +630,7 @@ int scenario_params(const Args& a) {
     }
     check(after_ok, "the callback after the post plays the chain at -20 dB (0.1), and every one after it");
 
-    check(rig.session->post_plugin_param(store, 0, plugin::kBypassParam, 1.f), "the bypass is queued");
+    check(rig.session->post_plugin_param(epoch, store, 0, plugin::kBypassParam, 1.f), "the bypass is queued");
     for (uint32_t k = 0; k < 20; ++k) {
         rig.block();
         rig.settle();

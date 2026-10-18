@@ -215,12 +215,14 @@ bool Session::post_locate(uint64_t frame) {
     return commands_->write(&c, 1) == 1;
 }
 
-bool Session::post_plugin_param(uint32_t store, uint32_t instance, uint32_t param, float value) {
+bool Session::post_plugin_param(uint64_t epoch, uint32_t store, uint32_t instance, uint32_t param,
+                                float value) {
     // A NaN would reach the store, every later submit and the host's
     // table; the plan never names kNoParamStore.
-    if (store >= max_param_stores_ || !std::isfinite(value)) return false;
+    if (epoch == 0 || store >= max_param_stores_ || !std::isfinite(value)) return false;
     RtCommand c{};
     c.kind = RtCommand::Kind::PluginParam;
+    c.epoch = epoch;
     c.store = store;
     c.instance = instance;
     c.param = param;
@@ -565,12 +567,14 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // Drained only in a callback whose chains run (RT re-audit of #60's
     // merge): a zero-frame callback, one of another size or a plan with no
     // chain leaves them queued for the next that runs, where nothing would
-    // re-seed a change dropped here. Sorted by node; what no node of this
-    // plan runs is dropped, counted, never carried to a later plan.
-    params_count_ = 0;
+    // re-seed a change dropped here. Behind the changes held for a plan not
+    // yet adopted, which were posted first. Sorted by node; what was posted
+    // for an earlier plan, or that no node of this plan runs, is dropped,
+    // counted, never handed to a node of another plan.
+    params_count_ = params_held_;
     if (runner_ != nullptr) {
-        params_count_ = static_cast<uint32_t>(
-            param_commands_->read(params_.get(), param_commands_->capacity()));
+        params_count_ += static_cast<uint32_t>(param_commands_->read(
+            params_.get() + params_held_, param_commands_->capacity() - params_held_));
     }
     gather_params();
 
@@ -718,8 +722,14 @@ void Session::gather_params() noexcept SONORA_RT {
         dropped = 0;
     } else {
         for (uint32_t i = 0; i < params_count_; ++i) {
-            const uint32_t s = params_[i].store;
-            const uint32_t o = s < max_param_stores_ ? store_order_[s] : kNoNode;
+            const RtCommand& c = params_[i];
+            // Posted for an earlier plan: its store may name another chain
+            // now (PR #77 RT audit M1). For a later one: held, below.
+            if (c.epoch != seen_epoch_) {
+                if (c.epoch < seen_epoch_) ++dropped;
+                continue;
+            }
+            const uint32_t o = c.store < max_param_stores_ ? store_order_[c.store] : kNoNode;
             if (o == kNoNode) {
                 ++dropped;
             } else {
@@ -733,11 +743,19 @@ void Session::gather_params() noexcept SONORA_RT {
             at += order_count_[o];
         }
         // Stable: each node's changes keep the order they were posted in.
+        // Those for a later plan move to the front, in order, never past
+        // the one being read.
+        uint32_t held = 0;
         for (uint32_t i = 0; i < params_count_; ++i) {
-            const RtCommand& c = params_[i];
+            const RtCommand c = params_[i];
+            if (c.epoch != seen_epoch_) {
+                if (c.epoch > seen_epoch_) params_[held++] = c;
+                continue;
+            }
             const uint32_t o = c.store < max_param_stores_ ? store_order_[c.store] : kNoNode;
             if (o != kNoNode) node_params_[order_pos_[o]++] = ChainParamEvent{c.instance, c.param, 0, c.value};
         }
+        params_held_ = held;
     }
     if (dropped != 0) {
         params_dropped_.store(params_dropped_.load(std::memory_order_relaxed) + dropped,
@@ -910,6 +928,10 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
 }
 
 bool Session::plan_in_bounds(const PlaybackPlan& plan) const noexcept SONORA_RT {
+    // node_order_ has an entry per node. The builder gives every node its
+    // own scratch buffer, which implies this; a plan whose nodes share
+    // buffers does not, and would index past it (PR #77 RT audit L4).
+    if (plan.node_count > scratch_buffers_) return false;
     if (plan.last_insert_node != kNoNode &&
         (plan.last_insert_node >= plan.node_count ||
          plan.nodes[plan.last_insert_node].kind != NodeKind::InsertChain)) {

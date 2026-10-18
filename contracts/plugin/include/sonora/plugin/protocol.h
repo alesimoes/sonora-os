@@ -164,7 +164,8 @@
 //    b. If submitted_block differs from the last block processed, process
 //       it (c to e), with block_frames frames: a submitted_frames other
 //       than block_frames is a fault (see Frame count). Otherwise sleep (clock.wake_mode): Timer, the default,
-//       sleeps to the next expected callback (next_wake_ns) and polls in
+//       sleeps to the next expected callback (next_wake_ns, never more
+//       than a period ahead) and polls in
 //       50 us steps while that callback is late, for at most half a period;
 //       Futex sleeps in FUTEX_WAIT(tick, value read in a) with a 100 ms
 //       timeout. Bump heartbeat on every pass, idle or not.
@@ -808,11 +809,16 @@ inline void publish_tick(ClockHeader& c) noexcept { c.tick.fetch_add(1, std::mem
 // microseconds; `offset_ns` is how long after the start the host looks.
 // Looking only at callback_ns + period (the draft) missed a block whenever
 // the host went to sleep between a callback's start and its submit.
+// Never more than one period after `now`: callback_ns is the server's
+// estimate of its cycle's start, and jackd2's runs hundreds of ms ahead
+// when its cycles run late (PR #77 RT audit B1). Followed as is, a stamp
+// that far ahead would put the host to sleep through every block until
+// then, and eight missed blocks remove the chain.
 inline uint64_t next_wake_ns(uint64_t callback_ns, uint64_t period_ns, uint64_t offset_ns,
                              uint64_t now_ns) noexcept {
     if (period_ns == 0) return now_ns;
     uint64_t at = callback_ns + offset_ns;
-    if (at > now_ns) return at;
+    if (at > now_ns) return at - now_ns > period_ns ? now_ns + period_ns : at;
     const uint64_t behind = (now_ns - at) / period_ns + 1;
     return at + behind * period_ns;
 }

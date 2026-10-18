@@ -352,8 +352,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              re-seeds. ctest `plugin_params`
              `zero_frame_callback_keeps_changes`, `unrouted`,
              `runner_block_size_gates_the_callback`.
+       - [x] PR #77 RT audit, fixed in the same PR: jackd2 at SCHED_FIFO in
+             `tools/rtsan-jack.sh`, and the `callback_ns` check skips, with
+             its reason, on a run with xruns or late callbacks (B1);
+             `plugin::next_wake_ns` never more than a period ahead (B1,
+             contract); parameter changes tagged with their plan's epoch
+             (M1, `plan_swap`); the least lag checked too (M2); the first
+             clock offset retried and never kept when wide (L1,
+             `clock_offset`); `atomic<int64_t>` lock-free asserted (L2);
+             `activate()` returns the thread's error (L3); `plan_in_bounds`
+             refuses more nodes than scratch buffers (L4); the ramp-in
+             starts from the fade's gain (L5).
        - [ ] Re-post or reseed when `plugin_params_dropped()` moves (a store
-             no runnable node names), and coalesce-and-retry a refused post
+             no runnable node names, a change for a replaced plan), and
+             coalesce-and-retry a refused post
              (ring full, including while no chain runs): the control-server
              PR.
        - [ ] After a callback the runner did not take, the next collect

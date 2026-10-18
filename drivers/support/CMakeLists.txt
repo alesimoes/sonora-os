@@ -35,3 +35,7 @@ add_test(NAME alsa_card COMMAND test_alsa_card)
 add_executable(test_fatal_reason tests/test_fatal_reason.cpp)
 target_link_libraries(test_fatal_reason PRIVATE sonora_driver_support)
 add_test(NAME fatal_reason COMMAND test_fatal_reason)
+
+add_executable(test_clock_offset tests/test_clock_offset.cpp)
+target_link_libraries(test_clock_offset PRIVATE sonora_driver_support)
+add_test(NAME clock_offset COMMAND test_clock_offset)

@@ -14,11 +14,13 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "sonora/alsa_card.h"
+#include "sonora/clock_offset.h"
 #include "sonora/fatal_reason.h"
 #include "sonora/frame_clock.h"
 #include "sonora/period_guard.h"
@@ -115,52 +117,67 @@ struct JackBackend::Impl {
     // thread.
     std::atomic<uint32_t> xruns{0};
     // jack_get_time()'s base is the server's, not necessarily the engine's
-    // CLOCK_MONOTONIC: jackd2's lagged steady_clock by a constant 0.8 s in
-    // the container (backend conformance, callback_ns_is_the_monotonic_clock),
-    // which would phase every timer-paced plugin host wrongly. The offset
-    // from it to steady_clock is sampled off the audio thread, every 100 ms
-    // while active, so the callback converts the cycle time with one add
-    // and reads no clock (contracts/backend, callback_ns).
+    // CLOCK_MONOTONIC: jackd2's is CLOCK_MONOTONIC_RAW, which lagged
+    // steady_clock by 0.8 s in the container (backend conformance,
+    // callback_ns_is_the_monotonic_clock) and would phase every timer-paced
+    // plugin host wrongly. The offset from it to steady_clock is sampled off
+    // the audio thread, every 100 ms while active, so the callback converts
+    // the cycle time with one add and reads no clock (contracts/backend,
+    // callback_ns).
     std::atomic<int64_t> steady_minus_jack_ns{0};
+    // One word the callback reads: a lock-based atomic there would be a
+    // mutex on the audio thread (PR #77 RT audit L2).
+    static_assert(std::atomic<int64_t>::is_always_lock_free, "steady_minus_jack_ns");
+    drivers::ClockOffset time_offset;  // the sampler's: start_time_sampler, then its thread
     std::thread time_sampler;
     std::mutex sampler_mutex;
     std::condition_variable sampler_wake;
     bool sampler_stop = false;
 
-    void sample_time_offset() {
-        // The tightest of three brackets around jack_get_time().
-        int64_t best_width = INT64_MAX, best = 0;
+    // The tightest of three brackets around jack_get_time().
+    static drivers::ClockOffset::Bracket bracket() {
+        drivers::ClockOffset::Bracket best{0, 0, 0};
+        int64_t best_width = INT64_MAX;
         for (int i = 0; i < 3; ++i) {
             const auto t0 = static_cast<int64_t>(now_ns());
             const auto j = static_cast<int64_t>(jack_get_time()) * 1000;
             const auto t1 = static_cast<int64_t>(now_ns());
             if (t1 - t0 < best_width) {
                 best_width = t1 - t0;
-                best = t0 + (t1 - t0) / 2 - j;
+                best = {t0, j, t1};
             }
         }
-        // A bracket the scheduler stretched (a loaded machine) would move
-        // the offset by half its width: keep the last good one instead.
-        const bool have = sampled.load(std::memory_order_relaxed);
-        if (have && best_width > 100'000) return;
-        steady_minus_jack_ns.store(best, std::memory_order_relaxed);
-        sampled.store(true, std::memory_order_relaxed);
+        return best;
     }
-    std::atomic<bool> sampled{false};
-    void start_time_sampler() {
-        sample_time_offset();
+    void publish_time_offset() {
+        if (time_offset.have()) steady_minus_jack_ns.store(time_offset.offset(), std::memory_order_relaxed);
+    }
+    // False, with `error` set, when the sampler thread cannot start: a
+    // std::system_error from std::thread, which activate() must not throw
+    // (PR #77 RT audit L3).
+    bool start_time_sampler(std::string& error) {
+        // Before the first callback, so it has an offset; a wide first
+        // bracket is retried, and kept only provisionally (ClockOffset).
+        if (!time_offset.trusted()) time_offset.first(bracket);
+        publish_time_offset();
         {
             std::lock_guard<std::mutex> lock(sampler_mutex);
             sampler_stop = false;
         }
-        time_sampler = std::thread([this] {
-            std::unique_lock<std::mutex> lock(sampler_mutex);
-            while (!sampler_wake.wait_for(lock, std::chrono::milliseconds(100), [this] { return sampler_stop; })) {
-                lock.unlock();
-                sample_time_offset();
-                lock.lock();
-            }
-        });
+        try {
+            time_sampler = std::thread([this] {
+                std::unique_lock<std::mutex> lock(sampler_mutex);
+                while (!sampler_wake.wait_for(lock, std::chrono::milliseconds(100), [this] { return sampler_stop; })) {
+                    lock.unlock();
+                    if (time_offset.offer(bracket())) publish_time_offset();
+                    lock.lock();
+                }
+            });
+        } catch (const std::system_error& e) {
+            error = std::string("cannot start the clock sampler thread: ") + e.what();
+            return false;
+        }
+        return true;
     }
     void stop_time_sampler() noexcept {
         {
@@ -435,9 +452,8 @@ bool JackBackend::activate(std::string& error) {
         return false;
     }
     if (d.active) return true;
+    if (!d.start_time_sampler(error)) return false;
     d.clock.resume();
-    // Before the first callback, so it has an offset.
-    d.start_time_sampler();
     if (jack_activate(d.client) != 0) {
         d.stop_time_sampler();
         error = "jack_activate failed";

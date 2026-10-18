@@ -65,6 +65,9 @@ struct RtCommand {
     // PluginParam: the chain's parameter store (the index its plan node
     // carries), the instance in the chain, the dense parameter index or
     // plugin::kBypassParam, and the format-native value (ADR-0012 §5.2).
+    // `epoch`: the plan whose `store` the change was posted for (PR #77 RT
+    // audit M1).
+    uint64_t epoch;
     uint32_t store;
     uint32_t instance;
     uint32_t param;
@@ -168,20 +171,25 @@ public:
     bool post_locate(uint64_t frame);
 
     // Queues a plugin parameter change for the audio thread (ADR-0012
-    // §5.1). At the start of the next callback that runs chains it is
-    // handed, at offset 0 and in the order posted, to the InsertChain node
-    // whose plan names `store`; that node keeps it in the store and tags it
-    // with the block it submits. A callback that runs no chain (zero
-    // frames, another size, mixed in pieces, no chain in the plan, no
-    // runner) leaves it queued. In one that runs chains, a change no
-    // runnable node takes (no bound node names the store, or it is
-    // silent) is dropped and counted in plugin_params_dropped(), never held
-    // for a later plan: the control thread seeds a new chain's store from
-    // the document, and re-posts or reseeds when this count moves. False when refused: no store, a store
-    // past PlaybackConfig::max_param_stores, a value that is not finite,
-    // or the queue full. Control thread; never waits.
-    bool post_plugin_param(uint32_t store, uint32_t instance, uint32_t param, float value);
-    // Changes the audio thread drained and had no node to hand to.
+    // §5.1), for the plan published with `epoch`, whose node names `store`.
+    // At the start of the next callback that runs chains under that plan it
+    // is handed, at offset 0 and in the order posted, to that InsertChain
+    // node, which keeps it in the store and tags it with the block it
+    // submits. A callback that runs no chain (zero frames, another size,
+    // mixed in pieces, no chain in the plan, no runner) leaves it queued,
+    // and so does one still on an earlier plan than `epoch` (published,
+    // not yet adopted). Dropped and counted in plugin_params_dropped(),
+    // never handed to another plan's node: one posted for a plan the audio
+    // thread has since replaced, whose store may now be another chain's
+    // (PR #77 RT audit M1); and one no runnable node of its plan takes (no
+    // bound node names the store, or it is silent). The control thread
+    // seeds a new chain's store from the document, and re-posts or reseeds
+    // when the count moves. False when refused: epoch 0 (no plan), no
+    // store, a store past PlaybackConfig::max_param_stores, a value that is
+    // not finite, or the queue full. Control thread; never waits.
+    bool post_plugin_param(uint64_t epoch, uint32_t store, uint32_t instance, uint32_t param, float value);
+    // Changes the audio thread drained and had no node of their plan to
+    // hand to.
     uint64_t plugin_params_dropped() const {
         return params_dropped_.load(std::memory_order_relaxed);
     }
@@ -342,6 +350,9 @@ private:
     std::unique_ptr<RtCommand[]> params_;
     std::unique_ptr<ChainParamEvent[]> node_params_;
     uint32_t params_count_ = 0;
+    // At the front of params_: changes for a plan published but not yet
+    // adopted, kept for the callback that adopts it.
+    uint32_t params_held_ = 0;
     uint32_t max_param_stores_ = 0;
     std::unique_ptr<uint32_t[]> store_order_;   // max_param_stores_: chain ordinal or kNoNode
     std::unique_ptr<uint32_t[]> node_order_;    // scratch_buffers_: chain ordinal or kNoNode

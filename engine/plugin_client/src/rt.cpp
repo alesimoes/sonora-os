@@ -42,10 +42,14 @@ void fade_out(PluginClient::Node& n, float* const* out, uint32_t channels, uint3
 }
 
 // The first block collected after a miss (or a channel's first) comes in
-// linearly from 0, so recovery is not a step (§3).
-void ramp_in(float* const* out, uint32_t channels, uint32_t frames) noexcept SONORA_RT {
+// linearly to unity, so recovery is not a step (§3). It starts from the gain
+// the fade-out had reached: 0 once the fade is over, but a skip shorter than
+// kFadeFrames leaves it part way, and a ramp from 0 would drop to 0 in one
+// sample (PR #77 RT audit L5).
+void ramp_in(const PluginClient::Node& n, float* const* out, uint32_t channels, uint32_t frames) noexcept SONORA_RT {
+    const float g0 = float(kFadeFrames - n.fade_pos) / float(kFadeFrames);
     for (uint32_t c = 0; c < channels; ++c)
-        for (uint32_t i = 0; i < frames; ++i) out[c][i] *= float(i) / float(frames);
+        for (uint32_t i = 0; i < frames; ++i) out[c][i] *= g0 + (1.f - g0) * (float(i) / float(frames));
 }
 
 // Into the authoritative store first, whatever happens to the channel this
@@ -209,7 +213,7 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
     }
     Outcome outcome = Outcome::Collected;
     if (got) {
-        if (!node.playing) ramp_in(out, ref.channels, frames);
+        if (!node.playing) ramp_in(node, out, ref.channels, frames);
         node.playing = true;
         for (uint32_t c = 0; c < ref.channels; ++c) node.last[c] = out[c][frames - 1];
         s.collected.bump();

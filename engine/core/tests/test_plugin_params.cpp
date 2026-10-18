@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Plugin parameter changes from the control thread to a chain (ADR-0012
-// §5.1, checklist 5): Session::post_plugin_param queues an RtCommand, the
-// audio thread drains it at the start of the next callback and hands it to
-// the InsertChain node whose plan names that parameter store, in the order
-// posted, once. The audio thread stays the parameter ring's only producer.
+// §5.1, checklist 5): Session::post_plugin_param queues an RtCommand for a
+// plan, the audio thread drains it at the start of the next callback that
+// runs chains and hands it to the InsertChain node of that plan whose
+// store it names, in the order posted, once. The audio thread stays the
+// parameter ring's only producer.
 //
 //   routed          each event reaches the node with its store, in order,
 //                   offset 0, in the next callback only; another node gets
 //                   none
-//   unrouted        a store no bound node of the plan names, a callback the
-//                   session mixes in pieces, a plan with no chain: dropped
-//                   and counted, never held for a later plan
+//   unrouted        a store no bound node of the plan names: dropped and
+//                   counted; a callback mixed in pieces, or a plan with no
+//                   chain: kept queued, and dropped if its plan is replaced
+//   plan_swap       a change for a replaced plan is dropped, counted; one
+//                   for a plan not yet adopted waits for it (PR #77 M1)
 //   refused         no store, a non-finite value, a full queue: refused at
 //                   the post, and the queue takes more once drained
 //   locate_apart    a full parameter queue never holds a locate back
@@ -132,6 +135,11 @@ struct Rig {
 
     bool publish(PlaybackPlan* p) { return playback_test::publish_plan(*session, p); }
 
+    // A change for the plan published last, as the control thread posts it.
+    bool post(uint32_t store, uint32_t instance, uint32_t param, float value) {
+        return session->post_plugin_param(session->plans().current()->epoch, store, instance, param, value);
+    }
+
     uint64_t stamp = 1'000'000'000;
 
     // `callback_ns` as the backend stamps it; by default one per period.
@@ -174,10 +182,10 @@ int test_routed() {
     rig.block();
     CHECK(runner.count == 0);
 
-    CHECK(rig.session->post_plugin_param(5, 0, 3, 0.25f));
-    CHECK(rig.session->post_plugin_param(9, 1, 0, -6.0f));
-    CHECK(rig.session->post_plugin_param(5, 0, 3, 0.5f));
-    CHECK(rig.session->post_plugin_param(5, 2, sonora::plugin::kBypassParam, 1.0f));
+    CHECK(rig.post(5, 0, 3, 0.25f));
+    CHECK(rig.post(9, 1, 0, -6.0f));
+    CHECK(rig.post(5, 0, 3, 0.5f));
+    CHECK(rig.post(5, 2, sonora::plugin::kBypassParam, 1.0f));
     reset_heap_counts();
     rig.block();
     CHECK(heap_untouched());
@@ -208,36 +216,92 @@ int test_unrouted() {
     // (RT re-audit of #60's merge): the change waits for a callback that
     // runs chains, rather than being dropped where nothing re-seeds it.
     CHECK(rig.publish(rig.plan({ChainBinding{}, ChainBinding{}}, pool)));
-    CHECK(rig.session->post_plugin_param(5, 0, 0, 1.0f));
+    CHECK(rig.post(5, 0, 0, 1.0f));
     rig.block();
     CHECK(rig.session->plugin_params_dropped() == 0);
 
     // A store the plan does not name, and a chain bound to no slot (it
     // passes through; the runner never sees it): those two are dropped,
-    // counted. Store 5's node gets the held change first, then the new one.
+    // counted. So is the change held from the plan with no chain: it was
+    // posted for that plan, never for this one's store 5 (PR #77 RT audit
+    // M1). Store 5's node gets only the change posted for it.
     ChainBinding unbound;
     unbound.active = true;
     unbound.param_store = 6;
     CHECK(rig.publish(rig.plan({bound(0, 5), unbound}, pool)));
-    CHECK(rig.session->post_plugin_param(7, 0, 0, 1.0f));
-    CHECK(rig.session->post_plugin_param(6, 0, 0, 1.0f));
-    CHECK(rig.session->post_plugin_param(5, 0, 0, 2.0f));
+    CHECK(rig.post(7, 0, 0, 1.0f));
+    CHECK(rig.post(6, 0, 0, 1.0f));
+    CHECK(rig.post(5, 0, 0, 2.0f));
     reset_heap_counts();
     rig.block();
     CHECK(heap_untouched());
-    CHECK(runner.count == 2 && runner.seen[0].store == 5 && same(runner.seen[0].event, 0, 0, 1.0f));
-    CHECK(runner.seen[1].store == 5 && same(runner.seen[1].event, 0, 0, 2.0f));
-    CHECK(rig.session->plugin_params_dropped() == 2);
+    CHECK(runner.count == 1 && runner.seen[0].store == 5 && same(runner.seen[0].event, 0, 0, 2.0f));
+    CHECK(rig.session->plugin_params_dropped() == 3);
 
     // A callback mixed in pieces runs no chain (insert_chain_runner.h): its
     // changes stay queued and reach the node in the next whole callback.
-    CHECK(rig.session->post_plugin_param(5, 0, 0, 3.0f));
+    CHECK(rig.post(5, 0, 0, 3.0f));
     rig.block(2 * kBlock);
     CHECK(rig.session->chain_bypassed_blocks() == 1);
-    CHECK(rig.session->plugin_params_dropped() == 2);
-    CHECK(runner.count == 2);
+    CHECK(rig.session->plugin_params_dropped() == 3);
+    CHECK(runner.count == 1);
     rig.block();
-    CHECK(runner.count == 3 && same(runner.seen[2].event, 0, 0, 3.0f));
+    CHECK(runner.count == 2 && same(runner.seen[1].event, 0, 0, 3.0f));
+    return 0;
+}
+
+// PR #77 RT audit M1: a change waits in the ring through callbacks that run
+// no chain, and a plan swap can happen meanwhile. If the control thread
+// gave the old plan's store index to another chain in the new plan, a
+// change posted for the old one would land in the new chain's store after
+// it was seeded. Each change carries its plan's epoch: one for a plan the
+// audio thread has replaced is dropped, counted; one for a plan published
+// but not yet adopted waits for it, in order.
+int test_a_change_never_crosses_a_plan_swap() {
+    Rig rig(1, kBlock);
+    RecordingRunner runner(kBlock);
+    rig.session->set_insert_chains(&runner);
+    DelayLinePool pool(rig.session->delay_lines());
+    CHECK(rig.publish(rig.plan({bound(0, 5)}, pool)));
+    rig.block();
+
+    // Posted for the first chain, held by a callback the runner does not
+    // take; then a plan where store 5 is another chain's.
+    CHECK(rig.post(5, 0, 1, 0.5f));
+    rig.block(kBlock / 2);
+    CHECK(rig.session->plugin_params_dropped() == 0 && runner.count == 0);
+    ChainBinding other = bound(0, 5);
+    other.chain_id = 900;
+    CHECK(rig.publish(rig.plan({other}, pool)));
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(runner.count == 0);
+    CHECK(rig.session->plugin_params_dropped() == 1);
+
+    // Posted for a plan built and published after the post, as when the
+    // callback has loaded the old plan just before the swap: held, then
+    // handed to the plan's node in the callback that adopts it, in order.
+    PlaybackPlan* next = rig.plan({bound(0, 5)}, pool);
+    CHECK(rig.session->post_plugin_param(next->epoch, 5, 0, 2, 0.25f));
+    CHECK(rig.session->post_plugin_param(next->epoch, 5, 0, 3, 0.75f));
+    rig.block();
+    CHECK(runner.count == 0 && rig.session->plugin_params_dropped() == 1);
+    CHECK(rig.post(5, 0, 4, 1.0f));  // for the current plan: handed now
+    rig.block();
+    CHECK(runner.count == 1 && same(runner.seen[0].event, 0, 4, 1.0f));
+    CHECK(rig.publish(next));
+    CHECK(rig.post(5, 0, 5, 0.5f));
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(runner.count == 4);
+    CHECK(same(runner.seen[1].event, 0, 2, 0.25f) && same(runner.seen[2].event, 0, 3, 0.75f));
+    CHECK(same(runner.seen[3].event, 0, 5, 0.5f));
+    CHECK(rig.session->plugin_params_dropped() == 1);
+
+    // No plan: refused at the post.
+    CHECK(!rig.session->post_plugin_param(0, 5, 0, 0, 1.0f));
     return 0;
 }
 
@@ -252,7 +316,7 @@ int test_zero_frame_callback_keeps_changes() {
     DelayLinePool pool(rig.session->delay_lines());
     CHECK(rig.publish(rig.plan({bound(0, 5)}, pool)));
     rig.block();
-    CHECK(rig.session->post_plugin_param(5, 0, 2, 0.75f));
+    CHECK(rig.post(5, 0, 2, 0.75f));
     rig.block(0);
     CHECK(rig.session->plugin_params_dropped() == 0);
     CHECK(runner.count == 0);
@@ -269,18 +333,18 @@ int test_refused() {
     DelayLinePool pool(rig.session->delay_lines());
     CHECK(rig.publish(rig.plan({bound(0, 5)}, pool)));
 
-    CHECK(!rig.session->post_plugin_param(sonora::kNoParamStore, 0, 0, 1.0f));
-    CHECK(!rig.session->post_plugin_param(5, 0, 0, std::nanf("")));
-    CHECK(!rig.session->post_plugin_param(5, 0, 0, INFINITY));
+    CHECK(!rig.post(sonora::kNoParamStore, 0, 0, 1.0f));
+    CHECK(!rig.post(5, 0, 0, std::nanf("")));
+    CHECK(!rig.post(5, 0, 0, INFINITY));
     // A ring of kCapacity holds kCapacity - 1.
     uint32_t taken = 0;
-    while (rig.session->post_plugin_param(5, 0, taken, float(taken))) ++taken;
+    while (rig.post(5, 0, taken, float(taken))) ++taken;
     CHECK(taken == kCapacity - 1);
     rig.block();
     CHECK(runner.count == taken);
     for (uint32_t i = 0; i < taken; ++i) CHECK(same(runner.seen[i].event, 0, i, float(i)));
     // Drained: it takes more.
-    CHECK(rig.session->post_plugin_param(5, 0, 0, 1.0f));
+    CHECK(rig.post(5, 0, 0, 1.0f));
     CHECK(rig.session->plugin_params_dropped() == 0);
     return 0;
 }
@@ -289,7 +353,7 @@ int test_locate_apart() {
     Rig rig(1);
     DelayLinePool pool(rig.session->delay_lines());
     CHECK(rig.publish(rig.plan({bound(0, 5)}, pool)));
-    while (rig.session->post_plugin_param(5, 0, 0, 1.0f)) {
+    while (rig.post(5, 0, 0, 1.0f)) {
     }
     CHECK(rig.session->post_locate(4800));
     rig.block();
@@ -332,7 +396,7 @@ int test_runner_block_size_gates_the_callback() {
     CHECK(rig.publish(rig.plan({bound(0, 5)}, pool)));
     rig.block();
     CHECK(runner.callback == 1);
-    CHECK(rig.session->post_plugin_param(5, 0, 0, 1.0f));
+    CHECK(rig.post(5, 0, 0, 1.0f));
     reset_heap_counts();
     rig.block(kBlock / 2);
     CHECK(heap_untouched());
@@ -368,7 +432,7 @@ int test_gather_many_nodes_full_ring() {
     rig.block();
     uint32_t posted = 0;
     const uint32_t order[8] = {5, 2, 7, 0, 3, 6, 1, 4};
-    while (rig.session->post_plugin_param(stores[order[posted % 8]], posted, 0, float(posted))) ++posted;
+    while (rig.post(stores[order[posted % 8]], posted, 0, float(posted))) ++posted;
     CHECK(posted == kCapacity - 1);
     reset_heap_counts();
     rig.block();
@@ -391,7 +455,7 @@ int test_gather_many_nodes_full_ring() {
     }
     CHECK(at == posted);
     // A store past the session's maximum is refused at the post.
-    CHECK(!rig.session->post_plugin_param(kMaxStores, 0, 0, 1.0f));
+    CHECK(!rig.post(kMaxStores, 0, 0, 1.0f));
     return 0;
 }
 
@@ -422,7 +486,7 @@ int test_silent_slot_keeps_its_latency() {
     CHECK(rig.publish(p));
     // The dry track carries a signal so its delay can be seen.
     for (uint32_t i = 0; i < 1024; ++i) rig.in[1][i] = 1.0f;
-    CHECK(rig.session->post_plugin_param(5, 0, 0, 1.0f));
+    CHECK(rig.post(5, 0, 0, 1.0f));
     reset_heap_counts();
     for (int k = 0; k < 12; ++k) {
         rig.block();
@@ -440,7 +504,7 @@ int test_silent_slot_keeps_its_latency() {
     CHECK(runner.runs == 0 && runner.skips == 12);
     CHECK(rig.session->silent_chain_blocks() == 12);
     CHECK(rig.session->plugin_params_dropped() == 1);
-    CHECK(!rig.session->post_plugin_param(sonora::kNoParamStore, 0, 0, 1.0f));
+    CHECK(!rig.post(sonora::kNoParamStore, 0, 0, 1.0f));
     return 0;
 }
 
@@ -453,6 +517,7 @@ int main() {
     if (test_silent_slot_keeps_its_latency()) return 1;
     if (test_routed()) return 1;
     if (test_unrouted()) return 1;
+    if (test_a_change_never_crosses_a_plan_swap()) return 1;
     if (test_zero_frame_callback_keeps_changes()) return 1;
     if (test_refused()) return 1;
     if (test_locate_apart()) return 1;
