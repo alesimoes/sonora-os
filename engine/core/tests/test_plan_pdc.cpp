@@ -73,8 +73,10 @@ public:
         ++ends;
     }
 
-    void run(const PlanNode& node, const float* const in[2], float* const out[2],
-             uint32_t frames) noexcept SONORA_RT override {
+    uint32_t block_frames() const noexcept SONORA_RT override { return 0; }
+
+    void run(const PlanNode& node, const float* const in[2], float* const out[2], uint32_t frames,
+             const sonora::ChainParamEvent*, uint32_t) noexcept SONORA_RT override {
         if (!open_ || frames != expected_frames) ++sequence_errors;
         float* ring = ring_.data() + static_cast<std::size_t>(node.channel_slot) * cap_;
         uint32_t pos = pos_[node.channel_slot];
@@ -154,6 +156,8 @@ struct Rig {
         b.outputs = out_ptrs;
         b.output_count = 2;
         b.nframes = n;
+        // The backend stamps every period (contracts/backend, callback_ns).
+        b.callback_ns = 1'000'000'000 + static_cast<uint64_t>(frame) * 1000;
         t_counting = true;
         session->process(b);
         t_counting = false;
@@ -362,7 +366,31 @@ int test_swap_with_latency_change() {
     return 0;
 }
 
-// No runner installed, or a chain bound to no slot: the chain passes its
+// PR #59 re-review (2): a bound chain with no runner installed is not run.
+// The plan delays the dry track by its 512 frames, so playing its input
+// would put it on the bus 512 frames early: it is silence, counted, and the
+// dry track keeps its compensation.
+int test_bound_chain_without_a_runner_is_silence() {
+    Rig rig(2, 16384);
+    rig.session->tracks()[0]->set_pan(-1.0f);
+    rig.session->tracks()[1]->set_pan(1.0f);
+    DelayLinePool pool(rig.session->delay_lines());
+    CHECK(rig.publish(rig.plan({chain(0, 512), ChainBinding{}}, pool)));
+    reset_heap_counts();
+    for (int blk = 0; blk < 20; ++blk) {
+        const int64_t at = rig.frame;
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            CHECK(rig.out[0][i] == 0.0f);
+            CHECK(rig.out[1][i] == signal(at + i - 512));
+        }
+    }
+    CHECK(heap_untouched());
+    CHECK(rig.session->unrun_chain_blocks() == 20);
+    return 0;
+}
+
+// A chain bound to no slot: laid out with latency 0, the chain passes its
 // input through, and a track with a chain sounds as it would without one.
 int test_unbound_chain_passes_through() {
     Rig rig(2, 16384);
@@ -474,7 +502,7 @@ int test_long_callback_bypasses_chains() {
     rig.session->tracks()[0]->set_pan(-1.0f);
     rig.session->tracks()[1]->set_pan(1.0f);
     DelayLinePool pool(rig.session->delay_lines());
-    CHECK(rig.publish(rig.plan({chain(0, 0), ChainBinding{}}, pool)));
+    CHECK(rig.publish(rig.plan({chain(0, 256), ChainBinding{}}, pool)));
     for (int blk = 0; blk < 8; ++blk) rig.block();
     CHECK(runner.calls == 8 && runner.begins == 8 && runner.ends == 8);
 
@@ -484,9 +512,12 @@ int test_long_callback_bypasses_chains() {
     CHECK(heap_untouched());
     CHECK(runner.calls == 8 && runner.begins == 8 && runner.ends == 8);
     CHECK(rig.session->chain_bypassed_blocks() == 1);
+    // The chain's track is silence, never its dry input 256 frames early
+    // (PR #59 re-review); the dry track keeps its compensation.
+    CHECK(rig.session->unrun_chain_blocks() == 2);  // one per slice
     for (uint32_t i = 0; i < 2 * kBlock; ++i) {
-        CHECK(rig.out[0][i] == signal(at + i));
-        CHECK(rig.out[1][i] == signal(at + i));
+        CHECK(rig.out[0][i] == 0.0f);
+        CHECK(rig.out[1][i] == signal(at + i - 256));
     }
     rig.block();
     CHECK(runner.calls == 9 && runner.begins == 9 && runner.ends == 9);
@@ -612,6 +643,7 @@ int main() {
     if (test_line_restarts_after_a_gap()) return 1;
     if (test_stable_ids_follow_the_track()) return 1;
     if (test_long_callback_bypasses_chains()) return 1;
+    if (test_bound_chain_without_a_runner_is_silence()) return 1;
     if (test_out_of_bounds_plan_is_silence()) return 1;
     if (test_zero_frame_callback_neither_begins_nor_ends()) return 1;
     if (test_no_node_state_is_unbound_and_never_early()) return 1;

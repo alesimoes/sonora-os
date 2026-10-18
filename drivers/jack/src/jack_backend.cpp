@@ -183,6 +183,18 @@ struct JackBackend::Impl {
         self->block.nframes = nframes;
         self->block.frame_time = self->clock.widen(jack_last_frame_time(self->client), nframes,
                                                    self->xruns.load(std::memory_order_relaxed));
+        // The server's own stamp of this cycle, from its shared memory: no
+        // clock read here (contracts/backend, callback_ns). Its time base
+        // is jack_get_time(), CLOCK_MONOTONIC in jackd2 and PipeWire's
+        // libjack; the conformance suite checks that against ours.
+        jack_nframes_t cycle_frames = 0;
+        jack_time_t cycle_usecs = 0, next_usecs = 0;
+        float period_usecs = 0.0f;
+        self->block.callback_ns =
+            jack_get_cycle_times(self->client, &cycle_frames, &cycle_usecs, &next_usecs,
+                                 &period_usecs) == 0
+                ? static_cast<uint64_t>(cycle_usecs) * 1000u
+                : 0;
         self->callback->process(self->block);
         return 0;
     }
@@ -339,7 +351,7 @@ bool JackBackend::open(const backend::BackendConfig& config,
     d.block = backend::AudioBlock{
         d.in_bufs.data(),  static_cast<uint32_t>(d.in_bufs.size()),
         d.out_bufs.data(), static_cast<uint32_t>(d.out_bufs.size()),
-        0, 0,
+        0, 0, 0,
     };
     d.callback = &callback;
 

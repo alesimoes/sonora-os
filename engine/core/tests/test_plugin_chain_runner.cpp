@@ -74,7 +74,7 @@ int test_no_node_state_is_silence() {
         n.channels = channels;
         b.scribble();
         runner.begin(channels);
-        runner.run(n, b.ip, b.op, kBlock);
+        runner.run(n, b.ip, b.op, kBlock, nullptr, 0);
         runner.end();
         for (int s = 0; s < 2; ++s)
             for (float v : b.out[s]) CHECK(v == 0.f);
@@ -97,7 +97,7 @@ int test_wider_than_stereo_is_silence() {
     n.node_state = 0;
     n.channels = 3;  // a plan the builder never makes (ChannelMismatch, §7.1)
     runner.begin(1);
-    runner.run(n, b.ip, b.op, kBlock);
+    runner.run(n, b.ip, b.op, kBlock, nullptr, 0);
     runner.end();
     for (int s = 0; s < 2; ++s)
         for (float v : b.out[s]) CHECK(v == 0.f);
@@ -122,7 +122,7 @@ int test_unassigned_slot_is_a_miss_and_mono_fills_both_sides() {
     for (int cb = 0; cb < 3; ++cb) {
         b.scribble();
         runner.begin(1000 + cb);
-        runner.run(n, b.ip, b.op, kBlock);
+        runner.run(n, b.ip, b.op, kBlock, nullptr, 0);
         runner.end();
         for (uint32_t i = 0; i < kBlock; ++i) {
             CHECK(b.out[0][i] == 0.f);
@@ -136,12 +136,46 @@ int test_unassigned_slot_is_a_miss_and_mono_fills_both_sides() {
     return 0;
 }
 
+// Parameter events reach the client for a node it is handed (a node with no
+// store drops them there, counted against the node), and are dropped and
+// counted by the runner for a node it keeps from the client.
+int test_events_reach_the_client() {
+    pc::PluginClient client(config());
+    PluginChainRunner runner(client);
+    Buffers b;
+    const sonora::ChainParamEvent ev[3] = {{0, 1, 0, 0.5f}, {0, 2, 0, 0.25f}, {1, 0, 0, 1.f}};
+    PlanNode n;
+    n.kind = sonora::NodeKind::InsertChain;
+    n.channel_slot = 1;
+    n.param_store = sonora::kNoParamStore;
+    n.node_state = 3;
+    n.channels = 1;
+    runner.begin(1);
+    runner.run(n, b.ip, b.op, kBlock, ev, 3);
+    runner.end();
+    CHECK(client.node_status(3).events_dropped == 3);
+    CHECK(runner.events_dropped() == 0);
+
+    PlanNode dry = n;
+    dry.node_state = sonora::kNoNodeState;
+    PlanNode wide = n;
+    wide.node_state = 0;
+    wide.channels = 3;
+    runner.begin(2);
+    runner.run(dry, b.ip, b.op, kBlock, ev, 2);
+    runner.run(wide, b.ip, b.op, kBlock, ev, 1);
+    runner.end();
+    CHECK(runner.events_dropped() == 3);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_no_node_state_is_silence()) return 1;
     if (test_wider_than_stereo_is_silence()) return 1;
     if (test_unassigned_slot_is_a_miss_and_mono_fills_both_sides()) return 1;
+    if (test_events_reach_the_client()) return 1;
     std::puts("plugin_chain_runner: ok");
     return 0;
 }
