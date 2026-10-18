@@ -55,7 +55,8 @@ bool add_closed_take(model::Document& document, const Session& session,
 // folder that an engine died before closing gets the length on disk
 // (recover_take(), session-format.md "Crash recovery"). Returns one line
 // per take that needed a word to the operator: recovered, shorter than its
-// header, or not recoverable. A recovered take is left in the folder and
+// header, or not recoverable. A take repaired with no audio in it gets no
+// line. A recovered take is left in the folder and
 // placed nowhere: placing it is offered, never done silently.
 std::vector<std::string> recover_unclosed_takes(const std::string& session_dir,
                                                 uint32_t sample_rate);

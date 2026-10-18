@@ -216,6 +216,9 @@ std::vector<std::string> recover_unclosed_takes(const std::string& session_dir,
         const std::string name = std::filesystem::path(r.path).filename().string();
         switch (r.outcome) {
             case TakeRecovery::Outcome::Repaired: {
+                // Killed before any audio: one per armed track, up to 18,
+                // and nothing to keep. The header is repaired all the same.
+                if (r.frames == 0) break;
                 char seconds[32];
                 std::snprintf(seconds, sizeof seconds, "%.1f",
                               sample_rate ? static_cast<double>(r.frames) / sample_rate : 0.0);
