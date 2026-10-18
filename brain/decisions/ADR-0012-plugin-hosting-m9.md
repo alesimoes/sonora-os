@@ -13,6 +13,8 @@
     passes. A2 (§5.1) and A3 (Consequences) accepted with conditions.
     Findings H1, M1–M3 and L1–L4 are applied in the sections they name
     ("Rulings of the rt-safety-auditor" maps them).
+  - **Amendment of 2026-10-14** (the control server's chains, after §8):
+    accepted by the owner, 2026-10-18, with the architect's changes A–H.
   - **Two owner decisions**, each with a default this ADR builds on until
     the owner rules ("For the owner"). Neither blocks the contract.
 - Date: 2026-10-13
@@ -806,11 +808,11 @@ updates `FakeEngine` and the conformance suite in the same PR.
 - **Protocol version 3** for the new messages; `Hello` mismatch refuses by
   name, as today.
 
-**Amendment, 2026-10-14: the control server's chains (PROPOSED, checklist
-5).** Proposed by plugin-engineer. The architect ruled on #64: accept
-with changes A to H, applied below; the rt-engineer's view is in the same
-ruling. The owner decided the question at the end of item 1 on
-2026-10-18; the amendment stays Proposed until the owner accepts it. It settles what this ADR leaves open when §5.3 and §8 are wired
+**Amendment, 2026-10-14: the control server's chains (checklist 5).
+Accepted by the owner, 2026-10-18.** Proposed by plugin-engineer. The
+architect ruled on #64: accept with changes A to H, applied below; the
+rt-engineer's view is in the same ruling. The owner decided the question
+at the end of item 1 on 2026-10-18. It settles what this ADR leaves open when §5.3 and §8 are wired
 into `engine/control`. It **changes accepted text in three places**: the
 ADR-0007 module graph (item 4), §8's list of `PluginFault` causes (item 5),
 and the live-period assumption of the first draft of item 4, which ADR-0007
