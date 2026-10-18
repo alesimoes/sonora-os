@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/quit_signals.h"
 
+#include <atomic>
 #include <csignal>
 
 namespace sonora {
 namespace {
 
-volatile std::sig_atomic_t g_quit = 0;
+// Atomic, not volatile sig_atomic_t: the kernel runs the handler on any
+// thread that does not block the signal, and main polls from its own. A
+// lock-free atomic is the one shared type a handler may write (C++17
+// [support.signal]).
+std::atomic<int> g_quit{0};
+static_assert(std::atomic<int>::is_always_lock_free,
+              "a signal handler may only touch lock-free atomics");
 
-void on_quit_signal(int) { g_quit = 1; }
+void on_quit_signal(int) { g_quit.store(1, std::memory_order_release); }
 
 }  // namespace
 
@@ -20,8 +27,8 @@ void install_quit_signals() {
     std::signal(SIGHUP, on_quit_signal);
 }
 
-bool quit_requested() { return g_quit != 0; }
+bool quit_requested() { return g_quit.load(std::memory_order_acquire) != 0; }
 
-void clear_quit_request() { g_quit = 0; }
+void clear_quit_request() { g_quit.store(0, std::memory_order_release); }
 
 }  // namespace sonora
