@@ -179,6 +179,20 @@ measured by the suite's `newton_cap` and `hot_input`, which now drive to
   processor reports a block that reached it, or a step that hit the cap,
   as bounded (ProcessorBase's `note_bounded`).
 
+Worst block after the fix: stereo linked, q128, Input +24 dB, 20:1,
+fastest attack and release, a 997 Hz square, 800 blocks, the minimum of
+3 runs per block. Taken on a quiet host (load average 0.24) in the
+sonora-plugins container; the RT audit's table had high at 1.8 to 1.95 ms.
+
+| base rate | quality | 0 dBFS: median / p99 / worst | 999999 FS: median / p99 / worst | period |
+|---|---|---|---|---|
+| 48 kHz | standard (4x) | 84 / 106 / 123 us | 79 / 81 / 92 us | 2667 us |
+| 48 kHz | high (8x) | 158 / 167 / 172 us | 149 / 157 / 160 us | 2667 us |
+| 96 kHz | standard (4x) | 76 / 78 / 82 us | 72 / 74 / 76 us | 1333 us |
+| 96 kHz | high (8x) | 150 / 157 / 160 us | 144 / 150 / 156 us | 1333 us |
+| 192 kHz | standard (4x) | 74 / 78 / 82 us | 72 / 74 / 80 us | 667 us |
+| 192 kHz | high (8x) | 144 / 152 / 173 us | 141 / 149 / 154 us | 667 us |
+
 A step whose point is not finite (a NaN device parameter is the only way
 the tests find to force one) is never committed: the channels solved
 together reset to rest, and the step is counted with the cap hits.
