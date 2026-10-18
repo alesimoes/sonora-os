@@ -44,6 +44,25 @@ public:
     // every later call writes nothing until the next open().
     bool write(const float* interleaved, std::size_t frames);
 
+    // Makes the take so far survive the engine dying: patches the sizes
+    // (and a time_reference set since open()) to the frames written, then
+    // syncs the file to the medium through common/platform, and on the
+    // first call its folder, so the file itself is found after a power cut.
+    // A reader then opens a valid file of that length while the take goes
+    // on; recover_take() adds whatever reached the file after it. The header
+    // counts no pad byte, which close() adds: it describes the file as it
+    // is. Blocks on the device; same thread as write(). False, doing
+    // nothing, if no take is open or it has failed; false, marking the take
+    // failed, if the disk reports the data could not be kept.
+    bool checkpoint();
+
+    // Hands what write() buffered to the OS, without a sync: a kill -9
+    // after it loses none of it, a power cut may. Cheap, so the disk thread
+    // calls it every pass. Same thread as write(). False, doing nothing, if
+    // no take is open or it has failed; false, marking the take failed, if
+    // the write fails.
+    bool flush();
+
     // Patches the RIFF/data sizes, pads an odd data chunk, and closes. Safe
     // to call twice.
     bool close();
@@ -74,9 +93,20 @@ public:
     uint64_t frames_written() const { return frames_written_; }
     const std::string& path() const { return path_; }
 
+    using SyncData = bool (*)(std::FILE* f);
+
 private:
+    // Only a test defines it, to reach set_sync().
+    friend struct WavWriterTestAccess;
+    // Replaces platform::sync_data() in checkpoint(), to stand in for a
+    // disk that fails or is slow. Null restores it. Same thread as
+    // checkpoint().
+    void set_sync(SyncData sync) { sync_ = sync; }
+
     bool write_header(uint32_t sample_rate, uint16_t channels,
                       uint64_t time_reference);
+    // Writes the RIFF and data sizes and a pending time_reference in place.
+    void patch_sizes(uint64_t riff_bytes, uint64_t data_bytes);
     void fail(const char* why);
     uint32_t bytes_per_frame() const;
 
@@ -90,7 +120,9 @@ private:
     long time_reference_offset_ = 0;
     uint64_t time_reference_ = 0;
     bool patch_time_reference_ = false;
+    bool folder_synced_ = false;
     LocalClock clock_ = nullptr;
+    SyncData sync_ = nullptr;
     uint64_t riff_size_limit_ = kRiffSizeLimit;
     std::string failure_;
     std::atomic<bool> failed_{false};

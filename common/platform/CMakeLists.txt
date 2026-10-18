@@ -37,4 +37,14 @@ if(UNIX)
   add_executable(test_platform_ipc tests/test_ipc.cpp)
   target_link_libraries(test_platform_ipc PRIVATE sonora_platform Threads::Threads)
   add_test(NAME platform_ipc COMMAND test_platform_ipc)
+
+  # The unsupported stubs claim no durability, so this is POSIX's test.
+  add_executable(test_platform_file_sync tests/test_file_sync.cpp)
+  target_link_libraries(test_platform_file_sync PRIVATE sonora_platform)
+  add_test(NAME platform_file_sync COMMAND test_platform_file_sync)
+
+  # The unsupported stub claims no exclusion; the other holder is a fork.
+  add_executable(test_platform_folder_lock tests/test_folder_lock.cpp)
+  target_link_libraries(test_platform_folder_lock PRIVATE sonora_platform)
+  add_test(NAME platform_folder_lock COMMAND test_platform_folder_lock)
 endif()

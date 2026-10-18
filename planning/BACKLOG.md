@@ -45,8 +45,12 @@ playback can follow edits; it is in flight.
        edges (`contract/api`; `engine/app` → `ui/tui` stays as the
        composition root until M7, ADR-0007 M4 update item 7).
 5b. [ ] M5, M6.
-6. [ ] Take safety in DAW 1: 4 GB limit refused, periodic `fdatasync`, a
-       take that survives `kill -9`, bext date.
+6. [x] Take safety in DAW 1: 4 GB limit refused and bext date (PR #16);
+       periodic checkpoint (header patched, `fdatasync`, folder `fsync`)
+       and a take that survives `kill -9`, repaired at the next startup
+       (`feature/take-safety`). Still open: offering recovered and orphan
+       takes for placement at session open (`engine.record.orphan_offer`);
+       the `fdatasync` cost on a stick (ADR-0009 Unverified 8, OS 1).
 7. [x] M7 process split: socket and memfd behind `common/platform`,
        headless `sonora-engine`, `SocketEngine`, `sonora-tui`, `sonora-ctl`,
        the Qt UI on the engine's document (`feature/process-split`; ADR-0007
@@ -83,7 +87,14 @@ playback can follow edits; it is in flight.
          track the document does not have, so an undone AddTrack of a
          soloed track no longer silences the rest. Its fader and mute stay:
          the old plan renders it until the swap (PR #71,
-         `playback_control`, rolling and stopped).
+         `playback_control`, rolling and stopped);
+       - [ ] A UI's single-index gain restore (`MixModel::dropRide`)
+         can be stale if another UI makes two mix-changing edits within one
+         round trip. Fix engine-side: each ParameterChange carries the
+         document version it was computed against, and the engine drops
+         changes older than its last apply_mix. Not a regression; the
+         removed resendGains had the same race (#76 review,
+         #issuecomment-6249488192 item 1).
 10. [ ] Engine commands the shipped key maps bind and no engine runs yet
         (Track 3 item 4; the window says "not implemented" for each):
         `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,

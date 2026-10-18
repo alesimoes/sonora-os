@@ -47,8 +47,16 @@ std::vector<DiskThread::ClosedFile> DiskThread::take_closed() {
 }
 
 void DiskThread::run() {
+    auto next_checkpoint = std::chrono::steady_clock::now() + checkpoint_interval_;
     while (running_.load(std::memory_order_relaxed)) {
         drain_once();
+        // After a drain, so the checkpoint covers what the rings held.
+        // From the time it ends: a slow sync pushes the next one back
+        // rather than letting checkpoints run back to back.
+        if (std::chrono::steady_clock::now() >= next_checkpoint) {
+            checkpoint_all();
+            next_checkpoint = std::chrono::steady_clock::now() + checkpoint_interval_;
+        }
         // Wake often enough that the rings never approach full, but not so
         // often that we spin. Rings hold seconds; this polls every 10 ms.
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -70,7 +78,12 @@ void DiskThread::drain_once() {
         if (b.track < state_.size()) state_[b.track].pending.push_back(b);
     }
     if (hook_) hook_(hook_context_);
-    for (std::size_t i = 0; i < tracks_.size(); ++i) drain_track(i);
+    for (std::size_t i = 0; i < tracks_.size(); ++i) {
+        drain_track(i);
+        // Nothing drained stays in this process, where a kill -9 would take
+        // it: only what is still in the ring is lost with it.
+        if (state_[i].active >= 0) tracks_[i]->writer(state_[i].active).flush();
+    }
 }
 
 void DiskThread::drain_track(std::size_t i) {
@@ -162,6 +175,31 @@ void DiskThread::finish(std::size_t i, int slot) {
     if (state_[i].active == slot) state_[i].active = -1;
     // Last: from here the control thread may open the slot again.
     t.set_slot_take(slot, 0);
+}
+
+void DiskThread::checkpoint_all() {
+    for (Track* t : tracks_) {
+        for (int slot = 0; slot < Track::kWriterSlots; ++slot) {
+            // A slot with a take is this thread's (Track::slot_take()),
+            // whether or not its window has opened yet. A failure marks the
+            // take failed, which Session::take_failure() reports.
+            if (t->slot_take(slot) == 0 || !t->writer(slot).is_open()) continue;
+            const auto begin = std::chrono::steady_clock::now();
+            t->writer(slot).checkpoint();
+            const auto ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - begin)
+                    .count());
+            if (ns > longest_checkpoint_ns_.load(std::memory_order_relaxed)) {
+                longest_checkpoint_ns_.store(ns, std::memory_order_relaxed);
+            }
+            // Between files, so the rings wait for one sync and never for
+            // the sum of them: 18 tracks on a slow stick would come close to
+            // the ring's depth. A file this drain closes is skipped above.
+            drain_once();
+        }
+    }
+    checkpoints_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void DiskThread::close_all() {

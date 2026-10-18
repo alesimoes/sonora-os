@@ -39,3 +39,9 @@ add_test(NAME engine_fake_record
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_engine_record.cmake)
 set_tests_properties(engine_fake_record PROPERTIES
   SKIP_REGULAR_EXPRESSION "cannot lock memory")
+
+# One session folder, one engine (the folder lock, common/platform).
+add_test(NAME engine_two_engines_one_session
+  COMMAND ${CMAKE_COMMAND} -DENGINE=$<TARGET_FILE:sonora-engine>
+          -DDIR=${CMAKE_CURRENT_BINARY_DIR}/two_engines_session
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_engine_two_engines.cmake)
