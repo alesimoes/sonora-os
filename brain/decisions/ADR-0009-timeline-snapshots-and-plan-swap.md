@@ -1,7 +1,8 @@
 # ADR-0009 — Timeline as immutable snapshots, operations as undo and replication, residency-gated plan swap
 
 - Status: Accepted (engine owner review 2026-10-13, changes applied). The
-  2026-10-14 update (compound operations) is Proposed.
+  2026-10-14 update (compound operations) was accepted by the owner,
+  2026-10-18.
 - Date: 2026-10-12; revised 2026-10-13 after the engine owner's review
 - Decided by: architect. Rests on one owner decision, 2026-10-12: Phase 2
   playback starts with a fixed 2-channel monitor bus, and the full mixer
@@ -632,9 +633,10 @@ detail) to land before sessions that size are edited.
   rejected because the UI would show a take as started and give the
   refusal only as a side line.
 
-## Update, 2026-10-14: compound operations (Proposed)
+## Update, 2026-10-14: compound operations (Accepted)
 
-Status: **Proposed**, not yet accepted. Nothing below is implemented.
+Status: **Accepted by the owner, 2026-10-18**, with the architect's changes
+and the owner's mix/plug-in undo decision. Implementation: PR #75.
 Author: the model track (Track 2). Revised after the architect's review
 (PR #70, "Accept with listed changes"). It amends §1 and §2. It also
 replaces the 2026-10-13 control-server update's consequence "A take on N
