@@ -623,6 +623,55 @@ int test_failure_in_a_take_punched_out_is_reported() {
     return 0;
 }
 
+// PR #60 review 4: take K failed and was punched out, and take K + 1 then
+// started while rolling and recorded cleanly. failed_files_ lasted until
+// stop(), so take_failure() kept naming K's file through K + 1 (the server
+// posts that as "take K + 1 failed" and the health flag never clears), and
+// stop() failed K + 1 with K's reason. K's failure was already said as a
+// Notice when its close was collected; the next clean take clears it.
+int test_failure_does_not_follow_into_the_next_take() {
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    auto session = make_session(2);
+    Session& s = *session;
+    s.tracks()[0]->set_rec_armed(true);
+    s.tracks()[1]->set_rec_armed(true);
+    for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[1]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+    }
+    Document doc(sonora::engine_document(s));
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    std::string error;
+    s.play();
+    const int take = s.next_free_take();
+    CHECK(s.start_recording(take, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.closed_takes().empty());
+    const std::string why = s.take_failure();
+    CHECK(why.find("Audio 2_") != std::string::npos);
+
+    CHECK(s.punch_out());
+    run_block_in(s, o, in);
+    const std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+    CHECK(!sonora::add_closed_take(doc, s, closed[0]).cut_short.empty());
+    CHECK(s.take_failure() == why);
+
+    // Track 2 has no room in either slot, so the next take leaves it out.
+    s.tracks()[1]->set_rec_armed(false);
+    CHECK(s.start_recording(take + 1, &error));
+    for (int i = 0; i < 3; ++i) run_block_in(s, o, in);
+    CHECK(s.closed_takes().empty());
+    if (!s.take_failure().empty()) {
+        std::fprintf(stderr, "  take %d reported: %s\n", take + 1, s.take_failure().c_str());
+        return 1;
+    }
+    std::string at_stop;
+    CHECK(s.stop(&at_stop));
+    CHECK(at_stop.empty());
+    return 0;
+}
+
 // PR #60 re-review: a take whose first track was cut short (and placed up
 // to the failure) and whose second track cannot be placed at all. The
 // second reason replaced the first, so the Notice lost the truncated
@@ -1320,6 +1369,7 @@ int main() {
     if (test_take_origin_is_first_recorded_frame()) return 1;
     if (test_takes_closed_while_rolling_join_the_document()) return 1;
     if (test_failure_in_a_take_punched_out_is_reported()) return 1;
+    if (test_failure_does_not_follow_into_the_next_take()) return 1;
     if (test_unplaceable_track_keeps_the_earlier_failure()) return 1;
     if (test_return_to_zero_then_record()) return 1;
     if (test_pending_locate_dropped_by_a_take()) return 1;

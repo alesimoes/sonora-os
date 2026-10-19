@@ -671,7 +671,7 @@ int test_profile_corrections() {
         {"logic.json", "ctrl+alt+]", nullptr},
         {"logic.json", "ctrl+alt+x", "edit.fade_selection"},
         {"logic.json", "cmd+f", nullptr},        // Show/Hide Flex Pitch/Time
-        {"logic.json", "numpad_multiply", "transport.toggle_record"},
+        {"logic.json", "numpad_multiply", "transport.punch"},
         {"logic.json", "cmd+d", nullptr},        // New Track with Duplicate Settings
         {"logic.json", "alt+pagedown", "tool.next"},
         {"logic.json", "t", nullptr},            // Show Tool Menu

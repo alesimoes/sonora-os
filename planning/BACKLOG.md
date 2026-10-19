@@ -32,11 +32,19 @@ playback can follow edits; it is in flight.
        side: PR #81. Their caller and placement (PR #91):
        record with the session's punch range set punches over
        [A − H, B + H), and the take goes in over [A, B) with a crossfade at
-       each punch point that has the handle, one undo step. Remain: a
-       `transport.punch` command and its key bindings (contracts/api
-       catalogue, ui-engineer review), the punch range in the take's bext
-       Description (session-format.md), loop, pre-roll and input
-       monitoring.
+       each punch point that has the handle, one undo step.
+       - [x] `transport.punch`, punch in and out on the fly: rolling, it
+         punches in at the playhead; during a take, it punches out with the
+         transport rolling on; stopped, it records as `transport.record`
+         does. In the catalogue, `install_session_commands()` and
+         `FakeEngine`; Logic's Record/Record Toggle (keypad `*`) bound to it.
+         Pro Tools has no key for it outside QuickPunch mode, which is
+         `transport.toggle_quickpunch`, not in the catalogue. A failed take
+         no longer follows into the next one punched in (`failed_files_`
+         keyed by take). Needs the ui-engineer's review in the PR thread
+         (ADR-0007 §6, additive).
+       Remain: the punch range in the take's bext Description
+       (session-format.md), loop, pre-roll and input monitoring.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,
@@ -1156,6 +1164,10 @@ Order and owners are in ADR-0008 §5.
       and the two crossfades (timeline-model.md, "Punch in" step 3), on top
       of #75's compounds. (c) `transport.punch` in the catalogue, under
       ui-engineer review (ADR-0007 §6). (d) The `failed_files_` item below.
+      (a) and (b) landed in PR #91; (c) and (d) on `feature/transport-punch`:
+      failures are kept per take and said for the newest take only, so take
+      K's is said when its close is collected and no longer as K + 1's
+      (test_playback_control test_failure_does_not_follow_into_the_next_take).
       Before it lands (PR #60, review 4): `Session::failed_files_` lasts
       until `stop()`, so after take K fails, `take_failure()` stays
       non-empty through a clean take K + 1 started while rolling.

@@ -201,8 +201,9 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
     // fails if the two lists differ.
     static const std::vector<std::string> ids = {
         "track.arm_all",        "track.disarm_all",         "track.toggle_arm",
-        "transport.play",       "transport.record",         "transport.return_to_zero",
-        "transport.stop",       "transport.toggle_play",    "transport.toggle_record",
+        "transport.play",       "transport.punch",          "transport.record",
+        "transport.return_to_zero", "transport.stop",       "transport.toggle_play",
+        "transport.toggle_record",
     };
     return ids;
 }
@@ -853,6 +854,12 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     const std::string& id = r.command;
     if (id == "transport.toggle_record") return recording ? finish() : start();
     if (id == "transport.record") return recording ? true : start();
+    if (id == "transport.punch") {
+        if (!recording) return start();
+        move(TransportState::Rolling);
+        ++take_;
+        return true;
+    }
     if (id == "transport.stop") return stop();
     if (id == "transport.play") return play();
     if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? play() : stop();

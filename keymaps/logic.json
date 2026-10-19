@@ -12,7 +12,10 @@
       "comment": "Logic calls Period Forward and Shift-Period Fast Forward; the catalog has one command for both."
     },
     "numpad_0": "transport.stop",
-    "numpad_multiply": "transport.toggle_record",
+    "numpad_multiply": {
+      "command": "transport.punch",
+      "comment": "Record/Record Toggle: records when stopped, and while playing switches recording on and off with playback rolling on, which is transport.punch; transport.toggle_record would stop the transport at the punch-out."
+    },
     "alt+return": {
       "command": "transport.go_to_end",
       "comment": "Go to End of Last Region: Logic's end is where the last region ends, not a fixed project end."

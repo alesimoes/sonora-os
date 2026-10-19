@@ -447,6 +447,76 @@ int check_play(Rig& rig) {
     return C(rig, "a roll").go();
 }
 
+// transport.punch, on the fly: while rolling it punches in, and during the
+// take it punches out with the transport still rolling, the next take
+// number announced; a second punch in opens that take.
+int check_punch_on_the_fly(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const auto& impl = s.engine->hello().implemented_commands;
+            EXPECT(std::find(impl.begin(), impl.end(), "transport.punch") != impl.end(),
+                   "transport.punch is not announced");
+            CommandReply r;
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return !v.transport().stale; }), "state is stale");
+            const int32_t take = v.transport().take;
+            EXPECT(s.await(rig_, s.command("transport.play"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Rolling; }),
+                   "the state block never showed a roll");
+
+            EXPECT(s.await(rig_, s.command("transport.punch"), r), "no reply to the punch in");
+            EXPECT(r.result == DispatchResult::Ok, "punch in failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Recording && t.take == take;
+                   }),
+                   "the punch in did not start the announced take");
+
+            EXPECT(s.await(rig_, s.command("transport.punch"), r), "no reply to the punch out");
+            EXPECT(r.result == DispatchResult::Ok, "punch out failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Rolling && t.take == take + 1;
+                   }),
+                   "the punch out stopped the transport or did not announce the next take");
+            const uint64_t rolled = v.transport().playhead;
+            EXPECT(s.until(rig_, [&]() { return v.transport().playhead > rolled; }),
+                   "the playhead did not advance after the punch out");
+
+            EXPECT(s.await(rig_, s.command("transport.punch"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "the second punch in failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Recording && t.take == take + 1;
+                   }),
+                   "the second punch in did not open the next take");
+
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Stopped && t.take == take + 2;
+                   }),
+                   "stop did not close the second take");
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "disarming failed: " + r.message);
+            return ok();
+        }
+    };
+    return C(rig, "punch on the fly").go();
+}
+
 int check_parameters(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -1309,6 +1379,7 @@ int run(Rig& rig) {
     failures += check_arming(rig);
     failures += check_take(rig);
     failures += check_play(rig);
+    failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);
     failures += check_model(rig);

@@ -180,11 +180,12 @@ public:
     // no take is running.
     bool punch_out();
     // Stops the transport and closes every open file, waiting for the
-    // callback in flight, if any, to finish first. Returns false if any
-    // take since the last stop() failed on any track -- the one it ends, or
-    // one punched out or started over while rolling; a disk error, or the
-    // file reaching the 4 GB WAV limit -- and `error`, if given, says which
-    // file and why. The files are closed either way, and one that reached
+    // callback in flight, if any, to finish first. Returns false if the
+    // newest take failed on any track -- the one it ends, or the one last
+    // punched out while rolling; a disk error, or the file reaching the
+    // 4 GB WAV limit -- and `error`, if given, says which file and why. An
+    // earlier take's failure is not repeated: closed_takes() reported it,
+    // and a later take started since. The files are closed either way, and one that reached
     // the limit is valid up to its last whole frame. Leaves the disk thread
     // stopped; disk().start() before the next take.
     bool stop(std::string* error = nullptr);
@@ -205,10 +206,12 @@ public:
     std::vector<ClosedTake> closed_takes();
     // The take being recorded, as the control thread last set it; 0 if none.
     int recording_take() const { return recording_take_; }
-    // Empty, or which file failed since the last stop() and why, in the
-    // words stop() will use: the running take's, or a take's ended while
-    // rolling. Writing stops at the failure, so the operator is told now
-    // rather than when the transport stops. Control thread; allocates.
+    // Empty, or which file of the newest take failed and why, in the words
+    // stop() will use: the running take's, or, after a punch-out, the take
+    // just ended, until the next take starts (ADR-0007: the next clean take
+    // clears the alert). Writing stops at the failure, so the operator is
+    // told now rather than when the transport stops. Control thread;
+    // allocates.
     std::string take_failure() const;
 
     // Transport while not recording. play() rolls from the playhead;
@@ -424,11 +427,16 @@ private:
     };
     std::map<int, Closing> closing_;
     int recording_take_ = 0;
-    // "path: why" for every file closed failed since the last stop(), in
-    // the order closed. A take punched out or started over has left
-    // recording_take_, and its failure must still reach take_failure() and
-    // stop() (PR #60, code review 3).
-    std::vector<std::string> failed_files_;
+    // The take take_failure() and stop() speak for: the last one started,
+    // kept after a punch-out (PR #60, code review 3) and replaced by the
+    // next, so take K's failure is never said as take K + 1's (review 4).
+    int newest_take_ = 0;
+    // Every file closed failed since the last stop(), in the order closed.
+    struct FailedFile {
+        int take = 0;
+        std::string what;  // "path: why"
+    };
+    std::vector<FailedFile> failed_files_;
 
     // Declared before the reader, so the reader is gone before the plans it
     // serves are freed.
