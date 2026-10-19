@@ -1117,8 +1117,10 @@ to `contracts/plugin` (item 2), which is a contract change under ADR-0007
 
 **Open questions for the owner** (each has a default above):
 - Q1. Scan at every engine start (default), or only on `plugin.rescan`
-  after the first boot (faster start, but a plug-in installed with `apt`
-  stays invisible until the operator asks)?
+  after the first boot (faster start, but a plug-in installed or updated
+  stays invisible until the operator asks: in `~/.vst3` or `~/.lv2` on the
+  appliance, since only `/home` persists (ADR-0005) and the system paths
+  change only with a new image; with `apt` too on a development machine)?
 - Q2. Is `~/.cache/sonora/` acceptable as the place the catalog lives,
   given `~/.cache` is the conventional "may be deleted" directory? The
   alternative is `~/.local/state/sonora/`. Deleting it costs one full
