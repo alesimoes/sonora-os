@@ -38,6 +38,10 @@
 //   failed_edit          an edit whose host crashes at start: faulted, the
 //                        old chain plays and follows the document, no
 //                        respawn on later changes (M4, #80)
+//   state_not_restored   a saved state past the cap, gone, not matching its
+//                        hash, or refused by the host: the insert runs at
+//                        defaults plus its params, with a PluginFault that
+//                        stands while the document names that state
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -592,6 +596,73 @@ int scenario_failed_edit(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// BACKLOG Track 4 item 8 (#80 review): a saved state that cannot be restored
+// loaded the plugin at defaults and said nothing. ADR-0012 §6.2 and
+// host_control.h ("shown loaded with defaults plus its params, as for a hash
+// mismatch") want it said: a PluginFault on that insert, standing while the
+// document names that state, gone once it names another or none.
+int scenario_state_not_restored(const Args& a) {
+    std::printf("state_not_restored: eg-amp on four tracks, each with a state that cannot be restored\n");
+    namespace pc = plugin::control;
+    Rig rig(a, 4);
+    std::filesystem::create_directories(kDir + "/Plugin State");
+    const auto write = [](const std::string& sha, const std::string& bytes) {
+        std::FILE* f = std::fopen((kDir + "/" + pc::state_file_name(sha)).c_str(), "wb");
+        if (!f) return;
+        std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+    };
+    // A: one byte past one state's cap (sparse: costs no disk).
+    const std::string big(64, 'a');
+    write(big, "");
+    std::filesystem::resize_file(kDir + "/" + pc::state_file_name(big), pc::kMaxStateBytes + 1);
+    // B: named, never written.
+    const std::string gone(64, 'b');
+    // C: bytes that do not hash to the name.
+    const std::string bad(64, 'c');
+    write(bad, "not the state the session saved");
+    // D: a well-formed state, but another plugin's: the host refuses it
+    // (Loaded: StateResult::Refused).
+    std::string other, e;
+    check(pc::encode_state_blob(pc::StateBlob{pc::Format::Lv2, kLookahead, {"x"}}, other, e), "a state blob");
+    const std::string theirs = pc::sha256_hex(other);
+    write(theirs, other);
+
+    const Id tracks[4] = {100, 102, 104, 106};
+    const Id inserts[4] = {500, 501, 502, 503};
+    const std::string shas[4] = {big, gone, bad, theirs};
+    // Ids are handed out in order: every track before any insert.
+    for (int i = 0; i < 4; ++i) rig.apply(track_op(tracks[i], tracks[i] + 1, std::string(1, char('A' + i))));
+    for (int i = 0; i < 4; ++i) {
+        rig.apply(insert_op(tracks[i], inserts[i], 0, kEgAmp, {{"gain", -3.f}}));
+        rig.apply(SetInsertState{inserts[i], StateRef{pc::state_file_name(shas[i]), shas[i], 1}});
+    }
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock) && rig.bound_at(2, kBlock) &&
+                                 rig.bound_at(3, kBlock); },
+                    20000),
+          "all four run, at defaults plus their params");
+    const char* const what[4] = {"over the cap", "gone", "not matching its hash", "refused by the host"};
+    for (int i = 0; i < 4; ++i) {
+        const auto& f = rig.hosting->faults();
+        const bool said = f.count(inserts[i]) && f.at(inserts[i]).find("saved state") != std::string::npos;
+        std::string line = std::string("a state ") + what[i] + ": a PluginFault on its insert";
+        check(said, line.c_str());
+        if (f.count(inserts[i])) std::printf("  fault: %s\n", f.at(inserts[i]).c_str());
+        const uint32_t flags = rig.hosting->insert_flags(inserts[i]);
+        check((flags & api::kInsertRunning) && (flags & api::kInsertFaulted), "  running, and shown faulted");
+    }
+    float gain = 0.f;
+    check(rig.hosting->host_value(500, "gain", gain) && gain == -3.f, "its params were applied (gain -3)");
+    rig.apply(SetInsertState{500, std::nullopt});
+    rig.show(false);
+    check(rig.until([&] { return rig.hosting->faults().count(500) == 0; }, 3000),
+          "the document names no state for A: its fault is gone");
+    check(rig.hosting->faults().count(501) == 1 && rig.hosting->faults().count(503) == 1, "the others still stand");
+    check(rig.bound_at(0, kBlock), "and A was not restarted for it");
+    return failures ? 1 : 0;
+}
+
 // The whole path through EngineControlServer on drivers/fake (its own
 // real-time thread, quantum 128): a session opened with eg-amp on track A
 // starts its host from the server's thread once the period is known; the
@@ -885,6 +956,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "repost_bypass_off") rc = scenario_repost_bypass_off(a);
     else if (a.scenario == "gesture_left_open") rc = scenario_gesture_left_open(a);
     else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
+    else if (a.scenario == "state_not_restored") rc = scenario_state_not_restored(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);

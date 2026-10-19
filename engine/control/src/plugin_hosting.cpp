@@ -158,6 +158,18 @@ struct PluginHosting::Chain {
         float value = 0.f;
     };
     std::map<std::pair<uint32_t, uint32_t>, Touch> open_touches;
+
+    // Saved states not restored (ADR-0012 §6.2): the plugin runs with its
+    // defaults plus its params, and the operator is told. By insert, with
+    // the state the document named then: the fault stands while it still
+    // names that one. The pending start's become the running chain's at
+    // its swap, with whatever its host's Loaded refused.
+    struct LostState {
+        model::StateRef ref;
+        std::string why;
+    };
+    std::map<model::Id, LostState> state_lost;
+    std::map<model::Id, LostState> pending_state_lost;
 };
 
 PluginHosting::PluginHosting(Session& session, PluginHostingConfig config)
@@ -254,6 +266,7 @@ void PluginHosting::abandon_pending(Chain& c) {
     c.pstore = c.pnode = kNone;
     c.pending_spec.clear();
     c.pending_seeded.clear();
+    c.pending_state_lost.clear();
 }
 
 void PluginHosting::drop_chain(Chain& c) {
@@ -269,6 +282,7 @@ void PluginHosting::drop_chain(Chain& c) {
     c.need_post = false;
     c.restart_swapped = false;
     c.restart_retire_epoch = 0;
+    c.state_lost.clear();
 }
 
 // ---- probes (amendment item 3)
@@ -407,6 +421,7 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
     if (!track) return;
     std::vector<Member> spec_members;
     std::map<model::Id, model::InsertMix> seeded;
+    std::map<model::Id, Chain::LostState> lost;
     plugin_client::ChainSpec spec;
     spec.channels = track->channels;
     std::vector<const model::Insert*> active;
@@ -435,15 +450,25 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
             // gone or does not match loads the plugin with defaults plus its
             // params, as at open. Sized first: a file past one state's cap
             // is not one, and reading it would stall the control loop.
+            // Each way it fails is said (BACKLOG Track 4 item 8).
             const std::string path = config_.session_dir + "/" + m->state->file;
             std::error_code ec;
             const auto size = std::filesystem::file_size(path, ec);
-            if (!ec && size <= pc::kMaxStateBytes) {
+            std::string why;
+            if (ec) {
+                why = std::filesystem::exists(path, ec) ? "its file could not be read" : "its file is missing";
+            } else if (size > pc::kMaxStateBytes) {
+                why = "its file is " + std::to_string(size) + " bytes, over the " +
+                      std::to_string(pc::kMaxStateBytes >> 20) + " MiB a plugin state may be";
+            } else {
                 std::ifstream f(path, std::ios::binary);
                 std::ostringstream ss;
                 ss << f.rdbuf();
-                if (f && pc::state_matches(ss.str(), m->state->sha256)) state = ss.str();
+                if (!f && size != 0) why = "its file could not be read";
+                else if (!pc::state_matches(ss.str(), m->state->sha256)) why = "its file does not match its checksum";
+                else state = ss.str();
             }
+            if (!why.empty()) lost[in->id] = Chain::LostState{*m->state, std::move(why)};
         }
         spec.states.push_back(std::move(state));
         spec_members.push_back({in->id, in->plugin});
@@ -451,6 +476,7 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
     }
     abandon_pending(c);
     if (spec_members.empty()) return;
+    c.pending_state_lost = std::move(lost);
     c.pstore = take_store();
     c.pnode = take_node();
     if (c.pstore == kNone || c.pnode == kNone) {
@@ -681,6 +707,9 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     // plan has the store (B2 on #80).
                     c.posted = std::move(c.pending_seeded);
                     c.pending_seeded.clear();
+                    c.state_lost = std::move(c.pending_state_lost);
+                    c.pending_state_lost.clear();
+                    note_refused_states(c, doc);
                     c.retry.clear();
                     c.store_epoch = 0;
                     c.named = false;
@@ -939,6 +968,20 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
 
 // ---- what the operator is told (item 5)
 
+void PluginHosting::note_refused_states(Chain& c, const model::Snapshot& doc) {
+    // host_control.h: a state the plugin refuses does not refuse the chain;
+    // Loaded says so per instance, and it is shown as a hash mismatch is.
+    if (!c.running || !c.running->host()) return;
+    const pc::Loaded& l = c.running->host()->loaded();
+    for (uint32_t i = 0; i < c.running_spec.size() && i < l.instances.size(); ++i) {
+        if (l.instances[i].state != pc::StateResult::Refused) continue;
+        const model::Id insert = c.running_spec[i].insert;
+        const model::InsertMix* m = doc.mix.find_insert(insert);
+        if (!m || !m->state || c.state_lost.count(insert)) continue;
+        c.state_lost[insert] = Chain::LostState{*m->state, "the plugin refused it"};
+    }
+}
+
 void PluginHosting::recompute_faults(const model::Snapshot& doc) {
     std::map<model::Id, std::string> faults;
     for (const auto& tp : doc.edit->tracks) {
@@ -985,13 +1028,24 @@ void PluginHosting::recompute_faults(const model::Snapshot& doc) {
                     continue;
                 }
             }
-            if (c.start_failed.empty() || member(c.failed_spec) == c.failed_spec.end()) continue;
-            // M4 on #80: an edit whose new host failed while the old one
-            // plays is said, on every insert of the chain the edit wanted.
-            faults[in.id] = where(t, in) + ": " +
-                            (c.running && !c.running->down() ? "the edited chain did not start, it plays as before: "
-                                                             : "") +
-                            c.start_failed;
+            if (!c.start_failed.empty() && member(c.failed_spec) != c.failed_spec.end()) {
+                // M4 on #80: an edit whose new host failed while the old one
+                // plays is said, on every insert of the chain the edit wanted.
+                faults[in.id] = where(t, in) + ": " +
+                                (c.running && !c.running->down() ? "the edited chain did not start, it plays as before: "
+                                                                 : "") +
+                                c.start_failed;
+                continue;
+            }
+            // Running without its saved state: said while the document still
+            // names the state that was not restored. A later save (a new
+            // state) or none named clears it without a restart.
+            const auto lost = c.state_lost.find(in.id);
+            if (lost == c.state_lost.end() || !c.running || member(c.running_spec) == c.running_spec.end()) continue;
+            const model::InsertMix* m = doc.mix.find_insert(in.id);
+            if (m && m->state && *m->state == lost->second.ref)
+                faults[in.id] = where(t, in) + ": its saved state was not restored (" + lost->second.why +
+                                "); it runs with its defaults and its saved parameter values";
         }
     }
     faults_.swap(faults);
