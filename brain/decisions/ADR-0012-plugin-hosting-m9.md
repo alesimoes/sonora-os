@@ -16,7 +16,8 @@
   - **Amendment of 2026-10-14** (the control server's chains, after §8):
     accepted by the owner, 2026-10-18, with the architect's changes A–H.
   - **Amendment of 2026-10-19** (the scan worker and the catalog, after
-    the 2026-10-14 one): **Proposed**, awaiting the owner.
+    the 2026-10-14 one): **accepted by the owner, 2026-10-19**, with the
+    architect's changes A–E and the owner's answers to Q1–Q4 (PR #88).
   - **Two owner decisions**, each with a default this ADR builds on until
     the owner rules ("For the owner"). Neither blocks the contract.
 - Date: 2026-10-13
@@ -975,6 +976,14 @@ through, and a bound chain that is not run plays silence.
      chain runs without it (item 1, change C).
    - *Missing:* "not installed", on that insert alone.
    - *Hosting disabled:* as today, on every active insert.
+   - **Saved state not restored** (owner, 2026-10-19, amendment of
+     2026-10-19 Q4). When an insert starts but the plugin refuses the state
+     the session saved for it, a fault stands on that insert, naming the
+     plugin, track and slot: "saved state not restored; running with the
+     plugin's defaults". This is the one standing fault allowed on a
+     **running** insert; its state is flagged both Running and Faulted. It
+     clears when the insert is removed, replaced or restarted with its
+     state restored.
    - **Non-finite output (change G, amends §8).** §8 lists non-finite output
      as a `PluginFault`. It is not a standing one: the host scrubs it and
      the chain plays on, so a fault that stood would describe a chain that
@@ -984,12 +993,13 @@ through, and a bound chain that is not run plays silence.
      from then on. The operator is told once; nothing stands.
 
 **Amendment, 2026-10-19: the scan worker and the plugin catalog
-(checklist 5). Proposed; not accepted.** Proposed by plugin-engineer.
-Nothing in it is implemented. It settles what §4 ("one probe per bundle
+(checklist 5). Accepted by the owner, 2026-10-19, with the architect's
+changes A–E (PR #88).** Proposed by plugin-engineer. Nothing in it is
+implemented yet. It settles what §4 ("one probe per bundle
 ... cached in the persistence partition keyed by bundle path, size and
 mtime"), §8 (`PluginCatalog`, `plugin.rescan`) and the 2026-10-14
 amendment's item 3 ("the scan worker settles which") leave open. Until it
-is accepted a client's `AddInsert`/`ReplaceInsert` stays refused
+is implemented a client's `AddInsert`/`ReplaceInsert` stays refused
 (`kNoCatalog`) and the catalog sent is empty. **It changes accepted text in
 two places**: §4's "one probe per bundle" (item 1) and item 4 of the
 2026-10-14 amendment, "no new thread" (item 3). The `contracts/api`
@@ -1115,18 +1125,54 @@ to `contracts/plugin` (item 2), which is a contract change under ADR-0007
      does not touch a running chain; the next start of that chain finds
      it missing.
 
-**Open questions for the owner** (each has a default above):
-- Q1. Scan at every engine start (default), or only on `plugin.rescan`
-  after the first boot (faster start, but a plug-in installed or updated
-  stays invisible until the operator asks: in `~/.vst3` or `~/.lv2` on the
-  appliance, since only `/home` persists (ADR-0005) and the system paths
-  change only with a new image; with `apt` too on a development machine)?
-- Q2. Is `~/.cache/sonora/` acceptable as the place the catalog lives,
-  given `~/.cache` is the conventional "may be deleted" directory? The
-  alternative is `~/.local/state/sonora/`. Deleting it costs one full
-  scan, nothing else.
-- Q3. `plugin.rescan` refused while recording (default), or allowed at
-  idle priority?
+7. **The architect's changes, accepted with the amendment** (A–E). Where
+   they differ from items 1–6, these rule.
+   - **A. Portability (ADR-0008 §1/§3).** `engine/control` resolves no
+     `$XDG_CACHE_HOME` or `~/.cache` and sets no `nice`. The default cache
+     directory is resolved in the entry layer (`engine/app`), or by a
+     `common/platform` `user_cache_dir()`, and passed down as a path (on
+     Windows, later, `%LOCALAPPDATA%\Sonora\`). Probe priority goes through
+     `platform::ChildProcess` spawn options (POSIX `nice` and I/O class;
+     Windows `BELOW_NORMAL_PRIORITY_CLASS` later). The fingerprint walk uses
+     `std::filesystem` with `error_code` overloads, or a platform seam for
+     ctime.
+   - **B. Fingerprint soundness** (amends item 4's fingerprint). The walk
+     **follows symlinks** and stats the target (yabridge's `~/.vst3/yabridge`
+     links into the Wine prefix); it takes max(mtime, **ctime**) on POSIX,
+     since `cp -p`, `rsync -t`, `tar` and unzip preserve mtimes but no
+     user-space tool can set ctime; and the cache header carries the
+     **image build id** beside the host `--version` line, so an image update
+     revalidates the system bundles even when reproducible builds clamp
+     their mtimes.
+   - **C. Thread and process lifetime.** `PR_SET_PDEATHSIG` fires when the
+     forking *thread* exits, so the `PluginScanner` thread lives as long as
+     the engine process and is joined only after it has killed and reaped
+     its children. A probe that ends because of our own shutdown is never
+     cached as blocked. A request that fails the control thread's
+     `try_lock` is kept for the next turn, never dropped. The worker holds
+     the mutex only for the pointer swap or the queue push, never across
+     I/O or a wait.
+   - **D. Record safety** (amends item 5). No new *catalog* probe starts
+     while the transport records, the start-up scan included; in-flight
+     probes finish, and the scan resumes when the take ends. Chain-start
+     probes the operator caused by an edit stay allowed. The walker and the
+     probes run at the idle I/O class as well as `nice 10`. Whether probe
+     I/O on the stick costs the disk thread margin is Unverified 12.
+   - **E. Probe cost at session open** (amends item 3). One probe slot is
+     **reserved for chain-start probes**, so a first-boot catalog scan
+     (yabridge probes cost a Wine start each) cannot consume the 10 s
+     play-wait at session open. Unverified 11 gains the per-format cold and
+     warm probe time on stick hardware.
+
+**The owner's answers, 2026-10-19:**
+- Q1. **Scan at every engine start** (item 5, as proposed).
+- Q2. **The cache lives in `~/.cache/sonora/`** (item 4); on Windows, later,
+  `%LOCALAPPDATA%`. The data is regenerable; deleting it costs one
+  background scan.
+- Q3. **Never during a take.** `plugin.rescan` is refused while the
+  transport records, and the start-up scan pauses during a take (change D).
+- Q4. **A standing fault when saved state is not restored** on a running
+  insert (2026-10-14 amendment, item 5, "Saved state not restored").
 
 ## Rationale
 
@@ -1326,7 +1372,14 @@ Each has the measurement that settles it and who takes it.
     warm page cache, probes serial against capped-parallel. If an open
     passes a few seconds, the fix is the scan worker's persistent cache and
     `lilv_world_load_bundle` for the one bundle in probe and host mode, not
-    more parallelism. plugin-engineer.
+    more parallelism. plugin-engineer. Extended by the 2026-10-19
+    amendment (change E): the per-format cold and warm probe time on stick
+    hardware for the native LV2 suite, native VST3 and yabridge VST3.
+12. **Probe I/O against a take on the stick** (amendment of 2026-10-19,
+    change D). Measure the disk thread's overrun margin (the ring fill
+    high-water mark) while recording 18 channels to the USB stick, with
+    concurrent `--probe` runs reading LV2 and VST3 bundles from it, with
+    and without the idle I/O class. researcher.
 
 ## Alternatives rejected
 
