@@ -1206,6 +1206,13 @@ bool EditController::toggle_solo(int index, std::string& why) {
     return submit(SetMix{m}, why);
 }
 
+bool EditController::toggle_solo_safe(int index, std::string& why) {
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    m.solo_safe = !m.solo_safe;
+    return submit(SetMix{m}, why);
+}
+
 bool EditController::set_bus_gain(float db, std::string& why) {
     MonitorBus bus = snapshot().mix.bus;
     if (!fader_gain(db, bus.gain_db, why)) return false;

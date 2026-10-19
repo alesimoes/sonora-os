@@ -64,6 +64,7 @@ struct Options {
     bool fake_engine = false;
     QString insert_view;
     QString edit_view;
+    QString mix_view;
 };
 
 // The demo session's inserts, on the fake engine's catalog (fake_catalog()):
@@ -226,8 +227,13 @@ bool parse(QGuiApplication& app, Options& o) {
                                                       "track and open the Edit menu "
                                                       "(clipboard), for screenshots."),
                                        QStringLiteral("fades|clipboard"));
+    const QCommandLineOption mix_view({QStringLiteral("mix-view")},
+                                      QStringLiteral("With --demo, solo Lead Vox and make Room "
+                                                     "and Talkback solo safe (solo-safe), for "
+                                                     "screenshots."),
+                                      QStringLiteral("solo-safe"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions, socket, fake, insert_view, edit_view});
+                  window, sessions, socket, fake, insert_view, edit_view, mix_view});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -256,6 +262,11 @@ bool parse(QGuiApplication& app, Options& o) {
     if (!o.insert_view.isEmpty() && o.insert_view != QStringLiteral("browser") &&
         o.insert_view != QStringLiteral("panel")) {
         std::fprintf(stderr, "sonora-ui: --insert-view must be browser or panel\n");
+        return false;
+    }
+    o.mix_view = p.value(mix_view);
+    if (!o.mix_view.isEmpty() && o.mix_view != QStringLiteral("solo-safe")) {
+        std::fprintf(stderr, "sonora-ui: --mix-view must be solo-safe\n");
         return false;
     }
     o.edit_view = p.value(edit_view);
@@ -566,6 +577,18 @@ int main(int argc, char** argv) {
             }
             if (a.opt.insert_view == QStringLiteral("browser")) inserts.openBrowser(14, 3);
             if (a.opt.insert_view == QStringLiteral("panel")) inserts.openPanel(0, 0);
+            // A vocal soloed over a session whose room mic and talkback are
+            // solo safe: those two stay audible and say so, the rest are
+            // outlined as the solo silences them.
+            if (a.opt.mix_view == QStringLiteral("solo-safe")) {
+                EditController& c = session.controller();
+                std::string why;
+                for (const int t : {7, 17}) {
+                    if (t < session.trackCount() && !c.toggle_solo_safe(t, why))
+                        std::fprintf(stderr, "sonora-ui: solo safe: %s\n", why.c_str());
+                }
+                if (14 < session.trackCount()) model.invoke(QStringLiteral("track.toggle_solo"), 14);
+            }
             model.invoke(QStringLiteral("zoom.fit_session"), -1);
             const int track = std::min(1, session.trackCount() - 1);
             const auto* p =

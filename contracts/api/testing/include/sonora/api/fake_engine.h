@@ -56,6 +56,7 @@
 
 namespace sonora::model {
 class Document;
+struct Snapshot;
 }
 
 namespace sonora::api::testing {
@@ -163,6 +164,10 @@ public:
         int32_t target;
     };
     const std::vector<PlannedCall>& planned_log() const { return planned_log_; }
+    // The engine's own document, read-only: what a test checks a mix field
+    // the state block does not carry (solo, solo safe) against, rather than
+    // the interface's replica of it.
+    const model::Snapshot& document() const;
 
 private:
     uint64_t now() const;

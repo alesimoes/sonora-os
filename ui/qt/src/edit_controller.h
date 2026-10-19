@@ -202,6 +202,9 @@ public:
     bool set_pan(int track, float pan, std::string& why);
     bool toggle_mute(int track, std::string& why);
     bool toggle_solo(int track, std::string& why);
+    // Solo safe (TrackMix::solo_safe): another track's solo never silences
+    // this one. Its own solo and mute are left as they are.
+    bool toggle_solo_safe(int track, std::string& why);
     bool set_bus_gain(float db, std::string& why);
 
     // The end of the last region, or one minute when the session is empty.

@@ -169,13 +169,8 @@ void MixModel::setAll(bool solo, bool on) {
 
 bool MixModel::soloClick(int track, int modifiers) {
     if (modifiers & Qt::ControlModifier) {
-        const QStringList names = session_.trackNames();
-        const QString name = track >= 0 && track < names.size() ? names[track] : QString();
-        session_.reportEdit(false, "Solo safe is not available yet: the session has nowhere to "
-                                   "keep it, so " +
-                                       (name.isEmpty() ? std::string("the track")
-                                                       : name.toStdString()) +
-                                       " is left as it was");
+        std::string why;
+        session_.reportEdit(session_.controller().toggle_solo_safe(track, why), why);
         return true;
     }
     if (modifiers & Qt::AltModifier) {

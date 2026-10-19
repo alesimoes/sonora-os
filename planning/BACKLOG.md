@@ -142,7 +142,7 @@ playback can follow edits; it is in flight.
        op codec and undo window format 4, `kProtocolVersion` 6; the engine's
        `Track::solo_safe()` exempts a track from the implicit mute in
        `Session::process()` (its own mute still applies). The Mix window's
-       Ctrl-click and implicit-mute outline are Track 3 item 2.
+       Ctrl-click and implicit-mute outline followed (Track 3 item 2).
 6. [ ] Mix and plug-in undo history, separate from the edit undo (owner
        decision 2026-10-14, recorded in ADR-0009's 2026-10-14 update, item
        4): `SetMix` (fader, pan, mute, solo), `SetInsertBypass` and
@@ -248,11 +248,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              should be one `Compound` (Track 2 item 7): one update, no
              edit-undo step, and one mix-undo step once that history exists
              (Track 2 item 6).
-       - [ ] Solo safe: the model and engine have it (Track 2 item 5); the
-             Mix window still refuses Ctrl-click on solo, and its
-             implicit-mute outline must skip a solo-safe track
-             (`SessionModel`'s any-solo test). Solo modes (latch, X-OR,
-             momentary) and stereo pan wait for those and stereo tracks.
+       - [x] Solo safe (`t3-solo-safe-mix`): Ctrl-click on a solo button,
+             in the Mix window or the Edit window's track header, toggles
+             `TrackMix::solo_safe` through `SetMix`; the button is recessed
+             with a padlock; the implicit-mute outline follows the engine's
+             rule (`SessionModel::implicitMutes`), so a solo-safe track is
+             never outlined while it is still heard.
+       - [ ] Solo modes (latch, X-OR, momentary) and stereo pan wait for
+             those and stereo tracks.
 3. [ ] Transport window and counters; tempo map and click display.
        - [x] `feature/ui-transport`: bars|beats through the whole tempo map
              (counters, ruler, grid lines, snap); the Transport window

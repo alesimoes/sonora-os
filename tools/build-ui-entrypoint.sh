@@ -74,6 +74,9 @@ if [[ "$MODE" == screenshot ]]; then
   # The Mix window with the plugin chooser open, and with a parameter panel.
   shoot "${mix%.png}-browser.png" --window mix --insert-view browser
   shoot "${mix%.png}-panel.png" --window mix --insert-view panel
+  # Lead Vox soloed, Room and Talkback solo safe: recessed solo buttons with
+  # a padlock, and no implicit-mute outline on either.
+  shoot "${mix%.png}-solo-safe.png" --window mix --mix-view solo-safe
   # The Keys menu open over the Edit window: the profiles, and the a-z button.
   shoot "$base-keys.png" --window edit --keys-view profiles --keymap-dir keymaps
 

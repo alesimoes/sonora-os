@@ -10,7 +10,8 @@
 #   tools/build-ui.sh --screenshot PATH     ... then the Edit window, the Mix
 #                                           window (PATH-mix.png), its plugin
 #                                           chooser and parameter panel
-#                                           (-mix-browser, -mix-panel), the Edit
+#                                           (-mix-browser, -mix-panel), solo
+#                                           safe (-mix-solo-safe), the Edit
 #                                           window zoomed on fades (-fades), a
 #                                           paste with the Edit menu open
 #                                           (-clipboard) and the

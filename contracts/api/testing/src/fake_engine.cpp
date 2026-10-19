@@ -303,6 +303,8 @@ bool FakeEngine::connect(std::string& error) {
     return true;
 }
 
+const model::Snapshot& FakeEngine::document() const { return document_->current(); }
+
 void FakeEngine::apply_mix() {
     const model::Snapshot& doc = document_->current();
     const auto& tracks = doc.edit->tracks;

@@ -74,7 +74,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
-        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml
+        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml
 )
 
 add_executable(sonora-ui src/main.cpp)

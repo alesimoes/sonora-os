@@ -19,11 +19,16 @@
 //     no gain of its own accord; the refusal at release stays said, and a
 //     ride whose track moved or left, or whose session was replaced, is
 //     dropped with the reason;
-//   - Alt-click solo and mute set every track; Ctrl-click solo (solo safe)
-//     is refused, loudly, and changes nothing;
+//   - Alt-click solo and mute set every track; Ctrl-click solo is solo
+//     safe, a SetMix the engine's document holds, the track's own solo
+//     left alone;
+//   - the implicit-mute outline is the engine's rule: a solo-safe track
+//     another track's solo does not silence is not outlined;
 //   - the QML: what the meters read is written on them, a drag on a fader
 //     is a ride, a typed gain keeps its keys from the profile, Alt-click on
-//     a solo button.
+//     a solo button, Ctrl-click on one in either window recesses it with a
+//     padlock and takes its mute's outline away.
+#include <QColor>
 #include <QGuiApplication>
 #include <QQuickItem>
 #include <QQuickView>
@@ -45,6 +50,7 @@
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/model/op_codec.h"
+#include "theme.h"
 #include "timeline_document.h"
 
 using namespace sonora;
@@ -601,13 +607,68 @@ int modifier_clicks() {
     r.settle();
     CHECK(r.session.mutes() == QList<bool>({false, false, false, false}));
     CHECK(r.refused.empty());
-    // Ctrl-click solo is solo safe: refused out loud, the track untouched.
+    // Ctrl-click solo is solo safe: one SetMix, held by the engine's own
+    // document, and the track's solo left as it was.
+    const auto engine_mix = [&r](int track) {
+        const model::Snapshot& s = r.fake.document();
+        return *s.mix.find(s.edit->tracks[static_cast<std::size_t>(track)]->id);
+    };
     const uint64_t rev = r.doc.revision();
     CHECK(r.mixer.soloClick(3, Qt::ControlModifier));
-    CHECK(!r.refused.empty() && r.refused.back().find("Solo safe") != std::string::npos);
     r.settle();
-    CHECK(r.doc.revision() == rev && !r.session.solos()[3]);
-    std::printf("  Alt-click all, Ctrl-click solo safe refused: ok\n");
+    CHECK(r.refused.empty());
+    CHECK(r.doc.revision() == rev + 1);
+    CHECK(engine_mix(3).solo_safe && !engine_mix(3).solo);
+    CHECK(r.session.soloSafes() == QList<bool>({false, false, false, true}));
+    CHECK(r.session.solos() == QList<bool>({false, false, false, false}));
+    // Ctrl+Alt is solo safe, never a solo of every track.
+    CHECK(r.mixer.soloClick(2, Qt::ControlModifier | Qt::AltModifier));
+    r.settle();
+    CHECK(engine_mix(2).solo_safe && !engine_mix(2).solo);
+    CHECK(r.session.solos() == QList<bool>({false, false, false, false}));
+    // And again: off. A soloed track keeps its solo through both.
+    CHECK(r.session.controller().toggle_solo(3, why));
+    r.settle();
+    CHECK(r.mixer.soloClick(3, Qt::ControlModifier));
+    CHECK(r.mixer.soloClick(2, Qt::ControlModifier));
+    r.settle();
+    CHECK(!engine_mix(3).solo_safe && engine_mix(3).solo && !engine_mix(2).solo_safe);
+    CHECK(r.session.soloSafes() == QList<bool>({false, false, false, false}));
+    // A track that is not there is refused by name, and nothing is sent.
+    const uint64_t before = r.doc.revision();
+    CHECK(r.mixer.soloClick(7, Qt::ControlModifier));
+    CHECK(!r.refused.empty() && r.refused.back().find("no track 8") != std::string::npos);
+    r.settle();
+    CHECK(r.doc.revision() == before);
+    std::printf("  Alt-click all, Ctrl-click solo safe through SetMix: ok\n");
+    return 0;
+}
+
+// The outline under a strip's mute says another track's solo silences it,
+// so it follows the engine's rule (Session::process()): soloed tracks, a
+// solo-safe one and every track with no solo anywhere are not outlined.
+int implicit_mutes() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.session.implicitMutes() == QList<bool>({false, false, false, false}));
+    // Solo safe alone silences nothing and outlines nothing.
+    CHECK(r.mixer.soloClick(1, Qt::ControlModifier));
+    r.settle();
+    CHECK(r.session.implicitMutes() == QList<bool>({false, false, false, false}));
+    CHECK(r.session.controller().toggle_solo(0, why));
+    r.settle();
+    CHECK(r.session.implicitMutes() == QList<bool>({false, false, true, true}));
+    // Its own mute still applies, and is the mute button lit, not an outline.
+    CHECK(r.session.controller().toggle_mute(1, why));
+    r.settle();
+    CHECK(r.session.mutes()[1] && !r.session.implicitMutes()[1]);
+    // Solo safe off: the solo silences it again.
+    CHECK(r.mixer.soloClick(1, Qt::ControlModifier));
+    r.settle();
+    CHECK(r.session.implicitMutes() == QList<bool>({false, true, true, true}));
+    CHECK(r.refused.empty());
+    std::printf("  implicit-mute outline skips solo-safe tracks: ok\n");
     return 0;
 }
 
@@ -705,6 +766,60 @@ int qml() {
     QTest::mouseClick(&view, Qt::LeftButton, {}, centre(solo));
     r.settle();
     CHECK(r.session.solos() == QList<bool>({true, true, false, true}));
+
+    r.refused.clear();  // the typed "99" above
+    // Ctrl-click: solo safe. The button is recessed with its padlock, its
+    // mute loses the outline the other solos gave it, and the flag is the
+    // engine's document's.
+    const auto outlined = [&root](int track) {
+        QQuickItem* m = named(root, QStringLiteral("mute%1").arg(track));
+        QObject* border = m != nullptr ? m->property("border").value<QObject*>() : nullptr;
+        return border != nullptr &&
+               border->property("color").value<QColor>() == QColor::fromRgba(theme::kMute);
+    };
+    const auto engine_safe = [&r](int track) {
+        const model::Snapshot& s = r.fake.document();
+        return s.mix.find(s.edit->tracks[static_cast<std::size_t>(track)]->id)->solo_safe;
+    };
+    QQuickItem* padlock = named(root, QStringLiteral("soloSafe2"));
+    CHECK(padlock != nullptr && !padlock->isVisible());
+    CHECK(!solo->property("recessed").toBool());
+    CHECK(outlined(2));
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::ControlModifier, centre(solo));
+    r.settle();
+    CHECK(engine_safe(2));
+    CHECK(r.session.solos() == QList<bool>({true, true, false, true}));
+    CHECK(padlock->isVisible() && solo->property("recessed").toBool());
+    CHECK(!outlined(2));
+    // The Edit window's solo button shows it, and its Ctrl-click is solo
+    // safe too, never a solo.
+    r.session.setWindow(QStringLiteral("edit"));
+    QTest::qWait(50);
+    QQuickItem* edit_lock2 = named(root, QStringLiteral("editSoloSafe2"));
+    CHECK(edit_lock2 != nullptr && edit_lock2->isVisible());
+    // Track 2 unsoloed first, so a Ctrl-click that soloed would show.
+    std::string why;
+    CHECK(r.session.controller().toggle_solo(1, why));
+    r.settle();
+    CHECK(r.session.solos() == QList<bool>({true, false, false, true}));
+    QQuickItem* edit_solo = named(root, QStringLiteral("editSolo1"));
+    QQuickItem* edit_lock1 = named(root, QStringLiteral("editSoloSafe1"));
+    CHECK(edit_solo != nullptr && edit_solo->isVisible());
+    CHECK(edit_lock1 != nullptr && !edit_lock1->isVisible());
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::ControlModifier, centre(edit_solo));
+    r.settle();
+    CHECK(engine_safe(1));
+    CHECK(r.session.soloSafes() == QList<bool>({false, true, true, false}));
+    CHECK(r.session.solos() == QList<bool>({true, false, false, true}));
+    CHECK(edit_lock1->isVisible() && edit_solo->property("recessed").toBool());
+    r.session.setWindow(QStringLiteral("mix"));
+    QTest::qWait(50);
+    // Ctrl-click again in the Mix window: off, and the outline is back.
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::ControlModifier, centre(solo));
+    r.settle();
+    CHECK(!engine_safe(2));
+    CHECK(!padlock->isVisible() && !solo->property("recessed").toBool() && outlined(2));
+    CHECK(r.refused.empty());
     std::printf("  qml: ok\n");
     return 0;
 }
@@ -726,6 +841,7 @@ int main(int argc, char** argv) {
     if (live_path_follows_the_engine() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
+    if (implicit_mutes() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui mix: all checks passed\n");
     return 0;
