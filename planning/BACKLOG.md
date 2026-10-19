@@ -377,12 +377,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              held while `PluginHosting::loading()` is non-zero, at most
              `Options::plugin_open_wait_ms` (10 s) from the open, with a
              Notice "Loading plug-ins (n of m): play starts when they are
-             ready"; a second space, a stop or a take withdraws it; record
-             is never held. ctest `plugin_hosting_play_waits` (answered
-             after the plug-in's load, before the bound),
-             `plugin_hosting_play_wait_bounded` (answered at the bound,
-             800 ms in the test, with the plug-in still loading).
+             ready", said once per wait and never kept for a client that
+             attaches later; only a second space, a stop or a take
+             withdraws it; record is never held; with hosting disabled
+             nothing is loading. ctest `plugin_hosting_play_waits`
+             (answered after the plug-in's load, before the bound; two
+             presses, one notice), `plugin_hosting_play_wait_bounded`
+             (answered at the bound, 800 ms in the test, with the plug-in
+             still loading), `plugin_hosting_play_no_hosting` (a host of
+             another kind: no wait), `plugin_hosting_play_wait_cancel` (a
+             return to zero leaves it waiting, a stop cancels it).
              The UI showing the notice as a progress line is the UI's.
+       - [ ] A Notice cannot be cleared (contracts/api has no clear for
+             it): the "Loading plug-ins" line stays on the screen of a
+             client attached during the wait, until the UI drops it.
        - [x] A new chain's start that fails while the old chain still
              runs is shown as a fault on the edit's inserts, and not
              started again until the document wants another chain

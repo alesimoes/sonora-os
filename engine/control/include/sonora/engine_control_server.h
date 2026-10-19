@@ -187,6 +187,9 @@ public:
 
     // --- the control thread, housekeeping, or before start() ---
     void post_event(const api::EngineEvent& event);
+    // An event for the clients attached now only: not kept, so a client
+    // that attaches later is not sent it.
+    void post_transient(const api::EngineEvent& event);
     void set_input_connected(uint32_t track, bool connected) {
         publisher_->set_input_connected(track, connected);
     }

@@ -450,6 +450,12 @@ void EngineControlServer::post_event(const api::EngineEvent& event) {
     send(bytes);
 }
 
+void EngineControlServer::post_transient(const api::EngineEvent& event) {
+    std::string bytes;
+    api::wire::encode(event, bytes);
+    send(bytes);
+}
+
 void EngineControlServer::set_inputs_connected(uint32_t count, bool none_is_a_problem) {
     publisher_->set_inputs_connected(count);
     publisher_->set_health(api::kHealthNoInputs, count == 0 && none_is_a_problem);
@@ -860,27 +866,35 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         const bool would_play = (r.command == "transport.play" || r.command == "transport.toggle_play") &&
                                 session_.transport().state() == TransportState::Stopped &&
                                 !playback_->play_requested() && !playback_->record_requested();
-        if (!held_plays_.empty() && r.command.rfind("transport.", 0) == 0) {
+        if (!held_plays_.empty()) {
             if (r.command == "transport.play") {
                 // Pressed again while one waits: both answered together.
                 held_plays_.push_back({from, r.seq, r.command, ctx});
                 return;
             }
-            // A second space, a stop or a take withdraws the waiting play.
-            release_plays(true);
+            // Only a second space, a stop or a take withdraws the waiting
+            // play (the owner's rule); any other transport command (a
+            // return to zero, a locate) runs and the play still waits.
             if (r.command == "transport.toggle_play") {
+                release_plays(true);
                 reply(from, r.seq, DispatchResult::Ok, "");
                 return;
             }
+            if (r.command == "transport.stop" || starts_a_take(r.command)) release_plays(true);
         }
         if (would_play && plugins_loading()) {
             held_plays_.push_back({from, r.seq, r.command, ctx});
+            // Said once per wait, to the clients attached now, never kept
+            // for one that attaches later: it is not standing (#83 review
+            // item 2). The count is bounded by the total, whatever a Load
+            // reset meanwhile.
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
-            const uint32_t total = hosting_->loading_total();
-            e.text = "Loading plug-ins (" + std::to_string(total - hosting_->loading()) + " of " +
-                     std::to_string(total) + "): play starts when they are ready";
-            post_event(e);
+            const uint32_t loading = hosting_->loading();
+            const uint32_t total = std::max(hosting_->loading_total(), loading);
+            e.text = "Loading plug-ins (" + std::to_string(total - loading) + " of " + std::to_string(total) +
+                     "): play starts when they are ready";
+            post_transient(e);
             return;
         }
         std::string why;
