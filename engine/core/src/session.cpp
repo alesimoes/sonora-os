@@ -286,10 +286,12 @@ bool Session::start_punch(int take_number, const PunchRange& range, std::string*
                       frame(range.capture_from) + ", " + frame(range.capture_to) + ")");
     }
     // The playhead only moves forward while rolling, so a range already
-    // behind it stays behind it: the take would be files with nothing in.
+    // behind it stays behind it. Past the punch-out but inside its handle,
+    // the take would hold handle only and be placed nowhere: a take shown
+    // as recording, then lost.
     const uint64_t playhead = transport_->playhead();
-    if (range.capture_to <= playhead) {
-        return refuse("the punch range ends at frame " + frame(range.capture_to) +
+    if (range.monitor_out <= playhead) {
+        return refuse("the punch range ends at frame " + frame(range.monitor_out) +
                       ", before the playhead at " + std::to_string(playhead));
     }
     return begin_take(take_number, &range, error);
