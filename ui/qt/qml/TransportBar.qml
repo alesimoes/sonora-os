@@ -15,6 +15,9 @@ Rectangle {
     property TransportModel transport: null
     // Open lists the sessions folder in a panel the window owns.
     signal openRequested()
+    // The Edit menu, drawn by the window under the point given.
+    signal editMenuRequested(real x, real y)
+    property bool editMenuOpen: false
 
     height: Theme.transportHeight
     color: Theme.panel
@@ -72,6 +75,18 @@ Rectangle {
                 objectName: "openButton"
                 text: "Open"; implicitHeight: 28; implicitWidth: 52
                 onClicked: bar.openRequested()
+            }
+            // Pro Tools' Edit menu: undo and redo by name, and the
+            // clipboard. The arrow tells it from the Edit window's button.
+            SButton {
+                id: editMenuButton
+                objectName: "editMenuButton"
+                text: "Edit \u25BE"; implicitHeight: 28; implicitWidth: 56
+                active: bar.editMenuOpen
+                onClicked: {
+                    const p = editMenuButton.mapToItem(null, 0, editMenuButton.height)
+                    bar.editMenuRequested(p.x, p.y)
+                }
             }
         }
 

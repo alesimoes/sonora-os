@@ -48,6 +48,11 @@ class SessionModel : public QObject {
     Q_PROPERTY(QStringList trackNames READ trackNames NOTIFY contentChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY contentChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY contentChanged)
+    // The Edit menu's first two items, as Pro Tools words them: "Undo
+    // Paste", "Redo Trim"; "Can't Undo" when there is nothing to undo.
+    Q_PROPERTY(QString undoText READ undoText NOTIFY contentChanged)
+    Q_PROPERTY(QString redoText READ redoText NOTIFY contentChanged)
+    Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
     Q_PROPERTY(QString gridValue READ gridValue NOTIFY editStateChanged)
@@ -149,6 +154,9 @@ public:
     QStringList trackNames() const;
     bool canUndo() const { return doc_.can_undo(); }
     bool canRedo() const { return doc_.can_redo(); }
+    QString undoText() const;
+    QString redoText() const;
+    bool canPaste() const { return !ctl_.clipboard().empty(); }
     QString editMode() const { return QString::fromLatin1(edit_mode_name(ctl_.mode())); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
     QString gridValue() const { return QString::fromLatin1(grid_value_name(ctl_.grid())); }
@@ -281,6 +289,7 @@ private:
     uint64_t seen_revision_ = UINT64_MAX;
     bool seen_dirty_ = false;
     int seen_mode_ = -1, seen_tool_ = -1, seen_grid_ = -1, seen_fades_ = -1;
+    uint64_t seen_clip_ = UINT64_MAX;
     Selection seen_sel_;
     bool seen_sel_valid_ = false;
     ViewState seen_view_;

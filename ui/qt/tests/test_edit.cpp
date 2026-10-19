@@ -423,7 +423,8 @@ int test_controller() {
     OK(c.selection().has_range());
     OK(c.separate(why));
     OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 4);
-    OK(c.undo(why) && c.undo(why));
+    OK(c.undo(why));   // both ends are one step (one Compound, "Separate")
+    OK(doc.snapshot().edit->tracks[0]->playlists[0]->regions.size() == 2);
 
     // Trim to the insertion point (Pro Tools' A and S).
     c.set_insertion(kBar + kBar / 2);

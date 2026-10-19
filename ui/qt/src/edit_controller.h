@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "edit_clipboard.h"
 #include "time_format.h"
 #include "timeline_document.h"
 
@@ -136,6 +137,8 @@ public:
     void set_insertion(model::Frames f);
     // As a click with the Grabber: the region, its track, and its bounds.
     bool select_region(model::Id region);
+    // As a Selector drag from `a` to `b` on `track` leaves it.
+    void select_range(int track, model::Frames a, model::Frames b);
     void clear_selection();
 
     // --- mouse, in track-area pixels ---
@@ -149,8 +152,32 @@ public:
     bool separate(std::string& why);
     bool trim_start_to_insertion(std::string& why);
     bool trim_end_to_insertion(std::string& why);
+    // A region selected, or a time range on the selected track: removes
+    // what the range covers, leaving the gap (Slip, Spot and Grid). A range
+    // that is exactly one fade or crossfade removes that instead.
     bool clear(std::string& why);
     bool nudge(int direction, std::string& why);
+
+    // --- the clipboard (edit_clipboard.h) ---
+    // On a selected region, or a time range on the selected track. Each
+    // edit is one compound, so one undo step labelled with its name; one
+    // that needs more than model::kMaxCompoundMembers members is refused
+    // before anything is sent. Shuffle would ripple every later region,
+    // which waits for ShiftRegions, so Cut, Paste and Duplicate refuse it.
+    //
+    // Copy changes no document and is no undo step, as in Pro Tools.
+    bool copy(std::string& why);
+    bool cut(std::string& why);
+    // At the selection's start on the selected track, overwriting what the
+    // clipboard's whole length covers there; the pasted range is then
+    // selected.
+    bool paste(std::string& why);
+    // A copy of the selection placed straight after it on the same track,
+    // which then becomes the selection. The clipboard is left alone.
+    bool duplicate(std::string& why);
+    const Clip& clipboard() const { return clipboard_; }
+    // Changes whenever the clipboard is replaced.
+    uint64_t clipboard_serial() const { return clipboard_serial_; }
     // Fades (Pro Tools' Fade to Start, Fade to End, and the crossfade
     // without its dialog). Fades change no region's position, so every edit
     // mode allows them. The shape is the last one used, as Pro Tools'
@@ -197,6 +224,16 @@ private:
                          std::string& why);
     // Clear on a range that is exactly one fade or crossfade removes it.
     bool clear_fade_at_selection(bool& done, std::string& why);
+    // The range a clipboard edit acts on: a selected region's bounds, else
+    // the selected track's time range. `nothing_was` finishes the refusal
+    // ("... Nothing was cut.").
+    bool edit_range(int& track_index, model::Frames& a, model::Frames& b,
+                    const char* nothing_was, std::string& why) const;
+    bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // One gesture's members as one Compound labelled `gesture`, refused
+    // unsent past the member limit.
+    bool submit_compound(std::vector<model::Member> members, const char* gesture,
+                         const char* nothing_was, std::string& why);
 
     TimelineDocument& doc_;
     ViewState view_;
@@ -209,6 +246,8 @@ private:
     Drag drag_;
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
+    Clip clipboard_;
+    uint64_t clipboard_serial_ = 0;
 };
 
 // --- fades, as the engine plays them ---
