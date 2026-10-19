@@ -58,6 +58,11 @@ public:
     virtual bool redo(std::string& why) = 0;
     virtual bool can_undo() const = 0;
     virtual bool can_redo() const = 0;
+    // What undo and redo would move over (History::undo_label): a
+    // compound's label ("Paste"), else the operation's type. Empty when
+    // there is nothing to undo or redo.
+    virtual std::string undo_label() const = 0;
+    virtual std::string redo_label() const = 0;
     // An id no operation has introduced and none will be given twice, for an
     // operation being resolved: at least the snapshot's next_id, which is
     // what apply() checks.
@@ -104,6 +109,8 @@ public:
     bool redo(std::string& why) override;
     bool can_undo() const override { return history_.can_undo(); }
     bool can_redo() const override { return history_.can_redo(); }
+    std::string undo_label() const override { return history_.undo_label(); }
+    std::string redo_label() const override { return history_.redo_label(); }
     model::Id reserve_id() override;
     bool reset(model::Snapshot s, std::string& why) override;
 

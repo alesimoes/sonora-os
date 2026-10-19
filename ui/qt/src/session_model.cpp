@@ -9,6 +9,7 @@
 
 #include "fader_taper.h"
 #include "scene_item.h"
+#include "edit_clipboard.h"
 #include "session_files.h"
 #include "sonora/command.h"
 #include "sonora/model/session_file.h"
@@ -121,6 +122,11 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("edit.undo", [this](const CommandContext&, Why& why) { return ctl_.undo(why); });
     simple("edit.redo", [this](const CommandContext&, Why& why) { return ctl_.redo(why); });
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
+    simple("edit.cut", [this](const CommandContext&, Why& why) { return ctl_.cut(why); });
+    simple("edit.copy", [this](const CommandContext&, Why& why) { return ctl_.copy(why); });
+    simple("edit.paste", [this](const CommandContext&, Why& why) { return ctl_.paste(why); });
+    simple("edit.duplicate",
+           [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
     simple("edit.trim_start_to_insertion",
@@ -190,7 +196,10 @@ void SessionModel::sync() {
               g = static_cast<int>(ctl_.grid());
     const int fades = static_cast<int>(ctl_.fade_shape()) * 16 +
                       static_cast<int>(ctl_.crossfade_shape());
-    if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_ || fades != seen_fades_) {
+    const uint64_t clip = ctl_.clipboard_serial();
+    if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_ || fades != seen_fades_ ||
+        clip != seen_clip_) {
+        seen_clip_ = clip;
         content = content || m != seen_mode_ || g != seen_grid_;  // grid lines follow them
         seen_mode_ = m;
         seen_tool_ = t;
@@ -220,6 +229,18 @@ void SessionModel::sync() {
         if (content) item->markContentDirty();
         if (overlay) item->markOverlayDirty();
     }
+}
+
+QString SessionModel::undoText() const {
+    if (!doc_.can_undo()) return QStringLiteral("Can't Undo");
+    const std::string what = step_text(doc_.undo_label());
+    return what.empty() ? QStringLiteral("Undo") : QStringLiteral("Undo ") + q(what);
+}
+
+QString SessionModel::redoText() const {
+    if (!doc_.can_redo()) return QStringLiteral("Can't Redo");
+    const std::string what = step_text(doc_.redo_label());
+    return what.empty() ? QStringLiteral("Redo") : QStringLiteral("Redo ") + q(what);
 }
 
 bool SessionModel::run(bool ok, const std::string& why) {
