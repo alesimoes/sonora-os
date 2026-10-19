@@ -272,7 +272,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
 6. [x] The version refusal reaches the operator (PR #75 ui-engineer review,
-       item 3; `feature/t3-version-refusal`). `version_mismatch()`'s text
+       item 3; PR #90). `version_mismatch()`'s text
        went to stderr and exit 1, which on the appliance is a black screen
        restarted for ever:
        - [x] at startup, a full-screen refusal page with the text instead of
