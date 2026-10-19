@@ -1031,6 +1031,8 @@ to `contracts/plugin` (item 2), which is a contract change under ADR-0007
      is `(id, channels)`, as the run-time probes are keyed; a chain on a
      mono track that finds no `(id, 1)` entry probes it then, as today.
 
+   > *2026-10-19 (PR #95):* enumeration is three children — `--bundles-only` (no plugin code), `--format lv2`, then `--format vst3 --only-given <new or changed bundles>` — so a warm start runs no VST3 code.
+
 2. **The probe record, versioned in `contracts/plugin`.** Today
    `--probe`'s JSON line is parsed by `engine/control` but specified only
    in `plugins/host/src/main.cpp`. It becomes `probe_record.h` (record
@@ -1042,6 +1044,8 @@ to `contracts/plugin` (item 2), which is a contract change under ADR-0007
    logarithmic, past `kMaxParamsPerChain`), unit, step count and labels.
    The record carries its version and the host's `--version` line; a
    record of another version is a cache miss, never a parse guess.
+
+   > *2026-10-19 (PR #95):* `has_editor` is false until editors are hosted; the PR that hosts them moves the record version (or the host `--version` line) so cached records are discarded.
 
 3. **The worker: one thread, for the engine process** (amends item 4 of
    2026-10-14, "no new thread or lock").
@@ -1109,6 +1113,8 @@ to `contracts/plugin` (item 2), which is a contract change under ADR-0007
      third-party code; and a catalog that changes under the operator's
      plug-in menu mid-session is a surprise. Pro Tools and Logic scan at
      launch and on request, as this does.
+
+   > *2026-10-19 (PR #95):* generation 1 is published once every cached bundle's fingerprint has been re-checked, not before; time to generation 1 on the stick joins Unverified 11.
 
 6. **`AddInsert` and `ReplaceInsert` resolve against the catalog.**
    - Refused (Failed, with the reason) when the `(format, id)` is not in

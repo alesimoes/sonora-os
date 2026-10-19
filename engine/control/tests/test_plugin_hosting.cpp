@@ -369,6 +369,31 @@ int scenario_missing(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// Code-reviewer finding 3 on #95: a chain dropped because nothing of it is
+// left to run (its running insert moved away, a missing one stays) must
+// forget what it ran, or the moved insert is "not running" on its new
+// track, which A precedes in the chain map.
+int scenario_move_off_missing(const Args& a) {
+    std::printf("move_off_missing: eg-amp moved off a track that keeps a missing insert\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, "urn:sonora:test#not-installed"));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "A runs eg-amp without the missing one");
+    rig.apply(MoveInsert{500, 102, 0});
+    rig.show();
+    check(rig.until([&] { return rig.bound_at(1, kBlock); }, 15000), "eg-amp runs on B");
+    std::string why;
+    check(rig.hosting->set_param(500, "gain", -6.f, why), "a parameter change reaches it on B");
+    if (!why.empty()) std::printf("  why: %s\n", why.c_str());
+    float v = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", v) && v == -6.f; }, 5000),
+          "and its host reads the value");
+    return failures ? 1 : 0;
+}
+
 int scenario_refused(const Args& a) {
     std::printf("refused: the liar beside eg-amp\n");
     Rig rig(a);
@@ -978,6 +1003,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "repost_bypass_off") rc = scenario_repost_bypass_off(a);
     else if (a.scenario == "gesture_left_open") rc = scenario_gesture_left_open(a);
     else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
+    else if (a.scenario == "move_off_missing") rc = scenario_move_off_missing(a);
     else if (a.scenario == "state_not_restored") rc = scenario_state_not_restored(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);

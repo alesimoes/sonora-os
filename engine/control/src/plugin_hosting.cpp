@@ -299,7 +299,8 @@ void PluginHosting::drop_chain(Chain& c) {
     abandon_pending(c);
     retire(std::move(c.running), c.store, c.node);
     c.store = c.node = kNone;
-
+    c.running_spec.clear();
+    c.posted.clear();
     c.retry.clear();
     c.open_touches.clear();
     c.store_epoch = 0;

@@ -433,13 +433,19 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              on a fake host), plugin_catalog, plugin_host_list_bundle,
              plugin_host_list_bundles_only, plugin_host_probe_record,
              plugin_host_probe_not_installed.
-       - [ ] Scan follow-ups: the image build writes BUILD_ID into
-             /etc/os-release (the cache header reads it; empty until
-             then); PluginHosting keeps its probe answers for the run, so
-             a rescan that loses a plugin is seen by the next chain start
-             only after a restart; a blocked chain-start probe whose bundle
-             no scan has named is kept for the run, not cached;
-             Unverified 11 and 12 measurements (researcher).
+       - [ ] Scan follow-ups (architect on #95): the image build writes
+             BUILD_ID into /etc/os-release, before OS 1 (also under Phase 1
+             below; the cache header reads it, empty until then).
+             PluginHosting keeps its probe answers for the run: a completed
+             rescan must drop the `probes_` entries whose bundle it probed
+             again, before any client exposes `plugin.rescan` to the
+             operator and before Track 4 closes (until then item 6's "the
+             next start finds it missing" does not hold, and a plugin
+             updated in place keeps its old parameter table until a
+             restart). Unverified 11 (warm time to generation 1 on the
+             stick, Debian's set plus a yabridge set) and 12 (researcher).
+             The PR that hosts editors moves the probe record version or
+             the host `--version` line (ADR-0012 item 2 note).
        - [ ] FlushPluginState through GetState and the saver thread's
              durable write; today it still answers from the document.
        - [x] Play waits for plug-ins at session open (owner, 2026-10-18):
@@ -790,6 +796,10 @@ not start or extend those items before the Complete DAW closes (owner,
 
 ## Phase 1 (OS 1, after the Complete DAW)
 
+- [ ] The image writes `BUILD_ID` into `/etc/os-release`: the plugin
+      catalog cache's header carries it (ADR-0012, amendment of 2026-10-19,
+      change B); every cache is discarded once, with one Notice, when it
+      first appears.
 - [ ] Compile the engine on Debian trixie and fix what the compiler finds.
 - [ ] Run `ctest`; make the ring buffer and BWF tests pass.
 - [ ] `live-build` config: package list, RT kernel, PipeWire from backports.

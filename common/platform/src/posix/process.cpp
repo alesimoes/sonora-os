@@ -212,7 +212,12 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     for (int s : {SIGPIPE, SIGINT, SIGTERM, SIGHUP, SIGCHLD}) sigaddset(&defaults, s);
     posix_spawnattr_setsigmask(&attr, &none);
     posix_spawnattr_setsigdefault(&attr, &defaults);
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    if (options.own_group) {
+        posix_spawnattr_setpgroup(&attr, 0);
+        flags |= POSIX_SPAWN_SETPGROUP;
+    }
+    posix_spawnattr_setflags(&attr, flags);
 
     auto impl = std::make_unique<Impl>();
     const int rc = ::posix_spawn(&impl->pid, args[0], &actions, &attr, args.data(), environ);

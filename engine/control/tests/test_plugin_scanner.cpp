@@ -30,11 +30,18 @@
 //   version            a host of another record version disables the scan
 //   vst3_list_fail     a VST3 bundle whose scan crashed is said, and not
 //                      enumerated again while it is unchanged
+//   recording_lost_lock  a take delivered by an exchange that lost its
+//                      try_lock stops the catalog (finding 2 on #95)
+//   chain_during_walk  chain-start probes served between the bundles of
+//                      the start-up check and of a scan's walk (finding 5)
+//   stop_signal        a probe a stop signal ended is never cached; a signal
+//                      to the engine's group does not reach it (finding 1)
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <csignal>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -363,7 +370,8 @@ void test_recording() {
     check(until(s, [&] { return s.catalog_probes_started() >= 1; }, 5000, false), "the take ends: the scan starts");
     // A take again, mid-scan: the probe in flight finishes, no new one. The
     // count is read once the worker has had a turn to see the take.
-    s.exchange(true);
+    // Finding 6 on #95: the take is delivered before the count is read.
+    while (!s.exchange(true)) std::this_thread::yield();
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
     const uint64_t started = s.catalog_probes_started();
     until(s, [] { return false; }, 900, true);
@@ -513,6 +521,117 @@ void test_version() {
     check(s.probes_started() == 0 && s.lists_started() == 0, "nothing ran");
 }
 
+// Finding 1 on #95: a probe that a stop signal ended (systemd's stop of
+// the whole cgroup, a Ctrl+C) is never cached as blocked, and a signal to
+// the engine's process group does not reach the probes at all.
+void test_stop_signal() {
+    std::printf("stop_signal\n");
+    Fixture fx("stopsignal");
+    const std::string a = fx.bundle("a.lv2");
+    fx.set_world({"plugin urn:h " + a + " lv2 1 1 hang"});
+    {
+        PluginScanner s(fx.config());
+        check(until(s, [&] { return !fx.log_lines("--probe urn:h").empty(); }, 5000), "the probe hangs");
+        const std::string line = fx.log_lines("--probe urn:h").front();
+        const pid_t pid = pid_t(std::atol(line.c_str() + line.find("pid=") + 4));
+        // The engine's group gets SIGTERM (this test leads its own group
+        // and ignores it, as the engine would handle it).
+        ::setpgid(0, 0);
+        const auto old = std::signal(SIGTERM, SIG_IGN);
+        ::kill(0, SIGTERM);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::signal(SIGTERM, old);
+        check(::kill(pid, 0) == 0, "a signal to the engine's process group does not reach the probe");
+        // The cgroup's stop: the probe itself gets SIGTERM.
+        ::kill(pid, SIGTERM);
+        check(until(s, [&] { return s.catalog()->find("urn:h", 2) != nullptr; }, 5000),
+              "the probe's end is answered for this run");
+    }
+    fx.clear_log();
+    PluginScanner s(fx.config());
+    check(until(s, [&] { return !fx.log_lines("--probe urn:h").empty(); }, 5000),
+          "and not cached: the next start probes it again");
+}
+
+// Finding 2 on #95: a take reaches the worker even when the exchange loses
+// its try_lock, and nothing of the catalog starts after it.
+void test_recording_lost_lock() {
+    std::printf("recording_lost_lock\n");
+    Fixture fx("recordlock");
+    const std::string a = fx.bundle("a.lv2");
+    std::vector<std::string> w;
+    for (int i = 0; i < 6; ++i) w.push_back("plugin urn:s" + std::to_string(i) + " " + a + " lv2 1 1 sleep 200");
+    fx.set_world(w);
+    PluginScanner s(fx.config(false));
+    check(until(s, [&] { return s.catalog_probes_started() >= 1; }, 5000), "the scan is probing");
+    {
+        // Held by another thread: a try_lock on a mutex the caller holds
+        // would be undefined.
+        std::mutex m;
+        std::condition_variable cv;
+        bool held = false, release = false;
+        std::thread holder([&] {
+            std::lock_guard<std::mutex> l(s.exchange_mutex_for_test());
+            std::unique_lock<std::mutex> g(m);
+            held = true;
+            cv.notify_all();
+            cv.wait(g, [&] { return release; });
+        });
+        {
+            std::unique_lock<std::mutex> g(m);
+            cv.wait(g, [&] { return held; });
+        }
+        check(!s.exchange(true), "the exchange loses its try_lock");
+        {
+            std::lock_guard<std::mutex> g(m);
+            release = true;
+        }
+        cv.notify_all();
+        holder.join();
+    }
+    // No exchange from here on: only the atomic can say a take is on.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const uint64_t started = s.catalog_probes_started();
+    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+    check(s.catalog_probes_started() == started,
+          "no catalog probe starts during the take (" + std::to_string(s.catalog_probes_started()) + " vs " +
+              std::to_string(started) + ")");
+    check(until(s, [&] { return s.catalog()->scanned && s.idle(); }, 10000, false), "and the scan ends after it");
+}
+
+// Finding 5 on #95 (change E): a chain-start probe is served between the
+// bundles of the worker's walks, at start-up (the cache's bundles checked
+// again) and in a scan (the listed ones fingerprinted), not after them.
+void test_chain_during_walk() {
+    std::printf("chain_during_walk\n");
+    Fixture fx("walk");
+    std::vector<std::string> w;
+    for (int i = 0; i < 12; ++i)
+        w.push_back("plugin urn:p" + std::to_string(i) + " " + fx.bundle("p" + std::to_string(i) + ".lv2") +
+                    " lv2 1 1 ok");
+    w.push_back("plugin urn:x " + fx.bundle("x.lv2") + " lv2 1 1 ok");
+    fx.set_world(w);
+    PluginScannerConfig c = fx.config();
+    c.fingerprint_delay_ms_for_test = 150;  // 13 bundles: about 2 s a walk
+    {
+        PluginScanner s(c);
+        check(until(s, [&] { return !fx.log_lines("--bundles-only").empty(); }, 5000), "the scan lists bundles");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const uint64_t t0 = now_ms();
+        s.probe("urn:x", 1);
+        check(until(s, [&] { return s.catalog()->find("urn:x", 1) != nullptr; }, 5000), "answered");
+        check(now_ms() - t0 < 1000, "in the middle of the scan's walk (" + std::to_string(now_ms() - t0) + " ms)");
+        check(scanned(s, 20000), "the scan completes");
+    }
+    PluginScanner s(c);
+    const uint64_t t0 = now_ms();
+    s.probe("urn:p11", 2);
+    check(until(s, [&] { return s.catalog()->find("urn:p11", 2) != nullptr; }, 5000), "answered from the cache");
+    check(now_ms() - t0 < 1000, "before the start-up check of every cached bundle is done (" +
+                                    std::to_string(now_ms() - t0) + " ms)");
+    check(s.probes_started() == 0, "with no probe: its bundle was checked first");
+}
+
 void test_vst3_list_fail() {
     std::printf("vst3_list_fail\n");
     Fixture fx("listfail");
@@ -555,6 +674,9 @@ int main(int argc, char** argv) {
     test_priority();
     test_version();
     test_vst3_list_fail();
+    test_recording_lost_lock();
+    test_chain_during_walk();
+    test_stop_signal();
     if (failures) {
         std::printf("test_plugin_scanner: %d failure(s)\n", failures);
         return 1;

@@ -108,15 +108,28 @@ std::string host_id(const model::PluginRef& p) {
 }
 
 // §6.1's "as scanned": the session file stores the catalog's words, never
-// the client's.
-void as_scanned(model::PluginRef& ref, const api::PluginCatalog& c) {
-    if (const api::PluginInfo* p = catalog_find(c, ref.format, ref.id)) {
+// the client's. From the catalog sent, or, as catalog_refusal accepts it,
+// from a probe this run finished (finding 4 on #95: during a first cold
+// scan every accepted insert is one of those).
+void as_scanned(model::PluginRef& ref, const PluginScanner::Catalog& c) {
+    if (const api::PluginInfo* p = catalog_find(c.api, ref.format, ref.id)) {
         ref.name = p->name;
         ref.version = p->version;
+        return;
+    }
+    const std::string id = host_id(ref);
+    const plugin::probe::Record* best = nullptr;
+    for (const auto& [key, rec] : c.probes) {
+        if (key.first != id || rec.outcome == plugin::probe::Outcome::NotInstalled) continue;
+        if (!best || (rec.ok() && !best->ok())) best = &rec;
+    }
+    if (best) {
+        ref.name = best->name.empty() ? ref.id : best->name;
+        ref.version = best->version;
     }
 }
 
-void as_scanned(model::Operation& op, const api::PluginCatalog& c) {
+void as_scanned(model::Operation& op, const PluginScanner::Catalog& c) {
     if (auto* a = std::get_if<model::AddInsert>(&op)) as_scanned(a->plugin, c);
     if (auto* r = std::get_if<model::ReplaceInsert>(&op)) as_scanned(r->plugin, c);
     if (auto* k = std::get_if<model::Compound>(&op)) {
@@ -1121,7 +1134,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
-                if (scanner_) as_scanned(op, scanner_->catalog()->api);
+                if (scanner_) as_scanned(op, *scanner_->catalog());
                 // Asked of each member of a compound with the state the
                 // members before it made (ADR-0009 update 2026-10-14).
                 bool no_host = false;

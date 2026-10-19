@@ -68,6 +68,10 @@ public:
         // lowered, with no window at the caller's priority.
         int nice = 0;
         bool idle_io = false;
+        // A process group of its own (POSIX setpgid(0, 0) at spawn): a
+        // Ctrl+C or a signal to the engine's group does not reach it, so
+        // only its owner ends it (code-reviewer finding 1 on #95).
+        bool own_group = false;
     };
 
     // argv[0] is the program's path. Fails with a reason, never silently.

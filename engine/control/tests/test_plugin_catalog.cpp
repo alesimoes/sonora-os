@@ -148,7 +148,7 @@ model::AddInsert add(model::Id track, model::Id id, const std::string& uri, uint
 
 void test_resolution() {
     std::printf("resolution\n");
-    World w("resolution", {"urn:mono 1 1 ok", "urn:stereo 2 2 ok", "urn:bad 1 1 refuse", "urn:slow 1 1 sleep 1500"});
+    World w("resolution", {"urn:mono 1 1 ok", "urn:stereo 2 2 ok", "urn:bad 1 1 refuse", "urn:slow 1 1 sleep 3000"});
     SessionConfig cfg;
     cfg.dir = w.root + "/session";
     cfg.track_count = 2;
@@ -173,6 +173,32 @@ void test_resolution() {
                "the plug-in scan is still running"),
           "while the first scan runs: \"the plug-in scan is still running\"");
 
+    // Finding 4 on #95: still in the first scan, urn:mono is accepted from
+    // its finished probe (the catalog sent does not have it yet), and the
+    // document stores the probe's words, not the client's.
+    const auto scan_done = [&] {
+        for (const api::PluginInfo& p : c.in.catalogs.back().plugins)
+            if (p.id == "urn:slow") return true;
+        return false;
+    };
+    const model::Id early = c.replica.current().next_id;
+    bool accepted = false;
+    for (int i = 0; i < 100 && !accepted && !scan_done(); ++i) {
+        const auto* r = c.apply(add(track, early, "urn:mono", 1));
+        accepted = r && r->result == DispatchResult::Ok;
+        if (!accepted) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    check(accepted && !scan_done(), "an insert accepted from a probe before the first scan completes");
+    check(c.until([&] {
+        const auto& ins = c.replica.current().edit->tracks.at(0)->inserts;
+        return std::any_of(ins.begin(), ins.end(), [&](const model::Insert& x) { return x.id == early; });
+    }),
+          "the replica has it");
+    for (const model::Insert& x : c.replica.current().edit->tracks.at(0)->inserts)
+        if (x.id == early)
+            check(x.plugin.name == "Fake urn:mono" && x.plugin.version == "1.0",
+                  "stored with the probe's name and version (\"" + x.plugin.name + "\")");
+
     check(c.until([&] {
         for (const api::PluginInfo& p : c.in.catalogs.back().plugins)
             if (p.id == "urn:slow") return true;
@@ -194,10 +220,15 @@ void test_resolution() {
     const model::Id id = c.replica.current().next_id;
     const auto* ok = c.apply(add(track, id, "urn:mono"));
     check(ok && ok->result == DispatchResult::Ok, "a usable plugin is inserted");
-    check(c.until([&] { return !c.replica.current().edit->tracks.at(0)->inserts.empty(); }), "the replica has it");
-    const model::Insert& in = c.replica.current().edit->tracks.at(0)->inserts.at(0);
-    check(in.plugin.name == "Fake urn:mono" && in.plugin.version == "1.0",
-          "stored with the catalog's name and version, not the client's (\"" + in.plugin.name + "\")");
+    const auto find_in = [&](model::Id want) -> const model::Insert* {
+        for (const model::Insert& x : c.replica.current().edit->tracks.at(0)->inserts)
+            if (x.id == want) return &x;
+        return nullptr;
+    };
+    check(c.until([&] { return find_in(id) != nullptr; }), "the replica has it");
+    const model::Insert* in = find_in(id);
+    check(in && in->plugin.name == "Fake urn:mono" && in->plugin.version == "1.0",
+          "stored with the catalog's name and version, not the client's");
 
     model::ReplaceInsert r;
     r.insert = id;

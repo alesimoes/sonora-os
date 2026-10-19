@@ -80,6 +80,9 @@ struct PluginScannerConfig {
     bool scan_at_start = true;
     int nice = 10;
     bool idle_io = true;
+    // Tests only: each bundle's fingerprint takes this much longer, so a
+    // walk over many bundles on slow storage can be stood in for.
+    uint32_t fingerprint_delay_ms_for_test = 0;
 };
 
 class PluginScanner {
@@ -114,7 +117,9 @@ public:
 
     // Once per turn. One try_lock: requests go in, the newest catalog and
     // notices come out. False when the lock was busy; nothing is lost.
-    // `recording`: the transport records or is about to.
+    // `recording`: the transport records or is about to. It is stored
+    // whether or not the lock is taken, and the worker reads it right
+    // before every catalog child it starts (change D).
     bool exchange(bool recording);
     // The newest catalog taken; never null.
     const std::shared_ptr<const Catalog>& catalog() const { return catalog_; }
@@ -159,7 +164,8 @@ private:
     std::mutex exchange_mu_;
     std::vector<Key> in_probes_;
     bool in_rescan_ = false;
-    bool in_recording_ = false;
+    // Not under the lock: a lost try_lock still delivers it.
+    std::atomic<bool> recording_{false};
     std::shared_ptr<const Catalog> out_catalog_;
     std::vector<std::string> out_notices_;
 

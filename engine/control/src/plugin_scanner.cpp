@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <deque>
 #include <fstream>
@@ -164,7 +165,6 @@ struct PluginScanner::Worker {
     std::map<std::string, std::pair<BundleFingerprint, uint32_t>> settling;
     std::set<Key> probed_this_scan;
 
-    bool recording = false;
     bool stopping = false;
     bool publish_wanted = false;
     bool urgent = false;  // a chain start or a scan's end waits on the publish
@@ -205,6 +205,9 @@ struct PluginScanner::Worker {
         o.stdout_path = j.out_path;
         o.nice = cfg.nice;
         o.idle_io = cfg.idle_io;
+        // Finding 1 on #95: a Ctrl+C or a signal to the engine's group is
+        // not the probe's to receive.
+        o.own_group = true;
         std::string error;
         j.child = platform::ChildProcess::spawn(argv, o, error);
         if (!j.child) {
@@ -230,6 +233,7 @@ struct PluginScanner::Worker {
         const std::string out = scratch("version");
         platform::ChildProcess::Options o;
         o.stdout_path = out;
+        o.own_group = true;
         std::string error;
         auto child = platform::ChildProcess::spawn({cfg.host_path, "--version"}, o, error);
         if (!child) {
@@ -270,16 +274,49 @@ struct PluginScanner::Worker {
                 dirty = true;
                 break;
         }
-        // A cached bundle whose files changed since is dropped at once, so
-        // no chain starts from what it used to be (the scan probes it).
-        for (auto it = cache.bundles.begin(); it != cache.bundles.end();) {
-            if (it->second.fingerprint.matches(fingerprint_bundle(it->first))) {
-                ++it;
-            } else {
-                it = cache.bundles.erase(it);
-                dirty = true;
-            }
+        // A cached bundle whose files changed since is dropped, so no chain
+        // starts from what it used to be (the scan probes it). One bundle
+        // at a time, with chain-start requests served between them (finding
+        // 5 on #95): a chain asking for a plugin of a bundle not yet checked
+        // has that bundle checked at once.
+        unvalidated.swap(cache.bundles);
+        while (!unvalidated.empty() && !s.stop_.load(std::memory_order_acquire)) {
+            validate(unvalidated.begin()->first);
+            service();
         }
+        unvalidated.clear();
+    }
+
+    // Cached bundles not yet fingerprinted again since start-up.
+    std::map<std::string, CachedBundle> unvalidated;
+
+    void validate(const std::string& path) {
+        const auto it = unvalidated.find(path);
+        if (it == unvalidated.end()) return;
+        if (it->second.fingerprint.matches(fingerprint(path))) cache.bundles.insert(*it);
+        else dirty = true;
+        unvalidated.erase(it);
+    }
+
+    BundleFingerprint fingerprint(const std::string& path) const {
+        if (cfg.fingerprint_delay_ms_for_test)
+            std::this_thread::sleep_for(std::chrono::milliseconds(cfg.fingerprint_delay_ms_for_test));
+        return fingerprint_bundle(path);
+    }
+
+    // Between the bundles of a walk (finding 5 on #95, change E): chain-start
+    // requests taken, chain probes reaped and started, their answers
+    // published. Nothing of the catalog scan moves here.
+    void service() {
+        std::vector<Key> probes;
+        {
+            std::lock_guard<std::mutex> l(s.exchange_mu_);
+            probes.swap(s.in_probes_);
+        }
+        for (const Key& k : probes) enqueue_chain(k);
+        reap(true);
+        start_chain_probes();
+        if (publish_wanted && urgent) publish();
     }
 
     // ---- what the control thread sees
@@ -401,11 +438,27 @@ struct PluginScanner::Worker {
         }
     }
 
+    // A probe that ended because something asked processes to stop (our
+    // own shutdown, a Ctrl+C, systemd's stop of the whole cgroup) said
+    // nothing about the plugin (change C, finding 1 on #95).
+    bool stopped_by_signal(platform::ChildProcess& c) const {
+        if (c.exited_normally()) return false;
+        const int sig = c.signal_number();
+        return sig == SIGINT || sig == SIGTERM || sig == SIGHUP || sig == SIGQUIT;
+    }
+
     void finish_probe(Job& j, bool timed_out) {
         pr::Record r;
         std::string why;
         const std::string out = read_file(j.out_path);
         std::remove(j.out_path.c_str());
+        if (!timed_out && (s.stop_.load(std::memory_order_acquire) || stopped_by_signal(*j.child))) {
+            // Never cached: refused for this run only, and its bundle left
+            // unsettled, so the next start enumerates and probes it again.
+            store(j.key, blocked(j.key, "its probe " + ended(*j.child) + " before it answered"), std::string());
+            settling.erase(j.bundle);
+            return;
+        }
         if (timed_out) {
             const uint64_t t = cfg.probe_timeout_ms;
             r = blocked(j.key, "its probe did not answer within " +
@@ -448,7 +501,8 @@ struct PluginScanner::Worker {
         changed_lv2.clear();
         changed_vst3.clear();
         for (const auto& [path, format] : listed) {
-            const BundleFingerprint fp = fingerprint_bundle(path);
+            service();
+            const BundleFingerprint fp = fingerprint(path);
             auto it = cache.bundles.find(path);
             // A rescan retries a bundle whose enumeration failed.
             if (it != cache.bundles.end() && it->second.format == format && it->second.fingerprint.matches(fp) &&
@@ -556,6 +610,14 @@ struct PluginScanner::Worker {
     }
 
     void enqueue_chain(const Key& k) {
+        for (auto it = unvalidated.begin(); it != unvalidated.end(); ++it) {
+            const bool has = std::any_of(it->second.plugins.begin(), it->second.plugins.end(),
+                                         [&](const pr::Record& r) { return same_key(r, k); });
+            if (has) {
+                validate(it->first);
+                break;
+            }
+        }
         if (known(k)) {
             // Answered already: the next publish has it.
             publish_wanted = true;
@@ -619,7 +681,11 @@ struct PluginScanner::Worker {
     // kept for a chain-start probe.
     bool catalog_slot() const { return catalog_jobs() + 1 < s.slots_ && jobs.size() < s.slots_; }
 
-    void start_list(Job::Kind kind) {
+    // Change D, read now: a walk just before may have taken seconds.
+    bool recording_now() const { return s.recording_.load(std::memory_order_acquire); }
+
+    bool start_list(Job::Kind kind) {
+        if (recording_now() || stopping) return false;
         auto j = std::make_unique<Job>();
         j->kind = kind;
         j->out_path = scratch("list");
@@ -640,20 +706,28 @@ struct PluginScanner::Worker {
         add_bundles(argv, kind == Job::Kind::ListVst3);
         if (!spawn(*j, argv)) {
             if (kind == Job::Kind::Bundles) end_scan();
-            return;
+            return false;
         }
         s.lists_started_.fetch_add(1, std::memory_order_acq_rel);
         jobs.push_back(std::move(j));
+        return true;
     }
 
     // ---- the loop
 
-    void reap() {
+    // `chain_only`: between the bundles of a walk, only chain-start probes.
+    void reap(bool chain_only = false) {
+        // Once stopping, what ends is shutdown()'s, never a result.
+        if (s.stop_.load(std::memory_order_acquire)) return;
         const uint64_t now = steady_ms();
+        // The finished ones leave `jobs` first: handling one may walk
+        // bundles and serve chain starts (service()), which reaps and starts
+        // jobs of its own.
+        std::vector<std::pair<std::unique_ptr<Job>, bool>> done;
         for (auto it = jobs.begin(); it != jobs.end();) {
             Job& j = **it;
-            const bool running = j.child->running();
-            const bool timed_out = running && now - j.started_ms >= j.timeout_ms;
+            const bool running = (chain_only && j.catalog()) ? true : j.child->running();
+            const bool timed_out = running && !(chain_only && j.catalog()) && now - j.started_ms >= j.timeout_ms;
             if (running && !timed_out) {
                 ++it;
                 continue;
@@ -662,17 +736,21 @@ struct PluginScanner::Worker {
                 j.child->kill();
                 j.child->wait(-1);
             }
+            done.emplace_back(std::move(*it), timed_out);
+            it = jobs.erase(it);
+        }
+        for (auto& [jp, timed_out] : done) {
+            Job& j = *jp;
             switch (j.kind) {
                 case Job::Kind::Probe: finish_probe(j, timed_out); break;
-                case Job::Kind::Bundles: finish_bundles(j, timed_out || !j.child->exited_normally() ||
-                                                               j.child->exit_code() != 0);
+                case Job::Kind::Bundles:
+                    finish_bundles(j, timed_out || !j.child->exited_normally() || j.child->exit_code() != 0);
                     break;
                 case Job::Kind::ListLv2:
                 case Job::Kind::ListVst3:
                     finish_list(j, timed_out || !j.child->exited_normally() || j.child->exit_code() != 0);
                     break;
             }
-            it = jobs.erase(it);
         }
     }
 
@@ -690,34 +768,33 @@ struct PluginScanner::Worker {
         const bool list_running = std::any_of(jobs.begin(), jobs.end(), [](const auto& j) {
             return j->kind != Job::Kind::Probe;
         });
-        // Change D: nothing of the catalog scan starts during a take.
-        const bool may_start = !recording && !stopping;
+        // Change D: nothing of the catalog scan starts during a take. Read
+        // here and again before every spawn (recording_now()).
+        const bool may_start = !recording_now() && !stopping;
         switch (phase) {
             case Phase::Idle:
                 if (scan_wanted && may_start) {
-                    scan_wanted = false;
                     if (!disabled.empty()) {
+                        scan_wanted = false;
                         end_scan();
                         break;
                     }
-                    phase = Phase::Bundles;
-                    probed_this_scan.clear();
                     if (rescan) run_only.clear();
-                    start_list(Job::Kind::Bundles);
+                    probed_this_scan.clear();
+                    if (start_list(Job::Kind::Bundles)) {
+                        scan_wanted = false;
+                        phase = Phase::Bundles;
+                    }
                 }
                 break;
             case Phase::Bundles: break;  // finish_bundles moves it on
             case Phase::Enumerate:
                 if (list_running) break;
                 if (!may_start) break;
-                if (!changed_lv2.empty() && !listed_lv2 && catalog_slot()) {
-                    listed_lv2 = true;
-                    start_list(Job::Kind::ListLv2);
-                }
-                if (!changed_vst3.empty() && !listed_vst3 && catalog_slot()) {
-                    listed_vst3 = true;
-                    start_list(Job::Kind::ListVst3);
-                }
+                if (!changed_lv2.empty() && !listed_lv2 && catalog_slot())
+                    listed_lv2 = start_list(Job::Kind::ListLv2);
+                if (!changed_vst3.empty() && !listed_vst3 && catalog_slot())
+                    listed_vst3 = start_list(Job::Kind::ListVst3);
                 if ((changed_lv2.empty() || listed_lv2) && (changed_vst3.empty() || listed_vst3) &&
                     !std::any_of(jobs.begin(), jobs.end(), [](const auto& j) { return j->kind != Job::Kind::Probe; })) {
                     phase = Phase::Probing;
@@ -725,7 +802,7 @@ struct PluginScanner::Worker {
                 }
                 break;
             case Phase::Probing: {
-                while (may_start && !catalog_queue.empty() && catalog_slot()) {
+                while (!recording_now() && !stopping && !catalog_queue.empty() && catalog_slot()) {
                     const Pending p = catalog_queue.front();
                     catalog_queue.pop_front();
                     start_probe(p.key, false, p.bundle);
@@ -740,7 +817,14 @@ struct PluginScanner::Worker {
                 break;
             }
         }
-        // Chain-start probes: any free slot, the reserved one included.
+        start_chain_probes();
+        s.idle_.store(phase == Phase::Idle && !scan_wanted && jobs.empty() && chain_queue.empty() && ready,
+                      std::memory_order_release);
+    }
+    bool listed_lv2 = false, listed_vst3 = false;
+
+    // Chain-start probes: any free slot, the reserved one included.
+    void start_chain_probes() {
         while (!chain_queue.empty() && jobs.size() < s.slots_ && !stopping) {
             const Key k = chain_queue.front();
             chain_queue.pop_front();
@@ -751,10 +835,7 @@ struct PluginScanner::Worker {
             }
             start_probe(k, true, bundle);
         }
-        s.idle_.store(phase == Phase::Idle && !scan_wanted && jobs.empty() && chain_queue.empty() && ready,
-                      std::memory_order_release);
     }
-    bool listed_lv2 = false, listed_vst3 = false;
 
     void save(bool now) {
         if (!dirty || cfg.cache_path.empty()) return;
@@ -776,7 +857,6 @@ struct PluginScanner::Worker {
             probes.swap(s.in_probes_);
             want_rescan = s.in_rescan_;
             s.in_rescan_ = false;
-            recording = s.in_recording_;
         }
         if (want_rescan) {
             if (phase == Phase::Idle) {
@@ -856,14 +936,17 @@ void PluginScanner::run() {
 }
 
 bool PluginScanner::exchange(bool recording) {
+    const bool was = recording_.exchange(recording, std::memory_order_acq_rel);
     std::unique_lock<std::mutex> l(exchange_mu_, std::try_to_lock);
-    if (!l.owns_lock()) return false;
-    const bool wake = !want_probes_.empty() || want_rescan_ || recording != in_recording_;
+    if (!l.owns_lock()) {
+        if (was != recording) sleep_cv_.notify_one();
+        return false;
+    }
+    const bool wake = !want_probes_.empty() || want_rescan_ || recording != was;
     in_probes_.insert(in_probes_.end(), want_probes_.begin(), want_probes_.end());
     want_probes_.clear();
     in_rescan_ = in_rescan_ || want_rescan_;
     want_rescan_ = false;
-    in_recording_ = recording;
     if (out_catalog_) catalog_ = std::move(out_catalog_);
     notices_.insert(notices_.end(), out_notices_.begin(), out_notices_.end());
     out_notices_.clear();
