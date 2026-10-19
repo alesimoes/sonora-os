@@ -192,6 +192,10 @@ public:
     struct ClosedTake {
         int take = 0;
         std::vector<DiskThread::ClosedFile> files;
+        // Started by start_punch(), with this range: it is placed over
+        // [monitor_in, monitor_out) only, not over all it captured.
+        bool punched = false;
+        PunchRange punch;
     };
     // The takes closed since the last call, oldest first: by stop(), or by
     // the disk thread after punch_out() or a take started over it. Control

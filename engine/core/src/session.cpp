@@ -399,6 +399,8 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
     c.expected = opened.size();
     c.take.take = take_number;
     c.take.files.clear();
+    c.take.punched = range != nullptr;
+    c.take.punch = range != nullptr ? *range : PunchRange{};
     recording_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.

@@ -29,8 +29,14 @@ playback can follow edits; it is in flight.
        locate, pre-roll; input monitoring. In-band boundaries, record
        while rolling and punch in/out on the fly at block boundaries:
        `feature/record-while-rolling`. Punch points inside a block, engine
-       side: PR #81; their caller, placement and command,
-       loop, pre-roll and input monitoring remain.
+       side: PR #81. Their caller and placement (`feature/punch-caller`):
+       record with the session's punch range set punches over
+       [A − H, B + H), and the take goes in over [A, B) with a crossfade at
+       each punch point that has the handle, one undo step. Remain: a
+       `transport.punch` command and its key bindings (contracts/api
+       catalogue, ui-engineer review), the punch range in the take's bext
+       Description (session-format.md), loop, pre-roll and input
+       monitoring.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,
