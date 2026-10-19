@@ -679,6 +679,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          them under Wine either works or is reported unusable.
        - Editors stay out of scope (ADR-0010).
 7. [ ] Freeze, bounce in place, offline processing; the curated stock set.
+8. [ ] Follow-ups from the PR #80 review (non-blocking):
+       - `plugin.retry` is unhandled, so the fault text should name the
+         recovery steps (make the insert inactive and then active, remove it,
+         or reload the session). Add a test that a later document change
+         leaves a down chain down.
+       - The forced re-post overwrites a parameter that is being dragged; it
+         should use the last touched value.
+       - A state file over 64 MiB loads at defaults without a `PluginFault`;
+         it should raise one.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
