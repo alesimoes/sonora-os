@@ -267,6 +267,7 @@ not referenced by any region in any playlist is *unused*. It stays.
     "pan": 0.0,
     "mute": false,
     "solo": false,
+    "solo_safe": false,
     "active_playlist": 11,
     "inserts": [ ... ],
     "playlists": [
@@ -286,9 +287,11 @@ not referenced by any region in any playlist is *unused*. It stays.
   per track channel, natural port order.
 - `monitor`: `"auto"` (input while armed and stopped or punching, playback
   otherwise), `"input"`, `"off"`.
-- `gain_db`, `pan`, `mute`, `solo` are mix state. They are saved, they are
-  not undoable, and at run time they are atomics, not part of the plan
-  (`timeline-model.md`, "The monitor bus plan").
+- `gain_db`, `pan`, `mute`, `solo`, `solo_safe` are mix state. They are
+  saved, they are not undoable, and at run time they are atomics, not part
+  of the plan (`timeline-model.md`, "The monitor bus plan").
+- `solo_safe` (version 3): another track's solo never mutes this one, as
+  Pro Tools' solo safe; its own `mute` still does.
 - A track always has at least one playlist, and `active_playlist` names one
   of them. Only the active playlist plays. The others exist for comping
   (Phase 3); the format carries them from the start so the Phase 3 change is
@@ -650,7 +653,11 @@ version cannot carry keys it does not define.
 **v1→v2 (inserts, ADR-0012):** every track gains `"inserts": []`. Nothing
 else changes. The frozen v1 fixture loads through it.
 
-Worked example, the expected v2→v3 (Phase 3 mixer): `monitor_bus` becomes
+**v2→v3 (solo safe):** every track gains `"solo_safe": false`. Nothing else
+changes. The frozen v2 fixture loads through it; v3's is
+`v3-solo-safe.sonora`.
+
+Worked example, the expected v3→v4 (Phase 3 mixer): `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
 `pan_law_db`; each track gains `"output": <id of Main>` and empty `sends`
 (inserts already exist from v2), and buses gain empty `inserts`. Nothing about regions changes. If that migration turns out to
@@ -687,7 +694,8 @@ saved by this writer. The engine and the UI only ever open native files
 
 ## Not in version 1
 
-Inserts arrive in version 2 (above). Still not in the format: automation,
+Inserts arrive in version 2 and solo safe in version 3 (above). Still not in
+the format: automation,
 sends, VCA, groups, MIDI, clip-based time
 stretch, video, interface state (zoom, scroll, window layout; ADR-0007 §5
 puts it outside the session), and the undo history. Each is a version bump

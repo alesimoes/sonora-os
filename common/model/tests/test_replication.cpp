@@ -40,6 +40,7 @@ std::vector<Operation> one_of_each() {
     mix.pan = 0.25f;
     mix.mute = true;
     mix.solo = true;
+    mix.solo_safe = true;
 
     MonitorBus bus;
     bus.outputs = {{2, 3}};
@@ -157,6 +158,9 @@ int test_every_operation_round_trips() {
     CHECK(encode_operation(ops[3], bytes, error));
     CHECK(decode_operation(bytes, back, error));
     CHECK(std::get<SetSettings>(back).settings == std::get<SetSettings>(ops[3]).settings);
+    CHECK(encode_operation(ops[1], bytes, error));
+    CHECK(decode_operation(bytes, back, error));
+    CHECK(std::get<SetMix>(back).mix.solo_safe);
     return 0;
 }
 
@@ -185,6 +189,10 @@ int test_codec_refuses_what_is_not_an_operation() {
         {R"({"op": "SetInsertState", "insert": 1, "state": 3})", "state: must be an object"},
         {R"({"op": "MoveInsert", "insert": 1, "to_track": 2, "to_slot": 256})", "to_slot"},
         {R"({"op": "RemoveInsert", "insert": 1, "plugin": null})", "unknown key \"plugin\""},
+        // A version-5 peer's SetMix, without solo safe.
+        {R"({"op": "SetMix", "mix": {"track": 1, "input": [0], "monitor": "auto",
+             "gain_db": 0.0, "pan": 0.0, "mute": false, "solo": false}})",
+         "missing required key \"solo_safe\""},
     };
     for (const Bad& b : bad) {
         error.clear();
@@ -445,8 +453,8 @@ int test_window_refuses_what_does_not_fit() {
         std::string err;
         return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 3", "\"window_format\": 2", "window_format"));
-    CHECK(refused("\"window_format\": 3", "\"window_format\": 4", "window_format"));
+    CHECK(refused("\"window_format\": 4", "\"window_format\": 3", "window_format"));
+    CHECK(refused("\"window_format\": 4", "\"window_format\": 5", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

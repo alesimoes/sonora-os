@@ -93,6 +93,7 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         t.set_pan(pan_of(m->pan));
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
+        t.set_solo_safe(m->solo_safe);
     }
     // The audio thread counts every engine track's solo: one left on a track
     // the document no longer has (an undone AddTrack) would silence the rest
