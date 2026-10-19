@@ -20,6 +20,16 @@ inline double bounded_exp(double x) noexcept { return std::exp(x < kMaxExpArg ? 
 // measurable (pair_current() says why).
 constexpr double kOffNvt = 12.0;
 
+// std::fmin and std::fmax as comparisons, with the same value whenever b is
+// not NaN (a NaN a gives b, as theirs does); every use here has a constant
+// or a bounded value as b. Without -ffinite-math-only GCC calls libm for
+// std::fmin and std::fmax (MINSD's NaN rule is not fmin's), and a call
+// clobbers every xmm register (SysV ABI), so the solve's state was spilled
+// and reloaded around each one: six calls a stereo sample (callgrind,
+// eco's golden programme; follow-up (e) of PR #74).
+inline double min_of(double a, double b) noexcept { return a < b ? a : b; }
+inline double max_of(double a, double b) noexcept { return a > b ? a : b; }
+
 // The ohmic channel with lambda, solved as ohmic_drain() says, with
 // inv = 1 / (g0 + g) given.
 inline double ohmic_drain_with(double b, double g0, double gch, double lambda, double inv) noexcept {
@@ -159,17 +169,21 @@ void FetChannel::ratio_network(const FetCircuit& c, double position, double& tap
     offset_v = offs[lo] + w * (offs[hi] - offs[lo]);
 }
 
-double FetChannel::channel_current(const JfetParams& j, double vg0, double vds, double* slope,
-                                   double* slope_gate) noexcept {
-    // [SH], SPICE's JFET level 1 for either sign of vds, with the LN gate
-    // vg0 + vds / 2. Measured from the terminal acting as the source, the
-    // gate is vg0 + |vds| / 2 either way, so the law is odd in vds.
+namespace {
+
+// [SH], SPICE's JFET level 1 for either sign of vds, with the LN gate
+// vg0 + vds / 2. Measured from the terminal acting as the source, the gate
+// is vg0 + |vds| / 2 either way, so the law is odd in vds. Inline, and its
+// slopes by reference: as a called function it was the solve's largest
+// callee, spilling the solve's state around every call (follow-up (e) of
+// PR #74).
+inline double channel_law(const JfetParams& j, double vg0, double vds, double& slope, double& slope_gate) noexcept {
     const double a = std::fabs(vds);
     const double v0 = vg0 - j.vto;
     const double vgst = v0 + 0.5 * a;
     if (!(vgst > 0.0)) {
-        if (slope != nullptr) *slope = 0.0;
-        if (slope_gate != nullptr) *slope_gate = 0.0;
+        slope = 0.0;
+        slope_gate = 0.0;
         return 0.0;
     }
     const double betap = j.beta * (1.0 + j.lambda * a);
@@ -186,9 +200,20 @@ double FetChannel::channel_current(const JfetParams& j, double vg0, double vds, 
         dh = 2.0 * v0 * j.beta * (1.0 + 2.0 * j.lambda * a);
         dg = 2.0 * betap * a;
     }
-    if (slope != nullptr) *slope = dh;
-    if (slope_gate != nullptr) *slope_gate = vds < 0.0 ? -dg : dg;
+    slope = dh;
+    slope_gate = vds < 0.0 ? -dg : dg;
     return vds < 0.0 ? -h : h;
+}
+
+}  // namespace
+
+double FetChannel::channel_current(const JfetParams& j, double vg0, double vds, double* slope,
+                                   double* slope_gate) noexcept {
+    double dh, dg;
+    const double h = channel_law(j, vg0, vds, dh, dg);
+    if (slope != nullptr) *slope = dh;
+    if (slope_gate != nullptr) *slope_gate = dg;
+    return h;
 }
 
 double FetChannel::rest_for(const DiodeParams& d, double target, double offset_v, double ra, double rr) noexcept {
@@ -248,15 +273,15 @@ double FetChannel::drain(double vin) const noexcept {
     // hundred times R5's.
     const double b = bounded_input(vin, c_.input_limit_v);
     if (!(b > 0.0)) return 0.0;
-    const double vg0 = std::fmin(0.5 * (vc_ + vq_), c_.gate_max_v);
+    const double vg0 = min_of(0.5 * (vc_ + vq_), c_.gate_max_v);
     const double v0 = vg0 - j_.vto;
     const double g0 = 1.0 / c_.r5;
     double a = start_drain(b, g0, j_.beta, j_.lambda, v0);
     const double tol = 1e-13 * b * g0;
     double lo = 0.0, hi = b;
     for (int it = 0; it < 40; ++it) {
-        double dh;
-        const double h = channel_current(j_, vg0, a, &dh);
+        double dh, dg;
+        const double h = channel_law(j_, vg0, a, dh, dg);
         const double f = (b - a) * g0 - h;
         if (std::fabs(f) <= tol) break;
         if (f > 0.0) lo = a;
@@ -380,13 +405,13 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
         // missing lambda's 2e-5).
         const double vg_now = 0.5 * (f.vc_ + f.vq_);
         vg_before[c] = vg_now;
-        const double v0 = std::fmin(2.0 * vg_now - f.vg_last_, f.c_.gate_max_v) - f.j_.vto;
+        const double v0 = min_of(2.0 * vg_now - f.vg_last_, f.c_.gate_max_v) - f.j_.vto;
         a[c] = start_drain(b[c], f.g0_, f.j_.beta, f.j_.lambda, v0);
         // Bounded at SPICE's critical junction voltage: from a junction far
         // forward Newton walks down one nVt an iteration (a jump of the
         // drive predicted 12 V and ran into the 60-iteration cap).
-        const double sp = std::fmin(f.sc_gain_ * a[c], f.c_.sc_swing_v);
-        u[c] = std::fmin(f.u_ + (sp - f.s_last_) / (1.0 + R[c][c] * f.iu_last_), std::fmax(f.u_, f.vcrit_));
+        const double sp = min_of(f.sc_gain_ * a[c], f.c_.sc_swing_v);
+        u[c] = min_of(f.u_ + (sp - f.s_last_) / (1.0 + R[c][c] * f.iu_last_), max_of(f.u_, f.vcrit_));
     }
     // The rectifier off. In limiting it conducts only near the peaks; the
     // rest of the time both junctions sit more than kOffNvt reverse, where
@@ -412,7 +437,7 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
                 rsum += R[c][j] * I_off[j];
             }
             vc_off[c] = vc;
-            const double v0 = std::fmin(0.5 * ((1.0 + lin[c].beta_q) * vc + lin[c].alpha), f.c_.gate_max_v) - f.j_.vto;
+            const double v0 = min_of(0.5 * ((1.0 + lin[c].beta_q) * vc + lin[c].alpha), f.c_.gate_max_v) - f.j_.vto;
             if (!(v0 > 0.0)) {
                 off = false;
                 break;
@@ -423,7 +448,7 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
                 off = false;
                 break;
             }
-            const double s = std::fmin(f.sc_gain_ * ad, f.c_.sc_swing_v);
+            const double s = min_of(f.sc_gain_ * ad, f.c_.sc_swing_v);
             const double uo = f.vb_ + s - P[c] - lin[c].hz - rsum;
             off = uo * f.inv_nvt_ < -kOffNvt;
             a_off[c] = ad;
@@ -472,7 +497,7 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
             const bool clamped = vraw > f.c_.gate_max_v;
             const double cg = clamped ? 0.0 : 0.5 * (1.0 + lin[c].beta_q);
             double ha, hv;
-            const double h = channel_current(f.j_, clamped ? f.c_.gate_max_v : vraw, a[c], &ha, &hv);
+            const double h = channel_law(f.j_, clamped ? f.c_.gate_max_v : vraw, a[c], ha, hv);
             const double s = dS[c] > 0.0 ? f.sc_gain_ * a[c] : f.c_.sc_swing_v;
             F1[c] = h - (b[c] - a[c]) * f.g0_;
             F2[c] = (f.vb_ + s - P[c] - lin[c].hz) - u[c] - rsum;
@@ -523,12 +548,14 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
         // at the saturated channel's steepest. On programme at 8:1 this
         // took the mean from 1.94 iterations a sample (1e-6 on both) to
         // 1.07.
+        const bool ref = ch[0]->reference_stop_;
+        const double tol_u = ref ? 1e-11 : 1e-4, tol_a = ref ? 1e-12 : 1e-5;
         bool done = true;
         for (int c = 0; c < N; ++c) {
             const FetChannel& f = *ch[c];
             const double an = clamp(a[c] + dx[c], 0.0, b[c]);
             const double un = limit_step(u[c] + dx[N + c], u[c], f.nvt_, f.vcrit_);
-            done &= std::fabs(un - u[c]) < 1e-4 && un == u[c] + dx[N + c] && std::fabs(an - a[c]) <= 1e-5 * b[c] &&
+            done &= std::fabs(un - u[c]) < tol_u && un == u[c] + dx[N + c] && std::fabs(an - a[c]) <= tol_a * b[c] &&
                     an == a[c] + dx[c];
             // The current at the corrected point, to first order (the
             // correction's square is below the tolerance).
@@ -570,7 +597,7 @@ void FetChannel::solve(FetChannel* const* ch, const double* vin, double g_link) 
         const double link = N == 2 ? -g_link * (vcn[c] - vcn[N - 1 - c]) : 0.0;
         ch[c]->u_ = u[c];
         ch[c]->vg_last_ = vg_before[c];
-        ch[c]->s_last_ = std::fmin(ch[c]->sc_gain_ * a[c], ch[c]->c_.sc_swing_v);
+        ch[c]->s_last_ = min_of(ch[c]->sc_gain_ * a[c], ch[c]->c_.sc_swing_v);
         ch[c]->iu_last_ = Iu[c];
         // The loop ran out (it == 60) only if no correction met the stop:
         // the step still commits its last point, and the miss is counted
@@ -596,8 +623,8 @@ void FetChannel::step_pair(FetChannel& a, FetChannel& b, double vin_a, double vi
 }
 
 double FetChannel::gain_reduction_db() const noexcept {
-    const double vg0 = std::fmin(0.5 * (vc_ + vq_), c_.gate_max_v);
-    const double g = 2.0 * j_.beta * std::fmax(vg0 - j_.vto, 0.0);
+    const double vg0 = min_of(0.5 * (vc_ + vq_), c_.gate_max_v);
+    const double g = 2.0 * j_.beta * max_of(vg0 - j_.vto, 0.0);
     return 20.0 * std::log10(rest_gain_ * (1.0 + c_.r5 * g));
 }
 

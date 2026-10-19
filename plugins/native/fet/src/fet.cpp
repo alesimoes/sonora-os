@@ -127,12 +127,27 @@ protected:
         const bool in_moving = smoother(kInput).moving(), out_moving = smoother(kOutput).moving();
         const double gin_still = in_moving ? 0.0 : dsp::db_to_gain(smoother(kInput).current()) * fsv;
         const double gout_still = out_moving ? 0.0 : dsp::db_to_gain(smoother(kOutput).current());
-        for (std::uint32_t n = 0; n < frames; ++n) {
-            gin_[n] = in_moving ? dsp::db_to_gain(smoother(kInput).next()) * fsv : gin_still;
-            gout_[n] = out_moving ? dsp::db_to_gain(smoother(kOutput).next()) : gout_still;
-            const double l = smoother(kLink).next();
-            link_[n] = kLinkSiemens * (l * l) * (l * l);
-            mix_[n] = smoother(kMix).next() * 0.01;
+        // The link and the mix likewise: a settled smoother's next() is its
+        // current value, so the per-sample calls are skipped (the same
+        // values, bit for bit).
+        const bool rest_moving = smoother(kLink).moving() || smoother(kMix).moving();
+        if (in_moving || out_moving || rest_moving) {
+            for (std::uint32_t n = 0; n < frames; ++n) {
+                gin_[n] = in_moving ? dsp::db_to_gain(smoother(kInput).next()) * fsv : gin_still;
+                gout_[n] = out_moving ? dsp::db_to_gain(smoother(kOutput).next()) : gout_still;
+                const double l = smoother(kLink).next();
+                link_[n] = kLinkSiemens * (l * l) * (l * l);
+                mix_[n] = smoother(kMix).next() * 0.01;
+            }
+        } else {
+            const double l = smoother(kLink).current();
+            const double link = kLinkSiemens * (l * l) * (l * l), mix = smoother(kMix).current() * 0.01;
+            for (std::uint32_t n = 0; n < frames; ++n) {
+                gin_[n] = gin_still;
+                gout_[n] = gout_still;
+                link_[n] = link;
+                mix_[n] = mix;
+            }
         }
         double* const* y = x;
         // Never a silent clamp (ProcessorBase): a block in which the input
@@ -167,8 +182,15 @@ protected:
                     double loop[kMaxCh] = {0.0, 0.0};
                     for (std::uint32_t c = 0; c < chs; ++c) {
                         loop[c] = (keyed ? (f > 1 ? key[c][j] : sc[c][n]) : y[c][j]) * gi;
-                        peak = std::fmax(peak, std::fabs(loop[c]));
-                        if (keyed) peak = std::fmax(peak, std::fabs(y[c][j] * gi));
+                        // A comparison, not std::fmax: the same value (a
+                        // NaN leaves the peak), without a libm call per
+                        // sample (fmin and fmax in common/dsp fet.cpp).
+                        const double m = std::fabs(loop[c]);
+                        peak = m > peak ? m : peak;
+                        if (keyed) {
+                            const double k = std::fabs(y[c][j] * gi);
+                            peak = k > peak ? k : peak;
+                        }
                     }
                     if (chs == 2) dsp::FetChannel::step_pair(ch_[0], ch_[1], loop[0], loop[1], gl);
                     else ch_[0].step(loop[0]);

@@ -211,6 +211,12 @@ public:
     // suite holds it. A processor reports a rise as a bounded block. Read
     // on the audio thread only.
     std::uint64_t cap_hits() const noexcept { return cap_hits_; }
+    // For the tests: Newton iterates to round-off (corrections under
+    // 1e-11 V on the junction and 1e-12 of the drive) instead of stopping
+    // on the corrections' size (1e-4 V, 1e-5), so the stop rule's own
+    // error can be measured against the root (test_fet). Read from the
+    // first channel of a pair.
+    void set_reference_stop(bool on) noexcept { reference_stop_ = on; }
 
     // The divider's gain at rest, for normalising: 10^(-rest_loss/20).
     double rest_gain() const noexcept { return rest_gain_; }
@@ -285,6 +291,7 @@ private:
     double link_g_ = -1.0, link_ka_ = -1.0, link_kb_ = -1.0;
     int iterations_ = 0;
     std::uint64_t cap_hits_ = 0;
+    bool reference_stop_ = false;
 };
 
 }  // namespace sonora::dsp

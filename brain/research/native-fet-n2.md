@@ -381,47 +381,103 @@ sweeps of input, output, attack, release, ratio, link and mix: worst
 
 ### CPU (§3.5, class A: p99.9 20 us, max 50 us)
 
-`tools/dsp-cpu.sh build-plugins 60 fet`, per q128 stereo block,
-per-block minimum of 5 runs over 60 s, on the golden configuration (8:1,
-input +12 dB, about 10 dB of limiting) and on the programme raised 12 dB
-at 20:1 with the fastest attack and release. Taken on a quiet host: a
-script waited until no other container ran, checked every 30 s during the
-run that none started, and discarded the run otherwise; the load average
-was 0.18 at the start and 0.88 at the end (the final build). Runs taken while other agents'
-builds ran (load 6-25) read up to twice these and were discarded.
+`tools/dsp-cpu.sh --calibrated build-plugins 60 fet`, per q128 stereo
+block, per-block minimum of 5 runs over 60 s, on the golden configuration
+(8:1, input +12 dB, about 10 dB of limiting) and on the programme raised
+12 dB at 20:1 with the fastest attack and release. i7-11800H, Docker
+Desktop, after follow-up (e) (2026-10-18). Taken on a quiet host: a script
+waited until no other container ran (33 minutes), checked every 30 s
+during the run that none started, and discarded the run otherwise; load
+average 3.3 at the start (falling from the builds before) and 1.3 at the
+end. The reference kernel read 32.607 us before the loads and 32.585 us
+after (0.07 % apart), against 32.6 us recorded for this machine, so the
+machine ran at its reference speed and the calibrated bar is the class
+bar (x 0.99988). A run the same afternoon that a neighbour's build
+interrupted read eco 21.6 us p99.9 from a quiet start and was discarded.
 
 | Quality | golden: p50 / p99.9 / max | programme +12 dB, 20:1, fastest | Held |
 |---|---|---|---|
-| eco (no latency) | 17.4 / **20.5** / 20.7 us | 12.2 / 17.6 / 18.2 us | class A: **misses p99.9 by 0.5 us** on golden |
-| standard (4x) | 73.6 / 81.0 / 83.0 us | 54.3 / 67.0 / 69.3 us | reported |
-| high (8x) | 138.9 / 148.3 / 151.5 us | 102.9 / 124.3 / 127.9 us | reported |
+| eco (no latency) | 16.8 / **19.66** / 19.9 us | 11.4 / 16.6 / 17.3 us | class A: meets it, **1.7 % under** on golden |
+| standard (4x) | 72.8 / 80.3 / 82.9 us | 52.2 / 65.2 / 68.2 us | reported |
+| high (8x) | 138.0 / 147.3 / 152.0 us | 99.3 / 120.9 / 124.5 us | reported |
 
-**Eco does not yet meet class A** on the golden configuration: 20.5 us
-p99.9 against 20 (2.7 % over); it meets it on the hot programme and on max
-everywhere. §3.5 lets standard ship over the class only beside an eco that
-meets it, so the FET is not ready for the default insert list until this
-is closed (BACKLOG, N2 FET follow-ups (e)). It is not in the nightly CPU
-gate, which would go red on it.
+PR #74 measured eco at 17.4 / 20.5 / 20.7 us. **Eco now meets class A,
+but without margin**: 19.66 us against 20. The FET stays out of the
+default insert list and out of the nightly CPU gate (a runner that tracks
+the reference kernel a few per cent worse would go red on it), and
+`cpu.p999_kernels` is not recorded (BACKLOG, N2 FET follow-ups (e)).
 
-What was done, each measured against the opto's eco in the same loaded
-session where the host was not quiet, and on a quiet host at the end:
-- the joint solve first cost 2.9 times the opto's eco in the same session
-  (about 24 us p50 on a quiet host, by that ratio), from two Newton
-  iterations a sample with two exps each; the starts and the stop rule
-  above brought the mean to 1.07 iterations and the ratio to 2.3;
-- the converted input and output gains once a block while settled, the
-  control update only while a control moves, eco's dry path without the
-  delay line, the link's inverse kept between samples, the lower
-  rectifier's exp under the off cut;
-- tried and not kept: replacing the starts' four divisions by
-  Newton-Raphson refinement of the previous sample's reciprocals
-  (no measurable change).
+**Where the time goes** (golden, eco, the circuit alone, ablations with
+the iteration count forced, timed A/B block by block so a loaded host's
+noise falls on both): everything outside Newton plus the first current
+evaluation about 7.9 us a block; the first Newton step about 5.5 us; each
+further iteration about 5.1 us; exp about 0.75 us of an iteration;
+`render` and `ProcessorBase` about 1.5 us. The mean is 1.42 iterations a
+sample; the p99.9 blocks are where the programme's sweep is at 20-40 Hz,
+at about 1.8: whole blocks near the drive's slow zero crossings. Per
+channel the first iteration's stop fails no more often there (junction
+25.6 %, drain 17.8 %, against 25.7 % and 18.0 % elsewhere); the two
+channels fail together more often.
 
-At 8:1 at moderate reduction the higher junction sits near the off cut,
-so every sample takes the Newton path with one exp a channel; the
-remaining cost is that path's arithmetic and its data-dependent branches.
-Candidates for the follow-up: the two channels in SIMD lanes (as the
-triode pair), a branch-free junction law, and a tabulated exp.
+**Kept** (each the same bits as before on eco's golden and hot programmes,
+and the golden files unchanged):
+- `std::fmin`/`std::fmax` as comparisons (`min_of`, `max_of`, the same
+  value whenever the second operand is not NaN): GCC calls libm for them
+  without -ffinite-math-only, and each call clobbers every xmm register
+  (SysV ABI), so the solve's state was spilled around six calls a sample;
+- the channel law inline with its slopes by reference (it was the solve's
+  largest callee, 117 M instructions on 20 s of programme);
+- the processor's peak tracking as comparisons (two `fmax` calls a
+  sample), and the link and mix smoothers read once a block while
+  settled.
+
+Callgrind counted the FET's instructions down from about 1550 M to 1190 M
+on 20 s of programme (23 %); block-alternating A/B of the circuit alone
+under load read 0.85-0.89 of #74's time; the full processor at reference
+speed, about 0.96. Instructions were not the binding cost.
+
+**Measured and not kept** (each A/B against the kept code, or the full
+harness), so the next attempt starts past them:
+- *a stop on the error left rather than on the correction's size* (a
+  second-order bound on the drain's and the junction's error after the
+  step): 1.42 to 1.31 iterations, accuracy unchanged, but slower: the
+  bound costs what it saves. The junction mostly failed it at 8:1 because
+  the linearised current's error is dy^2 / 2 of the forward current
+  however linear the junction's equation is;
+- *starts from the linear network* (the gate from P + Q I_last, the
+  junction from its full residual): 1.42 to 1.37 iterations (all buttons
+  2.02 to 1.45), slower, and the p99.9 blocks unchanged (1.74);
+- *the drive's sensitivity in the junction's start* (the lower junction's
+  dI/ds): no change in any count;
+- *a chord second iteration* (the first Jacobian's factors reused, the
+  step's distance from Newton's bounded): 96 % accepted, accuracy
+  unchanged, no faster (the Jacobian is still formed for the bound);
+- *the two channels in two SSE2 lanes* (`solve<2>` transcribed lane by
+  lane, the same bits on every test signal, 100 % of programme samples in
+  the lanes), with libm's exp per lane and then with a table-driven exp
+  (Tang 1989) in both lanes and the portable solve (1 ulp of glibc): 6-8 %
+  slower on golden, 9-14 % on the hot programme;
+- *an inline table-driven exp* in the scalar solve: fewer instructions,
+  no faster than glibc's FMA build;
+- *stop tolerances three times looser* (3e-4 V, 3e-5): mean 1.31
+  iterations, the p99.9 blocks unchanged at 1.73, and the departure from
+  the root ten times larger (1.8e-6 dB). Not a bar, but no gain where it
+  counts, so not kept.
+
+`dsp_fet` now holds the solve against the root (the same circuit iterated
+to round-off): the drain within 1e-8 of the peak drive and the reduction
+within 5e-7 dB on five programmes; today 5.9e-9 and 2.5e-7 dB at most. A
+change made for cost cannot trade accuracy away unseen.
+
+What is left, for the follow-up: the p99.9 is set by blocks of two
+iterations around slow zero crossings, at about 5 us a block an
+iteration, and by a per-sample chain through the state (commit, the
+linear step, the starts, the first Newton step) that neither fewer
+instructions nor two lanes shortened. Candidates not yet measured: a
+solve in the junction's current rather than its voltage (the exponential
+inverted, so the rectifier's equation is near linear in conduction), and
+a predictor across the zero crossings from the drive's own slope.
+
 
 ## Not measured, and why
 
@@ -447,6 +503,8 @@ triode pair), a branch-free junction law, and a tabulated exp.
   BACKLOG with what would settle them.
 - The ratios come out 10-24 % under the buttons' labels with [J]; the
   bar holds them between 0.65 and 1.1 times.
-- Eco misses class A's p99.9 by 0.5 us (20.5 us) on the golden
-  configuration, measured on a quiet host. The FET should not enter the
-  default insert list until the follow-up closes it.
+- Eco meets class A's p99.9 on the golden configuration since follow-up
+  (e), but by 1.7 % (19.66 us, quiet host at the reference kernel's
+  speed). That is not margin: the FET should not enter the default insert
+  list or the nightly CPU gate until a follow-up gives it some (the CPU
+  section lists what was measured and did not).

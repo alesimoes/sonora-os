@@ -795,7 +795,10 @@ void controls_after_prepare(Suite& s) {
 // the opto's reviews): the Newton loops' cost must not grow with the drive.
 // The block is also held inside the period in an uninstrumented build, and
 // reported under a sanitizer (Suite::check_time_le), as the tube's and the
-// opto's are.
+// opto's are. The shortest period: at a quality a 128-frame block is 128 x
+// factor circuit steps whatever the base rate, so the 48 kHz block must fit
+// 128 frames at 192 kHz, 667 us (RT re-audit of #74, non-blocking 1: B1's
+// regression showed only at the high rates).
 // The Newton loops' cost stays flat in the drive, up to the processor's
 // input ceiling: ProcessorBase accepts up to 1e6 FS, so with Input at +24 dB
 // the circuit sees about 2e5 V at R5. Hot squares at +48 dB (3.2 V, the
@@ -922,8 +925,8 @@ void hot_input(Suite& s) {
                            fmt("the gate's forward limit allows %.1f dB", deepest_bar));
             s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
                        fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
-            s.check_time_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us",
-                            "the 128-frame period at 48 kHz");
+            s.check_time_le(what + ": worst block, minimum of 3 runs", w, 667.0, "us",
+                            "the 128-frame period at 192 kHz: block cost independent of the base rate");
         }
     }
 }
