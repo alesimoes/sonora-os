@@ -26,7 +26,7 @@ message(STATUS "ui/qt: building sonora-ui against Qt ${Qt6_VERSION}")
 
 # Everything but main(), so the tests drive the same code the binary runs.
 # The Qt-free parts (meter_model, key_router, control_adapter, and the
-# Edit/Mix logic: model_access, timeline_document, edit_controller,
+# Edit/Mix logic: model_access, timeline_document, edit_controller, edit_clipboard,
 # insert_controller, timeline_scene, time_format, fader_taper, peak_source,
 # theme) are kept free
 # of Qt on purpose: they are what common/model and M7 touch, and what a test
@@ -52,6 +52,7 @@ add_library(sonora_ui_qt STATIC
   src/transport_model.h src/transport_model.cpp
   src/fader_taper.h src/fader_taper.cpp
   src/edit_controller.h src/edit_controller.cpp
+  src/edit_clipboard.h src/edit_clipboard.cpp
   src/timeline_scene.h src/timeline_scene.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_files.h src/session_files.cpp
@@ -108,6 +109,15 @@ target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Cut, Copy, Paste, Duplicate and Clear as compounds, at the member limit
+# and one past it, and Shuffle refused; then the Edit menu in the real QML.
+add_executable(test_ui_clipboard tests/test_clipboard.cpp)
+target_link_libraries(test_ui_clipboard PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_clipboard PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_clipboard COMMAND test_ui_clipboard)
+set_tests_properties(ui_clipboard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,

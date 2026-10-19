@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "edit_clipboard.h"
+
+#include <algorithm>
+#include <map>
+
+namespace sonora::ui {
+
+using namespace model;
+
+bool copy_range(const Snapshot& s, const TrackEdit& track, Frames a, Frames b, Clip& out) {
+    const Playlist* p = active_playlist(&track);
+    if (p == nullptr || b <= a) return false;
+    Clip clip;
+    clip.length = b - a;
+    clip.channels = track.channels;
+    for (const Region& r : p->regions) {
+        if (r.position >= b || r.end() <= a) continue;
+        const Frames from = std::max(a, r.position), to = std::min(b, r.end());
+        Region c = r;
+        c.source_offset += from - r.position;
+        c.position = from - a;
+        c.length = to - from;
+        // A fade whose end of the region the range cut away is not copied:
+        // half a fade is a level change nobody drew.
+        if (from > r.position) c.fade_in.length = 0;
+        if (to < r.end()) c.fade_out.length = 0;
+        c.fade_in.length = std::min(c.fade_in.length, c.length);
+        c.fade_out.length = std::min(c.fade_out.length, c.length - c.fade_in.length);
+        clip.regions.push_back(std::move(c));
+        for (const SourceRef& ch : r.channels) {
+            const bool known = std::any_of(clip.sources.begin(), clip.sources.end(),
+                                           [&ch](const Source& x) { return x.id == ch.source; });
+            if (known) continue;
+            if (const Source* src = s.sources->find(ch.source)) clip.sources.push_back(*src);
+        }
+    }
+    if (clip.regions.empty()) return false;
+    const auto in_clip = [&clip](Id id) {
+        return std::any_of(clip.regions.begin(), clip.regions.end(),
+                           [id](const Region& r) { return r.id == id; });
+    };
+    for (const Crossfade& x : p->crossfades) {
+        if (!in_clip(x.left) || !in_clip(x.right)) continue;
+        const auto left = std::find_if(p->regions.begin(), p->regions.end(),
+                                       [&x](const Region& r) { return r.id == x.left; });
+        if (left == p->regions.end()) continue;
+        Frames before = 0, after = 0;
+        crossfade_extent(x, before, after);
+        // Only a crossfade the range holds whole: its pieces then keep the
+        // handles it draws on, so the paste validates as the original did.
+        if (left->end() - before >= a && left->end() + after <= b) clip.crossfades.push_back(x);
+    }
+    out = std::move(clip);
+    return true;
+}
+
+void clear_range(const Playlist& p, Frames a, Frames b, const NextId& id,
+                 std::vector<Member>& out) {
+    if (b <= a) return;
+    for (const Region& r : p.regions) {
+        if (r.position >= b || r.end() <= a) continue;
+        const bool head = r.position < a, tail = r.end() > b;
+        if (head && tail) {
+            // The right part keeps what lies past the range; the left one
+            // is trimmed back to where the range starts.
+            out.push_back(SplitRegion{p.id, r.id, b, id()});
+            out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
+        } else if (head) {
+            out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
+        } else if (tail) {
+            out.push_back(TrimRegion{p.id, r.id, Edge::Start, b});
+        } else {
+            out.push_back(RemoveRegion{p.id, r.id});
+        }
+    }
+}
+
+void paste_clip(const Playlist& p, Frames at, const Clip& clip, const NextId& id,
+                std::vector<Member>& out) {
+    clear_range(p, at, at + clip.length, id, out);
+    std::map<Id, Id> renamed;
+    for (const Region& r : clip.regions) {
+        Region placed = r;
+        placed.id = id();
+        placed.position = at + r.position;
+        renamed[r.id] = placed.id;
+        // Nothing is beneath any more, so no split id is needed.
+        out.push_back(PlaceRegion{p.id, std::move(placed), kNoId});
+    }
+    for (Crossfade x : clip.crossfades) {
+        x.left = renamed[x.left];
+        x.right = renamed[x.right];
+        out.push_back(SetCrossfade{p.id, x});
+    }
+}
+
+namespace {
+
+std::string channels_text(std::uint16_t n) {
+    return n == 1 ? "mono" : n == 2 ? "stereo" : std::to_string(n) + "-channel";
+}
+
+}  // namespace
+
+std::string paste_problem(const Snapshot& s, const TrackEdit& track, const Clip& clip) {
+    if (clip.empty()) return "the clipboard is empty; cut or copy a selection first";
+    if (clip.channels != track.channels) {
+        return "the clipboard holds " + channels_text(clip.channels) + " audio and " + track.name +
+               " is " + channels_text(track.channels) + "; nothing was pasted";
+    }
+    for (const Source& src : clip.sources) {
+        const Source* here = s.sources->find(src.id);
+        if (here == nullptr || !(*here == src)) {
+            return "the clipboard's audio was copied from another session and is not in this "
+                   "one; nothing was pasted";
+        }
+    }
+    return {};
+}
+
+std::string over_limit(const char* gesture, const char* nothing_was, std::size_t members) {
+    if (members <= kMaxCompoundMembers) return {};
+    return std::string(gesture) + " needs " + std::to_string(members) + " changes; at most " +
+           std::to_string(kMaxCompoundMembers) + " in one edit. Nothing was " + nothing_was + ".";
+}
+
+std::string step_text(const std::string& label) {
+    static const std::map<std::string, const char*> kWords = {
+        {"AddTrack", "New Track"},        {"PlaceRegion", "Place Region"},
+        {"RecordTake", "Record"},         {"MoveRegion", "Move"},
+        {"TrimRegion", "Trim"},           {"SplitRegion", "Separate"},
+        {"RemoveRegion", "Clear"},        {"SetFade", "Fade"},
+        {"SetCrossfade", "Crossfade"},    {"RemoveCrossfade", "Clear Crossfade"},
+        {"AddPlaylist", "New Playlist"},  {"SetActivePlaylist", "Choose Playlist"},
+        {"AddMarker", "New Marker"},      {"MoveMarker", "Move Marker"},
+        {"RemoveMarker", "Clear Marker"}, {"SetTrackName", "Rename Track"},
+        {"ReorderTracks", "Reorder Tracks"}, {"AddInsert", "Insert Plug-in"},
+        {"RemoveInsert", "Remove Plug-in"},  {"MoveInsert", "Move Plug-in"},
+        {"SetInsertActive", "Plug-in Active State"}, {"ReplaceInsert", "Replace Plug-in"},
+    };
+    const auto it = kWords.find(label);
+    return it != kWords.end() ? it->second : label;
+}
+
+}  // namespace sonora::ui

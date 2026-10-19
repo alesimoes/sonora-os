@@ -5,7 +5,9 @@
 // still there once the engine has it; another interface's edit arrives;
 // an edit the engine refuses is taken back with its reason; undo and redo
 // go to the engine; File > Open sends the session to the engine. And the
-// model path's replies never reach the command path's status line.
+// model path's replies never reach the command path's status line. And when
+// the replica loses track: one Resync per loss, the last good document kept
+// on screen meanwhile, and edits refused until the Snapshot.
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -162,6 +164,154 @@ int a_lost_link_drops_what_was_not_answered() {
     return 0;
 }
 
+
+// --- losing track (PR #75 ui-engineer review) -------------------------------
+//
+// Driven by hand, with common/model's Document as the engine, so a test can
+// lose an update on purpose and choose what arrives in which tick.
+
+api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
+    api::ModelUpdate m;
+    switch (u.kind) {
+        case model::ReplicationUpdate::Kind::Op: m.kind = api::ModelUpdateKind::Op; break;
+        case model::ReplicationUpdate::Kind::Undo: m.kind = api::ModelUpdateKind::Undo; break;
+        case model::ReplicationUpdate::Kind::Redo: m.kind = api::ModelUpdateKind::Redo; break;
+        case model::ReplicationUpdate::Kind::Snapshot: m.kind = api::ModelUpdateKind::Snapshot; break;
+    }
+    m.revision = u.revision;
+    m.undo_floor = u.undo_floor;
+    m.next_id = u.next_id;
+    m.bytes = u.bytes;
+    m.label = u.label;
+    return m;
+}
+
+struct HandRig {
+    model::Document engine{make_demo_session(4, 48000)};
+    std::vector<api::ModelRequest> sent;
+    uint64_t seq = 0;
+    ReplicaDocument doc{[this](const api::ModelRequest& r) {
+                            sent.push_back(r);
+                            sent.back().seq = ++seq;
+                            return seq;
+                        },
+                        make_empty_session(4, 48000)};
+    std::vector<std::string> refused;
+
+    HandRig() { doc.on_refused = [this](const std::string& why) { refused.push_back(why); }; }
+
+    api::ModelUpdate snapshot() {
+        model::ReplicationUpdate u;
+        std::string error;
+        engine.snapshot(u, error);
+        return to_wire(u);
+    }
+    // Another interface's edit, applied by the engine.
+    api::ModelUpdate theirs(const char* name) {
+        model::ReplicationUpdate u;
+        std::string error;
+        engine.apply(marker(engine.current().next_id, name), u, error);
+        return to_wire(u);
+    }
+    std::size_t resyncs() const {
+        std::size_t n = 0;
+        for (const auto& r : sent) n += r.action == api::ModelAction::Resync ? 1 : 0;
+        return n;
+    }
+};
+
+std::size_t regions(const ReplicaDocument& d) {
+    return d.snapshot().edit->tracks[0]->playlists[0]->regions.size();
+}
+
+int a_loss_sends_one_resync_and_keeps_the_last_document() {
+    HandRig r;
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    CHECK(r.doc.synced());
+    const std::size_t demo_regions = regions(r.doc);
+    CHECK(demo_regions > 0);   // the placeholder has none, so it would show
+
+    // Three updates; the first is lost. The two after it each fail, and the
+    // whole document is asked for once.
+    r.theirs("One");
+    const api::ModelUpdate two = r.theirs("Two");
+    const api::ModelUpdate three = r.theirs("Three");
+    r.doc.receive({two, three}, {});
+    CHECK(r.resyncs() == 1 && r.doc.resyncs_sent() == 1);
+    // A later tick's update, still before the Snapshot, asks nothing more.
+    r.doc.receive({r.theirs("Four")}, {});
+    CHECK(r.resyncs() == 1);
+
+    // Meanwhile the session is still on screen, not an empty placeholder,
+    // and an edit made against it is refused, by name.
+    CHECK(r.doc.resyncing() && !r.doc.synced());
+    CHECK(regions(r.doc) == demo_regions);
+    std::string why;
+    CHECK(!r.doc.submit(marker(r.doc.reserve_id(), "Mine"), why));
+    CHECK(why.find("catching up") != std::string::npos);
+    CHECK(!r.doc.undo(why) && why.find("catching up") != std::string::npos);
+
+    // The Snapshot ends the loss: all four markers, edits allowed again.
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    CHECK(r.doc.synced() && !r.doc.resyncing());
+    CHECK(markers(r.doc) == 4);
+    CHECK(r.doc.submit(marker(r.doc.reserve_id(), "Mine"), why));
+
+    // A second loss is a second Resync: one per loss, not one ever.
+    r.theirs("Five");
+    r.doc.receive({r.theirs("Six")}, {});
+    CHECK(r.resyncs() == 2);
+    // A new connection forgets the Resync the old one was asked for: its
+    // own Snapshot comes anyway, and a loss after that asks again.
+    r.doc.set_link(false);
+    r.doc.set_link(true);
+    r.doc.receive({r.snapshot()}, {});
+    r.theirs("Seven");
+    r.doc.receive({r.theirs("Eight")}, {});
+    CHECK(r.resyncs() == 3);
+    return 0;
+}
+
+// An edit the engine accepted, whose update was lost with the others, stays
+// on screen over the last good document until the Snapshot that holds it.
+int an_accepted_edit_stays_through_a_loss() {
+    HandRig r;
+    r.doc.receive({r.snapshot()}, {});
+    std::string why;
+    const model::Operation ours = marker(r.doc.reserve_id(), "Ours");
+    CHECK(r.doc.submit(ours, why));
+    const uint64_t seq = r.sent.back().seq;
+    model::ReplicationUpdate applied;
+    std::string error;
+    CHECK(r.engine.apply(ours, applied, error));   // its update is lost
+    api::CommandReply ok;
+    ok.seq = seq;
+    r.doc.receive({r.theirs("Theirs")}, {ok});
+    CHECK(r.doc.resyncing());
+    CHECK(markers(r.doc) == 1 && r.doc.snapshot().edit->markers->markers[0].name == "Ours");
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    CHECK(r.doc.in_flight() == 0 && markers(r.doc) == 2);
+    CHECK(r.refused.empty());
+    return 0;
+}
+
+// What the Edit menu says: the engine's step labels, a compound's included.
+int undo_and_redo_labels_follow_the_engine() {
+    HandRig r;
+    r.doc.receive({r.snapshot()}, {});
+    CHECK(r.doc.undo_label().empty() && r.doc.redo_label().empty());
+    std::string why;
+    model::Compound c;
+    c.label = "Paste";
+    c.ops.push_back(model::AddMarker{model::Marker{r.doc.reserve_id(), 4800, "A", 0}});
+    c.ops.push_back(model::AddMarker{model::Marker{r.doc.reserve_id(), 9600, "B", 0}});
+    CHECK(r.doc.submit(c, why));
+    CHECK(r.doc.undo_label() == "Paste");
+    CHECK(r.doc.undo(why));
+    CHECK(r.doc.redo_label() == "Paste" && r.doc.undo_label().empty());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -169,6 +319,9 @@ int main() {
     if (edits_show_at_once_and_stay() != 0) return 1;
     if (another_interfaces_edit_arrives_and_a_clash_is_refused() != 0) return 1;
     if (open_sends_the_session_to_the_engine() != 0) return 1;
+    if (a_loss_sends_one_resync_and_keeps_the_last_document() != 0) return 1;
+    if (an_accepted_edit_stays_through_a_loss() != 0) return 1;
+    if (undo_and_redo_labels_follow_the_engine() != 0) return 1;
     std::printf("replica document: ok\n");
     return 0;
 }

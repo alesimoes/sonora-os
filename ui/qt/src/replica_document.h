@@ -13,6 +13,13 @@
 // rebuilt as the replica plus what is still in flight, so it never drifts
 // from the engine for longer than a round trip.
 //
+// Lost track (an update that does not follow on, Replica::receive): one
+// Resync is sent, however many updates fail before the Snapshot it asks for
+// arrives. Until then the last document this replica held is still shown,
+// never the placeholder: an empty timeline would say the session is gone.
+// Edits are refused meanwhile, since what is shown may be behind the
+// engine, and an edit resolved against it could mean something else there.
+//
 // A lost connection (set_link): a request the engine has not answered went
 // over a connection that no longer exists, or was dropped unsent, so its
 // fate is unknown and it is dropped, never replayed on the Snapshot the next
@@ -56,6 +63,8 @@ public:
     bool redo(std::string& why) override;
     bool can_undo() const override { return shown_.can_undo(); }
     bool can_redo() const override { return shown_.can_redo(); }
+    std::string undo_label() const override { return shown_.undo_label(); }
+    std::string redo_label() const override { return shown_.redo_label(); }
     model::Id reserve_id() override;
     // Sends the session to the engine (ModelAction::Load) and shows it at
     // once.
@@ -77,6 +86,11 @@ public:
 
     // The engine's document has arrived (its first Snapshot).
     bool synced() const { return replica_.synced(); }
+    // Lost track after having had the engine's document: a Resync is out,
+    // the last good document is shown and edits are refused.
+    bool resyncing() const { return replica_.history() != nullptr && !replica_.synced(); }
+    // How many Resyncs were sent, for the tests.
+    std::size_t resyncs_sent() const { return resyncs_sent_; }
     std::size_t in_flight() const { return pending_.size(); }
     // Why the engine refused a request; for the status line.
     std::function<void(const std::string&)> on_refused;
@@ -109,6 +123,8 @@ private:
     std::vector<Flush> flushes_;   // awaiting the engine's reply
     model::Id next_unreserved_ = 0;
     bool offline_ = false;
+    bool resync_pending_ = false;   // one Resync per loss, not one per failed update
+    std::size_t resyncs_sent_ = 0;
 };
 
 }  // namespace sonora::ui

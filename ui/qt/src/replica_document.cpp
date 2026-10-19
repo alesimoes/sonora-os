@@ -30,6 +30,8 @@ model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
 }
 
 constexpr const char* kOffline = "the engine is not connected; nothing was changed";
+constexpr const char* kResyncing =
+    "the interface is catching up with the engine's document; nothing was changed";
 
 }  // namespace
 
@@ -44,8 +46,8 @@ uint64_t ReplicaDocument::send(api::ModelAction action, std::string bytes) {
 }
 
 bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
-    if (offline_) {
-        why = kOffline;
+    if (offline_ || resyncing()) {
+        why = offline_ ? kOffline : kResyncing;
         return false;
     }
     // Checked here first, against what is shown, so a refusal the engine
@@ -64,8 +66,8 @@ bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
 }
 
 bool ReplicaDocument::undo(std::string& why) {
-    if (offline_) {
-        why = kOffline;
+    if (offline_ || resyncing()) {
+        why = offline_ ? kOffline : kResyncing;
         return false;
     }
     if (!shown_.undo()) {
@@ -80,8 +82,8 @@ bool ReplicaDocument::undo(std::string& why) {
 }
 
 bool ReplicaDocument::redo(std::string& why) {
-    if (offline_) {
-        why = kOffline;
+    if (offline_ || resyncing()) {
+        why = offline_ ? kOffline : kResyncing;
         return false;
     }
     if (!shown_.redo()) {
@@ -137,6 +139,9 @@ void ReplicaDocument::flush_plugin_state(model::Id insert, FlushDone done) {
 
 bool ReplicaDocument::set_link(bool up) {
     offline_ = !up;
+    // A Resync asked of the old connection will not be answered; the new
+    // one starts with the engine's Snapshot anyway.
+    resync_pending_ = false;
     // Whatever the old connection was asked to flush, it will never answer.
     std::vector<Flush> lost;
     lost.swap(flushes_);
@@ -171,11 +176,20 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         // A whole document: possibly another session (another interface's
         // Open), possibly this one again after a Resync. Either way, an id
         // held across it is not to be trusted.
-        if (m.kind == api::ModelUpdateKind::Snapshot) ++session_generation_;
+        if (m.kind == api::ModelUpdateKind::Snapshot) {
+            ++session_generation_;
+            // The answer to a Resync, or a whole document anyway: the loss
+            // it was asked for is over, whether this one loads or not.
+            resync_pending_ = false;
+        }
         std::string why;
-        if (!replica_.receive(from_wire(m), why)) {
+        if (!replica_.receive(from_wire(m), why) && !resync_pending_) {
             // Lost track: the whole document again, undo window and all.
+            // Once: the updates still on their way before the Snapshot fail
+            // the same way and say nothing new.
             send(api::ModelAction::Resync, {});
+            resync_pending_ = true;
+            ++resyncs_sent_;
         }
         changed = true;
     }
@@ -210,7 +224,9 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
     // The engine sends a request's reply just before its update, so an
     // accepted request is in the replica once an update has come after its
     // reply. Usually both arrive in one tick.
-    if (!updates.empty()) {
+    // While lost, the replica does not hold them yet: they stay on top of
+    // the last good document until the Snapshot, which has them.
+    if (!updates.empty() && replica_.synced()) {
         const std::size_t before = pending_.size();
         pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
                                       [](const Pending& p) { return p.answered; }),
@@ -225,8 +241,11 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
 }
 
 void ReplicaDocument::rebuild() {
-    model::History h = replica_.synced() ? *replica_.history()
-                                         : model::History(placeholder_, shown_.budget());
+    // The last document the engine's updates made, even after losing
+    // track; the placeholder only before the first one.
+    model::History h = replica_.history() != nullptr
+                           ? *replica_.history()
+                           : model::History(placeholder_, shown_.budget());
     for (const Pending& p : pending_) {
         std::string why;
         switch (p.kind) {

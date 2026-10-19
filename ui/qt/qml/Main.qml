@@ -34,6 +34,8 @@ Rectangle {
         transport: root.transport
         z: 2
         onOpenRequested: openPanel.show()
+        onEditMenuRequested: (x, y) => editMenu.show(x, y)
+        editMenuOpen: editMenu.visible
     }
 
     // --- loud conditions ------------------------------------------------------
@@ -272,6 +274,76 @@ Rectangle {
                 text: "Cancel"
                 implicitHeight: 24
                 onClicked: openPanel.visible = false
+            }
+        }
+    }
+
+    // --- the Edit menu ---------------------------------------------------------
+    // Every item sends the command its key sends, through the same router, so
+    // the menu and the keyboard cannot disagree. An item with nothing to act
+    // on is dimmed and still answers, on the status line, with the reason.
+    MouseArea {
+        anchors.fill: parent
+        visible: editMenu.visible
+        z: 9
+        onClicked: editMenu.visible = false
+    }
+    Rectangle {
+        id: editMenu
+        objectName: "editMenu"
+        visible: false
+        z: 10
+        function show(px, py) {
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = py + Theme.space1
+            visible = true
+        }
+        width: 220
+        height: editColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }  // a click between items does not fall through
+
+        Column {
+            id: editColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            Repeater {
+                model: [
+                    { name: "editUndo", label: root.session.undoText, command: "edit.undo", on: root.session.canUndo },
+                    { name: "editRedo", label: root.session.redoText, command: "edit.redo", on: root.session.canRedo },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editCut", label: "Cut", command: "edit.cut", on: true },
+                    { name: "editCopy", label: "Copy", command: "edit.copy", on: true },
+                    { name: "editPaste", label: "Paste", command: "edit.paste", on: root.session.canPaste },
+                    { name: "editClear", label: "Clear", command: "edit.clear", on: true },
+                    { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true }
+                ]
+                Item {
+                    required property var modelData
+                    width: editColumn.width
+                    height: modelData.command.length > 0 ? 26 : 7
+                    Rectangle {
+                        visible: modelData.command.length === 0
+                        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                        height: 1
+                        color: Theme.borderSubtle
+                    }
+                    SButton {
+                        objectName: modelData.name
+                        visible: modelData.command.length > 0
+                        anchors.fill: parent
+                        bold: false
+                        fontPx: Theme.textBody
+                        available: modelData.on
+                        text: modelData.label
+                        onClicked: {
+                            editMenu.visible = false
+                            root.shell.invoke(modelData.command, -1)
+                        }
+                    }
+                }
             }
         }
     }

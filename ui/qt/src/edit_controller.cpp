@@ -418,6 +418,14 @@ bool EditController::select_region(Id region) {
     return true;
 }
 
+void EditController::select_range(int index, Frames a, Frames b) {
+    if (track(index) == nullptr) return;
+    sel_.track = index;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = std::max<Frames>(0, std::min(a, b));
+    sel_.end = std::max<Frames>(0, std::max(a, b));
+}
+
 void EditController::clear_selection() {
     sel_.region = kNoId;
     sel_.start = sel_.end = sel_.insertion;
@@ -670,16 +678,21 @@ bool EditController::separate(std::string& why) {
     } else {
         at = {sel_.insertion};
     }
-    int done = 0;
+    // Both ends of a range are one separation, so one undo step.
+    std::vector<Member> members;
     for (Frames f : at) {
         const Region* r = region_at(sel_.track, f);
         if (r == nullptr || f <= r->position) continue;
-        if (!submit(SplitRegion{t->active_playlist, r->id, f, doc_.reserve_id()}, why)) return false;
-        ++done;
+        members.push_back(SplitRegion{t->active_playlist, r->id, f, doc_.reserve_id()});
     }
-    if (done == 0) {
+    if (members.empty()) {
         why = "no region to separate at the insertion point on " + t->name +
               "; click inside a region's upper half to place it";
+        return false;
+    }
+    if (members.size() == 1) {
+        if (!submit(to_operation(members.front()), why)) return false;
+    } else if (!submit_compound(std::move(members), "Separate", "separated", why)) {
         return false;
     }
     sel_.region = kNoId;
@@ -714,19 +727,30 @@ bool EditController::clear(std::string& why) {
     bool fade = false;
     if (!clear_fade_at_selection(fade, why)) return false;
     if (fade) return true;
-    if (refuse_in_mode("Clearing", why)) return false;
-    if (sel_.region == kNoId) {
-        why = sel_.has_range()
-                  ? "clearing part of a region is not built yet; select a whole region (lower half)"
-                  : "nothing is selected";
+    if (refuse_shuffle("Clear", "cleared", why)) return false;
+    if (sel_.region != kNoId) {
+        const TrackEdit* t = nullptr;
+        if (find_region(snapshot(), sel_.region, &t) == nullptr) {
+            why = "the selected region is gone";
+            return false;
+        }
+        return submit(RemoveRegion{t->active_playlist, sel_.region}, why);
+    }
+    if (!sel_.has_range()) {
+        why = "nothing is selected";
         return false;
     }
-    const TrackEdit* t = nullptr;
-    if (find_region(snapshot(), sel_.region, &t) == nullptr) {
-        why = "the selected region is gone";
+    int index = -1;
+    Frames a = 0, b = 0;
+    if (!edit_range(index, a, b, "cleared", why)) return false;
+    const TrackEdit* t = track(index);
+    std::vector<Member> members;
+    clear_range(*active(t), a, b, [this]() { return doc_.reserve_id(); }, members);
+    if (members.empty()) {
+        why = "there is no region in the selection on " + t->name + "; nothing was cleared";
         return false;
     }
-    return submit(RemoveRegion{t->active_playlist, sel_.region}, why);
+    return submit_compound(std::move(members), "Clear", "cleared", why);
 }
 
 bool EditController::nudge(int direction, std::string& why) {
@@ -749,6 +773,144 @@ bool EditController::nudge(int direction, std::string& why) {
         sel_.end = moved->end();
         sel_.insertion = moved->position;
     }
+    return true;
+}
+
+// --- the clipboard ---
+//
+// Pro Tools Reference Guide, "Editing" chapter: "Cut, Copy, Paste and Clear
+// Commands" (Cut moves the selection to the Clipboard; Paste puts it at the
+// insertion point or the selection's start, replacing what lies beneath in
+// Slip, Spot and Grid) and "Duplicate Command" (a copy placed straight after
+// the selection). The workflow only (ADR-0004).
+
+bool EditController::refuse_shuffle(const char* gesture, const char* nothing_was,
+                                    std::string& why) const {
+    if (mode_ != EditMode::Shuffle) return false;
+    why = std::string(gesture) +
+          " in Shuffle mode would move every later region to close or open the gap, and that "
+          "ripple is not built yet (it waits for ShiftRegions); use Slip, Spot or Grid. "
+          "Nothing was " + nothing_was + ".";
+    return true;
+}
+
+bool EditController::edit_range(int& index, Frames& a, Frames& b, const char* nothing_was,
+                                std::string& why) const {
+    if (sel_.region != kNoId) {
+        const TrackEdit* t = nullptr;
+        const Region* r = find_region(snapshot(), sel_.region, &t);
+        if (r == nullptr) {
+            why = std::string("the selected region is gone; nothing was ") + nothing_was;
+            return false;
+        }
+        index = track_index(snapshot(), t->id);
+        a = r->position;
+        b = r->end();
+        return true;
+    }
+    if (track(sel_.track) == nullptr) {
+        why = std::string("select a track first; nothing was ") + nothing_was;
+        return false;
+    }
+    if (!sel_.has_range()) {
+        why = std::string("select a region or a time range first; nothing was ") + nothing_was;
+        return false;
+    }
+    index = sel_.track;
+    a = sel_.start;
+    b = sel_.end;
+    return true;
+}
+
+bool EditController::submit_compound(std::vector<Member> members, const char* gesture,
+                                     const char* nothing_was, std::string& why) {
+    const std::string too_many = over_limit(gesture, nothing_was, members.size());
+    if (!too_many.empty()) {
+        why = too_many;
+        return false;
+    }
+    return submit(Compound{std::move(members), gesture}, why);
+}
+
+bool EditController::copy(std::string& why) {
+    int index = -1;
+    Frames a = 0, b = 0;
+    if (!edit_range(index, a, b, "copied", why)) return false;
+    const TrackEdit* t = track(index);
+    Clip clip;
+    if (!copy_range(snapshot(), *t, a, b, clip)) {
+        why = "there is no region in the selection on " + t->name + "; nothing was copied";
+        return false;
+    }
+    clipboard_ = std::move(clip);
+    ++clipboard_serial_;
+    return true;
+}
+
+bool EditController::cut(std::string& why) {
+    if (refuse_shuffle("Cut", "cut", why)) return false;
+    int index = -1;
+    Frames a = 0, b = 0;
+    if (!edit_range(index, a, b, "cut", why)) return false;
+    const TrackEdit* t = track(index);
+    Clip clip;
+    if (!copy_range(snapshot(), *t, a, b, clip)) {
+        why = "there is no region in the selection on " + t->name + "; nothing was cut";
+        return false;
+    }
+    std::vector<Member> members;
+    clear_range(*active(t), a, b, [this]() { return doc_.reserve_id(); }, members);
+    // The clipboard changes only with the edit: a refused Cut leaves both.
+    if (!submit_compound(std::move(members), "Cut", "cut", why)) return false;
+    clipboard_ = std::move(clip);
+    ++clipboard_serial_;
+    sel_.track = index;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = a;
+    sel_.end = b;
+    return true;
+}
+
+bool EditController::paste(std::string& why) {
+    if (refuse_shuffle("Paste", "pasted", why)) return false;
+    const TrackEdit* t = track(sel_.track);
+    if (t == nullptr) {
+        why = "select a track first; nothing was pasted";
+        return false;
+    }
+    const std::string problem = paste_problem(snapshot(), *t, clipboard_);
+    if (!problem.empty()) {
+        why = problem;
+        return false;
+    }
+    const Frames at = sel_.has_range() ? sel_.start : sel_.insertion;
+    std::vector<Member> members;
+    paste_clip(*active(t), at, clipboard_, [this]() { return doc_.reserve_id(); }, members);
+    if (!submit_compound(std::move(members), "Paste", "pasted", why)) return false;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = at;
+    sel_.end = at + clipboard_.length;
+    return true;
+}
+
+bool EditController::duplicate(std::string& why) {
+    if (refuse_shuffle("Duplicate", "duplicated", why)) return false;
+    int index = -1;
+    Frames a = 0, b = 0;
+    if (!edit_range(index, a, b, "duplicated", why)) return false;
+    const TrackEdit* t = track(index);
+    Clip clip;
+    if (!copy_range(snapshot(), *t, a, b, clip)) {
+        why = "there is no region in the selection on " + t->name + "; nothing was duplicated";
+        return false;
+    }
+    std::vector<Member> members;
+    paste_clip(*active(t), b, clip, [this]() { return doc_.reserve_id(); }, members);
+    if (!submit_compound(std::move(members), "Duplicate", "duplicated", why)) return false;
+    sel_.track = index;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = b;
+    sel_.end = b + clip.length;
     return true;
 }
 
