@@ -365,6 +365,17 @@ QList<bool> SessionModel::solos() const {
     return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.solo; });
 }
 
+QList<bool> SessionModel::soloSafes() const {
+    return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.solo_safe; });
+}
+
+QList<bool> SessionModel::implicitMutes() const {
+    const bool any = anySolo();
+    return per_strip<bool>(ctl_.snapshot(), [any](const model::TrackMix& m) {
+        return any && !m.solo && !m.solo_safe;
+    });
+}
+
 QList<qreal> SessionModel::gains() const {
     return per_strip<qreal>(ctl_.snapshot(),
                             [](const model::TrackMix& m) { return qreal(m.gain_db); });

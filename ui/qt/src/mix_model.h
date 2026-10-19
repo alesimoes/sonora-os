@@ -44,10 +44,11 @@
 // Modifier clicks, as the Pro Tools Reference Guide documents them for
 // Windows:
 //   Alt-click solo or mute    every track to the clicked track's new state
-//   Ctrl-click solo           solo safe; refused, loudly, until the session
-//                             format has somewhere to keep it (BACKLOG
-//                             Track 2) -- a solo button that soloed instead
-//                             would do the opposite of what was asked
+//   Ctrl-click solo           solo safe on or off (TrackMix::solo_safe), a
+//                             SetMix like any other mix field; the track's
+//                             own solo is left as it was. Control is checked
+//                             before Alt, so Ctrl+Alt is solo safe, never a
+//                             solo of every track
 // A plain click is the track.toggle_solo / track.toggle_mute command, the
 // same path as the key, so QML sends it through ShellModel::invoke.
 #pragma once

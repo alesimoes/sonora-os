@@ -4,7 +4,8 @@
 // The timeline and rulers are scene-graph items (Sonora.Timeline,
 // Sonora.Ruler); the headers are ordinary controls, which is what they are.
 // Every gesture goes to SessionModel, and every button sends the command its
-// key sends.
+// key sends; a solo button's modifier clicks (Ctrl: solo safe, Alt: every
+// track) are MixModel's, the same as on a Mix window strip.
 import QtQuick
 import Sonora
 
@@ -12,6 +13,8 @@ Item {
     id: edit
     required property ShellModel shell
     required property SessionModel session
+    // The solo button's modifier clicks; null where they are not wired.
+    property MixModel mixer: null
 
     // --- toolbar --------------------------------------------------------------
     Rectangle {
@@ -251,11 +254,16 @@ Item {
                             available: edit.shell.engineAlive
                             onClicked: edit.shell.invoke("track.toggle_arm", header.index)
                         }
-                        SButton {
-                            text: "S"; implicitWidth: 24; implicitHeight: 20
-                            active: edit.session.solos[header.index] === true
-                            activeColour: Theme.solo
-                            onClicked: edit.shell.invoke("track.toggle_solo", header.index)
+                        SoloButton {
+                            implicitWidth: 24; implicitHeight: 20
+                            soloed: edit.session.solos[header.index] === true
+                            safe: edit.session.soloSafes[header.index] === true
+                            padlockName: "editSoloSafe" + header.index
+                            objectName: "editSolo" + header.index
+                            onClicked: (m) => {
+                                if (edit.mixer === null || !edit.mixer.soloClick(header.index, m.modifiers))
+                                    edit.shell.invoke("track.toggle_solo", header.index)
+                            }
                         }
                         SButton {
                             text: "M"; implicitWidth: 24; implicitHeight: 20

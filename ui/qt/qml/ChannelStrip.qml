@@ -10,8 +10,10 @@
 // Alt-click to return to 0 dB; click the readout under it to type a gain.
 // Pan: drag the bar sideways (Ctrl for fine), Alt-click centres, click the
 // value to type one. Solo and mute: Alt-click sets every track the same;
-// Ctrl-click solo asks for solo safe, refused by name until the model has
-// it (mix_model.h). The taper is fader_taper.h's, asked through
+// Ctrl-click solo turns solo safe on or off (mix_model.h). A solo-safe
+// track's solo button is recessed and carries a padlock, as Pro Tools greys
+// it; another track's solo never outlines its mute, because the engine
+// does not silence it. The taper is fader_taper.h's, asked through
 // SessionModel, so the cap and the scale marks use the same mapping the
 // tests check.
 //
@@ -49,8 +51,10 @@ Rectangle {
     readonly property bool armed: !isBus && shell.engineAlive && shell.armed[track] === true
     readonly property bool soloed: !isBus && session.solos[track] === true
     readonly property bool muted: !isBus && session.mutes[track] === true
-    // Another track's solo silences this one; a console shows that, so does this.
-    readonly property bool implicitlyMuted: !isBus && session.anySolo && !soloed
+    readonly property bool soloSafe: !isBus && session.soloSafes[track] === true
+    // Another track's solo silences this one; a console shows that, so does
+    // this. SessionModel applies the engine's rule, solo safe included.
+    readonly property bool implicitlyMuted: !isBus && session.implicitMutes[track] === true
 
     color: selected ? Theme.raised : Theme.panel
     radius: Theme.radius
@@ -145,10 +149,12 @@ Rectangle {
                 available: strip.shell.engineAlive
                 onClicked: strip.shell.invoke("track.toggle_arm", strip.track)
             }
-            SButton {
+            SoloButton {
                 objectName: "solo" + strip.track
-                text: "S"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
-                active: strip.soloed; activeColour: Theme.solo
+                implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
+                soloed: strip.soloed
+                safe: strip.soloSafe
+                padlockName: strip.isBus ? "" : "soloSafe" + strip.track
                 onClicked: (m) => {
                     if (strip.mixer === null || !strip.mixer.soloClick(strip.track, m.modifiers))
                         strip.shell.invoke("track.toggle_solo", strip.track)

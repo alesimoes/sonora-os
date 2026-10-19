@@ -88,6 +88,7 @@ Rectangle {
             visible: root.session.window === "edit"
             shell: root.shell
             session: root.session
+            mixer: root.mixer
         }
         MixWindow {
             objectName: "mixWindow"

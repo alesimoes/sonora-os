@@ -67,6 +67,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString zoomText READ zoomText NOTIFY viewChanged)
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> solos READ solos NOTIFY mixChanged)
+    Q_PROPERTY(QList<bool> soloSafes READ soloSafes NOTIFY mixChanged)
+    Q_PROPERTY(QList<bool> implicitMutes READ implicitMutes NOTIFY mixChanged)
     Q_PROPERTY(QList<qreal> gains READ gains NOTIFY mixChanged)
     Q_PROPERTY(QList<qreal> pans READ pans NOTIFY mixChanged)
     Q_PROPERTY(qreal busGain READ busGain NOTIFY mixChanged)
@@ -173,6 +175,11 @@ public:
     QString zoomText() const;
     QList<bool> mutes() const;
     QList<bool> solos() const;
+    QList<bool> soloSafes() const;
+    // Per strip, whether another track's solo silences it: some track is
+    // soloed, this one is not, and it is not solo safe. The engine's rule
+    // (Session::process()), so the Mix window's outline says what is heard.
+    QList<bool> implicitMutes() const;
     QList<qreal> gains() const;
     QList<qreal> pans() const;
     qreal busGain() const { return ctl_.snapshot().mix.bus.gain_db; }
