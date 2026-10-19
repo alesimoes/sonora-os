@@ -185,7 +185,7 @@ would not do: it holds one state. In `contracts/api` that payload is
 | `SetTrackName`, `ReorderTracks` | yes | |
 | `SetMix{track, field, value}` | no | faders; also reaches the audio thread as an atomic |
 | `SetSettings{...}` | no | timecode, tempo, loop, punch range |
-| `Compound{ops, label}` | if any member is | several operations as one: each member applied to what the members before it made, all refused if one is, one revision, one update, at most one edit-undo step. At most 4,096 members, none a `Compound`. ADR-0009 update 2026-10-14 |
+| `Compound{ops, label}` | if any member is | several operations as one: each member applied to what the members before it made, all refused if one is, one revision, one update, at most one edit-undo step. At most 256 members (`kMaxCompoundMembers`), none a `Compound`. ADR-0009 update 2026-10-14 and note 2026-10-18 |
 
 Region moves, trims and edit modes beyond these (Shuffle, Spot, Grid,
 nudge) are Phase 3 commands that resolve into the same operations.

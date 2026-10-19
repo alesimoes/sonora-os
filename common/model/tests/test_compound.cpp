@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/local_edit.h"
 #include "model_test.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
@@ -491,6 +492,9 @@ int test_the_window_carries_labels() {
 }  // namespace
 
 int main() {
+    // Every member below is also checked against the whole-playlist operators
+    // and playlist_problem() (src/local_edit.h); only in the audited library.
+    CHECK(sonora::model::detail::audited());
     int failed = 0;
     int run = 0;
     const auto t = [&](int (*f)()) {

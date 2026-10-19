@@ -283,11 +283,14 @@ const Region* find_region(const Playlist& p, Id id) {
 
 std::string crossfade_problem(const Crossfade& x, const Playlist& p,
                               const SourcePool& pool) {
+    return crossfade_problem(x, find_region(p, x.left), find_region(p, x.right), pool);
+}
+
+std::string crossfade_problem(const Crossfade& x, const Region* l, const Region* r,
+                              const SourcePool& pool) {
     if (x.length <= 0 || x.length > kMaxInteger) {
         return "length must be greater than 0";
     }
-    const Region* l = find_region(p, x.left);
-    const Region* r = find_region(p, x.right);
     if (l == nullptr) return "region " + str(x.left) + " is not on this playlist";
     if (r == nullptr) return "region " + str(x.right) + " is not on this playlist";
     if (l->end() != r->position) {
@@ -379,12 +382,7 @@ std::string playlist_problem(const Playlist& p, const SourcePool& pool,
     for (std::size_t i = 0; i < p.regions.size(); ++i) {
         const Region& r = p.regions[i];
         std::string why = region_problem(r, pool, track_channels);
-        if (why.empty() && i > 0 && r.position < p.regions[i - 1].end()) {
-            why = p.regions[i - 1].position <= r.position
-                      ? "overlaps the region before it (regions[" +
-                            str(static_cast<std::int64_t>(i - 1)) + "])"
-                      : "is not sorted by position";
-        }
+        if (why.empty()) why = order_problem(p, i);
         if (why.empty() && !index.emplace(r.id, i).second) {
             why = "region id " + str(r.id) + " appears twice";
         }
@@ -406,13 +404,8 @@ std::string playlist_problem(const Playlist& p, const SourcePool& pool,
         if (!why.empty()) return why;
         const std::size_t li = index[x.left];
         const std::size_t ri = index[x.right];
-        if (has_out[li] || has_in[ri]) {
-            return "a second crossfade between regions " + str(x.left) +
-                   " and " + str(x.right);
-        }
-        if (k > 0 && index[p.crossfades[k - 1].left] > li) {
-            return "crossfades are not sorted by position";
-        }
+        if (has_out[li] || has_in[ri]) return second_crossfade_problem(x);
+        if (k > 0 && index[p.crossfades[k - 1].left] > li) return kCrossfadesUnsorted;
         Frames before = 0, after = 0;
         crossfade_extent(x, before, after);
         has_out[li] = true;
@@ -424,20 +417,41 @@ std::string playlist_problem(const Playlist& p, const SourcePool& pool,
     // fade. A fade under a crossfade at the same end is kept but silent; one
     // at the other end that runs into a crossfade would be multiplied by it.
     for (std::size_t i = 0; i < p.regions.size(); ++i) {
-        const Region& r = p.regions[i];
-        const Frames heard_in = has_in[i] ? in_after[i] : r.fade_in.length;
-        const Frames heard_out = has_out[i] ? out_before[i] : r.fade_out.length;
-        if (heard_in + heard_out <= r.length) continue;
+        std::string why =
+            heard_problem(p.regions[i], has_in[i], in_after[i], has_out[i], out_before[i]);
+        if (why.empty()) continue;
         where = "regions[" + str(static_cast<std::int64_t>(i)) + "]";
-        if (has_in[i] && has_out[i]) {
-            return "the crossfades at its two ends overlap; at most two"
-                   " regions may sound at once";
-        }
-        return has_in[i] ? "its fade-out overlaps the crossfade at its start"
-                         : "its fade-in overlaps the crossfade at its end";
+        return why;
     }
     where.clear();
     return {};
+}
+
+std::string order_problem(const Playlist& p, std::size_t i) {
+    if (i == 0 || p.regions[i].position >= p.regions[i - 1].end()) return {};
+    return p.regions[i - 1].position <= p.regions[i].position
+               ? "overlaps the region before it (regions[" +
+                     str(static_cast<std::int64_t>(i - 1)) + "])"
+               : "is not sorted by position";
+}
+
+std::string second_crossfade_problem(const Crossfade& x) {
+    return "a second crossfade between regions " + str(x.left) + " and " + str(x.right);
+}
+
+const char* const kCrossfadesUnsorted = "crossfades are not sorted by position";
+
+std::string heard_problem(const Region& r, bool has_in, Frames in_after, bool has_out,
+                          Frames out_before) {
+    const Frames heard_in = has_in ? in_after : r.fade_in.length;
+    const Frames heard_out = has_out ? out_before : r.fade_out.length;
+    if (heard_in + heard_out <= r.length) return {};
+    if (has_in && has_out) {
+        return "the crossfades at its two ends overlap; at most two"
+               " regions may sound at once";
+    }
+    return has_in ? "its fade-out overlaps the crossfade at its start"
+                  : "its fade-in overlaps the crossfade at its end";
 }
 
 std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,

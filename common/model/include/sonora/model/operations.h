@@ -248,13 +248,13 @@ using Member =
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState>;
 
-// Interim, under ADR-0009 update 2026-10-14 item 5's own rule: each member
-// still re-validates its whole playlist, and 64 members on a 2,000-region
-// playlist is what fits the 10 ms control-thread budget. 4,096 is the target
-// once validation is local (BACKLOG Track 2). Raising it changes what a
-// decoder accepts, so it needs a kProtocolVersion bump. The decoder and
-// apply() both refuse more.
-constexpr std::size_t kMaxCompoundMembers = 64;
+// The largest limit measured under the 10 ms control-thread budget on 18
+// playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
+// locally, but each split or removal still shifts the playlist's region
+// vector, and 1,024 cut-like members cost 11 to 12 ms. Changing it changes
+// what a decoder accepts, so it needs a kProtocolVersion bump. The decoder
+// and apply() both refuse more.
+constexpr std::size_t kMaxCompoundMembers = 256;
 
 // Several operations as one: each member applied to what the members before
 // it made, all refused if one is, one revision and one update. It makes one

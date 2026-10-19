@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <random>
 
+#include "../src/local_edit.h"
 #include "model_test.h"
 #include "sonora/model/session_file.h"
 
@@ -206,6 +207,9 @@ Operation next_op(const Snapshot& s, Gen& g) {
 }  // namespace
 
 int main() {
+    // Every edit below is also checked against the whole-playlist operators
+    // and playlist_problem() (src/local_edit.h); only in the audited library.
+    CHECK(sonora::model::detail::audited());
     Gen g(20261013);
     History engine(new_session(settings()), 256 * 1024);
     History replica = History::replica(engine.current());

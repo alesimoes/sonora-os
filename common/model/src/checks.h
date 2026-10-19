@@ -22,8 +22,20 @@ std::string region_problem(const Region& r, const SourcePool& pool,
                            std::uint16_t track_channels);
 std::string crossfade_problem(const Crossfade& x, const Playlist& p,
                               const SourcePool& pool);
+// The same, with the two regions already found (nullptr: not on the playlist).
+std::string crossfade_problem(const Crossfade& x, const Region* left, const Region* right,
+                              const SourcePool& pool);
 std::string playlist_problem(const Playlist& p, const SourcePool& pool,
                              std::uint16_t track_channels, std::string& where);
+// playlist_problem's parts, shared with the range-local check (local_edit.h)
+// so both word a refusal the same way. order_problem: regions[i] against
+// regions[i - 1]. heard_problem: a region's two ends, given the crossfades
+// there (has_in: one ends `in_after` frames into it).
+std::string order_problem(const Playlist& p, std::size_t i);
+std::string second_crossfade_problem(const Crossfade& x);
+extern const char* const kCrossfadesUnsorted;
+std::string heard_problem(const Region& r, bool has_in, Frames in_after, bool has_out,
+                          Frames out_before);
 std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,
                         std::string& where);
 std::string bus_problem(const MonitorBus& b, std::string& where);

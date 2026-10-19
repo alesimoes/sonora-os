@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // What a compound costs the document thread (ADR-0009 update 2026-10-14,
-// item 5): kMaxCompoundMembers members on one 2,000-region playlist, and on
-// 18 tracks of 2,000 regions, against the same members applied one by one. Run by hand;
-// the numbers go in the ADR. Not a test: it asserts nothing about time.
+// item 5): 64 to 4,096 members, up to kMaxCompoundMembers, on one
+// 2,000-region playlist and on 18 tracks of 2,000 regions, against the same
+// members applied one by one. Run by hand, in Release, on a quiet host; the
+// numbers go in the ADR. Not a test: it asserts nothing about time.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -199,22 +200,23 @@ bool measure(const char* what, int tracks, int regions, const Compound& c, int r
 }  // namespace
 
 int main() {
-    std::printf("measure_compound: best of 5 runs, steady_clock\n");
+    std::printf("measure_compound: best of 5 runs, steady_clock, limit %zu members\n",
+                kMaxCompoundMembers);
     bool ok = true;
     for (const int tracks : {1, 18}) {
         Session shape;
         if (!build(tracks, 2000, shape)) return 1;
-        ok = measure(tracks == 1 ? "cut-like (split+remove), one playlist"
-                                 : "cut-like (split+remove), 18 playlists",
-                     tracks, 2000, cut_like(shape, kMaxCompoundMembers), 5) && ok;
-        ok = measure(tracks == 1 ? "SetFade, one playlist" : "SetFade, 18 playlists", tracks,
-                     2000, fades(shape, kMaxCompoundMembers), 5) && ok;
-    }
-    // How the cost grows with the member count, below the limit.
-    for (const std::size_t n : {std::size_t{1}, std::size_t{16}, std::size_t{32}}) {
-        Session shape;
-        if (!build(1, 2000, shape)) return 1;
-        ok = measure("SetFade, one playlist", 1, 2000, fades(shape, n), 5) && ok;
+        // The limit's candidates (ADR-0009 update 2026-10-14, item 5); one
+        // above the limit would only be refused.
+        for (const std::size_t n : {std::size_t{64}, std::size_t{256}, std::size_t{1024},
+                                    std::size_t{4096}}) {
+            if (n > kMaxCompoundMembers) continue;
+            ok = measure(tracks == 1 ? "cut-like (split+remove), one playlist"
+                                     : "cut-like (split+remove), 18 playlists",
+                         tracks, 2000, cut_like(shape, n), 5) && ok;
+            ok = measure(tracks == 1 ? "SetFade, one playlist" : "SetFade, 18 playlists", tracks,
+                         2000, fades(shape, n), 5) && ok;
+        }
     }
     return ok ? 0 : 1;
 }

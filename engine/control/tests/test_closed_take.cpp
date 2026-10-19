@@ -188,9 +188,14 @@ int test_a_refused_take_keeps_its_audio_in_the_pool() {
 // is split into compounds within the limit, in track order, and every
 // track lands on the timeline. Without the split the one compound was
 // refused and every track fell back to the pool.
+//
+// Since the limit rose past 2 * kMaxTracks members (BACKLOG Track 2 item 8),
+// a take that needs the split has more files than this test records; the
+// take on kMaxTracks tracks is then checked to land as one compound.
 int test_a_take_larger_than_one_compound_lands_whole() {
-    constexpr std::size_t kTracks = model::kMaxCompoundMembers / 2 + 2;
-    static_assert(kTracks <= static_cast<std::size_t>(kMaxTracks), "wipe() reaches every file");
+    constexpr bool kSplits = model::kMaxCompoundMembers / 2 + 2 <= std::size_t{kMaxTracks};
+    constexpr std::size_t kTracks =
+        kSplits ? model::kMaxCompoundMembers / 2 + 2 : std::size_t{kMaxTracks};
     const SessionConfig cfg = config("test_closed_take_large", static_cast<int>(kTracks));
     wipe(cfg.dir);
     {
@@ -201,8 +206,9 @@ int test_a_take_larger_than_one_compound_lands_whole() {
         CHECK(r.track_notices.empty());
         if (!r.refused.empty()) std::fprintf(stderr, "  refused: %s\n", r.refused.c_str());
         CHECK(r.refused.empty());
-        CHECK(r.updates.size() == 2);   // a full compound, then 2 tracks
-        CHECK(doc.history().undo_depth() == 2);
+        // Split: a full compound, then 2 tracks.
+        CHECK(r.updates.size() == (kSplits ? 2u : 1u));
+        CHECK(doc.history().undo_depth() == (kSplits ? 2u : 1u));
         for (std::size_t t = 0; t < kTracks; ++t) CHECK(regions_on(doc.current(), t) == 1);
         CHECK(doc.current().sources->sources.size() == kTracks);
     }
