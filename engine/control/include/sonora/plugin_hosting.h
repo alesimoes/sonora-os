@@ -184,6 +184,8 @@ private:
     // A chain leaving (track gone, nothing left to run, a session opened).
     void drop_chain(Chain& c);
     void recompute_faults(const model::Snapshot& doc);
+    // The running host's Loaded: instances whose saved state it refused.
+    void note_refused_states(Chain& c, const model::Snapshot& doc);
     // The document's values the running chain's store does not have yet;
     // `force`: every one of them, bypass included (a dropped change).
     void post_values(Chain& c, const model::Snapshot& doc, bool force = false);

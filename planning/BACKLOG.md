@@ -698,8 +698,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          leaves a down chain down.
        - The forced re-post overwrites a parameter that is being dragged; it
          should use the last touched value.
-       - A state file over 64 MiB loads at defaults without a `PluginFault`;
-         it should raise one.
+       - [x] A saved state that cannot be restored (its file over the 16 MiB
+         state cap, missing, unreadable, not matching its hash, or refused
+         by the host in `Loaded`) loads at defaults plus its params and
+         raises a standing `PluginFault` on that insert, cleared once the
+         document names another state or none (ctest
+         `plugin_hosting_state_not_restored`).
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
