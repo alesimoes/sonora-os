@@ -362,6 +362,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              the chains, PluginParameterChange by Loaded key, gestures to
              SetInsertParams/SetInsertBypass. ctest
              `plugin_hosting_{open_starts_silent,new_insert_dry,edit_keeps_old,undo_abandons,missing,refused,params,down_keeps_latency,gestures,server}`.
+             #80 review round: values changed while a host starts are
+             posted once its store is in a plan (B2,
+             `values_while_starting`); a session opened, even the same
+             one, starts every chain afresh, silent until Ready (B3,
+             `reload_starts_afresh`); changes tagged with the playing plan's
+             epoch or the first plan with the store (B1); a gesture left
+             open by a dying host goes to the document (`gesture_left_open`);
+             a failed edit is faulted and not respawned per change
+             (`failed_edit`); the old host alive while a plan names it
+             (`edit_keeps_old`, residency held); teardown asks every host
+             first and waits once (2 s for the set).
        - [ ] pidfd instead of polling the host processes.
        - [ ] Scan worker and catalog cache (ADR-0012 §4, §8): until then
              the catalog is empty, so a client's AddInsert/ReplaceInsert is
@@ -373,11 +384,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              up to 10 s, "Loading plug-ins (n of m)"; record never waits.
              `PluginHosting::loading()` counts them; the server wiring is
              the next PR.
-       - [ ] A new chain's start that fails while the old chain still
-             runs is not shown as a fault (the old one keeps playing).
+       - [x] A new chain's start that fails while the old chain still
+             runs is shown as a fault on the edit's inserts, and not
+             started again until the document wants another chain
+             (`plugin_hosting_failed_edit`).
        - [ ] `HostProcess::stop()` still blocks from SupervisedChain's
-             destructor when a host was not asked to stop first; every path
-             PluginHosting takes asks first (`request_stop`).
+             destructor when a host was not asked to stop first, and
+             `SupervisedChain::replace` waits for the SIGKILLed host it
+             replaces; every path PluginHosting takes asks first and reaps
+             from poll (`request_stop`, `stopped`, `signal_kill`).
+       - [ ] Gestures from an editor still open on a host being retired
+             are not taken (#78 note 3 on #80; short-lived).
        Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
        out of that PR's scope and handed to checklist 5:
        - [x] The callback's timestamp (checklist 5 RT PR):
@@ -467,8 +484,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [x] Re-post when `plugin_params_dropped()` moves (every running
              chain's document values, at most every 100 ms), and
              coalesce-and-retry a refused post, the newest value kept per
-             (store, instance, parameter): `PluginHosting`. Not tested on
-             its own (a dropped change needs a store no node names).
+             (store, instance, parameter): `PluginHosting`. The re-post
+             sends the bypass too (`plugin_hosting_repost_bypass_off`: an
+             un-bypass dropped by a plan swap). A coalesced GestureEnd is
+             handed over before a newer message of its parameter
+             (`plugin_client_host_control_coalesce_order`); a touch burst
+             after a stalled poll survives
+             (`plugin_client_host_control_stalled_touches`).
        - [ ] After a callback the runner did not take, the next collect
              plays the host's block from before the skipped callback (one
              period late, ramped in): the client's callback count does not

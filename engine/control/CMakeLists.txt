@@ -74,7 +74,8 @@ if(TARGET sonora-plugin-host)
           --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
   set(_ph_tests)
   foreach(scenario open_starts_silent new_insert_dry edit_keeps_old undo_abandons missing refused params
-                   down_keeps_latency gestures server)
+                   down_keeps_latency gestures server values_while_starting reload_starts_afresh
+                   repost_bypass_off gesture_left_open failed_edit)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()

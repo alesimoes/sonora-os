@@ -29,7 +29,16 @@
 // without them (PlaybackController::oldest_live_epoch).
 //
 // An edit is a new SupervisedChain with its own store and node state,
-// seeded from the document; a restart keeps its store (change F).
+// seeded from the document; a restart keeps its store (change F). What the
+// document changed while that host started is posted once its store is in
+// a plan. A session opened (start-up or ModelAction::Load, the same session
+// reloaded included) starts every chain afresh: ids are per session.
+//
+// Parameter changes are tagged with a plan epoch (Session::post_plugin_param):
+// the playing plan's, or the first plan built with the chain's store when
+// that one is newer (a chain just swapped in). A change the audio thread
+// drops (its plan replaced before it was drained) is re-posted from the
+// document, bypass included, at most every 100 ms.
 #pragma once
 
 #include <cstdint>
@@ -82,7 +91,8 @@ public:
     PluginHosting(Session& session, PluginHostingConfig config);
     // Teardown order (item 4): the runner leaves the session; the caller
     // has deactivated the backend or seen a callback pass since; chains,
-    // supervisor, client.
+    // supervisor, client. Every host is asked to stop first and the whole
+    // set gets one grace (2 s) before it is killed, not one per host.
     ~PluginHosting();
     PluginHosting(const PluginHosting&) = delete;
     PluginHosting& operator=(const PluginHosting&) = delete;
@@ -91,7 +101,9 @@ public:
     const std::string& why() const { return why_; }
 
     // The document changed. `opened`: it is a session just opened (start-up
-    // or ModelAction::Load), whose chains start silent (item 1). Starts
+    // or ModelAction::Load), whose chains all start afresh, from their
+    // saved state, silent until Ready (item 1); no host of the document it
+    // replaces is kept. Starts
     // probes and hosts for chains whose instances changed, abandons starts
     // the document no longer describes, and posts changed values (bypass,
     // params) to running chains. Never waits.
@@ -134,8 +146,15 @@ public:
     uint32_t loading() const;
     uint32_t loading_total() const { return loading_total_; }
 
-    // Host processes alive, retiring ones included. For tests and the log.
+    // Host processes alive, retiring and stopping ones included. For tests
+    // and the log.
     uint32_t hosts() const;
+
+    // What the running host of `insert` reads for `key` (empty: its bypass)
+    // in its channel's last-value table: the store as the last submit
+    // copied it. False when the insert has no running host or no such key.
+    // For tests and diagnostics.
+    bool host_value(model::Id insert, const std::string& key, float& value);
 
     // A host message of the chain on `track` (what poll() takes from each
     // chain): gestures post the value to the chain and, at their end, give
@@ -145,6 +164,7 @@ public:
                              std::vector<model::Operation>& ops);
 
     struct Probe;
+    struct Member;
     struct Chain;
 
 private:
@@ -156,10 +176,29 @@ private:
     // The chain's spec as the document and the probes describe it now; false
     // while a probe runs.
     bool desired_spec(const model::TrackEdit& track, const model::Snapshot& doc, Chain& c);
-    void start_pending(Chain& c, const model::Snapshot& doc);
+    void start_pending(Chain& c, const model::Snapshot& doc, const std::vector<Member>& want);
     void retire(std::unique_ptr<plugin_client::SupervisedChain> chain, uint32_t store, uint32_t node);
+    // A start no plan names, let go: stopped without waiting, reaped from
+    // poll(); its store and node state are free at once.
+    void abandon_pending(Chain& c);
+    // A chain leaving (track gone, nothing left to run, a session opened).
+    void drop_chain(Chain& c);
     void recompute_faults(const model::Snapshot& doc);
-    void post_values(Chain& c, const model::Snapshot& doc);
+    // The document's values the running chain's store does not have yet;
+    // `force`: every one of them, bypass included (a dropped change).
+    void post_values(Chain& c, const model::Snapshot& doc, bool force = false);
+    // The epoch a change for the chain's store is tagged with; 0 while no
+    // plan built names the store.
+    uint64_t post_epoch(const Chain& c) const;
+    // One change to the running store, or kept for a retry, newest wins.
+    void post(Chain& c, uint32_t instance, uint32_t param, float value);
+    // The running host's messages taken and mapped (poll does it every
+    // turn). True when its latency moved.
+    bool take_messages(Chain& c, const model::Snapshot& doc, std::vector<model::Operation>& ops);
+    // Gestures a host left open (it died or was replaced mid-touch): the
+    // last value touched goes to the document, as GestureEnd would have
+    // (host_control.h, "A host that dies leaves gestures open").
+    void close_gestures(Chain& c, const model::Snapshot& doc, std::vector<model::Operation>& ops);
     uint32_t take_store();
     uint32_t take_node();
 
@@ -181,6 +220,11 @@ private:
         uint64_t first_epoch_without = 0;  // 0: not yet built without it
     };
     std::vector<Retiring> retiring_;
+    std::vector<std::unique_ptr<plugin_client::SupervisedChain>> stopping_;
+    // Operations from show() (gestures a dropped chain left open), handed
+    // out by the next poll().
+    std::vector<model::Operation> deferred_ops_;
+    bool reshow_ = false;
     std::vector<uint32_t> free_stores_;
     std::vector<uint32_t> free_nodes_;
     uint64_t last_built_epoch_ = 0;

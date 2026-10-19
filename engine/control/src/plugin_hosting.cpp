@@ -4,7 +4,9 @@
 #include "sonora/plugin_hosting.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -41,6 +43,43 @@ std::string host_id(const model::PluginRef& p) {
     return p.format == model::PluginFormat::Vst3 ? "vst3:" + p.id : p.id;
 }
 
+uint64_t steady_ms() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+}
+
+// A value as a document operation: bypass, or the insert's whole list with
+// this key set (§8, "Values moved in the plugin's own editor"). Several
+// moves of one batch land on one list.
+void record_value(std::vector<model::Operation>& ops, const model::Snapshot& doc, model::Id insert, bool bypass,
+                  const std::string& key, float value) {
+    if (bypass) {
+        ops.push_back(model::SetInsertBypass{insert, value >= 0.5f});
+        return;
+    }
+    model::SetInsertParams* set = nullptr;
+    for (model::Operation& op : ops) {
+        if (auto* s = std::get_if<model::SetInsertParams>(&op); s && s->insert == insert) set = s;
+    }
+    if (!set) {
+        const model::InsertMix* m = doc.mix.find_insert(insert);
+        ops.push_back(model::SetInsertParams{insert, m ? m->params : std::vector<model::ParamValue>{}});
+        set = std::get_if<model::SetInsertParams>(&ops.back());
+    }
+    const auto k = std::find_if(set->params.begin(), set->params.end(),
+                                [&](const model::ParamValue& p) { return p.key == key; });
+    if (k != set->params.end()) k->value = value;
+    else set->params.push_back({key, value});
+}
+
+bool insert_in(const model::Snapshot& doc, model::Id insert) {
+    for (const auto& t : doc.edit->tracks)
+        for (const model::Insert& in : t->inserts)
+            if (in.id == insert) return true;
+    return false;
+}
+
 }  // namespace
 
 // ---- what the scan says of one plugin at one channel count
@@ -58,7 +97,7 @@ struct PluginHosting::Probe {
     std::string reason;
 };
 
-struct Member {
+struct PluginHosting::Member {
     model::Id insert = 0;
     model::PluginRef plugin;
     bool operator==(const Member& o) const { return insert == o.insert && plugin == o.plugin; }
@@ -81,7 +120,15 @@ struct PluginHosting::Chain {
     std::unique_ptr<SupervisedChain> pending;
     uint32_t pstore = kNone, pnode = kNone;
     std::vector<Member> pending_spec;
-    std::string start_failed;  // a first start that crashed or timed out
+    // What start_pending seeded the pending store with, by insert: the
+    // document's values then. On Swapped it is what the store holds, so
+    // what the document changed meanwhile is posted (B2 on #80).
+    std::map<model::Id, model::InsertMix> pending_seeded;
+    // A start that crashed, timed out or could not get a store, and the
+    // spec it was for: not started again until the document wants another
+    // spec (a session opened starts every chain again).
+    std::string start_failed;
+    std::vector<Member> failed_spec;
 
     bool opened = false;      // started with the session: silent until Ready
     bool ever_ready = false;
@@ -89,10 +136,28 @@ struct PluginHosting::Chain {
     bool restart_swapped = false;
     uint64_t restart_retire_epoch = 0;
 
+    // The first plan built with the running store (0: none yet), and
+    // whether resolve() named the store in the plan being built.
+    uint64_t store_epoch = 0;
+    bool named = false;
+    // Values wait for store_epoch: post_values again once it is known.
+    bool need_post = false;
+
     // The values last given to the running chain's store, by insert.
     std::map<model::Id, model::InsertMix> posted;
-    // Changes the session's ring refused: (store, instance, param) -> value.
-    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, float> retry;
+    // Changes for the running store the session refused, or that wait for
+    // its first plan: (instance, param) -> the newest value.
+    std::map<std::pair<uint32_t, uint32_t>, float> retry;
+
+    // Gestures the running host has open: the last value touched, by
+    // (instance, param), with what the document needs to record it.
+    struct Touch {
+        model::Id insert = 0;
+        bool bypass = false;
+        std::string key;
+        float value = 0.f;
+    };
+    std::map<std::pair<uint32_t, uint32_t>, Touch> open_touches;
 };
 
 PluginHosting::PluginHosting(Session& session, PluginHostingConfig config)
@@ -128,12 +193,27 @@ PluginHosting::~PluginHosting() {
     // The runner leaves the session first; the caller has deactivated the
     // backend or seen a callback since (item 4), so no callback holds it.
     session_.set_insert_chains(nullptr);
+    std::vector<SupervisedChain*> all;
     for (auto& [track, c] : chains_) {
-        if (c->pending) c->pending->request_stop(0);
-        if (c->running) c->running->request_stop(0);
+        if (c->pending) all.push_back(c->pending.get());
+        if (c->running) all.push_back(c->running.get());
     }
-    for (Retiring& r : retiring_) r.chain->request_stop(0);
+    for (Retiring& r : retiring_) all.push_back(r.chain.get());
+    for (auto& s : stopping_) all.push_back(s.get());
+    // Every stop asked first, then one grace for the whole set (M5 on #80):
+    // N hung hosts cost 2 s, not 2 s each. stopped() signals the kill past
+    // the grace without waiting; the loop's last half second lets the
+    // kills be reaped, so the destructors below find nothing running.
+    const uint64_t t0 = steady_ms();
+    for (SupervisedChain* s : all) s->request_stop(t0);
+    for (;;) {
+        bool done = true;
+        for (SupervisedChain* s : all) done = s->stopped(steady_ms()) && done;
+        if (done || steady_ms() - t0 >= 2500) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     chains_.clear();
+    stopping_.clear();
     retiring_.clear();
     runner_.reset();
     supervisor_.reset();
@@ -161,6 +241,34 @@ void PluginHosting::retire(std::unique_ptr<SupervisedChain> chain, uint32_t stor
         return;
     }
     retiring_.push_back(Retiring{std::move(chain), store, node, 0});
+}
+
+void PluginHosting::abandon_pending(Chain& c) {
+    if (c.pending) {
+        // Never bound: no plan names it, so it needs no epoch, only a stop
+        // the control thread does not wait for (M5 on #80).
+        c.pending->request_stop(steady_ms());
+        stopping_.push_back(std::move(c.pending));
+    }
+    retire(nullptr, c.pstore, c.pnode);
+    c.pstore = c.pnode = kNone;
+    c.pending_spec.clear();
+    c.pending_seeded.clear();
+}
+
+void PluginHosting::drop_chain(Chain& c) {
+    abandon_pending(c);
+    retire(std::move(c.running), c.store, c.node);
+    c.store = c.node = kNone;
+    c.running_spec.clear();
+    c.posted.clear();
+    c.retry.clear();
+    c.open_touches.clear();
+    c.store_epoch = 0;
+    c.named = false;
+    c.need_post = false;
+    c.restart_swapped = false;
+    c.restart_retire_epoch = 0;
 }
 
 // ---- probes (amendment item 3)
@@ -292,12 +400,13 @@ bool PluginHosting::desired_spec(const model::TrackEdit& track, const model::Sna
     return complete;
 }
 
-void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc) {
+void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const std::vector<Member>& want) {
     const model::TrackEdit* track = nullptr;
     for (const auto& t : doc.edit->tracks)
         if (t->id == c.track) track = t.get();
     if (!track) return;
     std::vector<Member> spec_members;
+    std::map<model::Id, model::InsertMix> seeded;
     plugin_client::ChainSpec spec;
     spec.channels = track->channels;
     std::vector<const model::Insert*> active;
@@ -324,22 +433,23 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc) {
         if (m && m->state) {
             // The last state saved (§6.1), restored in Load; a file that is
             // gone or does not match loads the plugin with defaults plus its
-            // params, as at open.
-            std::ifstream f(config_.session_dir + "/" + m->state->file, std::ios::binary);
-            std::ostringstream ss;
-            ss << f.rdbuf();
-            if (f && pc::state_matches(ss.str(), m->state->sha256)) state = ss.str();
+            // params, as at open. Sized first: a file past one state's cap
+            // is not one, and reading it would stall the control loop.
+            const std::string path = config_.session_dir + "/" + m->state->file;
+            std::error_code ec;
+            const auto size = std::filesystem::file_size(path, ec);
+            if (!ec && size <= pc::kMaxStateBytes) {
+                std::ifstream f(path, std::ios::binary);
+                std::ostringstream ss;
+                ss << f.rdbuf();
+                if (f && pc::state_matches(ss.str(), m->state->sha256)) state = ss.str();
+            }
         }
         spec.states.push_back(std::move(state));
         spec_members.push_back({in->id, in->plugin});
+        seeded[in->id] = m ? *m : model::InsertMix{in->id, false, {}, {}};
     }
-    if (c.pending) {
-        c.pending->request_stop(0);
-        c.pending.reset();
-        retire(nullptr, c.pstore, c.pnode);
-        c.pstore = c.pnode = kNone;
-    }
-    c.pending_spec.clear();
+    abandon_pending(c);
     if (spec_members.empty()) return;
     c.pstore = take_store();
     c.pnode = take_node();
@@ -347,16 +457,40 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc) {
         retire(nullptr, c.pstore, c.pnode);
         c.pstore = c.pnode = kNone;
         c.start_failed = "no parameter store left for this chain";
+        c.failed_spec = want;
         return;
     }
     c.pending = std::make_unique<SupervisedChain>(*supervisor_, std::move(spec), c.pstore, c.pnode);
     c.pending_spec = std::move(spec_members);
+    c.pending_seeded = std::move(seeded);
     std::string error;
-    if (!c.pending->begin(error)) c.start_failed = error;
+    if (c.pending->begin(error)) return;
+    // Not even spawned. A state over its cap is that instance's refusal
+    // (change C: shown, the rest started again); anything else is a failed
+    // start, not tried again for this spec.
+    const int32_t r = c.pending->refused() ? c.pending->refused_instance() : -1;
+    if (r >= 0 && uint32_t(r) < c.pending_spec.size()) {
+        const Member& m = c.pending_spec[uint32_t(r)];
+        c.host_refused[m.insert] = (m.plugin.name.empty() ? m.plugin.id : m.plugin.name) + " was refused: " + error;
+        reshow_ = true;
+    } else {
+        c.start_failed = error;
+        c.failed_spec = want;
+    }
+    abandon_pending(c);
 }
 
 void PluginHosting::show(const model::Snapshot& doc, bool opened) {
-    if (opened) loading_total_ = 0;
+    if (opened) {
+        // A session opened, even the one already open (B3 on #80): ids are
+        // per session, so no host of the document it replaces is kept, and
+        // every chain starts from its saved state, silent until Ready (item
+        // 1). The old hosts play until the first plan without them and
+        // leave by epoch; their open gestures belong to the old document.
+        for (auto& [track, c] : chains_) drop_chain(*c);
+        chains_.clear();
+        loading_total_ = 0;
+    }
     std::set<model::Id> seen;
     for (const auto& tp : doc.edit->tracks) {
         const model::TrackEdit& t = *tp;
@@ -391,37 +525,36 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
         c.nothing_to_run = want.empty();
         if (want.empty()) {
             // No instance left: no chain, dry, its faults shown (change B).
-            if (c.pending) {
-                c.pending->request_stop(0);
-                c.pending.reset();
-                retire(nullptr, c.pstore, c.pnode);
-                c.pstore = c.pnode = kNone;
-                c.pending_spec.clear();
-            }
-            if (c.running) {
-                retire(std::move(c.running), c.store, c.node);
-                c.store = c.node = kNone;
-                c.running_spec.clear();
-            }
+            close_gestures(c, doc, deferred_ops_);
+            drop_chain(c);
+            c.start_failed.clear();
+            c.failed_spec.clear();
             continue;
         }
+        // The running chain follows the document for the inserts it has,
+        // whatever starts beside it.
+        post_values(c, doc);
         const bool running_matches = c.running && !c.running->down() && c.running_spec == want;
         if (running_matches) {
             // An edit undone before its new host was Ready: that start is
             // abandoned, the old binding never stopped (change H).
-            if (c.pending) {
-                c.pending->request_stop(0);
-                c.pending.reset();
-                retire(nullptr, c.pstore, c.pnode);
-                c.pstore = c.pnode = kNone;
-                c.pending_spec.clear();
-            }
-            post_values(c, doc);
+            abandon_pending(c);
+            c.start_failed.clear();
+            c.failed_spec.clear();
             continue;
         }
         if (c.pending && c.pending_spec == want) continue;
+        // Down after its restarts (§5.3) stays down, silent at its last
+        // latency, until the document wants another chain: never respawned
+        // by the next document change.
+        if (c.running && c.running->down() && c.running_spec == want) continue;
+        // A start that failed for this very spec is not tried again on
+        // every document change or probe (M4 on #80): its fault stands until
+        // the document wants another spec.
+        if (!c.start_failed.empty() && c.failed_spec == want) continue;
         c.start_failed.clear();
-        start_pending(c, doc);
+        c.failed_spec.clear();
+        start_pending(c, doc, want);
     }
     // Tracks with no active insert left, or gone: their chains leave by
     // epoch.
@@ -431,60 +564,106 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
             continue;
         }
         Chain& c = *it->second;
-        if (c.pending) {
-            c.pending->request_stop(0);
-            c.pending.reset();
-            retire(nullptr, c.pstore, c.pnode);
-        }
-        retire(std::move(c.running), c.store, c.node);
+        close_gestures(c, doc, deferred_ops_);
+        drop_chain(c);
         it = chains_.erase(it);
     }
     recompute_faults(doc);
 }
 
-void PluginHosting::post_values(Chain& c, const model::Snapshot& doc) {
+uint64_t PluginHosting::post_epoch(const Chain& c) const {
+    if (c.store == kNone || c.store_epoch == 0) return 0;
+    // The store changes only with a swap, which starts store_epoch again,
+    // so every plan from store_epoch on names it. The playing plan when it
+    // is one of them: the next callback takes the change. Before that, the
+    // first plan with the store, published or not: held until the audio
+    // thread adopts it (PR #77 RT audit M1).
+    const PlaybackPlan* p = session_.plans().current();
+    return std::max(c.store_epoch, p ? p->epoch : 0);
+}
+
+void PluginHosting::post(Chain& c, uint32_t instance, uint32_t param, float value) {
+    const uint64_t epoch = post_epoch(c);
+    if (epoch != 0 && session_.post_plugin_param(epoch, c.store, instance, param, value)) {
+        // A newer value went: an older one waiting must not follow it.
+        c.retry.erase({instance, param});
+        return;
+    }
+    // A full ring, or no plan with the store yet: coalesced, the newest
+    // value kept, never lost (#68 review item 3).
+    c.retry[{instance, param}] = value;
+}
+
+void PluginHosting::post_values(Chain& c, const model::Snapshot& doc, bool force) {
     if (!c.running || c.running->down() || !c.running->host()) return;
+    if (post_epoch(c) == 0) {
+        // The store is in no plan yet (just swapped in): posted once built()
+        // names the plan that has it, against what it was seeded with.
+        c.need_post = true;
+        return;
+    }
+    c.need_post = false;
     const pc::Loaded& l = c.running->host()->loaded();
     for (uint32_t i = 0; i < c.running_spec.size() && i < l.instances.size(); ++i) {
         const model::Id id = c.running_spec[i].insert;
         const model::InsertMix* m = doc.mix.find_insert(id);
         const model::InsertMix now = m ? *m : model::InsertMix{id, false, {}, {}};
         model::InsertMix& was = c.posted[id];
-        if (now.bypass != was.bypass) {
-            if (!session_.post_plugin_param(c.store, i, plugin::kBypassParam, now.bypass ? 1.f : 0.f))
-                c.retry[{c.store, i, plugin::kBypassParam}] = now.bypass ? 1.f : 0.f;
-        }
+        if (force || now.bypass != was.bypass) post(c, i, plugin::kBypassParam, now.bypass ? 1.f : 0.f);
         for (const model::ParamValue& v : now.params) {
             const auto old = std::find_if(was.params.begin(), was.params.end(),
                                           [&](const model::ParamValue& p) { return p.key == v.key; });
-            if (old != was.params.end() && old->value == v.value) continue;
+            if (!force && old != was.params.end() && old->value == v.value) continue;
             const auto& keys = l.instances[i].params;
             const auto d = std::find_if(keys.begin(), keys.end(), [&](const pc::ParamDesc& p) { return p.key == v.key; });
             if (d == keys.end()) continue;
-            const auto dense = uint32_t(d - keys.begin());
-            const float x = std::min(std::max(v.value, d->min), d->max);
-            if (!session_.post_plugin_param(c.store, i, dense, x)) c.retry[{c.store, i, dense}] = x;
+            post(c, i, uint32_t(d - keys.begin()), std::min(std::max(v.value, d->min), d->max));
         }
         was = now;
     }
+}
+
+bool PluginHosting::take_messages(Chain& c, const model::Snapshot& doc, std::vector<model::Operation>& ops) {
+    if (!c.running) return false;
+    bool latency = false;
+    for (const std::string& m : c.running->take_host_messages()) {
+        pc::Type t{};
+        if (pc::peek_type(m, t) && t == pc::Type::LatencyChanged) {
+            latency = c.running->refresh_latency() || latency;
+            continue;
+        }
+        handle_host_message(c.track, m, doc, ops);
+    }
+    return latency;
+}
+
+void PluginHosting::close_gestures(Chain& c, const model::Snapshot& doc, std::vector<model::Operation>& ops) {
+    for (const auto& [key, t] : c.open_touches)
+        if (insert_in(doc, t.insert)) record_value(ops, doc, t.insert, t.bypass, t.key, t.value);
+    c.open_touches.clear();
 }
 
 // ---- the loop
 
 PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snapshot& doc, uint64_t oldest_live_epoch) {
     PollResult result;
+    result.ops.swap(deferred_ops_);
     // A probe that finished lets the chains waiting on it start.
     const bool probes_moved = poll_probes(now_ms);
     start_probes(now_ms);
 
-    bool reshow = false;
+    bool reshow = reshow_;
+    reshow_ = false;
     for (auto& [track, cp] : chains_) {
         Chain& c = *cp;
         if (c.pending) {
             switch (c.pending->poll(now_ms)) {
                 case SupervisedChain::Event::Swapped: {
                     // The new host is Ready: it replaces the old binding in
-                    // the next plan; the old one leaves by epoch.
+                    // the next plan; the old one leaves by epoch, after what
+                    // it sent and the gestures it leaves open are taken.
+                    if (take_messages(c, doc, result.ops)) result.replan = true;
+                    close_gestures(c, doc, result.ops);
                     retire(std::move(c.running), c.store, c.node);
                     c.running = std::move(c.pending);
                     c.store = c.pstore;
@@ -494,14 +673,18 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.pending_spec.clear();
                     c.ever_ready = true;
                     c.start_failed.clear();
+                    c.failed_spec.clear();
                     c.restart_swapped = false;
                     c.restart_retire_epoch = 0;
-                    // What the store was seeded with.
-                    c.posted.clear();
-                    for (const Member& mbr : c.running_spec) {
-                        const model::InsertMix* m = doc.mix.find_insert(mbr.insert);
-                        c.posted[mbr.insert] = m ? *m : model::InsertMix{mbr.insert, false, {}, {}};
-                    }
+                    // What the store was seeded with, not the document now:
+                    // whatever moved while the host started is posted once a
+                    // plan has the store (B2 on #80).
+                    c.posted = std::move(c.pending_seeded);
+                    c.pending_seeded.clear();
+                    c.retry.clear();
+                    c.store_epoch = 0;
+                    c.named = false;
+                    c.need_post = true;
                     result.replan = true;
                     break;
                 }
@@ -516,18 +699,17 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                         reshow = true;
                     } else {
                         c.start_failed = c.pending->why();
+                        c.failed_spec = c.pending_spec;
                         result.replan = true;
                     }
-                    c.pending.reset();
-                    retire(nullptr, c.pstore, c.pnode);
-                    c.pstore = c.pnode = kNone;
-                    c.pending_spec.clear();
+                    abandon_pending(c);
                     break;
                 }
                 default: break;
             }
         }
         if (c.running) {
+            bool host_lost = false;
             switch (c.running->poll(now_ms)) {
                 case SupervisedChain::Event::Swapped:
                     // A restart is Ready (§5.3): the next plan names the new
@@ -536,20 +718,25 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.restart_retire_epoch = 0;
                     result.replan = true;
                     break;
-                case SupervisedChain::Event::Down: result.replan = true; break;
+                case SupervisedChain::Event::Restarting: host_lost = true; break;
+                case SupervisedChain::Event::Down:
+                    host_lost = true;
+                    result.replan = true;
+                    break;
                 default: break;
             }
-            for (const std::string& m : c.running->take_host_messages()) {
-                pc::Type t{};
-                if (pc::peek_type(m, t) && t == pc::Type::LatencyChanged) {
-                    if (c.running->refresh_latency()) result.replan = true;
-                    continue;
+            if (take_messages(c, doc, result.ops)) result.replan = true;
+            // The host died mid-gesture: its touches are in the store (kept
+            // across the restart, change F), so the document gets them too.
+            if (host_lost) close_gestures(c, doc, result.ops);
+            if (c.need_post) post_values(c, doc);
+            if (post_epoch(c) != 0 && !c.running->down()) {
+                const uint64_t epoch = post_epoch(c);
+                for (auto it = c.retry.begin(); it != c.retry.end();) {
+                    const auto [instance, param] = it->first;
+                    it = session_.post_plugin_param(epoch, c.store, instance, param, it->second) ? c.retry.erase(it)
+                                                                                               : std::next(it);
                 }
-                handle_host_message(track, m, doc, result.ops);
-            }
-            for (auto it = c.retry.begin(); it != c.retry.end();) {
-                const auto [store, instance, param] = it->first;
-                it = session_.post_plugin_param(store, instance, param, it->second) ? c.retry.erase(it) : std::next(it);
             }
             if (c.restart_swapped && c.restart_retire_epoch != 0 && oldest_live_epoch >= c.restart_retire_epoch) {
                 c.running->retired();
@@ -559,16 +746,21 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
         }
     }
 
-    // A change the session drained and had no node for (#68 review item 3):
-    // the running chains' values posted again, at most every 100 ms.
+    // A change the audio thread dropped: posted for a plan it replaced
+    // before the change was drained (the plan moved between the post and
+    // the next callback, or a plan built was cancelled), or for a store no
+    // runnable node of its plan names. The running chains' document values,
+    // every one and the bypass included, posted again under the playing
+    // plan, at most every 100 ms. Held changes for a plan not yet adopted
+    // are not drops, so this does not fire while a plan waits for residency.
+    // It cannot churn on its own: a re-post is dropped only if yet another
+    // plan replaces the playing one before the next callback, so it repeats
+    // only while plans keep being published, at 10 Hz at most.
     const uint64_t dropped = session_.plugin_params_dropped();
     if (dropped != dropped_seen_ && now_ms - last_repost_ms_ >= 100) {
         dropped_seen_ = dropped;
         last_repost_ms_ = now_ms;
-        for (auto& [track, cp] : chains_) {
-            cp->posted.clear();
-            post_values(*cp, doc);
-        }
+        for (auto& [track, cp] : chains_) post_values(*cp, doc, true);
     }
 
     // Retiring by epoch (item 2).
@@ -588,9 +780,16 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
         if (r.node != kNone) free_nodes_.push_back(r.node);
         it = retiring_.erase(it);
     }
+    // Starts let go: reaped once they have exited, never waited for.
+    for (auto it = stopping_.begin(); it != stopping_.end();)
+        it = (*it)->stopped(now_ms) ? stopping_.erase(it) : std::next(it);
 
     if (reshow || probes_moved) show(doc, false);
     else recompute_faults(doc);
+    // Gestures show() closed belong to this turn's operations.
+    result.ops.insert(result.ops.end(), std::make_move_iterator(deferred_ops_.begin()),
+                      std::make_move_iterator(deferred_ops_.end()));
+    deferred_ops_.clear();
     return result;
 }
 
@@ -612,6 +811,7 @@ void PluginHosting::resolve(const model::TrackEdit& track, uint32_t, ChainBindin
         b.param_store = r.param_store;
         b.node_state = r.node_state;
         b.latency_frames = c.running->latency_frames();
+        c.named = true;
         return;
     }
     if (c.running) {
@@ -639,8 +839,13 @@ void PluginHosting::built(uint64_t epoch) {
     last_built_epoch_ = epoch;
     for (Retiring& r : retiring_)
         if (r.first_epoch_without == 0) r.first_epoch_without = epoch;
-    for (auto& [track, c] : chains_)
+    for (auto& [track, c] : chains_) {
         if (c->restart_swapped && c->restart_retire_epoch == 0) c->restart_retire_epoch = epoch;
+        // The first plan with the running store: changes for it are tagged
+        // from here on (post_epoch).
+        if (c->named && c->store_epoch == 0) c->store_epoch = epoch;
+        c->named = false;
+    }
 }
 
 bool PluginHosting::set_param(model::Id insert, const std::string& key, float value, std::string& why) {
@@ -665,10 +870,7 @@ bool PluginHosting::set_param(model::Id insert, const std::string& key, float va
                 why = key + " must be from " + std::to_string(d->min) + " to " + std::to_string(d->max);
                 return false;
             }
-            const auto dense = uint32_t(d - keys.begin());
-            // A full ring keeps the newest value for a retry: coalesced,
-            // never lost (#68 review item 3).
-            if (!session_.post_plugin_param(c.store, i, dense, value)) c.retry[{c.store, i, dense}] = value;
+            post(c, i, uint32_t(d - keys.begin()), value);
             return true;
         }
     }
@@ -685,54 +887,50 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
     pc::Type t{};
     std::string e;
     if (!pc::peek_type(bytes, t)) return;
-    // The value as a document operation: bypass, or the insert's whole list
-    // with this key set (§8, "Values moved in the plugin's own editor").
-    const auto record = [&](uint32_t instance, uint32_t param, float value) {
-        if (instance >= c.running_spec.size() || instance >= l.instances.size()) return;
-        const model::Id id = c.running_spec[instance].insert;
-        if (param == plugin::kBypassParam) {
-            ops.push_back(model::SetInsertBypass{id, value >= 0.5f});
-            return;
-        }
-        if (param >= l.instances[instance].params.size()) return;
-        const std::string& key = l.instances[instance].params[param].key;
-        // Several moves of one message (EditorClosed) land on one list.
-        model::SetInsertParams* set = nullptr;
-        for (model::Operation& op : ops) {
-            if (auto* s = std::get_if<model::SetInsertParams>(&op); s && s->insert == id) set = s;
-        }
-        if (!set) {
-            const model::InsertMix* m = doc.mix.find_insert(id);
-            ops.push_back(model::SetInsertParams{id, m ? m->params : std::vector<model::ParamValue>{}});
-            set = std::get_if<model::SetInsertParams>(&ops.back());
-        }
-        const auto k = std::find_if(set->params.begin(), set->params.end(),
-                                    [&](const model::ParamValue& p) { return p.key == key; });
-        if (k != set->params.end()) k->value = value;
-        else set->params.push_back({key, value});
+    // What the document needs to record (instance, param): the insert, and
+    // the bypass or the parameter's stable key. False for neither.
+    const auto describe = [&](uint32_t instance, uint32_t param, Chain::Touch& out) {
+        if (instance >= c.running_spec.size() || instance >= l.instances.size()) return false;
+        out.insert = c.running_spec[instance].insert;
+        out.bypass = param == plugin::kBypassParam;
+        if (out.bypass) return true;
+        if (param >= l.instances[instance].params.size()) return false;
+        out.key = l.instances[instance].params[param].key;
+        return true;
     };
-    // The host never applies a touch itself (host_control.h): the value
-    // goes to the chain tagged, through the ring.
-    const auto post = [&](uint32_t instance, uint32_t param, float value) {
-        if (!session_.post_plugin_param(c.store, instance, param, value)) c.retry[{c.store, instance, param}] = value;
+    const auto record = [&](uint32_t instance, uint32_t param, float value) {
+        Chain::Touch d;
+        if (describe(instance, param, d)) record_value(ops, doc, d.insert, d.bypass, d.key, value);
     };
     switch (t) {
         case pc::Type::ParamTouched: {
             pc::ParamTouched m;
-            if (pc::decode(bytes, m, e)) post(m.instance, m.param, m.value);
+            if (!pc::decode(bytes, m, e)) break;
+            // The host never applies a touch itself (host_control.h): the
+            // value goes to the chain tagged, through the ring, and is
+            // remembered until its gesture ends.
+            post(c, m.instance, m.param, m.value);
+            Chain::Touch d;
+            if (describe(m.instance, m.param, d)) {
+                d.value = m.value;
+                c.open_touches[{m.instance, m.param}] = std::move(d);
+            }
             break;
         }
         case pc::Type::GestureEnd: {
             pc::GestureEnd m;
             if (!pc::decode(bytes, m, e)) break;
-            post(m.instance, m.param, m.value);
+            post(c, m.instance, m.param, m.value);
             record(m.instance, m.param, m.value);
+            c.open_touches.erase({m.instance, m.param});
             break;
         }
         case pc::Type::EditorClosed: {
             pc::EditorClosed m;
             if (!pc::decode(bytes, m, e)) break;
             for (const pc::TouchedValue& v : m.moved) record(m.instance, v.param, v.value);
+            for (auto o = c.open_touches.begin(); o != c.open_touches.end();)
+                o = o->first.first == m.instance ? c.open_touches.erase(o) : std::next(o);
             break;
         }
         default: break;
@@ -780,12 +978,20 @@ void PluginHosting::recompute_faults(const model::Snapshot& doc) {
                         faults[in.id] = where(t, in) + " is down with " +
                                         (m.plugin.name.empty() ? m.plugin.id : m.plugin.name);
                     }
-                } else if (c.running->restarting()) {
-                    faults[in.id] = where(t, in) + ": restarting: " + c.running->why();
+                    continue;
                 }
-                continue;
+                if (c.running->restarting()) {
+                    faults[in.id] = where(t, in) + ": restarting: " + c.running->why();
+                    continue;
+                }
             }
-            if (!c.running && !c.start_failed.empty()) faults[in.id] = where(t, in) + ": " + c.start_failed;
+            if (c.start_failed.empty() || member(c.failed_spec) == c.failed_spec.end()) continue;
+            // M4 on #80: an edit whose new host failed while the old one
+            // plays is said, on every insert of the chain the edit wanted.
+            faults[in.id] = where(t, in) + ": " +
+                            (c.running && !c.running->down() ? "the edited chain did not start, it plays as before: "
+                                                             : "") +
+                            c.start_failed;
         }
     }
     faults_.swap(faults);
@@ -829,7 +1035,36 @@ uint32_t PluginHosting::hosts() const {
     };
     for (const auto& [track, c] : chains_) n += count(c->running.get()) + count(c->pending.get());
     for (const Retiring& r : retiring_) n += count(r.chain.get());
+    for (const auto& s : stopping_) n += count(s.get());
     return n;
+}
+
+bool PluginHosting::host_value(model::Id insert, const std::string& key, float& value) {
+    for (auto& [track, cp] : chains_) {
+        Chain& c = *cp;
+        for (uint32_t i = 0; i < c.running_spec.size(); ++i) {
+            if (c.running_spec[i].insert != insert) continue;
+            if (!c.running || c.running->down() || !c.running->host()) return false;
+            plugin_client::HostProcess& h = *c.running->host();
+            if (key.empty()) {
+                if (i >= plugin::kMaxInstances) return false;
+                value = h.header().bypass[i].load(std::memory_order_relaxed);
+                return true;
+            }
+            const pc::Loaded& l = h.loaded();
+            if (i >= l.instances.size()) return false;
+            const auto& keys = l.instances[i].params;
+            const auto d = std::find_if(keys.begin(), keys.end(), [&](const pc::ParamDesc& p) { return p.key == key; });
+            if (d == keys.end()) return false;
+            const int64_t slot = plugin::param_slot(h.map(), i, uint32_t(d - keys.begin()));
+            if (slot < 0) return false;
+            const auto* table = reinterpret_cast<const std::atomic<float>*>(static_cast<const char*>(h.region()) +
+                                                                            h.layout().values_offset);
+            value = table[slot].load(std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace sonora

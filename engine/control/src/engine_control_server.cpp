@@ -171,6 +171,8 @@ void EngineControlServer::after_deactivate() {
     // the runner, the hosts and their regions may go.
     playback_->set_chain_resolver(ChainResolver());
     hosting_.reset();
+    // The next activation builds hosting again, for its own period.
+    hosting_tried_ = false;
     playback_->after_deactivate();
 }
 

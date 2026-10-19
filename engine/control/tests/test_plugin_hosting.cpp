@@ -27,6 +27,17 @@
 //                        its last checked latency (A)
 //   gestures             a GestureEnd becomes SetInsertParams with the
 //                        insert's whole list, a bypass touch SetInsertBypass
+//   values_while_starting  a param and the bypass changed while the host
+//                        starts reach its store once it is Ready (B2, #80)
+//   reload_starts_afresh the same session opened again: a new host from the
+//                        document's values, silent until Ready (B3, #80)
+//   repost_bypass_off    an un-bypass the audio thread dropped is re-posted
+//                        (the #80 review's should-fix 1)
+//   gesture_left_open    a host that dies mid-touch: the touched value is
+//                        written to the document (M3, #80)
+//   failed_edit          an edit whose host crashes at start: faulted, the
+//                        old chain plays and follows the document, no
+//                        respawn on later changes (M4, #80)
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -114,7 +125,12 @@ struct Rig {
     float* outs[2];
     std::vector<model::Operation> ops_seen;
 
-    explicit Rig(const Args& a, int tracks = 2) : history(new_session(SessionSettings{})) {
+    // Residency held: the reader runs no pass, so a plan built waits,
+    // pending, and the playing one stays (ADR-0009 §4.4).
+    bool hold_reader = false;
+
+    explicit Rig(const Args& a, int tracks = 2, uint64_t ready_timeout_ms = 10000)
+        : history(new_session(SessionSettings{})) {
         std::filesystem::remove_all(kDir);
         SessionConfig cfg;
         cfg.dir = kDir;
@@ -140,6 +156,7 @@ struct Rig {
         hc.block_frames = kBlock;
         hc.max_block_frames = 256;
         hc.max_stores = 16;
+        hc.ready_timeout_ms = ready_timeout_ms;
         hosting = std::make_unique<PluginHosting>(*session, hc);
         ctl->set_chain_resolver([this](const TrackEdit& t, uint32_t e, ChainBinding& b) { hosting->resolve(t, e, b); });
     }
@@ -174,7 +191,7 @@ struct Rig {
         b.nframes = kBlock;
         b.callback_ns = now_ns();
         session->process(b);
-        if (!session->reader().running()) session->reader().run_pass();
+        if (!session->reader().running() && !hold_reader) session->reader().run_pass();
         PluginHosting::PollResult r = hosting->poll(now_ms(), history.current(), ctl->oldest_live_epoch());
         for (model::Operation& op : r.ops) {
             ops_seen.push_back(op);
@@ -270,6 +287,20 @@ int scenario_edit_keeps_old(const Args& a) {
     const uint32_t old_slot = rig.chain_node(0)->channel_slot;
     rig.apply(insert_op(100, 501, 0, kLookahead));
     rig.show(false);
+    // The #80 review: while a plan still names the old host it stays alive.
+    // Residency is held, so the plan built once the new host is Ready waits
+    // and the playing one keeps the old binding.
+    rig.hold_reader = true;
+    check(rig.until([&] { return (rig.hosting->insert_flags(501) & api::kInsertRunning) != 0; }, 15000),
+          "the new host is Ready while residency is held");
+    bool alive = true;
+    for (int i = 0; i < 60; ++i) {
+        rig.turn();
+        alive = alive && rig.hosting->hosts() == 2 && rig.bound_at(0, kBlock) &&
+                rig.chain_node(0)->channel_slot == old_slot;
+    }
+    check(alive, "the old host stays alive and bound while the playing plan names it");
+    rig.hold_reader = false;
     bool old_held = true;
     const bool swapped = rig.until(
         [&] {
@@ -407,6 +438,159 @@ int scenario_gestures(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// B2 on #80: values the document changes while a session's host starts are
+// what its store holds once it is Ready. The sleep plugin, seeded at 300 ms
+// a block, holds the host in validation long enough to change them.
+int scenario_values_while_starting(const Args& a) {
+    std::printf("values_while_starting: values changed while the host validates\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kSleep, {{"sleep_ms", 300.f}}));
+    rig.apply(insert_op(100, 501, 1, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.hosting->hosts() == 1; }, 10000), "the host is starting");
+    check((rig.hosting->insert_flags(501) & api::kInsertRunning) == 0, "not Ready yet");
+    rig.apply(SetInsertParams{501, {{"gain", -20.f}}});
+    rig.apply(SetInsertBypass{501, true});
+    rig.apply(SetInsertParams{500, {{"sleep_ms", 0.f}}});
+    rig.show(false);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "bound at 128 once Ready");
+    float gain = 0.f, bypass = 0.f, sleep = -1.f;
+    check(rig.until([&] { return rig.hosting->host_value(501, "gain", gain) && gain == -20.f; }, 10000),
+          "the store holds the gain set while it started (-20)");
+    check(rig.until([&] { return rig.hosting->host_value(501, "", bypass) && bypass == 1.f; }, 10000),
+          "and the bypass");
+    check(rig.until([&] { return rig.hosting->host_value(500, "sleep_ms", sleep) && sleep == 0.f; }, 10000),
+          "and the sleep plugin's 0 ms");
+    std::printf("  gain %.1f, bypass %.0f, sleep_ms %.0f\n", double(gain), double(bypass), double(sleep));
+    return failures ? 1 : 0;
+}
+
+// B3 on #80: a session opened again (a revert, or another session whose ids
+// collide) keeps no host of the one it replaces.
+int scenario_reload_starts_afresh(const Args& a) {
+    std::printf("reload_starts_afresh: the same session opened again\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "eg-amp running");
+    const uint32_t old_slot = rig.chain_node(0)->channel_slot;
+    const uint32_t old_generation = rig.chain_node(0)->channel_generation;
+    std::string why;
+    float gain = 0.f;
+    check(rig.hosting->set_param(500, "gain", -20.f, why), "gain -20 in the running host, not in the document");
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", gain) && gain == -20.f; }, 2000),
+          "its store holds -20");
+    rig.show(true);
+    check(rig.hosting->loading_total() == 1 && rig.hosting->loading() == 1, "one chain loading again");
+    check(rig.until([&] { return rig.silent_at(0, 0); }, 2000), "silent, latency 0, until the new host is Ready");
+    // The old slot may be reused once the old host left; its generation
+    // moves either way.
+    check(rig.until(
+              [&] {
+                  return rig.bound_at(0, kBlock) && (rig.chain_node(0)->channel_slot != old_slot ||
+                                                     rig.chain_node(0)->channel_generation != old_generation);
+              },
+              15000),
+          "bound at 128 on a new host's slot");
+    check(rig.hosting->host_value(500, "gain", gain) && gain == 0.f, "its store is the document's (gain 0)");
+    std::printf("  gain %.1f\n", double(gain));
+    check(rig.until([&] { return rig.hosting->hosts() == 1; }, 5000), "the old host left");
+    return failures ? 1 : 0;
+}
+
+// The #80 review's should-fix 1: an un-bypass the audio thread dropped (its
+// plan replaced before the callback drained it) is posted again.
+int scenario_repost_bypass_off(const Args& a) {
+    std::printf("repost_bypass_off: an un-bypass dropped by a plan swap\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(SetInsertBypass{500, true});
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "eg-amp running");
+    float bypass = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "", bypass) && bypass == 1.f; }, 2000), "bypassed");
+    const uint64_t dropped = rig.session->plugin_params_dropped();
+    rig.apply(SetInsertBypass{500, false});
+    rig.hosting->show(rig.history.current(), false);
+    // Another plan published before the next callback: the change, tagged
+    // with the plan it replaces, is dropped.
+    rig.replan();
+    rig.session->reader().run_pass();
+    rig.ctl->pump();
+    rig.turn();
+    check(rig.session->plugin_params_dropped() > dropped, "the un-bypass was dropped by the audio thread");
+    check(rig.until([&] { return rig.hosting->host_value(500, "", bypass) && bypass == 0.f; }, 3000),
+          "re-posted: the store is not bypassed, as the document says");
+    return failures ? 1 : 0;
+}
+
+// M3 on #80: a touch posts its value to the store; the host dies before its
+// GestureEnd; the document gets the value, as the store kept it.
+int scenario_gesture_left_open(const Args& a) {
+    std::printf("gesture_left_open: the crash plugin touched to crash, mid-gesture\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kCrash));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "running");
+    namespace pc = plugin::control;
+    std::string bytes;
+    std::vector<model::Operation> ops;
+    pc::encode(pc::ParamTouched{0, 0, 1.f}, bytes);
+    rig.hosting->handle_host_message(100, bytes, rig.history.current(), ops);
+    check(ops.empty(), "a touch alone records nothing");
+    const auto recorded = [&] {
+        const InsertMix* m = rig.history.current().mix.find_insert(500);
+        if (!m) return false;
+        for (const ParamValue& v : m->params)
+            if (v.key == "crash" && v.value == 1.f) return true;
+        return false;
+    };
+    check(rig.until(recorded, 5000), "the host died mid-gesture: crash = 1 is in the document");
+    return failures ? 1 : 0;
+}
+
+// M4 on #80: a crash plugin added in front of a running eg-amp, crashing at
+// its first block: the edit's start fails, the fault stands, eg-amp plays
+// on and follows the document, and nothing respawns on later changes.
+int scenario_failed_edit(const Args& a) {
+    std::printf("failed_edit: a crashing plugin added to a running chain\n");
+    Rig rig(a, 2, 3000);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 1, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "eg-amp running");
+    const uint32_t slot = rig.chain_node(0)->channel_slot;
+    rig.apply(insert_op(100, 501, 0, kCrash, {{"crash", 1.f}}));
+    rig.show(false);
+    check(rig.until([&] { return rig.hosting->faults().count(501) == 1; }, 10000), "the new insert is faulted");
+    if (rig.hosting->faults().count(501)) std::printf("  fault: %s\n", rig.hosting->faults().at(501).c_str());
+    check(rig.hosting->faults().count(500) == 1, "and eg-amp, whose edited chain did not start");
+    check(rig.until([&] { return rig.hosting->hosts() == 1; }, 3000), "only the old host is alive");
+    bool steady = true;
+    for (int k = 0; k < 5; ++k) {
+        rig.apply(SetInsertParams{500, {{"gain", -3.f - float(k)}}});
+        rig.show(false);
+        for (int i = 0; i < 10; ++i) {
+            rig.turn();
+            steady = steady && rig.hosting->hosts() == 1 && rig.hosting->faults().count(501) == 1;
+        }
+    }
+    check(steady, "five document changes later: no new host was started, the fault stands");
+    check(rig.bound_at(0, kBlock) && rig.chain_node(0)->channel_slot == slot, "the old chain still plays");
+    float gain = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", gain) && gain == -7.f; }, 2000),
+          "and follows the document (gain -7)");
+    rig.apply(SetInsertActive{501, false});
+    rig.show(false);
+    check(rig.until([&] { return rig.hosting->faults().count(500) == 0; }, 3000),
+          "the crashing insert made inactive: eg-amp's fault is gone");
+    return failures ? 1 : 0;
+}
+
 // The whole path through EngineControlServer on drivers/fake (its own
 // real-time thread, quantum 128): a session opened with eg-amp on track A
 // starts its host from the server's thread once the period is known; the
@@ -525,6 +709,11 @@ int main(int argc, char** argv) {
     else if (a.scenario == "down_keeps_latency") rc = scenario_down_keeps_latency(a);
     else if (a.scenario == "gestures") rc = scenario_gestures(a);
     else if (a.scenario == "server") rc = scenario_server(a);
+    else if (a.scenario == "values_while_starting") rc = scenario_values_while_starting(a);
+    else if (a.scenario == "reload_starts_afresh") rc = scenario_reload_starts_afresh(a);
+    else if (a.scenario == "repost_bypass_off") rc = scenario_repost_bypass_off(a);
+    else if (a.scenario == "gesture_left_open") rc = scenario_gesture_left_open(a);
+    else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");
