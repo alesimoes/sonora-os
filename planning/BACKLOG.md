@@ -134,26 +134,18 @@ playback can follow edits; it is in flight.
        compound-operation implementation.
 7. [x] Compound operations (ADR-0009 update 2026-10-14): PR #75, with an
        interim limit of 64 members (5 to 7.5 ms on 2,000-region playlists).
-8. [ ] Raise the compound limit toward 4,096 (ADR-0009 update 2026-10-14,
-       item 5, remedy (a); rt-engineer's profile on PR #75). Per member, the
-       whole-playlist hash maps are about 75 % of the cost:
-       - exact local validation inside a fold: an operator reports the
-         index range it touched, and the range ±1, with the crossfades
-         whose left or right region lies in it, is checked with
-         `region_problem`, adjacency and the crossfade rules. Not deferred
-         to the fold's end, so "fold == members one by one" holds;
-       - a test-time check in `model_compound` and `model_random_edits`
-         that the local verdict equals `playlist_problem`'s after every
-         member;
-       - range-local `overwrite()` (`lower_bound` and splice in place, no
-         new vector) and `drop_broken_crossfades()` (only the crossfades
-         touching the range), so a cut-like compound is not O(n) a member
-         either.
-       Measure with `measure_compound` again. Raising the limit changes what
-       a decoder accepts, so it needs a `kProtocolVersion` bump. **Must land
-       with cut/copy/paste** (Track 3 item 1): a paste over 18 tracks with
-       a few regions each, plus its overwrite splits, passes 64 members, so
-       at the interim limit ordinary edits would be refused.
+8. [x] Compound limit raised from 64 to 256 (ADR-0009 note 2026-10-18,
+       `kProtocolVersion` 5): local validation of the touched range ±1 and
+       its crossfades, range-local `overwrite()` and
+       `drop_broken_crossfades()`, audited against the whole-playlist
+       versions after every member in Debug and in the model's tests. 256
+       is the largest measured limit under 10 ms on 18 × 2,000 regions
+       (3.8 ms cut-like); 1,024 costs 11 to 12 ms.
+8a. [ ] Toward 4,096: what is left per member is shifting the region
+       vector on every split or removal (O(n) element moves). Needs either
+       a region storage that splices in O(log n) or batched members
+       (`ShiftRegions`, a multi-region remove), with an ADR first, since
+       `Playlist::regions` is a public vector.
 9. [ ] FakeEngine adds its closed takes to its document, as the control
        server does (`add_closed_take`): a "Record" compound, its notices,
        and a refused take's TakeFailed. Then UI tests see a compound arrive
@@ -185,8 +177,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              operator should still hear what changed (PR #69 review, note 3).
        - [ ] Cut/copy/paste/duplicate/repeat and Shuffle: each one
              `Compound` with a label ("Cut", "Paste"), now in common/model
-             (Track 2 item 7), within its interim 64 members until Track 2
-             item 8. Shuffle on a long playlist needs a `ShiftRegions`
+             (Track 2 item 7), within `model::kMaxCompoundMembers` (256 since
+             Track 2 item 8). Shuffle on a long playlist needs a `ShiftRegions`
              operation first (ADR-0009 update 2026-10-14, item 5).
        - [ ] The compound rule for every sender (PR #75 ui-engineer
              review, item 4):
@@ -194,15 +186,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
                splits an operator's edit across compounds;
              - over `model::kMaxCompoundMembers` (the constant, never a
                literal) the UI refuses before sending, changes nothing and
-               says so in operator words ("Paste needs 70 changes; at most
-               64 in one edit for now. Nothing was pasted."), not the
-               model's "operation 65 of 70";
+               says so in operator words ("Paste needs 300 changes; at most
+               256 in one edit. Nothing was pasted."), not the
+               model's "operation 257 of 300";
              - build to the fewest members: Shuffle's ripple waits for
                `ShiftRegions` (one member a playlist), and until then a
                Shuffle edit that would ripple more than fits is refused;
              - a `ui/qt/tests` case per sender at the limit and one past it.
-             An 18-track paste passes 64 members, so Track 2 item 8 must
-             land with cut/copy/paste.
+             256 since Track 2 item 8: an 18-track paste of about ten
+             regions a track, with its overwrite splits, fits.
        - [ ] The undo and redo text: "Undo Record", "Undo Paste", from the
              history's step labels (`History::undo_label()` /
              `redo_label()`, PR #75), as a property and an Edit menu item.

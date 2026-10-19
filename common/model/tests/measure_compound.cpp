@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // What a compound costs the document thread (ADR-0009 update 2026-10-14,
-// item 5): kMaxCompoundMembers members on one 2,000-region playlist, and on
-// 18 tracks of 2,000 regions, against the same members applied one by one. Run by hand;
-// the numbers go in the ADR. Not a test: it asserts nothing about time.
+// item 5): 64 to 4,096 members, up to kMaxCompoundMembers, on one
+// 2,000-region playlist and on 18 tracks of 2,000 regions, against the same
+// members applied one by one. Run by hand, in Release, on a quiet host; the
+// numbers go in the ADR. Not a test: it asserts nothing about time.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -131,6 +132,8 @@ double ms_since(Clock::time_point start) {
 struct Timing {
     double best = 1e300;
     double median = 0;
+    double worst = 0;
+    std::vector<double> samples;   // sorted
 };
 
 template <typename F>
@@ -138,14 +141,16 @@ Timing time_runs(int runs, F&& f) {
     std::vector<double> t;
     for (int i = 0; i < runs; ++i) {
         const auto start = Clock::now();
-        if (!f()) return Timing{-1, -1};
+        if (!f()) return Timing{-1, -1, -1, {}};
         t.push_back(ms_since(start));
     }
     std::sort(t.begin(), t.end());
-    return Timing{t.front(), t[t.size() / 2]};
+    return Timing{t.front(), t[t.size() / 2], t.back(), t};
 }
 
-bool measure(const char* what, int tracks, int regions, const Compound& c, int runs) {
+// With `raw`, every Document::apply sample is printed too, so the runs of
+// several invocations can be pooled for a median and a worst (ADR-0009).
+bool measure(const char* what, int tracks, int regions, const Compound& c, int runs, bool raw) {
     Session s;
     if (!build(tracks, regions, s)) return false;
     std::string err;
@@ -189,32 +194,39 @@ bool measure(const char* what, int tracks, int regions, const Compound& c, int r
         return false;
     }
     std::printf(
-        "%-44s %5zu members  %2d x %4d regions  Document::apply %8.2f ms (median %8.2f)  "
-        "fold %8.2f ms  decode %6.2f ms  one by one %9.2f ms  %7zu bytes\n",
-        what, c.ops.size(), tracks, regions, whole.best, whole.median, fold_only.best,
-        decode.best, one_by_one.best, bytes.size());
+        "%-44s %5zu members  %2d x %4d regions  Document::apply %8.2f ms (median %8.2f, "
+        "worst %8.2f)  fold %8.2f ms  decode %6.2f ms  one by one %9.2f ms  %7zu bytes\n",
+        what, c.ops.size(), tracks, regions, whole.best, whole.median, whole.worst,
+        fold_only.best, decode.best, one_by_one.best, bytes.size());
+    if (raw) {
+        std::printf("raw|%s|%zu|%d|", what, c.ops.size(), tracks);
+        for (const double t : whole.samples) std::printf(" %.3f", t);
+        std::printf("\n");
+    }
     return true;
 }
 
 }  // namespace
 
-int main() {
-    std::printf("measure_compound: best of 5 runs, steady_clock\n");
+int main(int argc, char** argv) {
+    const bool raw = argc > 1 && std::string(argv[1]) == "--raw";
+    std::printf("measure_compound: best of 5 runs, steady_clock, limit %zu members\n",
+                kMaxCompoundMembers);
     bool ok = true;
     for (const int tracks : {1, 18}) {
         Session shape;
         if (!build(tracks, 2000, shape)) return 1;
-        ok = measure(tracks == 1 ? "cut-like (split+remove), one playlist"
-                                 : "cut-like (split+remove), 18 playlists",
-                     tracks, 2000, cut_like(shape, kMaxCompoundMembers), 5) && ok;
-        ok = measure(tracks == 1 ? "SetFade, one playlist" : "SetFade, 18 playlists", tracks,
-                     2000, fades(shape, kMaxCompoundMembers), 5) && ok;
-    }
-    // How the cost grows with the member count, below the limit.
-    for (const std::size_t n : {std::size_t{1}, std::size_t{16}, std::size_t{32}}) {
-        Session shape;
-        if (!build(1, 2000, shape)) return 1;
-        ok = measure("SetFade, one playlist", 1, 2000, fades(shape, n), 5) && ok;
+        // The limit's candidates (ADR-0009 update 2026-10-14, item 5); one
+        // above the limit would only be refused.
+        for (const std::size_t n : {std::size_t{64}, std::size_t{256}, std::size_t{1024},
+                                    std::size_t{4096}}) {
+            if (n > kMaxCompoundMembers) continue;
+            ok = measure(tracks == 1 ? "cut-like (split+remove), one playlist"
+                                     : "cut-like (split+remove), 18 playlists",
+                         tracks, 2000, cut_like(shape, n), 5, raw) && ok;
+            ok = measure(tracks == 1 ? "SetFade, one playlist" : "SetFade, 18 playlists", tracks,
+                         2000, fades(shape, n), 5, raw) && ok;
+        }
     }
     return ok ? 0 : 1;
 }

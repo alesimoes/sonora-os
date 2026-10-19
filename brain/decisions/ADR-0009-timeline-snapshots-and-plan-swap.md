@@ -1008,6 +1008,130 @@ heard half done. And undo takes N presses. Grouping undo steps in
   and new inserts with their starting values into two operations, and so
   brings back the intermediate state the compound exists to hide (item 4).
 
+## Note, 2026-10-18: the compound limit is 256, `kProtocolVersion` 5
+
+Author: the model track (Track 2), BACKLOG Track 2 item 8. It applies the
+remedy that item 5 of the compound update names. It changes no decision of
+that update: the rules are the same, and only the limit's value and the
+protocol version move. Reviewed by rt-engineer and ui-engineer under
+ADR-0007 §6, because it changes what a decoder accepts.
+
+**What changed.**
+
+- **Exact local validation inside a fold.** Each playlist operator records
+  the index ranges of the regions it changed, and the ids it removed
+  (`common/model/src/local_edit.h`). After each member, `edit_playlist()`
+  checks only those regions and one either side: `region_problem`,
+  adjacency, every crossfade on any of them or on a removed region, and
+  the heard-fade rule. It checks in `playlist_problem()`'s order and with
+  its words, so the refusal is the same text with the same indices. The
+  check runs after every member and is not deferred to the fold's end, so
+  "fold == members one by one" still holds. Id uniqueness is not
+  re-checked, because `fresh()` already guarantees it. The playlist was
+  valid before the member, so nothing outside the touched neighbourhood can
+  have become invalid.
+- **Range-local operators.** `overwrite_range()` finds the first region
+  that meets the range by binary search over region ends, and visits only
+  the regions that meet it. It then splices their replacements in place,
+  with at most one shift of the tail. `drop_broken_crossfades_near()`
+  decides only the crossfades on a changed or removed region, and reads
+  what the crossfades before them left on those regions, as the
+  whole-playlist rule does. `fit_fades_near()` fits fades only on the
+  touched neighbourhood. New crossfades are inserted in region order, so
+  the per-member `sort_crossfades` and its map over every region are gone.
+- **The audit.** A build with `SONORA_MODEL_AUDIT` runs every playlist
+  edit twice: through the whole-playlist operators and `playlist_problem()`
+  kept from before, and through the range-local ones. It aborts unless the
+  two give the same verdict, in the same words, on the same playlist.
+  Debug builds of `sonora_model` audit. So does `sonora_model_audited`,
+  which every `common/model` test links, so CI's Release, TSan and ASan
+  runs audit too. `model_local_edit` is a randomized property test of that
+  audit: 1,500 compounds of 1 to 48 members on dense, crossfaded mono and
+  stereo playlists, with every member checked. The fold must also equal
+  the members applied one by one, and a refused member must refuse the
+  compound with its own reason. `model_compound` and `model_random_edits`
+  run under the same audit.
+
+**Measured, 2026-10-18** (`measure_compound`, Release, in
+`sonora-build:trixie` on the owner's i7-11800H under Docker Desktop). The
+host was checked quiet: no container but the owner's long-lived database
+before or after each run. These are three runs, best of 5 each; they are
+spread from lowest to highest across the runs. The shapes are the same as
+in item 5. `measure_compound` skips sizes above the limit, so the
+1,024 and 4,096 rows were measured with the limit set to 4,096 for the
+run.
+
+| Members | 1 × 2,000 cut-like | 1 × 2,000 `SetFade` | 18 × 2,000 cut-like | 18 × 2,000 `SetFade` |
+|---|---|---|---|---|
+| 64 | 0.64 to 0.71 ms | 0.10 to 0.11 ms | 1.84 to 1.88 ms | 1.13 to 1.21 ms |
+| 256 | 2.15 to 2.33 ms | 0.26 to 0.27 ms | **3.79 to 3.87 ms** | 1.33 to 1.39 ms |
+| 1,024 | 8.12 to 8.23 ms | 1.11 to 1.13 ms | 10.90 to 11.80 ms | 2.15 to 2.25 ms |
+| 4,096 | 21.87 to 23.04 ms | 5.00 to 5.83 ms | 40.77 to 43.17 ms | 5.77 to 6.07 ms |
+
+That is `Document::apply`: the encoding, the fold and the history step.
+For comparison, at 4,096 members before this change the cut-like case was
+1,071 to 1,169 ms and the `SetFade` case 673 to 823 ms (item 5). The same
+members sent one by one now cost 98 to 101 ms at 1,024 and 389 to 396 ms
+at 4,096 on 18 × 2,000. Decoding 4,096 members takes 2.4 to 3.9 ms, and
+the largest encoding, 4,096 `SetFade`, is 714 KB, well inside
+`kMaxMessageBytes`.
+
+**The tail, 2026-10-18** (PR #85 review). Best-of-5 hides the slow runs,
+so every `Document::apply` sample was kept (`measure_compound --raw`) in
+three more invocations, 15 samples a cell, on the code after the review
+fixes and the same machine. The host was quieter at the start (1-minute
+load 0.96) than at the end (4.81), so these cells are less quiet than the
+table above; their best is from level with it to about 20 % above it.
+Best / median / worst:
+
+| Members | 1 × 2,000 cut-like | 1 × 2,000 `SetFade` | 18 × 2,000 cut-like | 18 × 2,000 `SetFade` |
+|---|---|---|---|---|
+| 64 | 0.62 / 0.68 / 0.94 ms | 0.11 / 0.12 / 0.29 ms | 2.14 / 2.29 / 2.49 ms | 1.28 / 1.55 / 2.10 ms |
+| 256 | 2.41 / 2.52 / 3.27 ms | 0.28 / 0.29 / 0.38 ms | **4.24 / 4.70 / 7.35 ms** | 1.46 / 1.68 / 2.24 ms |
+| 1,024 | 8.60 / 9.87 / 13.87 ms | 1.15 / 1.31 / 1.79 ms | 12.11 / 12.70 / 13.50 ms | 2.82 / 3.03 / 4.37 ms |
+| 4,096 | 23.78 / 24.80 / 32.72 ms | 5.93 / 6.64 / 8.36 ms | 44.01 / 47.89 / 70.91 ms | 6.56 / 7.47 / 15.98 ms |
+
+At 256 on 18 × 2,000 the median is 4.7 ms and the worst of 15 is 7.35 ms,
+still under 10 ms; the worst is about 1.7 times the best, inside the 1.5
+to 2 times busy-host factor below. At 1,024 even the best is over budget.
+
+**The limit is 256.** That is the largest measured limit under 10 ms on
+18 × 2,000, by item 5's rule. 1,024 measured 10.9 to 11.8 ms on the
+cut-like shape. The quiet-host margin at 256 (3.8 ms, about 2.6 times
+under the budget) covers the 1.5 to 2 times slowdown that the rt-engineer
+measured on a busy host for PR #75. 512 was not measured. It would
+probably come to about 6 ms quiet, but busy-host runs could put it at
+10 ms or more.
+
+256 covers an 18-track take (36 members) and Alt-click on 18 tracks (18).
+It also covers a cut or paste across 18 tracks of about ten regions each,
+with the two edge splits on every track. Cut, copy and paste can land on
+it (BACKLOG Track 3 item 1).
+
+**What still costs at 4,096.** `SetFade` is now about 1 µs a member. A
+cut-like member is about 10 µs on a 2,000-region playlist, almost all of
+it the O(*n*) shift of `Playlist::regions` on each split and removal, since
+a region moves with its name and channel vector. Local validation cannot
+remove that cost. Going past about 1,000 members would take one of two
+things, each needing its own ADR: region storage that splices in
+O(log *n*), which changes the public `Playlist`, or members that act on
+many regions at once (`ShiftRegions` from item 5, a multi-region remove).
+That is BACKLOG Track 2 item 8a. The target of 4,096 stands.
+
+**`kProtocolVersion` 5.** A version-4 decoder refuses a compound of more
+than 64 members. So a version-4 interface on this engine would resync on
+every large paste, and fail again on the next one. With the bump, a client
+and an engine from different builds refuse each other at connect, with
+both numbers, as item 6 set out. Nothing else on the wire changes.
+`messages.h` records "5: a compound may hold up to 256 members".
+
+**Also changed.** `engine/control`'s `test_closed_take` covered splitting
+a take of more than `kMaxCompoundMembers / 2` tracks into several
+compounds. That now needs 130 tracks' files. While the limit is over twice
+the test's 40 tracks, the test instead checks that a 40-track take lands
+as one compound. The split path in `add_closed_take()` is kept, but no
+test exercises it now.
+
 ## Alternatives rejected
 
 **Command pattern with hand-written inverses, over a mutable model.** It is

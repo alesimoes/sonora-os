@@ -35,7 +35,10 @@ namespace sonora::api {
 // 4 (ADR-0009 update 2026-10-14): Compound, in common/model's op codec;
 //   ModelUpdate::label, the step an Undo or Redo moved over; the undo
 //   window's format 3, with each step's label.
-constexpr uint32_t kProtocolVersion = 4;
+// 5 (ADR-0009 note 2026-10-18, BACKLOG Track 2 item 8): a Compound may hold
+//   up to model::kMaxCompoundMembers = 256 members, not 64; a version-4
+//   replica would refuse to decode the larger ones.
+constexpr uint32_t kProtocolVersion = 5;
 
 // --- client -> engine -------------------------------------------------------
 

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 
 #include "checks.h"
+#include "local_edit.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/operations.h"
 
@@ -89,12 +92,13 @@ std::size_t region_index(const Playlist& p, Id region) {
     return kNone;
 }
 
-// A fade that no longer fits is shortened to fit. Only the fade an edit cut
-// through is dropped (see overwrite()); the other keeps its shape.
-void clamp_fades(Region& r) {
-    r.fade_out.length = std::min(r.fade_out.length, r.length);
-    r.fade_in.length = std::min(r.fade_in.length, r.length - r.fade_out.length);
-}
+using detail::clamp_fades;
+
+#if SONORA_MODEL_AUDIT
+// The whole-playlist operators the range-local ones replaced (local_edit.h),
+// kept verbatim in audited builds: every edit is run through both, and the
+// results must be equal.
+namespace reference {
 
 void insert_sorted(Playlist& p, Region r) {
     const auto it = std::lower_bound(
@@ -189,6 +193,9 @@ void drop_broken_crossfades(Playlist& p, const SourcePool& pool) {
     p.crossfades = std::move(kept);
     detail::fit_fades_to_crossfades(p);
 }
+
+}  // namespace reference
+#endif
 
 class Applier {
 public:
@@ -314,21 +321,19 @@ public:
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
             Region r = p.regions[i];
-            p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
+            erase_region(p, i);
             if (op.position < 0 || op.position > kMaxInteger - r.length) {
                 return fail("position " + str(op.position) + " is outside the timeline");
             }
             r.position = op.position;
             bool used = false;
-            if (!overwrite(p, r.position, r.end(), op.split_right_id, used, error_)) {
-                return false;
-            }
+            if (!overwrite(p, r.position, r.end(), op.split_right_id, used)) return false;
             if (used) {
                 if (!fresh(op.split_right_id)) return false;
                 used_id = op.split_right_id;
             }
-            insert_sorted(p, std::move(r));
-            drop_broken_crossfades(p, *before_.sources);
+            insert_region(p, std::move(r));
+            drop_broken_crossfades(p);
             return true;
         });
         if (ok && used_id != 0) after_.next_id = used_id + 1;
@@ -340,7 +345,7 @@ public:
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
             Region r = p.regions[i];
-            p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
+            erase_region(p, i);
             const Frames start = r.position;
             const Frames end = r.end();
             if (op.edge == Edge::Start) {
@@ -365,9 +370,9 @@ public:
             // Extending never needs a split: the region itself bounds the
             // range on one side, so nothing beneath can span both ends.
             bool used = false;
-            if (!overwrite(p, r.position, r.end(), 0, used, error_)) return false;
-            insert_sorted(p, std::move(r));
-            drop_broken_crossfades(p, *before_.sources);
+            if (!overwrite(p, r.position, r.end(), 0, used)) return false;
+            insert_region(p, std::move(r));
+            drop_broken_crossfades(p);
             return true;
         });
     }
@@ -384,8 +389,8 @@ public:
             if (!fresh(op.new_right_id)) return false;
             bool used = false;
             // A split is an overwrite of the empty range [at, at).
-            if (!overwrite(p, op.at, op.at, op.new_right_id, used, error_)) return false;
-            drop_broken_crossfades(p, *before_.sources);
+            if (!overwrite(p, op.at, op.at, op.new_right_id, used)) return false;
+            drop_broken_crossfades(p);
             return true;
         });
         if (ok) after_.next_id = op.new_right_id + 1;
@@ -396,8 +401,9 @@ public:
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
-            p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
-            drop_broken_crossfades(p, *before_.sources);
+            gone(op.region);
+            erase_region(p, i);
+            drop_broken_crossfades(p);
             return true;
         });
     }
@@ -408,6 +414,7 @@ public:
             if (i == kNone) return no_region(op.region, op.playlist);
             (op.end == FadeEnd::In ? p.regions[i].fade_in : p.regions[i].fade_out) =
                 op.fade;
+            mark(i, i);
             return true;
         });
     }
@@ -415,7 +422,7 @@ public:
     bool operator()(const SetCrossfade& op) {
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const Crossfade& x = op.crossfade;
-            const std::string why = detail::crossfade_problem(x, p, *before_.sources);
+            const std::string why = crossfade_problem(x, p);
             if (!why.empty()) return fail("crossfade: " + why);
             auto it = std::find_if(p.crossfades.begin(), p.crossfades.end(),
                                    [&](const Crossfade& c) {
@@ -423,8 +430,9 @@ public:
                                    });
             if (it != p.crossfades.end()) {
                 *it = x;
+                mark_crossfade(p, x);
             } else {
-                p.crossfades.push_back(x);
+                add_crossfade(p, x);
             }
             return true;
         });
@@ -440,13 +448,15 @@ public:
                 return fail("no crossfade between regions " + str(op.left) + " and " +
                             str(op.right));
             }
+            const Crossfade removed = *it;
             p.crossfades.erase(it);
+            mark_crossfade(p, removed);
             // The fades kept under it come back; one that would run into
             // the crossfade at its region's other end shortens to meet it.
             // The operator never saw that fade, and cannot edit it while
             // the other end is crossfaded, so refusing would leave no way
             // out short of clearing the other crossfade first.
-            detail::fit_fades_to_crossfades(p);
+            fit_fades(p);
             return true;
         });
     }
@@ -748,9 +758,7 @@ private:
             const std::string why = detail::region_problem(region, *before_.sources, ch);
             if (!why.empty()) return fail("region " + str(region.id) + ": " + why);
             bool used = false;
-            if (!overwrite(p, region.position, region.end(), split_id, used, error_)) {
-                return false;
-            }
+            if (!overwrite(p, region.position, region.end(), split_id, used)) return false;
             if (used) {
                 if (split_id == region.id) {
                     return fail("the split id must differ from the region's id");
@@ -758,28 +766,177 @@ private:
                 if (!fresh(split_id)) return false;
                 top = std::max(top, split_id);
             }
-            insert_sorted(p, region);
-            drop_broken_crossfades(p, *before_.sources);
+            insert_region(p, region);
+            drop_broken_crossfades(p);
             for (const Crossfade& x : crossfades) {
                 if (x.left != region.id && x.right != region.id) {
                     return fail("a take's crossfade must join the take (region " +
                                 str(region.id) + ")");
                 }
-                const std::string bad = detail::crossfade_problem(x, p, *before_.sources);
+                const std::string bad = crossfade_problem(x, p);
                 if (!bad.empty()) return fail("crossfade: " + bad);
-                p.crossfades.push_back(x);
+                add_crossfade(p, x);
             }
             // A punch near a region's start must not be refused for that
             // region's fade-in: losing a take is worse than a shorter fade.
-            detail::fit_fades_to_crossfades(p);
+            fit_fades(p);
             return true;
         });
         if (ok) after_.next_id = top + 1;
         return ok;
     }
 
+    bool refuse_playlist(Id playlist, const std::string& why, const std::string& where) {
+        return fail("playlist " + str(playlist) + (where.empty() ? "" : "." + where) + ": " +
+                    why);
+    }
+
+    // The playlist operators. Each records what it changed in `touched_`,
+    // which is all that edit_playlist() checks afterwards. In an audited
+    // build's reference run they are the whole-playlist versions instead.
+    bool overwrite(Playlist& p, Frames a, Frames b, Id split_id, bool& used) {
+#if SONORA_MODEL_AUDIT
+        if (reference_) return reference::overwrite(p, a, b, split_id, used, error_);
+#endif
+        return detail::overwrite_range(p, a, b, split_id, used, error_, touched_);
+    }
+
+    void insert_region(Playlist& p, Region r) {
+#if SONORA_MODEL_AUDIT
+        if (reference_) return reference::insert_sorted(p, std::move(r));
+#endif
+        detail::insert_region(p, std::move(r), touched_);
+    }
+
+    void erase_region(Playlist& p, std::size_t i) {
+#if SONORA_MODEL_AUDIT
+        if (reference_) {
+            p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
+            return;
+        }
+#endif
+        detail::erase_region(p, i, touched_);
+    }
+
+    void gone(Id region) { touched_.add_gone(region); }
+
+    void mark(std::size_t first, std::size_t last) { touched_.mark(first, last); }
+
+    // The two regions a crossfade on `p` joins.
+    void mark_crossfade(const Playlist& p, const Crossfade& x) {
+        const std::size_t l = detail::find_index(p, x.left, touched_);
+        const std::size_t r = detail::find_index(p, x.right, touched_);
+        if (l != detail::kNoIndex && r != detail::kNoIndex) {
+            mark(std::min(l, r), std::max(l, r));
+        }
+    }
+
+    void drop_broken_crossfades(Playlist& p) {
+#if SONORA_MODEL_AUDIT
+        if (reference_) return reference::drop_broken_crossfades(p, *before_.sources);
+#endif
+        detail::drop_broken_crossfades_near(p, *before_.sources, touched_);
+        detail::fit_fades_near(p, touched_);
+    }
+
+    void fit_fades(Playlist& p) {
+#if SONORA_MODEL_AUDIT
+        if (reference_) {
+            detail::fit_fades_to_crossfades(p);
+            return;
+        }
+#endif
+        detail::fit_fades_near(p, touched_);
+    }
+
+    std::string crossfade_problem(const Crossfade& x, const Playlist& p) const {
+        const std::size_t l = detail::find_index(p, x.left, touched_);
+        const std::size_t r = detail::find_index(p, x.right, touched_);
+        return detail::crossfade_problem(x, l == detail::kNoIndex ? nullptr : &p.regions[l],
+                                         r == detail::kNoIndex ? nullptr : &p.regions[r],
+                                         *before_.sources);
+    }
+
+    // One that passed crossfade_problem(), so both its regions are there.
+    void add_crossfade(Playlist& p, const Crossfade& x) {
+#if SONORA_MODEL_AUDIT
+        if (reference_) {
+            p.crossfades.push_back(x);
+            return;
+        }
+#endif
+        detail::insert_crossfade(p, x, detail::find_index(p, x.left, touched_));
+        mark_crossfade(p, x);
+    }
+
+#if SONORA_MODEL_AUDIT
+    // Audited builds (Debug, and the model's own tests) run every playlist
+    // edit twice: through the whole-playlist operators and playlist_problem(),
+    // as before BACKLOG Track 2 item 8, and through the range-local ones.
+    // Both must reach the same verdict in the same words, and the same
+    // playlist.
+    struct Audit {
+        bool ok = false;
+        std::string error;
+        Playlist playlist;
+    };
+
+    template <typename F>
+    Audit run_reference(const Playlist& before, Id playlist, std::uint16_t channels, F& f) {
+        Audit a;
+        a.playlist = before;
+        const std::string saved = error_;
+        reference_ = true;
+        a.ok = f(a.playlist, channels);
+        reference_ = false;
+        if (a.ok) {
+            detail::sort_crossfades(a.playlist);
+            std::string where;
+            const std::string why =
+                detail::playlist_problem(a.playlist, *before_.sources, channels, where);
+            if (!why.empty()) a.ok = refuse_playlist(playlist, why, where);
+        }
+        a.error = error_;
+        error_ = saved;
+        return a;
+    }
+
+    [[noreturn]] static void audit_failed(const std::string& what) {
+        std::fprintf(stderr, "common/model audit: %s\n", what.c_str());
+        std::abort();
+    }
+
+    void audit_verdict(const Playlist& p, std::uint16_t channels, const std::string& why,
+                       const std::string& where) const {
+        std::string full_where;
+        const std::string full =
+            detail::playlist_problem(p, *before_.sources, channels, full_where);
+        if (full != why || full_where != where) {
+            audit_failed("the local check says \"" + where + ": " + why +
+                         "\", playlist_problem says \"" + full_where + ": " + full + "\"");
+        }
+    }
+
+    void audit_against_reference(const Audit& a, bool ok, const Playlist& p) const {
+        if (a.ok != ok) {
+            audit_failed(std::string("the whole-playlist edit ") +
+                         (a.ok ? "succeeds" : "fails (" + a.error + ")") +
+                         ", the range-local one " + (ok ? "succeeds" : "fails (" + error_ + ")"));
+        }
+        if (!ok && a.error != error_) {
+            audit_failed("refused as \"" + a.error + "\" by the whole-playlist edit and as \"" +
+                         error_ + "\" by the range-local one");
+        }
+        if (ok && !(a.playlist == p)) {
+            audit_failed("the whole-playlist and range-local edits of playlist " + str(p.id) +
+                         " differ");
+        }
+    }
+#endif
+
     // Copies the one playlist, lets `f` edit the copy, checks the result
-    // against every invariant, and shares everything else with `before`.
+    // against every invariant where `f` could have broken one (local_edit.h),
+    // and shares everything else with `before`.
     //
     // Inside a compound, a playlist an earlier member already copied is
     // edited where it is, and so are the track and edit state above it
@@ -808,14 +965,27 @@ private:
         Playlist copy;
         if (!playlist_mine) copy = *playlist_ptr;
         Playlist& p = playlist_mine ? const_cast<Playlist&>(*playlist_ptr) : copy;
-        if (!f(p, channels)) return false;
-        detail::sort_crossfades(p);
-        std::string where;
-        const std::string why = detail::playlist_problem(p, *before_.sources, channels, where);
-        if (!why.empty()) {
-            return fail("playlist " + str(playlist) + (where.empty() ? "" : "." + where) +
-                        ": " + why);
+#if SONORA_MODEL_AUDIT
+        const Audit reference = run_reference(*playlist_ptr, playlist, channels, f);
+#endif
+        touched_.clear();
+        bool ok = f(p, channels);
+        if (ok) {
+            // The playlist was valid before the edit, so only what the edit
+            // touched can be wrong now (local_edit.h). No crossfade sort either:
+            // every operator keeps the list in region order.
+            std::string where;
+            const std::string why =
+                detail::playlist_problem_near(p, *before_.sources, channels, touched_, where);
+#if SONORA_MODEL_AUDIT
+            audit_verdict(p, channels, why, where);
+#endif
+            if (!why.empty()) ok = refuse_playlist(playlist, why, where);
         }
+#if SONORA_MODEL_AUDIT
+        audit_against_reference(reference, ok, p);
+#endif
+        if (!ok) return false;
         if (playlist_mine) {
             after_ = before_;
             return true;
@@ -874,6 +1044,10 @@ private:
     std::string& error_;
     const bool in_fold_;
     Id next_id_ = 0;
+    detail::Touched touched_;
+#if SONORA_MODEL_AUDIT
+    bool reference_ = false;
+#endif
 };
 
 bool fold(const Snapshot& before, const Compound& c, Snapshot& after, std::string& error,
