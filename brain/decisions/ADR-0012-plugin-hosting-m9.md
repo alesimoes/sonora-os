@@ -15,6 +15,8 @@
     ("Rulings of the rt-safety-auditor" maps them).
   - **Amendment of 2026-10-14** (the control server's chains, after §8):
     accepted by the owner, 2026-10-18, with the architect's changes A–H.
+  - **Amendment of 2026-10-19** (the scan worker and the catalog, after
+    the 2026-10-14 one): **Proposed**, awaiting the owner.
   - **Two owner decisions**, each with a default this ADR builds on until
     the owner rules ("For the owner"). Neither blocks the contract.
 - Date: 2026-10-13
@@ -980,6 +982,149 @@ through, and a bound chain that is not run plays silence.
      a run posts one **non-standing** `Notice` naming the plugin, track and
      slot, and the state block's `InsertState` counter carries the count
      from then on. The operator is told once; nothing stands.
+
+**Amendment, 2026-10-19: the scan worker and the plugin catalog
+(checklist 5). Proposed; not accepted.** Proposed by plugin-engineer.
+Nothing in it is implemented. It settles what §4 ("one probe per bundle
+... cached in the persistence partition keyed by bundle path, size and
+mtime"), §8 (`PluginCatalog`, `plugin.rescan`) and the 2026-10-14
+amendment's item 3 ("the scan worker settles which") leave open. Until it
+is accepted a client's `AddInsert`/`ReplaceInsert` stays refused
+(`kNoCatalog`) and the catalog sent is empty. **It changes accepted text in
+two places**: §4's "one probe per bundle" (item 1) and item 4 of the
+2026-10-14 amendment, "no new thread" (item 3). The `contracts/api`
+messages it needs already exist (`PluginCatalog`, protocol 3; the
+`plugin.rescan` command); it adds none. It adds a versioned probe record
+to `contracts/plugin` (item 2), which is a contract change under ADR-0007
+§6.
+
+1. **Two stages: enumerate, then one probe per plugin** (amends §4).
+   - *Enumerate:* one `sonora-plugin-host --list --json` child per scan,
+     over the same paths the host loads (`LV2_PATH` or lilv's defaults;
+     `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`, which covers
+     yabridge's `~/.vst3/yabridge`; plus every `--plugin-bundle`). LV2 is
+     a static description and runs no plugin code; VST3 is already one
+     isolated child per bundle inside `--list`, with its own timeout.
+     `--list` gains the bundle path on every record, so the worker can
+     fingerprint it (item 4).
+   - *Probe:* one `sonora-plugin-host --probe ID --channels N` child per
+     **plugin**, not per bundle. Reasons: a VST3 bundle can carry many
+     classes, and one class that crashes on instantiate must not block its
+     siblings; `--probe` is already built one plugin per process; and the
+     chain-start probes of item 3 (2026-10-14) are per plugin, so one
+     cache serves both. A probe validates (declared channels against what
+     it writes, as the host's validation does today) and describes; a plugin
+     that refuses, crashes or times out is in the catalog with
+     `usable = false` and the reason, never left out silently.
+   - *Channels:* probed at 2 when the plugin can run stereo (2 in, 2 out,
+     or 1-in-1-out replicated), otherwise at its own count. The cache key
+     is `(id, channels)`, as the run-time probes are keyed; a chain on a
+     mono track that finds no `(id, 1)` entry probes it then, as today.
+
+2. **The probe record, versioned in `contracts/plugin`.** Today
+   `--probe`'s JSON line is parsed by `engine/control` but specified only
+   in `plugins/host/src/main.cpp`. It becomes `probe_record.h` (record
+   version 1): everything `api::PluginInfo` needs, so the engine maps a
+   record to a catalog entry without asking the host again: vendor,
+   version, categories (LV2 class labels or VST3 subCategories, broadest
+   first), has-editor, audio in/out and side-chain, and per parameter its
+   key, name, min, max, default, flags (automatable, toggle, enum,
+   logarithmic, past `kMaxParamsPerChain`), unit, step count and labels.
+   The record carries its version and the host's `--version` line; a
+   record of another version is a cache miss, never a parse guess.
+
+3. **The worker: one thread, for the engine process** (amends item 4 of
+   2026-10-14, "no new thread or lock").
+   - Walking the install paths, statting bundles and reading or writing
+     a cache of a few MiB are filesystem calls, and the control thread's
+     turn is budgeted (ADR-0009 note, 10 ms). So the scan runs on a
+     `PluginScanner` thread owned by the control server, not by
+     `PluginHosting`: the catalog outlives a backend activation (a reopen
+     at another period does not rescan).
+   - It starts and reaps the probe children itself (it may block; it is
+     not the control thread), up to a cap (placeholder: half the hardware
+     threads, at least 1), each with `probe_timeout_ms` (30 s), at
+     `nice 10`, `SCHED_OTHER`, never RT. A probe runs third-party code
+     alongside a session; it must not compete with the hosts.
+   - Hand-over: the worker publishes an immutable
+     `std::shared_ptr<const Catalog>` under a mutex the control thread
+     only `try_lock`s once per turn (the control thread, never the audio
+     thread). Requests go the other way through a queue under the same
+     rule: `rescan`, and `probe(id, channels)`.
+   - **One owner of probes.** `PluginHosting`'s chain-start probes (item 3
+     of 2026-10-14) ask the worker instead of spawning their own: a cache
+     hit answers at once; a miss is queued **ahead of** the catalog scan,
+     deduplicated with any probe in flight for the same key. Session open
+     then costs no probe at all for plugins already scanned, which is the
+     fix Unverified 11 names.
+
+4. **The cache: where it lives and when it is stale.**
+   - *Location:* `$XDG_CACHE_HOME/sonora/plugin-catalog.json`, by default
+     `~/.cache/sonora/plugin-catalog.json`. On the appliance `/home` is the
+     persistence partition's only union mount (ADR-0005), so the cache
+     persists across boots on the stick; `--plugin-cache PATH` overrides
+     it and an empty path keeps the catalog in memory (the tests, CI).
+   - *Format:* one JSON document: `{"version": 1, "host": "<--version
+     line>", "bundles": {"<path>": {"fingerprint": ..., "plugins": [<probe
+     records>]}}}`. Written to a temporary file in the same directory,
+     `fsync`ed (`common/platform` `sync_data`), renamed, and its directory synced (`sync_directory`). Capped at 32 MiB; over
+     the cap, unreadable, of another `version` or another `host` line: the
+     whole file is discarded and the next scan is a full one, said once
+     in a Notice.
+   - *Fingerprint:* per bundle, the number of regular files, their total
+     size and the newest `mtime` (ns), walked recursively, at most 1,024
+     entries (a VST3 bundle's binary sits two levels down,
+     `Contents/x86_64-linux/`; a bundle's own directory `mtime` misses a
+     binary rewritten in place). Over 1,024 entries the bundle is always
+     re-probed. §4's "path, size and mtime", made concrete.
+   - *Invalidation:* a bundle whose fingerprint changed, or a bundle that
+     is new, is enumerated and its plugins probed again; a bundle gone
+     from the paths is dropped from the catalog. A plugin that crashed or
+     timed out is cached **blocked**, with its reason, so it is not run
+     again at every boot; only `plugin.rescan` or a changed fingerprint
+     probes it again.
+
+5. **When it scans** (rescan policy).
+   - **At engine start**, always, in the background: the cached catalog is
+     published at once (generation 1), then the walk compares
+     fingerprints and probes only what changed. Clients get a
+     `PluginCatalog` after the Snapshot, and again whenever a scan
+     completes with a different result (generation bumped).
+   - **`plugin.rescan`**: the same walk, and blocked plugins are probed
+     again. Answered Ok when the scan is queued, not when it ends; a
+     second request while one runs joins it. Refused while the transport
+     records ("not during a take": a probe runs unknown code).
+   - **No filesystem watch** (inotify) and no periodic rescan. Installing
+     a plug-in on the appliance is rare and deliberate; a probe runs
+     third-party code; and a catalog that changes under the operator's
+     plug-in menu mid-session is a surprise. Pro Tools and Logic scan at
+     launch and on request, as this does.
+
+6. **`AddInsert` and `ReplaceInsert` resolve against the catalog.**
+   - Refused (Failed, with the reason) when the `(format, id)` is not in
+     the catalog, or is there with `usable = false` (the catalog's refusal
+     words, §8). While the first scan of this run has not completed and
+     the id is in neither the cached catalog nor a finished probe, the
+     reply is Failed, "the plug-in scan is still running".
+   - The engine overwrites the request's `PluginRef::name` and `version`
+     with the catalog's, so §6.1's "as scanned" is true of what the
+     session file stores; the client's are not trusted.
+   - Inserts a session already holds are never resolved against the
+     catalog: they go through the probes, as today, and one not installed
+     is *missing* (item 1 of 2026-10-14). A rescan that loses a plugin
+     does not touch a running chain; the next start of that chain finds
+     it missing.
+
+**Open questions for the owner** (each has a default above):
+- Q1. Scan at every engine start (default), or only on `plugin.rescan`
+  after the first boot (faster start, but a plug-in installed with `apt`
+  stays invisible until the operator asks)?
+- Q2. Is `~/.cache/sonora/` acceptable as the place the catalog lives,
+  given `~/.cache` is the conventional "may be deleted" directory? The
+  alternative is `~/.local/state/sonora/`. Deleting it costs one full
+  scan, nothing else.
+- Q3. `plugin.rescan` refused while recording (default), or allowed at
+  idle priority?
 
 ## Rationale
 
