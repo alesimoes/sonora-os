@@ -35,7 +35,7 @@ end of its run. Keep it short: what is true now, not a diary.
   control server's chains (#64, checklist 5). ADR-0013 (post-fader meters,
   state layout 3, protocol 4; filed with #71) is Proposed, not implemented.
   ADR-0014 (MIDI, DAW 6; spec `brain/specs/midi.md`) is Proposed,
-  2026-10-19, with owner questions O1–O6.
+  2026-10-19, revised with both #93 reviews, owner questions O1–O8.
 - **ADR-0007 M1 landed (2026-10-12, `aa4fbec`, PR #5).** The C++ is in the
   module layout of ADR-0007 §1 (`common/`, `contracts/api`, `engine/core`,
   `engine/control`, `engine/app`, `drivers/jack`, `ui/keymap`, `ui/tui`)

@@ -120,7 +120,8 @@ playback can follow edits; it is in flight.
        templates, autosave and backups.
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
        - [x] ADR-0014 and `brain/specs/midi.md` written, **Proposed**
-             (`docs/midi-adr`); waits on the owner and O1–O6.
+             (`docs/midi-adr`); revised with the rt-engineer and plugin-engineer reviews (PR #93);
+             waits on the owner and O1–O8.
        - [ ] After acceptance, ADR-0014 §9's phases in order: M-1 model
              and format v4 (`MusicalMap`, track kinds, MIDI regions,
              protocol 7), M-2 backend MIDI ports, M-3 playback to ports,
