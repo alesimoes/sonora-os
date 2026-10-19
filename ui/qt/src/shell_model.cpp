@@ -311,8 +311,14 @@ void ShellModel::tick() {
     if (engine_.take_catalog(catalog_) && plugin_sinks_.catalog) plugin_sinks_.catalog(catalog_);
 
     const bool alive = engine_.engine_alive(now_ns_());
-    if (alive != alive_) {
+    // Read only while dead: a live engine's link has nothing to say, and the
+    // reason changes as reconnection attempts fail.
+    QString link_error = alive ? QString() : QString::fromStdString(engine_.link_error());
+    // A sentence of its own on the banner.
+    if (!link_error.isEmpty()) link_error[0] = link_error[0].toUpper();
+    if (alive != alive_ || link_error != link_error_) {
         alive_ = alive;
+        link_error_ = link_error;
         emit engineAliveChanged();
     }
     std::fill(peak_read_.begin(), peak_read_.end(), false);

@@ -17,6 +17,7 @@
 #include "qt_keys.h"
 #include "peak_source.h"
 #include "recording_adapter.h"
+#include "refusal_page.h"
 #include "register_types.h"
 #include "scene_item.h"
 #include "session_model.h"
@@ -348,12 +349,52 @@ int main(int argc, char** argv) {
         if (m->channel() == 9) CHECK(m->ballistics().over);
     }
 
+    // --- why the link is down leads the banner, over a gone engine's last
+    // alert (ui BACKLOG Track 3 item 6) ---
+    CHECK(model.linkErrorText().isEmpty());
+    engine.link_error_text =
+        "refusing to connect: the engine speaks control protocol version 6 and this interface "
+        "speaks version 5; install an interface and an engine from the same build. The "
+        "interface has stopped reconnecting: retrying cannot fix this";
+    model.tick();
+    CHECK(model.linkErrorText().startsWith(QStringLiteral("Refusing to connect: the engine")));
+    CHECK(banner->isVisible());
+    CHECK(banner_text->property("text").toString().startsWith(model.linkErrorText()));
+    CHECK(banner_text->property("text").toString().contains(QStringLiteral("Meters show no data")));
+    CHECK(!banner_text->property("text").toString().contains(QStringLiteral("audio server")));
+    // Two lines at 1280 px, and the banner grows to hold them.
+    CHECK(banner->height() > 26);
+
     engine.alive = true;
     engine.peaks[0] = 0.25f;
     model.tick();
     CHECK(model.engineAlive());
+    // A live engine has no link error, whatever the backend last said.
+    CHECK(model.linkErrorText().isEmpty());
+    CHECK(banner_text->property("text").toString() == model.alertText());
     for (MeterItem* m : visible_meters(view)) {
         if (m->channel() == 0) CHECK(m->ballistics().has_data && m->ballistics().bar_db > -12.1f);
+    }
+
+    // --- the startup refusal page: the reason, whole, on its own page ---
+    {
+        QQuickView page;
+        page.resize(1280, 720);
+        QString why;
+        const QString reason = QStringLiteral(
+            "refusing to connect: the engine speaks control protocol version 6 and this "
+            "interface speaks version 5; install an interface and an engine from the same build");
+        CHECK(load_refusal_page(page, reason, why));
+        if (!why.isEmpty()) std::fprintf(stderr, "%s\n", qPrintable(why));
+        QQuickItem* text = named(page.rootObject(), QStringLiteral("refusalReason"));
+        CHECK(text != nullptr);
+        CHECK(text->property("text").toString() == QStringLiteral("R") + reason.mid(1));
+        // Wrapped, never elided: every word of it is on the page.
+        CHECK(text->property("lineCount").toInt() >= 2);
+        CHECK(text->property("truncated").toBool() == false);
+        QQuickItem* detail = named(page.rootObject(), QStringLiteral("refusalDetail"));
+        CHECK(detail != nullptr &&
+              detail->property("text").toString().contains(QStringLiteral("not trying again")));
     }
 
     std::printf("ui shell: all checks passed\n");

@@ -43,23 +43,32 @@ Rectangle {
         id: banner
         objectName: "banner"
         anchors { left: parent.left; right: parent.right; top: transport.bottom }
-        height: visible ? 26 : 0
+        // A link error can be two lines (a version refusal names both
+        // versions and what to install), and it is the whole message.
+        height: visible ? Math.max(26, bannerText.implicitHeight + 2 * Theme.space2) : 0
         visible: root.shell.alertText.length > 0 || root.shell.softwareRendering
                  || !root.shell.engineAlive
         color: Theme.alarmSurface
         z: 1
         Text {
+            id: bannerText
             objectName: "bannerText"
             anchors {
                 left: parent.left; leftMargin: Theme.space4
                 right: parent.right; rightMargin: Theme.space4
                 verticalCenter: parent.verticalCenter
             }
+            wrapMode: Text.WordWrap
+            maximumLineCount: 3
             elide: Text.ElideRight
             color: Theme.alarm
             font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.Bold }
-            // The engine's own reason comes first: it says what to do.
-            text: root.shell.alertText.length > 0
+            // Why the link is down comes first when it is known: a gone
+            // engine's last alert is not current. Then the engine's own
+            // reason: it says what to do.
+            text: !root.shell.engineAlive && root.shell.linkErrorText.length > 0
+                  ? root.shell.linkErrorText + ". Meters show no data; nothing on this screen is current."
+                  : root.shell.alertText.length > 0
                   ? root.shell.alertText
                   : !root.shell.engineAlive
                   ? "The engine is not responding. Meters show no data; nothing on this screen is current."

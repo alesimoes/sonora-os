@@ -79,6 +79,14 @@ public:
     uint64_t greetings() const { return greetings_; }
     // Why the last connection ended or the last attempt failed.
     const std::string& last_error() const { return last_error_; }
+    // The last engine to greet spoke another protocol or state layout
+    // version. poll() then stops reconnecting: the engine at the endpoint is
+    // still that build, and retrying every period cannot change it. Only a
+    // call to connect() tries again.
+    bool refused_version() const { return refused_version_; }
+    // What to tell the operator about the link: empty while greeted; else
+    // last_error(), and for a version refusal that retrying has stopped.
+    std::string link_problem() const;
     const std::string& endpoint() const { return opts_.endpoint; }
 
     // Drops the connection as a crash of the engine's side would look. The

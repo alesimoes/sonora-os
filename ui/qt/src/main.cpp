@@ -24,6 +24,7 @@
 #include "measure.h"
 #include "peak_source.h"
 #include "qt_keys.h"
+#include "refusal_page.h"
 #include "register_types.h"
 #include "render_path.h"
 #include "replica_document.h"
@@ -286,6 +287,29 @@ void on_render_path(const RenderPath& p, void* ctx) {
     if (app->opt.meter_hz == 0 && p.software) app->model->setMeterHz(30);
 }
 
+// The refusal page in place of the windows, until the window is closed (not
+// on the appliance, where nothing closes it). Exits 1 then: the interface
+// never ran.
+int show_refusal(QGuiApplication& app, const Options& opt, const QString& reason) {
+    register_types();   // the page's Theme
+    QQuickView view;
+    view.setTitle(QStringLiteral("Sonora"));
+    QString why;
+    if (!load_refusal_page(view, reason, why)) {
+        std::fprintf(stderr, "sonora-ui: %s\n", qPrintable(why));
+        return 1;
+    }
+    QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
+    if (opt.kiosk) {
+        view.showFullScreen();
+    } else {
+        view.resize(1280, 720);
+        view.show();
+    }
+    app.exec();
+    return 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -347,8 +371,15 @@ int main(int argc, char** argv) {
     std::string error;
     if (!engine.connect(error)) {
         std::fprintf(stderr, "sonora-ui: %s\n", error.c_str());
+        // Any other failure exits, and the unit's restart is the retry that
+        // can fix it. A version refusal cannot be fixed by retrying, and an
+        // exit would put the appliance on a black screen restarted for ever.
+        if (socket != nullptr && socket->refused_version()) {
+            return show_refusal(app, a.opt, QString::fromStdString(error));
+        }
         return 1;
     }
+    if (socket != nullptr) engine.setLinkError([socket]() { return socket->link_problem(); });
     if (a.opt.engine_dies_after_s >= 0) {
         if (fake != nullptr) {
             // Same clock the fake engine reads.

@@ -142,6 +142,9 @@ void SocketEngine::pump(int wait_ms) {
 
 bool SocketEngine::connect(std::string& error) {
     if (greeted_) return true;
+    // An earlier refusal says nothing about the engine there now; left set,
+    // it would end this attempt after the first 50 ms without a Hello.
+    refused_version_ = false;
     const auto end = std::chrono::steady_clock::now() +
                      std::chrono::milliseconds(opts_.connect_timeout_ms);
     while (std::chrono::steady_clock::now() < end) {
@@ -227,10 +230,19 @@ uint64_t SocketEngine::submit(const api::ModelRequest& request) {
     return queue(bytes, m.seq);
 }
 
+std::string SocketEngine::link_problem() const {
+    if (greeted_) return {};
+    if (refused_version_) {
+        return last_error_ + ". The interface has stopped reconnecting: retrying cannot fix this";
+    }
+    return last_error_;
+}
+
 void SocketEngine::poll(api::Inbox& inbox) {
     if (channel_) {
         pump(0);
-    } else if (opts_.reconnect_period_ns != 0 && now() >= next_attempt_ns_) {
+    } else if (!refused_version_ && opts_.reconnect_period_ns != 0 &&
+               now() >= next_attempt_ns_) {
         // Connecting to a Unix socket answers at once, listening or not, so
         // this costs the tick nothing; the Hello is read on later ticks.
         next_attempt_ns_ = now() + opts_.reconnect_period_ns;

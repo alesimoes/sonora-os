@@ -76,6 +76,52 @@ if [[ "$MODE" == screenshot ]]; then
   shoot "${mix%.png}-panel.png" --window mix --insert-view panel
   # The Keys menu open over the Edit window: the profiles, and the a-z button.
   shoot "$base-keys.png" --window edit --keys-view profiles --keymap-dir keymaps
+
+  # The version refusal on a real sonora-engine that announces the next
+  # protocol version (--announce-versions, as the conformance suite runs it):
+  # at startup the refusal page ($base-refusal.png); on reconnect, an engine
+  # of this build replaced by the newer one, the Edit window's banner
+  # ($base-refusal-reconnect.png).
+  protocol=$(sed -n 's/.*kProtocolVersion = \([0-9]*\);.*/\1/p' contracts/api/include/sonora/api/messages.h)
+  layout=$(sed -n 's/.*kStateLayoutVersion = \([0-9]*\);.*/\1/p' contracts/api/include/sonora/api/state_block.h)
+  engine_dir="$(mktemp -d)"
+  sock="$engine_dir/sock/engine.sock"
+  engine() {  # sonora-engine arguments after the common ones; its pid in $pid
+    "$BUILD/sonora-engine" --backend fake --tracks 18 --dir "$engine_dir/session" \
+      --control-socket "$sock" --headless --no-memlock "$@" \
+      >>"$engine_dir/engine.log" 2>&1 &
+    pid=$!
+    for _ in $(seq 100); do [[ -S "$sock" ]] && return 0; sleep 0.1; done
+    echo "error: sonora-engine did not listen on $sock" >&2
+    return 1
+  }
+  shoot_on_engine() {  # file, seconds, then sonora-ui arguments
+    # shellcheck disable=SC2016  # expanded by the inner shell, inside cage
+    in_cage sh -c '
+      out="$1"; wait_s="$2"; shift 2
+      "$@" & ui=$!
+      sleep "$wait_s"
+      grim "/out/$out"
+      kill "$ui"; wait "$ui" || true
+    ' sh "$@"
+  }
+  engine --announce-versions "$((protocol + 1))" "$layout"
+  shoot_on_engine "$base-refusal.png" 4 "$UI" --kiosk --engine-socket "$sock"
+  kill "$pid" 2>/dev/null || true; wait "$pid" || true
+  # The interface attaches to this build's engine; at 3 s that engine is
+  # killed and the newer one takes the socket; at 8 s the screen is read.
+  engine
+  shoot_on_engine "$base-refusal-reconnect.png" 8 "$UI" --kiosk --demo --window edit \
+    --keymap keymaps/protools.json --engine-socket "$sock" &
+  cage_job=$!
+  sleep 3
+  kill -9 "$pid" 2>/dev/null || true; wait "$pid" || true
+  rm -f "$sock"
+  engine --announce-versions "$((protocol + 1))" "$layout"
+  wait "$cage_job" || true
+  kill "$pid" 2>/dev/null || true; wait "$pid" || true
+  rm -rf "$engine_dir"
+  echo "saved /out/$base-refusal.png and /out/$base-refusal-reconnect.png"
   echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png and $base-keys.png"
   exit 0
 fi

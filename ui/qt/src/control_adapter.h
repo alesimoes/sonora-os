@@ -62,6 +62,10 @@ public:
     // seq is forgotten and a lost command is reported on the status line.
     using LinkSink = std::function<void(bool up)>;
     void watchConnection(ConnectionProbe probe, LinkSink sink);
+    // link_error()'s source: SocketEngine::link_problem on the real engine.
+    using LinkError = std::function<std::string()>;
+    void setLinkError(LinkError probe) { link_error_ = std::move(probe); }
+    std::string link_error() const override { return link_error_ ? link_error_() : std::string(); }
 
     // Requests unanswered are remembered up to this many each, the oldest
     // forgotten first, so an engine that never answers costs bounded memory.
@@ -75,6 +79,7 @@ private:
     ModelSink model_sink_;
     ConnectionProbe probe_;
     LinkSink link_sink_;
+    LinkError link_error_;
     uint64_t connection_ = 0;
     std::set<uint64_t> model_seqs_;             // model requests awaiting a reply
     std::vector<api::CommandReply> model_replies_;

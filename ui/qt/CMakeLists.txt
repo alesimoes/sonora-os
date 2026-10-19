@@ -60,6 +60,7 @@ add_library(sonora_ui_qt STATIC
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
   src/mix_model.h src/mix_model.cpp
+  src/refusal_page.h src/refusal_page.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
@@ -73,7 +74,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
-        qml/InsertPanel.qml qml/ValueField.qml
+        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml
 )
 
 add_executable(sonora-ui src/main.cpp)

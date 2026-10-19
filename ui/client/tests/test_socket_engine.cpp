@@ -486,6 +486,72 @@ void malformed_frames_cost_only_their_sender() {
     fs::remove_all(dir, ec);
 }
 
+bool mentions(const std::string& text, const std::string& what) {
+    return text.find(what) != std::string::npos;
+}
+
+// A version refusal is said, and stops the reconnection loop: retrying an
+// engine of another build every period cannot fix it (ui BACKLOG Track 3
+// item 6).
+void a_version_refusal_stops_reconnecting() {
+    const fs::path dir = fresh_dir("version");
+    const uint32_t newer = api::kProtocolVersion + 1;
+    EngineProcess engine(dir, newer, api::kStateLayoutVersion);
+    std::string error;
+    {
+        // At startup.
+        SocketEngine e(client_options(engine.endpoint()));
+        CHECK(!e.connect(error));
+        CHECK(e.refused_version());
+        CHECK(mentions(error, "protocol version " + std::to_string(newer)));
+        CHECK(mentions(e.link_problem(), error));
+        CHECK(mentions(e.link_problem(), "stopped reconnecting"));
+    }
+    // A later connect() judges the engine there then, not the last refusal:
+    // with none listening it fails for that, not for a version (#90 review).
+    SocketEngine quick([&]() {
+        SocketEngine::Options o = client_options(engine.endpoint());
+        o.connect_timeout_ms = 5000;
+        return o;
+    }());
+    CHECK(!quick.connect(error) && quick.refused_version());
+    CHECK(engine.stop() == 0);
+    error.clear();
+    CHECK(!quick.connect(error));
+    CHECK(!quick.refused_version());
+    CHECK(!mentions(error, "protocol version") && mentions(error, "no engine answered"));
+
+    // On reconnect: the engine comes back as another build.
+    engine.start();
+    SocketEngine b(client_options(engine.endpoint()));
+    CHECK(b.connect(error));
+    CHECK(!b.refused_version() && b.link_problem().empty());
+    api::Inbox in;
+    engine.kill();
+    engine.start(newer, api::kStateLayoutVersion);
+    CHECK(until(b, in, [&]() { return b.refused_version(); }, 20000));
+    CHECK(!b.connected());
+    CHECK(mentions(b.last_error(), "protocol version " + std::to_string(newer)));
+    CHECK(mentions(b.link_problem(), "stopped reconnecting"));
+    const uint64_t greeted = b.greetings();
+
+    // Retrying has stopped: an engine of this build is listening again (a
+    // fresh client proves it), and `b`, polled for many reconnect periods,
+    // never reaches it.
+    CHECK(engine.stop() == 0);
+    engine.start();
+    SocketEngine fresh(client_options(engine.endpoint()));
+    CHECK(fresh.connect(error));
+    CHECK(!until(b, in, [&]() { return b.connected(); }, 600));
+    CHECK(b.greetings() == greeted && b.refused_version());
+    // An explicit connect() is the one way to try again.
+    CHECK(b.connect(error));
+    CHECK(!b.refused_version() && b.link_problem().empty());
+    CHECK(engine.stop() == 0);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -500,6 +566,7 @@ int main(int argc, char** argv) {
     an_interface_killed_mid_take(argv[0]);
     a_reconnect_resyncs_and_undo_stays_in_step();
     malformed_frames_cost_only_their_sender();
+    a_version_refusal_stops_reconnecting();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

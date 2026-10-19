@@ -271,17 +271,23 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              sized from the first Hello: the synthetic waveforms' rate
              (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
-6. [ ] The version refusal reaches the operator (PR #75 ui-engineer review,
-       item 3). `version_mismatch()`'s text ("the engine speaks control
-       protocol version 4 and this interface speaks version 3; install an
-       interface and an engine from the same build") goes to stderr and
-       exit 1 today, which on the appliance is a black screen restarted
-       for ever:
-       - at startup, a full-screen refusal page with the text instead of
-         exiting;
-       - on reconnect, `last_error()` shown in the engine-gone overlay;
-       - a version refusal stops the retry loop, since retrying cannot fix
-         it.
+6. [x] The version refusal reaches the operator (PR #75 ui-engineer review,
+       item 3; PR #90). `version_mismatch()`'s text
+       went to stderr and exit 1, which on the appliance is a black screen
+       restarted for ever:
+       - [x] at startup, a full-screen refusal page with the text instead of
+         exiting (`RefusalPage.qml`, `refusal_page.h`); other connect
+         failures still exit, since the unit's restart is the retry that
+         can fix them;
+       - [x] on reconnect, `SocketEngine::link_problem()` (its
+         `last_error()`) leads the engine-gone banner while the engine is
+         not alive (`ShellModel::linkErrorText`), over a gone engine's last
+         alert;
+       - [x] a version refusal stops the retry loop (`refused_version()`);
+         only an explicit `connect()` tries again (client_socket_engine
+         a_version_refusal_stops_reconnecting).
+       Still open: the tty interface (`sonora-tui`) prints the refusal and
+       exits; it has no page.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
