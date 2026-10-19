@@ -766,6 +766,60 @@ int qml() {
     QTest::mouseClick(&view, Qt::LeftButton, {}, centre(solo));
     r.settle();
     CHECK(r.session.solos() == QList<bool>({true, true, false, true}));
+
+    r.refused.clear();  // the typed "99" above
+    // Ctrl-click: solo safe. The button is recessed with its padlock, its
+    // mute loses the outline the other solos gave it, and the flag is the
+    // engine's document's.
+    const auto outlined = [&root](int track) {
+        QQuickItem* m = named(root, QStringLiteral("mute%1").arg(track));
+        QObject* border = m != nullptr ? m->property("border").value<QObject*>() : nullptr;
+        return border != nullptr &&
+               border->property("color").value<QColor>() == QColor::fromRgba(theme::kMute);
+    };
+    const auto engine_safe = [&r](int track) {
+        const model::Snapshot& s = r.fake.document();
+        return s.mix.find(s.edit->tracks[static_cast<std::size_t>(track)]->id)->solo_safe;
+    };
+    QQuickItem* padlock = named(root, QStringLiteral("soloSafe2"));
+    CHECK(padlock != nullptr && !padlock->isVisible());
+    CHECK(!solo->property("recessed").toBool());
+    CHECK(outlined(2));
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::ControlModifier, centre(solo));
+    r.settle();
+    CHECK(engine_safe(2));
+    CHECK(r.session.solos() == QList<bool>({true, true, false, true}));
+    CHECK(padlock->isVisible() && solo->property("recessed").toBool());
+    CHECK(!outlined(2));
+    // The Edit window's solo button shows it, and its Ctrl-click is solo
+    // safe too, never a solo.
+    r.session.setWindow(QStringLiteral("edit"));
+    QTest::qWait(50);
+    QQuickItem* edit_lock2 = named(root, QStringLiteral("editSoloSafe2"));
+    CHECK(edit_lock2 != nullptr && edit_lock2->isVisible());
+    // Track 2 unsoloed first, so a Ctrl-click that soloed would show.
+    std::string why;
+    CHECK(r.session.controller().toggle_solo(1, why));
+    r.settle();
+    CHECK(r.session.solos() == QList<bool>({true, false, false, true}));
+    QQuickItem* edit_solo = named(root, QStringLiteral("editSolo1"));
+    QQuickItem* edit_lock1 = named(root, QStringLiteral("editSoloSafe1"));
+    CHECK(edit_solo != nullptr && edit_solo->isVisible());
+    CHECK(edit_lock1 != nullptr && !edit_lock1->isVisible());
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::ControlModifier, centre(edit_solo));
+    r.settle();
+    CHECK(engine_safe(1));
+    CHECK(r.session.soloSafes() == QList<bool>({false, true, true, false}));
+    CHECK(r.session.solos() == QList<bool>({true, false, false, true}));
+    CHECK(edit_lock1->isVisible() && edit_solo->property("recessed").toBool());
+    r.session.setWindow(QStringLiteral("mix"));
+    QTest::qWait(50);
+    // Ctrl-click again in the Mix window: off, and the outline is back.
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::ControlModifier, centre(solo));
+    r.settle();
+    CHECK(!engine_safe(2));
+    CHECK(!padlock->isVisible() && !solo->property("recessed").toBool() && outlined(2));
+    CHECK(r.refused.empty());
     std::printf("  qml: ok\n");
     return 0;
 }
