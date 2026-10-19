@@ -318,9 +318,9 @@
           "title": "MIDI and virtual instruments",
           "owner": "rt-engineer, ui-engineer, driver-engineer",
           "items": [
-            {"id": "midi.spec", "title": "MIDI in the timeline model and session file: spec and ADR first", "size": "M", "phase": 6, "status": "todo"},
+            {"id": "midi.spec", "title": "MIDI in the timeline model and session file: spec and ADR first", "size": "M", "phase": 6, "status": "done", "evidence": "PR #93: ADR-0014 and brain/specs/midi.md, accepted by the owner 2026-10-19 with O1-O8 as recommended"},
             {"id": "midi.core", "title": "common/midi: event model, SMF 0/1 codec, edit primitives (quantize, swing, transpose, velocity, legato, split, merge), RT-safe MidiBuffer", "size": "M", "phase": 6, "status": "done", "evidence": "PR #23; 14/14 ctest incl. SMF truncation/corruption sweeps and a no-allocation test for MidiBuffer; TSan and ASan+UBSan clean"},
-            {"id": "midi.model", "title": "MIDI regions and notes in common/model", "size": "L", "phase": 6, "status": "todo", "ref": "LP-UG: MIDI regions"},
+            {"id": "midi.model", "title": "MIDI regions and notes in common/model", "size": "L", "phase": 6, "status": "doing", "branch": "m1-timebase", "ref": "LP-UG: MIDI regions", "note": "ADR-0014 M-1 timebase: MusicalMap (exact frames/ticks/bars|beats at 960,000 PPQ, batch API, 64-bit fast path, bounds O7), session format 4 with the v3 -> v4 tempo migration and report, ui/qt bars|beats on it; track kinds and MIDI regions next"},
             {"id": "midi.record", "title": "MIDI recording: merge, replace, cycle takes, input quantize", "size": "M", "phase": 6, "status": "todo", "ref": "PT-RG: Recording MIDI; LP-UG: Record software instruments"},
             {"id": "midi.playback", "title": "MIDI playback to instruments and external ports, sample-accurate", "size": "M", "phase": 6, "status": "todo"},
             {"id": "midi.instrument_tracks", "title": "Instrument tracks hosting LV2 and VST3 instruments", "size": "M", "phase": 6, "status": "todo", "ref": "PT-RG: Instrument tracks; LP-UG: Software instrument tracks"},

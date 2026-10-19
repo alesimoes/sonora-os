@@ -11,6 +11,7 @@
 
 #include "checks.h"
 #include "sonora/json/json.h"
+#include "sonora/model/musical_map.h"
 
 namespace sonora::model {
 
@@ -57,13 +58,14 @@ const char* name_of(const Name<E> (&table)[N], E v) {
 // kMigrations[v - 1] turns a version-v tree into version v + 1, in place: a
 // pure function on the parsed tree (session-format.md, "Versioning"). Each
 // gets a frozen fixture in common/model/tests/fixtures that must load
-// forever.
-using Migration = bool (*)(Value& root, std::string& error);
+// forever. What a step had to change rather than fill in, it reports in
+// `repairs`, one sentence each with its key path, for the opener to show.
+using Migration = bool (*)(Value& root, std::vector<std::string>& repairs, std::string& error);
 
 // v1 -> v2 (ADR-0012 §6.2): every track gains "inserts": [], nothing else.
 // Whatever is not shaped like a track is left for the reader to refuse with
 // its own message and line.
-bool v1_to_v2(Value& root, std::string& error) {
+bool v1_to_v2(Value& root, std::vector<std::string>&, std::string& error) {
     Value* tracks = root.find("tracks");
     if (tracks == nullptr || !tracks->is_array()) return true;
     for (std::size_t i = 0; i < tracks->items().size(); ++i) {
@@ -80,7 +82,7 @@ bool v1_to_v2(Value& root, std::string& error) {
 }
 
 // v2 -> v3: every track gains "solo_safe": false, nothing else.
-bool v2_to_v3(Value& root, std::string& error) {
+bool v2_to_v3(Value& root, std::vector<std::string>&, std::string& error) {
     Value* tracks = root.find("tracks");
     if (tracks == nullptr || !tracks->is_array()) return true;
     for (std::size_t i = 0; i < tracks->items().size(); ++i) {
@@ -96,11 +98,55 @@ bool v2_to_v3(Value& root, std::string& error) {
     return true;
 }
 
-const std::array<Migration, kFormatVersion - 1> kMigrations{{v1_to_v2, v2_to_v3}};
+// v3 -> v4 (ADR-0014 §2, midi.md §2.4, owner question O7): the tempo map
+// is brought inside the bounds musical time needs. Unlike the steps before
+// it this changes values, so each change is reported with the old and the
+// new; the version 3 file, which the first save keeps as the pre-migration
+// backup, holds the original. A value v3 itself refuses is left for the
+// reader to refuse.
+bool v3_to_v4(Value& root, std::vector<std::string>& repairs, std::string&) {
+    Value* tempo = root.find("tempo");
+    if (tempo == nullptr || !tempo->is_array()) return true;
+    const std::string kept = "; the original stays in the version 3 file, which the "
+                             "first save keeps as a backup";
+    for (std::size_t i = 0; i < tempo->items().size(); ++i) {
+        Value& e = tempo->items()[i];
+        if (!e.is_object()) continue;
+        const std::string p = "tempo[" + std::to_string(i) + "]";
+        Value* bpm = e.find("bpm");
+        float v = 0.0f;
+        if (bpm != nullptr && bpm->is_number() && bpm->to_float(v)) {
+            const float fitted = bpm_within_bounds(v);
+            if (fitted != v) {
+                repairs.push_back(p + ".bpm: " + bpm->text() +
+                                  " bpm is outside the 1 to 1000 bpm this version counts "
+                                  "musical time in, and opens as " +
+                                  (fitted == kMinBpm ? "1" : "1000") + " bpm" + kept);
+                *bpm = Value::number_float(fitted);
+            }
+        }
+        Value* meter = e.find("meter");
+        if (meter == nullptr || !meter->is_array() || meter->items().size() != 2) continue;
+        Value& beat = meter->items()[1];
+        std::int64_t d = 0;
+        if (!beat.is_integer_lexeme() || !beat.to_int64(d) || d < 1 || d > 0xFFFF) continue;
+        const std::uint32_t fitted = nearest_meter_denominator(static_cast<std::uint32_t>(d));
+        if (fitted == static_cast<std::uint32_t>(d)) continue;
+        const std::string beats = meter->items()[0].text();
+        repairs.push_back(p + ".meter: " + beats + "/" + beat.text() +
+                          " has a beat that is not a power of two from 1 to 64, and opens as " +
+                          beats + "/" + std::to_string(fitted) + kept);
+        beat = Value::integer(fitted);
+    }
+    return true;
+}
 
-bool migrate(Value& root, std::int64_t from, std::string& error) {
+const std::array<Migration, kFormatVersion - 1> kMigrations{{v1_to_v2, v2_to_v3, v3_to_v4}};
+
+bool migrate(Value& root, std::int64_t from, std::vector<std::string>& repairs,
+             std::string& error) {
     for (std::int64_t v = from; v < kFormatVersion; ++v) {
-        if (!kMigrations[static_cast<std::size_t>(v - 1)](root, error)) return false;
+        if (!kMigrations[static_cast<std::size_t>(v - 1)](root, repairs, error)) return false;
     }
     return true;
 }
@@ -926,11 +972,13 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
                            " does not exist; versions start at 1");
     }
     std::string why;
-    if (!migrate(root, file_version, why)) {
+    std::vector<std::string> migrated;
+    if (!migrate(root, file_version, migrated, why)) {
         error.message = "migrating from format version " + std::to_string(file_version) +
                         ": " + why;
         return false;
     }
+    for (std::string& m : migrated) rd.repaired(std::move(m));
 
     if (!rd.keys(root, "",
                  {"sonora_session", "written_by", "save_generation", "name",

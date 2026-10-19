@@ -85,7 +85,7 @@ bool refused(const std::string& text, const char* needle, const char* path, int 
 }
 
 // The current version's frozen fixture: what this build writes.
-constexpr const char* kCurrent = "v3-solo-safe.sonora";
+constexpr const char* kCurrent = "v4-tempo-bounds.sonora";
 
 int test_fixture_is_canonical() {
     const std::string text = read_fixture(kCurrent);
@@ -94,15 +94,16 @@ int test_fixture_is_canonical() {
     LoadError e;
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 3);
+    CHECK(l.file_version == 4);
+    CHECK(l.repairs.empty());
     CHECK(l.save_generation == 42);
     CHECK(l.written_by == "sonora-engine 0.2.0");
     // Load, save, compare bytes: the writer is canonical.
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v3-solo-safe.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v3-solo-safe.out.sonora\n");
+        std::ofstream("v4-tempo-bounds.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v4-tempo-bounds.out.sonora\n");
     }
     CHECK(out == text);
 
@@ -160,12 +161,12 @@ int test_v1_migrates() {
 
     for (const TrackMix& m : l.snapshot.mix.tracks) CHECK(!m.solo_safe);
 
-    // Saved, it is the same session at version 3: the version, one empty
+    // Saved, it is the same session at version 4: the version, one empty
     // list and one solo safe off per track are the whole difference.
     std::string out;
     CHECK(save(l, out));
     const std::string expected =
-        edit(edit(edit(v1, "\"sonora_session\": 1,", "\"sonora_session\": 3,"),
+        edit(edit(edit(v1, "\"sonora_session\": 1,", "\"sonora_session\": 4,"),
                   "      \"active_playlist\": 11,\n",
                   "      \"solo_safe\": false,\n      \"active_playlist\": 11,\n"
                   "      \"inserts\": [],\n"),
@@ -179,7 +180,7 @@ int test_v1_migrates() {
     CHECK(out == expected);
     std::int64_t version = 0;
     CHECK(file_format_version(v1, version) && version == 1);
-    CHECK(file_format_version(out, version) && version == 3);
+    CHECK(file_format_version(out, version) && version == 4);
     CHECK(!file_format_version("{\"keymap\": 1}", version));
     CHECK(!file_format_version("not json", version));
 
@@ -207,7 +208,7 @@ int test_v2_migrates() {
     std::string out;
     CHECK(save(l, out));
     const std::string expected =
-        edit(edit(edit(v2, "\"sonora_session\": 2,", "\"sonora_session\": 3,"),
+        edit(edit(edit(v2, "\"sonora_session\": 2,", "\"sonora_session\": 4,"),
                   "      \"solo\": false,\n      \"active_playlist\": 11,\n",
                   "      \"solo\": false,\n      \"solo_safe\": false,\n"
                   "      \"active_playlist\": 11,\n"),
@@ -225,6 +226,90 @@ int test_v2_migrates() {
                        "      \"solo\": false,\n      \"solo_safe\": true,\n"
                        "      \"active_playlist\": 13,\n"),
                   "migrating from format version 2: tracks[1] has \"solo_safe\"", ""));
+    return 0;
+}
+
+// The frozen version-3 fixture loads forever, through v3 -> v4. Its tempo
+// map is inside the bounds, so nothing but the version changes and nothing
+// is reported.
+int test_v3_migrates() {
+    const std::string v3 = read_fixture("v3-solo-safe.sonora");
+    CHECK(!v3.empty());
+    Loaded l;
+    LoadError e;
+    if (!load(v3, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(v3, l, e));
+    CHECK(l.file_version == 3);
+    CHECK(l.repairs.empty());
+    CHECK(invariants_hold(l.snapshot));
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == edit(v3, "\"sonora_session\": 3,", "\"sonora_session\": 4,"));
+    return 0;
+}
+
+// O7: a version 3 tempo map outside the bounds opens inside them, with each
+// change reported by key path, old value and new; nothing inside them moves.
+int test_v3_tempo_brought_inside_bounds() {
+    const std::string v3 = read_fixture("v3-tempo-out-of-bounds.sonora");
+    CHECK(!v3.empty());
+    Loaded l;
+    LoadError e;
+    if (!load(v3, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(v3, l, e));
+    CHECK(l.file_version == 3);
+    const std::vector<TempoEntry>& t = l.snapshot.settings.tempo;
+    CHECK(t.size() == 4);
+    CHECK(t[0].bpm == 1.0f && t[0].meter[0] == 4 && t[0].meter[1] == 4);
+    CHECK(t[1].bpm == 1000.0f && t[1].meter[0] == 7 && t[1].meter[1] == 4);
+    CHECK(t[2].bpm == 96.5f && t[2].meter[0] == 5 && t[2].meter[1] == 64);
+    CHECK(t[3].bpm == 1000.0f && t[3].meter[0] == 3 && t[3].meter[1] == 16);
+    if (l.repairs.size() != 5) {
+        for (const std::string& r : l.repairs) std::fprintf(stderr, "  repair: %s\n", r.c_str());
+    }
+    CHECK(l.repairs.size() == 5);
+    CHECK(mentions(l.repairs[0], "tempo[0].bpm: 0.5 bpm"));
+    CHECK(mentions(l.repairs[0], "opens as 1 bpm"));
+    CHECK(mentions(l.repairs[1], "tempo[1].bpm: 2400.0 bpm"));
+    CHECK(mentions(l.repairs[1], "opens as 1000 bpm"));
+    CHECK(mentions(l.repairs[2], "tempo[1].meter: 7/3"));
+    CHECK(mentions(l.repairs[2], "opens as 7/4"));
+    CHECK(mentions(l.repairs[3], "tempo[2].meter: 5/128"));
+    CHECK(mentions(l.repairs[3], "opens as 5/64"));
+    CHECK(mentions(l.repairs[4], "tempo[3].meter: 3/12"));
+    CHECK(mentions(l.repairs[4], "opens as 3/16"));
+    for (const std::string& r : l.repairs) CHECK(mentions(r, "version 3 file"));
+    // Saved, it is a version 4 file that opens with nothing to report.
+    std::string out;
+    CHECK(save(l, out));
+    Loaded again;
+    CHECK(load(out, again, e));
+    CHECK(again.file_version == 4 && again.repairs.empty());
+    CHECK(again.snapshot.settings.tempo == t);
+    return 0;
+}
+
+// A version 4 file outside the bounds is refused by key path, not changed:
+// only a migration changes what a file says.
+int test_v4_tempo_bounds_refused() {
+    const std::string text = read_fixture(kCurrent);
+    CHECK(refused(edit(text, "\"bpm\": 96.5,", "\"bpm\": 1000.5,"),
+                  "bpm must be from 1 to 1000", "tempo[1]"));
+    CHECK(refused(edit(text, "\"bpm\": 120.0,", "\"bpm\": 0.99,"),
+                  "bpm must be from 1 to 1000", "tempo[0]"));
+    CHECK(refused(edit(text, "\"meter\": [6, 8]", "\"meter\": [6, 6]"),
+                  "power of two from 1 to 64", "tempo[1]"));
+    CHECK(refused(edit(text, "\"meter\": [6, 8]", "\"meter\": [6, 128]"),
+                  "power of two from 1 to 64", "tempo[1]"));
+    CHECK(refused(edit(text, "\"sample_rate\": 48000,", "\"sample_rate\": 768000,"),
+                  "must be at most 384000", "sample_rate"));
+    // The edges are inside.
+    Loaded l;
+    LoadError e;
+    CHECK(load(edit(edit(text, "\"bpm\": 96.5,", "\"bpm\": 1000.0,"), "\"meter\": [6, 8]",
+                    "\"meter\": [6, 64]"),
+               l, e));
+    CHECK(load(edit(text, "\"bpm\": 120.0,", "\"bpm\": 1.0,"), l, e));
     return 0;
 }
 
@@ -296,22 +381,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 4,"),
-                  "format version 4, newer than this program, which reads up to version 3",
+    CHECK(refused(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 5,"),
+                  "format version 5, newer than this program, which reads up to version 4",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 5,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 6,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 3,",
+    CHECK(refused(edit(text, "\"sonora_session\": 4,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 3.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 4.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -323,8 +408,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 3,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 3,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 4,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 4,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -594,6 +679,9 @@ int main() {
     t(test_fixture_is_canonical);
     t(test_v1_migrates);
     t(test_v2_migrates);
+    t(test_v3_migrates);
+    t(test_v3_tempo_brought_inside_bounds);
+    t(test_v4_tempo_bounds_refused);
     t(test_round_trip_from_edits);
     t(test_versions);
     t(test_key_order_is_lenient);
