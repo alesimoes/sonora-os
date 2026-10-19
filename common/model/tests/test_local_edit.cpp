@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <random>
 
+#include "../src/checks.h"
 #include "../src/local_edit.h"
 #include "model_test.h"
 
@@ -316,6 +317,45 @@ int test_a_cut_keeps_the_crossfades_beside_it() {
     return 0;
 }
 
+// A watched crossfade listed before an unwatched one whose left region comes
+// first. No operator builds that list today, so it is made by hand: the
+// local check must still refuse it, at the same index and in the same words
+// as playlist_problem(), and not only in audited builds.
+int test_a_watched_crossfade_before_an_earlier_one_is_unsorted() {
+    Snapshot s = new_session(settings());
+    Ids ids(s);
+    const AddTrack t = add_track(ids, "Keys");
+    CHECK(step(s, t));
+    const AddSource src = add_source(ids, kSourceLength, 1, t.track);
+    CHECK(step(s, src));
+    std::vector<Id> r;
+    for (int i = 0; i < 6; ++i) {
+        r.push_back(ids());
+        const Frames at = 10000 * i;
+        CHECK(step(s, PlaceRegion{t.playlist, region(r.back(), src.source.id, at, 10000,
+                                                     at + kHandle),
+                                  0}));
+    }
+    CHECK(step(s, SetCrossfade{t.playlist, centred(r[0], r[1], 1000)}));
+    CHECK(step(s, SetCrossfade{t.playlist, centred(r[4], r[5], 1000)}));
+
+    Playlist p = playlist_of(s, 0);
+    CHECK(p.crossfades.size() == 2);
+    std::swap(p.crossfades[0], p.crossfades[1]);
+    std::string where_all;
+    const std::string all = detail::playlist_problem(p, *s.sources, 1, where_all);
+    CHECK(all == detail::kCrossfadesUnsorted);
+    CHECK(where_all == "crossfades[1]");
+
+    // Regions 3 to 5 are watched, so crossfades[0] is and crossfades[1] is not.
+    detail::Touched touched;
+    touched.mark(4, 4);
+    std::string where_near;
+    CHECK(detail::playlist_problem_near(p, *s.sources, 1, touched, where_near) == all);
+    CHECK(where_near == where_all);
+    return 0;
+}
+
 // Random compounds on dense crossfaded playlists. The audited library checks
 // every member as it is folded, and every member applied alone; here, the
 // fold must also equal the members one by one, and a compound with a
@@ -391,6 +431,7 @@ int main() {
     CHECK(test_a_move_fits_the_fade_it_uncovers() == 0);
     CHECK(test_a_trim_drops_the_crossfade_that_no_longer_fits() == 0);
     CHECK(test_a_cut_keeps_the_crossfades_beside_it() == 0);
+    CHECK(test_a_watched_crossfade_before_an_earlier_one_is_unsorted() == 0);
     CHECK(test_random_compounds() == 0);
     return 0;
 }

@@ -1076,6 +1076,25 @@ at 4,096 on 18 × 2,000. Decoding 4,096 members takes 2.4 to 3.9 ms, and
 the largest encoding, 4,096 `SetFade`, is 714 KB, well inside
 `kMaxMessageBytes`.
 
+**The tail, 2026-10-18** (PR #85 review). Best-of-5 hides the slow runs,
+so every `Document::apply` sample was kept (`measure_compound --raw`) in
+three more invocations, 15 samples a cell, on the code after the review
+fixes and the same machine. The host was quieter at the start (1-minute
+load 0.96) than at the end (4.81), so these cells are less quiet than the
+table above; their best is from level with it to about 20 % above it.
+Best / median / worst:
+
+| Members | 1 × 2,000 cut-like | 1 × 2,000 `SetFade` | 18 × 2,000 cut-like | 18 × 2,000 `SetFade` |
+|---|---|---|---|---|
+| 64 | 0.62 / 0.68 / 0.94 ms | 0.11 / 0.12 / 0.29 ms | 2.14 / 2.29 / 2.49 ms | 1.28 / 1.55 / 2.10 ms |
+| 256 | 2.41 / 2.52 / 3.27 ms | 0.28 / 0.29 / 0.38 ms | **4.24 / 4.70 / 7.35 ms** | 1.46 / 1.68 / 2.24 ms |
+| 1,024 | 8.60 / 9.87 / 13.87 ms | 1.15 / 1.31 / 1.79 ms | 12.11 / 12.70 / 13.50 ms | 2.82 / 3.03 / 4.37 ms |
+| 4,096 | 23.78 / 24.80 / 32.72 ms | 5.93 / 6.64 / 8.36 ms | 44.01 / 47.89 / 70.91 ms | 6.56 / 7.47 / 15.98 ms |
+
+At 256 on 18 × 2,000 the median is 4.7 ms and the worst of 15 is 7.35 ms,
+still under 10 ms; the worst is about 1.7 times the best, inside the 1.5
+to 2 times busy-host factor below. At 1,024 even the best is over budget.
+
 **The limit is 256.** That is the largest measured limit under 10 ms on
 18 × 2,000, by item 5's rule. 1,024 measured 10.9 to 11.8 ms on the
 cut-like shape. The quiet-host margin at 256 (3.8 ms, about 2.6 times

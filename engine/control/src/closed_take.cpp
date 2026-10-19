@@ -143,7 +143,7 @@ bool place_file(model::Document& document, const std::string& session_dir,
 }
 
 TakeAdded add_closed_take(model::Document& document, const Session& session,
-                          const Session::ClosedTake& take) {
+                          const Session::ClosedTake& take, std::size_t files_per_compound) {
     TakeAdded out;
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
@@ -156,6 +156,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     // ids per file, reserved whether or not the overwrite splits.
     std::vector<model::AddSource> sources;
     std::vector<model::RecordTake> records;
+    std::vector<int> numbers;   // the track each file is on, from 1
     model::Id next = document.current().next_id;
     for (const DiskThread::ClosedFile& f : take.files) {
         // A failed file is still valid up to its last whole frame
@@ -196,6 +197,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         next += 3;
         sources.push_back(std::move(src));
         records.push_back(std::move(rec));
+        numbers.push_back(f.track + 1);
     }
     if (!first_failure.empty()) {
         out.cut_short = which + " was cut short: " + first_failure;
@@ -209,9 +211,10 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     // track order, one undo step per part: a take that does not fit must
     // still land whole, not fall back to the pool for being large. The ids
     // above rise across the parts, so each part's are still fresh.
-    constexpr std::size_t kFilesPerCompound = model::kMaxCompoundMembers / 2;
-    for (std::size_t first = 0; first < sources.size(); first += kFilesPerCompound) {
-        const std::size_t last = std::min(sources.size(), first + kFilesPerCompound);
+    const std::size_t per_part =
+        std::clamp<std::size_t>(files_per_compound, 1, model::kMaxCompoundMembers / 2);
+    for (std::size_t first = 0; first < sources.size(); first += per_part) {
+        const std::size_t last = std::min(sources.size(), first + per_part);
         model::Compound c;
         c.label = "Record";
         for (std::size_t k = first; k < last; ++k) {
@@ -229,9 +232,16 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         // of them or in the model. The audio must not be lost to it: into
         // the pool it goes, where a save records it, and the operator is
         // told.
+        // In a split take the other parts may have landed, so the part
+        // that did not is named by its tracks.
+        std::string part = which;
+        if (per_part < sources.size()) {
+            part += " (tracks " + std::to_string(numbers[first]) + " to " +
+                    std::to_string(numbers[last - 1]) + ")";
+        }
         if (!out.refused.empty()) out.refused += "; ";
         out.refused +=
-            which + " is on disk and in the session's audio, but not on the timeline: " + why;
+            part + " is on disk and in the session's audio, but not on the timeline: " + why;
         for (std::size_t k = first; k < last; ++k) {
             std::string error;
             if (!apply(document, sources[k], out.updates, error)) {

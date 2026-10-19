@@ -361,6 +361,20 @@ std::string playlist_problem_near(const Playlist& p, const SourcePool& pool,
             }
             if (previous_left != kNoIndex && previous_left > li) return kCrossfadesUnsorted;
         }
+        // No operator leaves a watched crossfade after an unwatched one today
+        // (insert_crossfade is positional, a split renames in place), but an
+        // unwatched successor is skipped below, so its order is checked here.
+        // playlist_problem() reports the pair at the later index.
+        if (k + 1 < p.crossfades.size()) {
+            const Crossfade& n = p.crossfades[k + 1];
+            if (!has(watched, n.left) && !has(watched, n.right)) {
+                const std::size_t ni = find_index(p, n.left, t);
+                if (ni != kNoIndex && li > ni) {
+                    where = "crossfades[" + std::to_string(k + 1) + "]";
+                    return kCrossfadesUnsorted;
+                }
+            }
+        }
         previous_left = li;
         Frames before = 0, after = 0;
         crossfade_extent(x, before, after);

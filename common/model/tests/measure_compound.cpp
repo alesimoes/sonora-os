@@ -132,6 +132,8 @@ double ms_since(Clock::time_point start) {
 struct Timing {
     double best = 1e300;
     double median = 0;
+    double worst = 0;
+    std::vector<double> samples;   // sorted
 };
 
 template <typename F>
@@ -139,14 +141,16 @@ Timing time_runs(int runs, F&& f) {
     std::vector<double> t;
     for (int i = 0; i < runs; ++i) {
         const auto start = Clock::now();
-        if (!f()) return Timing{-1, -1};
+        if (!f()) return Timing{-1, -1, -1, {}};
         t.push_back(ms_since(start));
     }
     std::sort(t.begin(), t.end());
-    return Timing{t.front(), t[t.size() / 2]};
+    return Timing{t.front(), t[t.size() / 2], t.back(), t};
 }
 
-bool measure(const char* what, int tracks, int regions, const Compound& c, int runs) {
+// With `raw`, every Document::apply sample is printed too, so the runs of
+// several invocations can be pooled for a median and a worst (ADR-0009).
+bool measure(const char* what, int tracks, int regions, const Compound& c, int runs, bool raw) {
     Session s;
     if (!build(tracks, regions, s)) return false;
     std::string err;
@@ -190,16 +194,22 @@ bool measure(const char* what, int tracks, int regions, const Compound& c, int r
         return false;
     }
     std::printf(
-        "%-44s %5zu members  %2d x %4d regions  Document::apply %8.2f ms (median %8.2f)  "
-        "fold %8.2f ms  decode %6.2f ms  one by one %9.2f ms  %7zu bytes\n",
-        what, c.ops.size(), tracks, regions, whole.best, whole.median, fold_only.best,
-        decode.best, one_by_one.best, bytes.size());
+        "%-44s %5zu members  %2d x %4d regions  Document::apply %8.2f ms (median %8.2f, "
+        "worst %8.2f)  fold %8.2f ms  decode %6.2f ms  one by one %9.2f ms  %7zu bytes\n",
+        what, c.ops.size(), tracks, regions, whole.best, whole.median, whole.worst,
+        fold_only.best, decode.best, one_by_one.best, bytes.size());
+    if (raw) {
+        std::printf("raw|%s|%zu|%d|", what, c.ops.size(), tracks);
+        for (const double t : whole.samples) std::printf(" %.3f", t);
+        std::printf("\n");
+    }
     return true;
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const bool raw = argc > 1 && std::string(argv[1]) == "--raw";
     std::printf("measure_compound: best of 5 runs, steady_clock, limit %zu members\n",
                 kMaxCompoundMembers);
     bool ok = true;
@@ -213,9 +223,9 @@ int main() {
             if (n > kMaxCompoundMembers) continue;
             ok = measure(tracks == 1 ? "cut-like (split+remove), one playlist"
                                      : "cut-like (split+remove), 18 playlists",
-                         tracks, 2000, cut_like(shape, n), 5) && ok;
+                         tracks, 2000, cut_like(shape, n), 5, raw) && ok;
             ok = measure(tracks == 1 ? "SetFade, one playlist" : "SetFade, 18 playlists", tracks,
-                         2000, fades(shape, n), 5) && ok;
+                         2000, fades(shape, n), 5, raw) && ok;
         }
     }
     return ok ? 0 : 1;

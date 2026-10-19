@@ -64,8 +64,11 @@ struct TakeAdded {
 // index, in track order, every id allocated up front. One update, one undo
 // step, up to kMaxCompoundMembers / 2 files; a larger take goes in as
 // several compounds of that many, one update and one step each.
+// `files_per_compound` exists so tests reach the split with a few tracks;
+// it is clamped to [1, kMaxCompoundMembers / 2].
 TakeAdded add_closed_take(model::Document& document, const Session& session,
-                          const Session::ClosedTake& take);
+                          const Session::ClosedTake& take,
+                          std::size_t files_per_compound = model::kMaxCompoundMembers / 2);
 
 // At open, before anything records: every take in `session_dir`'s audio
 // folder that an engine died before closing gets the length on disk
