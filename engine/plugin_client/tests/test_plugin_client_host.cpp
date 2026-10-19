@@ -600,6 +600,13 @@ int fake_host(int argc, char** argv, const std::string& mode) {
                 // A preset change in the plugin's own editor: every
                 // parameter ends a gesture at once.
                 burst_ends(params, params);
+            } else if (mode == "coalesce-newer") {
+                // #78 note 1: a burst past the human rate coalesces ends of
+                // parameter 0 at 0.5, then a newer gesture of the same
+                // parameter touches 0.75, all in one batch.
+                burst_ends(3 * pc::kMaxGestureEndsPerSecond, 0);
+                msg(pc::GestureBegin{0, 0});
+                msg(pc::ParamTouched{0, 0, 0.75f});
             } else if (mode == "touch-at-limit") {
                 burst_touches(pc::kMaxTouchesPerSecondPerParam);
             } else if (mode == "touch-over") {
@@ -817,8 +824,10 @@ int fake_fails_start(const char* mode, const char* named) {
 // A fake host sending at a legitimate rate, or a burst at the limit: it
 // stays up for `ms` after Ready, its messages taken every poll as the
 // control server takes them. Returns what it sent.
+// `stall_ms`: once, after the first poll, the control thread stalls that
+// long (a slow save), so what the host sent meanwhile arrives in one pump.
 int fake_survives(const char* mode, uint64_t ms, ChainSpec spec, std::vector<std::string>* taken = nullptr,
-                  uint64_t* coalesced = nullptr) {
+                  uint64_t* coalesced = nullptr, uint64_t stall_ms = 0) {
     ::setenv("SONORA_FAKE_HOST", mode, 1);
     ControlRig rig(self_path(), {});
     if (!rig.sup->ok()) {
@@ -836,7 +845,8 @@ int fake_survives(const char* mode, uint64_t ms, ChainSpec spec, std::vector<std
         e = chain.poll(now_ms());
         std::vector<std::string> m = chain.take_host_messages();
         if (taken) taken->insert(taken->end(), m.begin(), m.end());
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms ? stall_ms : 5));
+        stall_ms = 0;
     }
     if (e != SupervisedChain::Event::None) std::printf("  why: %s\n", chain.why().c_str());
     check(e == SupervisedChain::Event::None && chain.host() && chain.host()->running(), "the host is still up");
@@ -861,6 +871,56 @@ int scenario_control_flood(const Args&) {
     check(coalesced > 0, "the burst past the human rate was coalesced, not refused");
     std::printf("  over it by one:\n");
     return fake_misbehaves("gesture-over", "GestureEnd", 3000);
+}
+
+// #78 note 1: a GestureEnd a burst coalesced, then a newer gesture of the
+// same parameter in the same batch. The coalesced end is handed over before
+// the newer touch, so the last value the control server sees for the
+// parameter is the newer one.
+int scenario_control_coalesce_order(const Args&) {
+    std::printf("control_coalesce_order: coalesced ends of p0 at 0.5, then a newer touch at 0.75, one batch\n");
+    std::vector<std::string> taken;
+    uint64_t coalesced = 0;
+    fake_survives("coalesce-newer", 1200, fake_spec(), &taken, &coalesced, 800);
+    check(coalesced > 0, "the burst was coalesced");
+    float last = -1.f;
+    uint32_t ends = 0;
+    for (const std::string& m : taken) {
+        pc::Type t{};
+        std::string e;
+        if (!pc::peek_type(m, t)) continue;
+        if (t == pc::Type::GestureEnd) {
+            pc::GestureEnd g;
+            if (pc::decode(m, g, e) && g.instance == 0 && g.param == 0) {
+                last = g.value;
+                ++ends;
+            }
+        } else if (t == pc::Type::ParamTouched) {
+            pc::ParamTouched p;
+            if (pc::decode(m, p, e) && p.instance == 0 && p.param == 0) last = p.value;
+        }
+    }
+    std::printf("  %u ends of p0 handed over, last value %.2f\n", ends, double(last));
+    check(ends > 3 * pc::kMaxGestureEndsPerSecond - uint32_t(coalesced), "the coalesced end was handed over");
+    check(last == 0.75f, "the newer touch is the last value of p0, not the coalesced end");
+    return 0;
+}
+
+// #78 note 2: the control thread stalls 1.5 s while a knob is dragged at
+// 100 touches a second; the backlog arrives in one pump and the token
+// bucket's stall headroom lets it through.
+int scenario_control_stalled_touches(const Args&) {
+    std::printf("control_stalled_touches: 100 touches/s while the control thread stalls 1.5 s\n");
+    std::vector<std::string> taken;
+    fake_survives("touch-legit", 2600, fake_spec(), &taken, nullptr, 1500);
+    uint32_t touches = 0;
+    for (const std::string& m : taken) {
+        pc::Type t{};
+        if (pc::peek_type(m, t) && t == pc::Type::ParamTouched) ++touches;
+    }
+    std::printf("  %u touches taken\n", touches);
+    check(touches >= 150, "the backlog and the rest were taken, none refused");
+    return 0;
 }
 
 int scenario_control_half(const Args&) {
@@ -1343,6 +1403,8 @@ int main(int argc, char** argv) {
     else if (a.scenario == "control_bogus") r = scenario_control_bogus(a);
     else if (a.scenario == "control_flood") r = scenario_control_flood(a);
     else if (a.scenario == "control_half") r = scenario_control_half(a);
+    else if (a.scenario == "control_coalesce_order") r = scenario_control_coalesce_order(a);
+    else if (a.scenario == "control_stalled_touches") r = scenario_control_stalled_touches(a);
     else if (a.scenario == "control_rates") r = scenario_control_rates(a);
     else if (a.scenario == "control_unsolicited") r = scenario_control_unsolicited(a);
     else if (a.scenario == "control_breaches") r = scenario_control_breaches(a);

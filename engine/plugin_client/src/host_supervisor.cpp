@@ -82,6 +82,40 @@ void HostProcess::stop() {
     }
 }
 
+void HostProcess::request_stop(uint64_t now_ms) {
+    if (stop_requested_ms_ != 0 || !child_ || !child_->running()) return;
+    stop_requested_ms_ = now_ms ? now_ms : 1;
+    if (ctl_ && !ctl_closed_) {
+        std::string bytes, error;
+        plugin::control::encode(plugin::control::Shutdown{}, bytes);
+        if (link_.queue(bytes, error)) pump(now_ms);
+    }
+    header_->shutdown.store(1, std::memory_order_release);
+}
+
+bool HostProcess::stopped(uint64_t now_ms, uint64_t grace_ms) {
+    if (!child_ || !child_->running()) return true;
+    pump(now_ms);
+    // The signal only: running() reaps it on a later call, so a child slow
+    // to die (D state on a slow stick) never holds the control thread (M5
+    // on #80).
+    if (stop_requested_ms_ != 0 && now_ms - stop_requested_ms_ >= grace_ms) child_->kill();
+    return !child_->running();
+}
+
+void HostProcess::signal_kill() {
+    if (child_ && child_->running()) child_->kill();
+}
+
+bool HostProcess::refresh_latency() {
+    if (!header_) return false;
+    header_->latency_generation.load(std::memory_order_acquire);
+    const uint32_t l = plugin::checked_latency(header_->latency_frames.load(std::memory_order_relaxed));
+    if (l == plugin::kLatencyInvalid || l == latency_) return false;
+    latency_ = l;
+    return true;
+}
+
 void HostProcess::kill() {
     if (!child_ || !child_->running()) return;
     child_->kill();
@@ -368,6 +402,7 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
             pc::GestureBegin g;
             if (!pc::decode(m, g, e)) return fault("GestureBegin: " + e);
             if (!loaded_seen_ || !in_chain(g.instance, g.param)) return fault("GestureBegin for no parameter of the chain");
+            flush_coalesced(g.instance, g.param);
             break;
         }
         case pc::Type::ParamTouched: {
@@ -379,6 +414,7 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
                              " ParamTouched per second for instance " + std::to_string(p.instance) + " parameter " +
                              std::to_string(p.param) + " (M2)");
             }
+            flush_coalesced(p.instance, p.param);
             break;
         }
         case pc::Type::GestureEnd: {
@@ -386,7 +422,7 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
             if (!pc::decode(m, g, e)) return fault("GestureEnd: " + e);
             if (!loaded_seen_ || !in_chain(g.instance, g.param)) return fault("GestureEnd for no parameter of the chain");
             switch (gesture_end(g.instance, g.param, g.value, now_ms)) {
-                case GestureVerdict::Pass: break;
+                case GestureVerdict::Pass: flush_coalesced(g.instance, g.param); break;
                 case GestureVerdict::Coalesced: return true;
                 case GestureVerdict::Kill:
                     return fault("more than " + std::to_string(gesture_kill_threshold()) +
@@ -418,6 +454,18 @@ bool HostProcess::on_message(std::string_view m, uint64_t now_ms) {
         default: return fault("a message type no host sends");
     }
     return hold(m, true);
+}
+
+void HostProcess::flush_coalesced(uint32_t instance, uint32_t param) {
+    // #78 note 1: a coalesced end handed over after a newer message of the
+    // same parameter would close that newer gesture with the older value.
+    // It goes now, in its place, ahead of the message that passed.
+    const auto it = coalesced_.find({instance, param});
+    if (it == coalesced_.end()) return;
+    std::string bytes;
+    plugin::control::encode(plugin::control::GestureEnd{instance, param, it->second}, bytes);
+    coalesced_.erase(it);
+    messages_.push_back({std::move(bytes), false});
 }
 
 bool HostProcess::hold(std::string_view m, bool unsolicited) {
@@ -882,6 +930,26 @@ std::vector<std::string> SupervisedChain::take_host_messages() {
         out.insert(out.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
     }
     return out;
+}
+
+bool SupervisedChain::refresh_latency() { return current_ && current_->refresh_latency(); }
+
+void SupervisedChain::request_stop(uint64_t now_ms) {
+    // Never bound, so nothing fades: killed now, reaped by stopped().
+    if (starting_) {
+        starting_->request_stop(now_ms);
+        starting_->signal_kill();
+    }
+    if (current_) current_->request_stop(now_ms);
+    if (retiring_) retiring_->request_stop(now_ms);
+}
+
+bool SupervisedChain::stopped(uint64_t now_ms) {
+    bool all = true;
+    if (starting_) all = starting_->stopped(now_ms) && all;
+    if (current_) all = current_->stopped(now_ms) && all;
+    if (retiring_) all = retiring_->stopped(now_ms) && all;
+    return all;
 }
 
 SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {

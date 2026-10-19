@@ -123,6 +123,20 @@ public:
     // SIGKILL; reaps it.
     void stop();
     void kill();
+    // stop() without the wait, for the control thread: Shutdown and the
+    // word now; stopped() true once it has exited, killing it if it is
+    // still running `grace_ms` after the request.
+    void request_stop(uint64_t now_ms);
+    // Never waits: past the grace the kill is signalled and a later call
+    // reaps it.
+    bool stopped(uint64_t now_ms, uint64_t grace_ms = 2000);
+    // SIGKILL without the wait kill() does; stopped() reaps it.
+    void signal_kill();
+    // The latency re-read from the region by contracts/plugin's rule
+    // (generation, then the figure through checked_latency), after a
+    // LatencyChanged. True when it moved; an implausible figure keeps the
+    // old one.
+    bool refresh_latency();
     // "exited with code N" / "killed by signal N", once it is not running.
     std::string exit_text();
 
@@ -144,7 +158,8 @@ public:
     // Checked host messages since the last call, in arrival order, encoded:
     // gestures, touches, editor and state replies, LatencyChanged, Fault;
     // then one GestureEnd per parameter whose gestures a burst coalesced
-    // (M2). For the control server, which decodes them again (they decode).
+    // (M2) and that no newer message of the same parameter followed (a
+    // newer one hands the coalesced end over in its place first). For the control server, which decodes them again (they decode).
     // The owner takes them every poll: what a host sends unasked is held up
     // to kMaxHeldMessages / kMaxHeldBytes, past which the host is a fault
     // (H1 on #78); replies are bounded by the requests outstanding.
@@ -176,6 +191,9 @@ private:
     bool fault(std::string why);
     bool on_message(std::string_view m, uint64_t now_ms);
     bool hold(std::string_view m, bool unsolicited);
+    // A coalesced GestureEnd of (instance, param), held before a newer
+    // message of that parameter passes (#78 note 1).
+    void flush_coalesced(uint32_t instance, uint32_t param);
     // M2: a token bucket per parameter for touches, refilled by wall time
     // and widened by a stalled pump; past it, a fault.
     uint32_t touch_slot(uint32_t instance, uint32_t param) const;
@@ -229,6 +247,7 @@ private:
     std::vector<uint32_t> param_counts_;
     int32_t refused_instance_ = -1;
     std::string refused_text_;
+    uint64_t stop_requested_ms_ = 0;
 
     std::unique_ptr<platform::SharedRegion> region_;
     std::unique_ptr<platform::ChildProcess> child_;
@@ -367,6 +386,17 @@ public:
     // of hosts already let go first (L2 on #78), then the retiring one's,
     // then the bound one's.
     std::vector<std::string> take_host_messages();
+    // The bound host's latency re-read after a LatencyChanged; true when it
+    // moved (the caller builds a plan with it, §5.4).
+    bool refresh_latency();
+    // For a chain being let go, after every plan naming its slots has been
+    // retired: every host asked to stop without waiting, and stopped() true
+    // once all have exited (killed past the grace). The destructor then
+    // waits for nothing.
+    void request_stop(uint64_t now_ms);
+    bool stopped(uint64_t now_ms);
+    // A replacement is starting while the old host's slot stays bound.
+    bool restarting() const { return starting_ != nullptr && current_ != nullptr; }
     // Down because the plugin refused (deterministic; ADR-0012 amendment of
     // 2026-10-14, change C: the control server leaves that instance out and
     // starts the chain without it), and which instance, or -1.

@@ -392,6 +392,10 @@ int main(int argc, char** argv) {
             place_files.emplace_back(argv[++i]);
         } else if (std::strcmp(argv[i], "--no-input-monitoring") == 0) {
             no_input_monitoring = true;
+        } else if (std::strcmp(argv[i], "--plugin-host") == 0 && i + 1 < argc) {
+            control.plugin_host = argv[++i];
+        } else if (std::strcmp(argv[i], "--plugin-bundle") == 0 && i + 1 < argc) {
+            control.plugin_bundles.emplace_back(argv[++i]);
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
@@ -430,6 +434,9 @@ int main(int argc, char** argv) {
                 "                    its BWF time reference (repeatable: tracks 2, 3...)\n"
                 "  --no-input-monitoring\n"
                 "                    armed tracks send nothing to the monitor bus\n"
+                "  --plugin-host PATH  the plugin host (default: sonora-plugin-host\n"
+                "                    beside this binary; none: inserts show faulted)\n"
+                "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
                 "  --keymap PATH     key map for the terminal interface\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
@@ -823,6 +830,13 @@ int main(int argc, char** argv) {
     }
     control.state_memory = state->writable_data();
     control.state_memory_bytes = state->bytes();
+    // The plugin host beside this binary, as the image installs it; without
+    // one the engine still records and plays, every insert shown faulted.
+    if (control.plugin_host.empty()) {
+        const std::string dir = sonora::platform::executable_dir();
+        const std::string host = dir.empty() ? std::string() : dir + "/sonora-plugin-host";
+        if (!host.empty() && ::access(host.c_str(), X_OK) == 0) control.plugin_host = host;
+    }
 
     sonora::EngineControlServer server(session, audio.get(), std::move(control));
     // Kept on screen for the whole session, by every interface that ever

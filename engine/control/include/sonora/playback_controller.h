@@ -102,6 +102,15 @@ public:
     // What the next build starts from. For tests.
     const PlanContinuity& playing_continuity() const { return playing_continuity_; }
     uint64_t plans_published() const { return published_; }
+    // The epoch of the plan the last successful show() built.
+    uint64_t last_built_epoch() const { return last_built_epoch_; }
+    // The smallest epoch among the playing plan, the pending one and every
+    // retired plan not yet freed: what the audio thread may still read
+    // (ADR-0009 §4.1). A slot, store or node state a plan named may be
+    // reused once this is at or past the first plan built without it
+    // (ADR-0012 amendment of 2026-10-14, item 2). UINT64_MAX when there is
+    // no plan at all. A cancelled plan was never published: it holds none.
+    uint64_t oldest_live_epoch() const;
     // Locate request to the audio thread's queue, in milliseconds.
     double last_locate_ms() const { return last_locate_ms_; }
     double max_locate_ms() const { return max_locate_ms_; }
@@ -141,6 +150,7 @@ private:
     PlanReport report_;                // of the plan last built
     PlanReport playing_report_;
     uint64_t published_ = 0;
+    uint64_t last_built_epoch_ = 0;
 
     bool input_monitoring_ = true;
 
