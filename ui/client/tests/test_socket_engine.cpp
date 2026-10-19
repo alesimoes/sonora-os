@@ -507,7 +507,19 @@ void a_version_refusal_stops_reconnecting() {
         CHECK(mentions(e.link_problem(), error));
         CHECK(mentions(e.link_problem(), "stopped reconnecting"));
     }
+    // A later connect() judges the engine there then, not the last refusal:
+    // with none listening it fails for that, not for a version (#90 review).
+    SocketEngine quick([&]() {
+        SocketEngine::Options o = client_options(engine.endpoint());
+        o.connect_timeout_ms = 5000;
+        return o;
+    }());
+    CHECK(!quick.connect(error) && quick.refused_version());
     CHECK(engine.stop() == 0);
+    error.clear();
+    CHECK(!quick.connect(error));
+    CHECK(!quick.refused_version());
+    CHECK(!mentions(error, "protocol version") && mentions(error, "no engine answered"));
 
     // On reconnect: the engine comes back as another build.
     engine.start();

@@ -142,6 +142,9 @@ void SocketEngine::pump(int wait_ms) {
 
 bool SocketEngine::connect(std::string& error) {
     if (greeted_) return true;
+    // An earlier refusal says nothing about the engine there now; left set,
+    // it would end this attempt after the first 50 ms without a Hello.
+    refused_version_ = false;
     const auto end = std::chrono::steady_clock::now() +
                      std::chrono::milliseconds(opts_.connect_timeout_ms);
     while (std::chrono::steady_clock::now() < end) {
