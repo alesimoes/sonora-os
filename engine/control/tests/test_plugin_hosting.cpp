@@ -792,6 +792,12 @@ int play_waits(const Args& a, const PlayWait& w) {
     opts.plugin_open_wait_ms = w.wait_ms;
     opts.initial_document = std::make_shared<Snapshot>(h.current());
     {
+        // The bound runs from session open, not from the play (ADR-0012
+        // item 1): the server starts it while connecting, before the play is
+        // sent. Lower bounds count from before the engine exists and upper
+        // bounds from the play, so neither depends on how long connect took
+        // (a slow sanitizer once answered 799 ms after an 800 ms bound).
+        const uint64_t t_open = now_ms();
         InProcessEngine engine(session, &audio, opts);
         check(engine.connect(error), "connected");
         api::Inbox in;
@@ -843,9 +849,12 @@ int play_waits(const Args& a, const PlayWait& w) {
             const uint64_t seq2 = engine.send(play);
             api::CommandReply reply2;
             check(until([&] { return replied(seq, reply) && replied(seq2, reply2); }, 20000), "both plays answered");
-            const uint64_t waited = now_ms() - t0;
+            const uint64_t answered = now_ms();
+            const uint64_t waited = answered - t0;
+            const uint64_t since_open = answered - t_open;
             char line[160];
-            std::snprintf(line, sizeof line, "answered Ok after %llu ms", (unsigned long long)waited);
+            std::snprintf(line, sizeof line, "answered Ok after %llu ms (%llu ms since open)",
+                          (unsigned long long)waited, (unsigned long long)since_open);
             check(reply.result == DispatchResult::Ok && reply2.result == DispatchResult::Ok, line);
             if (w.expect == PlayWait::Expect::NoWait) {
                 check(waited < 1500, "hosting disabled: play did not wait for plug-ins that will never load");
@@ -862,10 +871,10 @@ int play_waits(const Args& a, const PlayWait& w) {
                 // at least that, and ended on the plug-in, well before the
                 // bound. (Once Ready, a plug-in this slow misses every block
                 // and is restarted: Running is too brief to sample.)
-                check(waited >= uint64_t(w.sleep_ms) - 100 && waited < w.wait_ms - 1000,
+                check(since_open >= uint64_t(w.sleep_ms) - 100 && waited < w.wait_ms - 1000,
                       "play waited for the plug-in, not for the bound");
             } else if (w.expect == PlayWait::Expect::BoundFirst) {
-                check(!running() && waited >= w.wait_ms && waited < w.wait_ms + 2000,
+                check(!running() && since_open >= w.wait_ms && waited < w.wait_ms + 2000,
                       "the bound passed first: play went ahead with the plug-in still loading");
             }
             check(until([&] { return session.transport().state() == TransportState::Rolling; }, 3000), "rolling");
