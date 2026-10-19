@@ -699,7 +699,8 @@ the format: automation,
 sends, VCA, groups, MIDI, clip-based time
 stretch, video, interface state (zoom, scroll, window layout; ADR-0007 §5
 puts it outside the session), and the undo history. Each is a version bump
-when it arrives.
+when it arrives. MIDI is proposed as version 4 in [`midi.md`](midi.md)
+(ADR-0014, Proposed; not part of the format until accepted and landed).
 
 ## Open questions
 
