@@ -515,6 +515,8 @@ int probe(const Options& o) {
     r.uri = o.probe;
     r.format = is_vst3_id(o.probe) ? "vst3" : "lv2";
     r.sample_rate = ChainConfig{}.sample_rate;
+    // What it was asked at, so the engine files the answer under its key.
+    r.channels = o.channels;
     if (!found) {
         // "not installed" is what the engine shows on the insert.
         r.outcome = err.reason == plugin::Refusal::NotFound ? pr::Outcome::NotInstalled : pr::Outcome::Refused;

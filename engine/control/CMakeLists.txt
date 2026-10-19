@@ -11,6 +11,8 @@ add_library(sonora_control STATIC
   src/playback_controller.cpp
   src/closed_take.cpp
   src/plugin_hosting.cpp
+  src/plugin_scanner.cpp
+  src/plugin_catalog_cache.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -22,7 +24,7 @@ target_include_directories(sonora_control PUBLIC include)
 # reached only through engine/core's PluginChainRunner. common/json reads
 # the probes' answers.
 target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_platform
-  sonora_model sonora_plugin_client PRIVATE sonora_json)
+  sonora_model sonora_plugin_client sonora_plugin_probe_record PRIVATE sonora_json)
 
 # Here rather than in engine/core because it also drives the session through
 # the installed commands, and control may link core but not the reverse.
@@ -58,6 +60,28 @@ if(UNIX)
   add_executable(test_control_socket tests/test_control_socket.cpp)
   target_link_libraries(test_control_socket PRIVATE sonora_control sonora_backend_fake)
   add_test(NAME control_socket COMMAND test_control_socket)
+endif()
+
+# The plugin scan worker and its cache (ADR-0012, amendment of 2026-10-19),
+# against a fake host that answers --version, --list and --probe from a
+# world file: no plugin SDK needed, so it runs in every build.
+if(UNIX)
+  add_executable(fake_plugin_host tests/fake_plugin_host.cpp)
+  target_link_libraries(fake_plugin_host PRIVATE sonora_plugin_probe_record)
+  add_executable(test_plugin_scanner tests/test_plugin_scanner.cpp)
+  target_link_libraries(test_plugin_scanner PRIVATE sonora_control Threads::Threads)
+  add_dependencies(test_plugin_scanner fake_plugin_host)
+  add_test(NAME plugin_scanner COMMAND test_plugin_scanner --host $<TARGET_FILE:fake_plugin_host>)
+  # The catalog through the control server: item 6's resolution, the
+  # catalog sent, plugin.rescan refused during a take.
+  add_executable(test_plugin_catalog tests/test_plugin_catalog.cpp)
+  target_link_libraries(test_plugin_catalog PRIVATE sonora_control sonora_backend_fake Threads::Threads)
+  add_dependencies(test_plugin_catalog fake_plugin_host)
+  add_test(NAME plugin_catalog COMMAND test_plugin_catalog --host $<TARGET_FILE:fake_plugin_host>)
+  # A real cold and warm scan, timed by hand against the real host (never
+  # run by ctest: minutes, and the machine's figure).
+  add_executable(measure_plugin_scan tests/measure_plugin_scan.cpp)
+  target_link_libraries(measure_plugin_scan PRIVATE sonora_control)
 endif()
 
 add_executable(test_playback_control tests/test_playback_control.cpp)

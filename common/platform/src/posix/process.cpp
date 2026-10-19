@@ -9,8 +9,12 @@
 
 #include <fcntl.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -54,6 +58,51 @@ std::string executable_dir() {
 }
 
 int64_t current_process_id() { return static_cast<int64_t>(::getpid()); }
+
+namespace {
+
+#ifdef __linux__
+// <linux/ioprio.h> is not in every libc's headers; the values are the ABI.
+constexpr int kIoprioWhoProcess = 1;
+constexpr int kIoprioClassIdle = 3;
+constexpr int kIoprioClassShift = 13;
+#endif
+
+// `who`: a thread id (Linux) or process id; 0 is the caller.
+bool lower(pid_t who, int nice, bool idle_io, std::string& error) {
+    bool ok = true;
+    if (nice > 0) {
+        errno = 0;
+        const int now = ::getpriority(PRIO_PROCESS, static_cast<id_t>(who));
+        if (errno == 0 && now < nice && ::setpriority(PRIO_PROCESS, static_cast<id_t>(who), nice) != 0) {
+            error = std::string("cannot lower the CPU priority: ") + std::strerror(errno);
+            ok = false;
+        }
+    }
+    if (idle_io) {
+#ifdef __linux__
+        if (::syscall(SYS_ioprio_set, kIoprioWhoProcess, static_cast<int>(who),
+                      kIoprioClassIdle << kIoprioClassShift) != 0) {
+            error = std::string("cannot set the idle I/O class: ") + std::strerror(errno);
+            ok = false;
+        }
+#endif
+    }
+    return ok;
+}
+
+}  // namespace
+
+bool lower_current_thread(int nice, bool idle_io, std::string& error) {
+#ifdef __linux__
+    // Linux keeps both per thread: setpriority and ioprio_set on a thread
+    // id touch that thread alone, and a child inherits its spawner's.
+    const pid_t self = static_cast<pid_t>(::syscall(SYS_gettid));
+#else
+    const pid_t self = 0;
+#endif
+    return lower(self, nice, idle_io, error);
+}
 
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>& argv,
                                                   const Options& options, std::string& error) {
@@ -173,6 +222,14 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     if (rc != 0) {
         error = "cannot start " + argv[0] + ": " + std::strerror(rc);
         return nullptr;
+    }
+    if (options.nice > 0 || options.idle_io) {
+        // posix_spawn has no attribute for either. A spawner that lowered
+        // itself first (lower_current_thread) passed both on already; this
+        // covers any other, from just after exec. A refusal is not a failed
+        // start: the child runs, at the priority it inherited.
+        std::string ignored;
+        lower(impl->pid, options.nice, options.idle_io, ignored);
     }
     return std::make_unique<ChildProcess>(std::move(impl));
 }

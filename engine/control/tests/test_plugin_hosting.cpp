@@ -65,6 +65,7 @@
 #include "sonora/playback_controller.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin_hosting.h"
+#include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
 
 using namespace sonora;
@@ -124,6 +125,9 @@ AddInsert insert_op(Id track, Id insert, uint8_t slot, const char* uri, std::vec
 struct Rig {
     std::unique_ptr<Session> session;
     std::unique_ptr<PlaybackController> ctl;
+    // The chains' probes go through the scan worker (amendment of
+    // 2026-10-19, item 3); no catalog scan here, only chain starts.
+    std::unique_ptr<PluginScanner> scanner;
     std::unique_ptr<PluginHosting> hosting;
     History history;
     std::vector<float> out[2];
@@ -162,11 +166,17 @@ struct Rig {
         hc.max_block_frames = 256;
         hc.max_stores = 16;
         hc.ready_timeout_ms = ready_timeout_ms;
-        hosting = std::make_unique<PluginHosting>(*session, hc);
+        PluginScannerConfig sc;
+        sc.host_path = a.host;
+        sc.bundles = a.bundles;
+        sc.scan_at_start = false;
+        scanner = std::make_unique<PluginScanner>(sc);
+        hosting = std::make_unique<PluginHosting>(*session, hc, *scanner);
         ctl->set_chain_resolver([this](const TrackEdit& t, uint32_t e, ChainBinding& b) { hosting->resolve(t, e, b); });
     }
     ~Rig() {
         hosting.reset();
+        scanner.reset();
         ctl.reset();
         session.reset();
         std::filesystem::remove_all(kDir);
@@ -197,6 +207,7 @@ struct Rig {
         b.callback_ns = now_ns();
         session->process(b);
         if (!session->reader().running() && !hold_reader) session->reader().run_pass();
+        scanner->exchange(false);
         PluginHosting::PollResult r = hosting->poll(now_ms(), history.current(), ctl->oldest_live_epoch());
         for (model::Operation& op : r.ops) {
             ops_seen.push_back(op);
@@ -693,6 +704,7 @@ int scenario_server(const Args& a) {
     EngineControlServer::Options opts;
     opts.plugin_host = a.host;
     opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
     opts.initial_document = std::make_shared<Snapshot>(h.current());
     {
         InProcessEngine engine(session, &audio, opts);
@@ -789,6 +801,7 @@ int play_waits(const Args& a, const PlayWait& w) {
     EngineControlServer::Options opts;
     opts.plugin_host = w.host.empty() ? a.host : w.host;
     opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
     opts.plugin_open_wait_ms = w.wait_ms;
     opts.initial_document = std::make_shared<Snapshot>(h.current());
     {

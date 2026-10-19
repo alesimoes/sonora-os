@@ -2,6 +2,7 @@
 #include "sonora/platform/file.h"
 
 #include <cerrno>
+#include <filesystem>
 
 namespace sonora::platform {
 
@@ -25,5 +26,22 @@ FolderLock::~FolderLock() = default;
 
 // Standard C++ has no file lock, so nothing is held and nothing excluded.
 FolderLock::Result FolderLock::acquire(const std::string&, std::string&) { return Result::Held; }
+
+// No per-user cache folder is known here yet: the catalog stays in memory.
+std::string user_cache_dir() { return {}; }
+
+// Standard C++ has no change time; the modification time stands for both.
+bool path_status(const std::string& path, PathStatus& out) {
+    std::error_code ec;
+    const auto st = std::filesystem::status(path, ec);
+    if (ec || !std::filesystem::exists(st)) return false;
+    out.regular = std::filesystem::is_regular_file(st);
+    out.directory = std::filesystem::is_directory(st);
+    out.size = out.regular ? static_cast<uint64_t>(std::filesystem::file_size(path, ec)) : 0;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    out.modified_ns = ec ? 0 : static_cast<int64_t>(t.time_since_epoch().count());
+    out.changed_ns = 0;
+    return true;
+}
 
 }  // namespace sonora::platform

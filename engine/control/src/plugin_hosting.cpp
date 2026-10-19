@@ -17,9 +17,11 @@
 #include "sonora/json/json.h"
 #include "sonora/platform/process.h"
 #include "sonora/plugin/host_control.h"
+#include "sonora/plugin/probe_record.h"
 #include "sonora/plugin_chain_runner.h"
 #include "sonora/plugin_client/host_supervisor.h"
 #include "sonora/plugin_client/plugin_client.h"
+#include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
 
 namespace sonora {
@@ -85,16 +87,41 @@ bool insert_in(const model::Snapshot& doc, model::Id insert) {
 // ---- what the scan says of one plugin at one channel count
 
 struct PluginHosting::Probe {
+    // Queued: not yet asked of the scan worker; Running: asked, no answer
+    // in its catalog yet.
     enum class State { Queued, Running, Ok, Missing, Refused };
     std::string id;  // host_id()
     uint16_t channels = 1;
     State state = State::Queued;
-    std::unique_ptr<platform::ChildProcess> child;
-    std::string out_path;
-    uint64_t started_ms = 0;
     std::vector<std::string> keys;  // dense order
     std::vector<float> defaults;
     std::string reason;
+
+    // The worker's record, as the chain needs it. A Blocked plugin (its
+    // probe crashed or hung, §4) is refused for the chain, as before.
+    void take(const plugin::probe::Record& r) {
+        keys.clear();
+        defaults.clear();
+        reason.clear();
+        switch (r.outcome) {
+            case plugin::probe::Outcome::Ok:
+                for (const plugin::probe::Param& p : r.params) {
+                    keys.push_back(p.key);
+                    defaults.push_back(p.default_value);
+                }
+                state = State::Ok;
+                return;
+            case plugin::probe::Outcome::NotInstalled:
+                state = State::Missing;
+                reason = "not installed";
+                return;
+            case plugin::probe::Outcome::Refused:
+            case plugin::probe::Outcome::Blocked:
+                state = State::Refused;
+                reason = r.reason.empty() ? "refused" : r.reason;
+                return;
+        }
+    }
 };
 
 struct PluginHosting::Member {
@@ -172,9 +199,8 @@ struct PluginHosting::Chain {
     std::map<model::Id, LostState> pending_state_lost;
 };
 
-PluginHosting::PluginHosting(Session& session, PluginHostingConfig config)
-    : session_(session), config_(std::move(config)) {
-    if (config_.max_probes == 0) config_.max_probes = std::max(1u, std::thread::hardware_concurrency());
+PluginHosting::PluginHosting(Session& session, PluginHostingConfig config, PluginScanner& scanner)
+    : session_(session), config_(std::move(config)), scanner_(scanner) {
     plugin_client::ClientConfig cc;
     cc.block_frames = config_.block_frames;
     cc.max_stores = config_.max_stores;
@@ -273,8 +299,7 @@ void PluginHosting::drop_chain(Chain& c) {
     abandon_pending(c);
     retire(std::move(c.running), c.store, c.node);
     c.store = c.node = kNone;
-    c.running_spec.clear();
-    c.posted.clear();
+
     c.retry.clear();
     c.open_touches.clear();
     c.store_epoch = 0;
@@ -285,7 +310,7 @@ void PluginHosting::drop_chain(Chain& c) {
     c.state_lost.clear();
 }
 
-// ---- probes (amendment item 3)
+// ---- probes: the scan worker's (amendment of 2026-10-19, item 3)
 
 PluginHosting::Probe* PluginHosting::probe_for(const model::PluginRef& plugin, uint16_t channels) {
     const std::string id = host_id(plugin);
@@ -298,90 +323,33 @@ PluginHosting::Probe* PluginHosting::probe_for(const model::PluginRef& plugin, u
         if (!pc::valid_plugin_id(f, plugin.id)) {
             p->state = Probe::State::Refused;
             p->reason = "not a plugin id";
+        } else if (const plugin::probe::Record* r = scanner_.catalog()->find(id, channels)) {
+            // Scanned already, this run or an earlier one: no probe.
+            p->take(*r);
         }
     }
     return p.get();
 }
 
-void PluginHosting::start_probes(uint64_t now_ms) {
-    uint32_t running = 0;
-    for (auto& [key, p] : probes_) running += p->state == Probe::State::Running ? 1 : 0;
+void PluginHosting::start_probes() {
     for (auto& [key, p] : probes_) {
-        if (running >= config_.max_probes) return;
         if (p->state != Probe::State::Queued) continue;
-        p->out_path = config_.scratch_dir + "/sonora-probe-" + std::to_string(platform::current_process_id()) + "-" +
-                      std::to_string(std::random_device{}()) + std::to_string(std::random_device{}()) + ".json";
-        std::vector<std::string> argv = {config_.host_path, "--probe", p->id, "--channels", std::to_string(p->channels)};
-        for (const std::string& b : config_.bundles) {
-            argv.push_back("--bundle");
-            argv.push_back(b);
-        }
-        platform::ChildProcess::Options o;
-        o.stdout_path = p->out_path;
-        std::string error;
-        p->child = platform::ChildProcess::spawn(argv, o, error);
-        if (!p->child) {
-            p->state = Probe::State::Refused;
-            p->reason = "the probe could not start: " + error;
-            continue;
-        }
+        // Deduplicated in the worker with any probe queued or running for
+        // the same key, and run ahead of its scan.
+        scanner_.probe(p->id, p->channels);
         p->state = Probe::State::Running;
-        p->started_ms = now_ms;
-        ++running;
     }
 }
 
-bool PluginHosting::poll_probes(uint64_t now_ms) {
+bool PluginHosting::poll_probes() {
     bool finished = false;
+    const auto& catalog = scanner_.catalog();
     for (auto& [key, p] : probes_) {
         if (p->state != Probe::State::Running) continue;
-        if (p->child->running()) {
-            if (now_ms - p->started_ms < config_.probe_timeout_ms) continue;
-            finished = true;
-            // §4: a probe that hangs blocks the plugin, with the reason.
-            p->child->kill();
-            p->state = Probe::State::Refused;
-            p->reason = "its probe did not answer within " + std::to_string(config_.probe_timeout_ms / 1000) + " s";
-            std::remove(p->out_path.c_str());
-            continue;
-        }
+        const plugin::probe::Record* r = catalog->find(p->id, p->channels);
+        if (!r) continue;
+        p->take(*r);
         finished = true;
-        std::string line;
-        {
-            std::ifstream f(p->out_path);
-            std::getline(f, line);
-        }
-        std::remove(p->out_path.c_str());
-        json::Value v;
-        json::Error je;
-        if (!json::parse(line, v, je) || !v.is_object()) {
-            p->state = Probe::State::Refused;
-            p->reason = "its probe " +
-                        (p->child->exited_normally() ? "exited with code " + std::to_string(p->child->exit_code())
-                                                     : "was killed by signal " + std::to_string(p->child->signal_number())) +
-                        " without an answer";
-            continue;
-        }
-        const json::Value* ok = v.find("ok");
-        const json::Value* reason = v.find("reason");
-        if (!ok || !ok->is_bool() || !ok->as_bool()) {
-            p->reason = reason && reason->is_string() ? reason->text() : "refused";
-            p->state = p->reason == "not installed" ? Probe::State::Missing : Probe::State::Refused;
-            continue;
-        }
-        p->keys.clear();
-        p->defaults.clear();
-        if (const json::Value* params = v.find("params"); params && params->is_array()) {
-            for (const json::Value& d : params->items()) {
-                const json::Value* k = d.find("key");
-                const json::Value* def = d.find("default");
-                float x = 0.f;
-                if (!k || !k->is_string() || !def || !def->to_float(x)) continue;
-                p->keys.push_back(k->text());
-                p->defaults.push_back(x);
-            }
-        }
-        p->state = Probe::State::Ok;
     }
     return finished;
 }
@@ -675,8 +643,8 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
     PollResult result;
     result.ops.swap(deferred_ops_);
     // A probe that finished lets the chains waiting on it start.
-    const bool probes_moved = poll_probes(now_ms);
-    start_probes(now_ms);
+    const bool probes_moved = poll_probes();
+    start_probes();
 
     bool reshow = reshow_;
     reshow_ = false;

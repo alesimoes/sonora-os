@@ -7,8 +7,11 @@
 // (amendment item 4). It lives on the document thread beside
 // PlaybackController: the control server shows it every document, polls it
 // every turn, and uses resolve() as the plan builder's ChainResolver.
-// Nothing here runs on the audio thread, and nothing here waits: probes and
-// hosts are started and noticed from poll().
+// Nothing here runs on the audio thread, and nothing here waits: hosts are
+// started and noticed from poll(). Probes are the scan worker's (the
+// amendment of 2026-10-19, item 3, "one owner of probes"): a plugin the
+// catalog cache already has costs no probe at all; a miss is asked of the
+// worker, ahead of its scan, and its answer read from the worker's catalog.
 //
 // One chain per track with an active insert (§2). What a chain plays while
 // it has no Ready host follows the amendment's item 1: until its host is
@@ -56,6 +59,7 @@ namespace sonora {
 
 class Session;
 class PluginChainRunner;
+class PluginScanner;
 namespace plugin_client {
 class PluginClient;
 class HostSupervisor;
@@ -74,9 +78,6 @@ struct PluginHostingConfig {
     uint32_t max_block_frames = 1024;  // the session's PlaybackConfig::max_block_frames
     // Stores and node states: the session's PlaybackConfig::max_param_stores.
     uint32_t max_stores = 256;
-    // Probes run at once (amendment item 3); 0: the hardware threads.
-    uint32_t max_probes = 0;
-    uint64_t probe_timeout_ms = 30000;
     uint64_t ready_timeout_ms = 10000;
     std::string scratch_dir = "/tmp";
 };
@@ -87,8 +88,10 @@ public:
     // the supervisor (the host's --version, the sealed clock) and the
     // runner, and installs the runner in the session. When the supervisor
     // refuses (a host of other versions, no seal), ok() is false and every
-    // active chain plays silent, faulted (§5.5).
-    PluginHosting(Session& session, PluginHostingConfig config);
+    // active chain plays silent, faulted (§5.5). `scanner` answers the
+    // chains' probes and outlives this object (the control server owns
+    // both); the caller runs its exchange() every turn.
+    PluginHosting(Session& session, PluginHostingConfig config, PluginScanner& scanner);
     // Teardown order (item 4): the runner leaves the session; the caller
     // has deactivated the backend or seen a callback pass since; chains,
     // supervisor, client. Every host is asked to stop first and the whole
@@ -170,9 +173,10 @@ public:
 private:
     // The probes this run has, by (plugin id, channels).
     Probe* probe_for(const model::PluginRef& plugin, uint16_t channels);
-    void start_probes(uint64_t now_ms);
-    // True when a probe finished.
-    bool poll_probes(uint64_t now_ms);
+    // Asks the scan worker for the probes not yet asked.
+    void start_probes();
+    // True when an answer arrived in the worker's catalog.
+    bool poll_probes();
     // The chain's spec as the document and the probes describe it now; false
     // while a probe runs.
     bool desired_spec(const model::TrackEdit& track, const model::Snapshot& doc, Chain& c);
@@ -206,6 +210,7 @@ private:
 
     Session& session_;
     PluginHostingConfig config_;
+    PluginScanner& scanner_;
     bool ok_ = false;
     std::string why_;
     std::unique_ptr<plugin_client::PluginClient> client_;

@@ -29,6 +29,28 @@ bool sync_data(std::FILE* f);
 // with errno set on failure.
 bool sync_directory(const std::string& path);
 
+// Where this user's regenerable data goes, the application's own folder in
+// it, not created: POSIX $XDG_CACHE_HOME/sonora when that is an absolute
+// path, else $HOME/.cache/sonora; empty when neither is known. (Windows,
+// later: %LOCALAPPDATA%\Sonora.) Deleting it costs a rebuild, never data.
+std::string user_cache_dir();
+
+// What a fingerprint needs of one path, following symlinks to their
+// target (a yabridge bundle links into a Wine prefix).
+struct PathStatus {
+    bool regular = false;
+    bool directory = false;
+    uint64_t size = 0;
+    // Nanoseconds since the epoch. `changed` is the inode change time
+    // (POSIX ctime), which cp -p, rsync -t, tar and unzip cannot set back
+    // the way they set the modification time; 0 where there is none.
+    int64_t modified_ns = 0;
+    int64_t changed_ns = 0;
+};
+// False when the path, or a symlink's target, does not exist or cannot be
+// read.
+bool path_status(const std::string& path, PathStatus& out);
+
 // An advisory lock on a folder: one engine per session folder, because a
 // second one would run crash recovery over the first one's open takes.
 // Held until the object is destroyed or the process ends, however it ends,

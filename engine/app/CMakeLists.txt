@@ -1,6 +1,6 @@
 add_executable(sonora-engine
   src/main.cpp src/quit_signals.cpp src/memory_lock.cpp src/exit_watchdog.cpp
-  src/device_policy.cpp)
+  src/device_policy.cpp src/plugin_paths.cpp)
 target_include_directories(sonora-engine PRIVATE include)
 # Headless since M7: interfaces connect on the control socket. Nothing of
 # ui/ is linked. On a terminal the engine starts sonora-tui, a separate
@@ -27,6 +27,12 @@ add_executable(test_exit_watchdog tests/test_exit_watchdog.cpp src/exit_watchdog
 target_include_directories(test_exit_watchdog PRIVATE include)
 target_link_libraries(test_exit_watchdog PRIVATE Threads::Threads)
 add_test(NAME exit_watchdog COMMAND test_exit_watchdog)
+
+# The plugin catalog cache's default path and the image build id (ADR-0012,
+# amendment of 2026-10-19, changes A and B).
+add_executable(test_plugin_paths tests/test_plugin_paths.cpp src/plugin_paths.cpp)
+target_include_directories(test_plugin_paths PRIVATE include)
+add_test(NAME plugin_paths COMMAND test_plugin_paths)
 
 add_executable(test_device_policy tests/test_device_policy.cpp src/device_policy.cpp)
 target_include_directories(test_device_policy PRIVATE include)
