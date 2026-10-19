@@ -1049,7 +1049,19 @@ bool EditController::fade_selection(std::string& why) {
             }
             return false;
         }
-        if (!submit(SetCrossfade{p.id, x}, why)) return false;
+        // The fades at the cut go with the crossfade, as in Pro Tools: kept
+        // under it, nobody can see them, yet they come back on Clear and
+        // still take room from a fade at the regions' other ends. One
+        // compound, so the gesture stays one undo step that brings them back.
+        std::vector<Member> members;
+        if (l.fade_out.length > 0) members.push_back(SetFade{p.id, l.id, FadeEnd::Out, Fade{}});
+        if (r.fade_in.length > 0) members.push_back(SetFade{p.id, r.id, FadeEnd::In, Fade{}});
+        if (members.empty()) {
+            if (!submit(SetCrossfade{p.id, x}, why)) return false;
+        } else {
+            members.push_back(SetCrossfade{p.id, x});
+            if (!submit_compound(std::move(members), "Crossfade", "crossfaded", why)) return false;
+        }
         sel_.region = kNoId;
         sel_.start = sel_.insertion = cut - before;
         sel_.end = cut + after;
@@ -1103,8 +1115,9 @@ bool EditController::clear_fade_at_selection(bool& done, std::string& why) {
         crossfade_extent(x, before, after);
         if (sel_.start == r->position - before && sel_.end == r->position + after) {
             done = true;
-            // Removing it brings back the fades each region keeps under it.
-            // One that would run into what is at its region's other end
+            // Removing it brings back any fade a region keeps under it: none
+            // for a crossfade made here, which drops them, but a document
+            // from elsewhere or an older build can have them. One that would run into what is at its region's other end
             // comes back shortened to meet it: the model does that
             // (RemoveCrossfade, PR #69), because the operator cannot see
             // or edit that fade while the other end is crossfaded.

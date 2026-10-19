@@ -921,6 +921,56 @@ int test_fades_against_crossfades() {
         OK(region(doc.snapshot(), 10)->fade_in.length == kBar && valid(doc.snapshot()));
     }
 
+    // --- a crossfade made here drops the fades at its cut, as Pro Tools
+    // does: A's 1-bar fade-out and B's 1-beat fade-in go with the Pre
+    // crossfade, in one compound and one undo step that brings them back ---
+    {
+        ModelDocument doc(two_tracks());
+        const Id pl = playlist_of(doc.snapshot(), 0);
+        OK(doc.submit(MoveRegion{pl, 11, 3 * kBar, kNoId}, why));
+        OK(doc.submit(SetFade{pl, 10, FadeEnd::Out, {kBar, FadeShape::Linear}}, why));
+        OK(doc.submit(SetFade{pl, 11, FadeEnd::In, {kBeat, FadeShape::Linear}}, why));
+        EditController c(doc);
+        c.set_viewport(1000, 200);
+        const double th = c.view().track_height;
+        c.set_tool(Tool::Select);
+        OK(c.press(c.view().x_of(3 * kBar - kBeat), th / 2, why) &&
+           c.release(c.view().x_of(3 * kBar), th / 2, why));
+        const uint64_t rev = doc.snapshot().revision;
+        const std::size_t depth = doc.history().undo_depth();
+        OK(c.fade_selection(why));
+        OK(doc.snapshot().revision == rev + 1 && doc.history().undo_depth() == depth + 1);
+        OK(doc.undo_label() == "Crossfade");
+        OK(active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.size() == 1);
+        OK(region(doc.snapshot(), 10)->fade_out.length == 0);
+        OK(region(doc.snapshot(), 11)->fade_in.length == 0);
+        OK(valid(doc.snapshot()));
+        // Nothing waits under it: A's fade-in may now take the whole region
+        // up to the crossfade, which the hidden 1-bar fade-out refused.
+        c.set_insertion(3 * kBar - kBeat);
+        OK(c.fade_to_start(why));
+        OK(region(doc.snapshot(), 10)->fade_in.length == 2 * kBar - kBeat);
+        OK(c.undo(why));
+        // Clear brings back nothing.
+        OK(c.press(c.view().x_of(3 * kBar - kBeat), th / 2, why) &&
+           c.release(c.view().x_of(3 * kBar), th / 2, why));
+        OK(c.clear(why));
+        OK(active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.empty());
+        OK(region(doc.snapshot(), 10)->fade_out.length == 0);
+        OK(region(doc.snapshot(), 11)->fade_in.length == 0);
+        // Undo of the clear, then of the crossfade: both fades come back.
+        OK(c.undo(why) && c.undo(why));
+        OK(active_playlist(doc.snapshot().edit->tracks[0].get())->crossfades.empty());
+        OK(region(doc.snapshot(), 10)->fade_out.length == kBar);
+        OK(region(doc.snapshot(), 11)->fade_in.length == kBeat);
+        // With no fade at the cut it is still the one SetCrossfade.
+        OK(doc.submit(SetFade{pl, 10, FadeEnd::Out, Fade{}}, why));
+        OK(doc.submit(SetFade{pl, 11, FadeEnd::In, Fade{}}, why));
+        OK(c.press(c.view().x_of(3 * kBar - kBeat), th / 2, why) &&
+           c.release(c.view().x_of(3 * kBar), th / 2, why));
+        OK(c.fade_selection(why) && doc.undo_label() == "SetCrossfade");
+    }
+
     // --- the overlap: a crossfade into the region's own fade at the other end ---
     {
         ModelDocument doc(two_tracks());
