@@ -10,7 +10,8 @@
 // both sides of the monitor bus, from the first frame rolled, with every
 // other block written and no chunk missing. Then the record reply's three
 // outcomes: Ok once the take has started, Failed with the reason when it is
-// refused, Failed "cancelled" when a second press withdraws it.
+// refused, Failed "cancelled" when a second press withdraws it. And record
+// with the session's punch range set punches in over the take before.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -589,10 +590,126 @@ int test_a_refused_take_is_shown_as_failed() {
     return 0;
 }
 
+// Record with a punch range set punches (timeline-model.md, "Punch in"):
+// take 1 records track 1 whole for a second; the session's punch range is
+// set to [A, B); from zero, transport.record captures [A - H, B + H) with
+// H a second, cut at zero, and once stopped the take goes in over [A, B)
+// only, take 1 split around it with a crossfade of the session's
+// punch_crossfade at each end, sent to every client as one update.
+int test_record_with_a_punch_range_punches() {
+    namespace model = sonora::model;
+    const fs::path dir = fs::temp_directory_path() / "sonora_test_playback_fake_punch";
+    fs::remove_all(dir);
+    sonora::Session s(config(dir));
+    CHECK(s.create_dirs());
+    FakeBackend::Config fc;
+    fc.quantum = kQuantum;
+    FakeBackend audio(fc);
+    std::string error;
+    CHECK(audio.open({"sonora", 2, 2, kRate, ""}, s, error));
+    CHECK(audio.activate(error));
+    CHECK(audio.connect_inputs_in_order() == 2);
+    s.disk().start();
+    s.reader().start();
+    constexpr model::Frames kA = 18000, kB = 30000, kX = 240;
+    constexpr model::Frames kH = kRate;
+    {
+        sonora::InProcessEngine engine(s, &audio);
+        CHECK(engine.connect(error));
+        Client c{engine, {}};
+        model::Replica replica;
+        std::size_t fed = 0;
+        const auto feed = [&]() {
+            engine.poll(c.inbox);
+            for (; fed < c.inbox.model.size(); ++fed) {
+                std::string why;
+                if (!replica.receive(from_wire(c.inbox.model[fed]), why)) return false;
+            }
+            return true;
+        };
+        const auto playlist = [&]() -> const model::Playlist& {
+            const model::TrackEdit& t = *replica.current().edit->tracks[0];
+            for (const auto& p : t.playlists) {
+                if (p->id == t.active_playlist) return *p;
+            }
+            return *t.playlists.front();
+        };
+        const auto await_regions = [&](std::size_t n) {
+            for (int i = 0; i < 2500; ++i) {
+                if (!feed()) return false;
+                if (replica.synced() && playlist().regions.size() == n) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return false;
+        };
+
+        CHECK(c.run("track.toggle_arm", 0));
+        CHECK(c.run("transport.record"));
+        constexpr uint32_t kBlocks = kRate / kQuantum;
+        CHECK(audio.run_blocks(kBlocks) == kBlocks);
+        CHECK(c.run("transport.stop"));
+        CHECK(await_regions(1));
+        const model::Region old = playlist().regions[0];
+        CHECK(old.position == 0 && old.length == model::Frames{kBlocks} * kQuantum);
+
+        model::SetSettings set;
+        set.settings = replica.current().settings;
+        set.settings.transport.punch = {{kA, kB}};
+        set.settings.transport.punch_crossfade = kX;
+        sonora::api::ModelRequest m;
+        m.action = sonora::api::ModelAction::Apply;
+        CHECK(model::encode_operation(model::Operation{set}, m.op, error));
+        sonora::api::CommandReply r;
+        CHECK(c.await(engine.submit(m), r) && r.result == DispatchResult::Ok);
+
+        CHECK(c.run("transport.return_to_zero"));
+        const uint64_t rec = c.send("transport.record");
+        bool answered = false;
+        for (int i = 0; i < 2000 && !answered; ++i) {
+            CHECK(audio.run_blocks(1) == 1);
+            if (c.reply(rec) != nullptr) answered = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(c.await(rec, r));
+        if (r.result != DispatchResult::Ok) std::fprintf(stderr, "  %s\n", r.message.c_str());
+        CHECK(r.result == DispatchResult::Ok);
+        CHECK(s.transport().state() == TransportState::Recording);
+        uint32_t blocks = 0;
+        while (s.transport().playhead() < static_cast<uint64_t>(kB + kH + kQuantum)) {
+            if (blocks++ % 8 == 0) CHECK(reader_turn(s));
+            CHECK(audio.run_blocks(1) == 1);
+        }
+        CHECK(c.run("transport.stop"));
+        CHECK(await_regions(3));
+
+        const model::Playlist& p = playlist();
+        CHECK(p.regions[0].id == old.id && p.regions[0].position == 0 &&
+              p.regions[0].end() == kA);
+        const model::Region& n = p.regions[1];
+        CHECK(n.position == kA && n.end() == kB);
+        // Captured from zero, so A is A frames into the take's file.
+        CHECK(n.source_offset == kA);
+        const model::Source* src = replica.current().sources->find(n.channels.at(0).source);
+        CHECK(src != nullptr && src->length == kB + kH);
+        CHECK(p.regions[2].position == kB && p.regions[2].end() == old.end());
+        CHECK(p.crossfades.size() == 2);
+        for (const model::Crossfade& x : p.crossfades) CHECK(x.length == kX);
+        CHECK(s.tracks()[0]->overruns() == 0);
+
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+    }
+    s.reader().stop();
+    fs::remove_all(dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_record_then_play_back()) return 1;
+    if (test_record_with_a_punch_range_punches()) return 1;
     if (test_record_replies()) return 1;
     if (test_mix_follows_the_document()) return 1;
     if (test_toggle_play_stops_a_take()) return 1;

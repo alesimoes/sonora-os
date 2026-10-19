@@ -66,9 +66,26 @@ struct TakeAdded {
 // several compounds of that many, one update and one step each.
 // `files_per_compound` exists so tests reach the split with a few tracks;
 // it is clamped to [1, kMaxCompoundMembers / 2].
+//
+// A punched take (ClosedTake::punched) goes in over its punch range [A, B)
+// only, cut to what was recorded, with the rest of the file as handle
+// (timeline-model.md, "Punch in"): the region beneath is trimmed or split
+// around it, and at A and at B, where it meets that region, a centred
+// crossfade of the punch's length and shape, if both sides have the handle
+// for it. A file with nothing recorded inside [A, B) goes into the pool
+// only, and makes no undo step.
 TakeAdded add_closed_take(model::Document& document, const Session& session,
                           const Session::ClosedTake& take,
                           std::size_t files_per_compound = model::kMaxCompoundMembers / 2);
+
+// The punch the record commands start when the document has a punch range
+// [A, B) set (transport.punch, B > A; what the interface shows as punch
+// on): capture over [A - H, B + H), H = max(punch_crossfade, one second),
+// cut at the timeline's start; Auto monitoring switching at A and B with
+// the equal-power crossfade the take will be placed with
+// (timeline-model.md, "Punch in"). False, leaving `out` alone, when no
+// range is set.
+bool document_punch(const model::Snapshot& document, PunchRange& out);
 
 // At open, before anything records: every take in `session_dir`'s audio
 // folder that an engine died before closing gets the length on disk

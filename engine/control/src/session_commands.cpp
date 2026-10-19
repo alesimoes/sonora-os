@@ -11,14 +11,16 @@ namespace sonora {
 
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record,
-                              PlaybackController* playback) {
+                              PlaybackController* playback, PunchFor punch_for) {
     // The counter is a hint, never trusted on its own: the folder may hold
     // takes from before a restart, and start_recording() refuses a name that
     // is taken, so the number is re-read from disk before every take.
-    const auto open_take = [&session, &take, may_record](std::string& why) {
+    const auto open_take = [&session, &take, may_record, punch_for](std::string& why) {
         if (may_record && !may_record(why)) return false;
         const int free = session.next_free_take();
         if (take < free) take = free;
+        PunchRange range;
+        if (punch_for && punch_for(range)) return session.start_punch(take, range, &why);
         return session.start_recording(take, &why);
     };
     // With a playback controller a take starts behind its residency gate,

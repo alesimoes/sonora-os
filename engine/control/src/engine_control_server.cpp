@@ -140,8 +140,12 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         opts_.initial_document ? *opts_.initial_document : engine_document(session_));
     playback_ = std::make_unique<PlaybackController>(session_, session_.config().dir);
     playback_->set_input_monitoring(opts_.input_monitoring);
+    // Read as the take starts, which with the residency gate is in pump(),
+    // on this thread: the range then is the one the operator last set.
     install_session_commands(registry_, session_, take_, quit_, opts_.may_record,
-                             playback_.get());
+                             playback_.get(), [this](PunchRange& range) {
+                                 return document_punch(document_->current(), range);
+                             });
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
             implemented_.push_back(spec.id);

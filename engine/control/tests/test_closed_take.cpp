@@ -6,12 +6,15 @@
 // and says so by name; a take larger than one compound is split into
 // compounds within the limit; and if the model refuses the take, its audio
 // still goes into the pool, so a save keeps it, and the engine says loudly
-// that it is not on the timeline.
+// that it is not on the timeline. A punched take goes in over its punch
+// range [A, B) only, with its crossfades where it meets what it replaced
+// (timeline-model.md, "Punch in").
 #include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -329,6 +332,374 @@ int test_a_refused_part_keeps_its_audio_and_the_others_land() {
     return 0;
 }
 
+// --- punched takes (timeline-model.md, "Punch in") -------------------------
+
+// At 1 kHz one second of handle is 1000 frames, so a whole punch with its
+// handles is a few dozen blocks.
+constexpr uint32_t kPunchRate = 1000;
+constexpr model::Frames kA = 3000, kB = 5000, kH = 1000, kX = 40;
+constexpr model::Frames kOldLength = 20000;
+
+SessionConfig punch_config(const char* dir) {
+    SessionConfig cfg;
+    cfg.dir = dir;
+    cfg.track_count = 1;
+    cfg.sample_rate = kPunchRate;
+    // Holds the whole punch: the disk thread is never what a test waits on.
+    cfg.ring_seconds = 20.0;
+    return cfg;
+}
+
+PunchRange punch_range() {
+    PunchRange r;
+    r.capture_from = static_cast<uint64_t>(kA - kH);
+    r.capture_to = static_cast<uint64_t>(kB + kH);
+    r.monitor_in = static_cast<uint64_t>(kA);
+    r.monitor_out = static_cast<uint64_t>(kB);
+    r.crossfade = static_cast<uint32_t>(kX);
+    r.shape = FadeCurve::EqualPower;
+    return r;
+}
+
+// The take recorded before, as an imported file on track 1 over
+// [0, kOldLength): what the punch goes in over.
+bool place_old_take(model::Document& doc, const SessionConfig& cfg) {
+    WavWriter w;
+    if (!w.open(cfg.dir + "/Audio Files/Old.wav", kPunchRate, 1, WavWriter::Format::Int24, 0)) {
+        return false;
+    }
+    const std::vector<float> frames(static_cast<std::size_t>(kOldLength), 0.25f);
+    if (!w.write(frames.data(), frames.size()) || !w.close()) return false;
+    std::vector<model::ReplicationUpdate> updates;
+    std::string error;
+    return place_file(doc, cfg.dir, "Audio Files/Old.wav", 0, updates, error);
+}
+
+// Blocks of 64 until the playhead reaches `to`.
+void roll_to(Session& s, uint64_t to) {
+    float block[64];
+    for (float& f : block) f = 0.5f;
+    const float* inputs[1] = {block};
+    backend::AudioBlock b{};
+    b.inputs = inputs;
+    b.input_count = 1;
+    b.nframes = 64;
+    while (s.transport().playhead() < to) s.process(b);
+}
+
+const model::Playlist& active_playlist(const model::Snapshot& s, std::size_t track) {
+    const model::TrackEdit& t = *s.edit->tracks[track];
+    for (const auto& p : t.playlists) {
+        if (p->id == t.active_playlist) return *p;
+    }
+    return *t.playlists.front();
+}
+
+struct Punched {
+    Session::ClosedTake take;
+    model::Frames length = 0;   // the file's frames on disk
+};
+
+// Arms track 1, starts a punch with `range`, rolls to `stop_at`, stops.
+bool punch(Session& s, const PunchRange& range, uint64_t stop_at, Punched& out) {
+    for (auto& t : s.tracks()) t->set_rec_armed(true);
+    s.disk().start();
+    if (!s.start_punch(1, range)) return false;
+    roll_to(s, stop_at);
+    if (!s.stop()) return false;
+    std::vector<Session::ClosedTake> closed = s.closed_takes();
+    if (closed.size() != 1 || closed[0].files.size() != 1) return false;
+    out.take = closed[0];
+    out.length = static_cast<model::Frames>(out.take.files[0].frames);
+    return true;
+}
+
+// The Phase 2 exit criterion in the engine: a take captured over
+// [A - H, B + H) goes in over [A, B) only, splitting the old take into
+// [0, A) and [B, ..), with a centred equal-power crossfade of the punch's
+// length at A and at B; one undo restores the old take whole.
+int test_a_punch_goes_in_over_its_range() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Region old = active_playlist(doc.current(), 0).regions.at(0);
+        Punched p;
+        CHECK(punch(s, punch_range(), static_cast<uint64_t>(kB + kH + 64), p));
+        CHECK(p.take.punched);
+        CHECK(p.length == (kB + kH) - (kA - kH));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.track_notices.empty() && r.refused.empty());
+        CHECK(r.updates.size() == 1);
+
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 3);
+        const model::Region& left = pl.regions[0];
+        const model::Region& n = pl.regions[1];
+        const model::Region& right = pl.regions[2];
+        CHECK(left.id == old.id && left.position == 0 && left.end() == kA);
+        CHECK(n.position == kA && n.end() == kB);
+        // The take's first frame is A - H on the timeline: A is H into it.
+        CHECK(n.source_offset == kH);
+        CHECK(right.position == kB && right.end() == kOldLength && right.source_offset == kB);
+        CHECK(pl.crossfades.size() == 2);
+        CHECK(pl.crossfades[0].left == left.id && pl.crossfades[0].right == n.id);
+        CHECK(pl.crossfades[1].left == n.id && pl.crossfades[1].right == right.id);
+        for (const model::Crossfade& x : pl.crossfades) {
+            CHECK(x.length == kX && x.align == model::Align::Centre &&
+                  x.shape == model::FadeShape::EqualPower);
+        }
+
+        // One step: undo brings back the old take whole; the punch's audio
+        // stays in the pool.
+        model::ReplicationUpdate u;
+        std::string why;
+        CHECK(doc.undo(u, why));
+        const model::Playlist& back = active_playlist(doc.current(), 0);
+        CHECK(back.regions.size() == 1 && back.regions[0] == old);
+        CHECK(back.crossfades.empty());
+        CHECK(doc.current().sources->sources.size() == 2);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// Stopped inside the range: the take ends where the recording did, with
+// the crossfade at A and none at the stop, which is a cut the operator
+// made, not a punch point.
+int test_a_punch_stopped_inside_its_range_ends_there() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_stopped");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        Punched p;
+        CHECK(punch(s, punch_range(), 4000, p));
+        const model::Frames stopped = (kA - kH) + p.length;
+        CHECK(stopped > kA && stopped < kB);
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.track_notices.empty() && r.refused.empty());
+
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 3);
+        CHECK(pl.regions[0].end() == kA);
+        CHECK(pl.regions[1].position == kA && pl.regions[1].end() == stopped);
+        CHECK(pl.regions[2].position == stopped && pl.regions[2].end() == kOldLength);
+        CHECK(pl.crossfades.size() == 1);
+        CHECK(pl.crossfades[0].right == pl.regions[1].id);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// Armed with the playhead already past A: capture starts at the next block,
+// and the take starts there, butting the old take with no crossfade (it has
+// no handle before its first frame), and crossfades at B.
+int test_a_punch_armed_late_starts_where_it_recorded() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_late");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        s.play();
+        roll_to(s, 3500);
+        const model::Frames armed_at = static_cast<model::Frames>(s.transport().playhead());
+        Punched p;
+        CHECK(punch(s, punch_range(), static_cast<uint64_t>(kB + kH + 64), p));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.track_notices.empty() && r.refused.empty());
+
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 3);
+        CHECK(pl.regions[0].end() == armed_at);
+        CHECK(pl.regions[1].position == armed_at && pl.regions[1].end() == kB);
+        CHECK(pl.regions[1].source_offset == 0);
+        CHECK(pl.crossfades.size() == 1);
+        CHECK(pl.crossfades[0].left == pl.regions[1].id);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// Over an empty track the take goes in over [A, B) with nothing to
+// crossfade with: never refused for a crossfade it cannot have.
+int test_a_punch_over_nothing_has_no_crossfade() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_empty");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        Punched p;
+        CHECK(punch(s, punch_range(), static_cast<uint64_t>(kB + kH + 64), p));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.track_notices.empty() && r.refused.empty());
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 1);
+        CHECK(pl.regions[0].position == kA && pl.regions[0].end() == kB);
+        CHECK(pl.crossfades.empty());
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// A rule only the model checks costs the crossfades, never the take: here
+// the old take was edited at 1000 with a crossfade there, and a punch at
+// 1030 leaves 30 frames between it and the new one at A, which the model
+// refuses (two crossfades overlapping in one region). The take still goes
+// in over its range, butt-spliced, and the operator is told.
+int test_a_punch_the_model_refuses_crossfades_for_lands_without_them() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_tight");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Id playlist = active_playlist(doc.current(), 0).id;
+        const model::Id first = active_playlist(doc.current(), 0).regions.at(0).id;
+        const model::Id second = doc.current().next_id;
+        model::ReplicationUpdate u;
+        std::string why;
+        CHECK(doc.apply(model::SplitRegion{playlist, first, 1000, second}, u, why));
+        model::Crossfade edit{first, second, kX, model::Align::Centre,
+                              model::FadeShape::EqualPower};
+        CHECK(doc.apply(model::SetCrossfade{playlist, edit}, u, why));
+
+        PunchRange range = punch_range();
+        range.monitor_in = 1030;
+        range.capture_from = 30;
+        Punched p;
+        CHECK(punch(s, range, static_cast<uint64_t>(kB + kH + 64), p));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 1 was punched in without its crossfades"));
+        CHECK(r.updates.size() == 1);
+
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 4);
+        CHECK(pl.regions[1].id == second && pl.regions[1].end() == 1030);
+        CHECK(pl.regions[2].position == 1030 && pl.regions[2].end() == kB);
+        CHECK(pl.crossfades.size() == 1 && pl.crossfades[0] == edit);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// Stopped before A: nothing was punched, so nothing goes on the timeline
+// and no undo step is made, but what the handle captured is kept in the
+// pool rather than lost.
+int test_a_punch_stopped_before_a_places_nothing() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_before");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Region old = active_playlist(doc.current(), 0).regions.at(0);
+        const std::size_t undo_depth = doc.history().undo_depth();
+        Punched p;
+        CHECK(punch(s, punch_range(), 2500, p));
+        CHECK(p.length > 0);
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.track_notices.empty() && r.refused.empty());
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 1 && pl.regions[0] == old);
+        CHECK(doc.current().sources->sources.size() == 2);
+        CHECK(doc.history().undo_depth() == undo_depth);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// The playhead start_punch() checks against B is read before the files
+// open, and the audio thread rolls on meanwhile: pressed a few frames
+// before B, capture can start at or past it. Nothing is then inside
+// [A, B); the take goes into the pool, and the operator is told so rather
+// than finding nothing on the timeline. Driven here with a take whose
+// capture starts past B, marked as that punch.
+int test_a_punch_captured_after_its_out_point_is_said() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_after");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Region old = active_playlist(doc.current(), 0).regions.at(0);
+        const std::size_t undo_depth = doc.history().undo_depth();
+        for (auto& t : s.tracks()) t->set_rec_armed(true);
+        s.disk().start();
+        s.play();
+        roll_to(s, static_cast<uint64_t>(kB));
+        CHECK(s.transport().playhead() >= static_cast<uint64_t>(kB));
+        CHECK(s.start_recording(1));
+        roll_to(s, static_cast<uint64_t>(kB + 500));
+        CHECK(s.stop());
+        std::vector<Session::ClosedTake> closed = s.closed_takes();
+        CHECK(closed.size() == 1 && closed[0].files.size() == 1);
+        Session::ClosedTake take = closed[0];
+        take.punched = true;
+        take.punch = punch_range();
+
+        const TakeAdded r = add_closed_take(doc, s, take);
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 1 is in the session's audio, not on the timeline"));
+        CHECK(mentions(r.track_notices[0], "after the punch-out"));
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 1 && pl.regions[0] == old);
+        CHECK(doc.current().sources->sources.size() == 2);
+        CHECK(doc.history().undo_depth() == undo_depth);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// The punch the record commands start, from the document's transport
+// settings: [A - H, B + H) captured, H = max(punch_crossfade, 1 s), cut at
+// the timeline's start; Auto monitoring switching at A and B with the
+// crossfade the take will be placed with. No range set: no punch.
+int test_the_document_punch() {
+    model::SessionSettings settings;
+    settings.sample_rate = kPunchRate;
+    model::Snapshot doc = model::new_session(settings);
+    PunchRange r;
+    CHECK(!document_punch(doc, r));
+
+    doc.settings.transport.punch = {{kA, kB}};
+    doc.settings.transport.punch_crossfade = kX;
+    CHECK(document_punch(doc, r));
+    CHECK(r.capture_from == static_cast<uint64_t>(kA - kH));
+    CHECK(r.capture_to == static_cast<uint64_t>(kB + kH));
+    CHECK(r.monitor_in == static_cast<uint64_t>(kA));
+    CHECK(r.monitor_out == static_cast<uint64_t>(kB));
+    CHECK(r.crossfade == static_cast<uint32_t>(kX));
+    CHECK(r.shape == FadeCurve::EqualPower);
+
+    doc.settings.transport.punch = {{500, kB}};
+    doc.settings.transport.punch_crossfade = 2400;
+    CHECK(document_punch(doc, r));
+    CHECK(r.capture_from == 0);
+    CHECK(r.capture_to == static_cast<uint64_t>(kB + 2400));
+
+    // [B, A) and [A, A) are no range, as the interface shows them.
+    doc.settings.transport.punch = {{kB, kA}};
+    CHECK(!document_punch(doc, r));
+    doc.settings.transport.punch = {{kA, kA}};
+    CHECK(!document_punch(doc, r));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -339,10 +710,18 @@ int main() {
     failed += test_a_refused_take_keeps_its_audio_in_the_pool();
     failed += test_a_split_take_lands_in_track_order();
     failed += test_a_refused_part_keeps_its_audio_and_the_others_land();
+    failed += test_a_punch_goes_in_over_its_range();
+    failed += test_a_punch_stopped_inside_its_range_ends_there();
+    failed += test_a_punch_armed_late_starts_where_it_recorded();
+    failed += test_a_punch_over_nothing_has_no_crossfade();
+    failed += test_a_punch_the_model_refuses_crossfades_for_lands_without_them();
+    failed += test_a_punch_stopped_before_a_places_nothing();
+    failed += test_a_punch_captured_after_its_out_point_is_said();
+    failed += test_the_document_punch();
     if (failed != 0) {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
     }
-    std::printf("closed_take: 6 passed\n");
+    std::printf("closed_take: 14 passed\n");
     return 0;
 }

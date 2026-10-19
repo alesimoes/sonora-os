@@ -2,6 +2,7 @@
 #include "sonora/closed_take.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 
@@ -75,6 +76,102 @@ model::Region region_of(const model::Source& source, model::Id id, const std::st
     r.length = source.length;
     for (uint16_t c = 0; c < channels; ++c) r.channels.push_back({source.id, c});
     return r;
+}
+
+model::FadeShape shape_of(FadeCurve c) {
+    switch (c) {
+        case FadeCurve::Linear: return model::FadeShape::Linear;
+        case FadeCurve::SCurve: return model::FadeShape::SCurve;
+        case FadeCurve::EqualPower: break;
+    }
+    return model::FadeShape::EqualPower;
+}
+
+model::Frames frames_of(uint64_t f) {
+    return f > static_cast<uint64_t>(model::kMaxInteger) ? model::kMaxInteger
+                                                         : static_cast<model::Frames>(f);
+}
+
+const model::Playlist* playlist_by_id(const model::Snapshot& s, model::Id id) {
+    for (const auto& t : s.edit->tracks) {
+        for (const auto& p : t->playlists) {
+            if (p->id == id) return p.get();
+        }
+    }
+    return nullptr;
+}
+
+// What the region's shortest channel has, as the model measures handle.
+model::Frames shortest_source(const model::Snapshot& s, const model::Region& r) {
+    model::Frames shortest = model::kMaxInteger;
+    for (const model::SourceRef& c : r.channels) {
+        const model::Source* src = s.sources->find(c.source);
+        shortest = std::min(shortest, src ? src->length : model::Frames{0});
+    }
+    return shortest;
+}
+
+// Cuts `rec`, a whole file at its TimeReference, to the punch range, and
+// asks for the crossfades it can have against `document` before the take.
+// A crossfade without handle on both sides is not asked for: the model
+// refuses rather than shortens it, and losing the take to it is worse than
+// a butt splice. False when nothing was recorded inside the range.
+bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
+                  model::RecordTake& rec) {
+    model::Region& n = rec.region;
+    const model::Frames origin = n.position;
+    const model::Frames file_end = n.end();
+    const model::Frames a = frames_of(punch.monitor_in);
+    const model::Frames b = frames_of(punch.monitor_out);
+    const model::Frames from = std::max(a, origin);
+    const model::Frames to = std::min(b, file_end);
+    if (to <= from) return false;
+    n.position = from;
+    n.length = to - from;
+    n.source_offset = from - origin;
+
+    const model::Playlist* p = playlist_by_id(document, rec.playlist);
+    if (punch.crossfade == 0 || p == nullptr) return true;
+    model::Crossfade x;
+    x.length = punch.crossfade;
+    x.align = model::Align::Centre;
+    x.shape = shape_of(punch.shape);
+    model::Frames before = 0, after = 0;
+    model::crossfade_extent(x, before, after);
+
+    // A take that started late, or stopped early, meets what is beneath at
+    // a point the operator did not set as a punch point: no crossfade there.
+    if (from == a) {
+        for (const model::Region& r : p->regions) {
+            if (r.position >= a || r.end() < a) continue;
+            const model::Frames kept = a - r.position;
+            const model::Frames handle = shortest_source(document, r) - r.source_offset - kept;
+            if (before <= kept && after <= n.length && handle >= after &&
+                n.source_offset >= before) {
+                x.left = r.id;
+                x.right = n.id;
+                rec.crossfades.push_back(x);
+            }
+            break;
+        }
+    }
+    if (to == b) {
+        for (const model::Region& r : p->regions) {
+            if (r.position > b || r.end() <= b) continue;
+            // Spanning the whole take it is split, and its right part is
+            // the new id; otherwise it keeps its id and starts at B.
+            const model::Id right = r.position < from ? rec.split_right_id : r.id;
+            const model::Frames right_offset = r.source_offset + (b - r.position);
+            if (before <= n.length && after <= r.end() - b && file_end - to >= after &&
+                right_offset >= before) {
+                x.left = n.id;
+                x.right = right;
+                rec.crossfades.push_back(x);
+            }
+            break;
+        }
+    }
+    return true;
 }
 
 // "Audio Files/Audio 1_03.wav" names its region "Audio 1_03".
@@ -156,6 +253,9 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     // ids per file, reserved whether or not the overwrite splits.
     std::vector<model::AddSource> sources;
     std::vector<model::RecordTake> records;
+    // False for a punched file with nothing inside the punch range: its
+    // source goes in alone.
+    std::vector<bool> placed;
     std::vector<int> numbers;   // the track each file is on, from 1
     model::Id next = document.current().next_id;
     for (const DiskThread::ClosedFile& f : take.files) {
@@ -195,6 +295,20 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         rec.region = region_of(src.source, next + 1, stem(relative), t->channels);
         rec.split_right_id = next + 2;
         next += 3;
+        const model::Frames origin = rec.region.position;
+        const bool in_range = !take.punched || cut_to_punch(document.current(), take.punch, rec);
+        // start_punch() refuses a punch-out behind the playhead, but the
+        // files open after that check while the audio thread rolls on, so a
+        // press just before B can capture from B on. Stopped before A is
+        // the operator's own choice and needs no word.
+        if (!in_range && origin >= frames_of(take.punch.monitor_out)) {
+            out.track_notices.push_back(
+                which + " is in the session's audio, not on the timeline: track " +
+                std::to_string(f.track + 1) + " started recording at frame " +
+                std::to_string(origin) + ", after the punch-out at " +
+                std::to_string(take.punch.monitor_out));
+        }
+        placed.push_back(in_range);
         sources.push_back(std::move(src));
         records.push_back(std::move(rec));
         numbers.push_back(f.track + 1);
@@ -215,16 +329,36 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         std::clamp<std::size_t>(files_per_compound, 1, model::kMaxCompoundMembers / 2);
     for (std::size_t first = 0; first < sources.size(); first += per_part) {
         const std::size_t last = std::min(sources.size(), first + per_part);
-        model::Compound c;
-        c.label = "Record";
-        for (std::size_t k = first; k < last; ++k) {
-            c.ops.push_back(sources[k]);
-            c.ops.push_back(records[k]);
-        }
+        const auto part_of = [&](bool crossfades) {
+            model::Compound c;
+            c.label = "Record";
+            for (std::size_t k = first; k < last; ++k) {
+                c.ops.push_back(sources[k]);
+                if (!placed[k]) continue;
+                model::RecordTake rec = records[k];
+                if (!crossfades) rec.crossfades.clear();
+                c.ops.push_back(std::move(rec));
+            }
+            return model::Operation{std::move(c)};
+        };
         std::string why;
         model::ReplicationUpdate u;
-        if (document.apply(model::Operation{std::move(c)}, u, why)) {
+        if (document.apply(part_of(true), u, why)) {
             out.updates.push_back(std::move(u));
+            continue;
+        }
+        // A punch's crossfades are checked against the model's rules here,
+        // but a rule this side does not know of must cost the crossfades,
+        // not the take.
+        const bool had_crossfades =
+            std::any_of(records.begin() + static_cast<std::ptrdiff_t>(first),
+                        records.begin() + static_cast<std::ptrdiff_t>(last),
+                        [](const model::RecordTake& r) { return !r.crossfades.empty(); });
+        std::string plain_why;
+        if (had_crossfades && document.apply(part_of(false), u, plain_why)) {
+            out.updates.push_back(std::move(u));
+            out.track_notices.push_back(which + " was punched in without its crossfades: " +
+                                        why);
             continue;
         }
 
@@ -251,6 +385,26 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         }
     }
     return out;
+}
+
+bool document_punch(const model::Snapshot& document, PunchRange& out) {
+    const auto& t = document.settings.transport;
+    const model::Frames a = t.punch[0];
+    const model::Frames b = t.punch[1];
+    if (a < 0 || b <= a) return false;
+    // H = max(punch_crossfade, 1 s): timeline-model.md, "Punch in".
+    const model::Frames x = std::clamp<model::Frames>(t.punch_crossfade, 0, UINT32_MAX);
+    const model::Frames h =
+        std::max<model::Frames>(x, static_cast<model::Frames>(document.settings.sample_rate));
+    out = PunchRange{};
+    out.capture_from = static_cast<uint64_t>(a > h ? a - h : 0);
+    out.capture_to = static_cast<uint64_t>(b + h);
+    out.monitor_in = static_cast<uint64_t>(a);
+    out.monitor_out = static_cast<uint64_t>(b);
+    out.crossfade = static_cast<uint32_t>(x);
+    // The shape session-format.md gives the punch crossfade.
+    out.shape = FadeCurve::EqualPower;
+    return true;
 }
 
 std::vector<std::string> recover_unclosed_takes(const std::string& session_dir,

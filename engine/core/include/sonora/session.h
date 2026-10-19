@@ -169,7 +169,9 @@ public:
     // Recording, until stop() or punch_out(); closed_takes() reports the
     // take then. Refused, with nothing opened, when the range is empty,
     // when its monitored part [monitor_in, monitor_out) is not inside what
-    // it captures, or when it ends at or before the playhead. A capture_from
+    // it captures, or when that monitored part ends at or before the
+    // playhead: past monitor_out only handle is left, which is placed
+    // nowhere (add_closed_take()). A capture_from
     // already passed records from the audio thread's next block.
     bool start_punch(int take_number, const PunchRange& range, std::string* error = nullptr);
     // Ends the running take and leaves the transport rolling (punch out on
@@ -192,6 +194,10 @@ public:
     struct ClosedTake {
         int take = 0;
         std::vector<DiskThread::ClosedFile> files;
+        // Started by start_punch(), with this range: it is placed over
+        // [monitor_in, monitor_out) only, not over all it captured.
+        bool punched = false;
+        PunchRange punch;
     };
     // The takes closed since the last call, oldest first: by stop(), or by
     // the disk thread after punch_out() or a take started over it. Control
