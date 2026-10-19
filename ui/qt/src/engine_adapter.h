@@ -179,6 +179,11 @@ public:
     // False when the heartbeat has stalled. The interface then shows meters
     // as "no data" rather than frozen values (§3).
     virtual bool engine_alive(uint64_t now_ns) const = 0;
+    // Why there is no link to the engine, in words for the engine-gone
+    // banner: a refused version, a closed socket. Empty while the link is up
+    // or when the backend cannot say (an engine in this process has no link
+    // to lose).
+    virtual std::string link_error() const { return {}; }
 
     // A fader being ridden: engine track `track`'s gain, linear 0 .. 4
     // (api::ParamId::Gain). Heard at once and not saved; the end of the

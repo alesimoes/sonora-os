@@ -17,7 +17,11 @@
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the
 #                                           compositor itself (grim); also the
-#                                           Transport window (-transport)
+#                                           Transport window (-transport) and,
+#                                           on a sonora-engine announcing a
+#                                           newer protocol, the version
+#                                           refusal at startup (-refusal) and
+#                                           on reconnect (-refusal-reconnect)
 #   tools/build-ui.sh --measure [SECONDS]   ... then frame time and CPU cost
 #                                           of the shell, meters on and off,
 #                                           under Xvfb and under cage

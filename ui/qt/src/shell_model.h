@@ -61,6 +61,10 @@ class ShellModel : public QObject {
     Q_PROPERTY(QString healthText READ healthText NOTIFY transportChanged)
     Q_PROPERTY(QList<bool> armed READ armed NOTIFY tracksChanged)
     Q_PROPERTY(bool engineAlive READ engineAlive NOTIFY engineAliveChanged)
+    // While the engine is not alive, why the link is down if the backend
+    // knows (EngineAdapter::link_error), capitalised: the version refusal
+    // among others.
+    Q_PROPERTY(QString linkErrorText READ linkErrorText NOTIFY engineAliveChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
     Q_PROPERTY(QStringList notices READ notices NOTIFY noticesChanged)
     // What the operator must act on, in red: why the backend stopped, why
@@ -145,6 +149,7 @@ public:
     QString healthText() const { return health_text_; }
     QList<bool> armed() const { return armed_; }
     bool engineAlive() const { return alive_; }
+    QString linkErrorText() const { return link_error_; }
     QString statusText() const { return status_; }
     QStringList notices() const { return notices_; }
     QString alertText() const { return alert_text_; }
@@ -261,6 +266,7 @@ private:
     QString health_text_;
     QList<bool> armed_;
     bool alive_ = false;
+    QString link_error_;
     QString status_;
     int64_t status_until_ns_ = 0;
     QStringList notices_;

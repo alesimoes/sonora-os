@@ -66,6 +66,7 @@ public:
         return p;
     }
     bool engine_alive(uint64_t) const override { return alive; }
+    std::string link_error() const override { return link_error_text; }
     uint64_t send_track_gain(uint32_t track, float linear) override {
         gain_changes.push_back({track, linear});
         return ++seq_;
@@ -103,6 +104,7 @@ public:
     std::vector<EngineEvent> events;   // handed over at the next take_events()
     mutable int frames = 0;
     bool alive = true;
+    std::string link_error_text;
     int peak_reads = 0;
     DispatchResult next_result = DispatchResult::Ok;
     std::string next_message;
