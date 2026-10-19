@@ -231,6 +231,9 @@ struct TrackMix {
     float pan = 0.0f;
     bool mute = false;
     bool solo = false;
+    // Never implicitly muted by another track's solo, as Pro Tools' solo
+    // safe; the track's own mute still silences it.
+    bool solo_safe = false;
     bool operator==(const TrackMix& o) const;
 };
 

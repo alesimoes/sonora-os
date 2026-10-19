@@ -223,25 +223,25 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // Compounds over 64 members (ADR-0009 note 2026-10-18) are version 5.
-    // A version-4 interface, whose decoder stops at 64, reads this engine's
-    // Hello and refuses it at connect, naming both numbers, before a
-    // compound it cannot decode can reach it. Its check is this function
-    // with its own constants, passed here.
-    CHECK(kProtocolVersion == 5);
+    // Solo safe in a track's mix (BACKLOG Track 2 item 5) is version 6. A
+    // version-5 interface, whose decoder refuses the solo_safe key, reads
+    // this engine's Hello and refuses it at connect, naming both numbers,
+    // before a mix it cannot decode can reach it. Its check is this
+    // function with its own constants, passed here.
+    CHECK(kProtocolVersion == 6);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
-    const std::string v4 = wire::version_mismatch(pv, lv, 4, kStateLayoutVersion);
-    CHECK(mentions(v4, "the engine speaks control protocol version 5 and this interface "
-                       "speaks version 4"));
-    CHECK(mentions(v4, "same build"));
-    // And this interface refuses a version-4 engine the same way.
-    CHECK(mentions(wire::version_mismatch(4, kStateLayoutVersion),
-                   "the engine speaks control protocol version 4 and this interface "
-                   "speaks version 5"));
+    const std::string v5 = wire::version_mismatch(pv, lv, 5, kStateLayoutVersion);
+    CHECK(mentions(v5, "the engine speaks control protocol version 6 and this interface "
+                       "speaks version 5"));
+    CHECK(mentions(v5, "same build"));
+    // And this interface refuses a version-5 engine the same way.
+    CHECK(mentions(wire::version_mismatch(5, kStateLayoutVersion),
+                   "the engine speaks control protocol version 5 and this interface "
+                   "speaks version 6"));
 }
 
 void domains() {

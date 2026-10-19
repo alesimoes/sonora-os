@@ -23,6 +23,7 @@
 #include "session_model.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/fade_curve.h"
+#include "sonora/model/session_file.h"
 #include "theme.h"
 #include "time_format.h"
 #include "timeline_document.h"
@@ -1575,11 +1576,16 @@ int test_pre_migration_backup() {
         QFile in(f);
         return in.open(QIODevice::ReadOnly) ? in.readAll().toStdString() : std::string("<none>");
     };
-    OK(write_session_file(file, "{\"sonora_session\": 2}\n", why, caution));
+    const std::string current =
+        "{\"sonora_session\": " + std::to_string(sonora::model::kFormatVersion) + "}\n";
+    OK(write_session_file(file, current, why, caution));
     OK(contents(kept) == v1);
-    OK(contents(file) == "{\"sonora_session\": 2}\n");
+    OK(contents(file) == current);
     // Kept once: later saves neither replace the copy nor make another.
-    OK(write_session_file(file, "{\"sonora_session\": 2, \"x\": 1}\n", why, caution));
+    OK(write_session_file(file,
+                          "{\"sonora_session\": " +
+                              std::to_string(sonora::model::kFormatVersion) + ", \"x\": 1}\n",
+                          why, caution));
     OK(contents(kept) == v1);
     const QDir backups(QFileInfo(kept).absolutePath());
     OK(backups.entryList(QDir::Files).size() == 1);
@@ -1601,7 +1607,7 @@ int test_pre_migration_backup() {
         CHECK(out.write(v99.data(), static_cast<qint64>(v99.size())) ==
               static_cast<qint64>(v99.size()));
     }
-    OK(!write_session_file(newer, "{\"sonora_session\": 2}\n", why, caution));
+    OK(!write_session_file(newer, current, why, caution));
     OK(why.find("version 99") != std::string::npos && why.find("newer") != std::string::npos);
     OK(contents(newer) == v99);
     return 0;

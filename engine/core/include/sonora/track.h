@@ -39,6 +39,10 @@ public:
     bool soloed() const { return soloed_.load(std::memory_order_relaxed); }
     void set_soloed(bool v) { soloed_.store(v, std::memory_order_relaxed); }
 
+    // Another track's solo does not mute this one; its own mute still does.
+    bool solo_safe() const { return solo_safe_.load(std::memory_order_relaxed); }
+    void set_solo_safe(bool v) { solo_safe_.store(v, std::memory_order_relaxed); }
+
     // What the track sends to the monitor bus. Auto: the input while armed
     // and stopped or recording, playback otherwise (session-format.md).
     enum class Monitor : uint8_t { Auto = 0, Input = 1, Off = 2 };
@@ -97,6 +101,7 @@ private:
     std::atomic<float> gain_{1.0f};
     std::atomic<float> pan_{0.0f};
     std::atomic<bool> soloed_{false};
+    std::atomic<bool> solo_safe_{false};
     std::atomic<Monitor> monitor_{Monitor::Auto};
     std::atomic<float> peak_{0.0f};
     std::atomic<uint32_t> overruns_{0};

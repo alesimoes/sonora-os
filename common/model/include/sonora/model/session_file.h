@@ -17,7 +17,8 @@ namespace sonora::model {
 
 // The format version this program writes, and the newest it reads.
 // 2: plugin inserts on tracks (ADR-0012 §6.2).
-constexpr std::int64_t kFormatVersion = 2;
+// 3: solo safe on tracks (BACKLOG Track 2 item 5).
+constexpr std::int64_t kFormatVersion = 3;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

@@ -733,7 +733,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t e = 0; e < tracks_.size(); ++e) {
         const Track& t = *tracks_[e];
         float g = t.gain();
-        if (t.muted() || (any_solo && !t.soloed())) g = 0.0f;
+        if (t.muted() || (any_solo && !t.soloed() && !t.solo_safe())) g = 0.0f;
         float l = 0.0f;
         float r = 0.0f;
         pan_gains(t.pan(), t.channels() >= 2, plan->pan_exponent, l, r);

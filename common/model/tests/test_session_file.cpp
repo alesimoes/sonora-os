@@ -85,7 +85,7 @@ bool refused(const std::string& text, const char* needle, const char* path, int 
 }
 
 // The current version's frozen fixture: what this build writes.
-constexpr const char* kCurrent = "v2-inserts.sonora";
+constexpr const char* kCurrent = "v3-solo-safe.sonora";
 
 int test_fixture_is_canonical() {
     const std::string text = read_fixture(kCurrent);
@@ -94,21 +94,23 @@ int test_fixture_is_canonical() {
     LoadError e;
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 2);
+    CHECK(l.file_version == 3);
     CHECK(l.save_generation == 42);
     CHECK(l.written_by == "sonora-engine 0.2.0");
     // Load, save, compare bytes: the writer is canonical.
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v2-inserts.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v2-inserts.out.sonora\n");
+        std::ofstream("v3-solo-safe.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v3-solo-safe.out.sonora\n");
     }
     CHECK(out == text);
 
     const Snapshot& s = l.snapshot;
     CHECK(invariants_hold(s));
     CHECK(s.next_id == 44);   // max(id) + 1; the counter is not stored
+    CHECK(!s.mix.find(3)->solo_safe);
+    CHECK(s.mix.find(4)->solo_safe);
 
     // The inserts: structure on the track, values in the mix.
     const TrackEdit& vox = *s.edit->tracks[0];
@@ -156,16 +158,20 @@ int test_v1_migrates() {
     for (const auto& t : l.snapshot.edit->tracks) CHECK(t->inserts.empty());
     CHECK(l.snapshot.mix.inserts.empty());
 
-    // Saved, it is the same session at version 2: the version and one empty
-    // list per track are the whole difference.
+    for (const TrackMix& m : l.snapshot.mix.tracks) CHECK(!m.solo_safe);
+
+    // Saved, it is the same session at version 3: the version, one empty
+    // list and one solo safe off per track are the whole difference.
     std::string out;
     CHECK(save(l, out));
     const std::string expected =
-        edit(edit(edit(v1, "\"sonora_session\": 1,", "\"sonora_session\": 2,"),
+        edit(edit(edit(v1, "\"sonora_session\": 1,", "\"sonora_session\": 3,"),
                   "      \"active_playlist\": 11,\n",
-                  "      \"active_playlist\": 11,\n      \"inserts\": [],\n"),
+                  "      \"solo_safe\": false,\n      \"active_playlist\": 11,\n"
+                  "      \"inserts\": [],\n"),
              "      \"active_playlist\": 13,\n",
-             "      \"active_playlist\": 13,\n      \"inserts\": [],\n");
+             "      \"solo_safe\": false,\n      \"active_playlist\": 13,\n"
+             "      \"inserts\": [],\n");
     if (out != expected) {
         std::ofstream("v1-migrated.out.sonora", std::ios::binary) << out;
         std::fprintf(stderr, "  migrated bytes differ; wrote v1-migrated.out.sonora\n");
@@ -173,7 +179,7 @@ int test_v1_migrates() {
     CHECK(out == expected);
     std::int64_t version = 0;
     CHECK(file_format_version(v1, version) && version == 1);
-    CHECK(file_format_version(out, version) && version == 2);
+    CHECK(file_format_version(out, version) && version == 3);
     CHECK(!file_format_version("{\"keymap\": 1}", version));
     CHECK(!file_format_version("not json", version));
 
@@ -181,6 +187,44 @@ int test_v1_migrates() {
     CHECK(refused(edit(v1, "      \"active_playlist\": 11,\n",
                        "      \"active_playlist\": 11,\n      \"inserts\": [],\n"),
                   "migrating from format version 1: tracks[0] has \"inserts\"", ""));
+    return 0;
+}
+
+// The frozen version-2 fixture loads forever, through v2 -> v3, which turns
+// solo safe off on every track and changes nothing else.
+int test_v2_migrates() {
+    const std::string v2 = read_fixture("v2-inserts.sonora");
+    CHECK(!v2.empty());
+    Loaded l;
+    LoadError e;
+    if (!load(v2, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(v2, l, e));
+    CHECK(l.file_version == 2);
+    CHECK(invariants_hold(l.snapshot));
+    CHECK(l.snapshot.mix.tracks.size() == 2);
+    for (const TrackMix& m : l.snapshot.mix.tracks) CHECK(!m.solo_safe);
+
+    std::string out;
+    CHECK(save(l, out));
+    const std::string expected =
+        edit(edit(edit(v2, "\"sonora_session\": 2,", "\"sonora_session\": 3,"),
+                  "      \"solo\": false,\n      \"active_playlist\": 11,\n",
+                  "      \"solo\": false,\n      \"solo_safe\": false,\n"
+                  "      \"active_playlist\": 11,\n"),
+             "      \"solo\": false,\n      \"active_playlist\": 13,\n",
+             "      \"solo\": false,\n      \"solo_safe\": false,\n"
+             "      \"active_playlist\": 13,\n");
+    if (out != expected) {
+        std::ofstream("v2-migrated.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  migrated bytes differ; wrote v2-migrated.out.sonora\n");
+    }
+    CHECK(out == expected);
+
+    // A version-2 file cannot carry what version 2 does not define.
+    CHECK(refused(edit(v2, "      \"solo\": false,\n      \"active_playlist\": 13,\n",
+                       "      \"solo\": false,\n      \"solo_safe\": true,\n"
+                       "      \"active_playlist\": 13,\n"),
+                  "migrating from format version 2: tracks[1] has \"solo_safe\"", ""));
     return 0;
 }
 
@@ -217,6 +261,7 @@ int test_round_trip_from_edits() {
     TrackMix m = *h.current().mix.find(t.track);
     m.gain_db = -0.3f;   // not exact in binary: the case that round-trips badly
     m.pan = 0.7f;
+    m.solo_safe = true;
     CHECK_APPLY(h, SetMix{m});
 
     std::string bytes, err;
@@ -226,6 +271,8 @@ int test_round_trip_from_edits() {
     CHECK(load(bytes, l, e));
     CHECK(same_document(l.snapshot, h.current()));
     CHECK(l.snapshot.mix.find(t.track)->gain_db == -0.3f);
+    CHECK(l.snapshot.mix.find(t.track)->solo_safe);
+    CHECK(!l.snapshot.mix.find(t2.track)->solo_safe);
     CHECK(l.save_generation == 7);
     std::string again;
     CHECK(save(l, again));
@@ -249,30 +296,35 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 2,", "\"sonora_session\": 3,"),
-                  "format version 3, newer than this program, which reads up to version 2",
+    CHECK(refused(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 4,"),
+                  "format version 4, newer than this program, which reads up to version 3",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 2,", "\"sonora_session\": 4,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 5,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 2,",
+    CHECK(refused(edit(text, "\"sonora_session\": 3,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 2,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 2,", "\"sonora_session\": 2.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 3,", "\"sonora_session\": 3.0,"),
                   "integer format version", "sonora_session"));
-    // A version-2 file must have the key version 2 added; only the migration
-    // fills it in for an older file.
+    // A current file must have the keys versions 2 and 3 added; only the
+    // migrations fill them in for an older file.
     CHECK(refused(edit(text, "      \"inserts\": [],\n", ""),
                   "missing required key \"inserts\"", "tracks[1]"));
+    CHECK(refused(edit(text, "      \"solo_safe\": true,\n", ""),
+                  "missing required key \"solo_safe\"", "tracks[1]"));
+    CHECK(refused(edit(text, "\"solo_safe\": true,", "\"solo_safe\": 1,"),
+                  "must be true or false", "tracks[1].solo_safe",
+                  line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 2,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 2,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 3,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 3,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -541,6 +593,7 @@ int main() {
     };
     t(test_fixture_is_canonical);
     t(test_v1_migrates);
+    t(test_v2_migrates);
     t(test_round_trip_from_edits);
     t(test_versions);
     t(test_key_order_is_lenient);

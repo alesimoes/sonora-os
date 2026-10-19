@@ -79,7 +79,24 @@ bool v1_to_v2(Value& root, std::string& error) {
     return true;
 }
 
-const std::array<Migration, kFormatVersion - 1> kMigrations{{v1_to_v2}};
+// v2 -> v3: every track gains "solo_safe": false, nothing else.
+bool v2_to_v3(Value& root, std::string& error) {
+    Value* tracks = root.find("tracks");
+    if (tracks == nullptr || !tracks->is_array()) return true;
+    for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+        Value& t = tracks->items()[i];
+        if (!t.is_object()) continue;
+        if (t.find("solo_safe") != nullptr) {
+            error = "tracks[" + std::to_string(i) +
+                    "] has \"solo_safe\", which version 2 does not define";
+            return false;
+        }
+        t.set("solo_safe", Value::boolean(false));
+    }
+    return true;
+}
+
+const std::array<Migration, kFormatVersion - 1> kMigrations{{v1_to_v2, v2_to_v3}};
 
 bool migrate(Value& root, std::int64_t from, std::string& error) {
     for (std::int64_t v = from; v < kFormatVersion; ++v) {
@@ -656,7 +673,8 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditStat
         const std::string p = index_path("tracks", i);
         if (!rd.keys(v, p,
                      {"id", "name", "channels", "input", "monitor", "gain_db", "pan",
-                      "mute", "solo", "active_playlist", "inserts", "playlists"})) {
+                      "mute", "solo", "solo_safe", "active_playlist", "inserts",
+                      "playlists"})) {
             return false;
         }
         auto t = std::make_shared<TrackEdit>();
@@ -690,6 +708,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditStat
         if (!rd.real(v, p, "pan", m.pan)) return false;
         if (!rd.flag(v, p, "mute", m.mute)) return false;
         if (!rd.flag(v, p, "solo", m.solo)) return false;
+        if (!rd.flag(v, p, "solo_safe", m.solo_safe)) return false;
         std::string where;
         if (!rd.checked(detail::mix_problem(m, t->channels, where), v, p, where)) {
             return false;
@@ -828,6 +847,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         tv.set("pan", Value::number_float(m.pan));
         tv.set("mute", Value::boolean(m.mute));
         tv.set("solo", Value::boolean(m.solo));
+        tv.set("solo_safe", Value::boolean(m.solo_safe));
         tv.set("active_playlist", id_value(t.active_playlist));
         Value& inserts = tv.set("inserts", Value::array());
         for (const Insert& in : t.inserts) {

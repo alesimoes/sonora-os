@@ -38,7 +38,10 @@ namespace sonora::api {
 // 5 (ADR-0009 note 2026-10-18, BACKLOG Track 2 item 8): a Compound may hold
 //   up to model::kMaxCompoundMembers = 256 members, not 64; a version-4
 //   replica would refuse to decode the larger ones.
-constexpr uint32_t kProtocolVersion = 5;
+// 6 (BACKLOG Track 2 item 5): a track's mix carries solo_safe, in SetMix,
+//   AddTrack and the undo window (format 4); a version-5 peer's decoder
+//   refuses the key, and this one requires it.
+constexpr uint32_t kProtocolVersion = 6;
 
 // --- client -> engine -------------------------------------------------------
 

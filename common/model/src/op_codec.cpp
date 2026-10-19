@@ -131,6 +131,7 @@ Value mix_value(const TrackMix& m) {
     v.set("pan", Value::number_float(m.pan));
     v.set("mute", Value::boolean(m.mute));
     v.set("solo", Value::boolean(m.solo));
+    v.set("solo_safe", Value::boolean(m.solo_safe));
     return v;
 }
 
@@ -627,7 +628,8 @@ bool read_source(Reader& rd, const Value& obj, const std::string& path, Source& 
 }
 
 bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& m) {
-    if (!rd.keys(v, p, {"track", "input", "monitor", "gain_db", "pan", "mute", "solo"}) ||
+    if (!rd.keys(v, p,
+                 {"track", "input", "monitor", "gain_db", "pan", "mute", "solo", "solo_safe"}) ||
         !rd.id(v, p, "track", m.track)) {
         return false;
     }
@@ -642,7 +644,8 @@ bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& 
     }
     return rd.choice(v, p, "monitor", kMonitors, m.monitor) &&
            rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
-           rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo);
+           rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo) &&
+           rd.flag(v, p, "solo_safe", m.solo_safe);
 }
 
 bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m) {
@@ -1049,7 +1052,8 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 2: tracks carry their inserts, and the mix the inserts' values.
 // 3: each step carries its label (ADR-0009 update 2026-10-14), for "Undo
 //    Paste" on a replica rebuilt from the window.
-constexpr std::int64_t kWindowFormat = 3;
+// 4: each track's mix carries solo_safe.
+constexpr std::int64_t kWindowFormat = 4;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on

@@ -428,8 +428,10 @@ Phase 2's graph is fixed: one `TrackOut` node per track, one `BusSum`, one
    last cycle left in it.
 
 Solo is computed from the atomics too: any solo set means unsoloed tracks
-contribute nothing, ramped to and from zero like mute. It is a per-block
-check, not a structural change.
+that are not solo safe contribute nothing, ramped to and from zero like
+mute. It is a per-block check, not a structural change. Solo safe, as in
+Pro Tools, only exempts a track from that implicit mute: its own mute still
+silences it, and it does not count as a solo.
 
 It is a node list rather than a hard-coded loop for the reason the owner
 gave: inserts, sends, VCA and groups arrive on top of the same graph. Phase

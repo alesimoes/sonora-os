@@ -910,6 +910,32 @@ int test_undone_track_leaves_no_solo() {
     return 0;
 }
 
+// A SetMix's solo safe reaches the engine track, on and off, and nothing else
+// changes with it.
+int test_solo_safe_reaches_the_track() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(!s.tracks()[0]->solo_safe());
+    TrackMix m = *h.current().mix.find(100);
+    m.solo_safe = true;
+    CHECK_APPLY(h, SetMix{m});
+    ctl.apply_mix(h.current());
+    CHECK(s.tracks()[0]->solo_safe());
+    CHECK(!s.tracks()[0]->soloed() && !s.tracks()[0]->muted());
+    CHECK(!s.tracks()[1]->solo_safe());
+    m.solo_safe = false;
+    CHECK_APPLY(h, SetMix{m});
+    ctl.apply_mix(h.current());
+    CHECK(!s.tracks()[0]->solo_safe());
+    return 0;
+}
+
 // The same, rolling. A document without track C (a session opened, an
 // AddTrack undone) is shown while the old plan still renders C on engine
 // track 2, and goes on rendering it until the reader has the new plan's
@@ -1301,6 +1327,7 @@ int main() {
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
     if (test_undone_track_leaves_no_solo()) return 1;
+    if (test_solo_safe_reaches_the_track()) return 1;
     if (test_removed_track_stays_muted_until_the_swap()) return 1;
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;

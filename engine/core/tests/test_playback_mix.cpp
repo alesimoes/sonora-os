@@ -351,6 +351,53 @@ int test_per_block_ramps() {
     return 0;
 }
 
+// A solo-safe track is never implicitly muted by another track's solo, and
+// its own mute still silences it, as in Pro Tools.
+int test_solo_safe() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(5, 1, 16 * kChunk);
+    SegmentSpec sp;
+    sp.end = 16 * kChunk;
+    sp.source_slot = a;
+    SegmentSpec sp2 = sp;
+    sp2.track = 1;
+    CHECK(rig.publish(rig.plan(2, {sp, sp2})));
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_pan(1.0f);
+    s.play();
+    rig.block(kBlock);
+    const auto level = [&](int side, float g) -> bool {
+        const uint64_t at = s.transport().playhead();
+        rig.block(kBlock);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float want = source_value(5, 0, static_cast<int64_t>(at + i)) * g;
+            if (!near(rig.out[side][i], want, 1e-4f)) {
+                std::fprintf(stderr, "  side %d frame %u: %f, want %f\n", side, i,
+                             rig.out[side][i], want);
+                return false;
+            }
+        }
+        return true;
+    };
+    s.tracks()[0]->set_solo_safe(true);
+    s.tracks()[1]->set_soloed(true);
+    CHECK(level(0, 1.0f));
+    CHECK(level(0, 1.0f));
+    CHECK(level(1, 1.0f));
+    s.tracks()[0]->set_muted(true);
+    rig.block(kBlock);
+    CHECK(level(0, 0.0f));
+    s.tracks()[0]->set_muted(false);
+    s.tracks()[0]->set_solo_safe(false);
+    rig.block(kBlock);
+    CHECK(level(0, 0.0f));
+    // Solo safe on the only soloed track changes nothing: it is heard.
+    s.tracks()[1]->set_solo_safe(true);
+    CHECK(level(1, 1.0f));
+    return 0;
+}
+
 // A slot with no chunk is silence and a counted miss; process() returns
 // without waiting for the reader.
 int test_miss_is_counted_silence() {
@@ -572,6 +619,7 @@ int main() {
     if (test_region_gain_and_fades()) return 1;
     if (test_crossfade()) return 1;
     if (test_per_block_ramps()) return 1;
+    if (test_solo_safe()) return 1;
     if (test_miss_is_counted_silence()) return 1;
     if (test_locate_without_dropping_a_block()) return 1;
     if (test_swap_and_delay_continuity()) return 1;
