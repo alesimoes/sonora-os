@@ -341,7 +341,38 @@ int check_cut_edges(const char* gesture, bool tail) {
     return 0;
 }
 
+// PR #86 second review: the trim clamps fades against each other, so the
+// cut edge's fade must be gone before it, or the kept fade is shortened by
+// one that no longer exists. A 10000-frame region, fade-in 4000 and
+// fade-out 3000, cut to 5000 frames keeps all of its uncut fade.
+int check_kept_fade_whole(bool tail) {
+    Region a = make_region(10, "A", kBar, 10000);
+    a.fade_in = Fade{4000, FadeShape::Linear};
+    a.fade_out = Fade{3000, FadeShape::Linear};
+    ModelDocument doc(session_with({a}));
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+    if (tail) {
+        c.select_range(0, kBar + 5000, 2 * kBar);
+    } else {
+        c.select_range(0, 0, kBar + 5000);
+    }
+    CHECK(c.clear(why));
+    const Region& r = lane(doc.snapshot(), 0).regions.at(0);
+    CHECK(r.length == 5000);
+    if (tail) {
+        CHECK(r.fade_out.length == 0 && r.fade_in.length == 4000);
+    } else {
+        CHECK(r.fade_in.length == 0 && r.fade_out.length == 3000);
+    }
+    CHECK(valid(doc.snapshot()));
+    return 0;
+}
+
 int test_cut_edges_lose_fades() {
+    if (check_kept_fade_whole(false) || check_kept_fade_whole(true)) return 1;
     for (const char* g : {"clear", "cut", "paste"}) {
         for (bool tail : {false, true}) {
             if (check_cut_edges(g, tail)) {

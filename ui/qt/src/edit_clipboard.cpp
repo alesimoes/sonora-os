@@ -71,11 +71,12 @@ void clear_range(const Playlist& p, Frames a, Frames b, const NextId& id,
             out.push_back(SplitRegion{p.id, r.id, b, id()});
             out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
         } else if (head) {
-            out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
+            // Before the trim, which clamps the kept fade against this one.
             if (r.fade_out.length > 0) out.push_back(SetFade{p.id, r.id, FadeEnd::Out, Fade{}});
+            out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
         } else if (tail) {
-            out.push_back(TrimRegion{p.id, r.id, Edge::Start, b});
             if (r.fade_in.length > 0) out.push_back(SetFade{p.id, r.id, FadeEnd::In, Fade{}});
+            out.push_back(TrimRegion{p.id, r.id, Edge::Start, b});
         } else {
             out.push_back(RemoveRegion{p.id, r.id});
         }
