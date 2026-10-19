@@ -119,6 +119,17 @@ playback can follow edits; it is in flight.
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
+       - [x] ADR-0014 and `brain/specs/midi.md` written, **Proposed**
+             (`docs/midi-adr`); waits on the owner and O1–O6.
+       - [ ] After acceptance, ADR-0014 §9's phases in order: M-1 model
+             and format v4 (`MusicalMap`, track kinds, MIDI regions,
+             protocol 7), M-2 backend MIDI ports, M-3 playback to ports,
+             M-4 recording and SMF take files, M-5 instruments
+             (plugin layout 2, exit part 1), M-6 SMF interchange (exit
+             part 2), M-7 the UI.
+       - [ ] Researcher, before M-2: ADR-0014 Unverified 1–3 (PipeWire
+             MIDI timing, port names across replug, UMP devices) and 5
+             (vendor behaviour, with the PT-RG pinning).
 5. [x] Solo safe in `TrackMix` (`track2-solo-safe`): `TrackMix::solo_safe`,
        session format v3 (v2→v3 fills `false`; frozen `v3-solo-safe.sonora`),
        op codec and undo window format 4, `kProtocolVersion` 6; the engine's
