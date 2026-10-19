@@ -49,7 +49,8 @@ using NextId = std::function<model::Id()>;
 bool copy_range(const model::Snapshot& s, const model::TrackEdit& track, model::Frames a,
                 model::Frames b, Clip& out);
 
-// The members that leave [a, b) on `p` empty, appended to `out`.
+// The members that leave [a, b) on `p` empty, appended to `out`. A region
+// cut at one end loses the fade on that edge, as model overwrite does.
 void clear_range(const model::Playlist& p, model::Frames a, model::Frames b, const NextId& id,
                  std::vector<model::Member>& out);
 

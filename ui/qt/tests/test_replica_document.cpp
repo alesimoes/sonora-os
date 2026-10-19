@@ -295,6 +295,69 @@ int an_accepted_edit_stays_through_a_loss() {
     return 0;
 }
 
+// PR #86 review: one tick brings an accepted Undo's update, which applies,
+// then an update that fails. The Undo is in the replica's last good document
+// already; replayed on top of it, two steps would show as undone.
+int an_applied_undo_is_not_shown_twice_while_lost() {
+    HandRig r;
+    r.doc.receive({r.snapshot()}, {});
+    std::string why, error;
+    for (const char* name : {"A", "B"}) {
+        const model::Operation op = marker(r.doc.reserve_id(), name);
+        CHECK(r.doc.submit(op, why));
+        api::CommandReply ok;
+        ok.seq = r.sent.back().seq;
+        model::ReplicationUpdate u;
+        CHECK(r.engine.apply(op, u, error));
+        r.doc.receive({to_wire(u)}, {ok});
+    }
+    CHECK(markers(r.doc) == 2 && r.doc.in_flight() == 0);
+
+    CHECK(r.doc.undo(why));
+    CHECK(markers(r.doc) == 1);
+    api::CommandReply ok;
+    ok.seq = r.sent.back().seq;
+    model::ReplicationUpdate undone;
+    CHECK(r.engine.undo(undone, error));
+    r.theirs("Lost");
+    r.doc.receive({to_wire(undone), r.theirs("Fails")}, {ok});
+    CHECK(r.doc.resyncing());
+    CHECK(markers(r.doc) == 1);   // B undone once, not A as well
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    CHECK(r.doc.in_flight() == 0 && markers(r.doc) == 3);
+    return 0;
+}
+
+// PR #86 review: the engine refuses the Resync (a document it cannot
+// snapshot). The interface must not stay "catching up" for good: the reason
+// is said, and the next edit asks again rather than waiting on nothing.
+int a_refused_resync_is_said_and_asked_again() {
+    HandRig r;
+    r.doc.receive({r.snapshot()}, {});
+    r.theirs("Lost");
+    r.doc.receive({r.theirs("Fails")}, {});
+    CHECK(r.resyncs() == 1 && r.doc.resyncing());
+    api::CommandReply no;
+    no.seq = r.sent.back().seq;
+    no.result = DispatchResult::Failed;
+    no.message = "the document is too large to send";
+    r.doc.receive({}, {no});
+    CHECK(r.refused.size() == 1 && r.refused[0].find("too large") != std::string::npos);
+    // Still behind the engine, so the edit is refused; but it asks again.
+    std::string why;
+    CHECK(!r.doc.submit(marker(r.doc.reserve_id(), "Mine"), why));
+    CHECK(r.resyncs() == 2);
+    CHECK(why.find("too large") != std::string::npos);
+    // Only one Resync is out at a time.
+    CHECK(!r.doc.undo(why));
+    CHECK(r.resyncs() == 2);
+    // The second one is answered: edits allowed again.
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    CHECK(r.doc.synced());
+    CHECK(r.doc.submit(marker(r.doc.reserve_id(), "Mine"), why));
+    return 0;
+}
+
 // What the Edit menu says: the engine's step labels, a compound's included.
 int undo_and_redo_labels_follow_the_engine() {
     HandRig r;
@@ -321,6 +384,8 @@ int main() {
     if (open_sends_the_session_to_the_engine() != 0) return 1;
     if (a_loss_sends_one_resync_and_keeps_the_last_document() != 0) return 1;
     if (an_accepted_edit_stays_through_a_loss() != 0) return 1;
+    if (an_applied_undo_is_not_shown_twice_while_lost() != 0) return 1;
+    if (a_refused_resync_is_said_and_asked_again() != 0) return 1;
     if (undo_and_redo_labels_follow_the_engine() != 0) return 1;
     std::printf("replica document: ok\n");
     return 0;

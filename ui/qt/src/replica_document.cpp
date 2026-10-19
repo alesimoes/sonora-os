@@ -45,11 +45,31 @@ uint64_t ReplicaDocument::send(api::ModelAction action, std::string bytes) {
     return submit_(r);
 }
 
-bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
-    if (offline_ || resyncing()) {
-        why = offline_ ? kOffline : kResyncing;
-        return false;
+void ReplicaDocument::request_resync() {
+    resync_seq_ = send(api::ModelAction::Resync, {});
+    resync_pending_ = true;
+    resync_refused_.clear();
+    ++resyncs_sent_;
+}
+
+bool ReplicaDocument::refuse_while_lost(std::string& why) {
+    if (offline_) {
+        why = kOffline;
+        return true;
     }
+    if (!resyncing()) return false;
+    if (!resync_pending_ && !resync_refused_.empty()) {
+        why = "the engine could not send its document (" + resync_refused_ +
+              "); asked again; nothing was changed";
+        request_resync();
+        return true;
+    }
+    why = kResyncing;
+    return true;
+}
+
+bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
+    if (refuse_while_lost(why)) return false;
     // Checked here first, against what is shown, so a refusal the engine
     // would make anyway reaches the status line in this frame, unsent.
     model::History trial = shown_;
@@ -66,10 +86,7 @@ bool ReplicaDocument::submit(const model::Operation& op, std::string& why) {
 }
 
 bool ReplicaDocument::undo(std::string& why) {
-    if (offline_ || resyncing()) {
-        why = offline_ ? kOffline : kResyncing;
-        return false;
-    }
+    if (refuse_while_lost(why)) return false;
     if (!shown_.undo()) {
         why = "nothing to undo";
         return false;
@@ -82,10 +99,7 @@ bool ReplicaDocument::undo(std::string& why) {
 }
 
 bool ReplicaDocument::redo(std::string& why) {
-    if (offline_ || resyncing()) {
-        why = offline_ ? kOffline : kResyncing;
-        return false;
-    }
+    if (refuse_while_lost(why)) return false;
     if (!shown_.redo()) {
         why = "nothing to redo";
         return false;
@@ -142,6 +156,8 @@ bool ReplicaDocument::set_link(bool up) {
     // A Resync asked of the old connection will not be answered; the new
     // one starts with the engine's Snapshot anyway.
     resync_pending_ = false;
+    resync_seq_ = 0;
+    resync_refused_.clear();
     // Whatever the old connection was asked to flush, it will never answer.
     std::vector<Flush> lost;
     lost.swap(flushes_);
@@ -172,6 +188,7 @@ bool ReplicaDocument::set_link(bool up) {
 bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
                               const std::vector<api::CommandReply>& replies) {
     bool changed = false;
+    bool applied = false;   // an update after this tick's replies reached the replica
     for (const api::ModelUpdate& m : updates) {
         // A whole document: possibly another session (another interface's
         // Open), possibly this one again after a Resync. Either way, an id
@@ -181,15 +198,16 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
             // The answer to a Resync, or a whole document anyway: the loss
             // it was asked for is over, whether this one loads or not.
             resync_pending_ = false;
+            resync_refused_.clear();
         }
         std::string why;
-        if (!replica_.receive(from_wire(m), why) && !resync_pending_) {
+        if (replica_.receive(from_wire(m), why)) {
+            applied = true;
+        } else if (!resync_pending_) {
             // Lost track: the whole document again, undo window and all.
             // Once: the updates still on their way before the Snapshot fail
             // the same way and say nothing new.
-            send(api::ModelAction::Resync, {});
-            resync_pending_ = true;
-            ++resyncs_sent_;
+            request_resync();
         }
         changed = true;
     }
@@ -200,6 +218,20 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
     };
     std::vector<Flushed> flushed;
     for (const api::CommandReply& r : replies) {
+        if (resync_seq_ != 0 && r.seq == resync_seq_) {
+            resync_seq_ = 0;
+            // Accepted: the Snapshot follows. Refused: nothing follows, so
+            // the loss is not over and the next edit asks again.
+            if (r.result != DispatchResult::Ok && resync_pending_) {
+                resync_pending_ = false;
+                resync_refused_ = r.message.empty() ? "no reason given" : r.message;
+                if (on_refused) {
+                    on_refused("the engine could not send its document: " + resync_refused_ +
+                               "; the interface is behind it and edits are refused");
+                }
+            }
+            continue;
+        }
         const auto f = std::find_if(flushes_.begin(), flushes_.end(),
                                     [&r](const Flush& x) { return x.seq == r.seq; });
         if (f != flushes_.end()) {
@@ -222,11 +254,12 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         }
     }
     // The engine sends a request's reply just before its update, so an
-    // accepted request is in the replica once an update has come after its
-    // reply. Usually both arrive in one tick.
-    // While lost, the replica does not hold them yet: they stay on top of
-    // the last good document until the Snapshot, which has them.
-    if (!updates.empty() && replica_.synced()) {
+    // accepted request is in the replica once an update has been applied
+    // after its reply. Usually both arrive in one tick. In a tick where
+    // none applied (lost before it), they stay on top of the last good
+    // document until the Snapshot, which has them; see the header for the
+    // tick that loses track.
+    if (applied) {
         const std::size_t before = pending_.size();
         pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
                                       [](const Pending& p) { return p.answered; }),

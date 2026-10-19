@@ -11,6 +11,7 @@
 #include <QQuickItem>
 #include <QQuickView>
 #include <QTest>
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -292,6 +293,66 @@ int test_fades_and_crossfades() {
     return 0;
 }
 
+// A region the range cuts at one end loses the fade on the new edge, as
+// overwrite and copy_range do: a fade left there would fade to silence
+// audio that used to play at full level. Its other fade is kept.
+int check_cut_edges(const char* gesture, bool tail) {
+    Region a = make_region(10, "A", kBar, 2 * kBar);   // [1, 3) bars
+    a.fade_in = Fade{1000, FadeShape::Linear};
+    a.fade_out = Fade{2000, FadeShape::SCurve};
+    Region src = make_region(11, "S", 10 * kBar, kBar);   // what Paste brings
+    ModelDocument doc(session_with({a, src}));
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+    const std::string g = gesture;
+    // The range covers A's tail (from bar 2) or its head (up to bar 2).
+    const Frames from = tail ? 2 * kBar : 0, to = tail ? 4 * kBar : 2 * kBar;
+    if (g == "paste") {
+        CHECK(c.select_region(11));
+        CHECK(c.copy(why));
+        // One bar pasted over A's tail [2, 3) or its head [1, 2).
+        c.select_track(0);
+        c.set_insertion(tail ? 2 * kBar : kBar);
+        CHECK(c.paste(why));
+    } else {
+        select_range(c, 0, from, to);
+        CHECK(g == "cut" ? c.cut(why) : c.clear(why));
+    }
+    CHECK(doc.history().undo_depth() == 1);
+    const Playlist& p = lane(doc.snapshot(), 0);
+    const auto it = std::find_if(p.regions.begin(), p.regions.end(),
+                                 [](const Region& r) { return r.id == 10; });
+    CHECK(it != p.regions.end());
+    if (tail) {
+        CHECK(it->end() == 2 * kBar);
+        CHECK(it->fade_out.length == 0);
+        CHECK(it->fade_in.length == 1000);
+    } else {
+        CHECK(it->position == 2 * kBar);
+        CHECK(it->fade_in.length == 0);
+        CHECK(it->fade_out.length == 2000);
+    }
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+    const Playlist& back = lane(doc.snapshot(), 0);
+    CHECK(back.regions[0].fade_in.length == 1000 && back.regions[0].fade_out.length == 2000);
+    return 0;
+}
+
+int test_cut_edges_lose_fades() {
+    for (const char* g : {"clear", "cut", "paste"}) {
+        for (bool tail : {false, true}) {
+            if (check_cut_edges(g, tail)) {
+                std::fprintf(stderr, "  in %s at the %s\n", g, tail ? "tail" : "head");
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 // --- the member limit -------------------------------------------------------
 //
 // Track 1 holds kMaxCompoundMembers + 44 one-thousand-frame regions, butted.
@@ -475,6 +536,7 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_copy_paste() || test_cut_clear_duplicate() || test_fades_and_crossfades() ||
+        test_cut_edges_lose_fades() ||
         test_limit() || test_menu()) {
         return 1;
     }

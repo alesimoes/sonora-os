@@ -61,15 +61,21 @@ void clear_range(const Playlist& p, Frames a, Frames b, const NextId& id,
     for (const Region& r : p.regions) {
         if (r.position >= b || r.end() <= a) continue;
         const bool head = r.position < a, tail = r.end() > b;
+        // A trim only clamps fades, so a cut edge is cleared of its fade
+        // here, as overwrite does: kept, it would fade out audio that
+        // played at full level before the edit.
         if (head && tail) {
             // The right part keeps what lies past the range; the left one
-            // is trimmed back to where the range starts.
+            // is trimmed back to where the range starts. The split already
+            // took the fades off both new edges.
             out.push_back(SplitRegion{p.id, r.id, b, id()});
             out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
         } else if (head) {
             out.push_back(TrimRegion{p.id, r.id, Edge::End, a});
+            if (r.fade_out.length > 0) out.push_back(SetFade{p.id, r.id, FadeEnd::Out, Fade{}});
         } else if (tail) {
             out.push_back(TrimRegion{p.id, r.id, Edge::Start, b});
+            if (r.fade_in.length > 0) out.push_back(SetFade{p.id, r.id, FadeEnd::In, Fade{}});
         } else {
             out.push_back(RemoveRegion{p.id, r.id});
         }
