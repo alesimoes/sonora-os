@@ -1,8 +1,9 @@
 # ADR-0014 — MIDI: ticks in the model, frames on the audio thread, MIDI ports in the backend, takes as SMF files
 
-- Status: **Proposed**, 2026-10-19. Not implemented. The owner approves
-  each ADR; eight questions for the owner are under "For the owner", each
-  with the default this ADR builds on until the owner rules.
+- Status: **Accepted by the owner, 2026-10-19**, with every recommended
+  default for O1–O8 ("For the owner"). Not implemented. Accepting it is the
+  ADR-0007 §6 amendment for the `contracts/backend` and `contracts/plugin`
+  changes (O8).
 - Date: 2026-10-19. Revised the same day with the rt-engineer's and
   plugin-engineer's reviews of PR #93 (both "accept with changes"). Every
   required change is folded in; the PR thread maps each review point to
@@ -16,7 +17,7 @@
   layout 2, a state layout bump) mean the next free number when each PR
   lands. ADR-0013 is also Proposed and also names numbers; neither may
   claim one before it lands.
-- Amends, if accepted: ADR-0007 §1 (four edges) and §6 (this ADR is the
+- Amends: ADR-0007 §1 (four edges) and §6 (this ADR is the
   amendment for the `contracts/backend` ownership change, O8), ADR-0012 §2
   and §7.1 (instrument chains), `session-format.md` (version 4, tempo
   bounds). Each amendment is named where it is made; none is made quietly.
@@ -408,7 +409,8 @@ dump are measured in M-3 and M-4.
 
 ## For the owner
 
-Each has a recommended default that the spec builds on until you rule.
+**Ruled by the owner, 2026-10-19: every recommended default below is
+accepted (O1–O8).**
 
 - **O1. Default record mode over existing MIDI.** *Recommended: replace*
   (the take overwrites the range, as audio does), with a Merge toggle in
