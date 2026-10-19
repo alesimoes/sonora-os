@@ -295,7 +295,20 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         rec.region = region_of(src.source, next + 1, stem(relative), t->channels);
         rec.split_right_id = next + 2;
         next += 3;
-        placed.push_back(!take.punched || cut_to_punch(document.current(), take.punch, rec));
+        const model::Frames origin = rec.region.position;
+        const bool in_range = !take.punched || cut_to_punch(document.current(), take.punch, rec);
+        // start_punch() refuses a punch-out behind the playhead, but the
+        // files open after that check while the audio thread rolls on, so a
+        // press just before B can capture from B on. Stopped before A is
+        // the operator's own choice and needs no word.
+        if (!in_range && origin >= frames_of(take.punch.monitor_out)) {
+            out.track_notices.push_back(
+                which + " is in the session's audio, not on the timeline: track " +
+                std::to_string(f.track + 1) + " started recording at frame " +
+                std::to_string(origin) + ", after the punch-out at " +
+                std::to_string(take.punch.monitor_out));
+        }
+        placed.push_back(in_range);
         sources.push_back(std::move(src));
         records.push_back(std::move(rec));
         numbers.push_back(f.track + 1);

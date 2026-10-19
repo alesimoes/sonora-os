@@ -621,6 +621,50 @@ int test_a_punch_stopped_before_a_places_nothing() {
     return 0;
 }
 
+// The playhead start_punch() checks against B is read before the files
+// open, and the audio thread rolls on meanwhile: pressed a few frames
+// before B, capture can start at or past it. Nothing is then inside
+// [A, B); the take goes into the pool, and the operator is told so rather
+// than finding nothing on the timeline. Driven here with a take whose
+// capture starts past B, marked as that punch.
+int test_a_punch_captured_after_its_out_point_is_said() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_after");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Region old = active_playlist(doc.current(), 0).regions.at(0);
+        const std::size_t undo_depth = doc.history().undo_depth();
+        for (auto& t : s.tracks()) t->set_rec_armed(true);
+        s.disk().start();
+        s.play();
+        roll_to(s, static_cast<uint64_t>(kB));
+        CHECK(s.transport().playhead() >= static_cast<uint64_t>(kB));
+        CHECK(s.start_recording(1));
+        roll_to(s, static_cast<uint64_t>(kB + 500));
+        CHECK(s.stop());
+        std::vector<Session::ClosedTake> closed = s.closed_takes();
+        CHECK(closed.size() == 1 && closed[0].files.size() == 1);
+        Session::ClosedTake take = closed[0];
+        take.punched = true;
+        take.punch = punch_range();
+
+        const TakeAdded r = add_closed_take(doc, s, take);
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 1 is in the session's audio, not on the timeline"));
+        CHECK(mentions(r.track_notices[0], "after the punch-out"));
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 1 && pl.regions[0] == old);
+        CHECK(doc.current().sources->sources.size() == 2);
+        CHECK(doc.history().undo_depth() == undo_depth);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
 // The punch the record commands start, from the document's transport
 // settings: [A - H, B + H) captured, H = max(punch_crossfade, 1 s), cut at
 // the timeline's start; Auto monitoring switching at A and B with the
@@ -672,11 +716,12 @@ int main() {
     failed += test_a_punch_over_nothing_has_no_crossfade();
     failed += test_a_punch_the_model_refuses_crossfades_for_lands_without_them();
     failed += test_a_punch_stopped_before_a_places_nothing();
+    failed += test_a_punch_captured_after_its_out_point_is_said();
     failed += test_the_document_punch();
     if (failed != 0) {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
     }
-    std::printf("closed_take: 13 passed\n");
+    std::printf("closed_take: 14 passed\n");
     return 0;
 }
