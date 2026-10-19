@@ -5,7 +5,8 @@
 // the engine's session.
 //
 //   sonora-plugin-host --list [--json] [--format lv2|vst3] [--scan-timeout S] [--bundle DIR]...
-//   sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...
+//                      [--bundles-only] [--only-given] [--engine-pid PID]
+//   sonora-plugin-host --probe ID [--channels N] [--bundle DIR]... [--engine-pid PID]
 //   sonora-plugin-host --version
 //   sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...
 //                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
@@ -46,8 +47,21 @@
 // engine's pid: the host exits at once if that process is not its parent,
 // and later when it stops being so (ipc.h, die_with_parent).
 //
-// --version prints the contract versions this binary speaks; the engine
-// runs it at start-up (ADR-0012 §5.5).
+// --version prints the contract versions this binary speaks, the probe
+// record's included (`probe 1`); the engine runs it at start-up (ADR-0012
+// §5.5) and its plugin scanner before it trusts a record.
+//
+// --list gives every record the bundle it came from (ADR-0012, amendment of
+// 2026-10-19, item 1), so the engine's scanner can fingerprint it. With
+// --bundles-only it prints only the bundles, one {"bundle","format"} line
+// each, running no plugin code at all (VST3 included): what the scanner
+// fingerprints before deciding what to enumerate. --only-given limits the
+// VST3 scan to the --bundle paths given, so a changed bundle is enumerated
+// without running every other one's code again.
+//
+// --probe prints one probe record (contracts/plugin probe_record.h). With
+// --engine-pid, --list and --probe die with the engine as a serving host
+// does: a probe runs third-party code and must not outlive the scan.
 //
 // Exit codes in --shm-fd mode (contracts/plugin, kHostExit*): 0 clean
 // shutdown, 2 usage or a channel that is not valid, 3 the engine's layout or
@@ -68,6 +82,7 @@
 #include "loader.h"
 #include "lv2_host.h"
 #include "sonora/plugin/host_control.h"
+#include "sonora/plugin/probe_record.h"
 #include "sonora/plugin/protocol.h"
 #include "sonora/rt.h"
 #ifdef SONORA_HAVE_VST3
@@ -80,6 +95,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -126,7 +143,7 @@ public:
 };
 
 struct Options {
-    bool list = false, json = false, version = false;
+    bool list = false, json = false, version = false, bundles_only = false, only_given = false;
     std::string probe, format;
     int shm_fd = -1, clock_fd = -1, control_fd = -1;
     int64_t engine_pid = 0;
@@ -149,8 +166,8 @@ struct Options {
     std::fprintf(stderr,
                  "sonora-plugin-host: %s\n"
                  "usage: sonora-plugin-host --list [--json] [--format lv2|vst3] [--scan-timeout S]\n"
-                 "                          [--bundle DIR]...\n"
-                 "       sonora-plugin-host --probe ID [--channels N] [--bundle DIR]...\n"
+                 "                          [--bundle DIR]... [--bundles-only] [--only-given] [--engine-pid PID]\n"
+                 "       sonora-plugin-host --probe ID [--channels N] [--bundle DIR]... [--engine-pid PID]\n"
                  "       sonora-plugin-host --version\n"
                  "       sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
                  "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n"
@@ -186,6 +203,8 @@ Options parse(int argc, char** argv) {
         else if (a == "--version") o.version = true;
         else if (a == "--clock-fd") o.clock_fd = std::atoi(next().c_str());
         else if (a == "--json") o.json = true;
+        else if (a == "--bundles-only") o.bundles_only = true;
+        else if (a == "--only-given") o.only_given = true;
         else if (a == "--format") {
             o.format = next();
             if (o.format != "lv2" && o.format != "vst3") usage("--format is lv2 or vst3");
@@ -224,6 +243,7 @@ Options parse(int argc, char** argv) {
         usage("--shm-fd needs --chain or --control-fd");
     }
     if (o.shm_fd >= 0 && o.clock_fd < 0) usage("--shm-fd needs --clock-fd");
+    if ((o.bundles_only || o.only_given) && !o.list) usage("--bundles-only and --only-given are --list's");
     return o;
 }
 
@@ -249,6 +269,7 @@ void print_info(std::FILE* f, const PluginInfo& info, bool json) {
         std::fprintf(f, "%s\n  uri:      %s\n  format:   %s\n  class:    %s\n  audio:    %u in, %u out\n",
                     info.name.c_str(), info.uri.c_str(), info.format.c_str(), info.class_label.c_str(),
                     info.audio_in, info.audio_out);
+        std::fprintf(f, "  bundle:   %s\n", info.bundle.c_str());
         if (info.latency_port >= 0)
             std::fprintf(f, "  latency:  reported on port %d\n", info.latency_port);
         else if (info.latency_frames >= 0)
@@ -279,6 +300,7 @@ void print_info(std::FILE* f, const PluginInfo& info, bool json) {
                 info.missing_features.empty() ? "true" : "false");
     if (!info.missing_features.empty())
         std::fprintf(f, ",\"reason\":\"%s\"", json_escape(info.missing_features.front()).c_str());
+    std::fprintf(f, ",\"bundle\":\"%s\"", json_escape(info.bundle).c_str());
     std::fprintf(f, ",\"ports\":[");
     uint32_t dense = 0;
     for (std::size_t i = 0; i < info.ports.size(); ++i) {
@@ -316,9 +338,49 @@ void print_failed_bundle(std::FILE* f, const std::string& bundle, const std::str
 // in a child process of its own: one that crashes or hangs costs its own
 // entry, not the list, and the latency printed is the instance's own at
 // 48 kHz.
+std::string absolute_bundle(const std::string& path) {
+    std::error_code ec;
+    std::string b = std::filesystem::absolute(path, ec).lexically_normal().string();
+    if (ec) b = path;
+    while (b.size() > 1 && b.back() == '/') b.pop_back();
+    return b;
+}
+
+// --list --bundles-only: what is installed, bundle by bundle, with no plugin
+// code run. LV2 from the world lilv loaded (a static description); VST3
+// from the paths alone.
+int list_bundles(const Catalog& catalog, const Options& o) {
+    std::size_t n = 0;
+    const auto line = [&](const std::string& bundle, const char* format) {
+        if (o.json)
+            std::printf("{\"bundle\":\"%s\",\"format\":\"%s\"}\n", json_escape(bundle).c_str(), format);
+        else
+            std::printf("%s  %s\n", format, bundle.c_str());
+        ++n;
+    };
+    if (o.format.empty() || o.format == "lv2") {
+        std::set<std::string> seen;
+        for (const LilvPlugin* p : catalog.lv2.all()) {
+            const std::string b = catalog.lv2.describe(p).bundle;
+            if (!b.empty() && seen.insert(b).second) line(b, "lv2");
+        }
+    }
+#ifdef SONORA_HAVE_VST3
+    if (o.format.empty() || o.format == "vst3") {
+        std::set<std::string> seen;
+        for (const std::string& b : catalog.vst3.bundles())
+            if (seen.insert(absolute_bundle(b)).second) line(absolute_bundle(b), "vst3");
+    }
+#endif
+    std::fflush(stdout);
+    std::fprintf(stderr, "sonora-plugin-host: listed %zu bundle(s)\n", n);
+    return 0;
+}
+
 int list(const Options& o) {
     Catalog catalog;
     load_bundles(catalog, o);
+    if (o.bundles_only) return list_bundles(catalog, o);
     std::size_t lv2_count = 0, vst3_count = 0, vst3_failed = 0;
     if (o.format.empty() || o.format == "lv2") {
         for (const LilvPlugin* p : catalog.lv2.all()) {
@@ -329,7 +391,15 @@ int list(const Options& o) {
 #ifdef SONORA_HAVE_VST3
     if (o.format.empty() || o.format == "vst3") {
         const uint64_t scan_timeout_ns = uint64_t(o.scan_timeout_s) * 1'000'000'000ull;
-        for (const std::string& bundle : catalog.vst3.bundles()) {
+        std::vector<std::string> scan;
+        if (o.only_given) {
+            for (const std::string& b : o.bundles)
+                if (is_vst3_bundle(b)) scan.push_back(b);
+        } else {
+            scan = catalog.vst3.bundles();
+        }
+        for (const std::string& given : scan) {
+            const std::string bundle = absolute_bundle(given);
             // Each record is flushed as soon as it is written (run_isolated:
             // the parent keeps whole lines only), so a class that hangs or
             // crashes costs itself and the classes after it, not those before.
@@ -379,10 +449,50 @@ int list(const Options& o) {
     return 0;
 }
 
+// The --version line: the contract versions, and the probe record's.
+std::string host_version_line() {
+    char line[96];
+    pc::format_host_version_line(line, sizeof line);
+    return std::string(line) + " probe " + std::to_string(plugin::probe::kProbeRecordVersion);
+}
+
+// What the probe record says of one dense parameter (probe_record.h).
+plugin::probe::Param probe_param(const Chain& chain, uint32_t d) {
+    namespace pr = plugin::probe;
+    const PortInfo& port = chain.param_port(0, d);
+    pr::Param p;
+    p.key = chain.param_key(0, d);
+    p.symbol = chain.param_symbol(0, d);
+    p.name = port.name;
+    chain.param_range(0, d, p.min, p.max);
+    p.default_value = chain.param_default(0, d);
+    p.unit = port.units;
+    p.steps = port.steps == 1 ? 0 : port.steps;
+    if (port.steps > 1 && port.labels.size() == port.steps) p.labels = port.labels;
+    if (port.automatable) p.flags |= pr::kParamAutomatable;
+    if (port.toggle) p.flags |= pr::kParamToggle;
+    if (port.enumeration) p.flags |= pr::kParamEnum;
+    if (port.logarithmic) p.flags |= pr::kParamLogarithmic;
+    // Past the chain's table (protocol.h): not automatable from Sonora,
+    // still saved in the plugin's own state.
+    if (d >= plugin::kMaxParamsPerChain) {
+        p.flags |= pr::kParamPastCap;
+        p.flags &= ~uint32_t(pr::kParamAutomatable);
+    }
+    return p;
+}
+
 // --probe: instantiate one plugin, validate it and report its latency at
-// 48 kHz / 128. Runs plugin code, so a scanner runs one probe per process:
-// a plugin that crashes on instantiate then costs one entry, not the list.
+// 48 kHz / 128, as one probe record (contracts/plugin probe_record.h). Runs
+// plugin code, so a scanner runs one probe per process: a plugin that
+// crashes on instantiate then costs one entry, not the list.
 int probe(const Options& o) {
+    namespace pr = plugin::probe;
+    if (!die_with_parent(o.engine_pid)) {
+        std::fprintf(stderr, "sonora-plugin-host: the engine (pid %lld) is gone; the probe exits\n",
+                     static_cast<long long>(o.engine_pid));
+        return plugin::kHostExitUsage;
+    }
     Catalog catalog;
     load_bundles(catalog, o);
     PluginInfo info;
@@ -398,43 +508,55 @@ int probe(const Options& o) {
         info = catalog.lv2.describe(p);
         found = true;
     } else {
-        err.message = "not installed";
+        err.reason = plugin::Refusal::NotFound;
     }
+    pr::Record r;
+    r.host = host_version_line();
+    r.uri = o.probe;
+    r.format = is_vst3_id(o.probe) ? "vst3" : "lv2";
+    r.sample_rate = ChainConfig{}.sample_rate;
     if (!found) {
-        std::printf("{\"uri\":\"%s\",\"ok\":false,\"reason\":\"%s\"}\n", json_escape(o.probe).c_str(),
-                    json_escape(err.message).c_str());
+        // "not installed" is what the engine shows on the insert.
+        r.outcome = err.reason == plugin::Refusal::NotFound ? pr::Outcome::NotInstalled : pr::Outcome::Refused;
+        r.reason = r.outcome == pr::Outcome::NotInstalled ? "not installed" : err.message;
+        std::printf("%s\n", pr::encode(r).c_str());
         return plugin::kHostExitRefused;
     }
+    r.bundle = info.bundle;
+    r.name = info.name;
+    r.vendor = info.vendor;
+    r.version = info.version;
+    r.categories = info.categories;
+    if (r.categories.size() > pr::kMaxRecordCategories) r.categories.resize(pr::kMaxRecordCategories);
+    // No editor is hosted yet (OpenEditor is answered EditorFailed): the
+    // record says what this host can open, not what the plugin ships.
+    r.has_editor = false;
+    r.audio_in = info.audio_in;
+    r.audio_out = info.audio_out;
+    r.sidechain_in = info.sidechain_in;
     ChainConfig cfg;
     cfg.channels = o.channels ? o.channels : (info.audio_in == info.audio_out && info.audio_in ? info.audio_in : 1);
+    r.channels = cfg.channels;
     Chain chain(catalog, cfg);
     const bool added = chain.add(o.probe, err);
     const bool ok = added && chain.validate(err);
     // The dense parameter list the engine's catalog keeps (ADR-0012 §8):
     // the index is the position, the key what the session file stores.
-    auto params = [&] {
-        std::string s = ",\"bypass\":\"";
-        s += chain.designated_bypass(0) ? "plugin" : "host";
-        s += "\",\"params\":[";
-        for (uint32_t d = 0; d < chain.param_count(0); ++d) {
-            char def[48];
-            std::snprintf(def, sizeof def, "%.9g", double(chain.param_default(0, d)));
-            // key: what the session stores. symbol: what --set takes.
-            s += (d ? ",{\"key\":\"" : "{\"key\":\"") + json_escape(chain.param_key(0, d)) +
-                 "\",\"symbol\":\"" + json_escape(chain.param_symbol(0, d)) + "\",\"default\":" + def + "}";
-        }
-        return s + "]";
-    };
+    if (added) {
+        r.plugin_bypass = chain.designated_bypass(0);
+        for (uint32_t d = 0; d < chain.param_count(0) && d < pr::kMaxRecordParams; ++d)
+            r.params.push_back(probe_param(chain, d));
+    }
     if (!ok) {
-        std::printf("{\"uri\":\"%s\",\"ok\":false,\"reason\":\"%s\"%s}\n", json_escape(o.probe).c_str(),
-                    json_escape(err.message).c_str(), added ? params().c_str() : "");
+        r.outcome = pr::Outcome::Refused;
+        r.reason = err.message.empty() ? "refused" : err.message;
+        std::printf("%s\n", pr::encode(r).c_str());
         return plugin::kHostExitRefused;
     }
-    std::printf("{\"uri\":\"%s\",\"name\":\"%s\",\"format\":\"%s\",\"ok\":true,\"channels\":%u,"
-                "\"replicas\":%u,\"latency_frames\":%u,\"sample_rate\":%u,\"sidechain_in\":%u%s}\n",
-                json_escape(info.uri).c_str(), json_escape(info.name).c_str(), info.format.c_str(),
-                cfg.channels, chain.replicas(0), chain.instance_latency(0), cfg.sample_rate,
-                info.sidechain_in, params().c_str());
+    r.outcome = pr::Outcome::Ok;
+    r.replicas = chain.replicas(0);
+    r.latency_frames = chain.instance_latency(0);
+    std::printf("%s\n", pr::encode(r).c_str());
     return 0;
 }
 
@@ -1241,15 +1363,21 @@ int main(int argc, char** argv) {
     if (o.version) {
         // Read by the engine at start-up (ADR-0012 §5.5); a mismatch
         // disables plugin hosting for the run, loudly. The grammar is the
-        // contract's (format_host_version_line): layout, clock and wire.
-        char line[96];
-        pc::format_host_version_line(line, sizeof line);
-        std::printf("%s\n", line);
+        // contract's (format_host_version_line): layout, clock and wire,
+        // then the probe record's version (probe_record.h).
+        std::printf("%s\n", host_version_line().c_str());
         return plugin::kHostExitClean;
     }
     // Before any plugin code loads, and inherited by the --list scan children.
     no_core_dumps();
-    if (o.list) return list(o);
+    if (o.list) {
+        if (!die_with_parent(o.engine_pid)) {
+            std::fprintf(stderr, "sonora-plugin-host: the engine (pid %lld) is gone; the scan exits\n",
+                         static_cast<long long>(o.engine_pid));
+            return plugin::kHostExitUsage;
+        }
+        return list(o);
+    }
     if (!o.probe.empty()) return probe(o);
     return serve(o);
 }

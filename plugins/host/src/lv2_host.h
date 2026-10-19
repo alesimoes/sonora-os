@@ -29,6 +29,7 @@ public:
     const LilvPlugin* find(const std::string& uri) const;
     std::vector<const LilvPlugin*> all() const;
     PluginInfo describe(const LilvPlugin* plugin) const;
+    void describe_control(const LilvPlugin* plugin, const LilvPort* port, PortInfo& out) const;
 
     std::unique_ptr<Processor> instantiate(const std::string& uri, const ChainConfig& config,
                                            const std::vector<float*>& in,
@@ -43,6 +44,9 @@ public:
     struct Nodes {
         LilvNode *audio, *control, *atom, *cv, *input, *output;
         LilvNode *optional, *reports_latency, *latency_designation, *enabled_designation, *sidechain;
+        // For the probe record's parameter descriptions and version.
+        LilvNode *toggled, *enumeration, *integer, *logarithmic, *not_automatic, *unit, *unit_symbol;
+        LilvNode *minor_version, *micro_version;
     } n{};
 
 private:
