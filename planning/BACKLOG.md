@@ -106,7 +106,7 @@ playback can follow edits; it is in flight.
         `install_session_commands()` and in `FakeEngine::engine_commands()`
         together, and then leaves `planned_commands`. `edit.cut`/`copy`/
         `paste`/`duplicate` run in the interface as compounds (Track 3 item
-        1, PR #NN); `edit.repeat`/`select_all`/`heal_separation`/
+        1, PR #86); `edit.repeat`/`select_all`/`heal_separation`/
         `consolidate` are still to build.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
@@ -177,7 +177,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              operator should still hear what changed (PR #69 review, note 3).
        - [x] Cut, Copy, Paste, Duplicate, and Clear and Separate on a range:
              each one `Compound` with a label ("Cut", "Paste"), within
-             `model::kMaxCompoundMembers` (`feature/ui-clipboard`, PR #NN;
+             `model::kMaxCompoundMembers` (`feature/ui-clipboard`, PR #86;
              `edit_clipboard.h`, ui_clipboard). One track's selection, as
              the selection model has; Shuffle refused by name.
        - [ ] Repeat (`edit.repeat`, a count dialog), multi-track selections
@@ -188,7 +188,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              copies the audio across; that needs `AddSource` members and the
              files copied into the session folder first.
        - [x] The compound rule for every sender (PR #75 ui-engineer
-             review, item 4), for the Edit window's senders (PR #NN):
+             review, item 4), for the Edit window's senders (PR #86):
              - one gesture is one compound and one undo step; the UI never
                splits an operator's edit across compounds;
              - over `model::kMaxCompoundMembers` (the constant, never a
@@ -205,11 +205,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              for the Mix window's Alt-click (Track 3 item 2).
        - [x] The undo and redo text: "Undo Paste", "Redo Trim", from the
              history's step labels, as `SessionModel::undoText`/`redoText`
-             and the Edit menu's first items (PR #NN).
+             and the Edit menu's first items (PR #86).
        - [x] ReplicaDocument sends one Resync per loss, not one per failed
              update, and keeps the last good document on screen while it
              waits, refusing edits meanwhile (PR #75 ui-engineer review;
-             PR #NN, ui_replica_document).
+             PR #86, ui_replica_document).
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain
