@@ -1018,7 +1018,9 @@ uint32_t PluginHosting::insert_flags(model::Id insert) const {
 
 uint32_t PluginHosting::loading() const {
     // A chain opened with the session is loading until its host is Ready,
-    // its start failed, or nothing of it is left to run.
+    // its start failed, or nothing of it is left to run. With hosting
+    // disabled none will ever start, so none is loading (#83 review item 1).
+    if (!ok_) return 0;
     uint32_t n = 0;
     for (const auto& [track, c] : chains_)
         n += c->opened && !c->ever_ready && c->start_failed.empty() && !c->nothing_to_run ? 1 : 0;

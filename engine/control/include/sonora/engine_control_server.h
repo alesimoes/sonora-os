@@ -121,6 +121,10 @@ public:
         std::string plugin_host;
         std::vector<std::string> plugin_bundles;
         uint32_t plugin_block_frames = 0;
+        // How long play from a freshly opened session waits for its
+        // plug-ins (the owner's decision of 2026-10-18; §5.3's Ready bound).
+        // Record never waits.
+        uint64_t plugin_open_wait_ms = 10000;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -183,6 +187,9 @@ public:
 
     // --- the control thread, housekeeping, or before start() ---
     void post_event(const api::EngineEvent& event);
+    // An event for the clients attached now only: not kept, so a client
+    // that attaches later is not sent it.
+    void post_transient(const api::EngineEvent& event);
     void set_input_connected(uint32_t track, bool connected) {
         publisher_->set_input_connected(track, connected);
     }
@@ -279,6 +286,20 @@ private:
     // Its document operations (editor gestures) applied and sent.
     void apply_hosting_ops(std::vector<model::Operation>& ops);
     bool hosting_tried_ = false;
+    // Play from a freshly opened session, held until its plug-ins have
+    // loaded or failed, or until open_deadline_ms_ (the owner's decision of
+    // 2026-10-18). Record is never held.
+    struct HeldPlay {
+        ClientId to = 0;
+        uint64_t seq = 0;
+        std::string command;
+        CommandContext ctx;
+    };
+    std::vector<HeldPlay> held_plays_;
+    uint64_t open_deadline_ms_ = 0;
+    bool plugins_loading() const;
+    // Held plays dispatched (`cancelled`: answered Failed instead).
+    void release_plays(bool cancelled);
     // The plans published when the state block last took the playing
     // plan's compensation.
     uint64_t compensation_shown_for_ = ~uint64_t{0};

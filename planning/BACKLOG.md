@@ -372,10 +372,25 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              are hosted.
        - [ ] FlushPluginState through GetState and the saver thread's
              durable write; today it still answers from the document.
-       - [ ] Play waits for plug-ins at session open (owner, 2026-10-18):
-             up to 10 s, "Loading plug-ins (n of m)"; record never waits.
-             `PluginHosting::loading()` counts them; the server wiring is
-             the next PR.
+       - [x] Play waits for plug-ins at session open (owner, 2026-10-18):
+             `transport.play`/`toggle_play` from a stopped transport is
+             held while `PluginHosting::loading()` is non-zero, at most
+             `Options::plugin_open_wait_ms` (10 s) from the open, with a
+             Notice "Loading plug-ins (n of m): play starts when they are
+             ready", said once per wait and never kept for a client that
+             attaches later; only a second space, a stop or a take
+             withdraws it; record is never held; with hosting disabled
+             nothing is loading. ctest `plugin_hosting_play_waits`
+             (answered after the plug-in's load, before the bound; two
+             presses, one notice), `plugin_hosting_play_wait_bounded`
+             (answered at the bound, 800 ms in the test, with the plug-in
+             still loading), `plugin_hosting_play_no_hosting` (a host of
+             another kind: no wait), `plugin_hosting_play_wait_cancel` (a
+             return to zero leaves it waiting, a stop cancels it).
+             The UI showing the notice as a progress line is the UI's.
+       - [ ] A Notice cannot be cleared (contracts/api has no clear for
+             it): the "Loading plug-ins" line stays on the screen of a
+             client attached during the wait, until the UI drops it.
        - [x] A new chain's start that fails while the old chain still
              runs is shown as a fault on the edit's inserts, and not
              started again until the document wants another chain
@@ -664,6 +679,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          them under Wine either works or is reported unusable.
        - Editors stay out of scope (ADR-0010).
 7. [ ] Freeze, bounce in place, offline processing; the curated stock set.
+8. [ ] Follow-ups from the PR #80 review (non-blocking):
+       - `plugin.retry` is unhandled, so the fault text should name the
+         recovery steps (make the insert inactive and then active, remove it,
+         or reload the session). Add a test that a later document change
+         leaves a down chain down.
+       - The forced re-post overwrites a parameter that is being dragged; it
+         should use the last touched value.
+       - A state file over 64 MiB loads at defaults without a `PluginFault`;
+         it should raise one.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 

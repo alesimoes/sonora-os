@@ -201,8 +201,30 @@ void EngineControlServer::start_hosting() {
         hosting_->resolve(t, engine_track, b);
     });
     hosting_->show(document_->current(), true);
+    open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
     show_document(false);
     show_inserts(false);
+}
+
+bool EngineControlServer::plugins_loading() const {
+    return hosting_ && hosting_->loading() > 0 && steady_ms_now() < open_deadline_ms_;
+}
+
+void EngineControlServer::release_plays(bool cancelled) {
+    std::vector<HeldPlay> held;
+    held.swap(held_plays_);
+    bool played = false;
+    for (HeldPlay& p : held) {
+        if (cancelled) {
+            reply(p.to, p.seq, DispatchResult::Failed, "cancelled");
+            continue;
+        }
+        // One roll for every press that waited.
+        std::string why;
+        const DispatchResult d = played ? DispatchResult::Ok : registry_.dispatch(p.command, p.ctx, why);
+        played = played || d == DispatchResult::Ok;
+        reply(p.to, p.seq, d, why);
+    }
 }
 
 void EngineControlServer::apply_hosting_ops(std::vector<model::Operation>& ops) {
@@ -396,7 +418,7 @@ void EngineControlServer::pump_playback() {
 
 bool EngineControlServer::playback_busy() const {
     return playback_->pending() || playback_->locating() || playback_->play_requested() ||
-           playback_->record_requested() || !held_records_.empty();
+           playback_->record_requested() || !held_records_.empty() || !held_plays_.empty();
 }
 
 void EngineControlServer::remember(const api::EngineEvent& event, const std::string& bytes) {
@@ -425,6 +447,12 @@ void EngineControlServer::post_event(const api::EngineEvent& event) {
     std::string bytes;
     api::wire::encode(event, bytes);
     remember(event, bytes);
+    send(bytes);
+}
+
+void EngineControlServer::post_transient(const api::EngineEvent& event) {
+    std::string bytes;
+    api::wire::encode(event, bytes);
     send(bytes);
 }
 
@@ -831,6 +859,44 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         CommandContext ctx;
         ctx.target = r.target;
         ctx.argument = r.argument;
+        // Play from a session just opened waits for its plug-ins, at most
+        // the bound (the owner's decision of 2026-10-18); a second press, a
+        // stop or a take withdraws it. Record never waits: capture is
+        // pre-insert.
+        const bool would_play = (r.command == "transport.play" || r.command == "transport.toggle_play") &&
+                                session_.transport().state() == TransportState::Stopped &&
+                                !playback_->play_requested() && !playback_->record_requested();
+        if (!held_plays_.empty()) {
+            if (r.command == "transport.play") {
+                // Pressed again while one waits: both answered together.
+                held_plays_.push_back({from, r.seq, r.command, ctx});
+                return;
+            }
+            // Only a second space, a stop or a take withdraws the waiting
+            // play (the owner's rule); any other transport command (a
+            // return to zero, a locate) runs and the play still waits.
+            if (r.command == "transport.toggle_play") {
+                release_plays(true);
+                reply(from, r.seq, DispatchResult::Ok, "");
+                return;
+            }
+            if (r.command == "transport.stop" || starts_a_take(r.command)) release_plays(true);
+        }
+        if (would_play && plugins_loading()) {
+            held_plays_.push_back({from, r.seq, r.command, ctx});
+            // Said once per wait, to the clients attached now, never kept
+            // for one that attaches later: it is not standing (#83 review
+            // item 2). The count is bounded by the total, whatever a Load
+            // reset meanwhile.
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            const uint32_t loading = hosting_->loading();
+            const uint32_t total = std::max(hosting_->loading_total(), loading);
+            e.text = "Loading plug-ins (" + std::to_string(total - loading) + " of " + std::to_string(total) +
+                     "): play starts when they are ready";
+            post_transient(e);
+            return;
+        }
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
@@ -972,6 +1038,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 // Chains from the document diff (undo, redo, active, values
                 // included), before the plan is built from it.
                 if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
+                if (m.action == api::ModelAction::Load) {
+                    open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
+                }
                 show_document(mix_changed);
                 show_inserts(m.action == api::ModelAction::Load);
             }
@@ -1001,6 +1070,9 @@ void EngineControlServer::tick() {
         if (r.replan || !r.ops.empty()) show_document(false);
         show_inserts(false);
     }
+    // Every plug-in of the session just opened has loaded or failed, or the
+    // bound has passed: the play that waited goes now.
+    if (!held_plays_.empty() && !plugins_loading()) release_plays(false);
 
     // The backend stopped calling the session. Said once; the interface
     // says why and leaves, and the wiring layer closes the take.

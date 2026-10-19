@@ -48,6 +48,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -680,6 +681,176 @@ int scenario_server(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// The owner's decision of 2026-10-18 (ADR-0012 amendment, item 1): play
+// from a freshly opened session waits until its plug-ins have loaded or
+// failed, at most the bound, with "Loading plug-ins (n of m)" said once and
+// never kept for a client that attaches later; record never waits; only a
+// stop, a second space or a take withdraws it. A sleep plugin seeded at
+// `sleep_ms` per block delays its host's Ready by about that (validation
+// runs a block).
+struct PlayWait {
+    float sleep_ms = 1500.f;
+    uint64_t wait_ms = 10000;
+    std::string host;  // empty: the real host
+    enum class Expect { ReadyFirst, BoundFirst, NoWait, Cancelled } expect = Expect::ReadyFirst;
+};
+
+int play_waits(const Args& a, const PlayWait& w) {
+    std::filesystem::remove_all(kDir);
+    SessionConfig cfg;
+    cfg.dir = kDir;
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    FakeBackend::Config bc;
+    bc.devices = {FakeBackend::onboard()};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    std::string error;
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    h.apply(track_op(100, 101, "A"), e);
+    h.apply(insert_op(100, 500, 0, kSleep, {{"sleep_ms", w.sleep_ms}}), e);
+    EngineControlServer::Options opts;
+    opts.plugin_host = w.host.empty() ? a.host : w.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_open_wait_ms = w.wait_ms;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        const auto running = [&] { return (engine.state().track(0).inserts[0].flags & api::kInsertRunning) != 0; };
+        const auto replied = [&](uint64_t seq, api::CommandReply& out) {
+            for (const auto& r : in.replies)
+                if (r.seq == seq) out = r;
+            return out.seq == seq;
+        };
+        const auto notices = [&] {
+            uint32_t n = 0;
+            for (const auto& ev : in.events)
+                n += ev.kind == api::EventKind::Notice && ev.text.find("Loading plug-ins") != std::string::npos;
+            return n;
+        };
+        api::CommandRequest play;
+        play.command = "transport.play";
+        const uint64_t t0 = now_ms();
+        const uint64_t seq = engine.send(play);
+        api::CommandReply reply;
+        if (w.expect == PlayWait::Expect::Cancelled) {
+            check(!until([&] { return replied(seq, reply); }, 300), "play waits");
+            // Not a cancel: a return to zero runs, the play still waits.
+            api::CommandRequest rtz;
+            rtz.command = "transport.return_to_zero";
+            const uint64_t rtz_seq = engine.send(rtz);
+            api::CommandReply rtz_reply;
+            check(until([&] { return replied(rtz_seq, rtz_reply); }, 2000), "return to zero answered");
+            check(!until([&] { return replied(seq, reply); }, 300), "the play still waits after a return to zero");
+            api::CommandRequest stop;
+            stop.command = "transport.stop";
+            engine.send(stop);
+            check(until([&] { return replied(seq, reply); }, 2000), "a stop answers the waiting play");
+            check(reply.result == DispatchResult::Failed && reply.message == "cancelled", "Failed, cancelled");
+            for (int i = 0; i < 40; ++i) until([] { return false; }, 5);
+            check(session.transport().state() == TransportState::Stopped, "the transport stays stopped");
+        } else {
+            // Space pressed twice: one wait, one notice, both answered.
+            const uint64_t seq2 = engine.send(play);
+            api::CommandReply reply2;
+            check(until([&] { return replied(seq, reply) && replied(seq2, reply2); }, 20000), "both plays answered");
+            const uint64_t waited = now_ms() - t0;
+            char line[160];
+            std::snprintf(line, sizeof line, "answered Ok after %llu ms", (unsigned long long)waited);
+            check(reply.result == DispatchResult::Ok && reply2.result == DispatchResult::Ok, line);
+            if (w.expect == PlayWait::Expect::NoWait) {
+                check(waited < 1500, "hosting disabled: play did not wait for plug-ins that will never load");
+                check(notices() == 0, "and said nothing about loading");
+            } else {
+                check(notices() == 1, "\"Loading plug-ins\" said once");
+                bool zero_of_one = false;
+                for (const auto& ev : in.events)
+                    zero_of_one = zero_of_one || ev.text.find("Loading plug-ins (0 of 1)") != std::string::npos;
+                check(zero_of_one, "as \"Loading plug-ins (0 of 1)\"");
+            }
+            if (w.expect == PlayWait::Expect::ReadyFirst) {
+                // Ready needs a validation block at sleep_ms, so play waited
+                // at least that, and ended on the plug-in, well before the
+                // bound. (Once Ready, a plug-in this slow misses every block
+                // and is restarted: Running is too brief to sample.)
+                check(waited >= uint64_t(w.sleep_ms) - 100 && waited < w.wait_ms - 1000,
+                      "play waited for the plug-in, not for the bound");
+            } else if (w.expect == PlayWait::Expect::BoundFirst) {
+                check(!running() && waited >= w.wait_ms && waited < w.wait_ms + 2000,
+                      "the bound passed first: play went ahead with the plug-in still loading");
+            }
+            check(until([&] { return session.transport().state() == TransportState::Rolling; }, 3000), "rolling");
+            // A client attaching after the wait is not told plug-ins are
+            // loading: the notice was transient.
+            std::mutex m;
+            std::vector<std::string> frames;
+            const EngineControlServer::ClientId late = engine.server().attach(
+                [&](std::string bytes) {
+                    std::lock_guard<std::mutex> lock(m);
+                    frames.push_back(std::move(bytes));
+                },
+                {});
+            for (int i = 0; i < 60; ++i) until([] { return false; }, 5);
+            bool told = false;
+            {
+                std::lock_guard<std::mutex> lock(m);
+                check(!frames.empty(), "the late client got its Hello");
+                for (const std::string& f : frames) told = told || f.find("Loading plug-ins") != std::string::npos;
+            }
+            check(!told, "a client attaching later is not told plug-ins are loading");
+            engine.server().detach(late);
+        }
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
+    }
+    std::filesystem::remove_all(kDir);
+    return failures ? 1 : 0;
+}
+
+int scenario_play_waits(const Args& a) {
+    std::printf("play_waits: a session opened with a plug-in that takes 1.5 s to load, play pressed twice at once\n");
+    return play_waits(a, PlayWait{1500.f, 10000, "", PlayWait::Expect::ReadyFirst});
+}
+
+int scenario_play_wait_bounded(const Args& a) {
+    std::printf("play_wait_bounded: a plug-in that takes 4 s, the wait bounded at 800 ms\n");
+    return play_waits(a, PlayWait{4000.f, 800, "", PlayWait::Expect::BoundFirst});
+}
+
+// #83 review item 1: a host the supervisor refuses (here not a host at all)
+// leaves nothing loading, so play does not wait.
+int scenario_play_no_hosting(const Args& a) {
+    std::printf("play_no_hosting: --plugin-host is not a Sonora host, play pressed at once\n");
+    return play_waits(a, PlayWait{1500.f, 10000, "/bin/true", PlayWait::Expect::NoWait});
+}
+
+// #83 review items 3 and 5: a return to zero leaves the play waiting; a
+// stop withdraws it.
+int scenario_play_wait_cancel(const Args& a) {
+    std::printf("play_wait_cancel: play waits, a return to zero, then a stop\n");
+    return play_waits(a, PlayWait{4000.f, 10000, "", PlayWait::Expect::Cancelled});
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -714,6 +885,10 @@ int main(int argc, char** argv) {
     else if (a.scenario == "repost_bypass_off") rc = scenario_repost_bypass_off(a);
     else if (a.scenario == "gesture_left_open") rc = scenario_gesture_left_open(a);
     else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
+    else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
+    else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
+    else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);
+    else if (a.scenario == "play_wait_cancel") rc = scenario_play_wait_cancel(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");
