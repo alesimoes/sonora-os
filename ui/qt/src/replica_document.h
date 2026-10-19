@@ -13,6 +13,22 @@
 // rebuilt as the replica plus what is still in flight, so it never drifts
 // from the engine for longer than a round trip.
 //
+// Lost track (an update that does not follow on, Replica::receive): one
+// Resync is sent, however many updates fail before the Snapshot it asks for
+// arrives. Until then the last document this replica held is still shown,
+// never the placeholder: an empty timeline would say the session is gone.
+// Edits are refused meanwhile, since what is shown may be behind the
+// engine, and an edit resolved against it could mean something else there.
+// If the engine refuses the Resync, its reason goes to `on_refused`, and the
+// next edit asks again (and is refused with that reason).
+//
+// An accepted request leaves the in-flight list once an update has been
+// applied after its reply (the engine replies just before the update). In
+// the tick that loses track, its update may be the one that applied or one
+// that failed; it is dropped either way. Kept, an applied Undo would be
+// shown twice; dropped, an edit whose update failed is missing for the one
+// round trip until the Snapshot, which shows what the engine holds.
+//
 // A lost connection (set_link): a request the engine has not answered went
 // over a connection that no longer exists, or was dropped unsent, so its
 // fate is unknown and it is dropped, never replayed on the Snapshot the next
@@ -56,6 +72,8 @@ public:
     bool redo(std::string& why) override;
     bool can_undo() const override { return shown_.can_undo(); }
     bool can_redo() const override { return shown_.can_redo(); }
+    std::string undo_label() const override { return shown_.undo_label(); }
+    std::string redo_label() const override { return shown_.redo_label(); }
     model::Id reserve_id() override;
     // Sends the session to the engine (ModelAction::Load) and shows it at
     // once.
@@ -77,6 +95,11 @@ public:
 
     // The engine's document has arrived (its first Snapshot).
     bool synced() const { return replica_.synced(); }
+    // Lost track after having had the engine's document: a Resync is out,
+    // the last good document is shown and edits are refused.
+    bool resyncing() const { return replica_.history() != nullptr && !replica_.synced(); }
+    // How many Resyncs were sent, for the tests.
+    std::size_t resyncs_sent() const { return resyncs_sent_; }
     std::size_t in_flight() const { return pending_.size(); }
     // Why the engine refused a request; for the status line.
     std::function<void(const std::string&)> on_refused;
@@ -95,6 +118,12 @@ private:
     };
 
     uint64_t send(api::ModelAction action, std::string bytes);
+    void request_resync();
+    // True, with `why`, when an edit must be refused now: offline, or behind
+    // the engine. A Resync the engine refused is asked for again here, on the
+    // operator's next edit, so a refusal never leaves the window waiting on
+    // nothing, and a refusing engine is not asked in a loop.
+    bool refuse_while_lost(std::string& why);
     void rebuild();
 
     Submit submit_;
@@ -109,6 +138,12 @@ private:
     std::vector<Flush> flushes_;   // awaiting the engine's reply
     model::Id next_unreserved_ = 0;
     bool offline_ = false;
+    bool resync_pending_ = false;   // one Resync per loss, not one per failed update
+    uint64_t resync_seq_ = 0;       // the Resync out, so its refusal is seen
+    // Why the engine refused the last Resync; while it is set and the
+    // replica is still lost, the next edit asks again (refuse_while_lost).
+    std::string resync_refused_;
+    std::size_t resyncs_sent_ = 0;
 };
 
 }  // namespace sonora::ui

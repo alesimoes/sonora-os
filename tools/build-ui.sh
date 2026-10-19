@@ -11,7 +11,9 @@
 #                                           window (PATH-mix.png), its plugin
 #                                           chooser and parameter panel
 #                                           (-mix-browser, -mix-panel), the Edit
-#                                           window zoomed on fades (-fades) and the
+#                                           window zoomed on fades (-fades), a
+#                                           paste with the Edit menu open
+#                                           (-clipboard) and the
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the
 #                                           compositor itself (grim); also the

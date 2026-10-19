@@ -104,10 +104,10 @@ playback can follow edits; it is in flight.
         the interface against `FakeEngine::Config::planned_commands`
         (test_ui_keymaps); each needs its handler in
         `install_session_commands()` and in `FakeEngine::engine_commands()`
-        together, and then leaves `planned_commands`. The edit operations
-        (`edit.cut`/`copy`/`paste`/`duplicate`/`repeat`/`select_all`/
-        `heal_separation`/`consolidate`) wait on Track 3 item 1's compound
-        operation.
+        together, and then leaves `planned_commands`. `edit.cut`/`copy`/
+        `paste`/`duplicate` run in the interface as compounds (Track 3 item
+        1, PR #86); `edit.repeat`/`select_all`/`heal_separation`/
+        `consolidate` are still to build.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -175,13 +175,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              punch shortened (`RecordTake` runs `fit_fades_to_crossfades`).
              Pro Tools truncates the fade and never refuses the record; the
              operator should still hear what changed (PR #69 review, note 3).
-       - [ ] Cut/copy/paste/duplicate/repeat and Shuffle: each one
-             `Compound` with a label ("Cut", "Paste"), now in common/model
-             (Track 2 item 7), within `model::kMaxCompoundMembers` (256 since
-             Track 2 item 8). Shuffle on a long playlist needs a `ShiftRegions`
-             operation first (ADR-0009 update 2026-10-14, item 5).
-       - [ ] The compound rule for every sender (PR #75 ui-engineer
-             review, item 4):
+       - [x] Cut, Copy, Paste, Duplicate, and Clear and Separate on a range:
+             each one `Compound` with a label ("Cut", "Paste"), within
+             `model::kMaxCompoundMembers` (`feature/ui-clipboard`, PR #86;
+             `edit_clipboard.h`, ui_clipboard). One track's selection, as
+             the selection model has; Shuffle refused by name.
+       - [ ] Repeat (`edit.repeat`, a count dialog), multi-track selections
+             and their clipboard, and Shuffle's ripple once `ShiftRegions`
+             exists (ADR-0009 update 2026-10-14, item 5).
+       - [ ] A clipboard copied in another session pastes nothing today
+             (refused by name: its sources are not in this pool). Pro Tools
+             copies the audio across; that needs `AddSource` members and the
+             files copied into the session folder first.
+       - [x] The compound rule for every sender (PR #75 ui-engineer
+             review, item 4), for the Edit window's senders (PR #86):
              - one gesture is one compound and one undo step; the UI never
                splits an operator's edit across compounds;
              - over `model::kMaxCompoundMembers` (the constant, never a
@@ -194,10 +201,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
                Shuffle edit that would ripple more than fits is refused;
              - a `ui/qt/tests` case per sender at the limit and one past it.
              256 since Track 2 item 8: an 18-track paste of about ten
-             regions a track, with its overwrite splits, fits.
-       - [ ] The undo and redo text: "Undo Record", "Undo Paste", from the
-             history's step labels (`History::undo_label()` /
-             `redo_label()`, PR #75), as a property and an Edit menu item.
+             regions a track, with its overwrite splits, fits. Still open
+             for the Mix window's Alt-click (Track 3 item 2).
+       - [x] The undo and redo text: "Undo Paste", "Redo Trim", from the
+             history's step labels, as `SessionModel::undoText`/`redoText`
+             and the Edit menu's first items (PR #86).
+       - [x] ReplicaDocument sends one Resync per loss, not one per failed
+             update, and keeps the last good document on screen while it
+             waits, refusing edits meanwhile (PR #75 ui-engineer review;
+             PR #86, ui_replica_document).
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain

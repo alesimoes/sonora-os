@@ -220,8 +220,11 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption edit_view({QStringLiteral("edit-view")},
                                        QStringLiteral("With --demo, zoom the Edit window in on "
                                                       "the snare's crossfade and the fades "
-                                                      "around it (fades), for screenshots."),
-                                       QStringLiteral("fades"));
+                                                      "around it (fades), or copy the snare's "
+                                                      "crossfaded edit, paste it on the next "
+                                                      "track and open the Edit menu "
+                                                      "(clipboard), for screenshots."),
+                                       QStringLiteral("fades|clipboard"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
                   window, sessions, socket, fake, insert_view, edit_view});
     p.process(app);
@@ -255,8 +258,9 @@ bool parse(QGuiApplication& app, Options& o) {
         return false;
     }
     o.edit_view = p.value(edit_view);
-    if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades")) {
-        std::fprintf(stderr, "sonora-ui: --edit-view must be fades\n");
+    if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades") &&
+        o.edit_view != QStringLiteral("clipboard")) {
+        std::fprintf(stderr, "sonora-ui: --edit-view must be fades or clipboard\n");
         return false;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
@@ -522,7 +526,7 @@ int main(int argc, char** argv) {
         // Once the window has its size: the whole session in view, and the
         // snare's second region selected, so a screenshot shows what a
         // selected region looks like.
-        QTimer::singleShot(200, &app, [&session, &model, &inserts, &a, fake, demo_crash]() {
+        QTimer::singleShot(200, &app, [&session, &model, &inserts, &a, &view, fake, demo_crash]() {
             // The fake engine has the demo session by now; a crash on Tom 1's
             // compressor shows what a fault looks like.
             if (fake != nullptr && demo_crash != 0) {
@@ -549,6 +553,32 @@ int main(int argc, char** argv) {
                 if (right != nullptr) {
                     c.set_insertion(right->position);
                     for (int i = 0; i < 2; ++i) model.invoke(QStringLiteral("zoom.in"), -1);
+                }
+            }
+            // The snare's two crossfaded regions copied and pasted after the
+            // next track's last region, through the keys' commands, with the
+            // Edit menu open on "Undo Paste".
+            if (a.opt.edit_view == QStringLiteral("clipboard") && p && p->regions.size() > 2 &&
+                session.trackCount() > track + 1) {
+                EditController& c = session.controller();
+                const auto from = p->regions[1].position, to = p->regions[2].end();
+                c.select_range(track, from, to);
+                model.invoke(QStringLiteral("edit.copy"), -1);
+                const auto* next =
+                    active_playlist(c.snapshot().edit->tracks[track + 1].get());
+                const auto after = next && !next->regions.empty() ? next->regions.back().end() : to;
+                model.invoke(QStringLiteral("track.select"), track + 1);
+                c.set_insertion(after + (to - from) / 10);
+                model.invoke(QStringLiteral("edit.paste"), -1);
+                model.invoke(QStringLiteral("zoom.fit_session"), -1);
+                QQuickItem* root = view.rootObject();
+                auto* button = root->findChild<QQuickItem*>(QStringLiteral("editMenuButton"));
+                auto* menu = root->findChild<QQuickItem*>(QStringLiteral("editMenu"));
+                if (button != nullptr && menu != nullptr) {
+                    const QPointF at = button->mapToScene(QPointF(0, button->height()));
+                    menu->setProperty("x", at.x());
+                    menu->setProperty("y", at.y() + 4);
+                    menu->setProperty("visible", true);
                 }
             }
         });
