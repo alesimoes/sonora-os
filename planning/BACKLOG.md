@@ -29,7 +29,7 @@ playback can follow edits; it is in flight.
        locate, pre-roll; input monitoring. In-band boundaries, record
        while rolling and punch in/out on the fly at block boundaries:
        `feature/record-while-rolling`. Punch points inside a block, engine
-       side: PR #81. Their caller and placement (`feature/punch-caller`):
+       side: PR #81. Their caller and placement (PR #91):
        record with the session's punch range set punches over
        [A − H, B + H), and the take goes in over [A, B) with a crossfade at
        each punch point that has the handle, one undo step. Remain: a
