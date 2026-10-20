@@ -99,11 +99,31 @@ public:
         // version); empty when it can.
         std::string disabled;
         api::PluginCatalog api;
+        // `api` as the wire carries it, encoded by the worker: the control
+        // thread only sends it (rt-engineer 2 on #95). Never null once
+        // published.
+        std::shared_ptr<const std::string> api_wire;
+        // (format, id) -> index in api.plugins.
+        std::map<std::pair<uint32_t, std::string>, std::size_t> api_index;
         // Every record known this run, chain-start probes included.
         std::map<Key, plugin::probe::Record> probes;
         const plugin::probe::Record* find(const std::string& host_id, uint16_t channels) const {
             const auto it = probes.find({host_id, channels});
             return it == probes.end() ? nullptr : &it->second;
+        }
+        const api::PluginInfo* find_plugin(api::PluginFormat format, const std::string& id) const {
+            const auto it = api_index.find({static_cast<uint32_t>(format), id});
+            return it == api_index.end() ? nullptr : &api.plugins[it->second];
+        }
+        // The record a finished probe left for `host_id`, a usable one
+        // first, not-installed ones skipped; null when there is none.
+        const plugin::probe::Record* any_probe(const std::string& host_id) const {
+            const plugin::probe::Record* best = nullptr;
+            for (auto it = probes.lower_bound({host_id, 0}); it != probes.end() && it->first.first == host_id; ++it) {
+                if (it->second.outcome == plugin::probe::Outcome::NotInstalled) continue;
+                if (!best || (it->second.ok() && !best->ok())) best = &it->second;
+            }
+            return best;
         }
     };
 
@@ -140,6 +160,10 @@ public:
     // No scan running and nothing queued.
     bool idle() const { return idle_.load(std::memory_order_acquire); }
     std::mutex& exchange_mutex_for_test() { return exchange_mu_; }
+    // Tests only: `c` is handed over as the worker's next publish would be.
+    void inject_catalog_for_test(std::shared_ptr<const Catalog> c);
+    // Bundles fingerprinted by the worker so far (a walk has begun).
+    uint64_t fingerprints() const { return fingerprints_.load(std::memory_order_acquire); }
 
     // Slots: probes in flight at most, and those a catalog child may take.
     uint32_t slots() const { return slots_; }
@@ -167,6 +191,9 @@ private:
     // Not under the lock: a lost try_lock still delivers it.
     std::atomic<bool> recording_{false};
     std::shared_ptr<const Catalog> out_catalog_;
+    // Catalogs the control thread let go of: freed by the worker, never on
+    // the control thread (rt-engineer 1 on #95).
+    std::vector<std::shared_ptr<const Catalog>> retired_;
     std::vector<std::string> out_notices_;
 
     // The worker sleeps here; the control thread only notifies.
@@ -178,6 +205,7 @@ private:
     std::atomic<uint64_t> catalog_probes_{0};
     std::atomic<uint64_t> lists_started_{0};
     std::atomic<uint32_t> peak_children_{0};
+    std::atomic<uint64_t> fingerprints_{0};
     std::atomic<bool> idle_{false};
 
     std::thread thread_;

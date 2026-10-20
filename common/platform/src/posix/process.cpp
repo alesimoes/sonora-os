@@ -28,6 +28,12 @@ struct ChildProcess::Impl {
     pid_t pid = -1;
     bool reaped = false;
     int status = 0;
+    // It leads its own process group: a signal goes to the group, so what
+    // it forked goes with it (a VST3 --list child's per-bundle children,
+    // which carry no death signal; code-reviewer B on #95).
+    bool group = false;
+
+    void signal(int sig) const { ::kill(group ? -pid : pid, sig); }
 
     bool reap(bool block) {
         if (reaped) return true;
@@ -98,10 +104,15 @@ bool lower_current_thread(int nice, bool idle_io, std::string& error) {
     // Linux keeps both per thread: setpriority and ioprio_set on a thread
     // id touch that thread alone, and a child inherits its spawner's.
     const pid_t self = static_cast<pid_t>(::syscall(SYS_gettid));
-#else
-    const pid_t self = 0;
-#endif
     return lower(self, nice, idle_io, error);
+#else
+    // Elsewhere POSIX's setpriority would lower the whole process, the
+    // engine's control and disk threads with it (rt-engineer on #95).
+    (void)nice;
+    (void)idle_io;
+    error = "lowering one thread's priority is not available on this platform";
+    return false;
+#endif
 }
 
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>& argv,
@@ -220,6 +231,7 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     posix_spawnattr_setflags(&attr, flags);
 
     auto impl = std::make_unique<Impl>();
+    impl->group = options.own_group;
     const int rc = ::posix_spawn(&impl->pid, args[0], &actions, &attr, args.data(), environ);
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
@@ -243,7 +255,7 @@ ChildProcess::ChildProcess(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) 
 
 ChildProcess::~ChildProcess() {
     if (!impl_->reap(false)) {
-        ::kill(impl_->pid, SIGKILL);
+        impl_->signal(SIGKILL);
         impl_->reap(true);
     }
 }
@@ -263,11 +275,11 @@ bool ChildProcess::wait(int timeout_ms) {
 }
 
 void ChildProcess::terminate() {
-    if (!impl_->reaped) ::kill(impl_->pid, SIGTERM);
+    if (!impl_->reaped) impl_->signal(SIGTERM);
 }
 
 void ChildProcess::kill() {
-    if (!impl_->reaped) ::kill(impl_->pid, SIGKILL);
+    if (!impl_->reaped) impl_->signal(SIGKILL);
 }
 
 bool ChildProcess::exited_normally() const { return WIFEXITED(impl_->status); }

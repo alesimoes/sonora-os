@@ -172,6 +172,8 @@ struct PluginScanner::Worker {
     std::set<Key> chain_asked;
     api::PluginCatalog api;
     std::string api_bytes;
+    std::shared_ptr<const std::string> api_wire;
+    std::map<std::pair<uint32_t, std::string>, std::size_t> api_index;
     uint64_t generation = 0;
     uint64_t serial = 0;
     bool ready = false;
@@ -299,6 +301,7 @@ struct PluginScanner::Worker {
     }
 
     BundleFingerprint fingerprint(const std::string& path) const {
+        s.fingerprints_.fetch_add(1, std::memory_order_acq_rel);
         if (cfg.fingerprint_delay_ms_for_test)
             std::this_thread::sleep_for(std::chrono::milliseconds(cfg.fingerprint_delay_ms_for_test));
         return fingerprint_bundle(path);
@@ -362,8 +365,14 @@ struct PluginScanner::Worker {
             ++generation;
             api_bytes = std::move(bytes);
             api = std::move(c);
+            api.generation = generation;
+            std::string wire;
+            api::wire::encode(api, wire, e);
+            api_wire = std::make_shared<const std::string>(std::move(wire));
+            api_index.clear();
+            for (std::size_t i = 0; i < api.plugins.size(); ++i)
+                api_index[{static_cast<uint32_t>(api.plugins[i].format), api.plugins[i].id}] = i;
         }
-        api.generation = generation;
         publish_wanted = true;
         urgent = true;
     }
@@ -376,13 +385,20 @@ struct PluginScanner::Worker {
         c->scanned = scanned_once;
         c->disabled = disabled;
         c->api = api;
+        c->api_wire = api_wire;
+        c->api_index = api_index;
         for (const auto& [path, b] : cache.bundles)
             for (const pr::Record& r : b.plugins) c->probes[{r.uri, uint16_t(r.channels)}] = r;
         for (const auto& [k, r] : run_only) c->probes[k] = r;
+        std::shared_ptr<const Catalog> untaken;
         {
             std::lock_guard<std::mutex> l(s.exchange_mu_);
+            untaken = std::move(s.out_catalog_);
             s.out_catalog_ = std::move(c);
         }
+        // A publish the control thread never took is freed here, outside
+        // the lock.
+        untaken.reset();
         publish_wanted = false;
         urgent = false;
         published_ms = steady_ms();
@@ -404,9 +420,13 @@ struct PluginScanner::Worker {
         run_only.erase(k);
         CachedBundle& b = cache.bundles[bundle];
         if (b.format.empty()) {
+            // Found by a chain-start probe before any walk reached it. Only
+            // the walk records a fingerprint, after enumerating the bundle:
+            // one recorded here would let the walk skip the bundle's other
+            // plugins for good (code-reviewer A on #95).
             b.format = r.format;
-            // Found by a chain-start probe before any scan listed it.
-            if (!settling.count(bundle)) b.fingerprint = fingerprint_bundle(bundle);
+            b.fingerprint = BundleFingerprint{};
+            b.fingerprint.complete = false;
         }
         b.plugins.erase(std::remove_if(b.plugins.begin(), b.plugins.end(),
                                        [&](const pr::Record& x) { return same_key(x, k); }),
@@ -501,6 +521,8 @@ struct PluginScanner::Worker {
         changed_lv2.clear();
         changed_vst3.clear();
         for (const auto& [path, format] : listed) {
+            // A quit mid-walk does not wait for the rest of it.
+            if (s.stop_.load(std::memory_order_acquire)) return;
             service();
             const BundleFingerprint fp = fingerprint(path);
             auto it = cache.bundles.find(path);
@@ -852,8 +874,10 @@ struct PluginScanner::Worker {
     void take_inbox() {
         std::vector<Key> probes;
         bool want_rescan = false;
+        std::vector<std::shared_ptr<const Catalog>> retired;
         {
             std::lock_guard<std::mutex> l(s.exchange_mu_);
+            retired.swap(s.retired_);
             probes.swap(s.in_probes_);
             want_rescan = s.in_rescan_;
             s.in_rescan_ = false;
@@ -947,7 +971,12 @@ bool PluginScanner::exchange(bool recording) {
     want_probes_.clear();
     in_rescan_ = in_rescan_ || want_rescan_;
     want_rescan_ = false;
-    if (out_catalog_) catalog_ = std::move(out_catalog_);
+    if (out_catalog_) {
+        // Handed to the worker to free: the last reference to a large
+        // catalog must not be dropped on the control thread.
+        retired_.push_back(std::move(catalog_));
+        catalog_ = std::move(out_catalog_);
+    }
     notices_.insert(notices_.end(), out_notices_.begin(), out_notices_.end());
     out_notices_.clear();
     l.unlock();
@@ -965,6 +994,15 @@ void PluginScanner::probe(const std::string& host_id, uint16_t channels) {
 }
 
 void PluginScanner::rescan() { want_rescan_ = true; }
+
+void PluginScanner::inject_catalog_for_test(std::shared_ptr<const Catalog> c) {
+    std::shared_ptr<const Catalog> untaken;
+    {
+        std::lock_guard<std::mutex> l(exchange_mu_);
+        untaken = std::move(out_catalog_);
+        out_catalog_ = std::move(c);
+    }
+}
 
 std::vector<std::string> PluginScanner::take_notices() {
     std::vector<std::string> out;

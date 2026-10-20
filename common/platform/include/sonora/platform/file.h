@@ -41,7 +41,9 @@ struct PathStatus {
     bool regular = false;
     bool directory = false;
     uint64_t size = 0;
-    // Nanoseconds since the epoch. `changed` is the inode change time
+    // Nanoseconds since the epoch: Unix's on POSIX; elsewhere the file
+    // clock's own, comparable only with stamps of the same platform.
+    // `changed` is the inode change time
     // (POSIX ctime), which cp -p, rsync -t, tar and unzip cannot set back
     // the way they set the modification time; 0 where there is none.
     int64_t modified_ns = 0;

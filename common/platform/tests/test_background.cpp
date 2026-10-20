@@ -137,11 +137,52 @@ void lowered() {
 }
 #endif
 
+// Code-reviewer B on #95: a child that leads its own group is killed with
+// what it forked (a VST3 --list child's per-bundle children carry no death
+// signal), and a signal to our own group does not reach it.
+bool dead(long pid) {
+    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
+    std::string s;
+    if (!std::getline(f, s)) return true;
+    const auto close = s.rfind(')');
+    return close != std::string::npos && close + 2 < s.size() && (s[close + 2] == 'Z' || s[close + 2] == 'X');
+}
+
+void group_kill() {
+    const std::string pidfile = "test_platform_background_grandchild.pid";
+    std::remove(pidfile.c_str());
+    ChildProcess::Options o;
+    o.own_group = true;
+    std::string error;
+    auto c = ChildProcess::spawn({"/bin/sh", "-c", "sleep 30 & echo $! > " + pidfile + "; wait"}, o, error);
+    CHECK(c != nullptr);
+    if (!c) return;
+    long grandchild = 0;
+    for (int i = 0; i < 200 && grandchild == 0; ++i) {
+        std::ifstream f(pidfile);
+        f >> grandchild;
+        if (grandchild == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(grandchild > 0);
+    CHECK(::getpgid(pid_t(c->pid())) == pid_t(c->pid()));
+    CHECK(::getpgid(0) != pid_t(c->pid()));
+    c->kill();
+    c->wait(-1);
+    bool gone = false;
+    for (int i = 0; i < 200 && !gone; ++i) {
+        gone = dead(grandchild);
+        if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(gone);
+    std::remove(pidfile.c_str());
+}
+
 }  // namespace
 
 int main() {
     cache_dir();
     status_through_symlink();
+    group_kill();
 #ifdef __linux__
     lowered();
 #endif

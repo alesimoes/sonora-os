@@ -97,10 +97,12 @@ const char* const kScanRunning = "the plug-in scan is still running";
 const char* const kNoRescanWhileRecording =
     "not during a take: a plug-in scan runs plug-in code; stop the transport, then rescan";
 
-const api::PluginInfo* catalog_find(const api::PluginCatalog& c, model::PluginFormat format, const std::string& id) {
-    for (const api::PluginInfo& p : c.plugins)
-        if (static_cast<uint32_t>(p.format) == static_cast<uint32_t>(format) && p.id == id) return &p;
-    return nullptr;
+// By index and by ordered key, not by a walk of the whole catalog: a
+// compound of 256 inserts against thousands of plugins is one turn
+// (rt-engineer on #95).
+const api::PluginInfo* catalog_find(const PluginScanner::Catalog& c, model::PluginFormat format,
+                                    const std::string& id) {
+    return c.find_plugin(static_cast<api::PluginFormat>(format), id);
 }
 
 std::string host_id(const model::PluginRef& p) {
@@ -112,18 +114,12 @@ std::string host_id(const model::PluginRef& p) {
 // from a probe this run finished (finding 4 on #95: during a first cold
 // scan every accepted insert is one of those).
 void as_scanned(model::PluginRef& ref, const PluginScanner::Catalog& c) {
-    if (const api::PluginInfo* p = catalog_find(c.api, ref.format, ref.id)) {
+    if (const api::PluginInfo* p = catalog_find(c, ref.format, ref.id)) {
         ref.name = p->name;
         ref.version = p->version;
         return;
     }
-    const std::string id = host_id(ref);
-    const plugin::probe::Record* best = nullptr;
-    for (const auto& [key, rec] : c.probes) {
-        if (key.first != id || rec.outcome == plugin::probe::Outcome::NotInstalled) continue;
-        if (!best || (rec.ok() && !best->ok())) best = &rec;
-    }
-    if (best) {
+    if (const plugin::probe::Record* best = c.any_probe(host_id(ref))) {
         ref.name = best->name.empty() ? ref.id : best->name;
         ref.version = best->version;
     }
@@ -599,8 +595,11 @@ void EngineControlServer::send_catalog(Client& client) {
         if (api::wire::encode(empty, bytes, why)) send_to(client, bytes);
         return;
     }
-    // Generation 0 and empty until the worker has read its cache.
-    if (api::wire::encode(scanner_->catalog()->api, bytes, why)) send_to(client, bytes);
+    // Generation 0 and empty until the worker has read its cache. Encoded
+    // by the worker, never here (rt-engineer 2 on #95).
+    const auto& c = scanner_->catalog();
+    if (c->api_wire) send_to(client, *c->api_wire);
+    else if (api::wire::encode(c->api, bytes, why)) send_to(client, bytes);
 }
 
 void EngineControlServer::follow_scanner() {
@@ -620,8 +619,7 @@ void EngineControlServer::follow_scanner() {
     if (c->generation != 0 && c->generation != catalog_sent_) {
         // Item 5: again whenever a scan completes with a different result.
         catalog_sent_ = c->generation;
-        std::string bytes, why;
-        if (api::wire::encode(c->api, bytes, why)) send(bytes);
+        if (c->api_wire) send(*c->api_wire);
     }
 }
 
@@ -645,7 +643,7 @@ std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, mod
     if (!scanner_) return kNoHosting;
     const auto& c = scanner_->catalog();
     if (!c->disabled.empty()) return c->disabled;
-    if (const api::PluginInfo* p = catalog_find(c->api, ref->format, ref->id)) {
+    if (const api::PluginInfo* p = catalog_find(*c, ref->format, ref->id)) {
         // The catalog's refusal words (§8).
         if (!p->usable) return p->name + " cannot be used: " + p->refusal;
         if (!fits(p->inputs, p->outputs, on->channels)) return fit_refusal(p->name, p->inputs, p->outputs, on->channels);
@@ -653,13 +651,11 @@ std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, mod
     }
     // Not in the catalog sent: a probe this run finished for it (a chain
     // start, or the scan running) is as good.
-    const std::string id = host_id(*ref);
-    for (const auto& [key, rec] : c->probes) {
-        if (key.first != id || rec.outcome == plugin::probe::Outcome::NotInstalled) continue;
-        const std::string name = rec.name.empty() ? ref->id : rec.name;
-        if (!rec.ok()) return name + " cannot be used: " + rec.reason;
-        if (!fits(rec.audio_in, rec.audio_out, on->channels))
-            return fit_refusal(name, rec.audio_in, rec.audio_out, on->channels);
+    if (const plugin::probe::Record* rec = c->any_probe(host_id(*ref))) {
+        const std::string name = rec->name.empty() ? ref->id : rec->name;
+        if (!rec->ok()) return name + " cannot be used: " + rec->reason;
+        if (!fits(rec->audio_in, rec->audio_out, on->channels))
+            return fit_refusal(name, rec->audio_in, rec->audio_out, on->channels);
         return {};
     }
     if (!c->scanned) return kScanRunning;

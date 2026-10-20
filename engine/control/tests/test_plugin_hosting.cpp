@@ -749,13 +749,17 @@ int scenario_server(const Args& a) {
               "the state block shows the insert running");
         check((engine.state().transport().health_flags & api::kHealthPluginsDisabled) == 0,
               "the plugins-disabled health flag is down");
-        const PlaybackPlan* p = session.plans().current();
-        bool bound = false;
-        for (uint32_t i = 0; p && i < p->node_count; ++i)
-            bound = bound || (p->nodes[i].kind == NodeKind::InsertChain && p->nodes[i].latency_frames == kBlock &&
-                              p->nodes[i].channel_slot != kSilentChannelSlot &&
-                              p->nodes[i].channel_slot != kNoChannelSlot);
-        check(bound, "the playing plan binds the chain at 128");
+        // The state block says Running at Ready; the plan that binds the
+        // chain is adopted by the audio thread a turn or two later.
+        const auto bound = [&] {
+            const PlaybackPlan* p = session.plans().current();
+            for (uint32_t i = 0; p && i < p->node_count; ++i)
+                if (p->nodes[i].kind == NodeKind::InsertChain && p->nodes[i].latency_frames == kBlock &&
+                    p->nodes[i].channel_slot != kSilentChannelSlot && p->nodes[i].channel_slot != kNoChannelSlot)
+                    return true;
+            return false;
+        };
+        check(until(bound, 5000), "the playing plan binds the chain at 128");
         std::string last_fault = "none";
         for (const auto& ev : in.events)
             if (ev.kind == api::EventKind::PluginFault && ev.insert == 500) last_fault = ev.text;

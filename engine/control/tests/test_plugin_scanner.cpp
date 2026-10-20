@@ -34,6 +34,10 @@
 //                      try_lock stops the catalog (finding 2 on #95)
 //   chain_during_walk  chain-start probes served between the bundles of
 //                      the start-up check and of a scan's walk (finding 5)
+//   chain_keeps_bundle_unwalked  a chain-start probe mid-walk never records
+//                      a bundle fingerprint (code-reviewer A)
+//   exchange_frees_nothing  the control thread hands old catalogs to the
+//                      worker to free (rt-engineer 1)
 //   stop_signal        a probe a stop signal ended is never cached; a signal
 //                      to the engine's group does not reach it (finding 1)
 #include <signal.h>
@@ -615,8 +619,8 @@ void test_chain_during_walk() {
     c.fingerprint_delay_ms_for_test = 150;  // 13 bundles: about 2 s a walk
     {
         PluginScanner s(c);
-        check(until(s, [&] { return !fx.log_lines("--bundles-only").empty(); }, 5000), "the scan lists bundles");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // In the walk itself, however long the listing took (a TSan run).
+        check(until(s, [&] { return s.fingerprints() >= 1; }, 10000), "the scan walks the listed bundles");
         const uint64_t t0 = now_ms();
         s.probe("urn:x", 1);
         check(until(s, [&] { return s.catalog()->find("urn:x", 1) != nullptr; }, 5000), "answered");
@@ -630,6 +634,93 @@ void test_chain_during_walk() {
     check(now_ms() - t0 < 1000, "before the start-up check of every cached bundle is done (" +
                                     std::to_string(now_ms() - t0) + " ms)");
     check(s.probes_started() == 0, "with no probe: its bundle was checked first");
+}
+
+// Code-reviewer A on #95: a chain-start probe served mid-walk, for a
+// bundle the walk has not reached and no cache knew, must not record its
+// fingerprint: the walk would then skip the bundle and its other plugins
+// would stay out of the catalog for good.
+void test_chain_keeps_bundle_unwalked() {
+    std::printf("chain_keeps_bundle_unwalked\n");
+    Fixture fx("unwalked");
+    std::vector<std::string> w;
+    for (int i = 0; i < 8; ++i)
+        w.push_back("plugin urn:a" + std::to_string(i) + " " + fx.bundle("a" + std::to_string(i) + ".lv2") +
+                    " lv2 1 1 ok");
+    const std::string z = fx.bundle("z.lv2");  // walked last
+    w.push_back("plugin urn:p1 " + z + " lv2 1 1 ok");
+    w.push_back("plugin urn:p2 " + z + " lv2 1 1 ok");
+    fx.set_world(w);
+    PluginScannerConfig c = fx.config();
+    c.fingerprint_delay_ms_for_test = 150;
+    {
+        PluginScanner s(c);
+        check(until(s, [&] { return s.fingerprints() >= 1; }, 10000), "the scan walks the listed bundles");
+        s.probe("urn:p1", 1);
+        check(until(s, [&] { return s.catalog()->find("urn:p1", 1) != nullptr; }, 5000),
+              "the chain-start probe answers mid-walk");
+        check(scanned(s, 20000), "the scan completes");
+        check(entry(s, "urn:p2") != nullptr, "the bundle's other plugin is in the catalog");
+    }
+    fx.clear_log();
+    PluginScanner s(fx.config());
+    check(scanned(s) && entry(s, "urn:p2") != nullptr && s.probes_started() == 0,
+          "and in the cache, the bundle settled by its walk");
+}
+
+// rt-engineer 1 on #95: the control thread never frees a catalog. The one
+// exchange() replaces goes back to the worker, so a large one costs the
+// control thread a pointer swap.
+void test_exchange_frees_nothing() {
+    std::printf("exchange_frees_nothing\n");
+    Fixture fx("retire");
+    PluginScannerConfig c = fx.config(false);
+    c.scan_at_start = false;
+    PluginScanner s(c);
+    check(until(s, [&] { return s.catalog()->ready && s.idle(); }, 5000), "ready");
+    const auto big = [](int tag) {
+        auto cat = std::make_shared<PluginScanner::Catalog>();
+        cat->generation = uint64_t(tag);
+        for (int i = 0; i < 1000; ++i) {
+            pr::Record r;
+            r.uri = "urn:big" + std::to_string(i);
+            r.format = "lv2";
+            r.name = "A plug-in with a name of some length " + std::to_string(i);
+            r.outcome = pr::Outcome::Ok;
+            r.channels = 2;
+            for (int k = 0; k < 150; ++k) {
+                pr::Param p;
+                p.key = "parameter_key_" + std::to_string(k);
+                p.symbol = p.key;
+                p.name = "Parameter number " + std::to_string(k);
+                p.unit = "dB";
+                if (k % 10 == 0) {
+                    p.labels = {"Off", "Low", "Mid", "High"};
+                    p.steps = 4;
+                }
+                r.params.push_back(std::move(p));
+            }
+            cat->api.plugins.push_back(catalog_entry(r));
+            cat->probes[{r.uri, 2}] = std::move(r);
+        }
+        return std::shared_ptr<const PluginScanner::Catalog>(std::move(cat));
+    };
+    std::weak_ptr<const PluginScanner::Catalog> first;
+    {
+        auto a = big(100);
+        first = a;
+        s.inject_catalog_for_test(std::move(a));
+    }
+    s.exchange(false);
+    check(s.catalog()->generation == 100, "the first large catalog taken");
+    s.inject_catalog_for_test(big(101));
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool took = s.exchange(false);
+    const auto us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    check(took && s.catalog()->generation == 101, "the second taken");
+    check(us < 5000, "exchange() frees nothing on the control thread (" + std::to_string(us) + " us)");
+    check(until(s, [&] { return first.expired(); }, 5000), "the worker freed the one it replaced");
 }
 
 void test_vst3_list_fail() {
@@ -675,6 +766,8 @@ int main(int argc, char** argv) {
     test_version();
     test_vst3_list_fail();
     test_recording_lost_lock();
+    test_chain_keeps_bundle_unwalked();
+    test_exchange_frees_nothing();
     test_chain_during_walk();
     test_stop_signal();
     if (failures) {
