@@ -50,6 +50,11 @@ struct TakeAdded {
     // short: <file>: <why>, placed up to the failure", and how many more.
     // Such a file is placed up to its last whole frame, like the rest.
     std::string cut_short;
+    // One per fade beside the take that the take shortened to make room
+    // for its crossfade: "take N shortened the fade-in of "Old" on track
+    // T from 2990.0 ms to 2980.0 ms to make room for its crossfade". The
+    // model shortens rather than refuses, as Pro Tools does; this says so.
+    std::vector<std::string> fade_notices;
     // Set when the model refused the take, which for operations the engine
     // built is a model bug. The good files' sources were then added on
     // their own, so the audio is in the pool and a save keeps it, but none

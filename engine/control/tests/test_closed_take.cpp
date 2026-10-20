@@ -433,6 +433,7 @@ int test_a_punch_goes_in_over_its_range() {
         CHECK(p.length == (kB + kH) - (kA - kH));
         const TakeAdded r = add_closed_take(doc, s, p.take);
         CHECK(r.track_notices.empty() && r.refused.empty());
+        CHECK(r.fade_notices.empty());
         CHECK(r.updates.size() == 1);
 
         const model::Playlist& pl = active_playlist(doc.current(), 0);
@@ -594,6 +595,51 @@ int test_a_punch_the_model_refuses_crossfades_for_lands_without_them() {
     return 0;
 }
 
+// Pro Tools shortens a fade beside a punch to make room for the punch's
+// crossfade and never refuses the record; the model does the same
+// (RecordTake fits fades), and the take's report names each one, so the
+// operator hears what changed. Here the old take's fade-in runs to 10
+// frames before A and its fade-out from 10 frames after B: each meets half
+// the crossfade (20 frames) and loses 10. The fade-out the punch cut at A
+// is where the crossfade now sits, which is not news, and is not named.
+int test_a_punch_names_the_fades_it_shortened() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_fades");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Id playlist = active_playlist(doc.current(), 0).id;
+        const model::Id region = active_playlist(doc.current(), 0).regions.at(0).id;
+        model::ReplicationUpdate u;
+        std::string why;
+        CHECK(doc.apply(model::SetFade{playlist, region, model::FadeEnd::In,
+                                       {kA - 10, model::FadeShape::Linear}},
+                        u, why));
+        CHECK(doc.apply(model::SetFade{playlist, region, model::FadeEnd::Out,
+                                       {kOldLength - kB - 10, model::FadeShape::Linear}},
+                        u, why));
+
+        Punched p;
+        CHECK(punch(s, punch_range(), static_cast<uint64_t>(kB + kH + 64), p));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.refused.empty() && r.track_notices.empty());
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 3 && pl.crossfades.size() == 2);
+        CHECK(pl.regions[0].fade_in.length == kA - kX / 2);
+        CHECK(pl.regions[2].fade_out.length == kOldLength - kB - kX / 2);
+
+        CHECK(r.fade_notices.size() == 2);
+        CHECK(mentions(r.fade_notices[0], "take 1 shortened the fade-in of \"Old\" on track 1 "
+                                          "from 2990.0 ms to 2980.0 ms"));
+        CHECK(mentions(r.fade_notices[1], "take 1 shortened the fade-out of \"Old\" on track 1 "
+                                          "from 14990.0 ms to 14980.0 ms"));
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
 // Stopped before A: nothing was punched, so nothing goes on the timeline
 // and no undo step is made, but what the handle captured is kept in the
 // pool rather than lost.
@@ -715,6 +761,7 @@ int main() {
     failed += test_a_punch_armed_late_starts_where_it_recorded();
     failed += test_a_punch_over_nothing_has_no_crossfade();
     failed += test_a_punch_the_model_refuses_crossfades_for_lands_without_them();
+    failed += test_a_punch_names_the_fades_it_shortened();
     failed += test_a_punch_stopped_before_a_places_nothing();
     failed += test_a_punch_captured_after_its_out_point_is_said();
     failed += test_the_document_punch();
@@ -722,6 +769,6 @@ int main() {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
     }
-    std::printf("closed_take: 14 passed\n");
+    std::printf("closed_take: 15 passed\n");
     return 0;
 }
