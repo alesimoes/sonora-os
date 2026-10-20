@@ -80,6 +80,12 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool loopOn READ loopOn NOTIFY contentChanged)
     Q_PROPERTY(bool punchOn READ punchOn NOTIFY contentChanged)
     Q_PROPERTY(QString tempoText READ tempoText NOTIFY sessionChanged)
+    // What the loader changed so that the open session's file still opened
+    // (model::Repair): [{path, was, now, why}], one notice each, held until
+    // the operator dismisses it or opens another session. A status line
+    // would elide them and clear them in seconds; a value changed under
+    // the operator must not be said only that briefly.
+    Q_PROPERTY(QVariantList repairs READ repairs NOTIFY repairsChanged)
 
 public:
     // `synthetic_peaks`: the waveforms `peaks` draws are not the sources'
@@ -118,7 +124,9 @@ public:
     // more than one plugin's latest state. Tests shorten it.
     void setFlushPatienceMs(qint64 ms) { flush_patience_ms_ = ms; }
     // File > Open. Refused while a take is open, at another sample rate
-    // than this session's, and over unsaved changes unless `discard`.
+    // than this session's, and over unsaved changes unless `discard`. A
+    // file the loader repaired opens modified: what is shown is not what
+    // the file holds, and the next save writes the current format knowingly.
     bool openSessionFile(const QString& file, bool discard, std::string& why);
     // The File > Open just made never reached the engine (its connection was
     // lost first). What is shown is the engine's document, not that file's,
@@ -191,6 +199,8 @@ public:
     bool loopOn() const;
     bool punchOn() const;
     QString tempoText() const;
+    QVariantList repairs() const { return repairs_; }
+    Q_INVOKABLE void dismissRepair(int index);
 
     // --- Edit window: track-area pixels ---
     Q_INVOKABLE void setViewport(qreal width, qreal height);
@@ -254,6 +264,7 @@ signals:
     void mixChanged();
     void counterChanged();
     void sessionChanged();
+    void repairsChanged();
     // A refusal from a mouse gesture, for the status line. Keys report
     // through the router.
     void refused(const QString& why);
@@ -285,6 +296,9 @@ private:
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
+
+    QVariantList repairs_;
+    void setRepairs(QVariantList r);
 
     TransportOverlay overlay_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;

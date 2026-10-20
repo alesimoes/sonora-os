@@ -9,6 +9,7 @@
 // first entry alone, so a loaded session with a tempo change showed a
 // counter, a ruler and a grid that disagreed with the session after the
 // change, with nothing on screen to say so.
+#include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QQuickItem>
@@ -572,6 +573,39 @@ void test_window() {
     OK(!transport.open());
 }
 
+// A long tempo map (a tempo-mapped live take, a change every beat): the
+// Transport window's list is read from one map, not a map per entry. Built
+// per entry, 20,000 entries took tens of seconds; from one, milliseconds.
+void test_long_map() {
+    SessionSettings s;
+    s.sample_rate = kRate;
+    constexpr std::size_t kEntries = 20'000;
+    s.tempo.clear();  // not the default entry: one map entry per beat
+    s.tempo.reserve(kEntries);
+    for (std::size_t i = 0; i < kEntries; ++i) {
+        const auto at = static_cast<Frames>(i) * 24'000;
+        s.tempo.push_back(TempoEntry{at, i % 2 == 0 ? 120.0f : 121.0f,
+                                     {{i % 3 == 0 ? 3u : 4u, 4u}}});
+    }
+    Frames insertion = 0;
+    QElapsedTimer clock;
+    clock.start();
+    TransportModel t([&s]() -> const SessionSettings& { return s; },
+                     [&insertion]() { return insertion; });
+    const qint64 ms = clock.elapsed();
+    std::printf("test_ui_transport: %zu-entry tempo list (%lld listed) in %lld ms\n", kEntries,
+                static_cast<long long>(t.tempoMap().size()), static_cast<long long>(ms));
+    OK(ms < 2000);
+    OK(t.tempoMap().size() == static_cast<int>(kEntries));
+    // The same readings a position gets on its own.
+    for (std::size_t i : {std::size_t{0}, std::size_t{1}, std::size_t{7}, kEntries / 2,
+                          kEntries - 1}) {
+        OK(t.tempoMap().at(static_cast<int>(i)).toMap().value(QStringLiteral("at")).toString() ==
+           QString::fromStdString(bb(i == 0 ? 0 : s.tempo[i].at, s)));
+    }
+    OK(t.nextChangeText().endsWith(QString::fromStdString(" at " + bb(s.tempo[1].at, s))));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -580,6 +614,7 @@ int main(int argc, char** argv) {
     test_reading();
     test_grid();
     test_model();
+    test_long_map();
     test_window();
     if (failures != 0) {
         std::fprintf(stderr, "test_ui_transport: %d failure(s)\n", failures);

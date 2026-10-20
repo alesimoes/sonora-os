@@ -58,6 +58,10 @@ MusicalTime musical_time(model::Frames f, const model::SessionSettings& s);
 // change cut short, past the change, reads as the change's own frame; a
 // position before 1|1|000 as 0.
 model::Frames frame_of(const MusicalTime& t, const model::SessionSettings& s);
+// format_bars_beats() of every tempo map entry's `at` (the first's as 0),
+// from one map: the Transport window's list is n log n, where a map per
+// entry would be n^2 on a long map.
+std::vector<std::string> tempo_entry_positions(const model::SessionSettings& s);
 // The tempo map entry in force at `f`, by index. An empty map (which the
 // session format forbids) reads as the default entry.
 std::size_t tempo_index_at(model::Frames f, const model::SessionSettings& s);

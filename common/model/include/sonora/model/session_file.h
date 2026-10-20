@@ -40,16 +40,28 @@ struct WriteInfo {
 bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
                std::string& error);
 
+// One value the loader changed so that a file an older build wrote still
+// opens. The opener shows each on its own, held until dismissed (ui/qt
+// SessionModel::repairs), so the parts are kept apart rather than joined
+// into a sentence a status line would elide.
+struct Repair {
+    std::string path;  // the key changed: "tempo[1].bpm"
+    std::string was;   // as the file holds it: "2400.0 bpm"
+    std::string now;   // as it opens: "1000 bpm"
+    std::string why;   // why it could not open as it was
+    // "tempo[1].bpm: 2400.0 bpm -> 1000 bpm (why)", for a log or a test.
+    std::string text() const { return path + ": " + was + " -> " + now + " (" + why + ")"; }
+};
+
 struct Loaded {
     Snapshot snapshot;               // revision 0, next_id = max(id) + 1
     std::string written_by;
     std::uint64_t save_generation = 0;
     std::int64_t file_version = 0;   // before migration
     // What the loader changed so that a file an older build wrote still
-    // opens, one sentence each with its key path and, where a value
-    // changed, the old and the new, for the opener to show.
-    // Empty for a file this build would have written.
-    std::vector<std::string> repairs;
+    // opens, for the opener to show. Empty for a file this build would
+    // have written.
+    std::vector<Repair> repairs;
 };
 
 struct LoadError {

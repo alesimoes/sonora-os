@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <unordered_map>
 
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
@@ -92,8 +94,8 @@ model::Frames frames_of(uint64_t f) {
                                                          : static_cast<model::Frames>(f);
 }
 
-const model::Playlist* playlist_by_id(const model::Snapshot& s, model::Id id) {
-    for (const auto& t : s.edit->tracks) {
+const model::Playlist* playlist_by_id(const model::EditState& edit, model::Id id) {
+    for (const auto& t : edit.tracks) {
         for (const auto& p : t->playlists) {
             if (p->id == id) return p.get();
         }
@@ -130,7 +132,7 @@ bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
     n.length = to - from;
     n.source_offset = from - origin;
 
-    const model::Playlist* p = playlist_by_id(document, rec.playlist);
+    const model::Playlist* p = playlist_by_id(*document.edit, rec.playlist);
     if (punch.crossfade == 0 || p == nullptr) return true;
     model::Crossfade x;
     x.length = punch.crossfade;
@@ -172,6 +174,59 @@ bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
         }
     }
     return true;
+}
+
+// One notice per fade beside a punch that its crossfade shortened: Pro
+// Tools truncates such a fade and never refuses the record, and so does the
+// model (RecordTake fits fades to its crossfades), but the operator should
+// hear what changed. Only the regions a crossfade of `rec` joins the take
+// to are looked at, so a fade a plain overwrite clamped (no crossfade) is
+// never blamed on one. Only an edge the take did not cut is compared: the
+// fade the overwrite dropped at the cut, where the crossfade now sits, is
+// not news. The right part of a region the take split is compared with
+// that region, whose fade-out it carries.
+void say_shortened_fades(const model::EditState& before, const model::Snapshot& after,
+                         const model::RecordTake& rec, int track, const std::string& which,
+                         std::vector<std::string>& out) {
+    if (rec.crossfades.empty()) return;
+    const model::Playlist* was = playlist_by_id(before, rec.playlist);
+    const model::Playlist* now = playlist_by_id(*after.edit, rec.playlist);
+    if (was == nullptr || now == nullptr) return;
+    const model::Region& take = rec.region;
+    std::unordered_map<model::Id, const model::Region*> old;
+    const model::Region* split = nullptr;
+    for (const model::Region& o : was->regions) {
+        old.emplace(o.id, &o);
+        if (o.position < take.position && o.end() > take.end()) split = &o;
+    }
+    std::unordered_map<model::Id, const model::Region*> current;
+    for (const model::Region& r : now->regions) current.emplace(r.id, &r);
+
+    const double rate = after.settings.sample_rate;
+    const auto ms = [rate](model::Frames f) {
+        char text[32];
+        std::snprintf(text, sizeof text, "%.1f ms", rate > 0 ? 1000.0 * f / rate : 0.0);
+        return std::string(text);
+    };
+    for (const model::Crossfade& x : rec.crossfades) {
+        const model::Id id = x.left == take.id ? x.right : x.left;
+        const auto at = current.find(id);
+        if (at == current.end()) continue;
+        const model::Region& r = *at->second;
+        const auto was_at = old.find(id);
+        const model::Region* origin = was_at != old.end() ? was_at->second
+                                      : id == rec.split_right_id ? split
+                                                                 : nullptr;
+        if (origin == nullptr) continue;
+        const auto say = [&](const char* end, const model::Fade& from, const model::Fade& to) {
+            if (to.length >= from.length) return;
+            out.push_back(which + " shortened the " + end + " of \"" + r.name + "\" on track " +
+                          std::to_string(track) + " from " + ms(from.length) + " to " +
+                          ms(to.length) + " to make room for its crossfade");
+        };
+        if (r.position == origin->position) say("fade-in", origin->fade_in, r.fade_in);
+        if (r.end() == origin->end()) say("fade-out", origin->fade_out, r.fade_out);
+    }
 }
 
 // "Audio Files/Audio 1_03.wav" names its region "Audio 1_03".
@@ -341,10 +396,19 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
             }
             return model::Operation{std::move(c)};
         };
+        const auto say_fades = [&](const model::EditState& before) {
+            for (std::size_t k = first; k < last; ++k) {
+                if (!placed[k]) continue;
+                say_shortened_fades(before, document.current(), records[k], numbers[k], which,
+                                    out.fade_notices);
+            }
+        };
+        const std::shared_ptr<const model::EditState> before = document.current().edit;
         std::string why;
         model::ReplicationUpdate u;
         if (document.apply(part_of(true), u, why)) {
             out.updates.push_back(std::move(u));
+            if (take.punched) say_fades(*before);
             continue;
         }
         // A punch's crossfades are checked against the model's rules here,

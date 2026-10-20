@@ -430,6 +430,7 @@ void EngineControlServer::follow_transport() {
         for (const auto& u : added.updates) send_update(u);
         std::vector<std::string> notices = added.track_notices;
         if (!added.cut_short.empty()) notices.push_back(added.cut_short);
+        notices.insert(notices.end(), added.fade_notices.begin(), added.fade_notices.end());
         // A refused take is also a Notice, which stays for the session: the
         // alert below clears on the next clean take, which while rolling can
         // be the next tick, and this take is still not on the timeline then.
