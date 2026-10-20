@@ -511,12 +511,13 @@ void test_window() {
         OK(named(root, QStringLiteral("transportRecord")) != nullptr);
         engine.snapshot.state = TransportMode::Recording;
         engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96);
-        model.tick();
+        // The bar reads the state block every fourth tick (kStateEvery).
+        for (int i = 0; i < 4; ++i) model.tick();
         OK(model.recording() && transport.recording());
         OK(active("barRecord") && active("transportRecord"));
         OK(transport.stateText() == QStringLiteral("REC"));
         engine.snapshot.state = TransportMode::Rolling;
-        model.tick();
+        for (int i = 0; i < 4; ++i) model.tick();
         OK(!model.recording() && !transport.recording() && transport.rolling());
         OK(!active("barRecord") && !active("transportRecord"));
         OK(transport.stateText() == QStringLiteral("PLAY"));
