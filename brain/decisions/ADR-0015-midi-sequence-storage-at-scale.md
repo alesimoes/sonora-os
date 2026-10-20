@@ -2,7 +2,9 @@
 
 - Status: **Proposed**, 2026-10-20. Not implemented. The owner approves it
   or not; the architect's recommendation is not acceptance.
-- Date: 2026-10-20
+- Date: 2026-10-20. Revised the same day with the rt-engineer's review of
+  PR #102 ("accept with changes"); the PR thread maps each point to where
+  it landed.
 - Decided by: architect, from ADR-0014 Unverified 6 as measured in M-1
   (PR #100, branch `m1b-midi-model`, `brain/specs/midi.md` §4.6 there) and
   its BACKLOG item ("Unverified 6's decision, before M-4").
@@ -97,10 +99,16 @@ What any remedy must keep:
 - The public reading API (iterate notes, events and SysEx in order; count;
   index ↔ position) is what M-3's plan builder, M-4's resolver and M-7's
   piano roll are written against. `EditMidi` keeps its **global indices**;
-  the spine's per-chunk counts map them to chunks.
+  each spine entry holds the **cumulative** note, event and SysEx counts
+  before its chunk, so an index maps to a chunk by binary search, and every
+  add or remove rewrites the spine (charged in §2).
 - Readers that cache by identity (M-3's flatten cache) key on the chunk
   pointer, so an edit re-flattens the chunks it touched and not the
-  region. That is a side benefit for ADR-0014 Unverified 7, not a claim.
+  region. A note belongs to the chunk of its start but may sound into the
+  next ones, and its off frame depends on the region's window: the cache
+  key is the chunk pointer together with the region's window and the
+  tempo map's revision, never the pointer alone. That is a side benefit
+  for ADR-0014 Unverified 7, not a claim.
 
 ### 2. Undo: structural sharing reaches into the sequence; ADR-0009 is unchanged
 
@@ -110,12 +118,13 @@ What any remedy must keep:
   is deterministic across compilers and allocators.
 - Rough cost for the measured case (50,000 CC events at 100/s, 8 notes/s,
   so 250 chunks of about 200 events and 16 notes): a chunk is about
-  3.6 KiB, the spine about 6 KiB (24 bytes an entry). A drag that moves a
-  note across a chunk boundary copies two chunks and the spine, **about
-  13 KiB instead of 800 KiB**. 200 drags charge about 2.6 MiB; the 64 MiB
-  budget keeps about 5,000 such steps. A 60-minute region has a 43 KiB
-  spine, which then dominates; a two-level spine is the upgrade if
-  Unverified 1 shows it matters.
+  3.6 KiB, the spine about 10 KiB (40 bytes an entry: chunk index,
+  pointer, three cumulative counts). A drag that moves a note across a
+  chunk boundary copies two chunks and the spine, **about 17 KiB instead of
+  800 KiB**. 200 drags charge about 3.4 MiB; the 64 MiB budget keeps about
+  3,800 such steps. A 60-minute region has a 70 KiB spine, which then
+  dominates; a two-level spine is the upgrade, and likely needed for long
+  regions if Unverified 1 confirms it.
 - A transform of the whole region (quantize all, transpose all) copies
   every chunk it changes, exactly as today. The newest step is never
   evicted (ADR-0009 §1), so it can always be undone once.
@@ -148,20 +157,37 @@ What any remedy must keep:
   in JSON. The measured 100 CC/s session is **about 3.5 MiB instead of
   23.2**; the 16 M target is about 100 MiB. The byte layout goes into
   `midi.md` §4.4 with the implementation; the decoder is bounded and
-  non-throwing like `common/midi`'s SMF reader, and fuzzed.
-- **Write order, the plugin-state rule**: the saver writes every sequence
-  file the snapshot names that is not already on disk (write, `fsync`,
-  folder `fsync`), then the session file atomically. A session file never
-  names a sequence that is not durable. An unchanged sequence is not
-  rewritten: the saver remembers which sequence objects it has written.
+  non-throwing like `common/midi`'s SMF reader, and fuzzed. Each section
+  is non-decreasing in its first key, so deltas are unsigned: the decoder
+  refuses a non-minimal LEB128, a count that disagrees with the header,
+  and anything that would put an entry before its predecessor.
+- **Write order, the plugin-state rule, through tmp and rename.** The
+  name is the hash, so a file torn by a crash must never carry it. For
+  each sequence the snapshot names that is not yet on disk, the saver
+  writes `<sha>.msq.tmp`, `fdatasync`s it and renames it to `<sha>.msq`;
+  **one folder `fsync` covers the batch**; then the session file is saved
+  atomically as today. A session file never names a sequence that is not
+  durable. A leftover `.msq.tmp` at open is an interrupted save and is
+  deleted.
+- **What is on disk is a set of hashes**, the saver's own, never object
+  identities (a freed sequence's address can be reused). At open it holds
+  the hashes of the referenced files that verified; the saver adds each
+  file it renames and **removes each file cleanup deletes**, so a sequence
+  still held by an undo step or a replica is rewritten if it is saved
+  again after its file went.
 - **The saver encodes and hashes, not the document thread.** It is handed
   the immutable snapshot (shared, safe to read from another thread) rather
   than finished bytes, and serialises both the sidecars and the session
-  file. SHA-256 of 100 MiB is roughly 0.1 to 0.4 s on one core, paid once,
-  at first save; later saves hash what changed.
+  file. SHA-256 cost is not measured: `sha256_hex` exists in
+  `contracts/plugin`, moves to `common/base` (which `common/model` may
+  use) and is measured in M-1c PR 1 (Unverified 6). It is paid in full at
+  first save; later saves hash what changed.
 - **Open** reads the session file (now small: regions, not events) and
   each referenced file once, checking hash, size and counts. A missing or
   damaged file does not drop its regions (O2).
+- **Medium.** Every disk figure here assumes the worst case ADR-0005
+  allows, the stick's ext4 persistence partition; an internal disk, which
+  ADR-0005 also offers for sessions, only makes them smaller.
 - **Migration.** The next session format number reads PR #100's inline
   format (5 on that branch) and moves each inline sequence to a sidecar at
   the first save, reported, with the pre-migration backup kept as
@@ -177,12 +203,22 @@ What any remedy must keep:
 - **The window's chunk table travels in parts.** `contracts/api` gains
   `ModelUpdate` kinds for a Snapshot in parts: a header naming the part
   count and total bytes, parts of at most **16 MiB** each, and the window
-  itself last; the replica holds nothing until the last part has arrived
-  and decoded. The 64 MiB per-message cap stays, so the `Reassembler`'s
-  bound against a hostile peer is unchanged; the total is bounded by §5's
-  budget instead. Parts use the existing large-message path (at most 2 in
-  flight over 1 MiB per client), so a slow interface delays its own
-  attach and nobody else's.
+  itself last. **Each part is a self-contained slice of the chunk table**
+  (whole chunks, their own count), decoded and checked as it arrives, never
+  a byte segment of one blob: the replica never holds more than one part's
+  bytes beyond what it has decoded, so it needs no large `Reassembler`.
+  The new state replaces the old only when the last part and the window
+  have decoded; a bad part abandons the attach and asks for `Resync`. The
+  64 MiB per-message cap stays, so the bound against a hostile peer is
+  unchanged. The **replica has its own cap** on the announced total, an
+  interface setting (default 512 MiB), not the engine's figure. Parts use
+  the existing large-message path (at most 2 in flight over 1 MiB per
+  client), so a slow interface delays its own attach and nobody else's.
+- **Encoding the window leaves the document thread.** Today
+  `encode_window()` runs there, and with a ~100 MiB chunk table edits would
+  wait behind it. It runs on a worker holding the immutable window it
+  encodes, as the saver does; the engine holds one encoded window per
+  attaching client until its last part is sent (Unverified 3, 7).
 - **Edits do not move chunks.** An `EditMidi` crosses as the forward
   operation it already is, a few hundred bytes for a drag, and the replica
   builds the same chunks with the same `apply` (§1). Only attach and resync
@@ -206,13 +242,22 @@ What any remedy must keep:
   is opened by raising it, not by editing the file.
 - **At open**, a session over the budget is refused by name, with its count
   and the setting to change. Never opened half-loaded.
-- **At edit**, an operation that would cross it is refused by name, as an
-  out-of-range conversion is (ADR-0014 §2).
+- **History goes before work.** Before an edit or a take placement is
+  refused, undo steps are evicted, oldest first, down to the newest one,
+  exactly as ADR-0009 §1's byte budget evicts (the floor rises and is sent
+  to every replica). It is refused only if the document's current state
+  alone would still be over. Otherwise history that could be dropped would
+  refuse a take, which is common and recoverable.
+- **At edit**, an operation that would still cross it is refused by name,
+  as an out-of-range conversion is (ADR-0014 §2).
 - **At take close**, never while recording. The SMF take is on disk and in
-  the pool whatever happens. A take whose placement would cross the
-  budget is kept there, unplaced, with a Notice naming it, and is placed
-  like an orphan once there is room. A warning shows from 90 % of the
-  budget, so the operator learns of it before a take, not after.
+  the pool whatever happens. A take whose placement would still cross the
+  budget stays there, **unplaced**: a `midi_sources` entry no region
+  refers to, saved with the session, its SMF and header event in
+  `MIDI Files/`, so it survives a reboot. A Notice names it; once there is
+  room it is placed like an orphan, and that placement is an ordinary
+  undoable `PlaceMidiRegion`. A warning shows from 90 % of the budget, so
+  the operator learns of it before a take, not after.
 - Counting is in entries, not allocator bytes, so it is the same on GCC and
   MSVC and on every machine (ADR-0009's reason for an engine-sent floor).
 
@@ -222,14 +267,54 @@ What any remedy must keep:
   names a sequence that was not durable first; an autosave or backup names
   sequences that are still on disk, because of the rule below. Edits since
   the last autosave are lost, as today. A take is in its SMF, as today.
+- **From take to sequence file, in order.** The disk thread writes the SMF
+  take and checkpoints it (ADR-0014 §6) → the take closes → the control
+  thread reads the file back and converts to ticks → the take compound
+  places a new `MidiSequence` → the autosave that follows every
+  `RecordTake` writes its sidecar, then the session file. A crash between
+  close and that autosave loses nothing: the take is recovered from
+  `MIDI Files/` by its header event, as today. The sidecar is a second
+  copy of the take's data, about twice the bytes for recorded MIDI, which
+  is small beside audio.
+- **Saves while recording never stall a take.** In loop and punch
+  recording takes close while other tracks still capture, so the autosave
+  after a `RecordTake` runs during capture. On ext4 every `fdatasync` and
+  folder `fsync` forces a journal commit, and under `data=ordered` that
+  commit also flushes the take files' dirty pages, which is how a save
+  could delay the disk thread's own syncs into a capture overrun. So,
+  **while any take is open**:
+  - the saver issues its syncs (each sidecar's `fdatasync`, the batch's
+    folder `fsync`, the session file's) **only in the slot right after a
+    disk-thread checkpoint has completed**, which the disk thread
+    announces by bumping an atomic counter, and at most one batch of them
+    per checkpoint period (`sync_seconds`). A saver commit therefore
+    never sits in front of a take's checkpoint, and the take files' pages
+    it flushes are the few written since that checkpoint;
+  - cleanup is deferred until the transport stops;
+  - the disk thread never waits for the saver; the saver waits, and a
+    save that has to wait says so in the interface ("Saving after the
+    next checkpoint").
+  With no take open, the saver syncs as it does today. Whether this holds
+  capture overruns at zero is Unverified 5.
 - **Sequence files are derived state, not recordings,** so unlike audio
   and takes they are cleaned up without asking: after a save is durable,
   the saver may delete a sequence file that **no kept file names** (the
   main file, the autosave, each of the 20 backups, each pre-migration
   copy). A crash during cleanup leaves extra files, never a missing one.
-  Bound: at most 22 versions of each sequence, so a 3.5 MiB sequence edited
-  all day costs at most about 77 MiB of the stick, where append-only with
-  a 60 s autosave would grow by about 210 MiB an hour (O4).
+- **The reference sets are held in memory.** The saver wrote every kept
+  file, so it keeps each one's set of sequence names and drops a set when
+  its file rotates out; the sets are rebuilt once at open by reading the
+  kept files. A kept file that cannot be parsed has unknown references, so
+  while it exists **nothing is deleted** (and the operator is told). Each
+  deletion removes its hash from the saver's on-disk set (§3).
+- **The bound is per session, not per sequence:** at most about
+  22 × the MIDI bytes that changed between kept versions. One edited track
+  of the measured case is about 0.2 MiB, so about 4.4 MiB. The worst case
+  is a whole-session transform before every save: **about 22 × 100 MiB ≈
+  2.2 GiB at the 16 M target**, against a persistence partition that is
+  what is left of an 8 to 64 GB stick (roughly 3 to 30 % of it).
+  Append-only, the same worst case would grow by about 6 GiB an hour at a
+  60 s autosave (O4).
 - A sequence file a kept file names is never deleted. Files in
   `MIDI Files/` (takes, imports) are never deleted by this rule.
 
@@ -292,6 +377,9 @@ PR #100 can merge as it is: its inline reader becomes the migration source
 - The interface keeps a full copy of every sequence, about 256 MiB at the
   target. A remote or memory-poor interface would need on-demand chunks,
   which this ADR does not provide.
+- `sha256_hex` moves from `contracts/plugin` to `common/base`, since
+  `common/model` may not depend on `contracts/plugin`; the plugin code
+  calls it there.
 - `session-format.md` gains the folder, the `data` key and the cleanup
   rule; `midi.md` §4.4 and §4.6 are rewritten with M-1c. Neither is edited
   by this PR, to stay off PR #100's diff.
@@ -301,28 +389,42 @@ PR #100 can merge as it is: its inline reader becomes the migration source
 Each names the measurement that settles it and who runs it.
 
 1. **Edit cost with chunks.** `measure_midi_session` rerun on the chunked
-   model: bytes charged per drag (expected about 13 KiB), steps kept of
+   model: bytes charged per drag (expected about 17 KiB), steps kept of
    200, window bytes, worst drag time on the control thread (today
    1.5 ms), for spans of 1, 4 and 16 quarters, and a 60-minute region's
    spine. rt-engineer, in M-1c PR 1. Over 64 KiB a drag means a two-level
    spine.
 2. **Open and save at the target.** A 16 M-entry session on the laptop:
-   decode time (assumed under 1 s), peak memory at open, first save time
-   including SHA-256. rt-engineer, M-1c PR 1. On the stick: OS 1.
+   at open, **hash time and decode time reported apart** (decode assumed
+   under 1 s), and peak memory; first save time, hash and write apart.
+   rt-engineer, M-1c PR 1. On the stick: OS 1.
 3. **Attach at the target.** Time for an interface to receive and decode a
-   ~100 MiB Snapshot in parts over the M7 socket, and its resident memory.
-   ui-engineer with the rt-engineer, M-1c PR 2.
+   ~100 MiB Snapshot in parts over the M7 socket, and **peak RSS on both
+   sides**, not only the steady state: the engine's encoded window held
+   per attaching client, the replica's undecoded part, the decoded
+   ~256 MiB. With it, a test that each part decodes and is checked on its
+   own, and that a bad part abandons the attach without touching the
+   replica's state. ui-engineer with the rt-engineer, M-1c PR 2.
 4. **Operation size in real use.** Whether whole-region transforms on dense
    regions reach about 500,000 entries in one `EditMidi`. Revisit with
    M-7's operations.
-5. **Sidecar writes on the persistence partition.** Time for a save that
-   writes 1, 18 and 100 sidecars with `fsync` each, on the stick's ext4
-   under the `/home` overlay, while 8 audio tracks record. Laptop proxy in
-   M-1c PR 3 (researcher); the stick in OS 1. If it competes with take
-   writes, sidecar writes are paced behind the disk thread.
-6. **SHA-256 throughput without SHA extensions**, on the oldest CPU class
-   we expect, since the image runs on hardware we have not seen.
-   Researcher, with 5.
+5. **Sidecar writes during capture.** A save of 1, 18 and 100 sidecars
+   (tmp, `fdatasync`, rename, one folder `fsync`) paced as §6 says, during
+   loop recording on 8 audio tracks and 4 MIDI tracks: capture overruns
+   (must be 0), the disk thread's checkpoint latency with and without the
+   save, and how long the save waited. Laptop proxy in M-1c PR 3
+   (researcher, with the rt-engineer); the stick's ext4 under the `/home`
+   overlay in OS 1. If overruns are not 0, sidecar writes during a take
+   wait until the transport stops.
+6. **SHA-256 throughput**, measured through `sha256_hex` once it is in
+   `common/base`, on the laptop in M-1c PR 1 (minutes of work, not later),
+   MiB/s on 100 MiB; then without SHA extensions on the oldest CPU class we
+   expect, since the image runs on hardware we have not seen (researcher,
+   OS 1).
+7. **Encoding the window at the target.** `encode_window()` time for a
+   16 M-entry document with 200 retained steps, on the worker, and how long
+   the document thread is held (expected: only to take the snapshot).
+   rt-engineer, M-1c PR 1.
 
 ## For the owner
 
@@ -339,14 +441,16 @@ Recommended defaults first; each is a decision only the owner makes.
   reference); where the region came from a take, rebuilding from the take
   file is offered. The alternative refuses to open the session.
 - **O3. The budget.** *Recommended: 16,777,216 entries by default*, an
-  engine setting, open refused above it, takes kept unplaced, a warning at
-  90 %. The alternatives are a higher default (more memory on a machine
+  engine setting; undo history evicted first, then open, edit or take
+  placement refused above it, takes kept unplaced, a warning at 90 %. The alternatives are a higher default (more memory on a machine
   we have not seen) or none (out-of-memory decides, while recording).
 - **O4. Cleaning up sequence files.** *Recommended: automatic,* deleting
   only files no kept session file names, because they are derived state.
-  The alternative is the audio rule (only an explicit, confirmed Clean
-  Up), which grows the folder by about 210 MiB an hour on a heavily edited
-  dense region.
+  With it the folder holds at most about 22 × the MIDI bytes changed
+  between kept versions: about 4.4 MiB for one edited track of the
+  measured case, about 2.2 GiB in the worst case at the 16 M target. The
+  alternative is the audio rule (only an explicit, confirmed Clean Up),
+  which in that worst case grows the folder by about 6 GiB an hour.
 - **O5. PR #100.** *Recommended: merge it with its inline format;* M-1c
   migrates from it. The alternative holds #100 until M-1c, so no inline
   MIDI format ever lands, at the cost of blocking M-2 work stacked on it.
@@ -362,7 +466,7 @@ Recommended defaults first; each is a decision only the owner makes.
   file, past the 64 MiB input cap, and undo and attach stay broken.
 - **Delta-encoded undo for `EditMidi`** (each step stores the edit, a
   state is rebuilt by replay or by inverse). About 100 bytes a drag rather
-  than 13 KiB, but it replaces ADR-0009 §1's "one state per step, undo is
+  than 17 KiB, but it replaces ADR-0009 §1's "one state per step, undo is
   a pointer, no inverse operation" with inverses or replay for one
   operation kind, and both engine and replica would need them exact.
   Chunk sharing reaches the budget with the model unchanged.
