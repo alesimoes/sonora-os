@@ -41,7 +41,11 @@ namespace sonora::api {
 // 6 (BACKLOG Track 2 item 5): a track's mix carries solo_safe, in SetMix,
 //   AddTrack and the undo window (format 4); a version-5 peer's decoder
 //   refuses the key, and this one requires it.
-constexpr uint32_t kProtocolVersion = 6;
+// 7 (ADR-0014 M-1): MIDI in the model. New operation kinds AddMidiSource,
+//   PlaceMidiRegion, EditMidi and SetMidiRouting; AddTrack carries `kind`;
+//   MoveRegion, TrimRegion and SplitRegion carry `timebase`; a track's mix
+//   carries its MIDI routing; the undo window's format 5.
+constexpr uint32_t kProtocolVersion = 7;
 
 // --- client -> engine -------------------------------------------------------
 

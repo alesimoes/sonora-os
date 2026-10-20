@@ -13,6 +13,7 @@
 #include "sonora/model/replication.h"
 
 using namespace model_test;
+namespace midi = sonora::midi;
 
 namespace {
 
@@ -41,6 +42,7 @@ std::vector<Operation> one_of_each() {
     mix.mute = true;
     mix.solo = true;
     mix.solo_safe = true;
+    mix.midi = MidiRouting{"Keystation 49", 3, "UMC1820 MIDI 1", 10};
 
     MonitorBus bus;
     bus.outputs = {{2, 3}};
@@ -94,16 +96,54 @@ std::vector<Operation> one_of_each() {
     const std::string digest(64, 'b');
     const StateRef state{plugin_state_file(digest), digest, 99};
 
+    MidiSource msrc;
+    msrc.id = 40;
+    msrc.path = "MIDI Files/Bass_02.mid";
+    msrc.length = 96000;
+    msrc.events = 17;
+    msrc.time_reference = 172800000;
+    msrc.kind = SourceKind::Recorded;
+    msrc.take = 4;
+    msrc.recorded_on_track = 2;
+    msrc.latency_compensation = 32;
+
+    auto seq = std::make_shared<MidiSequence>();
+    seq->notes = {midi::Note{0, 480000, 1, 36, 90, 10}, midi::Note{960000, 1, 0, 127, 127, 0}};
+    seq->events = {MidiEvent{0, 0xB3, 7, 100}, MidiEvent{5, 0xC3, 9, 0}};
+    seq->sysex = {MidiSysEx{7, {0xF0, 0x43, 0x10, 0x7F, 0xF7}}};
+    MidiRegion mr;
+    mr.id = 41;
+    mr.name = "Bass \xC3\xA9";
+    mr.position = 3840000;
+    mr.length = 7680000;
+    mr.offset = 960000;
+    mr.mute = true;
+    mr.source = 40;
+    mr.data = seq;
+
+    AddTrack midi_track = at;
+    midi_track.kind = TrackKind::Instrument;
+
+    EditMidi em;
+    em.playlist = 3;
+    em.region = 41;
+    em.remove_notes = {NoteRemoval{0, seq->notes[0]}, NoteRemoval{4, seq->notes[1]}};
+    em.add_notes = {midi::Note{10, 20, 2, 60, 1, 127}};
+    em.remove_events = {EventRemoval{1, seq->events[1]}};
+    em.add_events = {MidiEvent{30, 0xE0, 0, 64}};
+    em.remove_sysex = {SysExRemoval{0, seq->sysex[0]}};
+    em.add_sysex = {MidiSysEx{40, {0xF0, 0xF7}}};
+
     return {AddSource{src},
             SetMix{mix},
             SetMonitorBus{bus},
             SetSettings{st},
-            at,
+            midi_track,
             PlaceRegion{3, r, 14},
             take,
-            MoveRegion{3, 11, 5000, 15},
-            TrimRegion{3, 11, Edge::Start, 1200},
-            SplitRegion{3, 11, 1500, 16},
+            MoveRegion{3, 11, 5000, 15, Timebase::Ticks},
+            TrimRegion{3, 11, Edge::Start, 1200, Timebase::Ticks},
+            SplitRegion{3, 11, 1500, 16, Timebase::Ticks},
             RemoveRegion{3, 11},
             SetFade{3, 11, FadeEnd::Out, Fade{30, FadeShape::Linear}},
             SetCrossfade{3, x},
@@ -123,7 +163,20 @@ std::vector<Operation> one_of_each() {
             SetInsertBypass{30, true},
             SetInsertParams{30, {{"gain", 1.5f}, {"mix", 0.25f}}},
             SetInsertState{30, state},
+            AddMidiSource{msrc},
+            PlaceMidiRegion{3, mr, 42, MidiDataRef{5, 9}},
+            em,
+            SetMidiRouting{2, MidiRouting{"all", 0, "none", 16}},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
+}
+
+template <typename T>
+std::size_t variant_index() {
+    return Operation(T{}).index();
+}
+
+const EditMidi& em_of(const std::vector<Operation>& ops) {
+    return std::get<EditMidi>(ops[variant_index<EditMidi>()]);
 }
 
 bool same_op(const Operation& a, const Operation& b) {
@@ -161,6 +214,24 @@ int test_every_operation_round_trips() {
     CHECK(encode_operation(ops[1], bytes, error));
     CHECK(decode_operation(bytes, back, error));
     CHECK(std::get<SetMix>(back).mix.solo_safe);
+    CHECK(std::get<SetMix>(back).mix.midi == std::get<SetMix>(ops[1]).mix.midi);
+    CHECK(encode_operation(ops[4], bytes, error));
+    CHECK(decode_operation(bytes, back, error));
+    CHECK(std::get<AddTrack>(back).kind == TrackKind::Instrument);
+    CHECK(encode_operation(ops[7], bytes, error));
+    CHECK(decode_operation(bytes, back, error));
+    CHECK(std::get<MoveRegion>(back).timebase == Timebase::Ticks);
+    const std::size_t place_midi = variant_index<PlaceMidiRegion>();
+    CHECK(encode_operation(ops[place_midi], bytes, error));
+    CHECK(decode_operation(bytes, back, error));
+    CHECK(std::get<PlaceMidiRegion>(back).region == std::get<PlaceMidiRegion>(ops[place_midi]).region);
+    CHECK(mentions(bytes, "[7, \"f043107ff7\"]"));
+    const std::size_t edit_midi = variant_index<EditMidi>();
+    CHECK(encode_operation(ops[edit_midi], bytes, error));
+    CHECK(decode_operation(bytes, back, error));
+    const EditMidi& e2 = std::get<EditMidi>(back);
+    CHECK(e2.remove_notes == em_of(ops).remove_notes && e2.add_notes == em_of(ops).add_notes);
+    CHECK(e2.add_events == em_of(ops).add_events && e2.add_sysex == em_of(ops).add_sysex);
     return 0;
 }
 
@@ -180,7 +251,8 @@ int test_codec_refuses_what_is_not_an_operation() {
         {R"({"op": "RemoveMarker", "marker": -1})", "marker"},
         {R"({"op": "RemoveMarker", "marker": 1.5})", "marker"},
         {R"({"op": "MoveMarker", "marker": 1, "position": 9007199254740992})", "position"},
-        {R"({"op": "TrimRegion", "playlist": 1, "region": 2, "edge": "middle", "to": 3})",
+        {R"({"op": "TrimRegion", "playlist": 1, "region": 2, "edge": "middle", "to": 3,
+             "timebase": "frames"})",
          "edge"},
         {R"({"op": "SetTrackName", "track": 1, "name": 7})", "must be a string"},
         {R"({"op": "SetInsertBypass", "insert": 1})", "missing required key \"bypass\""},
@@ -193,6 +265,35 @@ int test_codec_refuses_what_is_not_an_operation() {
         {R"({"op": "SetMix", "mix": {"track": 1, "input": [0], "monitor": "auto",
              "gain_db": 0.0, "pan": 0.0, "mute": false, "solo": false}})",
          "missing required key \"solo_safe\""},
+        // A version-6 peer's MoveRegion, without the timebase it now needs
+        // (A26): a position whose unit is not said is not guessed.
+        {R"({"op": "MoveRegion", "playlist": 1, "region": 2, "position": 3,
+             "split_right_id": 0})",
+         "missing required key \"timebase\""},
+        {R"({"op": "TrimRegion", "playlist": 1, "region": 2, "edge": "end", "to": 3,
+             "timebase": "beats"})",
+         "timebase"},
+        {R"({"op": "EditMidi", "playlist": 1, "region": 2, "remove_notes": [-1],
+             "add_notes": [], "remove_events": [], "add_events": [], "remove_sysex": [],
+             "add_sysex": []})",
+         "remove_notes"},
+        // A protocol-7 draft's bare index: a removal carries its value.
+        {R"({"op": "EditMidi", "playlist": 1, "region": 2, "remove_notes": [3],
+             "add_notes": [], "remove_events": [], "add_events": [], "remove_sysex": [],
+             "add_sysex": []})",
+         "remove_notes[0]: must be [index, start, length"},
+        {R"({"op": "PlaceMidiRegion", "playlist": 1, "split_right_id": 0,
+             "region": {"id": 2, "name": "", "position_ticks": 0, "length_ticks": 1,
+                        "offset_ticks": 0, "mute": false, "source": 0, "notes": [],
+                        "events": [], "sysex": []}})",
+         "missing required key \"data_from\""},
+        {R"({"op": "EditMidi", "playlist": 1, "region": 2, "remove_notes": [],
+             "add_notes": [[0, 1, 2]], "remove_events": [], "add_events": [],
+             "remove_sysex": [], "add_sysex": []})",
+         "add_notes[0]: must be [start, length"},
+        {R"({"op": "SetMidiRouting", "track": 1, "midi_input": {"port": "all"},
+             "midi_output": {"port": "none", "channel": 0}})",
+         "midi_input: missing required key \"channel\""},
     };
     for (const Bad& b : bad) {
         error.clear();
@@ -453,8 +554,8 @@ int test_window_refuses_what_does_not_fit() {
         std::string err;
         return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 4", "\"window_format\": 3", "window_format"));
-    CHECK(refused("\"window_format\": 4", "\"window_format\": 5", "window_format"));
+    CHECK(refused("\"window_format\": 5", "\"window_format\": 4", "window_format"));
+    CHECK(refused("\"window_format\": 5", "\"window_format\": 6", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

@@ -93,6 +93,11 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
 // range is set.
 bool document_punch(const model::Snapshot& document, PunchRange& out);
 
+// Whether engine track `engine_track` may be armed: not while a MIDI or
+// instrument track sits on it, which records no audio (ADR-0014 M-1). An
+// engine track past the document's tracks may: it records as it always has.
+bool may_arm_track(const model::Snapshot& document, std::size_t engine_track, std::string& why);
+
 // At open, before anything records: every take in `session_dir`'s audio
 // folder that an engine died before closing gets the length on disk
 // (recover_take(), session-format.md "Crash recovery"). Returns one line

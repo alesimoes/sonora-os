@@ -40,6 +40,34 @@ bool locate_playlist(const EditState& e, Id playlist, Located& at) {
     return false;
 }
 
+bool locate_midi_playlist(const EditState& e, Id playlist, Located& at) {
+    for (std::size_t t = 0; t < e.tracks.size(); ++t) {
+        const auto& pls = e.tracks[t]->midi_playlists;
+        for (std::size_t p = 0; p < pls.size(); ++p) {
+            if (pls[p]->id == playlist) {
+                at.track = t;
+                at.playlist = p;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::size_t midi_region_index(const MidiPlaylist& p, Id region) {
+    for (std::size_t i = 0; i < p.regions.size(); ++i) {
+        if (p.regions[i].id == region) return i;
+    }
+    return std::numeric_limits<std::size_t>::max();
+}
+
+void insert_midi_region(MidiPlaylist& p, MidiRegion r) {
+    const auto it = std::lower_bound(
+        p.regions.begin(), p.regions.end(), r.position,
+        [](const MidiRegion& a, Ticks pos) { return a.position < pos; });
+    p.regions.insert(it, std::move(r));
+}
+
 std::size_t locate_track(const EditState& e, Id track) {
     for (std::size_t t = 0; t < e.tracks.size(); ++t) {
         if (e.tracks[t]->id == track) return t;
@@ -212,12 +240,8 @@ public:
         const std::string why = detail::source_problem(s);
         if (!why.empty()) return fail("source " + str(s.id) + ": " + why);
         if (!fresh(s.id)) return false;
-        for (const Source& existing : before_.sources->sources) {
-            if (existing.path == s.path) {
-                return fail("source " + str(s.id) + ": path \"" + s.path +
-                            "\" is already source " + str(existing.id));
-            }
-        }
+        const std::string taken = path_taken(s.path);
+        if (!taken.empty()) return fail("source " + str(s.id) + ": " + taken);
         // Every id below next_id is taken, so a fresh id is the largest and
         // appending keeps the pool sorted.
         auto pool = std::make_shared<SourcePool>(*before_.sources);
@@ -232,8 +256,8 @@ public:
         const std::size_t t = locate_track(*before_.edit, op.mix.track);
         if (t == kNone) return fail("track " + str(op.mix.track) + " does not exist");
         std::string where;
-        const std::string why =
-            detail::mix_problem(op.mix, before_.edit->tracks[t]->channels, where);
+        const TrackEdit& track = *before_.edit->tracks[t];
+        const std::string why = detail::mix_problem(op.mix, track.kind, track.channels, where);
         if (!why.empty()) return fail("mix." + where + ": " + why);
         after_ = before_;
         set_mix(after_.mix, op.mix);
@@ -266,7 +290,10 @@ public:
     // --- undoable ---
 
     bool operator()(const AddTrack& op) {
-        if (op.channels < 1 || op.channels > 2) {
+        if (op.kind == TrackKind::Midi && op.channels != 0) {
+            return fail("a MIDI track has no audio channels; channels must be 0");
+        }
+        if (op.kind != TrackKind::Midi && (op.channels < 1 || op.channels > 2)) {
             return fail("a track has 1 or 2 channels in this version");
         }
         if (!detail::valid_text(op.name) || !detail::valid_text(op.playlist_name)) {
@@ -277,18 +304,26 @@ public:
         TrackMix mix = op.mix;
         mix.track = op.track;
         std::string where;
-        const std::string why = detail::mix_problem(mix, op.channels, where);
+        const std::string why = detail::mix_problem(mix, op.kind, op.channels, where);
         if (!why.empty()) return fail("mix." + where + ": " + why);
 
-        auto playlist = std::make_shared<Playlist>();
-        playlist->id = op.playlist;
-        playlist->name = op.playlist_name;
         auto track = std::make_shared<TrackEdit>();
         track->id = op.track;
+        track->kind = op.kind;
         track->name = op.name;
         track->channels = op.channels;
         track->active_playlist = op.playlist;
-        track->playlists.push_back(std::move(playlist));
+        if (op.kind == TrackKind::Audio) {
+            auto playlist = std::make_shared<Playlist>();
+            playlist->id = op.playlist;
+            playlist->name = op.playlist_name;
+            track->playlists.push_back(std::move(playlist));
+        } else {
+            auto playlist = std::make_shared<MidiPlaylist>();
+            playlist->id = op.playlist;
+            playlist->name = op.playlist_name;
+            track->midi_playlists.push_back(std::move(playlist));
+        }
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks.push_back(std::move(track));
 
@@ -300,10 +335,14 @@ public:
     }
 
     bool operator()(const PlaceRegion& op) {
+        if (!not_midi(op.playlist, "place a MIDI region on it instead")) return false;
         return place(op.playlist, op.region, op.split_right_id, {});
     }
 
     bool operator()(const RecordTake& op) {
+        if (!not_midi(op.playlist, "a MIDI take is AddMidiSource and PlaceMidiRegion")) {
+            return false;
+        }
         Located at;
         if (!locate_playlist(*before_.edit, op.playlist, at)) {
             return fail("playlist " + str(op.playlist) + " does not exist");
@@ -316,6 +355,8 @@ public:
     }
 
     bool operator()(const MoveRegion& op) {
+        if (!timebase_matches(op.playlist, op.timebase)) return false;
+        if (op.timebase == Timebase::Ticks) return move_midi(op);
         Id used_id = 0;
         const bool ok = edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const std::size_t i = region_index(p, op.region);
@@ -341,6 +382,8 @@ public:
     }
 
     bool operator()(const TrimRegion& op) {
+        if (!timebase_matches(op.playlist, op.timebase)) return false;
+        if (op.timebase == Timebase::Ticks) return trim_midi(op);
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
@@ -378,6 +421,8 @@ public:
     }
 
     bool operator()(const SplitRegion& op) {
+        if (!timebase_matches(op.playlist, op.timebase)) return false;
+        if (op.timebase == Timebase::Ticks) return split_midi(op);
         const bool ok = edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
@@ -398,6 +443,15 @@ public:
     }
 
     bool operator()(const RemoveRegion& op) {
+        Located midi;
+        if (locate_midi_playlist(*before_.edit, op.playlist, midi)) {
+            return edit_midi_playlist(op.playlist, [&](MidiPlaylist& p) {
+                const std::size_t i = midi_region_index(p, op.region);
+                if (i == kNone) return no_region(op.region, op.playlist);
+                p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
+                return true;
+            });
+        }
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
@@ -409,6 +463,7 @@ public:
     }
 
     bool operator()(const SetFade& op) {
+        if (!not_midi(op.playlist, "a MIDI region has no fades")) return false;
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const std::size_t i = region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
@@ -420,6 +475,7 @@ public:
     }
 
     bool operator()(const SetCrossfade& op) {
+        if (!not_midi(op.playlist, "MIDI regions have no crossfades")) return false;
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             const Crossfade& x = op.crossfade;
             const std::string why = crossfade_problem(x, p);
@@ -439,6 +495,7 @@ public:
     }
 
     bool operator()(const RemoveCrossfade& op) {
+        if (!not_midi(op.playlist, "MIDI regions have no crossfades")) return false;
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
             auto it = std::find_if(p.crossfades.begin(), p.crossfades.end(),
                                    [&](const Crossfade& c) {
@@ -465,10 +522,17 @@ public:
         return edit_track(op.track, [&](TrackEdit& t) {
             if (!detail::valid_text(op.name)) return fail("name is not valid UTF-8");
             if (!fresh(op.playlist)) return false;
-            auto p = std::make_shared<Playlist>();
-            p->id = op.playlist;
-            p->name = op.name;
-            t.playlists.push_back(std::move(p));
+            if (t.kind == TrackKind::Audio) {
+                auto p = std::make_shared<Playlist>();
+                p->id = op.playlist;
+                p->name = op.name;
+                t.playlists.push_back(std::move(p));
+            } else {
+                auto p = std::make_shared<MidiPlaylist>();
+                p->id = op.playlist;
+                p->name = op.name;
+                t.midi_playlists.push_back(std::move(p));
+            }
             next_id_ = op.playlist + 1;
             return true;
         });
@@ -476,11 +540,13 @@ public:
 
     bool operator()(const SetActivePlaylist& op) {
         return edit_track(op.track, [&](TrackEdit& t) {
-            for (const auto& p : t.playlists) {
-                if (p->id == op.playlist) {
-                    t.active_playlist = op.playlist;
-                    return true;
-                }
+            const auto named = [&](const auto& list) {
+                return std::any_of(list.begin(), list.end(),
+                                   [&](const auto& p) { return p->id == op.playlist; });
+            };
+            if (named(t.playlists) || named(t.midi_playlists)) {
+                t.active_playlist = op.playlist;
+                return true;
             }
             return fail("playlist " + str(op.playlist) + " is not on track " +
                         str(op.track));
@@ -563,6 +629,7 @@ public:
         if (!why.empty()) return fail(where + ": " + why);
         if (!fresh(op.insert)) return false;
         const bool ok = edit_track(op.track, [&](TrackEdit& t) {
+            if (t.kind == TrackKind::Midi) return no_audio(t.id);
             if (!free_slot(t, op.slot, 0)) return false;
             insert_by_slot(t.inserts, Insert{op.insert, op.slot, op.plugin, true});
             next_id_ = op.insert + 1;
@@ -584,6 +651,7 @@ public:
         if (!locate_insert(*before_.edit, op.insert, at)) return no_insert(op.insert);
         const std::size_t to = locate_track(*before_.edit, op.to_track);
         if (to == kNone) return fail("track " + str(op.to_track) + " does not exist");
+        if (before_.edit->tracks[to]->kind == TrackKind::Midi) return no_audio(op.to_track);
         // A chain runs at its track's channel count, in and out (ADR-0012
         // §7.1), and the plugin was chosen for this one. Moving it across
         // would keep a mono plugin on a stereo track, or the reverse.
@@ -661,7 +729,377 @@ public:
         });
     }
 
+    // --- MIDI (midi.md §3.1) ---
+
+    bool operator()(const AddMidiSource& op) {
+        const MidiSource& s = op.source;
+        const std::string why = detail::midi_source_problem(s);
+        if (!why.empty()) return fail("MIDI source " + str(s.id) + ": " + why);
+        if (!fresh(s.id)) return false;
+        const std::string taken = path_taken(s.path);
+        if (!taken.empty()) return fail("MIDI source " + str(s.id) + ": " + taken);
+        auto pool = std::make_shared<SourcePool>(*before_.sources);
+        pool->midi_sources.push_back(s);
+        after_ = before_;
+        after_.sources = std::move(pool);
+        after_.next_id = s.id + 1;
+        return true;
+    }
+
+    bool operator()(const PlaceMidiRegion& op) {
+        MidiRegion region = op.region;
+        if (!fresh(region.id)) return false;
+        if (op.data_from) {
+            const MidiSequence* own = region.data.get();
+            if (own != nullptr &&
+                !(own->notes.empty() && own->events.empty() && own->sysex.empty())) {
+                return fail("region " + str(region.id) +
+                            ": carries a sequence of its own and data_from; send one or the"
+                            " other");
+            }
+            const MidiDataRef& ref = *op.data_from;
+            Located at;
+            const MidiRegion* from = nullptr;
+            if (locate_midi_playlist(*before_.edit, ref.playlist, at)) {
+                const MidiPlaylist& p =
+                    *before_.edit->tracks[at.track]->midi_playlists[at.playlist];
+                const std::size_t i = midi_region_index(p, ref.region);
+                if (i != kNone) from = &p.regions[i];
+            }
+            if (from == nullptr) {
+                return fail("data_from: region " + str(ref.region) +
+                            " is not on MIDI playlist " + str(ref.playlist));
+            }
+            // Shared, already checked when it was first placed.
+            region.data = from->data;
+        }
+        std::string why = detail::midi_region_problem(region, *before_.sources);
+        if (why.empty() && !op.data_from) {
+            std::string where;
+            why = detail::sequence_problem(*region.data, where);
+            if (!why.empty()) why = where + ": " + why;
+        }
+        if (!why.empty()) return fail("region " + str(region.id) + ": " + why);
+        Id top = region.id;
+        const bool ok = edit_midi_playlist(op.playlist, [&](MidiPlaylist& p) {
+            bool used = false;
+            if (!midi_overwrite(p, region.position, region.end(), op.split_right_id, used)) {
+                return false;
+            }
+            if (used) {
+                if (op.split_right_id == region.id) {
+                    return fail("the split id must differ from the region's id");
+                }
+                if (!fresh(op.split_right_id)) return false;
+                top = std::max(top, op.split_right_id);
+            }
+            insert_midi_region(p, region);
+            return true;
+        });
+        if (ok) after_.next_id = top + 1;
+        return ok;
+    }
+
+    bool operator()(const EditMidi& op) {
+        if (op.remove_notes.empty() && op.add_notes.empty() && op.remove_events.empty() &&
+            op.add_events.empty() && op.remove_sysex.empty() && op.add_sysex.empty()) {
+            return fail("the edit removes and adds nothing");
+        }
+        // Each value on its own first, so a bad one is named by where it is
+        // in the operation rather than where it would have landed.
+        for (std::size_t i = 0; i < op.add_notes.size(); ++i) {
+            MidiSequence one;
+            one.notes.push_back(op.add_notes[i]);
+            if (!value_ok(one, "add_notes", i)) return false;
+        }
+        for (std::size_t i = 0; i < op.add_events.size(); ++i) {
+            MidiSequence one;
+            one.events.push_back(op.add_events[i]);
+            if (!value_ok(one, "add_events", i)) return false;
+        }
+        for (std::size_t i = 0; i < op.add_sysex.size(); ++i) {
+            MidiSequence one;
+            one.sysex.push_back(op.add_sysex[i]);
+            if (!value_ok(one, "add_sysex", i)) return false;
+        }
+        return edit_midi_playlist(op.playlist, [&](MidiPlaylist& p) {
+            const std::size_t i = midi_region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            const MidiSequence& old = *p.regions[i].data;
+            auto seq = std::make_shared<MidiSequence>();
+            if (!kept(old.notes, op.remove_notes, "remove_notes", "note", seq->notes) ||
+                !kept(old.events, op.remove_events, "remove_events", "event", seq->events) ||
+                !kept(old.sysex, op.remove_sysex, "remove_sysex", "SysEx message",
+                      seq->sysex)) {
+                return false;
+            }
+            // Stable throughout: what was there stays before what is added
+            // at the same place, and the additions keep their own order.
+            seq->notes.insert(seq->notes.end(), op.add_notes.begin(), op.add_notes.end());
+            midi::sort_notes(seq->notes);
+            seq->events.insert(seq->events.end(), op.add_events.begin(), op.add_events.end());
+            std::stable_sort(seq->events.begin(), seq->events.end(),
+                             [](const MidiEvent& a, const MidiEvent& b) { return a.tick < b.tick; });
+            seq->sysex.insert(seq->sysex.end(), op.add_sysex.begin(), op.add_sysex.end());
+            std::stable_sort(seq->sysex.begin(), seq->sysex.end(),
+                             [](const MidiSysEx& a, const MidiSysEx& b) { return a.tick < b.tick; });
+            p.regions[i].data = std::move(seq);
+            return true;
+        });
+    }
+
+    bool operator()(const SetMidiRouting& op) {
+        const std::size_t t = locate_track(*before_.edit, op.track);
+        if (t == kNone) return fail("track " + str(op.track) + " does not exist");
+        const TrackEdit& track = *before_.edit->tracks[t];
+        if (track.kind == TrackKind::Audio) {
+            return fail("track " + str(op.track) + " is an audio track; it has no MIDI routing");
+        }
+        std::string where;
+        const std::string why = detail::midi_routing_problem(op.routing, track.kind, where);
+        if (!why.empty()) return fail("routing." + where + ": " + why);
+        const TrackMix* existing = before_.mix.find(op.track);
+        TrackMix m = existing != nullptr ? *existing : TrackMix{};
+        m.track = op.track;
+        m.midi = op.routing;
+        after_ = before_;
+        set_mix(after_.mix, m);
+        return true;
+    }
+
 private:
+    // "path ... is already source N", or empty: audio and MIDI sources
+    // share the folder, and a path names one file.
+    std::string path_taken(const std::string& path) const {
+        for (const Source& s : before_.sources->sources) {
+            if (s.path == path) return "path \"" + path + "\" is already source " + str(s.id);
+        }
+        for (const MidiSource& s : before_.sources->midi_sources) {
+            if (s.path == path) {
+                return "path \"" + path + "\" is already MIDI source " + str(s.id);
+            }
+        }
+        return {};
+    }
+
+    bool no_audio(Id track) {
+        return fail("track " + str(track) + " is a MIDI track; it has no audio to insert a"
+                    " plug-in on");
+    }
+
+    // For the operations only an audio playlist has.
+    bool not_midi(Id playlist, const char* instead) {
+        Located at;
+        if (!locate_midi_playlist(*before_.edit, playlist, at)) return true;
+        return fail("playlist " + str(playlist) + " is a MIDI playlist; " + instead);
+    }
+
+    // A26: frames sent to a tick playlist, or the reverse, are refused by
+    // name rather than taken for the other unit.
+    bool timebase_matches(Id playlist, Timebase timebase) {
+        Located at;
+        const bool midi = locate_midi_playlist(*before_.edit, playlist, at);
+        if (!midi && !locate_playlist(*before_.edit, playlist, at)) {
+            return fail("playlist " + str(playlist) + " does not exist");
+        }
+        if (midi == (timebase == Timebase::Ticks)) return true;
+        return fail("playlist " + str(playlist) +
+                    (midi ? " is a MIDI playlist, in ticks, and this operation's position is in"
+                            " frames"
+                          : " is an audio playlist, in frames, and this operation's position is"
+                            " in ticks"));
+    }
+
+    bool value_ok(const MidiSequence& one, const char* list, std::size_t i) {
+        std::string where;
+        const std::string why = detail::sequence_problem(one, where);
+        if (why.empty()) return true;
+        return fail(std::string(list) + "[" + str(static_cast<std::uint64_t>(i)) + "]: " + why);
+    }
+
+    static const midi::Note& expected(const NoteRemoval& r) { return r.note; }
+    static const MidiEvent& expected(const EventRemoval& r) { return r.event; }
+    static const MidiSysEx& expected(const SysExRemoval& r) { return r.sysex; }
+
+    // `from` without the elements `remove` names, into `out`. Each must hold
+    // the value its removal expects: an index alone would remove whatever a
+    // concurrent edit moved there.
+    template <typename T, typename R>
+    bool kept(const std::vector<T>& from, const std::vector<R>& remove, const char* list,
+              const char* what, std::vector<T>& out) {
+        out.reserve(from.size() + 1);
+        std::size_t r = 0;
+        for (std::size_t k = 0; k < remove.size(); ++k) {
+            const std::string at =
+                std::string(list) + "[" + str(static_cast<std::uint64_t>(k)) + "]: ";
+            const std::uint32_t i = remove[k].index;
+            if (i >= from.size() || (k > 0 && i <= remove[k - 1].index)) {
+                return fail(at + "indices must be increasing and below " +
+                            str(static_cast<std::uint64_t>(from.size())));
+            }
+            if (!(from[i] == expected(remove[k]))) {
+                return fail(at + what + " " + str(static_cast<std::uint64_t>(i)) +
+                            " is not the " + what +
+                            " this edit removes; the region changed under it");
+            }
+        }
+        for (std::size_t k = 0; k < from.size(); ++k) {
+            if (r < remove.size() && remove[r].index == k) {
+                ++r;
+                continue;
+            }
+            out.push_back(from[k]);
+        }
+        return true;
+    }
+
+    // Clears [a, b) on a MIDI playlist, as overwrite() does on an audio one:
+    // a region inside goes, one straddling an end is cut back to it, and
+    // one spanning both is split, its right part taking `split_id` and
+    // sharing the sequence. A cut moves the window, never the notes.
+    bool midi_overwrite(MidiPlaylist& p, Ticks a, Ticks b, Id split_id, bool& used) {
+        std::vector<MidiRegion> out;
+        out.reserve(p.regions.size() + 1);
+        for (MidiRegion& r : p.regions) {
+            const Ticks s = r.position;
+            const Ticks e = r.end();
+            if (e <= a || s >= b) {
+                out.push_back(std::move(r));
+            } else if (s >= a && e <= b) {
+                // Covered: removed. Its sequence lives on in the undo steps.
+            } else if (s < a && e > b) {
+                if (split_id == 0) {
+                    return fail("region " + str(r.id) +
+                                " spans the whole range and must be split, but the"
+                                " operation carries no split id");
+                }
+                MidiRegion right = r;
+                right.id = split_id;
+                right.position = b;
+                right.offset += b - s;
+                right.length = e - b;
+                r.length = a - s;
+                out.push_back(std::move(r));
+                out.push_back(std::move(right));
+                used = true;
+            } else if (s < a) {
+                r.length = a - s;
+                out.push_back(std::move(r));
+            } else {
+                r.offset += b - s;
+                r.length = e - b;
+                r.position = b;
+                out.push_back(std::move(r));
+            }
+        }
+        p.regions = std::move(out);
+        return true;
+    }
+
+    bool move_midi(const MoveRegion& op) {
+        Id used_id = 0;
+        const bool ok = edit_midi_playlist(op.playlist, [&](MidiPlaylist& p) {
+            const std::size_t i = midi_region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            MidiRegion r = p.regions[i];
+            p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
+            if (op.position < 0 || op.position > kMaxInteger - r.length) {
+                return fail("position " + str(op.position) + " is outside the timeline");
+            }
+            r.position = op.position;
+            bool used = false;
+            if (!midi_overwrite(p, r.position, r.end(), op.split_right_id, used)) return false;
+            if (used) {
+                if (!fresh(op.split_right_id)) return false;
+                used_id = op.split_right_id;
+            }
+            insert_midi_region(p, std::move(r));
+            return true;
+        });
+        if (ok && used_id != 0) after_.next_id = used_id + 1;
+        return ok;
+    }
+
+    bool trim_midi(const TrimRegion& op) {
+        return edit_midi_playlist(op.playlist, [&](MidiPlaylist& p) {
+            const std::size_t i = midi_region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            MidiRegion r = p.regions[i];
+            p.regions.erase(p.regions.begin() + static_cast<std::ptrdiff_t>(i));
+            const Ticks start = r.position;
+            const Ticks end = r.end();
+            if (op.edge == Edge::Start) {
+                if (op.to >= end) return fail("trimming the start to or past the end");
+                if (op.to < 0) return fail("trimming the start before timeline tick 0");
+                // The notes stay where they are on the timeline.
+                if (r.offset + (op.to - start) < 0) {
+                    return fail("region " + str(r.id) + " shows its sequence from data tick " +
+                                str(r.offset) + "; its start cannot move back past tick 0");
+                }
+                r.offset += op.to - start;
+                r.position = op.to;
+                r.length = end - op.to;
+            } else {
+                if (op.to <= start) return fail("trimming the end to or before the start");
+                if (op.to > kMaxInteger) return fail("trimming past the end of the timeline");
+                r.length = op.to - start;
+            }
+            bool used = false;
+            if (!midi_overwrite(p, r.position, r.end(), 0, used)) return false;
+            insert_midi_region(p, std::move(r));
+            return true;
+        });
+    }
+
+    bool split_midi(const SplitRegion& op) {
+        const bool ok = edit_midi_playlist(op.playlist, [&](MidiPlaylist& p) {
+            const std::size_t i = midi_region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            const MidiRegion& r = p.regions[i];
+            if (op.at <= r.position || op.at >= r.end()) {
+                return fail("split point " + str(op.at) + " is not inside region " +
+                            str(op.region));
+            }
+            if (!fresh(op.new_right_id)) return false;
+            bool used = false;
+            return midi_overwrite(p, op.at, op.at, op.new_right_id, used);
+        });
+        if (ok) after_.next_id = op.new_right_id + 1;
+        return ok;
+    }
+
+    // Copies the one MIDI playlist, lets `f` edit the copy and checks it,
+    // sharing everything else with `before`. Every region of the copy still
+    // shares its sequence with the original; only EditMidi and
+    // PlaceMidiRegion bring a new one, and check it before they do. Unlike
+    // edit_playlist() it copies inside a compound too: a MIDI playlist's
+    // regions are a few words each, their notes are not copied.
+    template <typename F>
+    bool edit_midi_playlist(Id playlist, F&& f) {
+        Located at;
+        if (!locate_midi_playlist(*before_.edit, playlist, at)) {
+            Located audio;
+            if (locate_playlist(*before_.edit, playlist, audio)) {
+                return fail("playlist " + str(playlist) + " is an audio playlist, not a MIDI one");
+            }
+            return fail("playlist " + str(playlist) + " does not exist");
+        }
+        const auto& track_ptr = before_.edit->tracks[at.track];
+        MidiPlaylist copy = *track_ptr->midi_playlists[at.playlist];
+        if (!f(copy)) return false;
+        std::string where;
+        const std::string why =
+            detail::midi_playlist_problem(copy, *before_.sources, false, where);
+        if (!why.empty()) return refuse_playlist(playlist, why, where);
+        auto track = std::make_shared<TrackEdit>(*track_ptr);
+        track->midi_playlists[at.playlist] = std::make_shared<MidiPlaylist>(std::move(copy));
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->tracks[at.track] = std::move(track);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
     bool no_insert(Id insert) {
         return fail("insert " + str(insert) + " is not on any track");
     }
@@ -1114,7 +1552,8 @@ namespace {
 bool leaf_is_undoable(MemberRef m) {
     return !(m.holds<AddSource>() || m.holds<SetMix>() || m.holds<SetMonitorBus>() ||
              m.holds<SetSettings>() || m.holds<SetInsertBypass>() ||
-             m.holds<SetInsertParams>() || m.holds<SetInsertState>());
+             m.holds<SetInsertParams>() || m.holds<SetInsertState>() ||
+             m.holds<AddMidiSource>() || m.holds<SetMidiRouting>());
 }
 
 }  // namespace

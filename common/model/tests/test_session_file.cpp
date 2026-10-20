@@ -84,8 +84,26 @@ bool refused(const std::string& text, const char* needle, const char* path, int 
     return true;
 }
 
+// What the v4 -> v5 migration adds to a version 4 file's text, as this
+// build writes it: "kind": "audio" second in every track, and an empty
+// midi_sources after the sources.
+std::string as_v5(const std::string& v4) {
+    std::string s = edit(v4, "\"sonora_session\": 4,", "\"sonora_session\": 5,");
+    const std::string id = "\n      \"id\": ";
+    const std::string name = "\n      \"name\":";
+    for (std::size_t at = s.find(id); at != std::string::npos; at = s.find(id, at + 1)) {
+        const std::size_t eol = s.find('\n', at + 1);
+        if (s.compare(eol, name.size(), name) == 0) {
+            s.insert(eol, "\n      \"kind\": \"audio\",");
+        }
+    }
+    const std::size_t tracks = s.find("\n  \"tracks\": [");
+    s.insert(tracks, "\n  \"midi_sources\": [],");
+    return s;
+}
+
 // The current version's frozen fixture: what this build writes.
-constexpr const char* kCurrent = "v4-tempo-bounds.sonora";
+constexpr const char* kCurrent = "v5-midi.sonora";
 
 int test_fixture_is_canonical() {
     const std::string text = read_fixture(kCurrent);
@@ -94,7 +112,7 @@ int test_fixture_is_canonical() {
     LoadError e;
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 4);
+    CHECK(l.file_version == 5);
     CHECK(l.repairs.empty());
     CHECK(l.save_generation == 42);
     CHECK(l.written_by == "sonora-engine 0.2.0");
@@ -102,14 +120,14 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v4-tempo-bounds.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v4-tempo-bounds.out.sonora\n");
+        std::ofstream("v5-midi.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v5-midi.out.sonora\n");
     }
     CHECK(out == text);
 
     const Snapshot& s = l.snapshot;
     CHECK(invariants_hold(s));
-    CHECK(s.next_id == 44);   // max(id) + 1; the counter is not stored
+    CHECK(s.next_id == 53);   // max(id) + 1; the counter is not stored
     CHECK(!s.mix.find(3)->solo_safe);
     CHECK(s.mix.find(4)->solo_safe);
 
@@ -141,6 +159,115 @@ int test_fixture_is_canonical() {
     CHECK(p.regions.size() == 3 && p.crossfades.size() == 2);
     CHECK(p.crossfades[1].length == 241);
     CHECK(s.edit->tracks[0]->playlists.size() == 2);
+
+    // One track of each kind (midi.md §4.5).
+    CHECK(s.edit->tracks.size() == 4);
+    CHECK(s.edit->tracks[0]->kind == TrackKind::Audio);
+    const TrackEdit& bass = *s.edit->tracks[2];
+    CHECK(bass.kind == TrackKind::Midi && bass.channels == 0 && bass.playlists.empty());
+    CHECK(bass.midi_playlists.size() == 1 && bass.active_playlist == 46);
+    const MidiPlaylist& bp = *bass.midi_playlists[0];
+    CHECK(bp.regions.size() == 2);
+    const MidiRegion& b1 = bp.regions[0];
+    CHECK(b1.id == 47 && b1.position == 15360000 && b1.length == 30720000 && b1.offset == 0);
+    CHECK(b1.source == 44 && !b1.mute);
+    CHECK(b1.data->notes.size() == 3);
+    CHECK(b1.data->notes[1].start == 960000 && b1.data->notes[1].pitch == 43);
+    CHECK(b1.data->notes[2].channel == 1 && b1.data->notes[2].release_velocity == 0);
+    CHECK(b1.data->events.size() == 4);
+    // At one tick, in stored order: the bank select before the program change.
+    CHECK(b1.data->events[0].status == 0xB0 && b1.data->events[1].status == 0xC0);
+    CHECK(b1.data->events[2].status == 0xE0 && b1.data->events[2].data2 == 72);
+    CHECK(bp.regions[1].source == 0 && bp.regions[1].mute && bp.regions[1].data->notes.empty());
+    const TrackMix* bm = s.mix.find(45);
+    CHECK(bm != nullptr && bm->input.empty() && bm->gain_db == 0.0f);
+    CHECK(bm->midi.in_port == "all" && bm->midi.in_channel == 0);
+    CHECK(bm->midi.out_port == "UMC1820 MIDI 1" && bm->midi.out_channel == 2);
+
+    const TrackEdit& piano = *s.edit->tracks[3];
+    CHECK(piano.kind == TrackKind::Instrument && piano.channels == 2);
+    CHECK(piano.midi_playlists.size() == 2 && piano.midi_playlists[1]->regions.empty());
+    const MidiRegion& pr = piano.midi_playlists[0]->regions[0];
+    CHECK(pr.offset == 480000 && pr.data->sysex.size() == 1);
+    CHECK(pr.data->sysex[0].bytes ==
+          (std::vector<std::uint8_t>{0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7}));
+    const TrackMix* pm = s.mix.find(49);
+    CHECK(pm != nullptr && pm->gain_db == -6.0f && pm->pan == 0.25f && !pm->solo_safe);
+    CHECK(pm->midi.in_port == "Keystation 49 MIDI 1" && pm->midi.in_channel == 1);
+    CHECK(pm->midi.out_port == "none");
+
+    const MidiSource* ms = s.sources->find_midi(44);
+    CHECK(ms != nullptr && ms->path == "MIDI Files/Synth Bass_01.mid" && ms->events == 412);
+    CHECK(ms->kind == SourceKind::Recorded && ms->recorded_on_track == 45);
+    CHECK(s.sources->find(44) == nullptr);
+    return 0;
+}
+
+// The key set is the kind's, and every MIDI value is checked at load with
+// its key path (midi.md §4.3, §4.4).
+int test_malformed_midi() {
+    const std::string text = read_fixture(kCurrent);
+    const std::string bass = "      \"kind\": \"midi\",\n";
+    CHECK(refused(edit(text, bass, bass + "      \"input\": [0],\n"), "unknown key \"input\"",
+                  "tracks[2].input"));
+    CHECK(refused(edit(text, bass, bass + "      \"channels\": 1,\n"),
+                  "unknown key \"channels\"", "tracks[2].channels"));
+    CHECK(refused(edit(text, bass, bass + "      \"inserts\": [],\n"),
+                  "unknown key \"inserts\"", "tracks[2].inserts"));
+    CHECK(refused(edit(text, "\"kind\": \"midi\",", "\"kind\": \"drums\","), "must be one of",
+                  "tracks[2].kind"));
+    // An instrument track has no MIDI output; an audio track no MIDI input.
+    CHECK(refused(edit(text, "      \"monitor\": \"input\",\n      \"gain_db\": -6.0,",
+                       "      \"midi_output\": {\"port\": \"none\", \"channel\": 0},\n"
+                       "      \"monitor\": \"input\",\n      \"gain_db\": -6.0,"),
+                  "unknown key \"midi_output\"", "tracks[3].midi_output"));
+    CHECK(refused(edit(text, "\"port\": \"all\"", "\"port\": \"none\""),
+                  "must be \"all\" or a port name", "tracks[2].midi_input.port"));
+    CHECK(refused(edit(text, "\"port\": \"UMC1820 MIDI 1\"", "\"port\": \"all\""),
+                  "must be \"none\" or a port name", "tracks[2].midi_output.port"));
+    CHECK(refused(edit(text, "\"channel\": 2", "\"channel\": 17"), "1 to 16",
+                  "tracks[2].midi_output.channel"));
+    // Regions: the window, the notes, the events, the SysEx.
+    CHECK(refused(edit(text, "\"length_ticks\": 3840000", "\"length_ticks\": 0"),
+                  "length must be greater than 0", "tracks[2].playlists[0].regions[1]"));
+    CHECK(refused(edit(text, "\"position_ticks\": 46080000", "\"position_ticks\": 46079999"),
+                  "overlaps the region before it", "tracks[2].playlists[0].regions[1]"));
+    CHECK(refused(edit(text, "\"position_ticks\": 0,", "\"position_ticks\": -1,"),
+                  "must be an integer from 0", "tracks[3].playlists[0].regions[0].position_ticks"));
+    CHECK(refused(edit(text, "[0, 480000, 0, 36, 96, 64]", "[0, 480000, 0, 36, 0, 64]"),
+                  "velocity must be from 1 to 127",
+                  "tracks[2].playlists[0].regions[0].notes[0]"));
+    CHECK(refused(edit(text, "[0, 480000, 0, 36, 96, 64]", "[0, 480000, 16, 36, 96, 64]"),
+                  "channel must be from 0 to 15", "tracks[2].playlists[0].regions[0].notes[0]"));
+    CHECK(refused(edit(text, "[0, 480000, 0, 36, 96, 64]", "[0, 480000, 0, 36, 96]"),
+                  "must be [start, length", "tracks[2].playlists[0].regions[0].notes[0]"));
+    CHECK(refused(edit(text, "[0, 480000, 0, 36, 96, 64]", "[1000000, 480000, 0, 36, 96, 64]"),
+                  "notes are not in order", "tracks[2].playlists[0].regions[0].notes[1]"));
+    CHECK(refused(edit(text, "[0, 192, 5, 0]", "[0, 192, 5, 9]"), "data2 must be 0",
+                  "tracks[2].playlists[0].regions[0].events[1]"));
+    CHECK(refused(edit(text, "[0, 192, 5, 0]", "[0, 144, 5, 9]"), "other than a note",
+                  "tracks[2].playlists[0].regions[0].events[1]"));
+    CHECK(refused(edit(text, "[96000, 224, 0, 72]", "[2000000, 224, 0, 72]"),
+                  "events are not sorted by tick", "tracks[2].playlists[0].regions[0].events[3]"));
+    CHECK(refused(edit(text, "\"f07e7f0901f7\"", "\"F07E7F0901F7\""), "lower-case hex",
+                  "tracks[3].playlists[0].regions[0].sysex[0][1]"));
+    CHECK(refused(edit(text, "\"f07e7f0901f7\"", "\"f07e7f0901\""), "starts with F0 and ends with F7",
+                  "tracks[3].playlists[0].regions[0].sysex[0]"));
+    CHECK(refused(edit(text, "\"f07e7f0901f7\"", "\"f07e8f0901f7\""), "below 0x80",
+                  "tracks[3].playlists[0].regions[0].sysex[0]"));
+    CHECK(refused(edit(text, "\"f07e7f0901f7\"", "\"f0" + std::string(2 * kMaxSysexBytes, '0') + "f7\""),
+                  "at most 4096 bytes", "tracks[3].playlists[0].regions[0].sysex[0][1]"));
+    CHECK(refused(edit(text, "\"source\": 44,", "\"source\": 9,"), "MIDI source 9 does not exist",
+                  "tracks[2].playlists[0].regions[0]"));
+    CHECK(refused(edit(text, "\"source\": 44,", "\"source\": 0,"), "leave it out for none",
+                  "tracks[2].playlists[0].regions[0].source"));
+    CHECK(refused(edit(text, "\"active_playlist\": 46,", "\"active_playlist\": 11,"),
+                  "names no playlist of this track", "tracks[2].active_playlist"));
+    // MIDI sources share the one id space and the folder's paths.
+    CHECK(refused(edit(text, "      \"id\": 44,\n      \"path\"", "      \"id\": 9,\n      \"path\""),
+                  "id 9 is already used", "midi_sources[0].id"));
+    CHECK(refused(edit(text, "\"events\": 412,", "\"events\": -1,"), "events",
+                  "midi_sources[0].events"));
     return 0;
 }
 
@@ -161,18 +288,19 @@ int test_v1_migrates() {
 
     for (const TrackMix& m : l.snapshot.mix.tracks) CHECK(!m.solo_safe);
 
-    // Saved, it is the same session at version 4: the version, one empty
-    // list and one solo safe off per track are the whole difference.
+    // Saved, it is the same session at version 5: the version, one empty
+    // list, one solo safe off and one audio kind per track, and an empty
+    // midi_sources, are the whole difference.
     std::string out;
     CHECK(save(l, out));
-    const std::string expected =
+    const std::string expected = as_v5(
         edit(edit(edit(v1, "\"sonora_session\": 1,", "\"sonora_session\": 4,"),
                   "      \"active_playlist\": 11,\n",
                   "      \"solo_safe\": false,\n      \"active_playlist\": 11,\n"
                   "      \"inserts\": [],\n"),
              "      \"active_playlist\": 13,\n",
              "      \"solo_safe\": false,\n      \"active_playlist\": 13,\n"
-             "      \"inserts\": [],\n");
+             "      \"inserts\": [],\n"));
     if (out != expected) {
         std::ofstream("v1-migrated.out.sonora", std::ios::binary) << out;
         std::fprintf(stderr, "  migrated bytes differ; wrote v1-migrated.out.sonora\n");
@@ -180,7 +308,7 @@ int test_v1_migrates() {
     CHECK(out == expected);
     std::int64_t version = 0;
     CHECK(file_format_version(v1, version) && version == 1);
-    CHECK(file_format_version(out, version) && version == 4);
+    CHECK(file_format_version(out, version) && version == 5);
     CHECK(!file_format_version("{\"keymap\": 1}", version));
     CHECK(!file_format_version("not json", version));
 
@@ -207,14 +335,14 @@ int test_v2_migrates() {
 
     std::string out;
     CHECK(save(l, out));
-    const std::string expected =
+    const std::string expected = as_v5(
         edit(edit(edit(v2, "\"sonora_session\": 2,", "\"sonora_session\": 4,"),
                   "      \"solo\": false,\n      \"active_playlist\": 11,\n",
                   "      \"solo\": false,\n      \"solo_safe\": false,\n"
                   "      \"active_playlist\": 11,\n"),
              "      \"solo\": false,\n      \"active_playlist\": 13,\n",
              "      \"solo\": false,\n      \"solo_safe\": false,\n"
-             "      \"active_playlist\": 13,\n");
+             "      \"active_playlist\": 13,\n"));
     if (out != expected) {
         std::ofstream("v2-migrated.out.sonora", std::ios::binary) << out;
         std::fprintf(stderr, "  migrated bytes differ; wrote v2-migrated.out.sonora\n");
@@ -244,7 +372,38 @@ int test_v3_migrates() {
     CHECK(invariants_hold(l.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == edit(v3, "\"sonora_session\": 3,", "\"sonora_session\": 4,"));
+    CHECK(out == as_v5(edit(v3, "\"sonora_session\": 3,", "\"sonora_session\": 4,")));
+    return 0;
+}
+
+// The frozen version-4 fixture loads forever, through v4 -> v5: every track
+// is an audio track, the session has no MIDI source, nothing is reported.
+int test_v4_migrates() {
+    const std::string v4 = read_fixture("v4-tempo-bounds.sonora");
+    CHECK(!v4.empty());
+    Loaded l;
+    LoadError e;
+    if (!load(v4, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(v4, l, e));
+    CHECK(l.file_version == 4);
+    CHECK(l.repairs.empty());
+    CHECK(invariants_hold(l.snapshot));
+    for (const auto& t : l.snapshot.edit->tracks) {
+        CHECK(t->kind == TrackKind::Audio && t->midi_playlists.empty());
+    }
+    CHECK(l.snapshot.sources->midi_sources.empty());
+    std::string out;
+    CHECK(save(l, out));
+    if (out != as_v5(v4)) {
+        std::ofstream("v4-migrated.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  migrated bytes differ; wrote v4-migrated.out.sonora\n");
+    }
+    CHECK(out == as_v5(v4));
+    // A version-4 file cannot carry what version 4 does not define.
+    CHECK(refused(edit(v4, "      \"name\": \"Keys\",", "      \"kind\": \"audio\",\n      \"name\": \"Keys\","),
+                  "migrating from format version 4: tracks[1] has \"kind\"", ""));
+    CHECK(refused(edit(v4, "  \"tracks\": [", "  \"midi_sources\": [],\n  \"tracks\": ["),
+                  "migrating from format version 4: the file has \"midi_sources\"", ""));
     return 0;
 }
 
@@ -290,7 +449,7 @@ int test_v3_tempo_brought_inside_bounds() {
     CHECK(save(l, out));
     Loaded again;
     CHECK(load(out, again, e));
-    CHECK(again.file_version == 4 && again.repairs.empty());
+    CHECK(again.file_version == 5 && again.repairs.empty());
     CHECK(again.snapshot.settings.tempo == t);
     return 0;
 }
@@ -387,26 +546,27 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 5,"),
-                  "format version 5, newer than this program, which reads up to version 4",
+    CHECK(refused(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 6,"),
+                  "format version 6, newer than this program, which reads up to version 5",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 6,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 7,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 4,",
+    CHECK(refused(edit(text, "\"sonora_session\": 5,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 4,", "\"sonora_session\": 4.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 5.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
-    CHECK(refused(edit(text, "      \"inserts\": [],\n", ""),
+    CHECK(refused(edit(text, "      \"active_playlist\": 13,\n      \"inserts\": [],\n",
+                       "      \"active_playlist\": 13,\n"),
                   "missing required key \"inserts\"", "tracks[1]"));
     CHECK(refused(edit(text, "      \"solo_safe\": true,\n", ""),
                   "missing required key \"solo_safe\"", "tracks[1]"));
@@ -414,8 +574,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 4,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 4,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 5,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 5,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -688,12 +848,14 @@ int main() {
     t(test_v2_migrates);
     t(test_v3_migrates);
     t(test_v3_tempo_brought_inside_bounds);
+    t(test_v4_migrates);
     t(test_v4_tempo_bounds_refused);
     t(test_round_trip_from_edits);
     t(test_versions);
     t(test_key_order_is_lenient);
     t(test_malformed);
     t(test_malformed_inserts);
+    t(test_malformed_midi);
     t(test_comma_locale);
     t(test_fade_into_crossfade_is_repaired_at_load);
     if (failed != 0) {

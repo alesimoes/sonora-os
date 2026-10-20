@@ -121,6 +121,18 @@ void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {
         const model::TrackMix* m = snapshot.mix.find(tracks[i]->id);
         if (!m) continue;
         Track& t = *session_.tracks()[i];
+        if (tracks[i]->kind != model::TrackKind::Audio) {
+            // Its engine track carries no audio of its own (ADR-0014 M-1):
+            // a capture channel monitored or recorded through it would be
+            // another source's sound under its name. Arming is fixed for a
+            // take, so an arm left from before stays until the take ends,
+            // and add_closed_take() leaves its file out.
+            t.set_monitor(Track::Monitor::Off);
+            if (session_.transport().state() != TransportState::Recording) {
+                t.set_rec_armed(false);
+            }
+            continue;
+        }
         t.set_monitor(!input_monitoring_ && t.rec_armed() ? Track::Monitor::Off
                                                           : monitor_of(m->monitor));
     }

@@ -36,8 +36,12 @@ std::string second_crossfade_problem(const Crossfade& x);
 extern const char* const kCrossfadesUnsorted;
 std::string heard_problem(const Region& r, bool has_in, Frames in_after, bool has_out,
                           Frames out_before);
-std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,
+// By kind: an audio track's input has one entry per channel and its MIDI
+// routing is the default; a MIDI or instrument track has no input; a MIDI
+// track has no fader or pan either (the file has no key for them).
+std::string mix_problem(const TrackMix& m, TrackKind kind, std::uint16_t track_channels,
                         std::string& where);
+std::string midi_routing_problem(const MidiRouting& r, TrackKind kind, std::string& where);
 std::string bus_problem(const MonitorBus& b, std::string& where);
 std::string settings_problem(const SessionSettings& s, std::string& where);
 std::string marker_problem(const Marker& m);
@@ -61,6 +65,24 @@ struct FadeFit {
     Frames from = 0, to = 0;
 };
 std::vector<FadeFit> fit_fades_to_crossfades(Playlist& p);
+
+// --- MIDI (midi.md §4.4) ---
+std::string midi_source_problem(const MidiSource& s);
+// Every value in range and every list in order. Linear in the sequence.
+std::string sequence_problem(const MidiSequence& s, std::string& where);
+// The region's own fields and its source, not its sequence: a sequence is
+// checked once, when a region first holds it, and is immutable after.
+std::string midi_region_problem(const MidiRegion& r, const SourcePool& pool);
+std::string midi_order_problem(const MidiPlaylist& p, std::size_t i);
+// With `check_data`, every region's sequence too: what the loader and
+// check_invariants() ask; apply() checks only the sequences it makes.
+std::string midi_playlist_problem(const MidiPlaylist& p, const SourcePool& pool, bool check_data,
+                                  std::string& where);
+// midi::sort_notes()'s order, which the sequence's notes are kept in.
+bool note_before(const midi::Note& a, const midi::Note& b);
+// Which playlists a track of its kind holds, and how many channels.
+std::string track_shape_problem(const TrackEdit& t);
+const char* track_kind_name(TrackKind kind);
 
 const Region* find_region(const Playlist& p, Id id);
 // Canonical order: by the left region's position.

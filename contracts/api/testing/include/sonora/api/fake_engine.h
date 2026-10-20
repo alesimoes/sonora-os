@@ -226,6 +226,10 @@ private:
     std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;
     std::vector<bool> muted_;
+    // Engine tracks a MIDI or instrument track sits on: no audio reaches
+    // them in this version, as on the real engine (ADR-0014 M-1).
+    std::vector<bool> silent_;
+    uint32_t silent_said_ = 0;
     std::vector<float> scripted_;
     std::vector<uint32_t> clips_;
     uint32_t health_ = 0;

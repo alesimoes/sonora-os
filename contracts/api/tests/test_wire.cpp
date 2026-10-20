@@ -223,25 +223,26 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // Solo safe in a track's mix (BACKLOG Track 2 item 5) is version 6. A
-    // version-5 interface, whose decoder refuses the solo_safe key, reads
-    // this engine's Hello and refuses it at connect, naming both numbers,
-    // before a mix it cannot decode can reach it. Its check is this
+    // MIDI in the model (ADR-0014 M-1) is version 7: new operation kinds, a
+    // timebase on every positioned region operation, a kind on AddTrack. A
+    // version-6 interface, whose decoder refuses all of them, reads this
+    // engine's Hello and refuses it at connect, naming both numbers, before
+    // an operation it cannot decode can reach it. Its check is this
     // function with its own constants, passed here.
-    CHECK(kProtocolVersion == 6);
+    CHECK(kProtocolVersion == 7);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
-    const std::string v5 = wire::version_mismatch(pv, lv, 5, kStateLayoutVersion);
-    CHECK(mentions(v5, "the engine speaks control protocol version 6 and this interface "
-                       "speaks version 5"));
-    CHECK(mentions(v5, "same build"));
-    // And this interface refuses a version-5 engine the same way.
-    CHECK(mentions(wire::version_mismatch(5, kStateLayoutVersion),
-                   "the engine speaks control protocol version 5 and this interface "
-                   "speaks version 6"));
+    const std::string v6 = wire::version_mismatch(pv, lv, 6, kStateLayoutVersion);
+    CHECK(mentions(v6, "the engine speaks control protocol version 7 and this interface "
+                       "speaks version 6"));
+    CHECK(mentions(v6, "same build"));
+    // And this interface refuses a version-6 engine the same way.
+    CHECK(mentions(wire::version_mismatch(6, kStateLayoutVersion),
+                   "the engine speaks control protocol version 6 and this interface "
+                   "speaks version 7"));
 }
 
 void domains() {

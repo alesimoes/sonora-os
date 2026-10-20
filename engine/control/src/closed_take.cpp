@@ -364,6 +364,17 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
 
         std::string why;
         const model::TrackEdit* t = track_at(document, static_cast<std::size_t>(f.track), why);
+        // Arming refuses these tracks, but one can come to sit on an armed
+        // engine track (an add or a reorder during the take). Its file is
+        // the capture channel's audio, which is not what the track records.
+        if (t != nullptr && t->kind != model::TrackKind::Audio) {
+            out.track_notices.push_back(
+                which + " is on disk but not in the session: track " +
+                std::to_string(f.track + 1) + " is a " +
+                (t->kind == model::TrackKind::Midi ? "MIDI" : "instrument") +
+                " track, which records no audio, " + f.path);
+            continue;
+        }
         model::AddSource src;
         if (t == nullptr ||
             !source_of(document, dir, relative, t->channels, next, src.source, why)) {
@@ -466,28 +477,66 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         }
 
         // The engine built these operations, so a refusal is a bug in one
-        // of them or in the model. The audio must not be lost to it: into
-        // the pool it goes, where a save records it, and the operator is
-        // told.
-        // In a split take the other parts may have landed, so the part
-        // that did not is named by its tracks.
-        std::string part = which;
-        if (per_part < sources.size()) {
-            part += " (tracks " + std::to_string(numbers[first]) + " to " +
-                    std::to_string(numbers[last - 1]) + ")";
-        }
-        if (!out.refused.empty()) out.refused += "; ";
-        out.refused +=
-            part + " is on disk and in the session's audio, but not on the timeline: " + why;
+        // of them or in the model. One bad member must not cost the other
+        // tracks their takes (PR #100 review): file by file, each that the
+        // model takes lands as its own step, and the audio of each it
+        // refuses goes into the pool, where a save records it, and the
+        // operator is told by track.
+        std::vector<std::size_t> failed;
+        std::string first_why;
         for (std::size_t k = first; k < last; ++k) {
+            const auto one = [&](bool crossfades) {
+                model::Compound c;
+                c.label = "Record";
+                c.ops.push_back(sources[k]);
+                if (placed[k]) {
+                    model::RecordTake rec = records[k];
+                    if (!crossfades) rec.crossfades.clear();
+                    c.ops.push_back(std::move(rec));
+                }
+                return model::Operation{std::move(c)};
+            };
+            std::string alone;
+            if (document.apply(one(true), u, alone) ||
+                (!records[k].crossfades.empty() && document.apply(one(false), u, plain_why))) {
+                out.updates.push_back(std::move(u));
+                continue;
+            }
+            failed.push_back(k);
+            if (first_why.empty()) first_why = alone;
             std::string error;
             if (!apply(document, sources[k], out.updates, error)) {
-                out.refused += "; and " + sources[k].source.path +
-                               " could not be added either: " + error;
+                first_why += "; and " + sources[k].source.path +
+                             " could not be added either: " + error;
             }
         }
+        if (failed.empty()) continue;
+        std::string part = which;
+        if (failed.size() == last - first && per_part < sources.size()) {
+            part += " (tracks " + std::to_string(numbers[first]) + " to " +
+                    std::to_string(numbers[last - 1]) + ")";
+        } else if (failed.size() < sources.size()) {
+            part += failed.size() == 1 ? " (track " : " (tracks ";
+            for (std::size_t i = 0; i < failed.size(); ++i) {
+                part += (i == 0 ? "" : ", ") + std::to_string(numbers[failed[i]]);
+            }
+            part += ")";
+        }
+        if (!out.refused.empty()) out.refused += "; ";
+        out.refused += part + " is on disk and in the session's audio, but not on the timeline: " +
+                       first_why;
     }
     return out;
+}
+
+bool may_arm_track(const model::Snapshot& document, std::size_t engine_track, std::string& why) {
+    const auto& tracks = document.edit->tracks;
+    if (engine_track >= tracks.size()) return true;
+    const model::TrackEdit& t = *tracks[engine_track];
+    if (t.kind == model::TrackKind::Audio) return true;
+    why = "\"" + t.name + "\" is a " + (t.kind == model::TrackKind::Midi ? "MIDI" : "instrument") +
+          " track; this version records audio only";
+    return false;
 }
 
 bool document_punch(const model::Snapshot& document, PunchRange& out) {

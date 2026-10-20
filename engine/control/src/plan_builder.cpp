@@ -96,6 +96,14 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
         const model::TrackEdit& t = *tracks[ti];
         const std::string where = "track \"" + t.name + "\"";
+        if (t.kind != model::TrackKind::Audio) {
+            // Its engine track plays silence, through the instrument
+            // track's inserts if it has any, until MIDI reaches the audio
+            // thread (ADR-0014 M-3) and instruments are hosted (M-5).
+            if (t.kind == model::TrackKind::Instrument) track_channels[ti] = t.channels;
+            ++report.silent_midi_tracks;
+            continue;
+        }
         if (t.channels < 1 || t.channels > 2) {
             error = where + " has " + str(t.channels) +
                     " channels; Phase 2 plays mono and stereo tracks";

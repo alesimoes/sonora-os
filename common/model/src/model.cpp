@@ -78,14 +78,24 @@ bool Playlist::operator==(const Playlist& o) const {
            crossfades == o.crossfades;
 }
 
+bool MidiRegion::operator==(const MidiRegion& o) const {
+    return id == o.id && name == o.name && position == o.position && length == o.length &&
+           offset == o.offset && mute == o.mute && source == o.source &&
+           same_ptr_or_value(data, o.data);
+}
+
 bool TrackEdit::operator==(const TrackEdit& o) const {
-    if (id != o.id || name != o.name || channels != o.channels ||
+    if (id != o.id || kind != o.kind || name != o.name || channels != o.channels ||
         active_playlist != o.active_playlist || inserts != o.inserts ||
-        playlists.size() != o.playlists.size()) {
+        playlists.size() != o.playlists.size() ||
+        midi_playlists.size() != o.midi_playlists.size()) {
         return false;
     }
     for (std::size_t i = 0; i < playlists.size(); ++i) {
         if (!same_ptr_or_value(playlists[i], o.playlists[i])) return false;
+    }
+    for (std::size_t i = 0; i < midi_playlists.size(); ++i) {
+        if (!same_ptr_or_value(midi_playlists[i], o.midi_playlists[i])) return false;
     }
     return true;
 }
@@ -109,10 +119,17 @@ bool Source::operator==(const Source& o) const {
            latency_compensation == o.latency_compensation;
 }
 
+bool MidiSource::operator==(const MidiSource& o) const {
+    return id == o.id && path == o.path && length == o.length && events == o.events &&
+           time_reference == o.time_reference && kind == o.kind && take == o.take &&
+           recorded_on_track == o.recorded_on_track &&
+           latency_compensation == o.latency_compensation;
+}
+
 bool TrackMix::operator==(const TrackMix& o) const {
     return track == o.track && input == o.input && monitor == o.monitor &&
            gain_db == o.gain_db && pan == o.pan && mute == o.mute &&
-           solo == o.solo && solo_safe == o.solo_safe;
+           solo == o.solo && solo_safe == o.solo_safe && midi == o.midi;
 }
 
 const Source* SourcePool::find(Id id) const {
@@ -120,6 +137,14 @@ const Source* SourcePool::find(Id id) const {
         sources.begin(), sources.end(), id,
         [](const Source& s, Id want) { return s.id < want; });
     if (it == sources.end() || it->id != id) return nullptr;
+    return &*it;
+}
+
+const MidiSource* SourcePool::find_midi(Id id) const {
+    const auto it = std::lower_bound(
+        midi_sources.begin(), midi_sources.end(), id,
+        [](const MidiSource& s, Id want) { return s.id < want; });
+    if (it == midi_sources.end() || it->id != id) return nullptr;
     return &*it;
 }
 
@@ -152,19 +177,14 @@ Snapshot new_session(const SessionSettings& settings) {
 }
 
 bool operator==(const Snapshot& a, const Snapshot& b) {
-    return same_ptr_or_value(a.edit, b.edit) &&
-           (a.sources == b.sources ||
-            (a.sources && b.sources && a.sources->sources == b.sources->sources)) &&
+    return same_ptr_or_value(a.edit, b.edit) && same_ptr_or_value(a.sources, b.sources) &&
            a.mix == b.mix && a.settings == b.settings &&
            a.revision == b.revision && a.next_id == b.next_id;
 }
 
 bool same_document(const Snapshot& a, const Snapshot& b) {
     if (!same_ptr_or_value(a.edit, b.edit)) return false;
-    if (!(a.sources == b.sources ||
-          (a.sources && b.sources && a.sources->sources == b.sources->sources))) {
-        return false;
-    }
+    if (!same_ptr_or_value(a.sources, b.sources)) return false;
     if (!(a.settings == b.settings) || !(a.mix.bus == b.mix.bus)) return false;
     for (const auto& t : a.edit->tracks) {
         const TrackMix* ma = a.mix.find(t->id);
@@ -183,31 +203,57 @@ namespace detail {
 
 bool valid_text(const std::string& s) { return json::valid_utf8(s); }
 
-std::string source_problem(const Source& s) {
-    if (s.id == 0) return "id must be at least 1";
-    if (!valid_text(s.path)) return "path is not valid UTF-8";
+namespace {
+
+std::string path_problem(const std::string& path) {
+    if (!valid_text(path)) return "path is not valid UTF-8";
     // The folder is the unit: a path that leaves it, or that only means
     // something on this machine, breaks the session when the folder moves.
-    if (s.path.empty()) return "path is empty";
-    if (s.path.front() == '/') return "path \"" + s.path + "\" is absolute";
-    if (s.path.find('\\') != std::string::npos) {
-        return "path \"" + s.path + "\" uses '\\'; paths are '/'-separated";
+    if (path.empty()) return "path is empty";
+    if (path.front() == '/') return "path \"" + path + "\" is absolute";
+    if (path.find('\\') != std::string::npos) {
+        return "path \"" + path + "\" uses '\\'; paths are '/'-separated";
     }
-    if (s.path.find(':') != std::string::npos) {
-        return "path \"" + s.path + "\" contains ':'";
+    if (path.find(':') != std::string::npos) {
+        return "path \"" + path + "\" contains ':'";
     }
     std::size_t start = 0;
     for (;;) {
-        const std::size_t slash = s.path.find('/', start);
-        const std::string part = s.path.substr(
-            start, slash == std::string::npos ? std::string::npos : slash - start);
+        const std::size_t slash = path.find('/', start);
+        const std::string part =
+            path.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
         if (part.empty() || part == "." || part == "..") {
-            return "path \"" + s.path +
-                   "\" has an empty, \".\" or \"..\" component";
+            return "path \"" + path + "\" has an empty, \".\" or \"..\" component";
         }
         if (slash == std::string::npos) break;
         start = slash + 1;
     }
+    return {};
+}
+
+std::string take_problem(SourceKind kind, std::int64_t take, Id recorded_on_track,
+                         Frames latency_compensation) {
+    if (kind == SourceKind::Imported) {
+        if (take != 0 || recorded_on_track != 0 || latency_compensation != 0) {
+            return "an imported source has no take, recorded_on_track or"
+                   " latency_compensation";
+        }
+        return {};
+    }
+    if (!in_range(take)) return "take is out of range";
+    if (recorded_on_track > static_cast<Id>(kMaxInteger)) {
+        return "recorded_on_track is out of range";
+    }
+    if (!in_range(latency_compensation)) return "latency_compensation is out of range";
+    return {};
+}
+
+}  // namespace
+
+std::string source_problem(const Source& s) {
+    if (s.id == 0) return "id must be at least 1";
+    const std::string why = path_problem(s.path);
+    if (!why.empty()) return why;
     if (s.channels == 0) return "channels must be at least 1";
     if (!in_range(s.length)) return "length is out of range";
     if (!in_range(s.time_reference)) return "time_reference is out of range";
@@ -218,19 +264,156 @@ std::string source_problem(const Source& s) {
         }
         if (!hex) return "umid must be 64 lower-case hex digits";
     }
-    if (s.kind == SourceKind::Imported) {
-        if (s.take != 0 || s.recorded_on_track != 0 || s.latency_compensation != 0) {
-            return "an imported source has no take, recorded_on_track or"
-                   " latency_compensation";
+    return take_problem(s.kind, s.take, s.recorded_on_track, s.latency_compensation);
+}
+
+std::string midi_source_problem(const MidiSource& s) {
+    if (s.id == 0) return "id must be at least 1";
+    const std::string why = path_problem(s.path);
+    if (!why.empty()) return why;
+    if (!in_range(s.length)) return "length is out of range";
+    if (s.events > static_cast<std::uint64_t>(kMaxInteger)) return "events is out of range";
+    if (!in_range(s.time_reference)) return "time_reference is out of range";
+    return take_problem(s.kind, s.take, s.recorded_on_track, s.latency_compensation);
+}
+
+bool note_before(const midi::Note& a, const midi::Note& b) {
+    if (a.start != b.start) return a.start < b.start;
+    if (a.channel != b.channel) return a.channel < b.channel;
+    if (a.pitch != b.pitch) return a.pitch < b.pitch;
+    return a.end() < b.end();
+}
+
+std::string sequence_problem(const MidiSequence& s, std::string& where) {
+    const auto at = [&](const char* list, std::size_t i) {
+        where = std::string(list) + "[" + std::to_string(i) + "]";
+    };
+    for (std::size_t i = 0; i < s.notes.size(); ++i) {
+        const midi::Note& n = s.notes[i];
+        at("notes", i);
+        if (!in_range(n.start) || !in_range(n.length) || n.start + n.length > kMaxInteger) {
+            return "start and length must not be negative, and start + length at most " +
+                   str(kMaxInteger);
         }
+        if (n.channel > 15) return "channel must be from 0 to 15";
+        if (n.pitch > 127) return "pitch must be from 0 to 127";
+        // 0 is a note-off on the wire: a note stored with it never sounds.
+        if (n.velocity < 1 || n.velocity > 127) return "velocity must be from 1 to 127";
+        if (n.release_velocity > 127) return "release velocity must be from 0 to 127";
+        if (i > 0 && note_before(n, s.notes[i - 1])) {
+            return "notes are not in order (start, channel, pitch, end)";
+        }
+    }
+    for (std::size_t i = 0; i < s.events.size(); ++i) {
+        const MidiEvent& e = s.events[i];
+        at("events", i);
+        if (!in_range(e.tick)) return "tick must be from 0 to " + str(kMaxInteger);
+        if (e.status < 0xA0 || e.status > 0xEF) {
+            return "status must be a channel message other than a note, 0xA0 to 0xEF";
+        }
+        if (e.data1 > 127 || e.data2 > 127) return "data bytes must be from 0 to 127";
+        const std::uint8_t type = e.status & 0xF0;
+        if ((type == 0xC0 || type == 0xD0) && e.data2 != 0) {
+            return "a program change or channel pressure has one data byte; data2 must be 0";
+        }
+        if (i > 0 && e.tick < s.events[i - 1].tick) return "events are not sorted by tick";
+    }
+    for (std::size_t i = 0; i < s.sysex.size(); ++i) {
+        const MidiSysEx& x = s.sysex[i];
+        at("sysex", i);
+        if (!in_range(x.tick)) return "tick must be from 0 to " + str(kMaxInteger);
+        if (x.bytes.size() < 2 || x.bytes.size() > kMaxSysexBytes) {
+            return "a SysEx message is from 2 to " +
+                   str(static_cast<std::int64_t>(kMaxSysexBytes)) + " bytes, F0 to F7";
+        }
+        if (x.bytes.front() != 0xF0 || x.bytes.back() != 0xF7) {
+            return "a SysEx message starts with F0 and ends with F7";
+        }
+        for (std::size_t k = 1; k + 1 < x.bytes.size(); ++k) {
+            if (x.bytes[k] > 0x7F) return "a SysEx message's data bytes are below 0x80";
+        }
+        if (i > 0 && x.tick < s.sysex[i - 1].tick) return "sysex is not sorted by tick";
+    }
+    where.clear();
+    return {};
+}
+
+std::string midi_region_problem(const MidiRegion& r, const SourcePool& pool) {
+    if (r.id == 0) return "id must be at least 1";
+    if (!valid_text(r.name)) return "name is not valid UTF-8";
+    if (r.length <= 0) return "length must be greater than 0";
+    if (r.position < 0) return "position must not be negative";
+    if (r.offset < 0) return "offset must not be negative";
+    if (r.position > kMaxInteger || r.length > kMaxInteger ||
+        r.position + r.length > kMaxInteger) {
+        return "position + length is past the end of the timeline";
+    }
+    if (r.offset > kMaxInteger) return "offset is out of range";
+    if (r.source != 0 && pool.find_midi(r.source) == nullptr) {
+        return "MIDI source " + str(r.source) + " does not exist";
+    }
+    if (!r.data) return "has no sequence";
+    return {};
+}
+
+std::string midi_order_problem(const MidiPlaylist& p, std::size_t i) {
+    if (i == 0 || p.regions[i].position >= p.regions[i - 1].end()) return {};
+    return p.regions[i - 1].position <= p.regions[i].position
+               ? "overlaps the region before it (regions[" +
+                     str(static_cast<std::int64_t>(i - 1)) + "])"
+               : "is not sorted by position";
+}
+
+std::string midi_playlist_problem(const MidiPlaylist& p, const SourcePool& pool, bool check_data,
+                                  std::string& where) {
+    where.clear();
+    if (p.id == 0) return "id must be at least 1";
+    if (!valid_text(p.name)) return "name is not valid UTF-8";
+    std::unordered_set<Id> ids;
+    for (std::size_t i = 0; i < p.regions.size(); ++i) {
+        const MidiRegion& r = p.regions[i];
+        where = "regions[" + str(static_cast<std::int64_t>(i)) + "]";
+        std::string why = midi_region_problem(r, pool);
+        if (why.empty()) why = midi_order_problem(p, i);
+        if (why.empty() && !ids.insert(r.id).second) {
+            why = "region id " + str(r.id) + " appears twice";
+        }
+        if (why.empty() && check_data) {
+            std::string inner;
+            why = sequence_problem(*r.data, inner);
+            if (!why.empty()) where += "." + inner;
+        }
+        if (!why.empty()) return why;
+    }
+    where.clear();
+    return {};
+}
+
+const char* track_kind_name(TrackKind kind) {
+    switch (kind) {
+        case TrackKind::Midi: return "MIDI";
+        case TrackKind::Instrument: return "instrument";
+        case TrackKind::Audio: break;
+    }
+    return "audio";
+}
+
+std::string track_shape_problem(const TrackEdit& t) {
+    if (t.kind == TrackKind::Midi) {
+        if (t.channels != 0) return "a MIDI track has no audio channels; channels must be 0";
+        if (!t.inserts.empty()) return "a MIDI track has no audio, and so no insert";
+    } else if (t.channels < 1 || t.channels > 2) {
+        return "needs 1 or 2 channels";
+    }
+    if (t.kind == TrackKind::Audio) {
+        if (!t.midi_playlists.empty()) return "an audio track holds no MIDI playlist";
+        if (t.playlists.empty()) return "a track needs at least one playlist";
     } else {
-        if (!in_range(s.take)) return "take is out of range";
-        if (s.recorded_on_track > static_cast<Id>(kMaxInteger)) {
-            return "recorded_on_track is out of range";
+        if (!t.playlists.empty()) {
+            return std::string(t.kind == TrackKind::Midi ? "a MIDI" : "an instrument") +
+                   " track holds MIDI playlists, not audio ones";
         }
-        if (!in_range(s.latency_compensation)) {
-            return "latency_compensation is out of range";
-        }
+        if (t.midi_playlists.empty()) return "a track needs at least one playlist";
     }
     return {};
 }
@@ -455,14 +638,61 @@ std::string heard_problem(const Region& r, bool has_in, Frames in_after, bool ha
                   : "its fade-in overlaps the crossfade at its end";
 }
 
-std::string mix_problem(const TrackMix& m, std::uint16_t track_channels,
+std::string midi_routing_problem(const MidiRouting& r, TrackKind kind, std::string& where) {
+    where.clear();
+    if (kind == TrackKind::Audio) {
+        if (r == MidiRouting{}) return {};
+        where = "midi";
+        return "an audio track has no MIDI input or output";
+    }
+    // A name is what the backend reports; the two words are the only ones
+    // with a meaning of their own, each on its side only.
+    const auto port = [](const std::string& name, const char* other) {
+        return !name.empty() && valid_text(name) && name != other;
+    };
+    if (!port(r.in_port, kNoMidiOutput)) {
+        where = "midi_input.port";
+        return "must be \"all\" or a port name";
+    }
+    if (r.in_channel > 16) {
+        where = "midi_input.channel";
+        return "must be 0 (all) or a channel from 1 to 16";
+    }
+    if (kind == TrackKind::Instrument) {
+        if (r.out_port == kNoMidiOutput && r.out_channel == 0) return {};
+        where = "midi_output";
+        return "an instrument track plays its own instrument and has no MIDI output";
+    }
+    if (!port(r.out_port, kAllMidiInputs)) {
+        where = "midi_output.port";
+        return "must be \"none\" or a port name";
+    }
+    if (r.out_channel > 16) {
+        where = "midi_output.channel";
+        return "must be 0 (as recorded) or a channel from 1 to 16";
+    }
+    return {};
+}
+
+std::string mix_problem(const TrackMix& m, TrackKind kind, std::uint16_t track_channels,
                         std::string& where) {
     where.clear();
-    if (m.input.size() != track_channels) {
+    if (kind != TrackKind::Audio && !m.input.empty()) {
+        where = "input";
+        return std::string("a ") + (kind == TrackKind::Midi ? "MIDI" : "n instrument") +
+               " track records MIDI and has no audio input";
+    }
+    if (kind == TrackKind::Audio && m.input.size() != track_channels) {
         where = "input";
         return "needs one capture channel per track channel (" +
                str(static_cast<std::int64_t>(track_channels)) + ")";
     }
+    if (kind == TrackKind::Midi && (m.gain_db != 0.0f || m.pan != 0.0f)) {
+        where = m.gain_db != 0.0f ? "gain_db" : "pan";
+        return "a MIDI track has no audio fader or pan; it must be 0";
+    }
+    std::string why = midi_routing_problem(m.midi, kind, where);
+    if (!why.empty()) return why;
     if (!gain_in_range(m.gain_db)) {
         where = "gain_db";
         return gain_range();
@@ -713,26 +943,40 @@ bool check_invariants(const Snapshot& s, std::string& error) {
         }
         if (!claim(sources[i].id, path)) return false;
     }
+    const auto& midi_sources = s.sources->midi_sources;
+    for (std::size_t i = 0; i < midi_sources.size(); ++i) {
+        const std::string path = "midi_sources[" + std::to_string(i) + "]";
+        why = midi_source_problem(midi_sources[i]);
+        if (why.empty() && i > 0 && midi_sources[i].id <= midi_sources[i - 1].id) {
+            why = "midi_sources are not sorted by id";
+        }
+        if (!why.empty()) {
+            error = path + ": " + why;
+            return false;
+        }
+        if (!claim(midi_sources[i].id, path)) return false;
+    }
 
     const auto& tracks = s.edit->tracks;
     for (std::size_t t = 0; t < tracks.size(); ++t) {
         const TrackEdit& tr = *tracks[t];
         const std::string path = "tracks[" + std::to_string(t) + "]";
-        if (tr.id == 0 || !valid_text(tr.name) || tr.channels < 1 || tr.channels > 2) {
-            error = path + ": needs an id, a UTF-8 name and 1 or 2 channels";
+        if (tr.id == 0 || !valid_text(tr.name)) {
+            error = path + ": needs an id and a UTF-8 name";
+            return false;
+        }
+        why = track_shape_problem(tr);
+        if (!why.empty()) {
+            error = path + ": " + why;
             return false;
         }
         if (!claim(tr.id, path)) return false;
-        if (tr.playlists.empty()) {
-            error = path + ": a track needs at least one playlist";
-            return false;
-        }
         const TrackMix* mix = s.mix.find(tr.id);
         if (mix == nullptr) {
             error = path + ": has no mix";
             return false;
         }
-        why = mix_problem(*mix, tr.channels, where);
+        why = mix_problem(*mix, tr.kind, tr.channels, where);
         if (!why.empty()) {
             error = path + "." + where + ": " + why;
             return false;
@@ -771,6 +1015,22 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             for (std::size_t r = 0; r < pl.regions.size(); ++r) {
                 if (!claim(pl.regions[r].id,
                            ppath + ".regions[" + std::to_string(r) + "]")) {
+                    return false;
+                }
+            }
+        }
+        for (std::size_t p = 0; p < tr.midi_playlists.size(); ++p) {
+            const MidiPlaylist& pl = *tr.midi_playlists[p];
+            const std::string ppath = path + ".playlists[" + std::to_string(p) + "]";
+            active_found = active_found || pl.id == tr.active_playlist;
+            why = midi_playlist_problem(pl, *s.sources, true, where);
+            if (!why.empty()) {
+                error = ppath + (where.empty() ? "" : "." + where) + ": " + why;
+                return false;
+            }
+            if (!claim(pl.id, ppath)) return false;
+            for (std::size_t r = 0; r < pl.regions.size(); ++r) {
+                if (!claim(pl.regions[r].id, ppath + ".regions[" + std::to_string(r) + "]")) {
                     return false;
                 }
             }

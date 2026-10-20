@@ -321,6 +321,130 @@ void scripted_plugins() {
     CHECK(replica.current().edit->tracks[0]->inserts.size() == 1);
 }
 
+// ADR-0014 M-1 over the wire: a MIDI track, its regions in ticks, the
+// timebase tag refused on a mismatch, and the fake as silent about MIDI as
+// the real engine, and as open about it.
+void midi_tracks() {
+    namespace model = sonora::model;
+    uint64_t now = 1'000'000'000;
+    FakeEngine::Config cfg;
+    cfg.tracks = 3;
+    cfg.clock = [&now]() { return now; };
+    FakeEngine e(cfg);
+    std::string error;
+    CHECK(e.connect(error));
+    Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto poll = [&]() {
+        e.poll(in);
+        for (; fed < in.model.size(); ++fed) {
+            model::ReplicationUpdate u;
+            const ModelUpdate& m = in.model[fed];
+            u.kind = m.kind == ModelUpdateKind::Snapshot ? model::ReplicationUpdate::Kind::Snapshot
+                                                         : model::ReplicationUpdate::Kind::Op;
+            u.revision = m.revision;
+            u.undo_floor = m.undo_floor;
+            u.next_id = m.next_id;
+            u.bytes = m.bytes;
+            u.label = m.label;
+            std::string why;
+            CHECK(replica.receive(u, why));
+        }
+    };
+    const auto apply = [&](const model::Operation& op) {
+        ModelRequest m;
+        m.action = ModelAction::Apply;
+        CHECK(model::encode_operation(op, m.op, error));
+        const uint64_t seq = e.submit(m);
+        poll();
+        for (const CommandReply& r : in.replies) {
+            if (r.seq == seq) return r;
+        }
+        return CommandReply{seq, DispatchResult::UnknownCommand, "no reply"};
+    };
+    poll();
+    CHECK(replica.synced());
+
+    model::Id next = replica.current().next_id;
+    model::AddTrack add;
+    add.track = next++;
+    add.playlist = next++;
+    add.name = "Bass";
+    add.playlist_name = "Bass.01";
+    add.kind = model::TrackKind::Midi;
+    add.channels = 0;
+    CHECK(apply(add).result == DispatchResult::Ok);
+    // Fourth, past the three engine tracks; moved onto engine track 0, it
+    // carries no audio there, and the operator is told why.
+    model::ReorderTracks order;
+    order.order.push_back(add.track);
+    for (std::size_t i = 0; i + 1 < replica.current().edit->tracks.size(); ++i) {
+        order.order.push_back(replica.current().edit->tracks[i]->id);
+    }
+    CHECK(apply(order).result == DispatchResult::Ok);
+    poll();
+    bool said = false;
+    for (const EngineEvent& ev : in.events) {
+        said = said || ev.text.find("1 MIDI or instrument track plays nothing yet") !=
+                           std::string::npos;
+    }
+    CHECK(said);
+    // What was published before the reorder, when an audio track was there.
+    e.state().take_peak(0);
+    e.state().take_peak(1);
+    now += 30'000'000;
+    e.publish();
+    poll();
+    CHECK(e.state().take_peak(0) == 0.0f);
+    CHECK(e.state().take_peak(1) > 0.0f);
+    // Not armed with the rest, and not armed on its own (PR #100 review).
+    CommandRequest arm;
+    arm.command = "track.arm_all";
+    e.send(arm);
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    const uint64_t refused_seq = e.send(arm);
+    now += 30'000'000;
+    e.publish();
+    poll();
+    CHECK((e.state().track(0).flags & kTrackArmed) == 0);
+    CHECK((e.state().track(1).flags & kTrackArmed) != 0);
+    bool told = false;
+    for (const CommandReply& r : in.replies) {
+        told = told || (r.seq == refused_seq && r.result == DispatchResult::Failed &&
+                        r.message.find("\"Bass\" is a MIDI track") != std::string::npos);
+    }
+    CHECK(told);
+
+    auto data = std::make_shared<model::MidiSequence>();
+    sonora::midi::Note n;
+    n.length = model::kTicksPerQuarter;
+    data->notes.push_back(n);
+    model::MidiRegion r;
+    r.id = next++;
+    r.name = "Bass_01";
+    r.length = 4 * model::kTicksPerQuarter;
+    r.data = data;
+    CHECK(apply(model::PlaceMidiRegion{add.playlist, r, 0}).result == DispatchResult::Ok);
+    const CommandReply frames = apply(model::MoveRegion{add.playlist, r.id, 96000, 0});
+    CHECK(frames.result == DispatchResult::Failed &&
+          mentions(frames.message, "in ticks, and this operation's position is in frames"));
+    const model::Ticks bar = 4 * model::kTicksPerQuarter;
+    CHECK(apply(model::MoveRegion{add.playlist, r.id, bar, 0, model::Timebase::Ticks}).result ==
+          DispatchResult::Ok);
+    model::EditMidi edit;
+    edit.playlist = add.playlist;
+    edit.region = r.id;
+    edit.add_events.push_back(model::MidiEvent{0, 0xB0, 64, 127});
+    CHECK(apply(edit).result == DispatchResult::Ok);
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    CHECK(t.kind == model::TrackKind::Midi && t.midi_playlists.size() == 1);
+    const model::MidiRegion& placed = t.midi_playlists[0]->regions.at(0);
+    CHECK(placed.position == bar && placed.data->events.size() == 1);
+    CHECK(replica.current() == e.document());
+}
+
 }  // namespace
 
 int main() {
@@ -332,6 +456,7 @@ int main() {
     }
     deterministic();
     scripted_plugins();
+    midi_tracks();
     if (failures) return EXIT_FAILURE;
     std::printf("api fake engine: ok\n");
     return EXIT_SUCCESS;

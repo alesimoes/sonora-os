@@ -21,10 +21,21 @@
 #include <string>
 #include <vector>
 
+#include "sonora/midi/notes.h"
+
 namespace sonora::model {
 
 using Id = std::uint64_t;      // one counter for every object; 0 is "none"
 using Frames = std::int64_t;   // samples at the session rate, never negative
+// MIDI positions, lengths and offsets (ADR-0014 §2). The same type as
+// Frames: what keeps the two apart is a playlist's Timebase, which apply()
+// checks, not the compiler.
+using Ticks = std::int64_t;
+
+// Pro Tools' published internal resolution. What decides it is that a tick
+// is shorter than a frame above 3 bpm at 48 kHz, so a recorded event comes
+// back to its frame (midi.md §1).
+constexpr Ticks kTicksPerQuarter = 960'000;
 
 // Integers in the session file stay inside what jq, Python and JavaScript
 // read exactly (session-format.md, "Numbers").
@@ -36,6 +47,14 @@ enum class AudioFormat : std::uint8_t { Int24, Float32 };
 enum class SourceKind : std::uint8_t { Recorded, Imported };
 enum class MonitorMode : std::uint8_t { Auto, Input, Off };
 enum class Fps : std::uint8_t { F23_976, F24, F25, F29_97, F29_97df, F30 };
+// Audio plays the track's own regions; Midi sends its regions to an
+// external port; Instrument plays them through a hosted instrument
+// (ADR-0014 §1).
+enum class TrackKind : std::uint8_t { Audio, Midi, Instrument };
+// A playlist's unit: frames for audio, ticks for MIDI. Every region
+// operation that carries a position says which it means, so a sender that
+// got it wrong is refused instead of moving a region by about 25 times.
+enum class Timebase : std::uint8_t { Frames, Ticks };
 
 struct SourceRef {
     Id source = 0;
@@ -103,6 +122,73 @@ struct Playlist {
     std::vector<Region> regions;         // sorted by position, never overlapping
     std::vector<Crossfade> crossfades;   // sorted by the left region's position
     bool operator==(const Playlist& o) const;
+};
+
+// --- MIDI regions (ADR-0014 §1, brain/specs/midi.md §3) --------------------
+
+// The largest SysEx message a region stores, F0 to F7. Larger ones are not
+// stored: import reports each one, never truncates it (midi.md §4.4).
+inline constexpr std::size_t kMaxSysexBytes = 4096;
+
+// A channel message other than a note on or off: status 0xA0 to 0xEF, data
+// bytes 0 to 127, data2 0 for the two-byte messages (program change,
+// channel pressure).
+struct MidiEvent {
+    Ticks tick = 0;
+    std::uint8_t status = 0xB0;
+    std::uint8_t data1 = 0;
+    std::uint8_t data2 = 0;
+    bool operator==(const MidiEvent& o) const {
+        return tick == o.tick && status == o.status && data1 == o.data1 && data2 == o.data2;
+    }
+};
+
+struct MidiSysEx {
+    Ticks tick = 0;
+    std::vector<std::uint8_t> bytes;   // the whole message, 0xF0 to 0xF7
+    bool operator==(const MidiSysEx& o) const { return tick == o.tick && bytes == o.bytes; }
+};
+
+// What one region plays, in data ticks. Immutable once a region holds it,
+// and shared: by the regions a split, duplicate or paste makes, and by
+// every snapshot that did not edit it.
+struct MidiSequence {
+    std::vector<midi::Note> notes;   // midi::sort_notes() order
+    // By tick; at one tick in stored order, which is meaning (a bank
+    // select before its program change).
+    std::vector<MidiEvent> events;
+    std::vector<MidiSysEx> sysex;    // by tick, at one tick in stored order
+    bool operator==(const MidiSequence& o) const {
+        return notes == o.notes && events == o.events && sysex == o.sysex;
+    }
+};
+
+// A window onto a sequence, as an audio region is onto its source. A note
+// is heard if its start is in [offset, offset + length); notes outside stay
+// in `data`, so an undone or dragged-back trim brings them back.
+struct MidiRegion {
+    Id id = 0;
+    std::string name;
+    Ticks position = 0;   // timeline tick of the window's start
+    Ticks length = 0;     // > 0
+    Ticks offset = 0;     // the data tick shown at `position`
+    bool mute = false;
+    Id source = 0;        // the MIDI source it came from; 0 for none
+    std::shared_ptr<const MidiSequence> data;   // never null
+
+    Ticks end() const { return position + length; }
+    bool operator==(const MidiRegion& o) const;
+};
+
+// The rules of Playlist, in ticks: sorted, never overlapping, overwrite on
+// placement. No crossfades and no fades.
+struct MidiPlaylist {
+    Id id = 0;
+    std::string name;
+    std::vector<MidiRegion> regions;
+    bool operator==(const MidiPlaylist& o) const {
+        return id == o.id && name == o.name && regions == o.regions;
+    }
 };
 
 // --- plugin inserts (ADR-0012 §6, session format version 2) ---------------
@@ -176,6 +262,11 @@ struct TrackEdit {
     // default, ADR-0012). If the owner rules otherwise this list moves to
     // MixState and the session file stays as it is.
     std::vector<Insert> inserts;
+    // Audio tracks hold `playlists`; MIDI and instrument tracks hold
+    // `midi_playlists` instead, and `active_playlist` names one of those. A
+    // MIDI track has no audio: `channels` is 0 and it holds no insert.
+    TrackKind kind = TrackKind::Audio;
+    std::vector<std::shared_ptr<const MidiPlaylist>> midi_playlists;
     bool operator==(const TrackEdit& o) const;
 };
 
@@ -217,10 +308,49 @@ struct Source {
     bool operator==(const Source& o) const;
 };
 
+// A MIDI take or an imported SMF beside the session (midi.md §4.2). The
+// regions hold their own events, so a source missing or changed at open
+// changes nothing that plays: it says where a region came from.
+struct MidiSource {
+    Id id = 0;
+    std::string path;              // "MIDI Files/<name>.mid", relative, '/'-separated
+    Frames length = 0;             // frames from the take's start to its end
+    std::uint64_t events = 0;      // what the file held, checked at open
+    std::int64_t time_reference = 0;   // samples since midnight at its tick 0
+    SourceKind kind = SourceKind::Recorded;
+    // Recorded sources only.
+    std::int64_t take = 0;
+    Id recorded_on_track = 0;
+    Frames latency_compensation = 0;
+    bool operator==(const MidiSource& o) const;
+};
+
 // Append-only: undo never removes a source (session-format.md, rule 2).
 struct SourcePool {
-    std::vector<Source> sources;   // sorted by id
+    std::vector<Source> sources;            // sorted by id
+    std::vector<MidiSource> midi_sources;   // sorted by id, in the same id space
     const Source* find(Id id) const;
+    const MidiSource* find_midi(Id id) const;
+    bool operator==(const SourcePool& o) const {
+        return sources == o.sources && midi_sources == o.midi_sources;
+    }
+};
+
+// Where a MIDI or instrument track's MIDI comes from and goes. Saved and
+// not undoable, like `input` (owner question O5). Ports are named, not
+// numbered: a MIDI port is a device that comes and goes while the session
+// runs, and an index would point at another one after a replug.
+inline constexpr const char* kAllMidiInputs = "all";
+inline constexpr const char* kNoMidiOutput = "none";
+struct MidiRouting {
+    std::string in_port = kAllMidiInputs;   // "all", or a port name
+    std::uint8_t in_channel = 0;            // 0 all, else 1 to 16
+    std::string out_port = kNoMidiOutput;   // MIDI tracks only: "none", or a port name
+    std::uint8_t out_channel = 0;           // 0 as recorded, else 1 to 16
+    bool operator==(const MidiRouting& o) const {
+        return in_port == o.in_port && in_channel == o.in_channel && out_port == o.out_port &&
+               out_channel == o.out_channel;
+    }
 };
 
 struct TrackMix {
@@ -234,6 +364,8 @@ struct TrackMix {
     // Never implicitly muted by another track's solo, as Pro Tools' solo
     // safe; the track's own mute still silences it.
     bool solo_safe = false;
+    // MIDI and instrument tracks; an audio track's is the default.
+    MidiRouting midi;
     bool operator==(const TrackMix& o) const;
 };
 

@@ -1138,6 +1138,108 @@ AddInsert insert_op(Id track, Id insert, std::uint8_t slot) {
     return op;
 }
 
+// ADR-0014 M-1: a session with MIDI and instrument tracks builds, those
+// tracks play nothing, and the report counts them so the engine can say so.
+// Regions in ticks never reach the frame segments.
+int test_midi_tracks_build_silent() {
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "Vox"));
+    AddTrack midi = track_op(102, 103, "Bass");
+    midi.kind = TrackKind::Midi;
+    midi.channels = 0;
+    midi.mix = TrackMix{};
+    CHECK_APPLY(h, midi);
+    AddTrack inst = track_op(104, 105, "Piano");
+    inst.kind = TrackKind::Instrument;
+    inst.channels = 2;
+    inst.mix = TrackMix{};
+    CHECK_APPLY(h, inst);
+    auto data = std::make_shared<MidiSequence>();
+    data->notes.push_back(sonora::midi::Note{});
+    MidiRegion r;
+    r.id = 106;
+    r.name = "Bass_01";
+    r.length = kTicksPerQuarter;
+    r.data = data;
+    CHECK_APPLY(h, (PlaceMidiRegion{103, r, 0}));
+
+    sonora::BuildLimits limits;
+    limits.engine_tracks = 3;
+    limits.channels_per_track = 2;
+    limits.max_segments = 64;
+    limits.max_chunk_slots = 1024;
+    limits.chunk_frames = kChunk;
+    limits.window_frames = 1024;
+    limits.pool_chunks = 128;
+    const sonora::SourceSlot no_sources = [](const Source&, uint32_t&, std::string& e) {
+        e = "no source expected";
+        return false;
+    };
+    PlaybackPlan* plan = nullptr;
+    sonora::PlanReport report;
+    std::string error;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, 1, plan, report, error));
+    CHECK(plan != nullptr);
+    CHECK(report.silent_midi_tracks == 2);
+    CHECK(report.segments == 0);
+    CHECK(plan->tracks[0].channels == 1);
+    CHECK(plan->tracks[1].segment_count == 0);
+    CHECK(plan->tracks[2].channels == 2 && plan->tracks[2].segment_count == 0);
+    sonora::destroy_plan(plan);
+    return 0;
+}
+
+// PR #100 review: the engine track under a MIDI or instrument track passed
+// its capture channel through under Input or Auto monitoring, and could be
+// armed and record a WAV. Its monitoring is forced off, an arm left on it
+// is cleared while no take runs, and arming refuses it.
+int test_midi_tracks_are_never_monitored_or_armed() {
+    auto session = make_session(3);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "Vox"));
+    AddTrack midi = track_op(102, 103, "Bass");
+    midi.kind = TrackKind::Midi;
+    midi.channels = 0;
+    midi.mix = TrackMix{};
+    midi.mix.monitor = MonitorMode::Input;
+    CHECK_APPLY(h, midi);
+    AddTrack inst = track_op(104, 105, "Piano");
+    inst.kind = TrackKind::Instrument;
+    inst.channels = 1;
+    inst.mix = TrackMix{};
+    inst.mix.monitor = MonitorMode::Auto;
+    CHECK_APPLY(h, inst);
+    for (const auto& t : s.tracks()) t->set_rec_armed(true);
+    PlaybackController ctl(s, kDir);
+    ctl.apply_mix(h.current());
+    CHECK(s.tracks()[0]->rec_armed());
+    CHECK(!s.tracks()[1]->rec_armed() && !s.tracks()[2]->rec_armed());
+    CHECK(s.tracks()[1]->monitor() == sonora::Track::Monitor::Off);
+    CHECK(s.tracks()[2]->monitor() == sonora::Track::Monitor::Off);
+    CHECK(s.tracks()[0]->monitor() != sonora::Track::Monitor::Off);
+
+    sonora::CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(
+        reg, s, take, quit, nullptr, &ctl, nullptr,
+        [&h](std::size_t engine_track, std::string& why) {
+            return sonora::may_arm_track(h.current(), engine_track, why);
+        });
+    CHECK(reg.dispatch("track.disarm_all") == DispatchResult::Ok);
+    CHECK(reg.dispatch("track.arm_all") == DispatchResult::Ok);
+    CHECK(s.tracks()[0]->rec_armed());
+    CHECK(!s.tracks()[1]->rec_armed() && !s.tracks()[2]->rec_armed());
+    sonora::CommandContext bass;
+    bass.target = 1;
+    std::string why;
+    CHECK(reg.dispatch("track.toggle_arm", bass, why) == DispatchResult::Failed);
+    CHECK(why.find("\"Bass\" is a MIDI track") != std::string::npos);
+    CHECK(!s.tracks()[1]->rec_armed());
+    return 0;
+}
+
 // Tracks A and B have active inserts, C an inactive one. The builder makes
 // A and B TrackSource -> InsertChain -> TrackFader, keeps C a TrackOut,
 // carries what the resolver bound (slot, generation, store index by A2.5,
@@ -1382,6 +1484,8 @@ int main() {
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;
     if (test_huge_gain_is_no_nan()) return 1;
+    if (test_midi_tracks_build_silent()) return 1;
+    if (test_midi_tracks_are_never_monitored_or_armed()) return 1;
     if (test_build_with_chains()) return 1;
     if (test_latency_change_is_a_new_plan()) return 1;
     if (test_report_shows_the_planned_latency()) return 1;

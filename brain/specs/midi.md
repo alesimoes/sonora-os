@@ -27,7 +27,14 @@ number it took into this spec.
 Taken so far: **session format 4** by M-1's timebase PR, for the tempo
 bounds of §2.4 and the v3 → v4 migration that brings a map inside them
 (§4.5). The MIDI keys of §4 (track kinds, `midi_sources`, MIDI regions)
-therefore land in the next free number after it, not in 4.
+therefore land in the next free number after it, not in 4: **session
+format 5**, with **control protocol 7** and **undo window format 5**, taken
+by the rest of M-1 (track kinds, MIDI regions, the timebase tag, the MIDI
+operations). §4 below says "version 4" for what is format 5 on disk.
+`SetInstrument`, `RemoveInstrument` and an instrument track's `instrument`
+key are not in format 5: they come with hosting an instrument, in M-5, at
+the next free number then. Until then an instrument track is its MIDI,
+its channels and its inserts, and plays silence.
 
 ## 1. Units
 
@@ -268,6 +275,29 @@ struct MidiSource {                         // SourcePool, append-only
 - Protocol 7 (new operation kinds the engine may send, `messages.h` rule),
   the undo window format, op codec entries; `FakeEngine` and the
   conformance suite follow.
+- **Settled in M-1** (`operations.h`): `SplitRegion` carries the timebase
+  tag too, its `at` being a position. `EditMidi` names its playlist as
+  every other region operation does. A MIDI track has `channels` 0, no
+  input and no inserts, and its mix's `gain_db` and `pan` stay 0 (the file
+  has no key for them). `MidiRouting` lives in `TrackMix`, so `SetMix`
+  carries it as well as `SetMidiRouting`, under the same check. An
+  `EditMidi` that removes and adds nothing is refused rather than made an
+  empty undo step. The sequence's lists are kept by `stable_sort` after
+  the removals: what was there stays before what is added at the same
+  tick.
+- **Settled in the PR #100 review, inside protocol 7.** Each `EditMidi`
+  removal carries the value it expects with its index
+  (`[index, start, length, channel, pitch, velocity, release]`, and the same
+  for event and SysEx rows); a mismatch is refused by name ("note 14 is not
+  the note this edit removes; the region changed under it"), so a request
+  resolved against a stale replica never removes the wrong note.
+  `PlaceMidiRegion` has an optional `data_from` (`{playlist, region}`): the
+  new region shares that region's sequence, for duplicate, repeat, paste
+  and a move to another track; inline stays for recording and import.
+- The engine arms, monitors and records no audio on the engine track under
+  a MIDI or instrument track (`may_arm_track`, `apply_monitoring`), and a
+  closed take leaves such a file out with a notice; a member the model
+  refuses costs only its own track's placement.
 
 ### 3.2 What a tempo change does
 
@@ -412,6 +442,29 @@ dense performance with continuous controllers can reach tens of thousands
 of events per track. *Unverified whether real sessions stay inside*
 (ADR-0014 Unverified 6); the remedy, if not, is the plugin-state pattern:
 sequences beside the file, content-addressed, a version bump.
+
+**Measured in M-1** (`common/model/tests/measure_midi_session`, Release,
+the build container on the owner's laptop, 2026-10-20). 18 instrument
+tracks, 5 minutes at 120 bpm, 8 notes a second per track:
+
+| Controller events per track | Events and notes | File | DOM values | Opens? |
+|---|---|---|---|---|
+| 30 a second | 162,000 + 43,200 | 8.5 MiB | 1.1 M | yes, 101 ms |
+| 100 a second | 540,000 + 43,200 | 23.2 MiB | 3.0 M | **no**: the 256 MiB DOM-memory cap binds first, at about 89 bytes a value |
+
+So the values cap is not the one that binds: the DOM-memory cap is, at
+about 3 M values, and a session dense enough to reach it **saves but does
+not open**. 200 note drags in one region of 50,000 controller events
+charge the whole 64 MiB undo budget (each drag copies the sequence, about
+800 KiB), which keeps 79 of the 202 steps, and the undo window is then
+132 MiB, twice the 64 MiB a Snapshot update may carry: a replica could not
+attach. Each drag costs 1.5 ms at most on the control thread.
+
+Both are over the caps, which ADR-0014 Unverified 6 says decides
+sequences beside the file. Nothing in this build can make such a session
+yet (no recording before M-4, no import before M-6, no MIDI editing in the
+interface before M-7), so the decision is due before M-4 lands, and is the
+owner's and the architect's.
 
 ## 5. The real-time path
 

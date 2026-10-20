@@ -27,9 +27,26 @@ std::size_t playlist_bytes(const Playlist& p) {
     return n;
 }
 
+std::size_t midi_playlist_bytes(const MidiPlaylist& p) {
+    std::size_t n = kNodeOverhead + sizeof(MidiPlaylist) + p.name.size() +
+                    p.regions.size() * sizeof(MidiRegion);
+    for (const MidiRegion& r : p.regions) n += r.name.size();
+    return n;
+}
+
+// A note edit copies the whole sequence it touches (midi.md §3), so a drag
+// in a region of 50,000 controller events is charged all of them.
+std::size_t sequence_bytes(const MidiSequence& s) {
+    std::size_t n = kNodeOverhead + sizeof(MidiSequence) + s.notes.size() * sizeof(midi::Note) +
+                    s.events.size() * sizeof(MidiEvent) + s.sysex.size() * sizeof(MidiSysEx);
+    for (const MidiSysEx& x : s.sysex) n += x.bytes.size();
+    return n;
+}
+
 std::size_t track_bytes(const TrackEdit& t) {
     std::size_t n = kNodeOverhead + sizeof(TrackEdit) + t.name.size() +
                     t.playlists.size() * sizeof(std::shared_ptr<const Playlist>) +
+                    t.midi_playlists.size() * sizeof(std::shared_ptr<const MidiPlaylist>) +
                     t.inserts.size() * sizeof(Insert);
     for (const Insert& in : t.inserts) {
         n += in.plugin.id.size() + in.plugin.name.size() + in.plugin.version.size();
@@ -50,6 +67,10 @@ std::size_t exclusive_bytes(const EditState& state, const EditState& previous) {
     for (const auto& t : previous.tracks) {
         shared.insert(t.get());
         for (const auto& p : t->playlists) shared.insert(p.get());
+        for (const auto& p : t->midi_playlists) {
+            shared.insert(p.get());
+            for (const MidiRegion& r : p->regions) shared.insert(r.data.get());
+        }
     }
     std::size_t n = kNodeOverhead + sizeof(EditState) +
                     state.tracks.size() * sizeof(std::shared_ptr<const TrackEdit>);
@@ -58,6 +79,14 @@ std::size_t exclusive_bytes(const EditState& state, const EditState& previous) {
         n += track_bytes(*t);
         for (const auto& p : t->playlists) {
             if (shared.count(p.get()) == 0) n += playlist_bytes(*p);
+        }
+        for (const auto& p : t->midi_playlists) {
+            if (shared.count(p.get()) != 0) continue;
+            n += midi_playlist_bytes(*p);
+            for (const MidiRegion& r : p->regions) {
+                // A sequence two regions share (a split) is charged once.
+                if (r.data && shared.insert(r.data.get()).second) n += sequence_bytes(*r.data);
+            }
         }
     }
     if (state.markers != previous.markers && state.markers) {

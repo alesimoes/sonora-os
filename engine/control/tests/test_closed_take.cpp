@@ -332,6 +332,89 @@ int test_a_refused_part_keeps_its_audio_and_the_others_land() {
     return 0;
 }
 
+// The document Audio 1 (audio), Bass (MIDI), Audio 3 (audio), on the
+// session's three engine tracks.
+model::Snapshot with_midi_track_2(const Session& s) {
+    model::Snapshot doc = engine_document(s);
+    model::Snapshot out = model::new_session(doc.settings);
+    for (std::size_t i = 0; i < 3; ++i) {
+        model::AddTrack op;
+        op.track = out.next_id;
+        op.playlist = out.next_id + 1;
+        op.name = i == 1 ? "Bass" : "Audio " + std::to_string(i + 1);
+        op.playlist_name = op.name + ".01";
+        if (i == 1) {
+            op.kind = model::TrackKind::Midi;
+            op.channels = 0;
+        } else {
+            op.mix.input = {static_cast<uint16_t>(i)};
+        }
+        model::Snapshot next;
+        std::string why;
+        if (!model::apply(out, op, next, why)) std::fprintf(stderr, "  %s\n", why.c_str());
+        out = std::move(next);
+    }
+    out.revision = 0;
+    return out;
+}
+
+// PR #100 review: a file recorded on the engine track under a MIDI track
+// used to make the whole take's compound refused (a RecordTake on a MIDI
+// playlist), so every audio track's take fell to the pool. It is left out
+// with a notice; the audio tracks land as one step.
+int test_a_file_under_a_midi_track_is_left_out() {
+    const SessionConfig cfg = config("test_closed_take_midi");
+    wipe(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(record(s));
+        model::Document doc(with_midi_track_2(s));
+        const TakeAdded r = add_closed_take(doc, s, the_take(s));
+        if (!r.refused.empty()) std::fprintf(stderr, "  refused: %s\n", r.refused.c_str());
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "track 2"));
+        CHECK(mentions(r.track_notices[0], "MIDI track"));
+        CHECK(r.updates.size() == 1);
+        CHECK(doc.history().undo_depth() == 1);
+        CHECK(regions_on(doc.current(), 0) == 1);
+        CHECK(regions_on(doc.current(), 2) == 1);
+        CHECK(doc.current().sources->sources.size() == 2);
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
+// PR #100 review: one member the model refuses (track 2's file names a path
+// already in the pool) must not sink the other tracks' takes: they land,
+// and only track 2 is named as off the timeline.
+int test_one_refused_file_does_not_sink_the_others() {
+    const SessionConfig cfg = config("test_closed_take_one_refused");
+    wipe(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(record(s));
+        model::Document doc(engine_document(s));
+        model::AddSource taken;
+        taken.source.id = doc.current().next_id;
+        taken.source.path = "Audio Files/Audio 2_01.wav";
+        taken.source.length = 64;
+        taken.source.kind = model::SourceKind::Imported;
+        model::ReplicationUpdate u;
+        std::string why;
+        CHECK(doc.apply(taken, u, why));
+        const TakeAdded r = add_closed_take(doc, s, the_take(s));
+        CHECK(mentions(r.refused, "take 1 (track 2)"));
+        CHECK(mentions(r.refused, "is already source"));
+        CHECK(r.refused.find("track 1") == std::string::npos);
+        CHECK(regions_on(doc.current(), 0) == 1);
+        CHECK(regions_on(doc.current(), 1) == 0);
+        CHECK(regions_on(doc.current(), 2) == 1);
+    }
+    wipe(cfg.dir);
+    return 0;
+}
+
 // --- punched takes (timeline-model.md, "Punch in") -------------------------
 
 // At 1 kHz one second of handle is 1000 frames, so a whole punch with its
@@ -912,6 +995,8 @@ int main() {
     failed += test_a_refused_take_keeps_its_audio_in_the_pool();
     failed += test_a_split_take_lands_in_track_order();
     failed += test_a_refused_part_keeps_its_audio_and_the_others_land();
+    failed += test_a_file_under_a_midi_track_is_left_out();
+    failed += test_one_refused_file_does_not_sink_the_others();
     failed += test_a_punch_goes_in_over_its_range();
     failed += test_a_punch_stopped_inside_its_range_ends_there();
     failed += test_a_punch_armed_late_starts_where_it_recorded();

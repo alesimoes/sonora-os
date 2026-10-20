@@ -11,7 +11,8 @@ namespace sonora {
 
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record,
-                              PlaybackController* playback, PunchFor punch_for) {
+                              PlaybackController* playback, PunchFor punch_for,
+                              MayArm may_arm) {
     // The counter is a hint, never trusted on its own: the folder may hold
     // takes from before a restart, and start_recording() refuses a name that
     // is taken, so the number is re-read from disk before every take.
@@ -145,8 +146,8 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     };
 
     reg.install("track.toggle_arm",
-                [&session, take_running](const CommandContext& ctx,
-                                         std::string& why) {
+                [&session, take_running, may_arm](const CommandContext& ctx,
+                                                  std::string& why) {
         // No selection exists yet, and guessing a track is the
         // port-ordering defect in another form.
         if (!ctx.has_target()) {
@@ -160,14 +161,20 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         }
         if (take_running(why)) return false;
         auto& tr = session.tracks()[idx];
+        if (!tr->rec_armed() && may_arm && !may_arm(idx, why)) return false;
         tr->set_rec_armed(!tr->rec_armed());
         return true;
     });
 
     reg.install("track.arm_all",
-                [&session, take_running](const CommandContext&, std::string& why) {
+                [&session, take_running, may_arm](const CommandContext&, std::string& why) {
         if (take_running(why)) return false;
-        for (const auto& tr : session.tracks()) tr->set_rec_armed(true);
+        // Every track that may record; the others stay as they are.
+        for (std::size_t i = 0; i < session.tracks().size(); ++i) {
+            std::string refused;
+            if (may_arm && !may_arm(i, refused)) continue;
+            session.tracks()[i]->set_rec_armed(true);
+        }
         return true;
     });
 

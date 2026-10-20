@@ -247,6 +247,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
     muted_.assign(cfg_.tracks, false);
+    silent_.assign(cfg_.tracks, false);
     scripted_.assign(cfg_.tracks, -1.0f);
     clips_.assign(cfg_.tracks, 0);
 
@@ -320,6 +321,28 @@ void FakeEngine::apply_mix() {
         db = std::min(db, model::kMaxGainDb);
         gain_[i] = std::pow(10.0f, db / 20.0f);
         muted_[i] = m->mute;
+    }
+    uint32_t silent = 0;
+    for (std::size_t i = 0; i < silent_.size(); ++i) {
+        silent_[i] = i < tracks.size() && tracks[i]->kind != model::TrackKind::Audio;
+        if (!silent_[i]) continue;
+        ++silent;
+        // As the engine: an arm left on it goes, but not during a take.
+        if (mode_ != TransportState::Recording) armed_[i] = false;
+    }
+    // The real engine's notice, said when the count changes
+    // (EngineControlServer::show_document).
+    if (silent != silent_said_) {
+        silent_said_ = silent;
+        if (silent > 0) {
+            EngineEvent e;
+            e.kind = EventKind::Notice;
+            e.text = "playback: " + std::to_string(silent) +
+                     (silent == 1 ? " MIDI or instrument track plays"
+                                  : " MIDI or instrument tracks play") +
+                     " nothing yet; this version edits and saves MIDI but does not play it";
+            post_event(e);
+        }
     }
 }
 
@@ -901,12 +924,23 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             return false;
         }
         if (take_running()) return false;
+        // As the engine (may_arm_track): a MIDI or instrument track records
+        // no audio in this version.
+        if (!armed_[idx] && silent_[idx]) {
+            const model::TrackEdit& t = *document_->current().edit->tracks[idx];
+            why = "\"" + t.name + "\" is a " +
+                  (t.kind == model::TrackKind::Midi ? "MIDI" : "instrument") +
+                  " track; this version records audio only";
+            return false;
+        }
         armed_[idx] = !armed_[idx];
         return true;
     }
     if (id == "track.arm_all" || id == "track.disarm_all") {
         if (take_running()) return false;
-        std::fill(armed_.begin(), armed_.end(), id == "track.arm_all");
+        for (std::size_t i = 0; i < armed_.size(); ++i) {
+            armed_[i] = id == "track.arm_all" && !silent_[i];
+        }
         return true;
     }
     why = "not handled";
@@ -937,7 +971,7 @@ void FakeEngine::publish() {
         float peak = 0.0f;
         if (scripted_[i] >= 0.0f) {
             peak = scripted_[i];
-        } else if (cfg_.signal) {
+        } else if (cfg_.signal && !silent_[i]) {
             // The engine's peak is the maximum of every sample since the
             // last publish; the envelope sampled each millisecond is close
             // enough, and a transient between two publishes still shows.

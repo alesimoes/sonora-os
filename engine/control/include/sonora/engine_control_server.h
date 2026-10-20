@@ -329,6 +329,7 @@ private:
     // The plans published when the state block last took the playing
     // plan's compensation.
     uint64_t compensation_shown_for_ = ~uint64_t{0};
+    uint32_t silent_midi_said_ = 0;   // the MIDI tracks the last notice counted
 
     CommandRegistry registry_;
     std::vector<std::string> implemented_;

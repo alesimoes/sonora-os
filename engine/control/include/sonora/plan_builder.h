@@ -82,6 +82,9 @@ struct PlanReport {
     // bus.
     std::vector<uint32_t> track_latency;
     std::vector<uint32_t> track_shortfall;
+    // MIDI and instrument tracks, which this version plays nothing on
+    // (ADR-0014 M-1): the engine says so rather than look broken.
+    uint32_t silent_midi_tracks = 0;
 };
 
 // On success `out` is a plan with `epoch`, fully written, ready to hand to
