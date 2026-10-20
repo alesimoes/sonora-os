@@ -2,6 +2,7 @@
 #include "edit_clipboard.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 
 namespace sonora::ui {
@@ -85,21 +86,44 @@ void clear_range(const Playlist& p, Frames a, Frames b, const NextId& id,
 
 void paste_clip(const Playlist& p, Frames at, const Clip& clip, const NextId& id,
                 std::vector<Member>& out) {
-    clear_range(p, at, at + clip.length, id, out);
-    std::map<Id, Id> renamed;
-    for (const Region& r : clip.regions) {
-        Region placed = r;
-        placed.id = id();
-        placed.position = at + r.position;
-        renamed[r.id] = placed.id;
-        // Nothing is beneath any more, so no split id is needed.
-        out.push_back(PlaceRegion{p.id, std::move(placed), kNoId});
+    repeat_clip(p, at, clip, 1, id, out);
+}
+
+void repeat_clip(const Playlist& p, Frames at, const Clip& clip, int count, const NextId& id,
+                 std::vector<Member>& out) {
+    if (count < 1) return;
+    clear_range(p, at, at + clip.length * count, id, out);
+    for (int i = 0; i < count; ++i) {
+        const Frames origin = at + clip.length * i;
+        std::map<Id, Id> renamed;
+        for (const Region& r : clip.regions) {
+            Region placed = r;
+            placed.id = id();
+            placed.position = origin + r.position;
+            renamed[r.id] = placed.id;
+            // Nothing is beneath any more, so no split id is needed.
+            out.push_back(PlaceRegion{p.id, std::move(placed), kNoId});
+        }
+        for (Crossfade x : clip.crossfades) {
+            x.left = renamed[x.left];
+            x.right = renamed[x.right];
+            out.push_back(SetCrossfade{p.id, x});
+        }
     }
-    for (Crossfade x : clip.crossfades) {
-        x.left = renamed[x.left];
-        x.right = renamed[x.right];
-        out.push_back(SetCrossfade{p.id, x});
-    }
+}
+
+std::size_t repeat_members(const Playlist& p, Frames at, const Clip& clip, std::size_t count) {
+    if (count == 0 || clip.length <= 0) return 0;
+    // Nothing lies past the playlist's last region, so the span cleared is
+    // capped there rather than multiplied out for a count that could
+    // overflow it.
+    Frames last = at;
+    for (const Region& r : p.regions) last = std::max(last, r.end());
+    const auto reach = static_cast<std::size_t>((last - at + clip.length - 1) / clip.length);
+    const auto copies = static_cast<Frames>(std::min(count, reach));
+    std::vector<Member> clear;
+    clear_range(p, at, at + clip.length * copies, [] { return kNoId; }, clear);
+    return clear.size() + count * (clip.regions.size() + clip.crossfades.size());
 }
 
 namespace {
@@ -124,6 +148,23 @@ std::string paste_problem(const Snapshot& s, const TrackEdit& track, const Clip&
         }
     }
     return {};
+}
+
+bool parse_repeat_count(const std::string& text, int& out) {
+    std::size_t i = 0, n = text.size();
+    while (i < n && text[i] == ' ') ++i;
+    while (n > i && text[n - 1] == ' ') --n;
+    bool negative = false;
+    if (i < n && (text[i] == '-' || text[i] == '+')) negative = text[i++] == '-';
+    if (i == n) return false;
+    long long v = 0;
+    for (; i < n; ++i) {
+        if (text[i] < '0' || text[i] > '9') return false;
+        v = v * 10 + (text[i] - '0');
+        if (v > std::numeric_limits<int>::max()) return false;
+    }
+    out = static_cast<int>(negative ? -v : v);
+    return true;
 }
 
 std::string over_limit(const char* gesture, const char* nothing_was, std::size_t members) {

@@ -781,8 +781,9 @@ bool EditController::nudge(int direction, std::string& why) {
 // Pro Tools Reference Guide, "Editing" chapter: "Cut, Copy, Paste and Clear
 // Commands" (Cut moves the selection to the Clipboard; Paste puts it at the
 // insertion point or the selection's start, replacing what lies beneath in
-// Slip, Spot and Grid) and "Duplicate Command" (a copy placed straight after
-// the selection). The workflow only (ADR-0004).
+// Slip, Spot and Grid), "Duplicate Command" (a copy placed straight after
+// the selection) and "Repeat Command" (Duplicate a number of times, the
+// number asked in a dialog). The workflow only (ADR-0004).
 
 bool EditController::refuse_shuffle(const char* gesture, const char* nothing_was,
                                     std::string& why) const {
@@ -911,6 +912,54 @@ bool EditController::duplicate(std::string& why) {
     sel_.region = kNoId;
     sel_.start = sel_.insertion = b;
     sel_.end = b + clip.length;
+    return true;
+}
+
+bool EditController::can_repeat(std::string& why, std::string* track_out, Frames* length) const {
+    if (refuse_shuffle("Repeat", "repeated", why)) return false;
+    int index = -1;
+    Frames a = 0, b = 0;
+    if (!edit_range(index, a, b, "repeated", why)) return false;
+    const TrackEdit* t = track(index);
+    Clip clip;
+    if (!copy_range(snapshot(), *t, a, b, clip)) {
+        why = "there is no region in the selection on " + t->name + "; nothing was repeated";
+        return false;
+    }
+    if (track_out != nullptr) *track_out = t->name;
+    if (length != nullptr) *length = b - a;
+    return true;
+}
+
+bool EditController::repeat(int count, std::string& why) {
+    if (!can_repeat(why)) return false;
+    if (count < 1) {
+        why = "Repeat needs a number of repeats of 1 or more; nothing was repeated";
+        return false;
+    }
+    int index = -1;
+    Frames a = 0, b = 0;
+    edit_range(index, a, b, "repeated", why);
+    const TrackEdit* t = track(index);
+    Clip clip;
+    copy_range(snapshot(), *t, a, b, clip);
+    const Playlist& p = *active(t);
+    // Counted before it is built: a typed 100000 is refused by its size,
+    // not by allocating it.
+    const std::string too_many = over_limit(
+        "Repeat", "repeated", repeat_members(p, b, clip, static_cast<std::size_t>(count)));
+    if (!too_many.empty()) {
+        why = too_many;
+        return false;
+    }
+    std::vector<Member> members;
+    repeat_clip(p, b, clip, count, [this]() { return doc_.reserve_id(); }, members);
+    if (!submit_compound(std::move(members), "Repeat", "repeated", why)) return false;
+    repeat_count_ = count;
+    sel_.track = index;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = b;
+    sel_.end = b + clip.length * count;
     return true;
 }
 

@@ -14,7 +14,8 @@
 #                                           safe (-mix-solo-safe), the Edit
 #                                           window zoomed on fades (-fades), a
 #                                           paste with the Edit menu open
-#                                           (-clipboard), a repaired session
+#                                           (-clipboard), the Repeat dialog
+#                                           (-repeat), a repaired session
 #                                           opened (-repairs) and the
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the

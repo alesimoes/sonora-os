@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Cut, Copy, Paste, Duplicate and Clear (edit_clipboard.h): each gesture one
+// Cut, Copy, Paste, Duplicate, Repeat and Clear (edit_clipboard.h): each gesture one
 // compound and one labelled undo step; past model::kMaxCompoundMembers
 // refused before anything is sent, in the operator's words, changing
 // nothing; Shuffle refused by name. Then the Edit menu in the real QML,
@@ -384,6 +384,116 @@ int test_cut_edges_lose_fades() {
     return 0;
 }
 
+// --- repeat --------------------------------------------------------------------
+
+int test_repeat() {
+    ModelDocument doc(two_regions());
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+
+    // Nothing to repeat: refused before any count is asked for.
+    c.select_track(0);
+    c.set_insertion(0);
+    CHECK(!c.can_repeat(why) && has(why, "nothing was repeated"));
+
+    // B [4, 5) three times: copies at bars 5, 6 and 7, one undo step, and
+    // the copies become the selection.
+    CHECK(c.select_region(11));
+    std::string name;
+    Frames length = 0;
+    CHECK(c.can_repeat(why, &name, &length) && length == kBar);
+    CHECK(name == doc.snapshot().edit->tracks[0]->name);
+    const uint64_t clip = c.clipboard_serial();
+    CHECK(c.repeat(3, why));
+    {
+        const Playlist& p = lane(doc.snapshot(), 0);
+        CHECK(p.regions.size() == 5);
+        for (int i = 0; i < 3; ++i) {
+            const Region& r = p.regions[static_cast<std::size_t>(2 + i)];
+            CHECK(r.position == (5 + i) * kBar && r.length == kBar && r.source_offset == 4 * kBar);
+            CHECK(r.id != 11);
+        }
+    }
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Repeat");
+    CHECK(c.selection().start == 5 * kBar && c.selection().end == 8 * kBar);
+    CHECK(c.repeat_count() == 3 && c.clipboard_serial() == clip);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && lane(doc.snapshot(), 0).regions.size() == 2 && !doc.can_undo());
+
+    // A [1, 3) twice: the copies cover [3, 7) and replace B under them.
+    CHECK(c.select_region(10));
+    CHECK(c.repeat(2, why));
+    {
+        const Playlist& p = lane(doc.snapshot(), 0);
+        CHECK(p.regions.size() == 3);
+        CHECK(std::none_of(p.regions.begin(), p.regions.end(),
+                           [](const Region& r) { return r.id == 11; }));
+        CHECK(p.regions[1].position == 3 * kBar && p.regions[2].position == 5 * kBar);
+    }
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // A count below one, and Shuffle: refused by name, nothing sent, the
+    // count offered next unchanged.
+    const uint64_t r0 = doc.revision();
+    CHECK(c.select_region(11));
+    CHECK(!c.repeat(0, why) && has(why, "1 or more") && has(why, "nothing was repeated"));
+    CHECK(!c.repeat(-2, why) && has(why, "1 or more"));
+    c.set_mode(EditMode::Shuffle);
+    CHECK(!c.can_repeat(why) && has(why, "Shuffle") && has(why, "Nothing was repeated."));
+    CHECK(!c.repeat(2, why) && has(why, "Shuffle"));
+    c.set_mode(EditMode::Slip);
+    CHECK(doc.revision() == r0 && c.repeat_count() == 2);
+
+    // A crossfade held in the range comes with every copy, between that
+    // copy's own regions.
+    Region a = make_region(20, "A", kBar, kBar);
+    Region b = make_region(21, "B", 2 * kBar, kBar);   // butts A
+    Crossfade x;
+    x.left = 20;
+    x.right = 21;
+    x.length = 4800;
+    ModelDocument xdoc(session_with({a, b}, {x}));
+    EditController xc(xdoc);
+    xc.set_viewport(4000, 400);
+    xc.scroll_to_frame(0);
+    select_range(xc, 0, kBar, 3 * kBar);
+    CHECK(xc.repeat(2, why));
+    const Playlist& xp = lane(xdoc.snapshot(), 0);
+    CHECK(xp.regions.size() == 6 && xp.crossfades.size() == 3);
+    for (const Crossfade& f : xp.crossfades) {
+        const auto left = std::find_if(xp.regions.begin(), xp.regions.end(),
+                                       [&f](const Region& r) { return r.id == f.left; });
+        const auto right = std::find_if(xp.regions.begin(), xp.regions.end(),
+                                        [&f](const Region& r) { return r.id == f.right; });
+        CHECK(left != xp.regions.end() && right != xp.regions.end());
+        CHECK(left->end() == right->position);
+    }
+    CHECK(valid(xdoc.snapshot()));
+    return 0;
+}
+
+int test_repeat_count_text() {
+    int n = 0;
+    CHECK(parse_repeat_count("3", n) && n == 3);
+    CHECK(parse_repeat_count(" 12 ", n) && n == 12);
+    CHECK(parse_repeat_count("+4", n) && n == 4);
+    CHECK(parse_repeat_count("0", n) && n == 0);
+    CHECK(parse_repeat_count("-1", n) && n == -1);
+    CHECK(parse_repeat_count("2147483647", n) && n == 2147483647);
+    CHECK(!parse_repeat_count("", n));
+    CHECK(!parse_repeat_count(" ", n));
+    CHECK(!parse_repeat_count("-", n));
+    CHECK(!parse_repeat_count("3x", n));
+    CHECK(!parse_repeat_count("2.5", n));
+    CHECK(!parse_repeat_count("1 2", n));
+    CHECK(!parse_repeat_count("2147483648", n));
+    CHECK(!parse_repeat_count("99999999999999999999", n));
+    return 0;
+}
+
 // --- the member limit -------------------------------------------------------
 //
 // Track 1 holds kMaxCompoundMembers + 44 one-thousand-frame regions, butted.
@@ -464,6 +574,23 @@ int test_limit() {
     CHECK(why == "Duplicate needs " + std::to_string(kLimit + 2) + " changes; at most " + limit +
                      " in one edit. Nothing was duplicated.");
     CHECK(doc.revision() == r0 && !doc.can_undo());
+
+    // Repeat of the first region over the rest: a removal and a placement a
+    // copy, counted before anything is built, so even an int's worth of
+    // copies is refused by its size rather than allocated.
+    c.select_range(0, 0, span(1));   // under a pixel: set as a drag leaves it
+    CHECK(c.repeat(static_cast<int>(kLimit / 2), why));
+    CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
+    CHECK(c.undo(why));
+    c.select_range(0, 0, span(1));   // under a pixel: set as a drag leaves it
+    r0 = doc.revision();
+    CHECK(!c.repeat(static_cast<int>(kLimit / 2 + 1), why));
+    CHECK(why == "Repeat needs " + std::to_string(kLimit + 2) + " changes; at most " + limit +
+                     " in one edit. Nothing was repeated.");
+    CHECK(!c.repeat(2147483647, why));
+    CHECK(why == "Repeat needs " + std::to_string(kLimit + 43 + 2147483647ull) +
+                     " changes; at most " + limit + " in one edit. Nothing was repeated.");
+    CHECK(doc.revision() == r0 && !doc.can_undo());
     return 0;
 }
 
@@ -482,6 +609,19 @@ QQuickItem* named(QQuickItem* item, const QString& name) {
         if (QQuickItem* f = named(c, name)) return f;
     }
     return nullptr;
+}
+
+// An Edit menu item below the first, once it is where it is drawn. The
+// menu's Repeater rebuilds its rows when the undo text changes, and its
+// Column places them at the next polish: until then every new row sits on
+// the first, and a click meant for Duplicate lands on Undo.
+QQuickItem* menu_item(QQuickItem* root, const QString& name) {
+    QQuickItem* item = nullptr;
+    QTest::qWaitFor([&]() {
+        item = named(root, name);
+        return item != nullptr && item->parentItem() != nullptr && item->parentItem()->y() > 0;
+    });
+    return item;
 }
 
 void click(QQuickView& view, QQuickItem* item) {
@@ -555,9 +695,54 @@ int test_menu() {
     // Duplicate from the menu: what Ctrl+D sends.
     CHECK(session.controller().select_region(11));
     click(view, button);
-    click(view, named(root, QStringLiteral("editDuplicate")));
+    click(view, menu_item(root, QStringLiteral("editDuplicate")));
     CHECK(lane(document.snapshot(), 0).regions.size() == 3);
     CHECK(session.undoText() == QStringLiteral("Undo Duplicate"));
+    CHECK(session.controller().undo(why));
+    session.documentUpdated();
+
+    // Repeat, Pro Tools' Alt+R: with nothing to repeat it says why and asks
+    // for no number.
+    QQuickItem* panel = named(root, QStringLiteral("repeatPanel"));
+    QQuickItem* input = named(root, QStringLiteral("repeatInput"));
+    CHECK(panel != nullptr && input != nullptr && !panel->isVisible());
+    session.controller().select_track(1);
+    session.controller().set_insertion(0);
+    key(view, Qt::Key_R, Qt::AltModifier);
+    CHECK(!panel->isVisible());
+    CHECK(model.statusText().contains(QStringLiteral("nothing was repeated")));
+
+    // On B it asks, offering the last count, and says what one copy is.
+    CHECK(session.controller().select_region(11));
+    key(view, Qt::Key_R, Qt::AltModifier);
+    CHECK(panel->isVisible() && input->hasActiveFocus() && model.textEntry());
+    CHECK(input->property("text").toString() == QStringLiteral("1"));
+    CHECK(named(root, QStringLiteral("repeatWhat"))->property("text").toString()
+              .contains(QString::fromStdString(" of " + document.snapshot().edit->tracks[0]->name)));
+    // While the field has the keyboard, typing is the number, not keys.
+    // Text that is no count leaves the dialog open with the reason.
+    const uint64_t r0 = document.revision();
+    QTest::keyClick(&view, 'x');
+    QTest::keyClick(&view, Qt::Key_Return);
+    CHECK(panel->isVisible() && document.revision() == r0);
+    CHECK(model.statusText().contains(QStringLiteral("is not a number of repeats")));
+    input->setProperty("text", QString());
+    QTest::keyClick(&view, '3');
+    QTest::keyClick(&view, Qt::Key_Return);
+    CHECK(!panel->isVisible() && !model.textEntry());
+    CHECK(lane(document.snapshot(), 0).regions.size() == 5);
+    CHECK(session.undoText() == QStringLiteral("Undo Repeat"));
+
+    // From the menu, which offers 3 now; Escape leaves it unsent.
+    CHECK(session.controller().undo(why));
+    session.documentUpdated();
+    CHECK(session.controller().select_region(11));
+    click(view, button);
+    click(view, menu_item(root, QStringLiteral("editRepeat")));
+    CHECK(panel->isVisible() && input->property("text").toString() == QStringLiteral("3"));
+    QTest::keyClick(&view, Qt::Key_Escape);
+    CHECK(!panel->isVisible() && !model.textEntry());
+    CHECK(lane(document.snapshot(), 0).regions.size() == 2);
     return 0;
 }
 
@@ -566,7 +751,8 @@ int test_menu() {
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_copy_paste() || test_cut_clear_duplicate() || test_fades_and_crossfades() ||
+    if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() ||
+        test_repeat_count_text() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() ||
         test_limit() || test_menu()) {
         return 1;

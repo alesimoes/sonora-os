@@ -71,6 +71,9 @@ if [[ "$MODE" == screenshot ]]; then
   # Copy and Paste: the snare's crossfaded edit pasted on the next track,
   # with the Edit menu open on "Undo Paste".
   shoot "$base-clipboard.png" --window edit --edit-view clipboard
+  # Repeat: the snare's region repeated three times, and the Repeat dialog
+  # open again on it, offering the count just used.
+  shoot "$base-repeat.png" --window edit --edit-view repeat
   # The Mix window with the plugin chooser open, and with a parameter panel.
   shoot "${mix%.png}-browser.png" --window mix --insert-view browser
   shoot "${mix%.png}-panel.png" --window mix --insert-view panel
@@ -129,7 +132,7 @@ if [[ "$MODE" == screenshot ]]; then
   kill "$pid" 2>/dev/null || true; wait "$pid" || true
   rm -rf "$engine_dir"
   echo "saved /out/$base-refusal.png and /out/$base-refusal-reconnect.png"
-  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-keys.png and $base-repairs.png"
+  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-repeat.png, $base-keys.png and $base-repairs.png"
   exit 0
 fi
 

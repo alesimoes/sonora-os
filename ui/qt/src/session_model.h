@@ -270,6 +270,11 @@ signals:
     void refused(const QString& why);
     // Something done that the operator should see confirmed: "Saved ...".
     void notice(const QString& text);
+    // edit.repeat without a count, with something to repeat: the window
+    // asks for the number, offering `count` (the last one used), and sends
+    // edit.repeat again with it. `what` says what one copy is ("2.000 s of
+    // Gtr"), so the number is asked about something the operator can see.
+    void repeatRequested(int count, const QString& what);
 
 private:
     // Re-publishes what changed since the last call and marks the items.

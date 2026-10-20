@@ -171,6 +171,10 @@ public:
     // The same path as a key, for a click: the arm button sends exactly what
     // the profile's arm key would.
     Q_INVOKABLE void invoke(const QString& command, int target);
+    // The same with the value a dialog asked for (Repeat's count). True when
+    // it ran, so the dialog closes; on a refusal the reason is on the status
+    // line and the dialog stays open to correct it.
+    Q_INVOKABLE bool invokeWith(const QString& command, int target, const QString& argument);
     // Whether this build can run `command`, for drawing a control as
     // unavailable instead of letting it look live.
     Q_INVOKABLE bool implemented(const QString& command) const {

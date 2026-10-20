@@ -127,6 +127,28 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("edit.paste", [this](const CommandContext&, Why& why) { return ctl_.paste(why); });
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
+    // Pro Tools' Repeat asks for the number of repeats first. The key sends
+    // no count, so it opens the window's dialog, which sends the count back
+    // as the argument; there is nothing to ask about with nothing to repeat.
+    simple("edit.repeat", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            std::string name;
+            Frames length = 0;
+            if (!ctl_.can_repeat(why, &name, &length)) return false;
+            emit repeatRequested(ctl_.repeat_count(),
+                                 q(format_min_sec(length, ctl_.snapshot().settings.sample_rate)) +
+                                     QStringLiteral(" of ") + q(name));
+            return true;
+        }
+        int count = 0;
+        if (!parse_repeat_count(ctx.argument, count)) {
+            why = "\"" + ctx.argument +
+                  "\" is not a number of repeats; type a whole number, 1 or more. Nothing was "
+                  "repeated.";
+            return false;
+        }
+        return ctl_.repeat(count, why);
+    });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
     simple("edit.trim_start_to_insertion",
