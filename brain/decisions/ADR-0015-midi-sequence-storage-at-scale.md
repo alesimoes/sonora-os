@@ -1,7 +1,7 @@
 # ADR-0015 — MIDI sequences at scale: canonical chunks in memory, binary sidecar files on disk, a chunk table in the replicated window
 
-- Status: **Proposed**, 2026-10-20. Not implemented. The owner approves it
-  or not; the architect's recommendation is not acceptance.
+- Status: **Accepted by the owner, 2026-10-20**, with every recommended
+  default for O1–O5 ("For the owner"). Not implemented.
 - Date: 2026-10-20. Revised the same day with the rt-engineer's review of
   PR #102 ("accept with changes"); the PR thread maps each point to where
   it landed.
@@ -428,7 +428,8 @@ Each names the measurement that settles it and who runs it.
 
 ## For the owner
 
-Recommended defaults first; each is a decision only the owner makes.
+**Ruled by the owner, 2026-10-20: every recommended default below is
+accepted (O1–O5).**
 
 - **O1. MIDI out of the session file.** *Recommended: yes,* binary files in
   `MIDI Sequences/`, as §3. The cost is a session file that no longer shows
