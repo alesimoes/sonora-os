@@ -600,6 +600,35 @@ int test_time() {
     OK(ticks.front().major && ticks.front().label == "01:00:00:00");
     ruler_ticks(TimeFormat::BarsBeats, 0, 1200, 1000, s, ticks);
     OK(ticks.front().label == "1");
+
+    // A very long session zoomed out: 5,000 and 1,000,000 bars across 1000
+    // px. Bar labels thin by powers of two and reach the right edge; they
+    // used to stop where the first 4096 bar lines ended.
+    for (double bars : {5'000.0, 1'000'000.0}) {
+        const double fpp = bars * static_cast<double>(kBar) / 1000;
+        ruler_ticks(TimeFormat::BarsBeats, 0, fpp, 1000, s, ticks);
+        double last = -1e9;
+        int majors = 0;
+        int64_t stride = 0, previous = 0;
+        for (const auto& t : ticks) {
+            if (!t.major) continue;
+            OK(t.x - last >= 89.0);
+            const int64_t bar = std::stoll(t.label);
+            // One level for the whole ruler: every label the same number
+            // of bars from the one before, a power of two.
+            if (majors >= 1) {
+                const int64_t d = bar - previous;
+                OK(d > 0 && (d & (d - 1)) == 0);
+                OK(stride == 0 || d == stride);
+                stride = d;
+            }
+            previous = bar;
+            last = t.x;
+            ++majors;
+        }
+        OK(majors >= 5);
+        OK(last >= 1000 - 2 * 90.0);
+    }
     return 0;
 }
 
@@ -1409,7 +1438,36 @@ int test_files() {
         OK(region(other.snapshot(), 11)->fade_out.length == kBar / 2);
         OK(valid(other.snapshot()));
         OK(!said.isEmpty() && said.back().startsWith(QStringLiteral("Opened ")) &&
-           said.back().contains(QStringLiteral("fade-out shortened from 72000 to 48000")));
+           said.back().contains(QStringLiteral("1 value repaired")));
+        // The repair is a notice of its own, by key path with the old and
+        // the new, held rather than said once on the status line.
+        int held = 0;
+        QObject::connect(&opener, &SessionModel::repairsChanged, [&held]() { ++held; });
+        OK(opener.repairs().size() == 1);
+        const QVariantMap r = opener.repairs().at(0).toMap();
+        OK(r.value(QStringLiteral("path")).toString() ==
+           QStringLiteral("tracks[0].playlists[0].regions[1].fade_out.length"));
+        OK(r.value(QStringLiteral("was")).toString() == QStringLiteral("72000 frames"));
+        OK(r.value(QStringLiteral("now")).toString() == QStringLiteral("48000 frames"));
+        OK(r.value(QStringLiteral("why")).toString().contains(QStringLiteral("crossfade")));
+        // Modified: what is shown is not the file on disk, so another Open
+        // asks first and Save writes it.
+        OK(opener.dirty());
+        OK(!opener.openSessionFile(file, false, why) && contains(why, "unsaved"));
+        OK(opener.saveSession(why));
+        OK(!opener.dirty());
+        Loaded saved;
+        OK(read_session_file(f.fileName(), bytes, saved, why) && saved.repairs.empty());
+        OK(saved.file_version == kFormatVersion);
+        // Saving does not dismiss it; the operator does.
+        OK(opener.repairs().size() == 1 && held == 0);
+        opener.dismissRepair(5);
+        OK(opener.repairs().size() == 1 && held == 0);
+        opener.dismissRepair(0);
+        OK(opener.repairs().isEmpty() && held == 1);
+        // A session opened over a repaired one takes its notices away.
+        OK(opener.openSessionFile(f.fileName(), true, why));
+        OK(opener.repairs().isEmpty() && !opener.dirty());
     }
 
     // Not while a take is open.

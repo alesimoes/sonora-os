@@ -136,6 +136,13 @@ playback can follow edits; it is in flight.
              rounds meter denominators with a report per change; `ui/qt`
              bars|beats, grid, snap and ruler on `MusicalMap`;
              `measure_musical_map` (GCC; no MSVC toolchain here or in CI).
+       - [x] Follow-ups from the #98 review: a load repair is a
+             `model::Repair` (key path, old, new, why), shown one held
+             notice each in the footer until dismissed, the session opening
+             modified so Save writes the current format; the Transport
+             window's tempo list reads one map (n log n, was n²); the
+             Bars|Beats ruler thins labels by powers of two of bars instead
+             of losing them past 4096 bar lines.
        - [ ] After acceptance, ADR-0014 §9's phases in order: the rest of M-1
              (track kinds, MIDI regions, timebase tags, `midi_sources`,
              protocol 7, the format after 4; Unverified 6), M-2 backend MIDI ports, M-3 playback to ports,

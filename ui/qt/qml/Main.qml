@@ -150,6 +150,36 @@ Rectangle {
                 elide: Text.ElideRight
                 font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
             }
+            // One per value the loader changed to open this session, kept
+            // until dismissed: the old and the new value under its key path.
+            Repeater {
+                model: root.session.repairs
+                Row {
+                    id: repairRow
+                    objectName: "repairNotice"
+                    required property var modelData
+                    required property int index
+                    width: footerColumn.width
+                    spacing: Theme.space2
+                    SButton {
+                        objectName: "dismissRepair"
+                        text: "Dismiss"
+                        implicitHeight: 18
+                        fontPx: Theme.textCaption
+                        onClicked: root.session.dismissRepair(repairRow.index)
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width - parent.spacing - parent.children[0].width
+                        wrapMode: Text.Wrap
+                        text: "Repaired to open: " + repairRow.modelData.path + "  " +
+                              repairRow.modelData.was + " → " + repairRow.modelData.now +
+                              "  (" + repairRow.modelData.why + ")"
+                        color: Theme.caution
+                        font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                    }
+                }
+            }
             Repeater {
                 model: root.shell.notices
                 Text {
