@@ -595,6 +595,22 @@ int test_a_punch_the_model_refuses_crossfades_for_lands_without_them() {
     return 0;
 }
 
+// The fade the old take carries, which a take over it clamps or a punch
+// fits: fade-in to 10 frames before A, fade-out from 10 frames after B.
+bool fade_old_take(model::Document& doc) {
+    const model::Playlist& pl = active_playlist(doc.current(), 0);
+    const model::Id playlist = pl.id;
+    const model::Id region = pl.regions.at(0).id;
+    model::ReplicationUpdate u;
+    std::string why;
+    return doc.apply(model::SetFade{playlist, region, model::FadeEnd::In,
+                                    {kA - 10, model::FadeShape::Linear}},
+                     u, why) &&
+           doc.apply(model::SetFade{playlist, region, model::FadeEnd::Out,
+                                    {kOldLength - kB - 10, model::FadeShape::Linear}},
+                     u, why);
+}
+
 // Pro Tools shortens a fade beside a punch to make room for the punch's
 // crossfade and never refuses the record; the model does the same
 // (RecordTake fits fades), and the take's report names each one, so the
@@ -610,16 +626,7 @@ int test_a_punch_names_the_fades_it_shortened() {
         CHECK(s.create_dirs());
         model::Document doc(engine_document(s));
         CHECK(place_old_take(doc, cfg));
-        const model::Id playlist = active_playlist(doc.current(), 0).id;
-        const model::Id region = active_playlist(doc.current(), 0).regions.at(0).id;
-        model::ReplicationUpdate u;
-        std::string why;
-        CHECK(doc.apply(model::SetFade{playlist, region, model::FadeEnd::In,
-                                       {kA - 10, model::FadeShape::Linear}},
-                        u, why));
-        CHECK(doc.apply(model::SetFade{playlist, region, model::FadeEnd::Out,
-                                       {kOldLength - kB - 10, model::FadeShape::Linear}},
-                        u, why));
+        CHECK(fade_old_take(doc));
 
         Punched p;
         CHECK(punch(s, punch_range(), static_cast<uint64_t>(kB + kH + 64), p));
@@ -635,6 +642,87 @@ int test_a_punch_names_the_fades_it_shortened() {
                                           "from 2990.0 ms to 2980.0 ms"));
         CHECK(mentions(r.fade_notices[1], "take 1 shortened the fade-out of \"Old\" on track 1 "
                                           "from 14990.0 ms to 14980.0 ms"));
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// A take that is not a punch has no crossfade. Recorded over [0, 6000) it
+// cuts the old take's start, leaving [6000, 20000), shorter than its
+// fade-out, which the overwrite clamps: not a crossfade making room, and
+// not reported as one (PR #103 review).
+int test_an_unpunched_take_names_no_fade() {
+    const SessionConfig cfg = punch_config("test_closed_take_unpunched_fades");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Playlist& old = active_playlist(doc.current(), 0);
+        model::ReplicationUpdate u;
+        std::string why;
+        CHECK(doc.apply(model::SetFade{old.id, old.regions.at(0).id, model::FadeEnd::Out,
+                                       {18000, model::FadeShape::Linear}},
+                        u, why));
+        for (auto& t : s.tracks()) t->set_rec_armed(true);
+        s.disk().start();
+        CHECK(s.start_recording(1));
+        roll_to(s, 6000);
+        CHECK(s.stop());
+        std::vector<Session::ClosedTake> closed = s.closed_takes();
+        CHECK(closed.size() == 1 && !closed[0].punched);
+        const TakeAdded r = add_closed_take(doc, s, closed[0]);
+        CHECK(r.refused.empty() && r.track_notices.empty());
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.crossfades.empty() && pl.regions.size() == 2);
+        // The case that must stay quiet: the fade-out was clamped.
+        CHECK(pl.regions[1].fade_out.length == pl.regions[1].length);
+        CHECK(pl.regions[1].length < 18000);
+        CHECK(r.fade_notices.empty());
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// A punch the model refused the crossfades for goes in without them: no
+// crossfade made room for anything, so no fade is named, even one the
+// overwrite clamped (PR #103 review).
+int test_a_punch_without_its_crossfades_names_no_fade() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_tight_fades");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        const model::Id playlist = active_playlist(doc.current(), 0).id;
+        const model::Id first = active_playlist(doc.current(), 0).regions.at(0).id;
+        const model::Id second = doc.current().next_id;
+        model::ReplicationUpdate u;
+        std::string why;
+        CHECK(doc.apply(model::SplitRegion{playlist, first, 1000, second}, u, why));
+        model::Crossfade edit{first, second, kX, model::Align::Centre,
+                              model::FadeShape::EqualPower};
+        CHECK(doc.apply(model::SetCrossfade{playlist, edit}, u, why));
+        // Longer than the part the punch leaves after B, which the
+        // overwrite clamps with no crossfade there to blame.
+        CHECK(doc.apply(model::SetFade{playlist, second, model::FadeEnd::Out,
+                                       {18000, model::FadeShape::Linear}},
+                        u, why));
+
+        PunchRange range = punch_range();
+        range.monitor_in = 1030;
+        range.capture_from = 30;
+        Punched p;
+        CHECK(punch(s, range, static_cast<uint64_t>(kB + kH + 64), p));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 1 was punched in without its crossfades"));
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 4 && pl.regions[3].fade_out.length == kOldLength - kB);
+        CHECK(r.fade_notices.empty());
     }
     std::filesystem::remove_all(cfg.dir);
     return 0;
@@ -762,6 +850,8 @@ int main() {
     failed += test_a_punch_over_nothing_has_no_crossfade();
     failed += test_a_punch_the_model_refuses_crossfades_for_lands_without_them();
     failed += test_a_punch_names_the_fades_it_shortened();
+    failed += test_an_unpunched_take_names_no_fade();
+    failed += test_a_punch_without_its_crossfades_names_no_fade();
     failed += test_a_punch_stopped_before_a_places_nothing();
     failed += test_a_punch_captured_after_its_out_point_is_said();
     failed += test_the_document_punch();
@@ -769,6 +859,6 @@ int main() {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
     }
-    std::printf("closed_take: 15 passed\n");
+    std::printf("closed_take: 17 passed\n");
     return 0;
 }

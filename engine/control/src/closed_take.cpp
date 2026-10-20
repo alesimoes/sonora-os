@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <unordered_map>
 
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
@@ -175,34 +176,47 @@ bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
     return true;
 }
 
-// One notice per fade beside the take that the take shortened: Pro Tools
-// truncates such a fade and never refuses the record, and so does the model
-// (RecordTake fits fades to its crossfades), but the operator should hear
-// what changed. Only an edge the take did not cut is compared, so the fade
-// the overwrite dropped at the cut, where the crossfade now sits, is not
-// news. The right part of a region the take split is compared with that
-// region, whose fade-out it carries.
+// One notice per fade beside a punch that its crossfade shortened: Pro
+// Tools truncates such a fade and never refuses the record, and so does the
+// model (RecordTake fits fades to its crossfades), but the operator should
+// hear what changed. Only the regions a crossfade of `rec` joins the take
+// to are looked at, so a fade a plain overwrite clamped (no crossfade) is
+// never blamed on one. Only an edge the take did not cut is compared: the
+// fade the overwrite dropped at the cut, where the crossfade now sits, is
+// not news. The right part of a region the take split is compared with
+// that region, whose fade-out it carries.
 void say_shortened_fades(const model::EditState& before, const model::Snapshot& after,
                          const model::RecordTake& rec, int track, const std::string& which,
                          std::vector<std::string>& out) {
+    if (rec.crossfades.empty()) return;
     const model::Playlist* was = playlist_by_id(before, rec.playlist);
     const model::Playlist* now = playlist_by_id(*after.edit, rec.playlist);
     if (was == nullptr || now == nullptr) return;
     const model::Region& take = rec.region;
+    std::unordered_map<model::Id, const model::Region*> old;
+    const model::Region* split = nullptr;
+    for (const model::Region& o : was->regions) {
+        old.emplace(o.id, &o);
+        if (o.position < take.position && o.end() > take.end()) split = &o;
+    }
+    std::unordered_map<model::Id, const model::Region*> current;
+    for (const model::Region& r : now->regions) current.emplace(r.id, &r);
+
     const double rate = after.settings.sample_rate;
     const auto ms = [rate](model::Frames f) {
         char text[32];
         std::snprintf(text, sizeof text, "%.1f ms", rate > 0 ? 1000.0 * f / rate : 0.0);
         return std::string(text);
     };
-    for (const model::Region& r : now->regions) {
-        if (r.id == take.id) continue;
-        const model::Region* origin = nullptr;
-        for (const model::Region& o : was->regions) {
-            const bool split = r.id == rec.split_right_id && o.position < take.position &&
-                               o.end() > take.end();
-            if (o.id == r.id || split) origin = &o;
-        }
+    for (const model::Crossfade& x : rec.crossfades) {
+        const model::Id id = x.left == take.id ? x.right : x.left;
+        const auto at = current.find(id);
+        if (at == current.end()) continue;
+        const model::Region& r = *at->second;
+        const auto was_at = old.find(id);
+        const model::Region* origin = was_at != old.end() ? was_at->second
+                                      : id == rec.split_right_id ? split
+                                                                 : nullptr;
         if (origin == nullptr) continue;
         const auto say = [&](const char* end, const model::Fade& from, const model::Fade& to) {
             if (to.length >= from.length) return;
@@ -394,7 +408,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         model::ReplicationUpdate u;
         if (document.apply(part_of(true), u, why)) {
             out.updates.push_back(std::move(u));
-            say_fades(*before);
+            if (take.punched) say_fades(*before);
             continue;
         }
         // A punch's crossfades are checked against the model's rules here,
@@ -409,7 +423,6 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
             out.updates.push_back(std::move(u));
             out.track_notices.push_back(which + " was punched in without its crossfades: " +
                                         why);
-            say_fades(*before);
             continue;
         }
 
