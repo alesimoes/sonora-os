@@ -219,11 +219,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              edits, crossfade clears and punches shorten the fade instead,
              and the loader repairs older v2 files the same way, reporting
              each shortened fade on Open (PR #69).
-       - [ ] Once the engine sends punch crossfades (`add_closed_take` sends
-             none today), the take's report names any neighbour's fade the
-             punch shortened (`RecordTake` runs `fit_fades_to_crossfades`).
-             Pro Tools truncates the fade and never refuses the record; the
-             operator should still hear what changed (PR #69 review, note 3).
+       - [x] The take's report names any neighbour's fade the punch
+             shortened (`RecordTake` runs `fit_fades_to_crossfades`). Pro
+             Tools truncates the fade and never refuses the record; the
+             operator still hears what changed (PR #69 review, note 3):
+             `TakeAdded::fade_notices`, one engine Notice each, "take 4
+             shortened the fade-in of "Gtr" on track 2 from 250.0 ms to
+             240.0 ms to make room for its crossfade"; only edges the take
+             did not cut are compared (`t3-punch-fade-notices`; ctest
+             closed_take test_a_punch_names_the_fades_it_shortened).
        - [x] Cut, Copy, Paste, Duplicate, and Clear and Separate on a range:
              each one `Compound` with a label ("Cut", "Paste"), within
              `model::kMaxCompoundMembers` (`feature/ui-clipboard`, PR #86;
