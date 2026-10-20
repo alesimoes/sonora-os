@@ -324,7 +324,10 @@ void FakeEngine::apply_mix() {
     uint32_t silent = 0;
     for (std::size_t i = 0; i < silent_.size(); ++i) {
         silent_[i] = i < tracks.size() && tracks[i]->kind != model::TrackKind::Audio;
-        if (silent_[i]) ++silent;
+        if (!silent_[i]) continue;
+        ++silent;
+        // As the engine: an arm left on it goes, but not during a take.
+        if (mode_ != TransportState::Recording) armed_[i] = false;
     }
     // The real engine's notice, said when the count changes
     // (EngineControlServer::show_document).
@@ -920,12 +923,23 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             return false;
         }
         if (take_running()) return false;
+        // As the engine (may_arm_track): a MIDI or instrument track records
+        // no audio in this version.
+        if (!armed_[idx] && silent_[idx]) {
+            const model::TrackEdit& t = *document_->current().edit->tracks[idx];
+            why = "\"" + t.name + "\" is a " +
+                  (t.kind == model::TrackKind::Midi ? "MIDI" : "instrument") +
+                  " track; this version records audio only";
+            return false;
+        }
         armed_[idx] = !armed_[idx];
         return true;
     }
     if (id == "track.arm_all" || id == "track.disarm_all") {
         if (take_running()) return false;
-        std::fill(armed_.begin(), armed_.end(), id == "track.arm_all");
+        for (std::size_t i = 0; i < armed_.size(); ++i) {
+            armed_[i] = id == "track.arm_all" && !silent_[i];
+        }
         return true;
     }
     why = "not handled";

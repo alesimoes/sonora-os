@@ -33,10 +33,17 @@ using MayRecord = std::function<bool(std::string& why)>;
 // does not hold the document the punch range is saved in.
 using PunchFor = std::function<bool(PunchRange& range)>;
 
+// Asked before an engine track is armed: false keeps it disarmed, with
+// `why` for the operator. The session does not know which document track
+// sits on an engine track, nor its kind; a MIDI or instrument track records
+// no audio (ADR-0014 M-1).
+using MayArm = std::function<bool(std::size_t engine_track, std::string& why)>;
+
 // `take` is the number the next take will be written under; `quit` is set by
 // app.quit. Both are owned by the caller and must outlive `reg`, as must
 // `may_record`, `punch_for` and what they refer to. Without `may_record`
-// every take may start; without `punch_for` every take is whole.
+// every take may start; without `punch_for` every take is whole; without
+// `may_arm` every engine track may be armed.
 // With `playback` (which must outlive `reg` too), transport.play,
 // transport.toggle_play and transport.return_to_zero are installed as well,
 // gated on the plan's residency through it, and a take started from a key
@@ -44,6 +51,6 @@ using PunchFor = std::function<bool(PunchRange& range)>;
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record = nullptr,
                               PlaybackController* playback = nullptr,
-                              PunchFor punch_for = nullptr);
+                              PunchFor punch_for = nullptr, MayArm may_arm = nullptr);
 
 }  // namespace sonora

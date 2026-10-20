@@ -285,6 +285,19 @@ struct MidiSource {                         // SourcePool, append-only
   empty undo step. The sequence's lists are kept by `stable_sort` after
   the removals: what was there stays before what is added at the same
   tick.
+- **Settled in the PR #100 review, inside protocol 7.** Each `EditMidi`
+  removal carries the value it expects with its index
+  (`[index, start, length, channel, pitch, velocity, release]`, and the same
+  for event and SysEx rows); a mismatch is refused by name ("note 14 is not
+  the note this edit removes; the region changed under it"), so a request
+  resolved against a stale replica never removes the wrong note.
+  `PlaceMidiRegion` has an optional `data_from` (`{playlist, region}`): the
+  new region shares that region's sequence, for duplicate, repeat, paste
+  and a move to another track; inline stays for recording and import.
+- The engine arms, monitors and records no audio on the engine track under
+  a MIDI or instrument track (`may_arm_track`, `apply_monitoring`), and a
+  closed take leaves such a file out with a notice; a member the model
+  refuses costs only its own track's placement.
 
 ### 3.2 What a tempo change does
 

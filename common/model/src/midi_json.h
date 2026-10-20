@@ -17,12 +17,18 @@
 
 #include "sonora/json/json.h"
 #include "sonora/model/model.h"
+#include "sonora/model/operations.h"
 
 namespace sonora::model::detail {
 
 json::Value note_row(const midi::Note& n);
 json::Value event_row(const MidiEvent& e);
 json::Value sysex_row(const MidiSysEx& x);
+// An EditMidi removal: the row above with the index in front,
+// [index, start, length, ...], so the value it expects travels with it.
+json::Value note_removal_row(const NoteRemoval& r);
+json::Value event_removal_row(const EventRemoval& r);
+json::Value sysex_removal_row(const SysExRemoval& r);
 
 // Why a list did not read: `where` is relative to the list ("[3][2]") and
 // `at` the node, for a caller that reports lines.
@@ -35,5 +41,11 @@ struct RowError {
 bool read_note_rows(const json::Value& list, std::vector<midi::Note>& out, RowError& error);
 bool read_event_rows(const json::Value& list, std::vector<MidiEvent>& out, RowError& error);
 bool read_sysex_rows(const json::Value& list, std::vector<MidiSysEx>& out, RowError& error);
+bool read_note_removal_rows(const json::Value& list, std::vector<NoteRemoval>& out,
+                            RowError& error);
+bool read_event_removal_rows(const json::Value& list, std::vector<EventRemoval>& out,
+                             RowError& error);
+bool read_sysex_removal_rows(const json::Value& list, std::vector<SysExRemoval>& out,
+                             RowError& error);
 
 }  // namespace sonora::model::detail

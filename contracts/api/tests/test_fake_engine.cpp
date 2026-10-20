@@ -398,6 +398,24 @@ void midi_tracks() {
     poll();
     CHECK(e.state().take_peak(0) == 0.0f);
     CHECK(e.state().take_peak(1) > 0.0f);
+    // Not armed with the rest, and not armed on its own (PR #100 review).
+    CommandRequest arm;
+    arm.command = "track.arm_all";
+    e.send(arm);
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    const uint64_t refused_seq = e.send(arm);
+    now += 30'000'000;
+    e.publish();
+    poll();
+    CHECK((e.state().track(0).flags & kTrackArmed) == 0);
+    CHECK((e.state().track(1).flags & kTrackArmed) != 0);
+    bool told = false;
+    for (const CommandReply& r : in.replies) {
+        told = told || (r.seq == refused_seq && r.result == DispatchResult::Failed &&
+                        r.message.find("\"Bass\" is a MIDI track") != std::string::npos);
+    }
+    CHECK(told);
 
     auto data = std::make_shared<model::MidiSequence>();
     sonora::midi::Note n;

@@ -127,11 +127,11 @@ std::vector<Operation> one_of_each() {
     EditMidi em;
     em.playlist = 3;
     em.region = 41;
-    em.remove_notes = {0, 4};
+    em.remove_notes = {NoteRemoval{0, seq->notes[0]}, NoteRemoval{4, seq->notes[1]}};
     em.add_notes = {midi::Note{10, 20, 2, 60, 1, 127}};
-    em.remove_events = {1};
+    em.remove_events = {EventRemoval{1, seq->events[1]}};
     em.add_events = {MidiEvent{30, 0xE0, 0, 64}};
-    em.remove_sysex = {0};
+    em.remove_sysex = {SysExRemoval{0, seq->sysex[0]}};
     em.add_sysex = {MidiSysEx{40, {0xF0, 0xF7}}};
 
     return {AddSource{src},
@@ -164,7 +164,7 @@ std::vector<Operation> one_of_each() {
             SetInsertParams{30, {{"gain", 1.5f}, {"mix", 0.25f}}},
             SetInsertState{30, state},
             AddMidiSource{msrc},
-            PlaceMidiRegion{3, mr, 42},
+            PlaceMidiRegion{3, mr, 42, MidiDataRef{5, 9}},
             em,
             SetMidiRouting{2, MidiRouting{"all", 0, "none", 16}},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
@@ -277,6 +277,16 @@ int test_codec_refuses_what_is_not_an_operation() {
              "add_notes": [], "remove_events": [], "add_events": [], "remove_sysex": [],
              "add_sysex": []})",
          "remove_notes"},
+        // A protocol-7 draft's bare index: a removal carries its value.
+        {R"({"op": "EditMidi", "playlist": 1, "region": 2, "remove_notes": [3],
+             "add_notes": [], "remove_events": [], "add_events": [], "remove_sysex": [],
+             "add_sysex": []})",
+         "remove_notes[0]: must be [index, start, length"},
+        {R"({"op": "PlaceMidiRegion", "playlist": 1, "split_right_id": 0,
+             "region": {"id": 2, "name": "", "position_ticks": 0, "length_ticks": 1,
+                        "offset_ticks": 0, "mute": false, "source": 0, "notes": [],
+                        "events": [], "sysex": []}})",
+         "missing required key \"data_from\""},
         {R"({"op": "EditMidi", "playlist": 1, "region": 2, "remove_notes": [],
              "add_notes": [[0, 1, 2]], "remove_events": [], "add_events": [],
              "remove_sysex": [], "add_sysex": []})",

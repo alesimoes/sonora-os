@@ -747,10 +747,34 @@ public:
     }
 
     bool operator()(const PlaceMidiRegion& op) {
-        const MidiRegion& region = op.region;
+        MidiRegion region = op.region;
         if (!fresh(region.id)) return false;
+        if (op.data_from) {
+            const MidiSequence* own = region.data.get();
+            if (own != nullptr &&
+                !(own->notes.empty() && own->events.empty() && own->sysex.empty())) {
+                return fail("region " + str(region.id) +
+                            ": carries a sequence of its own and data_from; send one or the"
+                            " other");
+            }
+            const MidiDataRef& ref = *op.data_from;
+            Located at;
+            const MidiRegion* from = nullptr;
+            if (locate_midi_playlist(*before_.edit, ref.playlist, at)) {
+                const MidiPlaylist& p =
+                    *before_.edit->tracks[at.track]->midi_playlists[at.playlist];
+                const std::size_t i = midi_region_index(p, ref.region);
+                if (i != kNone) from = &p.regions[i];
+            }
+            if (from == nullptr) {
+                return fail("data_from: region " + str(ref.region) +
+                            " is not on MIDI playlist " + str(ref.playlist));
+            }
+            // Shared, already checked when it was first placed.
+            region.data = from->data;
+        }
         std::string why = detail::midi_region_problem(region, *before_.sources);
-        if (why.empty()) {
+        if (why.empty() && !op.data_from) {
             std::string where;
             why = detail::sequence_problem(*region.data, where);
             if (!why.empty()) why = where + ": " + why;
@@ -803,9 +827,10 @@ public:
             if (i == kNone) return no_region(op.region, op.playlist);
             const MidiSequence& old = *p.regions[i].data;
             auto seq = std::make_shared<MidiSequence>();
-            if (!kept(old.notes, op.remove_notes, "remove_notes", seq->notes) ||
-                !kept(old.events, op.remove_events, "remove_events", seq->events) ||
-                !kept(old.sysex, op.remove_sysex, "remove_sysex", seq->sysex)) {
+            if (!kept(old.notes, op.remove_notes, "remove_notes", "note", seq->notes) ||
+                !kept(old.events, op.remove_events, "remove_events", "event", seq->events) ||
+                !kept(old.sysex, op.remove_sysex, "remove_sysex", "SysEx message",
+                      seq->sysex)) {
                 return false;
             }
             // Stable throughout: what was there stays before what is added
@@ -892,21 +917,34 @@ private:
         return fail(std::string(list) + "[" + str(static_cast<std::uint64_t>(i)) + "]: " + why);
     }
 
-    // `from` without the elements `remove` names, into `out`.
-    template <typename T>
-    bool kept(const std::vector<T>& from, const std::vector<std::uint32_t>& remove,
-              const char* list, std::vector<T>& out) {
+    static const midi::Note& expected(const NoteRemoval& r) { return r.note; }
+    static const MidiEvent& expected(const EventRemoval& r) { return r.event; }
+    static const MidiSysEx& expected(const SysExRemoval& r) { return r.sysex; }
+
+    // `from` without the elements `remove` names, into `out`. Each must hold
+    // the value its removal expects: an index alone would remove whatever a
+    // concurrent edit moved there.
+    template <typename T, typename R>
+    bool kept(const std::vector<T>& from, const std::vector<R>& remove, const char* list,
+              const char* what, std::vector<T>& out) {
         out.reserve(from.size() + 1);
         std::size_t r = 0;
         for (std::size_t k = 0; k < remove.size(); ++k) {
-            if (remove[k] >= from.size() || (k > 0 && remove[k] <= remove[k - 1])) {
-                return fail(std::string(list) + "[" + str(static_cast<std::uint64_t>(k)) +
-                            "]: indices must be increasing and below " +
+            const std::string at =
+                std::string(list) + "[" + str(static_cast<std::uint64_t>(k)) + "]: ";
+            const std::uint32_t i = remove[k].index;
+            if (i >= from.size() || (k > 0 && i <= remove[k - 1].index)) {
+                return fail(at + "indices must be increasing and below " +
                             str(static_cast<std::uint64_t>(from.size())));
+            }
+            if (!(from[i] == expected(remove[k]))) {
+                return fail(at + what + " " + str(static_cast<std::uint64_t>(i)) +
+                            " is not the " + what +
+                            " this edit removes; the region changed under it");
             }
         }
         for (std::size_t k = 0; k < from.size(); ++k) {
-            if (r < remove.size() && remove[r] == k) {
+            if (r < remove.size() && remove[r].index == k) {
                 ++r;
                 continue;
             }

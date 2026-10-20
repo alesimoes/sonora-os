@@ -263,26 +263,61 @@ struct AddMidiSource {
     MidiSource source;
 };
 
-// As PlaceRegion, overwrite included, on a MIDI playlist.
+// A region already in the session, whose sequence a new one shares.
+struct MidiDataRef {
+    Id playlist = 0;
+    Id region = 0;
+    bool operator==(const MidiDataRef& o) const {
+        return playlist == o.playlist && region == o.region;
+    }
+};
+
+// As PlaceRegion, overwrite included, on a MIDI playlist. The sequence is
+// either inline in `region.data` (a recording, an import) or, with
+// `data_from`, the one an existing region holds, shared and not copied:
+// duplicate, repeat, paste and a move to another track send no notes, and
+// every copy charges the undo budget a few words. With `data_from`,
+// `region.data` is null or empty.
 struct PlaceMidiRegion {
     Id playlist = 0;
     MidiRegion region;
     Id split_right_id = 0;
+    std::optional<MidiDataRef> data_from;
+};
+
+// A removal names the element by its index in the region's current
+// sequence and by the value it expects there. A request resolved against a
+// sequence that has changed since (another edit in flight, a merge take)
+// is refused by name rather than removing whatever now sits at the index.
+struct NoteRemoval {
+    std::uint32_t index = 0;
+    midi::Note note;
+    bool operator==(const NoteRemoval& o) const { return index == o.index && note == o.note; }
+};
+struct EventRemoval {
+    std::uint32_t index = 0;
+    MidiEvent event;
+    bool operator==(const EventRemoval& o) const { return index == o.index && event == o.event; }
+};
+struct SysExRemoval {
+    std::uint32_t index = 0;
+    MidiSysEx sysex;
+    bool operator==(const SysExRemoval& o) const { return index == o.index && sysex == o.sysex; }
 };
 
 // Every note, event-list, quantize, transpose, velocity and legato edit
-// resolves to one of these. The removals are indices into the region's
-// current sequence, each list strictly increasing; the additions are
-// values, sorted in. The region gets a sequence of its own, so regions
-// that shared the old one (a split, a paste) keep it unchanged.
+// resolves to one of these. Each removal list is strictly increasing by
+// index; the additions are values, sorted in. The region gets a sequence of
+// its own, so regions that shared the old one (a split, a paste) keep it
+// unchanged.
 struct EditMidi {
     Id playlist = 0;
     Id region = 0;
-    std::vector<std::uint32_t> remove_notes;
+    std::vector<NoteRemoval> remove_notes;
     std::vector<midi::Note> add_notes;
-    std::vector<std::uint32_t> remove_events;
+    std::vector<EventRemoval> remove_events;
     std::vector<MidiEvent> add_events;
-    std::vector<std::uint32_t> remove_sysex;
+    std::vector<SysExRemoval> remove_sysex;
     std::vector<MidiSysEx> add_sysex;
 };
 

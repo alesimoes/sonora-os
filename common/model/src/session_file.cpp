@@ -147,7 +147,7 @@ bool v3_to_v4(Value& root, std::vector<Repair>& repairs, std::string&) {
 
 // v4 -> v5 (ADR-0014 §3): every track is an audio track and gains
 // "kind": "audio"; the top level gains "midi_sources": []. Nothing else.
-bool v4_to_v5(Value& root, std::vector<std::string>&, std::string& error) {
+bool v4_to_v5(Value& root, std::vector<Repair>&, std::string& error) {
     if (root.find("midi_sources") != nullptr) {
         error = "the file has \"midi_sources\", which version 4 does not define";
         return false;

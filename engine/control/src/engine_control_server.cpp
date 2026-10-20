@@ -191,8 +191,12 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     // Read as the take starts, which with the residency gate is in pump(),
     // on this thread: the range then is the one the operator last set.
     install_session_commands(registry_, session_, take_, quit_, opts_.may_record,
-                             playback_.get(), [this](PunchRange& range) {
+                             playback_.get(),
+                             [this](PunchRange& range) {
                                  return document_punch(document_->current(), range);
+                             },
+                             [this](std::size_t engine_track, std::string& why) {
+                                 return may_arm_track(document_->current(), engine_track, why);
                              });
     if (!opts_.plugin_host.empty()) {
         // For the engine process's life (amendment of 2026-10-19, item 3):

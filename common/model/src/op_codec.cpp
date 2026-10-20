@@ -183,9 +183,10 @@ Value sysex_value(const std::vector<MidiSysEx>& sysex) {
     return v;
 }
 
-Value indices_value(const std::vector<std::uint32_t>& indices) {
+template <typename R>
+Value removals_value(const std::vector<R>& removals, Value (*row)(const R&)) {
     Value v = Value::array();
-    for (const std::uint32_t i : indices) v.push(integer(i));
+    for (const R& r : removals) v.push(row(r));
     return v;
 }
 
@@ -516,17 +517,24 @@ struct Encoder {
         v.set("playlist", id_value(o.playlist));
         v.set("region", midi_region_value(o.region));
         v.set("split_right_id", id_value(o.split_right_id));
+        if (o.data_from) {
+            Value& ref = v.set("data_from", Value::object());
+            ref.set("playlist", id_value(o.data_from->playlist));
+            ref.set("region", id_value(o.data_from->region));
+        } else {
+            v.set("data_from", Value::null());
+        }
         return v;
     }
     Value operator()(const EditMidi& o) const {
         Value v = with_kind("EditMidi");
         v.set("playlist", id_value(o.playlist));
         v.set("region", id_value(o.region));
-        v.set("remove_notes", indices_value(o.remove_notes));
+        v.set("remove_notes", removals_value(o.remove_notes, detail::note_removal_row));
         v.set("add_notes", notes_value(o.add_notes));
-        v.set("remove_events", indices_value(o.remove_events));
+        v.set("remove_events", removals_value(o.remove_events, detail::event_removal_row));
         v.set("add_events", events_value(o.add_events));
-        v.set("remove_sysex", indices_value(o.remove_sysex));
+        v.set("remove_sysex", removals_value(o.remove_sysex, detail::sysex_removal_row));
         v.set("add_sysex", sysex_value(o.add_sysex));
         return v;
     }
@@ -762,16 +770,19 @@ bool read_rows(Reader& rd, const Value& obj, const std::string& path, const char
     return rd.fail(Reader::at(path, key) + e.where, e.message);
 }
 
-bool read_indices(Reader& rd, const Value& obj, const char* key, std::vector<std::uint32_t>& out) {
-    const Value* list = nullptr;
-    if (!rd.array(obj, "", key, list)) return false;
-    for (const Value& e : list->items()) {
-        std::int64_t n = 0;
-        if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 0 || n > 0xFFFFFFFF) {
-            return rd.fail(key, "must hold indices from 0 to 4294967295");
-        }
-        out.push_back(static_cast<std::uint32_t>(n));
+bool read_data_ref(Reader& rd, const Value& obj, std::optional<MidiDataRef>& out) {
+    const Value& v = *obj.find("data_from");
+    if (v.is_null()) {
+        out.reset();
+        return true;
     }
+    MidiDataRef ref;
+    if (!rd.keys(v, "data_from", {"playlist", "region"}) ||
+        !rd.id(v, "data_from", "playlist", ref.playlist) ||
+        !rd.id(v, "data_from", "region", ref.region)) {
+        return false;
+    }
+    out = ref;
     return true;
 }
 
@@ -1202,10 +1213,11 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
         out = std::move(o);
     } else if (kind == "PlaceMidiRegion") {
         PlaceMidiRegion o;
-        if (!rd.keys(v, "", {"op", "playlist", "region", "split_right_id"}) ||
+        if (!rd.keys(v, "", {"op", "playlist", "region", "split_right_id", "data_from"}) ||
             !rd.id(v, "", "playlist", o.playlist) ||
             !read_midi_region_value(rd, *v.find("region"), "region", o.region) ||
-            !rd.id(v, "", "split_right_id", o.split_right_id)) {
+            !rd.id(v, "", "split_right_id", o.split_right_id) ||
+            !read_data_ref(rd, v, o.data_from)) {
             return false;
         }
         out = std::move(o);
@@ -1214,11 +1226,14 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
         if (!rd.keys(v, "", {"op", "playlist", "region", "remove_notes", "add_notes",
                              "remove_events", "add_events", "remove_sysex", "add_sysex"}) ||
             !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
-            !read_indices(rd, v, "remove_notes", o.remove_notes) ||
+            !read_rows(rd, v, "", "remove_notes", detail::read_note_removal_rows,
+                       o.remove_notes) ||
             !read_rows(rd, v, "", "add_notes", detail::read_note_rows, o.add_notes) ||
-            !read_indices(rd, v, "remove_events", o.remove_events) ||
+            !read_rows(rd, v, "", "remove_events", detail::read_event_removal_rows,
+                       o.remove_events) ||
             !read_rows(rd, v, "", "add_events", detail::read_event_rows, o.add_events) ||
-            !read_indices(rd, v, "remove_sysex", o.remove_sysex) ||
+            !read_rows(rd, v, "", "remove_sysex", detail::read_sysex_removal_rows,
+                       o.remove_sysex) ||
             !read_rows(rd, v, "", "add_sysex", detail::read_sysex_rows, o.add_sysex)) {
             return false;
         }

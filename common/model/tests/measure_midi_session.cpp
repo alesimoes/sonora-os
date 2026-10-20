@@ -166,8 +166,8 @@ int main(int argc, char** argv) {
         EditMidi e;
         e.playlist = 2;
         e.region = 3;
-        e.remove_notes = {static_cast<std::uint32_t>(i)};
         midi::Note moved = now.notes[static_cast<std::size_t>(i)];
+        e.remove_notes = {NoteRemoval{static_cast<std::uint32_t>(i), moved}};
         moved.start += kBeat / 8;
         e.add_notes = {moved};
         const auto t0 = Clock::now();

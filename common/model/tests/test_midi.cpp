@@ -256,7 +256,7 @@ int test_edit_midi_copies_on_write() {
     EditMidi e;
     e.playlist = f.midi_pl;
     e.region = f.region;
-    e.remove_notes = {1};
+    e.remove_notes = {NoteRemoval{1, f.data->notes[1]}};
     e.add_notes = {note(kBeat / 4, kBeat / 4, 50), note(0, kBeat / 2, 30)};
     e.add_events = {MidiEvent{0, 0xB0, 64, 127}, MidiEvent{0, 0xB0, 1, 10}};
     CHECK_APPLY(f.h, e);
@@ -303,13 +303,96 @@ int test_edit_midi_copies_on_write() {
     bad.add_sysex = {MidiSysEx{0, {0xF0, 0x80, 0xF7}}};
     CHECK(refused(f.h, bad, "add_sysex[0]: a SysEx message's data bytes are below 0x80"));
     bad.add_sysex.clear();
-    bad.remove_notes = {2, 2};
+    const MidiSequence& now = *midi_playlist_of(f.h.current(), 1).regions[0].data;
+    bad.remove_notes = {NoteRemoval{2, now.notes[2]}, NoteRemoval{2, now.notes[2]}};
     CHECK(refused(f.h, bad, "remove_notes[1]: indices must be increasing"));
-    bad.remove_notes = {5};
+    bad.remove_notes = {NoteRemoval{5, now.notes[0]}};
     CHECK(refused(f.h, bad, "remove_notes[0]: indices must be increasing and below 5"));
-    bad.remove_notes = {0};
+    bad.remove_notes = {NoteRemoval{0, now.notes[0]}};
     bad.region = 9999;
     CHECK(refused(f.h, bad, "region 9999 is not on playlist"));
+    return 0;
+}
+
+// PR #100 review: a removal resolved against a sequence that changed since
+// (two edits in flight from one replica) used to remove whatever sat at its
+// index. It carries the value it expects, and a mismatch is refused by name.
+int test_stale_edit_midi_is_refused() {
+    Fixture f;
+    CHECK(f.build());
+    // Two requests resolved against the same sequence: delete the beat-2
+    // note, then raise the beat-3 note's velocity.
+    const MidiSequence& seen = *f.data;
+    EditMidi first;
+    first.playlist = f.midi_pl;
+    first.region = f.region;
+    first.remove_notes = {NoteRemoval{1, seen.notes[1]}};
+    EditMidi second = first;
+    midi::Note louder = seen.notes[2];
+    louder.velocity = 127;
+    second.remove_notes = {NoteRemoval{2, seen.notes[2]}};
+    second.add_notes = {louder};
+    CHECK_APPLY(f.h, first);
+    // Index 2 now holds the beat-4 note; the stale request must not touch it.
+    CHECK(refused(f.h, second,
+                  "remove_notes[0]: note 2 is not the note this edit removes; the region "
+                  "changed under it"));
+    const MidiSequence& after = *midi_playlist_of(f.h.current(), 1).regions[0].data;
+    CHECK(after.notes.size() == 3 && after.notes[2].pitch == 41 && after.notes[2].velocity == 100);
+    // Resolved again against what is there, it applies.
+    second.remove_notes = {NoteRemoval{1, after.notes[1]}};
+    CHECK_APPLY(f.h, second);
+    EditMidi events;
+    events.playlist = f.midi_pl;
+    events.region = f.region;
+    events.remove_events = {EventRemoval{0, MidiEvent{0, 0xB0, 7, 100}}};
+    CHECK(refused(f.h, events, "remove_events[0]: indices must be increasing and below 0"));
+    return 0;
+}
+
+// PR #100 review: duplicate, repeat, paste and a move to another track place
+// a region that shares an existing one's sequence, by reference.
+int test_place_midi_region_shares_by_reference() {
+    Fixture f;
+    CHECK(f.build());
+    Ids ids(f.h.current());
+    const std::size_t before = f.h.charged_bytes();
+    // Repeat x4 on the same track, then a copy on the instrument track.
+    Compound repeat;
+    repeat.label = "Repeat";
+    for (int i = 1; i <= 4; ++i) {
+        MidiRegion copy = midi_region(ids(), (4 + 4 * i) * kBeat, 4 * kBeat, 0, nullptr);
+        repeat.ops.push_back(
+            PlaceMidiRegion{f.midi_pl, copy, 0, MidiDataRef{f.midi_pl, f.region}});
+    }
+    MidiRegion other = midi_region(ids(), 0, 4 * kBeat, 0, nullptr);
+    repeat.ops.push_back(PlaceMidiRegion{f.inst_pl, other, 0, MidiDataRef{f.midi_pl, f.region}});
+    CHECK_APPLY(f.h, repeat);
+    const MidiPlaylist& p = midi_playlist_of(f.h.current(), 1);
+    CHECK(p.regions.size() == 5);
+    for (const MidiRegion& r : p.regions) CHECK(r.data == f.data);
+    CHECK(midi_playlist_of(f.h.current(), 2).regions[0].data == f.data);
+    // Each copy costs a few words, not its notes.
+    CHECK(f.h.charged_bytes() - before < 4096);
+    // Through the codec, the reference crosses and the notes do not.
+    std::string bytes, error;
+    const Operation op = to_operation(repeat.ops[0]);
+    CHECK(encode_operation(op, bytes, error));
+    CHECK(mentions(bytes, "\"data_from\": {"));
+    CHECK(mentions(bytes, "\"notes\": []"));
+    Operation back;
+    CHECK(decode_operation(bytes, back, error));
+    CHECK(std::get<PlaceMidiRegion>(back).data_from ==
+          std::get<PlaceMidiRegion>(op).data_from);
+
+    MidiRegion both = midi_region(ids(), 60 * kBeat, kBeat, 0, f.data);
+    CHECK(refused(f.h, PlaceMidiRegion{f.midi_pl, both, 0, MidiDataRef{f.midi_pl, f.region}},
+                  "carries a sequence of its own and data_from"));
+    both.data = nullptr;
+    CHECK(refused(f.h, PlaceMidiRegion{f.midi_pl, both, 0, MidiDataRef{f.midi_pl, 9999}},
+                  "data_from: region 9999 is not on MIDI playlist"));
+    CHECK(refused(f.h, PlaceMidiRegion{f.midi_pl, both, 0, MidiDataRef{f.audio_pl, f.region}},
+                  "is not on MIDI playlist"));
     return 0;
 }
 
@@ -491,6 +574,8 @@ int main() {
     t(test_timebase_tag_refused_on_mismatch);
     t(test_move_trim_split_in_ticks);
     t(test_edit_midi_copies_on_write);
+    t(test_stale_edit_midi_is_refused);
+    t(test_place_midi_region_shares_by_reference);
     t(test_place_midi_region_refusals);
     t(test_midi_sources_and_routing);
     t(test_inserts_on_midi_tracks);
