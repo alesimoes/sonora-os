@@ -707,6 +707,25 @@ int test_a_punch_that_captured_nothing_is_said() {
         CHECK(mentions(r.track_notices[0], "ended at frame 6000"));
         CHECK(mentions(r.track_notices[0], "punch-out at frame 5000"));
 
+        // Armed before A - H and rolled well into the range, every frame
+        // lost to an overrun: the ring is to blame, not an early stop.
+        Session::ClosedTake lost;
+        lost.take = 3;
+        lost.punched = true;
+        lost.punch = punch_range();
+        lost.origin = static_cast<uint64_t>(kA - kH);
+        lost.end = static_cast<uint64_t>(kA + 500);
+        DiskThread::ClosedFile empty;
+        empty.take = 3;
+        empty.path = file_of(cfg, 1);
+        lost.files.push_back(empty);
+        r = add_closed_take(doc, s, lost);
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 3 captured nothing"));
+        CHECK(mentions(r.track_notices[0], "from frame 2000 on"));
+        CHECK(mentions(r.track_notices[0], "overran"));
+        CHECK(r.track_notices[0].find("ended before") == std::string::npos);
+
         CHECK(doc.current().sources->sources.empty());
         CHECK(doc.history().undo_depth() == undo_depth);
     }

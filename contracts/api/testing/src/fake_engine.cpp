@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "sonora/api/wire.h"
+#include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 
@@ -838,8 +839,8 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         const auto& range = document_->current().settings.transport.punch;
         const uint64_t at = playhead();
         if (range[0] >= 0 && range[1] > range[0] && static_cast<uint64_t>(range[1]) <= at) {
-            why = "the punch range ends at frame " + std::to_string(range[1]) +
-                  ", before the playhead at " + std::to_string(at);
+            why = "the punch range ends at " + frame_text(static_cast<uint64_t>(range[1])) +
+                  ", before the playhead at " + frame_text(at);
             return false;
         }
         move(TransportState::Recording);

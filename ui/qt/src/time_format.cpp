@@ -2,7 +2,6 @@
 #include "time_format.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -266,36 +265,6 @@ std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSet
         case TimeFormat::Samples: return format_samples(f);
     }
     return {};
-}
-
-std::string format_positions(const std::string& text,
-                             const std::function<std::string(model::Frames)>& as) {
-    static const std::string kWord = "frame ";
-    const auto word_char = [](char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-    };
-    std::string out;
-    std::size_t at = 0;
-    while (at < text.size()) {
-        const std::size_t hit = text.find(kWord, at);
-        if (hit == std::string::npos) break;
-        std::size_t end = hit + kWord.size();
-        while (end < text.size() && text[end] >= '0' && text[end] <= '9') ++end;
-        const std::size_t digits = end - hit - kWord.size();
-        // 18 digits always fit in Frames.
-        const bool position = digits > 0 && digits <= 18 && (hit == 0 || !word_char(text[hit - 1])) &&
-                              (end == text.size() || !word_char(text[end]));
-        if (!position) {
-            out.append(text, at, hit + kWord.size() - at);
-            at = hit + kWord.size();
-            continue;
-        }
-        out.append(text, at, hit - at);
-        out += as(std::stoll(text.substr(hit + kWord.size(), digits)));
-        at = end;
-    }
-    out.append(text, at, std::string::npos);
-    return out;
 }
 
 const char* time_format_name(TimeFormat fmt) {

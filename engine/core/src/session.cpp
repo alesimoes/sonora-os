@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "denormals.h"
+#include "sonora/frame_text.h"
 #include "sonora/plan_graph.h"
 
 namespace sonora {
@@ -271,9 +272,7 @@ bool Session::start_punch(int take_number, const PunchRange& range, std::string*
         return false;
     };
     const auto frame = [](uint64_t f) {
-        // "frame N": an interface shows it in its own counter format
-        // (contracts/api messages.h, CommandReply::message).
-        return f == PunchRange::kOpenEnd ? std::string("the end") : "frame " + std::to_string(f);
+        return f == PunchRange::kOpenEnd ? std::string("the end") : frame_text(f);
     };
     if (range.capture_from >= range.capture_to) {
         return refuse("the punch captures nothing: from " + frame(range.capture_from) + " to " +
@@ -400,7 +399,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
         o.first->set_slot_take(o.second, take_number);
     }
     // A take started over another ends it here.
-    keep_origin();
+    keep_origin(transport_->playhead());
     Closing& c = closing_[take_number];
     c.expected = opened.size();
     c.take.take = take_number;
@@ -408,6 +407,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
     c.take.punched = range != nullptr;
     c.take.punch = range != nullptr ? *range : PunchRange{};
     c.take.origin = kNoOrigin;
+    c.take.end = kNoOrigin;
     recording_take_ = take_number;
     newest_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
@@ -420,8 +420,9 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
 
 bool Session::punch_out() {
     if (transport_->state() != TransportState::Recording) return false;
+    const uint64_t end = transport_->playhead();
     transport_->set_state(TransportState::Rolling);
-    keep_origin();
+    keep_origin(end);
     recording_take_ = 0;
     return true;
 }
@@ -434,10 +435,12 @@ bool Session::follow_punch_out() {
     return punch_out();
 }
 
-void Session::keep_origin() {
+void Session::keep_origin(uint64_t end) {
     if (recording_take_ == 0) return;
     const auto it = closing_.find(recording_take_);
-    if (it != closing_.end()) it->second.take.origin = take_origin();
+    if (it == closing_.end()) return;
+    it->second.take.origin = take_origin();
+    it->second.take.end = end;
 }
 
 void Session::collect_closed() {
@@ -527,6 +530,7 @@ std::string Session::take_failure() const {
 }
 
 bool Session::stop(std::string* error) {
+    const uint64_t end = transport_->playhead();
     transport_->set_state(TransportState::Stopped);
     if (!wait_for_callback()) {
         std::fprintf(stderr,
@@ -539,7 +543,7 @@ bool Session::stop(std::string* error) {
     // Files no close record reached: no callback ran after the store above.
     disk_->close_all();
     collect_closed();
-    keep_origin();
+    keep_origin(end);
     recording_take_ = 0;
 
     // Every file is closed and collected, so only failed_files_ speaks.

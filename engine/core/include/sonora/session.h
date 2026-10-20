@@ -211,6 +211,11 @@ public:
         // kNoOrigin if it ended before the audio thread ran a block of it.
         // With no frame in any file, what says why nothing was captured.
         uint64_t origin = kNoOrigin;
+        // The playhead when the control thread ended it, read before the
+        // transport left Recording, so no block it counts went unrecorded:
+        // past capture_from with no frame captured is an overrun, not an
+        // early stop. kNoOrigin until it ends.
+        uint64_t end = kNoOrigin;
     };
     // The takes closed since the last call, oldest first: by stop(), or by
     // the disk thread after punch_out() or a take started over it. Control
@@ -390,9 +395,9 @@ private:
     // `first`: the take's first block.
     void capture(const backend::AudioBlock& block, bool recording, uint32_t take,
                  uint64_t playhead, bool first) noexcept SONORA_RT;
-    // The running take's origin into its closing_ entry, before
+    // The running take's origin and `end` into its closing_ entry, before
     // recording_take_ moves on.
-    void keep_origin();
+    void keep_origin(uint64_t end);
     // Pulls the disk thread's closed files into closing_.
     void collect_closed();
     // Until the callback running now, if one is, has returned, or 1 s has

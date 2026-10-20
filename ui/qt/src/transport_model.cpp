@@ -164,7 +164,6 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
     });
     QObject::connect(&session, &SessionModel::counterChanged, &transport,
                      &TransportModel::followCounter);
-    shell.setPositionText([&session](const std::string& text) { return session.positionText(text); });
 }
 
 QString TransportModel::positionSource() const {

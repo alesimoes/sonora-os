@@ -485,31 +485,6 @@ void test_window() {
     OK(!win->isVisible());
     OK(button->isVisible());
 
-    // The engine names positions "frame N"; the operator reads them in the
-    // main counter's format, on the status line and in the notices.
-    {
-        const SessionSettings& st = session.controller().snapshot().settings;
-        const std::string a = format_bars_beats(kAt96, st);
-        const std::string b = format_bars_beats(kAt96 + kBeat96, st);
-        engine.next_result = DispatchResult::Failed;
-        engine.next_message = "the punch range ends at frame " + std::to_string(kAt96) +
-                              ", before the playhead at frame " + std::to_string(kAt96 + kBeat96);
-        CommandContext none;
-        engine.send("transport.punch", none);
-        engine.next_result = DispatchResult::Ok;
-        engine.next_message.clear();
-        EngineEvent e;
-        e.kind = EngineEventKind::Notice;
-        e.text = "take 2 captured nothing: it began at frame " + std::to_string(kAt96);
-        engine.events.push_back(e);
-        model.tick();
-        OK(model.statusText() == QString::fromStdString("transport.punch: the punch range ends at " +
-                                                        a + ", before the playhead at " + b));
-        OK(!model.notices().isEmpty() &&
-           model.notices().last() == QString::fromStdString("take 2 captured nothing: it began at " + a));
-        OK(a.find('|') != std::string::npos);
-    }
-
     // Pro Tools' Window > Transport: Ctrl+1 on the keypad.
     key(view, Qt::Key_1, Qt::ControlModifier | Qt::KeypadModifier);
     OK(transport.open());
@@ -523,6 +498,28 @@ void test_window() {
         QQuickItem* i = named(root, QString::fromLatin1(name));
         return i ? i->property("text").toString() : QStringLiteral("<missing>");
     };
+    // Past a punch's B + H the engine drops from Recording to Rolling: both
+    // record buttons release, as Pro Tools' does at the punch-out, and the
+    // transport shows a roll, not a take.
+    {
+        const auto active = [&](const char* name) {
+            QQuickItem* i = named(root, QString::fromLatin1(name));
+            return i != nullptr && i->property("active").toBool();
+        };
+        OK(named(root, QStringLiteral("barRecord")) != nullptr);
+        OK(named(root, QStringLiteral("transportRecord")) != nullptr);
+        engine.snapshot.state = TransportMode::Recording;
+        engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96);
+        model.tick();
+        OK(model.recording() && transport.recording());
+        OK(active("barRecord") && active("transportRecord"));
+        OK(transport.stateText() == QStringLiteral("REC"));
+        engine.snapshot.state = TransportMode::Rolling;
+        model.tick();
+        OK(!model.recording() && !transport.recording() && transport.rolling());
+        OK(!active("barRecord") && !active("transportRecord"));
+        OK(transport.stateText() == QStringLiteral("PLAY"));
+    }
     engine.snapshot.state = TransportMode::Rolling;
     engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96 + kBeat96);
     model.tick();

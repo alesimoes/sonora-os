@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 
+#include "sonora/frame_text.h"
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
@@ -241,10 +242,10 @@ bool place_file(model::Document& document, const std::string& session_dir,
 
 namespace {
 
-// Why a punched take holds no frame, from where its first block began.
-// Positions as "frame N", for the interface's counter format.
+// Why a punched take holds no frame: from where its first block began and
+// where it was ended.
 std::string why_nothing(const Session::ClosedTake& take) {
-    const auto frame = [](uint64_t f) { return "frame " + std::to_string(f); };
+    const auto frame = frame_text;
     const PunchRange& p = take.punch;
     if (take.origin == Session::kNoOrigin) {
         return "it ended before the audio thread ran a block of it";
@@ -257,11 +258,13 @@ std::string why_nothing(const Session::ClosedTake& take) {
                ", plus its handle): the transport passed the punch range while the take's"
                " files were being opened";
     }
-    if (take.origin <= p.capture_from) {
+    if (take.end <= p.capture_from) {
         return "it ended before " + frame(p.capture_from) + ", where its capture was to begin"
                " (the punch-in at " + frame(p.monitor_in) + ", less its handle)";
     }
-    return "nothing reached its files from " + frame(take.origin) +
+    // Rolled into the range and recorded nothing: every frame was lost.
+    const uint64_t from = take.origin > p.capture_from ? take.origin : p.capture_from;
+    return "nothing reached its files from " + frame(from) +
            " on: the capture or boundary ring overran";
 }
 
@@ -332,9 +335,9 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         if (!in_range && origin >= frames_of(take.punch.monitor_out)) {
             out.track_notices.push_back(
                 which + " is in the session's audio, not on the timeline: track " +
-                std::to_string(f.track + 1) + " started recording at frame " +
-                std::to_string(origin) + ", after the punch-out at frame " +
-                std::to_string(take.punch.monitor_out));
+                std::to_string(f.track + 1) + " started recording at " +
+                frame_text(static_cast<uint64_t>(origin)) + ", after the punch-out at " +
+                frame_text(take.punch.monitor_out));
         }
         placed.push_back(in_range);
         sources.push_back(std::move(src));

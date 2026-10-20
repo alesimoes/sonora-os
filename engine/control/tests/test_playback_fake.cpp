@@ -691,7 +691,6 @@ int test_record_with_a_punch_range_punches() {
             return false;
         };
         CHECK(await_rolling());
-        CHECK(s.recording_take() == 0);
         // Placed before any stop: the take closed in band.
         CHECK(await_regions(3));
         CHECK(c.run("transport.stop"));

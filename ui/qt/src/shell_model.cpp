@@ -304,8 +304,7 @@ void ShellModel::tick() {
             if (!r.live && !status_.isEmpty()) say(QString());
             continue;
         }
-        std::string why = r.message.empty() ? dispatch_result_text(r.result) : r.message;
-        if (position_text_) why = position_text_(why);
+        const std::string why = r.message.empty() ? dispatch_result_text(r.result) : r.message;
         say(QString::fromStdString(r.command + ": " + why));
     }
     takeEvents();
@@ -361,7 +360,7 @@ void ShellModel::takeEvents() {
     engine_.take_events(events_);
     if (events_.empty()) return;
     for (const EngineEvent& e : events_) {
-        const QString text = QString::fromStdString(position_text_ ? position_text_(e.text) : e.text);
+        const QString text = QString::fromStdString(e.text);
         switch (e.kind) {
             case EngineEventKind::Notice:
                 addNotice(text);

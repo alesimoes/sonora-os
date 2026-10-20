@@ -54,10 +54,12 @@ playback can follow edits; it is in flight.
          change: the state block's Rolling says it). A punch whose range is
          already behind its first block (the #91 race past B + H) closes
          its files at once, empty, and any punch that ends with nothing
-         captured posts a Notice saying why. Positions in refusals and
-         notices are written "frame N" (contracts/api `messages.h`), and
-         the interface shows each in the main counter's format
-         (`format_positions()`); no protocol bump, the encoding is unchanged.
+         captured posts a Notice saying why. The engine spells positions in
+         refusals and notices one way, "frame N" (`sonora/frame_text.h`,
+         FakeEngine included). Showing them in the operator's counter
+         format waits for structured positions (protocol 8, after #100);
+         a free-text rewrite in the UI was dropped in review, since it would
+         corrupt paths and plugin text.
        Remain: the punch range in the take's bext Description
        (session-format.md), loop, pre-roll and input monitoring.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),

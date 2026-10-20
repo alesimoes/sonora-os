@@ -570,16 +570,6 @@ int test_time() {
     OK(format_min_sec(0, kRate) == "0:00.000");
     OK(format_min_sec(83 * kRate + kRate / 2, kRate) == "1:23.500");
     OK(format_min_sec(3723LL * kRate, kRate) == "1:02:03.000");
-    // The engine's "frame N" (contracts/api messages.h) in a counter format.
-    const auto bars = [&s](Frames f) { return format_bars_beats(f, s); };
-    OK(format_positions("the punch range ends at frame 96000, before the playhead at frame 120000",
-                        bars) == "the punch range ends at 2|1|000, before the playhead at 2|2|000");
-    OK(format_positions("frame 0", bars) == "1|1|000");
-    OK(format_positions("[frame 24000, the end)", bars) == "[1|2|000, the end)");
-    for (const char* kept : {"placed up to its last whole frame", "64 frames 12", "keyframe 5",
-                             "frame 12a", "frame ", "frame 1234567890123456789"}) {
-        OK(format_positions(kept, bars) == kept);
-    }
     SessionSettings df = s;
     df.timecode.fps = Fps::F29_97df;
     df.timecode.origin = 0;

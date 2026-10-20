@@ -314,6 +314,43 @@ int test_out_point_ends_the_take() {
     CHECK(closed[0].files.size() == 1);
     CHECK(closed[0].files[0].frames == r.capture_to - r.capture_from);
     CHECK(closed[0].origin == r.capture_from);
+    CHECK(closed[0].end == 4 * kBlock);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+// Take N passes its out point and is punched out by hand before the
+// control thread follows it; take N + 1 is then armed. Until N + 1 itself
+// passes its own capture_to, nothing ends it: neither before its first
+// block nor inside its range.
+int test_repunch_is_not_dropped_by_the_last_take() {
+    Rig rig("repunch", 1);
+    Session& s = *rig.session;
+    const int take = s.next_free_take();
+    PunchRange r;
+    r.capture_from = kBlock;
+    r.capture_to = 2 * kBlock;
+    r.monitor_in = r.capture_from;
+    r.monitor_out = r.capture_to;
+    std::string error;
+    CHECK(s.start_punch(take, r, &error));
+    for (int b = 0; b < 3; ++b) rig.block();
+    CHECK(s.punch_out());
+    PunchRange next;
+    next.capture_from = s.transport().playhead() + kBlock;
+    // Inside the fourth block from here.
+    next.capture_to = next.capture_from + 2 * kBlock + 1;
+    next.monitor_in = next.capture_from;
+    next.monitor_out = next.capture_to;
+    CHECK(s.start_punch(take + 1, next, &error));
+    CHECK(!s.follow_punch_out());
+    CHECK(s.transport().state() == TransportState::Recording);
+    for (int b = 0; b < 3; ++b) {
+        rig.block();
+        CHECK(!s.follow_punch_out());
+    }
+    rig.block();
+    CHECK(s.follow_punch_out());
     CHECK(s.stop(&error));
     return 0;
 }
@@ -805,6 +842,7 @@ int main(int argc, char** argv) {
         {"capture_from_behind_the_playhead", test_capture_from_behind_the_playhead},
         {"bad_ranges_are_refused", test_bad_ranges_are_refused},
         {"out_point_ends_the_take", test_out_point_ends_the_take},
+        {"repunch_is_not_dropped_by_the_last_take", test_repunch_is_not_dropped_by_the_last_take},
         {"range_passed_before_the_first_block", test_range_passed_before_the_first_block},
         {"auto_monitor_crossfades", test_auto_monitor_crossfades_at_the_punch_points},
         {"other_switches_ramp", test_other_switches_ramp},

@@ -121,12 +121,6 @@ public:
     using TransportSink = std::function<void(const TransportSnapshot&, bool alive)>;
     void setTransportSink(TransportSink s) { transport_sink_ = std::move(s); }
 
-    // The engine's words with each "frame N" in the operator's counter
-    // format (contracts/api messages.h): refusals on the status line,
-    // notices and a failed take. Unset, they read in samples.
-    using PositionText = std::function<std::string(const std::string&)>;
-    void setPositionText(PositionText p) { position_text_ = std::move(p); }
-
     // The insert slots' view of the engine (ADR-0012 §8), each a C++ call
     // from the tick: a new plugin catalog when one arrives; a PluginFault,
     // by insert id, empty text clearing it; and the state block's frame at
@@ -245,7 +239,6 @@ private:
     std::vector<float> peaks_;
     std::vector<bool> peak_read_;
     TransportSink transport_sink_;
-    PositionText position_text_;
     PluginSinks plugin_sinks_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
     std::vector<CommandOutcome> replies_;

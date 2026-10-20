@@ -119,6 +119,7 @@ Rectangle {
             TransportKey { shell: win.shell; text: "▶▶"; command: "transport.fast_forward" }
             TransportKey { shell: win.shell; text: "▶|"; command: "transport.go_to_end" }
             TransportKey {
+                objectName: "transportRecord"
                 shell: win.shell
                 text: "●"; command: "transport.record"; fontPx: Theme.textTitle
                 active: win.transport.recording
