@@ -76,7 +76,7 @@
 
 | Item | Module | Branch | Points |
 |---|---|---|---:|
-| Punch in and out over an existing take, closing the take while rolling | Complete DAW / Engine core: record, play back, transport | `feature/punch-caller` | 3 |
+| Punch in and out over an existing take, closing the take while rolling | Complete DAW / Engine core: record, play back, transport | `feature/transport-punch` | 3 |
 | tools/dev-wsl.sh: WSL2 Debian trixie with WSLg, builds engine and UI, starts PipeWire on onboard audio, runs both | Complete DAW / Development environment: WSL2 on the owner's laptop | `tools/dev-wsl` | 3 |
 | Waveform display with an overview cache | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 3 |
 | Selection, edit cursor, linked timeline/edit selection | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 1 |
