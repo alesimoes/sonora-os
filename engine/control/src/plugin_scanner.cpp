@@ -172,7 +172,7 @@ struct PluginScanner::Worker {
     std::set<Key> chain_asked;
     api::PluginCatalog api;
     std::string api_bytes;
-    std::shared_ptr<const std::string> api_wire;
+    std::shared_ptr<const Catalog::Frames> api_frames;
     std::map<std::pair<uint32_t, std::string>, std::size_t> api_index;
     uint64_t generation = 0;
     uint64_t serial = 0;
@@ -368,7 +368,14 @@ struct PluginScanner::Worker {
             api.generation = generation;
             std::string wire;
             api::wire::encode(api, wire, e);
-            api_wire = std::make_shared<const std::string>(std::move(wire));
+            // Split once here; every client is then handed these frames.
+            std::vector<std::string> split;
+            auto frames = std::make_shared<Catalog::Frames>();
+            if (api::wire::split_frames(wire, split, e)) {
+                frames->reserve(split.size());
+                for (std::string& f : split) frames->push_back(std::make_shared<const std::string>(std::move(f)));
+            }
+            api_frames = std::move(frames);
             api_index.clear();
             for (std::size_t i = 0; i < api.plugins.size(); ++i)
                 api_index[{static_cast<uint32_t>(api.plugins[i].format), api.plugins[i].id}] = i;
@@ -385,7 +392,7 @@ struct PluginScanner::Worker {
         c->scanned = scanned_once;
         c->disabled = disabled;
         c->api = api;
-        c->api_wire = api_wire;
+        c->api_frames = api_frames;
         c->api_index = api_index;
         for (const auto& [path, b] : cache.bundles)
             for (const pr::Record& r : b.plugins) c->probes[{r.uri, uint16_t(r.channels)}] = r;

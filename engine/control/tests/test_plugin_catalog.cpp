@@ -12,6 +12,8 @@
 //                an accepted insert stores the catalog's name and version,
 //                never the client's; plugin.rescan is announced and Ok
 //   no_rescan_while_recording  plugin.rescan refused during a take (Q3)
+//   shared_frames  every client is sent the catalog's own frames, split once
+//                  by the worker: the same immutable bytes, not a copy each
 #include <unistd.h>
 
 #include <algorithm>
@@ -21,6 +23,9 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -278,6 +283,71 @@ void test_no_rescan_while_recording() {
     session.stop();
 }
 
+
+// The follow-up to #95: send_to() split and copied the whole encoded catalog
+// for each client (about 17 ms at 18 MB). The worker splits it once; each
+// client is handed the same frames.
+void test_shared_frames() {
+    std::printf("shared_frames\n");
+    World w("shared", {"urn:mono 1 1 ok", "urn:stereo 2 2 ok"});
+    SessionConfig cfg;
+    cfg.dir = w.root + "/session";
+    cfg.track_count = 2;
+    Session session(cfg);
+    session.create_dirs();
+    EngineControlServer::Options opts;
+    opts.plugin_host = g_host;
+    InProcessEngine engine(session, nullptr, opts);
+    std::string error;
+    check(engine.connect(error), "connected");
+
+    struct Seen {
+        std::mutex m;
+        api::wire::Reassembler reassembler;
+        std::vector<EngineControlServer::Frame> parts;
+        // Each complete catalog message: its frames, and the plugins it has.
+        std::vector<std::pair<std::vector<EngineControlServer::Frame>, std::size_t>> catalogs;
+        std::set<const std::string*> all;
+    };
+    Seen a, b;
+    const auto out = [](Seen& s) {
+        return [&s](EngineControlServer::Frame f) {
+            std::lock_guard<std::mutex> l(s.m);
+            s.all.insert(f.get());
+            s.parts.push_back(f);
+            std::string message, e;
+            const auto r = s.reassembler.add(*f, message, e);
+            if (r == api::wire::Reassembler::Result::Partial) return;
+            std::vector<EngineControlServer::Frame> parts;
+            parts.swap(s.parts);
+            api::wire::Type t{};
+            api::PluginCatalog cat;
+            if (r == api::wire::Reassembler::Result::Complete && api::wire::peek_type(message, t) &&
+                t == api::wire::Type::PluginCatalog && api::wire::decode(message, cat, e))
+                s.catalogs.push_back({std::move(parts), cat.plugins.size()});
+        };
+    };
+    engine.server().attach(out(a), {});
+    engine.server().attach(out(b), {});
+    const auto has_full = [](Seen& s) {
+        std::lock_guard<std::mutex> l(s.m);
+        return !s.catalogs.empty() && s.catalogs.back().second == 2;
+    };
+    const uint64_t end = now_ms() + 15000;
+    while (now_ms() < end && !(has_full(a) && has_full(b))) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    check(has_full(a) && has_full(b), "both clients have the scanned catalog");
+    {
+        std::lock_guard<std::mutex> la(a.m), lb(b.m);
+        bool shared = !a.catalogs.empty() && !b.catalogs.empty();
+        if (shared) {
+            for (const auto& f : a.catalogs.back().first) shared = shared && b.all.count(f.get()) == 1;
+            shared = shared && a.catalogs.back().first.size() == b.catalogs.back().first.size();
+        }
+        check(shared, "every frame of the catalog is the one object both clients were handed");
+    }
+    engine.shutdown();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -289,6 +359,7 @@ int main(int argc, char** argv) {
     }
     test_resolution();
     test_no_rescan_while_recording();
+    test_shared_frames();
     if (failures) {
         std::printf("test_plugin_catalog: %d failure(s)\n", failures);
         return 1;

@@ -96,10 +96,15 @@ struct PluginHosting::Probe {
     std::vector<std::string> keys;  // dense order
     std::vector<float> defaults;
     std::string reason;
+    // The record this answer was taken from, encoded: a catalog whose record
+    // for the key differs, or has none, makes it stale. Empty when the
+    // answer is not the worker's (a malformed id).
+    std::string record;
 
     // The worker's record, as the chain needs it. A Blocked plugin (its
     // probe crashed or hung, §4) is refused for the chain, as before.
     void take(const plugin::probe::Record& r) {
+        record = plugin::probe::encode(r);
         keys.clear();
         defaults.clear();
         reason.clear();
@@ -345,6 +350,25 @@ void PluginHosting::start_probes() {
 bool PluginHosting::poll_probes() {
     bool finished = false;
     const auto& catalog = scanner_.catalog();
+    if (catalog->serial != catalog_serial_) {
+        // A rescan can change a plugin under the same id (an upgrade, a
+        // bundle replaced): the answer taken from its old record is dropped
+        // and taken again from the new one, or asked of the worker when the
+        // catalog no longer has it. Running chains are not touched: each
+        // keeps the table its host loaded until its next start.
+        catalog_serial_ = catalog->serial;
+        for (auto it = probes_.begin(); it != probes_.end();) {
+            const Probe& p = *it->second;
+            const plugin::probe::Record* r = p.record.empty() ? nullptr : catalog->find(p.id, p.channels);
+            if (p.record.empty() || (r && plugin::probe::encode(*r) == p.record)) {
+                ++it;
+                continue;
+            }
+            it = probes_.erase(it);
+            ++answers_dropped_;
+            finished = true;
+        }
+    }
     for (auto& [key, p] : probes_) {
         if (p->state != Probe::State::Running) continue;
         const plugin::probe::Record* r = catalog->find(p->id, p->channels);
@@ -353,6 +377,15 @@ bool PluginHosting::poll_probes() {
         finished = true;
     }
     return finished;
+}
+
+bool PluginHosting::probe_answer_for_test(const std::string& host_id, std::vector<std::string>& keys) const {
+    for (auto it = probes_.lower_bound({host_id, 0}); it != probes_.end() && it->first.first == host_id; ++it) {
+        if (it->second->state != Probe::State::Ok) continue;
+        keys = it->second->keys;
+        return true;
+    }
+    return false;
 }
 
 // ---- the document

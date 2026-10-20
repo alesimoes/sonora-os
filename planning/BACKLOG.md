@@ -457,16 +457,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] Scan follow-ups (architect on #95): the image build writes
              BUILD_ID into /etc/os-release, before OS 1 (also under Phase 1
              below; the cache header reads it, empty until then).
-             PluginHosting keeps its probe answers for the run: a completed
-             rescan must drop the `probes_` entries whose bundle it probed
-             again, before any client exposes `plugin.rescan` to the
-             operator and before Track 4 closes (until then item 6's "the
-             next start finds it missing" does not hold, and a plugin
-             updated in place keeps its old parameter table until a
-             restart). Unverified 11 (warm time to generation 1 on the
+             Unverified 11 (warm time to generation 1 on the
              stick, Debian's set plus a yabridge set) and 12 (researcher).
              The PR that hosts editors moves the probe record version or
              the host `--version` line (ADR-0012 item 2 note).
+       - [x] Scan follow-ups from #95: a catalog whose record for a key
+             changed or lost it drops PluginHosting's cached answer (a
+             rescan no longer leaves a stale parameter table; a running
+             chain keeps its own until its next start); the worker splits
+             the encoded catalog into frames once and every client is
+             handed the same immutable frames (`Outbound` takes a shared
+             `Frame`); `exchange_frees_nothing` counts destructor calls on
+             the control thread instead of timing them. ctest
+             `plugin_hosting_rescan_drops_stale`, `plugin_catalog`
+             (shared_frames), `plugin_scanner` (exchange_frees_nothing).
        - [ ] FlushPluginState through GetState and the saver thread's
              durable write; today it still answers from the document.
        - [x] Play waits for plug-ins at session open (owner, 2026-10-18):

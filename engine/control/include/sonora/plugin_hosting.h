@@ -12,6 +12,8 @@
 // amendment of 2026-10-19, item 3, "one owner of probes"): a plugin the
 // catalog cache already has costs no probe at all; a miss is asked of the
 // worker, ahead of its scan, and its answer read from the worker's catalog.
+// An answer kept for the run is dropped when a newer catalog changes its
+// record (a rescan); a running chain keeps its own table until it restarts.
 //
 // One chain per track with an active insert (§2). What a chain plays while
 // it has no Ready host follows the amendment's item 1: until its host is
@@ -166,6 +168,12 @@ public:
     void handle_host_message(model::Id track, const std::string& bytes, const model::Snapshot& doc,
                              std::vector<model::Operation>& ops);
 
+    // The parameter keys of the probe answer cached for `host_id` (any
+    // channel count); false when none is Ok. For tests.
+    bool probe_answer_for_test(const std::string& host_id, std::vector<std::string>& keys) const;
+    // Cached answers dropped because the worker's record for them changed.
+    uint64_t probe_answers_dropped() const { return answers_dropped_; }
+
     struct Probe;
     struct Member;
     struct Chain;
@@ -217,7 +225,11 @@ private:
     std::unique_ptr<plugin_client::HostSupervisor> supervisor_;
     std::unique_ptr<PluginChainRunner> runner_;
 
+    // Answers by (plugin id, channels), each from the worker's record; one
+    // whose record a newer catalog changed or lost is dropped (poll_probes).
     std::map<std::pair<std::string, uint16_t>, std::unique_ptr<Probe>> probes_;
+    uint64_t catalog_serial_ = 0;
+    uint64_t answers_dropped_ = 0;
     std::map<model::Id, std::unique_ptr<Chain>> chains_;   // by track id
 
     struct Retiring {

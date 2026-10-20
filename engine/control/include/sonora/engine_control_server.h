@@ -72,7 +72,11 @@ struct Snapshot;
 
 class EngineControlServer {
 public:
-    using Outbound = std::function<void(std::string bytes)>;
+    // One frame (api/wire.h), immutable and shared: the catalog's frames
+    // are split once by the scan worker and handed to every client as they
+    // are, never copied per client.
+    using Frame = std::shared_ptr<const std::string>;
+    using Outbound = std::function<void(Frame frame)>;
     // Called on the control thread when a client is dropped for what it
     // sent; the transport then closes the connection. `why` names the fault.
     using Refuse = std::function<void(const std::string& why)>;
@@ -254,6 +258,8 @@ private:
     void send(const std::string& bytes);
     void send_to(Client& client, const std::string& bytes);
     void send_to(ClientId id, const std::string& bytes);
+    // Frames already split, shared as they are.
+    void send_frames(Client& client, const std::vector<Frame>& frames);
     void reply(ClientId to, uint64_t seq, DispatchResult result, const std::string& message);
     void remember(const api::EngineEvent& event, const std::string& bytes);
     void send_update(const model::ReplicationUpdate& update);

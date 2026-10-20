@@ -16,14 +16,14 @@ InProcessEngine::InProcessEngine(Session& session, backend::AudioBackend* audio,
 // they write to goes away.
 InProcessEngine::~InProcessEngine() { server_.stop(); }
 
-void InProcessEngine::receive(std::string frame) {
+void InProcessEngine::receive(EngineControlServer::Frame frame) {
     std::lock_guard<std::mutex> lock(mutex_);
     inbound_.push_back(std::move(frame));
 }
 
 bool InProcessEngine::next_message(std::string& message) {
     for (;;) {
-        std::string frame;
+        EngineControlServer::Frame frame;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (inbound_.empty()) return false;
@@ -33,7 +33,7 @@ bool InProcessEngine::next_message(std::string& message) {
         std::string error;
         // A frame out of place loses its message; after M7 the socket
         // client closes the connection instead.
-        if (reassembler_.add(frame, message, error) ==
+        if (reassembler_.add(*frame, message, error) ==
             api::wire::Reassembler::Result::Complete) {
             return true;
         }
@@ -51,7 +51,7 @@ uint64_t InProcessEngine::deliver(const std::string& message, uint64_t seq) {
 
 bool InProcessEngine::connect(std::string& error) {
     if (connected_) return true;
-    server_.start([this](std::string frame) { receive(std::move(frame)); });
+    server_.start([this](EngineControlServer::Frame frame) { receive(std::move(frame)); });
 
     // The Hello is the first thing the server sends, before its threads
     // start, so all of its frames are already here.

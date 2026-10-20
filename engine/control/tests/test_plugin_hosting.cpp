@@ -42,11 +42,16 @@
 //                        hash, or refused by the host: the insert runs at
 //                        defaults plus its params, with a PluginFault that
 //                        stands while the document names that state
+//   rescan_drops_stale   a catalog in which a plugin's record changed (a
+//                        rescan found it upgraded) drops the answer cached
+//                        for it; an unchanged record keeps it; the running
+//                        chain keeps its own table until its next start
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -925,9 +930,9 @@ int play_waits(const Args& a, const PlayWait& w) {
             std::mutex m;
             std::vector<std::string> frames;
             const EngineControlServer::ClientId late = engine.server().attach(
-                [&](std::string bytes) {
+                [&](EngineControlServer::Frame bytes) {
                     std::lock_guard<std::mutex> lock(m);
-                    frames.push_back(std::move(bytes));
+                    frames.push_back(*bytes);
                 },
                 {});
             for (int i = 0; i < 60; ++i) until([] { return false; }, 5);
@@ -975,6 +980,57 @@ int scenario_play_wait_cancel(const Args& a) {
 
 }  // namespace
 
+
+int scenario_rescan_drops_stale(const Args& a) {
+    std::printf("rescan_drops_stale: eg-amp's record changes under a running chain\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "eg-amp running");
+    const uint32_t slot = rig.chain_node(0)->channel_slot;
+    std::vector<std::string> keys;
+    check(rig.hosting->probe_answer_for_test(kEgAmp, keys) &&
+              std::find(keys.begin(), keys.end(), "gain") != keys.end(),
+          "the cached answer has eg-amp's table");
+    const uint64_t dropped = rig.hosting->probe_answers_dropped();
+
+    // As the worker would publish after a rescan found the plugin changed:
+    // the same catalog with one more parameter in eg-amp's record.
+    const auto republish = [&](bool change) {
+        auto c = std::make_shared<PluginScanner::Catalog>(*rig.scanner->catalog());
+        c->serial += 1000;
+        for (auto& [k, r] : c->probes) {
+            if (k.first != kEgAmp || !change) continue;
+            plugin::probe::Param p = r.params.at(0);
+            p.key = "gain2";
+            p.symbol = "gain2";
+            r.params.push_back(p);
+        }
+        rig.scanner->inject_catalog_for_test(std::move(c));
+    };
+    republish(false);
+    for (int i = 0; i < 20; ++i) rig.turn();
+    check(rig.hosting->probe_answers_dropped() == dropped, "an unchanged record keeps the cached answer");
+
+    republish(true);
+    check(rig.until(
+              [&] {
+                  return rig.hosting->probe_answer_for_test(kEgAmp, keys) &&
+                         std::find(keys.begin(), keys.end(), "gain2") != keys.end();
+              },
+              2000),
+          "a changed record replaces the cached answer");
+    check(rig.hosting->probe_answers_dropped() == dropped + 1, "one answer dropped");
+    for (int i = 0; i < 20; ++i) rig.turn();
+    check(rig.bound_at(0, kBlock) && rig.chain_node(0)->channel_slot == slot && rig.hosting->hosts() == 1,
+          "the running chain is not restarted");
+    std::string why;
+    check(rig.hosting->set_param(500, "gain", -6.f, why), "it still takes its own keys");
+    check(!rig.hosting->set_param(500, "gain2", 0.f, why), "and only them, until its next start");
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     Args a;
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -1013,6 +1069,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);
     else if (a.scenario == "play_wait_cancel") rc = scenario_play_wait_cancel(a);
+    else if (a.scenario == "rescan_drops_stale") rc = scenario_rescan_drops_stale(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

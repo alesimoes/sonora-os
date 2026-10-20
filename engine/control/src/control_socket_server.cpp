@@ -16,7 +16,7 @@ struct ControlSocketServer::Connection {
 
     std::mutex mutex;
     std::condition_variable wake;
-    std::deque<std::string> out;
+    std::deque<EngineControlServer::Frame> out;
     std::size_t queued = 0;
     bool closing = false;
 
@@ -38,15 +38,15 @@ struct ControlSocketServer::Connection {
     }
 
     // The control thread's Outbound: queues, never waits on the peer.
-    void enqueue(std::string frame) {
+    void enqueue(EngineControlServer::Frame frame) {
         bool overflow = false;
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (closing) return;
-            if (queued + frame.size() > max_queued) {
+            if (queued + frame->size() > max_queued) {
                 overflow = true;
             } else {
-                queued += frame.size();
+                queued += frame->size();
                 out.push_back(std::move(frame));
             }
         }
@@ -63,20 +63,20 @@ struct ControlSocketServer::Connection {
         bool first = true;
         std::string error;
         for (;;) {
-            std::string frame;
+            EngineControlServer::Frame frame;
             {
                 std::unique_lock<std::mutex> lock(mutex);
                 wake.wait(lock, [this]() { return closing || !out.empty(); });
                 if (closing) break;
                 frame = std::move(out.front());
                 out.pop_front();
-                queued -= frame.size();
+                queued -= frame->size();
             }
             // The Hello's first frame carries the state block, so a client
             // has it before it can ask anything.
             const platform::IoStatus s =
-                first ? channel->send_with_region(frame, *state, -1, error)
-                      : channel->send(frame, -1, error);
+                first ? channel->send_with_region(*frame, *state, -1, error)
+                      : channel->send(*frame, -1, error);
             first = false;
             if (s != platform::IoStatus::Ok) {
                 if (s == platform::IoStatus::Error) {
@@ -180,7 +180,7 @@ void ControlSocketServer::open(std::unique_ptr<platform::ControlChannel> channel
     // use of them even when the reaper has let go of it.
     std::weak_ptr<Connection> weak = c;
     c->id = server_.attach(
-        [c](std::string frame) { c->enqueue(std::move(frame)); },
+        [c](EngineControlServer::Frame frame) { c->enqueue(std::move(frame)); },
         [weak](const std::string& why) {
             if (auto conn = weak.lock()) {
                 std::fprintf(stderr, "sonora: interface %llu refused: %s\n",

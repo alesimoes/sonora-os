@@ -99,10 +99,13 @@ public:
         // version); empty when it can.
         std::string disabled;
         api::PluginCatalog api;
-        // `api` as the wire carries it, encoded by the worker: the control
-        // thread only sends it (rt-engineer 2 on #95). Never null once
-        // published.
-        std::shared_ptr<const std::string> api_wire;
+        // `api` as the wire carries it, encoded and split into frames by the
+        // worker: the control thread only hands these to each client, the
+        // same immutable frames to all (rt-engineer 2 on #95, and its
+        // follow-up: at 18 MB a split and copy per client was 17 ms). Shared
+        // by every catalog of one generation. Never null once published.
+        using Frames = std::vector<std::shared_ptr<const std::string>>;
+        std::shared_ptr<const Frames> api_frames;
         // (format, id) -> index in api.plugins.
         std::map<std::pair<uint32_t, std::string>, std::size_t> api_index;
         // Every record known this run, chain-start probes included.
