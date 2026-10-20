@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "denormals.h"
+#include "sonora/frame_text.h"
 #include "sonora/plan_graph.h"
 
 namespace sonora {
@@ -271,11 +272,11 @@ bool Session::start_punch(int take_number, const PunchRange& range, std::string*
         return false;
     };
     const auto frame = [](uint64_t f) {
-        return f == PunchRange::kOpenEnd ? std::string("the end") : std::to_string(f);
+        return f == PunchRange::kOpenEnd ? std::string("the end") : frame_text(f);
     };
     if (range.capture_from >= range.capture_to) {
-        return refuse("the punch captures nothing: from frame " + frame(range.capture_from) +
-                      " to " + frame(range.capture_to));
+        return refuse("the punch captures nothing: from " + frame(range.capture_from) + " to " +
+                      frame(range.capture_to));
     }
     // Auto monitoring hears the input only where it is recorded: what the
     // performer hears while punching is what plays back afterwards.
@@ -291,8 +292,8 @@ bool Session::start_punch(int take_number, const PunchRange& range, std::string*
     // as recording, then lost.
     const uint64_t playhead = transport_->playhead();
     if (range.monitor_out <= playhead) {
-        return refuse("the punch range ends at frame " + frame(range.monitor_out) +
-                      ", before the playhead at " + std::to_string(playhead));
+        return refuse("the punch range ends at " + frame(range.monitor_out) +
+                      ", before the playhead at " + frame(playhead));
     }
     return begin_take(take_number, &range, error);
 }
@@ -397,26 +398,49 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
         o.first->set_current_slot(o.second);
         o.first->set_slot_take(o.second, take_number);
     }
+    // A take started over another ends it here.
+    keep_origin(transport_->playhead());
     Closing& c = closing_[take_number];
     c.expected = opened.size();
     c.take.take = take_number;
     c.take.files.clear();
     c.take.punched = range != nullptr;
     c.take.punch = range != nullptr ? *range : PunchRange{};
+    c.take.origin = kNoOrigin;
+    c.take.end = kNoOrigin;
     recording_take_ = take_number;
     newest_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.
     take_origin_.store(kNoOrigin, std::memory_order_relaxed);
+    punch_passed_.store(0, std::memory_order_relaxed);
     transport_->set_recording(static_cast<uint32_t>(take_number), range != nullptr);
     return true;
 }
 
 bool Session::punch_out() {
     if (transport_->state() != TransportState::Recording) return false;
+    const uint64_t end = transport_->playhead();
     transport_->set_state(TransportState::Rolling);
+    keep_origin(end);
     recording_take_ = 0;
     return true;
+}
+
+bool Session::follow_punch_out() {
+    if (recording_take_ == 0 || transport_->state() != TransportState::Recording) return false;
+    if (punch_passed_.load(std::memory_order_acquire) != static_cast<uint32_t>(recording_take_)) {
+        return false;
+    }
+    return punch_out();
+}
+
+void Session::keep_origin(uint64_t end) {
+    if (recording_take_ == 0) return;
+    const auto it = closing_.find(recording_take_);
+    if (it == closing_.end()) return;
+    it->second.take.origin = take_origin();
+    it->second.take.end = end;
 }
 
 void Session::collect_closed() {
@@ -506,6 +530,7 @@ std::string Session::take_failure() const {
 }
 
 bool Session::stop(std::string* error) {
+    const uint64_t end = transport_->playhead();
     transport_->set_state(TransportState::Stopped);
     if (!wait_for_callback()) {
         std::fprintf(stderr,
@@ -518,6 +543,7 @@ bool Session::stop(std::string* error) {
     // Files no close record reached: no callback ran after the store above.
     disk_->close_all();
     collect_closed();
+    keep_origin(end);
     recording_take_ = 0;
 
     // Every file is closed and collected, so only failed_files_ speaks.
@@ -726,7 +752,8 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     // Settled for the block once the locates are applied.
     const uint64_t playhead = transport_->playhead();
-    if (recording && !take_started) {
+    const bool first = recording && !take_started;
+    if (first) {
         origin_take_ = word.take;
         // Its first sample: the range's start, or this block's if that has
         // passed (capture()).
@@ -734,7 +761,12 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             punch_->capture_from > playhead ? punch_->capture_from : playhead;
         take_origin_.store(origin, std::memory_order_release);
     }
-    capture(block, recording, word.take, playhead);
+    capture(block, recording, word.take, playhead, first);
+    // Said every block from here until the control thread ends the take;
+    // kWholeTake and kNoCapture end at kOpenEnd, which no block reaches.
+    if (punched && playhead + nframes >= punch_->capture_to) {
+        punch_passed_.store(word.take, std::memory_order_release);
+    }
 
     // Mix state, read once per block and ramped across it from what the
     // last block ended on (ADR-0009 §4.5). Solo, mute and gain fold into one
@@ -782,7 +814,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 }
 
 void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t take,
-                      uint64_t playhead) noexcept SONORA_RT {
+                      uint64_t playhead, bool first) noexcept SONORA_RT {
     const uint32_t nframes = block.nframes;
     // The frames of this block the take records: its range, cut to the
     // block. Empty before the range and after it.
@@ -790,6 +822,11 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
     const uint64_t from = punch_->capture_from > playhead ? punch_->capture_from : playhead;
     const uint64_t to = punch_->capture_to < end ? punch_->capture_to : end;
     const bool in_range = recording && from < to;
+    // Started too late to record anything (the files open after
+    // start_punch() checked the playhead, and the transport rolls on).
+    // Without a window no close record would ever reach these files, which
+    // stop() alone would then close.
+    const bool passed = first && playhead >= punch_->capture_to;
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track& t = *tracks_[i];
         uint32_t& window = window_take_[i];
@@ -808,6 +845,21 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
                 boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
             }
             window = kNoWindow;
+        }
+        if (passed && t.rec_armed()) {
+            b.kind = CaptureBoundary::Kind::Open;
+            b.take = take;
+            b.at = captured_[i];
+            if (boundaries_->write(&b, 1) == 1) {
+                b.kind = CaptureBoundary::Kind::Close;
+                if (boundaries_->write(&b, 1) != 1) {
+                    boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
+                t.note_overrun();
+            }
+            continue;
         }
         if (wanted && window == kNoWindow) {
             b.kind = CaptureBoundary::Kind::Open;

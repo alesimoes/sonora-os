@@ -492,6 +492,12 @@ void EngineControlServer::pump_playback() {
     publisher_->set_take(take_);
     follow_transport();
     resolve_records();
+    // After the replies: a take whose range was already behind its first
+    // block ends here, and resolve_records() would call that a cancel.
+    if (session_.follow_punch_out()) {
+        ++take_;
+        publisher_->set_take(take_);
+    }
 }
 
 bool EngineControlServer::playback_busy() const {

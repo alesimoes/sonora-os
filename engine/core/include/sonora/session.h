@@ -166,8 +166,9 @@ public:
     // are opened now, when the punch is armed, and the audio thread opens
     // and closes each track's capture window at the range's frames. Past
     // capture_to the files close while the transport rolls on, still
-    // Recording, until stop() or punch_out(); closed_takes() reports the
-    // take then. Refused, with nothing opened, when the range is empty,
+    // Recording, until follow_punch_out(), punch_out() or stop() ends the
+    // take; closed_takes() reports it then. A range wholly behind the
+    // take's first block closes the files at once, empty. Refused, with nothing opened, when the range is empty,
     // when its monitored part [monitor_in, monitor_out) is not inside what
     // it captures, or when that monitored part ends at or before the
     // playhead: past monitor_out only handle is left, which is placed
@@ -179,6 +180,13 @@ public:
     // closes its files after that, and closed_takes() reports it. False if
     // no take is running.
     bool punch_out();
+    // Ends the running punched take as punch_out() does once the audio
+    // thread has recorded it up to capture_to, or found its range already
+    // behind its first block: its files are closed in band, and a transport
+    // left in Recording would show a take while nothing records (Pro Tools'
+    // record button drops out at the punch-out). True if it ended it.
+    // Control thread, every turn.
+    bool follow_punch_out();
     // Stops the transport and closes every open file, waiting for the
     // callback in flight, if any, to finish first. Returns false if the
     // newest take failed on any track -- the one it ends, or the one last
@@ -199,6 +207,15 @@ public:
         // [monitor_in, monitor_out) only, not over all it captured.
         bool punched = false;
         PunchRange punch;
+        // The frame its first block recorded from (take_origin()), or
+        // kNoOrigin if it ended before the audio thread ran a block of it.
+        // With no frame in any file, what says why nothing was captured.
+        uint64_t origin = kNoOrigin;
+        // The playhead when the control thread ended it, read before the
+        // transport left Recording, so no block it counts went unrecorded:
+        // past capture_from with no frame captured is an overrun, not an
+        // early stop. kNoOrigin until it ends.
+        uint64_t end = kNoOrigin;
     };
     // The takes closed since the last call, oldest first: by stop(), or by
     // the disk thread after punch_out() or a take started over it. Control
@@ -375,8 +392,12 @@ private:
     bool begin_take(int take_number, const PunchRange* range, std::string* error);
     // The capture windows: boundary records and the frames inside them,
     // opened and closed at punch_'s frames.
+    // `first`: the take's first block.
     void capture(const backend::AudioBlock& block, bool recording, uint32_t take,
-                 uint64_t playhead) noexcept SONORA_RT;
+                 uint64_t playhead, bool first) noexcept SONORA_RT;
+    // The running take's origin and `end` into its closing_ entry, before
+    // recording_take_ moves on.
+    void keep_origin(uint64_t end);
     // Pulls the disk thread's closed files into closing_.
     void collect_closed();
     // Until the callback running now, if one is, has returned, or 1 s has
@@ -563,6 +584,10 @@ private:
     // Reset by start_recording() before it publishes the take; set by the
     // audio thread in the take's first block.
     std::atomic<uint64_t> take_origin_{kNoOrigin};
+    // The punched take whose capture_to the audio thread has passed, or 0.
+    // Its only writer is the audio thread; begin_take() clears it before
+    // the take it starts can be seen.
+    std::atomic<uint32_t> punch_passed_{0};
     // Odd while process() runs; each callback adds one on entry and one on
     // exit. stop() waits, after storing Stopped, for the callback in flight
     // to return, so none that read the take before the store is still

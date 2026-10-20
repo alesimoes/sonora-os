@@ -110,6 +110,7 @@ Rectangle {
                 onClicked: bar.shell.invoke("transport.toggle_play", -1)
             }
             SButton {
+                objectName: "barRecord"
                 text: "●"; implicitWidth: 40; implicitHeight: 32; fontPx: Theme.textTitle
                 available: bar.shell.implemented("transport.record")
                 active: bar.shell.recording

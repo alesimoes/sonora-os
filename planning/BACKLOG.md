@@ -47,6 +47,19 @@ playback can follow edits; it is in flight.
          no longer follows into the next one punched in (`failed_files_`
          keyed by take). Needs the ui-engineer's review in the PR thread
          (ADR-0007 §6, additive).
+       - [x] Punch follow-ups (`feature/punch-followups`): past B + H the
+         take ends and the transport drops to Rolling, as Pro Tools' record
+         button does at the punch-out, for `transport.record` with a range
+         and `transport.punch` (`Session::follow_punch_out()`, no contract
+         change: the state block's Rolling says it). A punch whose range is
+         already behind its first block (the #91 race past B + H) closes
+         its files at once, empty, and any punch that ends with nothing
+         captured posts a Notice saying why. The engine spells positions in
+         refusals and notices one way, "frame N" (`sonora/frame_text.h`,
+         FakeEngine included). Showing them in the operator's counter
+         format waits for structured positions (protocol 8, after #100);
+         a free-text rewrite in the UI was dropped in review, since it would
+         corrupt paths and plugin text.
        Remain: the punch range in the take's bext Description
        (session-format.md), loop, pre-roll and input monitoring.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),

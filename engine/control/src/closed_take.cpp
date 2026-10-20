@@ -8,6 +8,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include "sonora/frame_text.h"
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
@@ -294,6 +295,36 @@ bool place_file(model::Document& document, const std::string& session_dir,
     return apply(document, place, updates, error);
 }
 
+namespace {
+
+// Why a punched take holds no frame: from where its first block began and
+// where it was ended.
+std::string why_nothing(const Session::ClosedTake& take) {
+    const auto frame = frame_text;
+    const PunchRange& p = take.punch;
+    if (take.origin == Session::kNoOrigin) {
+        return "it ended before the audio thread ran a block of it";
+    }
+    // The #91 race: start_punch() checked the playhead before B, and by the
+    // time the files were open the transport had rolled past B + H.
+    if (take.origin >= p.capture_to) {
+        return "it began at " + frame(take.origin) + ", after its capture ended at " +
+               frame(p.capture_to) + " (the punch-out at " + frame(p.monitor_out) +
+               ", plus its handle): the transport passed the punch range while the take's"
+               " files were being opened";
+    }
+    if (take.end <= p.capture_from) {
+        return "it ended before " + frame(p.capture_from) + ", where its capture was to begin"
+               " (the punch-in at " + frame(p.monitor_in) + ", less its handle)";
+    }
+    // Rolled into the range and recorded nothing: every frame was lost.
+    const uint64_t from = take.origin > p.capture_from ? take.origin : p.capture_from;
+    return "nothing reached its files from " + frame(from) +
+           " on: the capture or boundary ring overran";
+}
+
+}  // namespace
+
 TakeAdded add_closed_take(model::Document& document, const Session& session,
                           const Session::ClosedTake& take, std::size_t files_per_compound) {
     TakeAdded out;
@@ -359,14 +390,22 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         if (!in_range && origin >= frames_of(take.punch.monitor_out)) {
             out.track_notices.push_back(
                 which + " is in the session's audio, not on the timeline: track " +
-                std::to_string(f.track + 1) + " started recording at frame " +
-                std::to_string(origin) + ", after the punch-out at " +
-                std::to_string(take.punch.monitor_out));
+                std::to_string(f.track + 1) + " started recording at " +
+                frame_text(static_cast<uint64_t>(origin)) + ", after the punch-out at " +
+                frame_text(take.punch.monitor_out));
         }
         placed.push_back(in_range);
         sources.push_back(std::move(src));
         records.push_back(std::move(rec));
         numbers.push_back(f.track + 1);
+    }
+    // A punch that ends with nothing in any file would otherwise vanish
+    // without a word: no source, no region, no undo step. A failed file is
+    // said by cut_short instead.
+    const bool captured = std::any_of(take.files.begin(), take.files.end(),
+                                      [](const DiskThread::ClosedFile& f) { return f.frames != 0; });
+    if (take.punched && !captured && first_failure.empty()) {
+        out.track_notices.push_back(which + " captured nothing: " + why_nothing(take));
     }
     if (!first_failure.empty()) {
         out.cut_short = which + " was cut short: " + first_failure;

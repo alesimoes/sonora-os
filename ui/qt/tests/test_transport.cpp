@@ -499,6 +499,29 @@ void test_window() {
         QQuickItem* i = named(root, QString::fromLatin1(name));
         return i ? i->property("text").toString() : QStringLiteral("<missing>");
     };
+    // Past a punch's B + H the engine drops from Recording to Rolling: both
+    // record buttons release, as Pro Tools' does at the punch-out, and the
+    // transport shows a roll, not a take.
+    {
+        const auto active = [&](const char* name) {
+            QQuickItem* i = named(root, QString::fromLatin1(name));
+            return i != nullptr && i->property("active").toBool();
+        };
+        OK(named(root, QStringLiteral("barRecord")) != nullptr);
+        OK(named(root, QStringLiteral("transportRecord")) != nullptr);
+        engine.snapshot.state = TransportMode::Recording;
+        engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96);
+        // The bar reads the state block every fourth tick (kStateEvery).
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(model.recording() && transport.recording());
+        OK(active("barRecord") && active("transportRecord"));
+        OK(transport.stateText() == QStringLiteral("REC"));
+        engine.snapshot.state = TransportMode::Rolling;
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(!model.recording() && !transport.recording() && transport.rolling());
+        OK(!active("barRecord") && !active("transportRecord"));
+        OK(transport.stateText() == QStringLiteral("PLAY"));
+    }
     engine.snapshot.state = TransportMode::Rolling;
     engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96 + kBeat96);
     model.tick();
