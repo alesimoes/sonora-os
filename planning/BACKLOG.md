@@ -138,7 +138,7 @@ playback can follow edits; it is in flight.
         together, and then leaves `planned_commands`. `edit.cut`/`copy`/
         `paste`/`duplicate` run in the interface as compounds (Track 3 item
         1, PR #86), and `edit.repeat` and `edit.select_all` too
-        (`t3f-repeat`, `t3g-multitrack-clipboard`);
+        (`t3f-repeat`, `t3-multitrack-clipboard`);
         `heal_separation`/`consolidate` are still to build.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
@@ -283,7 +283,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              tracks: there is no track below Keys for what was copied from
              Keys."); a paste whose regions would all fall past it is refused.
              Fades and trims to the insertion point refuse several tracks by
-             name (`t3g-multitrack-clipboard`; ui_clipboard
+             name (`t3-multitrack-clipboard`; ui_clipboard
              test_several_tracks, test_menu).
        - [ ] Shuffle's ripple for the clipboard once `ShiftRegions` exists
              (ADR-0009 update 2026-10-14, item 5).
