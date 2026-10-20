@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include "fader_taper.h"
 #include "sonora/fade_curve.h"
@@ -378,11 +379,12 @@ bool EditController::refuse_in_mode(const char* what, std::string& why) const {
 
 void EditController::select_track(int index) {
     if (track(index) == nullptr) return;
-    if (index != sel_.track) {
+    if (index != sel_.track || sel_.tracks != 1) {
         sel_.region = kNoId;
         sel_.start = sel_.end = sel_.insertion;
     }
     sel_.track = index;
+    sel_.tracks = 1;
 }
 
 bool EditController::select_next_track(int delta, std::string& why) {
@@ -412,23 +414,49 @@ bool EditController::select_region(Id region) {
     const Region* r = find_region(snapshot(), region, &t);
     if (r == nullptr) return false;
     sel_.track = track_index(snapshot(), t->id);
+    sel_.tracks = 1;
     sel_.region = r->id;
     sel_.start = sel_.insertion = r->position;
     sel_.end = r->end();
     return true;
 }
 
-void EditController::select_range(int index, Frames a, Frames b) {
+void EditController::select_range(int index, Frames a, Frames b, int count) {
     if (track(index) == nullptr) return;
     sel_.track = index;
+    sel_.tracks = std::clamp(count, 1, static_cast<int>(snapshot().edit->tracks.size()) - index);
     sel_.region = kNoId;
     sel_.start = sel_.insertion = std::max<Frames>(0, std::min(a, b));
     sel_.end = std::max<Frames>(0, std::max(a, b));
 }
 
+bool EditController::select_all(std::string& why) {
+    const auto& ts = snapshot().edit->tracks;
+    if (ts.empty()) {
+        why = "the session has no tracks";
+        return false;
+    }
+    Frames end = 0;
+    for (const auto& t : ts) {
+        if (const Playlist* p = active(t.get())) {
+            if (!p->regions.empty()) end = std::max(end, p->regions.back().end());
+        }
+    }
+    if (end == 0) {
+        why = "there is no region in the session to select";
+        return false;
+    }
+    select_span(0, static_cast<int>(ts.size()), 0, end);
+    return true;
+}
+
 void EditController::clear_selection() {
     sel_.region = kNoId;
     sel_.start = sel_.end = sel_.insertion;
+}
+
+void EditController::clamp_selection() {
+    if (const int n = span()) sel_.tracks = n;
 }
 
 // --- mouse ---
@@ -485,7 +513,7 @@ bool EditController::press(double x, double y, std::string& why) {
     }
 
     drag_.kind = kind;
-    drag_.track = h.track;
+    drag_.track = drag_.track_end = h.track;
     drag_.press_x = x;
     drag_.press_frame = view_.frame_at(x);
     if (kind == Drag::Kind::Range) {
@@ -531,7 +559,7 @@ bool EditController::press(double x, double y, std::string& why) {
     return true;
 }
 
-void EditController::move(double x, double /*y*/) {
+void EditController::move(double x, double y) {
     if (drag_.kind == Drag::Kind::None) return;
     if (std::abs(x - drag_.press_x) >= kDragSlopPx) drag_.moved = true;
     if (!drag_.moved) return;
@@ -569,6 +597,10 @@ void EditController::move(double x, double /*y*/) {
             break;
         }
         case Drag::Kind::Range: {
+            // Above or below the lanes is the first or the last track, so
+            // a drag past the edge still reaches it.
+            const int n = static_cast<int>(s.edit->tracks.size());
+            drag_.track_end = std::clamp(view_.track_at(y), 0, std::max(0, n - 1));
             const Frames f = snapped(view_.frame_at(x));
             drag_.start = std::min(drag_.press_frame, f);
             drag_.end = std::max(drag_.press_frame, f);
@@ -602,9 +634,8 @@ bool EditController::release(double x, double y, std::string& why) {
     if (d.kind == Drag::Kind::None || !d.moved) return true;
     switch (d.kind) {
         case Drag::Kind::Range:
-            sel_.start = d.start;
-            sel_.end = d.end;
-            sel_.insertion = d.start;
+            select_span(std::min(d.track, d.track_end), std::abs(d.track_end - d.track) + 1,
+                        d.start, d.end);
             return true;
         case Drag::Kind::Move: {
             MoveRegion op;
@@ -678,16 +709,23 @@ bool EditController::separate(std::string& why) {
     } else {
         at = {sel_.insertion};
     }
-    // Both ends of a range are one separation, so one undo step.
+    // Both ends of a range, on every selected track, are one separation, so
+    // one undo step.
+    const int tracks = sel_.region != kNoId ? 1 : span();
     std::vector<Member> members;
-    for (Frames f : at) {
-        const Region* r = region_at(sel_.track, f);
-        if (r == nullptr || f <= r->position) continue;
-        members.push_back(SplitRegion{t->active_playlist, r->id, f, doc_.reserve_id()});
+    for (int i = 0; i < tracks; ++i) {
+        for (Frames f : at) {
+            const Region* r = region_at(sel_.track + i, f);
+            if (r == nullptr || f <= r->position) continue;
+            members.push_back(SplitRegion{track(sel_.track + i)->active_playlist, r->id, f,
+                                          doc_.reserve_id()});
+        }
     }
     if (members.empty()) {
-        why = "no region to separate at the insertion point on " + t->name +
-              "; click inside a region's upper half to place it";
+        why = tracks == 1 ? "no region to separate at the insertion point on " + t->name
+                          : "no region to separate at the insertion point on any of the " +
+                                std::to_string(tracks) + " selected tracks";
+        why += "; click inside a region's upper half to place it";
         return false;
     }
     if (members.size() == 1) {
@@ -700,6 +738,7 @@ bool EditController::separate(std::string& why) {
 }
 
 bool EditController::trim_start_to_insertion(std::string& why) {
+    if (refuse_several("Trimming to the insertion point", why)) return false;
     int index = -1;
     const Region* r = target_region(index);
     if (refuse_in_mode("Trimming", why)) return false;
@@ -712,6 +751,7 @@ bool EditController::trim_start_to_insertion(std::string& why) {
 }
 
 bool EditController::trim_end_to_insertion(std::string& why) {
+    if (refuse_several("Trimming to the insertion point", why)) return false;
     int index = -1;
     const Region* r = target_region(index);
     if (refuse_in_mode("Trimming", why)) return false;
@@ -740,14 +780,18 @@ bool EditController::clear(std::string& why) {
         why = "nothing is selected";
         return false;
     }
-    int index = -1;
-    Frames a = 0, b = 0;
-    if (!edit_range(index, a, b, "cleared", why)) return false;
-    const TrackEdit* t = track(index);
+    Span e;
+    if (!edit_range(e, "cleared", why)) return false;
     std::vector<Member> members;
-    clear_range(*active(t), a, b, [this]() { return doc_.reserve_id(); }, members);
+    for (int i = 0; i < e.count; ++i) {
+        clear_range(*active(track(e.first + i)), e.a, e.b, [this]() { return doc_.reserve_id(); },
+                    members);
+    }
     if (members.empty()) {
-        why = "there is no region in the selection on " + t->name + "; nothing was cleared";
+        why = e.count == 1 ? "there is no region in the selection on " + track(e.first)->name
+                           : "there is no region in the selection on any of its " +
+                                 std::to_string(e.count) + " tracks";
+        why += "; nothing was cleared";
         return false;
     }
     return submit_compound(std::move(members), "Clear", "cleared", why);
@@ -795,8 +839,19 @@ bool EditController::refuse_shuffle(const char* gesture, const char* nothing_was
     return true;
 }
 
-bool EditController::edit_range(int& index, Frames& a, Frames& b, const char* nothing_was,
-                                std::string& why) const {
+int EditController::span() const {
+    const int n = static_cast<int>(snapshot().edit->tracks.size());
+    if (sel_.track < 0 || sel_.track >= n) return 0;
+    return std::clamp(sel_.tracks, 1, n - sel_.track);
+}
+
+bool EditController::refuse_several(const char* gesture, std::string& why) const {
+    if (sel_.region != kNoId || span() <= 1) return false;
+    why = std::string(gesture) + " on several tracks is not built yet; select one track";
+    return true;
+}
+
+bool EditController::edit_range(Span& out, const char* nothing_was, std::string& why) const {
     if (sel_.region != kNoId) {
         const TrackEdit* t = nullptr;
         const Region* r = find_region(snapshot(), sel_.region, &t);
@@ -804,9 +859,7 @@ bool EditController::edit_range(int& index, Frames& a, Frames& b, const char* no
             why = std::string("the selected region is gone; nothing was ") + nothing_was;
             return false;
         }
-        index = track_index(snapshot(), t->id);
-        a = r->position;
-        b = r->end();
+        out = Span{track_index(snapshot(), t->id), 1, r->position, r->end()};
         return true;
     }
     if (track(sel_.track) == nullptr) {
@@ -817,10 +870,36 @@ bool EditController::edit_range(int& index, Frames& a, Frames& b, const char* no
         why = std::string("select a region or a time range first; nothing was ") + nothing_was;
         return false;
     }
-    index = sel_.track;
-    a = sel_.start;
-    b = sel_.end;
+    out = Span{sel_.track, span(), sel_.start, sel_.end};
     return true;
+}
+
+bool EditController::copy_lanes(const Span& e, Clipboard& out, const char* nothing_was,
+                                std::string& why) const {
+    Clipboard clip;
+    bool any = false;
+    for (int i = 0; i < e.count; ++i) {
+        Clip lane;
+        any = copy_range(snapshot(), *track(e.first + i), e.a, e.b, lane) || any;
+        clip.lanes.push_back(std::move(lane));
+    }
+    if (!any) {
+        why = e.count == 1 ? "there is no region in the selection on " + track(e.first)->name
+                           : "there is no region in the selection on any of its " +
+                                 std::to_string(e.count) + " tracks";
+        why += std::string("; nothing was ") + nothing_was;
+        return false;
+    }
+    out = std::move(clip);
+    return true;
+}
+
+void EditController::select_span(int first, int count, Frames a, Frames b) {
+    sel_.track = first;
+    sel_.tracks = count;
+    sel_.region = kNoId;
+    sel_.start = sel_.insertion = a;
+    sel_.end = b;
 }
 
 bool EditController::submit_compound(std::vector<Member> members, const char* gesture,
@@ -834,15 +913,9 @@ bool EditController::submit_compound(std::vector<Member> members, const char* ge
 }
 
 bool EditController::copy(std::string& why) {
-    int index = -1;
-    Frames a = 0, b = 0;
-    if (!edit_range(index, a, b, "copied", why)) return false;
-    const TrackEdit* t = track(index);
-    Clip clip;
-    if (!copy_range(snapshot(), *t, a, b, clip)) {
-        why = "there is no region in the selection on " + t->name + "; nothing was copied";
-        return false;
-    }
+    Span e;
+    Clipboard clip;
+    if (!edit_range(e, "copied", why) || !copy_lanes(e, clip, "copied", why)) return false;
     clipboard_ = std::move(clip);
     ++clipboard_serial_;
     return true;
@@ -850,84 +923,121 @@ bool EditController::copy(std::string& why) {
 
 bool EditController::cut(std::string& why) {
     if (refuse_shuffle("Cut", "cut", why)) return false;
-    int index = -1;
-    Frames a = 0, b = 0;
-    if (!edit_range(index, a, b, "cut", why)) return false;
-    const TrackEdit* t = track(index);
-    Clip clip;
-    if (!copy_range(snapshot(), *t, a, b, clip)) {
-        why = "there is no region in the selection on " + t->name + "; nothing was cut";
-        return false;
-    }
+    Span e;
+    Clipboard clip;
+    if (!edit_range(e, "cut", why) || !copy_lanes(e, clip, "cut", why)) return false;
     std::vector<Member> members;
-    clear_range(*active(t), a, b, [this]() { return doc_.reserve_id(); }, members);
+    for (int i = 0; i < e.count; ++i) {
+        clear_range(*active(track(e.first + i)), e.a, e.b, [this]() { return doc_.reserve_id(); },
+                    members);
+    }
     // The clipboard changes only with the edit: a refused Cut leaves both.
     if (!submit_compound(std::move(members), "Cut", "cut", why)) return false;
     clipboard_ = std::move(clip);
     ++clipboard_serial_;
-    sel_.track = index;
-    sel_.region = kNoId;
-    sel_.start = sel_.insertion = a;
-    sel_.end = b;
+    select_span(e.first, e.count, e.a, e.b);
     return true;
 }
 
+namespace {
+
+// "Gtr", "Gtr and Bass", "Gtr, Bass and Keys".
+std::string spoken_list(const std::vector<std::string>& names) {
+    std::string out;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) out += i + 1 == names.size() ? " and " : ", ";
+        out += names[i];
+    }
+    return out;
+}
+
+}  // namespace
+
 bool EditController::paste(std::string& why) {
     if (refuse_shuffle("Paste", "pasted", why)) return false;
-    const TrackEdit* t = track(sel_.track);
-    if (t == nullptr) {
+    if (track(sel_.track) == nullptr) {
         why = "select a track first; nothing was pasted";
         return false;
     }
-    const std::string problem = paste_problem(snapshot(), *t, clipboard_);
-    if (!problem.empty()) {
-        why = problem;
+    if (clipboard_.empty()) {
+        why = "the clipboard is empty; cut or copy a selection first";
+        return false;
+    }
+    // Pro Tools pastes each lane as many tracks below the selected one as it
+    // was copied from below the first, and leaves out lanes that run past
+    // the last track. What is left out is said, never silent.
+    const int n = static_cast<int>(snapshot().edit->tracks.size());
+    const int lanes = static_cast<int>(clipboard_.lanes.size());
+    const int fit = std::min(lanes, n - sel_.track);
+    bool any = false;
+    for (int i = 0; i < fit; ++i) {
+        const Clip& lane = clipboard_.lanes[static_cast<std::size_t>(i)];
+        if (lane.empty()) continue;
+        any = true;
+        const std::string problem = paste_problem(snapshot(), *track(sel_.track + i), lane);
+        if (!problem.empty()) {
+            why = problem;
+            return false;
+        }
+    }
+    std::vector<std::string> left_out;
+    for (int i = fit; i < lanes; ++i) {
+        left_out.push_back(clipboard_.lanes[static_cast<std::size_t>(i)].track);
+    }
+    const std::string last = track(n - 1)->name;
+    if (!any) {
+        // Only the lanes' gaps would land: a paste that clears and places
+        // nothing is not what the operator asked for.
+        why = "the clipboard's regions were copied from " + spoken_list(left_out) +
+              ", and there is no track below " + last + " to paste them on; nothing was pasted";
         return false;
     }
     const Frames at = sel_.has_range() ? sel_.start : sel_.insertion;
     std::vector<Member> members;
-    paste_clip(*active(t), at, clipboard_, [this]() { return doc_.reserve_id(); }, members);
+    for (int i = 0; i < fit; ++i) {
+        paste_clip(*active(track(sel_.track + i)), at,
+                   clipboard_.lanes[static_cast<std::size_t>(i)],
+                   [this]() { return doc_.reserve_id(); }, members);
+    }
     if (!submit_compound(std::move(members), "Paste", "pasted", why)) return false;
-    sel_.region = kNoId;
-    sel_.start = sel_.insertion = at;
-    sel_.end = at + clipboard_.length;
+    select_span(sel_.track, fit, at, at + clipboard_.length());
+    why.clear();
+    if (fit < lanes) {
+        why = "Pasted " + std::to_string(fit) + " of the clipboard's " + std::to_string(lanes) +
+              " tracks: there is no track below " + last + " for what was copied from " +
+              spoken_list(left_out) + ".";
+    }
     return true;
 }
 
 bool EditController::duplicate(std::string& why) {
     if (refuse_shuffle("Duplicate", "duplicated", why)) return false;
-    int index = -1;
-    Frames a = 0, b = 0;
-    if (!edit_range(index, a, b, "duplicated", why)) return false;
-    const TrackEdit* t = track(index);
-    Clip clip;
-    if (!copy_range(snapshot(), *t, a, b, clip)) {
-        why = "there is no region in the selection on " + t->name + "; nothing was duplicated";
+    Span e;
+    Clipboard clip;
+    if (!edit_range(e, "duplicated", why) || !copy_lanes(e, clip, "duplicated", why)) {
         return false;
     }
     std::vector<Member> members;
-    paste_clip(*active(t), b, clip, [this]() { return doc_.reserve_id(); }, members);
+    for (int i = 0; i < e.count; ++i) {
+        paste_clip(*active(track(e.first + i)), e.b, clip.lanes[static_cast<std::size_t>(i)],
+                   [this]() { return doc_.reserve_id(); }, members);
+    }
     if (!submit_compound(std::move(members), "Duplicate", "duplicated", why)) return false;
-    sel_.track = index;
-    sel_.region = kNoId;
-    sel_.start = sel_.insertion = b;
-    sel_.end = b + clip.length;
+    select_span(e.first, e.count, e.b, e.b + clip.length());
     return true;
 }
 
 bool EditController::can_repeat(std::string& why, std::string* track_out, Frames* length) const {
     if (refuse_shuffle("Repeat", "repeated", why)) return false;
-    int index = -1;
-    Frames a = 0, b = 0;
-    if (!edit_range(index, a, b, "repeated", why)) return false;
-    const TrackEdit* t = track(index);
-    Clip clip;
-    if (!copy_range(snapshot(), *t, a, b, clip)) {
-        why = "there is no region in the selection on " + t->name + "; nothing was repeated";
-        return false;
+    Span e;
+    Clipboard clip;
+    if (!edit_range(e, "repeated", why) || !copy_lanes(e, clip, "repeated", why)) return false;
+    if (track_out != nullptr) {
+        std::vector<std::string> names;
+        for (int i = 0; i < e.count; ++i) names.push_back(track(e.first + i)->name);
+        *track_out = spoken_list(names);
     }
-    if (track_out != nullptr) *track_out = t->name;
-    if (length != nullptr) *length = b - a;
+    if (length != nullptr) *length = e.b - e.a;
     return true;
 }
 
@@ -937,29 +1047,33 @@ bool EditController::repeat(int count, std::string& why) {
         why = "Repeat needs a number of repeats of 1 or more; nothing was repeated";
         return false;
     }
-    int index = -1;
-    Frames a = 0, b = 0;
-    edit_range(index, a, b, "repeated", why);
-    const TrackEdit* t = track(index);
-    Clip clip;
-    copy_range(snapshot(), *t, a, b, clip);
-    const Playlist& p = *active(t);
+    Span e;
+    Clipboard clip;
+    edit_range(e, "repeated", why);
+    copy_lanes(e, clip, "repeated", why);
     // Counted before it is built: a typed 100000 is refused by its size,
-    // not by allocating it.
-    const std::string too_many = over_limit(
-        "Repeat", "repeated", repeat_members(p, b, clip, static_cast<std::size_t>(count)));
+    // not by allocating it. A lane with no region costs only its clear, but
+    // one lane at least holds a region, so a count that passes is at most
+    // the member limit.
+    std::size_t total = 0;
+    for (int i = 0; i < e.count; ++i) {
+        total += repeat_members(*active(track(e.first + i)), e.b,
+                                clip.lanes[static_cast<std::size_t>(i)],
+                                static_cast<std::size_t>(count));
+    }
+    const std::string too_many = over_limit("Repeat", "repeated", total);
     if (!too_many.empty()) {
         why = too_many;
         return false;
     }
     std::vector<Member> members;
-    repeat_clip(p, b, clip, count, [this]() { return doc_.reserve_id(); }, members);
+    for (int i = 0; i < e.count; ++i) {
+        repeat_clip(*active(track(e.first + i)), e.b, clip.lanes[static_cast<std::size_t>(i)],
+                    count, [this]() { return doc_.reserve_id(); }, members);
+    }
     if (!submit_compound(std::move(members), "Repeat", "repeated", why)) return false;
     repeat_count_ = count;
-    sel_.track = index;
-    sel_.region = kNoId;
-    sel_.start = sel_.insertion = b;
-    sel_.end = b + clip.length * count;
+    select_span(e.first, e.count, e.b, e.b + clip.length() * count);
     return true;
 }
 
@@ -1007,6 +1121,7 @@ bool EditController::set_region_fade(Id region, FadeEnd end, Frames length, std:
 }
 
 bool EditController::fade_to_start(std::string& why) {
+    if (refuse_several("Fade to Start", why)) return false;
     int index = -1;
     const Region* r = target_region(index);
     if (r == nullptr || sel_.insertion <= r->position) {
@@ -1017,6 +1132,7 @@ bool EditController::fade_to_start(std::string& why) {
 }
 
 bool EditController::fade_to_end(std::string& why) {
+    if (refuse_several("Fade to End", why)) return false;
     int index = -1;
     const Region* r = target_region(index);
     if (r == nullptr || sel_.insertion <= r->position) {
@@ -1027,6 +1143,7 @@ bool EditController::fade_to_end(std::string& why) {
 }
 
 bool EditController::fade_selection(std::string& why) {
+    if (refuse_several("Fading a selection", why)) return false;
     const TrackEdit* t = track(sel_.track);
     if (t == nullptr) {
         why = "select a track first";
@@ -1155,7 +1272,8 @@ bool EditController::fade_selection(std::string& why) {
 bool EditController::clear_fade_at_selection(bool& done, std::string& why) {
     done = false;
     const TrackEdit* t = track(sel_.track);
-    if (t == nullptr || sel_.region != kNoId || !sel_.has_range()) return true;
+    // A fade is on one track; on several, Clear clears the range.
+    if (t == nullptr || sel_.region != kNoId || !sel_.has_range() || span() > 1) return true;
     const Playlist& p = *active(t);
     for (const Crossfade& x : p.crossfades) {
         const Region* r = region_on(p, x.right);

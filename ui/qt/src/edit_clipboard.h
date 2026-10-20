@@ -6,9 +6,9 @@
 // "Editing" chapter: "Cut, Copy, Paste and Clear Commands", "Duplicate
 // Command", "Repeat Command"), never its code.
 //
-// What the clipboard holds is interface state, as the selection is: the
-// regions under a range on one track, cut to it, with the fades and
-// crossfades that lie wholly inside it. It names its sources and keeps a
+// What the clipboard holds is interface state, as the selection is: for each
+// track the range covered, the regions under it, cut to it, with the fades
+// and crossfades that lie wholly inside it. It names its sources and keeps a
 // copy of each, so a paste into a session whose pool says something else
 // under those ids is refused rather than placing someone else's audio.
 //
@@ -29,9 +29,11 @@
 
 namespace sonora::ui {
 
+// One track's part of a copied range.
 struct Clip {
     model::Frames length = 0;        // the range copied, gaps included
     std::uint16_t channels = 1;      // of the track it was copied from
+    std::string track;               // that track's name, for the refusals
     // Positions are from the range's start; ids are the originals', for
     // the crossfades to name until a paste gives each a new one.
     std::vector<model::Region> regions;
@@ -41,11 +43,23 @@ struct Clip {
     bool empty() const { return regions.empty(); }
 };
 
+// What Cut and Copy leave: one lane per track the selection covered, top
+// first. A lane whose part of the range held no region keeps its place, so
+// every lane lands the same number of tracks below the first as it was
+// copied from, and pasting it clears what it covers, as its gap would.
+struct Clipboard {
+    std::vector<Clip> lanes;
+
+    bool empty() const;   // no region on any lane
+    model::Frames length() const { return lanes.empty() ? 0 : lanes.front().length; }
+};
+
 // An id for a member that introduces an object, in the order the members
 // use them (operations.h: a compound's new ids strictly increase).
 using NextId = std::function<model::Id()>;
 
-// The regions of `p` under [a, b), cut to it. False when there are none.
+// The regions of `track` under [a, b), cut to it. False when there are
+// none; `out` is then that empty lane, still the range's length.
 bool copy_range(const model::Snapshot& s, const model::TrackEdit& track, model::Frames a,
                 model::Frames b, Clip& out);
 

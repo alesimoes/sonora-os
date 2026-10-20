@@ -359,7 +359,9 @@ Rectangle {
                     { name: "editPaste", label: "Paste", command: "edit.paste", on: root.session.canPaste },
                     { name: "editClear", label: "Clear", command: "edit.clear", on: true },
                     { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true },
-                    { name: "editRepeat", label: "Repeat…", command: "edit.repeat", on: true }
+                    { name: "editRepeat", label: "Repeat…", command: "edit.repeat", on: true },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true }
                 ]
                 Item {
                     required property var modelData
