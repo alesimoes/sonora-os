@@ -101,9 +101,12 @@ model::Ticks ceil_div(model::Ticks a, model::Ticks b) {   // b > 0
     return q;
 }
 
-// The lines in [a, b] frames on `m`, as grid_lines() states them.
+// The lines in [a, b] frames on `m`, as grid_lines() states them. With
+// `bars_only`, `bar_every` > 1 keeps only the bars whose 0-based number is
+// a multiple of it, found directly rather than walked bar by bar, so a view
+// of a million bars costs what its labels cost.
 void lines_on(const model::MusicalMap& m, double a, double b, GridValue g, bool bars_only,
-              std::vector<GridLine>& out, std::size_t max) {
+              std::vector<GridLine>& out, std::size_t max, int64_t bar_every = 1) {
     out.clear();
     // Whole frames only: a line is drawn at the frame nearest it. None
     // before the timeline's 0, where entry 0 would otherwise extend.
@@ -128,6 +131,23 @@ void lines_on(const model::MusicalMap& m, double a, double b, GridValue g, bool 
         const model::Ticks step = bars_only ? bar : grid_step_ticks(g, e);
         const model::Ticks from = std::max(ta, e.tick);
         const model::Ticks to = std::min(tb, end - 1);
+        if (bars_only && bar_every > 1) {
+            if (to < from) continue;
+            // Bars from e.bar_tick are e.bar, e.bar + 1, ...: the first at or
+            // after `from`, moved up to a multiple of bar_every. Counted in
+            // bars, not ticks, so a long stride cannot overflow.
+            const int64_t first = e.bar + ceil_div(from - e.bar_tick, bar);
+            const int64_t last = e.bar + (to - e.bar_tick) / bar;
+            for (int64_t n = (first + bar_every - 1) / bar_every * bar_every;
+                 n <= last && out.size() < max; n += bar_every) {
+                const model::Ticks t = e.bar_tick + (n - e.bar) * bar;
+                model::Frames f = 0;
+                if (!m.frame_at(t, f)) return;
+                if (f < fa || f > fb) continue;
+                out.push_back({static_cast<double>(f), true, t});
+            }
+            continue;
+        }
         for (model::Ticks t = e.bar_tick + ceil_div(from - e.bar_tick, step) * step;
              t <= to && out.size() < max; t += step) {
             model::Frames f = 0;
@@ -238,10 +258,40 @@ std::string format_meter(const model::TempoEntry& t) {
     return std::to_string(t.meter[0]) + "/" + std::to_string(t.meter[1]);
 }
 
+namespace {
+
+std::string bars_beats_text(const MusicalTime& t) {
+    return printf_string("%lld|%lld|%03lld", t.bar, t.beat, t.tick);
+}
+
+// musical_time() on a map already built.
+MusicalTime musical_time_on(const model::MusicalMap& m, model::Frames f) {
+    model::Ticks t = 0;
+    if (!m.tick_at(std::max<model::Frames>(0, f), t)) return {};
+    return reading_of(m.bars_beats_at(t));
+}
+
+}  // namespace
+
 std::string format_bars_beats(model::Frames f, const model::SessionSettings& s) {
     if (s.sample_rate == 0) return "-|-|---";
-    const MusicalTime t = musical_time(f, s);
-    return printf_string("%lld|%lld|%03lld", t.bar, t.beat, t.tick);
+    return bars_beats_text(musical_time(f, s));
+}
+
+std::vector<std::string> tempo_entry_positions(const model::SessionSettings& s) {
+    std::vector<std::string> out;
+    out.reserve(s.tempo.size());
+    model::MusicalMap m;
+    const bool read = s.sample_rate != 0 && reading_map(s, m);
+    for (std::size_t i = 0; i < s.tempo.size(); ++i) {
+        if (s.sample_rate == 0) {
+            out.emplace_back("-|-|---");
+        } else {
+            out.push_back(bars_beats_text(read ? musical_time_on(m, i == 0 ? 0 : s.tempo[i].at)
+                                               : MusicalTime{}));
+        }
+    }
+    return out;
 }
 
 std::string format_min_sec(model::Frames f, uint32_t rate) {
@@ -392,15 +442,15 @@ void bar_ticks(double first, double fpp, double width, double need, double min_m
         min_beat = std::min(min_beat, frames_of_ticks(e.beat_ticks, e));
         min_bar = std::min(min_bar, frames_of_ticks(e.beat_ticks * e.beats, e));
     }
-    static const int kEvery[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
+    // Labels every 1, 2, 4, ... bars, as far as the view needs: a long
+    // session zoomed out labels every 4096th bar rather than losing its
+    // labels past the first few thousand bars. 2^40 bars is past any tick
+    // the map can reach.
     const bool beat_majors = min_beat >= need;
-    int every = 256;
+    int64_t every = 1;
     if (!beat_majors) {
-        for (int k : kEvery) {
-            if (k * min_bar >= need) {
-                every = k;
-                break;
-            }
+        while (every < (int64_t{1} << 40) && static_cast<double>(every) * min_bar < need) {
+            every *= 2;
         }
     }
     // Between the labels: sixteenths under beat labels, beats under bar
@@ -409,8 +459,13 @@ void bar_ticks(double first, double fpp, double width, double need, double min_m
                                          : every == 1 && min_beat / fpp >= 6.0;
     const bool minor_bars = !beat_majors && min_bar / fpp >= 6.0;
     const GridValue sub = beat_majors ? GridValue::Sixteenth : GridValue::Beat;
+    // Where no bar between the labels is drawn, only the labelled bars are
+    // looked for. Every other case draws each line it asks for, at least
+    // 6 px apart, so the view's width bounds it.
     std::vector<GridLine> lines;
-    lines_on(m, std::max(0.0, first), last, sub, !beat_majors && !minor_beats, lines, 4096);
+    const bool bars_only = !beat_majors && !minor_beats;
+    lines_on(m, std::max(0.0, first), last, sub, bars_only, lines, 4096,
+             bars_only && !minor_bars ? every : 1);
     double last_major = -HUGE_VAL;
     for (const GridLine& l : lines) {
         if (out.size() >= 4096) break;

@@ -79,6 +79,10 @@ if [[ "$MODE" == screenshot ]]; then
   shoot "${mix%.png}-solo-safe.png" --window mix --mix-view solo-safe
   # The Keys menu open over the Edit window: the profiles, and the a-z button.
   shoot "$base-keys.png" --window edit --keys-view profiles --keymap-dir keymaps
+  # A version 3 file whose tempo map is outside the bounds: it opens
+  # modified, with one held notice per value the loader repaired.
+  shoot "$base-repairs.png" --window edit \
+    --open common/model/tests/fixtures/v3-tempo-out-of-bounds.sonora
 
   # The version refusal on a real sonora-engine that announces the next
   # protocol version (--announce-versions, as the conformance suite runs it):
@@ -125,7 +129,7 @@ if [[ "$MODE" == screenshot ]]; then
   kill "$pid" 2>/dev/null || true; wait "$pid" || true
   rm -rf "$engine_dir"
   echo "saved /out/$base-refusal.png and /out/$base-refusal-reconnect.png"
-  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png and $base-keys.png"
+  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-keys.png and $base-repairs.png"
   exit 0
 fi
 

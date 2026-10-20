@@ -13,7 +13,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -35,6 +37,7 @@
 #include "sonora/platform/file.h"
 #include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
+#include "sonora/plugin_paths.h"
 #include "sonora/quit_signals.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
@@ -357,6 +360,7 @@ int main(int argc, char** argv) {
     bool headless = false;
     bool lock = true;
     sonora::EngineControlServer::Options control;
+    bool plugin_cache_given = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -396,6 +400,9 @@ int main(int argc, char** argv) {
             control.plugin_host = argv[++i];
         } else if (std::strcmp(argv[i], "--plugin-bundle") == 0 && i + 1 < argc) {
             control.plugin_bundles.emplace_back(argv[++i]);
+        } else if (std::strcmp(argv[i], "--plugin-cache") == 0 && i + 1 < argc) {
+            control.plugin_cache = argv[++i];
+            plugin_cache_given = true;
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
@@ -437,6 +444,8 @@ int main(int argc, char** argv) {
                 "  --plugin-host PATH  the plugin host (default: sonora-plugin-host\n"
                 "                    beside this binary; none: inserts show faulted)\n"
                 "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
+                "  --plugin-cache PATH  the plugin catalog cache (default:\n"
+                "                    ~/.cache/sonora/plugin-catalog.json; \"\": in memory)\n"
                 "  --keymap PATH     key map for the terminal interface\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
@@ -836,6 +845,16 @@ int main(int argc, char** argv) {
         const std::string dir = sonora::platform::executable_dir();
         const std::string host = dir.empty() ? std::string() : dir + "/sonora-plugin-host";
         if (!host.empty() && ::access(host.c_str(), X_OK) == 0) control.plugin_host = host;
+    }
+    // The catalog cache (ADR-0012, amendment of 2026-10-19, change A and
+    // Q2): resolved here and passed down; an empty --plugin-cache keeps
+    // the catalog in memory.
+    if (!plugin_cache_given) control.plugin_cache = sonora::default_plugin_cache(sonora::platform::user_cache_dir());
+    {
+        std::ifstream os_release("/etc/os-release");
+        std::ostringstream text;
+        text << os_release.rdbuf();
+        control.plugin_build_id = sonora::image_build_id(text.str());
     }
 
     sonora::EngineControlServer server(session, audio.get(), std::move(control));

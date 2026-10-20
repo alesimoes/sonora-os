@@ -25,3 +25,16 @@ target_link_libraries(sonora_plugin_host_control PUBLIC sonora_plugin_protocol)
 add_executable(test_plugin_host_control tests/test_host_control.cpp)
 target_link_libraries(test_plugin_host_control PRIVATE sonora_plugin_host_control)
 add_test(NAME plugin_host_control COMMAND test_plugin_host_control)
+
+# The probe record, record version 1 (ADR-0012, amendment of 2026-10-19,
+# item 2): what `sonora-plugin-host --probe` prints and the engine's plugin
+# catalog caches, with its one codec. Standard library only, like the rest
+# of contracts/ (ADR-0007): no common/json here.
+add_library(sonora_plugin_probe_record STATIC src/probe_record.cpp
+            include/sonora/plugin/probe_record.h)
+target_include_directories(sonora_plugin_probe_record PUBLIC include)
+target_link_libraries(sonora_plugin_probe_record PUBLIC sonora_base)
+
+add_executable(test_plugin_probe_record tests/test_probe_record.cpp)
+target_link_libraries(test_plugin_probe_record PRIVATE sonora_plugin_probe_record)
+add_test(NAME plugin_probe_record COMMAND test_plugin_probe_record)

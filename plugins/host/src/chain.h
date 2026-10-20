@@ -81,6 +81,7 @@ public:
     void param_range(std::size_t i, uint32_t dense, float& min, float& max) const {
         slots_[i]->param_range(dense, min, max);
     }
+    const PortInfo& param_port(std::size_t i, uint32_t dense) const { return slots_[i]->param_port(dense); }
     void set_touch_sink(TouchSink* sink) {
         for (std::size_t k = 0; k < slots_.size(); ++k) slots_[k]->set_touch_sink(sink, static_cast<uint32_t>(k));
     }

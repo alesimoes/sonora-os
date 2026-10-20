@@ -9,8 +9,12 @@
 
 #include <fcntl.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +28,12 @@ struct ChildProcess::Impl {
     pid_t pid = -1;
     bool reaped = false;
     int status = 0;
+    // It leads its own process group: a signal goes to the group, so what
+    // it forked goes with it (a VST3 --list child's per-bundle children,
+    // which carry no death signal; code-reviewer B on #95).
+    bool group = false;
+
+    void signal(int sig) const { ::kill(group ? -pid : pid, sig); }
 
     bool reap(bool block) {
         if (reaped) return true;
@@ -54,6 +64,56 @@ std::string executable_dir() {
 }
 
 int64_t current_process_id() { return static_cast<int64_t>(::getpid()); }
+
+namespace {
+
+#ifdef __linux__
+// <linux/ioprio.h> is not in every libc's headers; the values are the ABI.
+constexpr int kIoprioWhoProcess = 1;
+constexpr int kIoprioClassIdle = 3;
+constexpr int kIoprioClassShift = 13;
+#endif
+
+// `who`: a thread id (Linux) or process id; 0 is the caller.
+bool lower(pid_t who, int nice, bool idle_io, std::string& error) {
+    bool ok = true;
+    if (nice > 0) {
+        errno = 0;
+        const int now = ::getpriority(PRIO_PROCESS, static_cast<id_t>(who));
+        if (errno == 0 && now < nice && ::setpriority(PRIO_PROCESS, static_cast<id_t>(who), nice) != 0) {
+            error = std::string("cannot lower the CPU priority: ") + std::strerror(errno);
+            ok = false;
+        }
+    }
+    if (idle_io) {
+#ifdef __linux__
+        if (::syscall(SYS_ioprio_set, kIoprioWhoProcess, static_cast<int>(who),
+                      kIoprioClassIdle << kIoprioClassShift) != 0) {
+            error = std::string("cannot set the idle I/O class: ") + std::strerror(errno);
+            ok = false;
+        }
+#endif
+    }
+    return ok;
+}
+
+}  // namespace
+
+bool lower_current_thread(int nice, bool idle_io, std::string& error) {
+#ifdef __linux__
+    // Linux keeps both per thread: setpriority and ioprio_set on a thread
+    // id touch that thread alone, and a child inherits its spawner's.
+    const pid_t self = static_cast<pid_t>(::syscall(SYS_gettid));
+    return lower(self, nice, idle_io, error);
+#else
+    // Elsewhere POSIX's setpriority would lower the whole process, the
+    // engine's control and disk threads with it (rt-engineer on #95).
+    (void)nice;
+    (void)idle_io;
+    error = "lowering one thread's priority is not available on this platform";
+    return false;
+#endif
+}
 
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>& argv,
                                                   const Options& options, std::string& error) {
@@ -163,9 +223,15 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
     for (int s : {SIGPIPE, SIGINT, SIGTERM, SIGHUP, SIGCHLD}) sigaddset(&defaults, s);
     posix_spawnattr_setsigmask(&attr, &none);
     posix_spawnattr_setsigdefault(&attr, &defaults);
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    if (options.own_group) {
+        posix_spawnattr_setpgroup(&attr, 0);
+        flags |= POSIX_SPAWN_SETPGROUP;
+    }
+    posix_spawnattr_setflags(&attr, flags);
 
     auto impl = std::make_unique<Impl>();
+    impl->group = options.own_group;
     const int rc = ::posix_spawn(&impl->pid, args[0], &actions, &attr, args.data(), environ);
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
@@ -174,6 +240,14 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
         error = "cannot start " + argv[0] + ": " + std::strerror(rc);
         return nullptr;
     }
+    if (options.nice > 0 || options.idle_io) {
+        // posix_spawn has no attribute for either. A spawner that lowered
+        // itself first (lower_current_thread) passed both on already; this
+        // covers any other, from just after exec. A refusal is not a failed
+        // start: the child runs, at the priority it inherited.
+        std::string ignored;
+        lower(impl->pid, options.nice, options.idle_io, ignored);
+    }
     return std::make_unique<ChildProcess>(std::move(impl));
 }
 
@@ -181,7 +255,7 @@ ChildProcess::ChildProcess(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) 
 
 ChildProcess::~ChildProcess() {
     if (!impl_->reap(false)) {
-        ::kill(impl_->pid, SIGKILL);
+        impl_->signal(SIGKILL);
         impl_->reap(true);
     }
 }
@@ -201,11 +275,11 @@ bool ChildProcess::wait(int timeout_ms) {
 }
 
 void ChildProcess::terminate() {
-    if (!impl_->reaped) ::kill(impl_->pid, SIGTERM);
+    if (!impl_->reaped) impl_->signal(SIGTERM);
 }
 
 void ChildProcess::kill() {
-    if (!impl_->reaped) ::kill(impl_->pid, SIGKILL);
+    if (!impl_->reaped) impl_->signal(SIGKILL);
 }
 
 bool ChildProcess::exited_normally() const { return WIFEXITED(impl_->status); }

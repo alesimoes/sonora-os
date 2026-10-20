@@ -265,20 +265,26 @@ int test_v3_tempo_brought_inside_bounds() {
     CHECK(t[2].bpm == 96.5f && t[2].meter[0] == 5 && t[2].meter[1] == 64);
     CHECK(t[3].bpm == 1000.0f && t[3].meter[0] == 3 && t[3].meter[1] == 16);
     if (l.repairs.size() != 5) {
-        for (const std::string& r : l.repairs) std::fprintf(stderr, "  repair: %s\n", r.c_str());
+        for (const Repair& r : l.repairs) std::fprintf(stderr, "  repair: %s\n", r.text().c_str());
     }
     CHECK(l.repairs.size() == 5);
-    CHECK(mentions(l.repairs[0], "tempo[0].bpm: 0.5 bpm"));
-    CHECK(mentions(l.repairs[0], "opens as 1 bpm"));
-    CHECK(mentions(l.repairs[1], "tempo[1].bpm: 2400.0 bpm"));
-    CHECK(mentions(l.repairs[1], "opens as 1000 bpm"));
-    CHECK(mentions(l.repairs[2], "tempo[1].meter: 7/3"));
-    CHECK(mentions(l.repairs[2], "opens as 7/4"));
-    CHECK(mentions(l.repairs[3], "tempo[2].meter: 5/128"));
-    CHECK(mentions(l.repairs[3], "opens as 5/64"));
-    CHECK(mentions(l.repairs[4], "tempo[3].meter: 3/12"));
-    CHECK(mentions(l.repairs[4], "opens as 3/16"));
-    for (const std::string& r : l.repairs) CHECK(mentions(r, "version 3 file"));
+    // Each by key path, the old and the new, so the opener can show them
+    // one by one.
+    CHECK(l.repairs[0].path == "tempo[0].bpm" && l.repairs[0].was == "0.5 bpm" &&
+          l.repairs[0].now == "1 bpm");
+    CHECK(l.repairs[1].path == "tempo[1].bpm" && l.repairs[1].was == "2400.0 bpm" &&
+          l.repairs[1].now == "1000 bpm");
+    CHECK(l.repairs[2].path == "tempo[1].meter" && l.repairs[2].was == "7/3" &&
+          l.repairs[2].now == "7/4");
+    CHECK(l.repairs[3].path == "tempo[2].meter" && l.repairs[3].was == "5/128" &&
+          l.repairs[3].now == "5/64");
+    CHECK(l.repairs[4].path == "tempo[3].meter" && l.repairs[4].was == "3/12" &&
+          l.repairs[4].now == "3/16");
+    CHECK(mentions(l.repairs[0].why, "1 to 1000 bpm"));
+    CHECK(mentions(l.repairs[2].why, "power of two"));
+    for (const Repair& r : l.repairs) CHECK(mentions(r.why, "version 3 file"));
+    CHECK(l.repairs[1].text() ==
+          "tempo[1].bpm: 2400.0 bpm -> 1000 bpm (" + l.repairs[1].why + ")");
     // Saved, it is a version 4 file that opens with nothing to report.
     std::string out;
     CHECK(save(l, out));
@@ -632,9 +638,9 @@ int test_fade_into_crossfade_is_repaired_at_load() {
     const Region* back = find(playlist_of(l.snapshot, 0), s);
     CHECK(back != nullptr && back->fade_out.length == 50000 - 480);
     CHECK(l.repairs.size() == 1);
-    CHECK(mentions(l.repairs[0], "tracks[0].playlists[0].regions[1]"));
-    CHECK(mentions(l.repairs[0], "fade-out shortened from 50000 to 49520 frames"));
-    CHECK(mentions(l.repairs[0], "crossfade at its start"));
+    CHECK(l.repairs[0].path == "tracks[0].playlists[0].regions[1].fade_out.length");
+    CHECK(l.repairs[0].was == "50000 frames" && l.repairs[0].now == "49520 frames");
+    CHECK(mentions(l.repairs[0].why, "crossfade at the region's start"));
     // What loads is what the current model would have made, and it saves.
     std::string again;
     CHECK(save(l, again));
@@ -662,8 +668,9 @@ int test_fade_into_crossfade_is_repaired_at_load() {
     back = find(playlist_of(l.snapshot, 0), s);
     CHECK(back != nullptr && back->fade_in.length == 50000 - 480);
     CHECK(l.repairs.size() == 1);
-    CHECK(mentions(l.repairs[0], "fade-in shortened from 50000 to 49520 frames"));
-    CHECK(mentions(l.repairs[0], "crossfade at its end"));
+    CHECK(mentions(l.repairs[0].path, ".fade_in.length"));
+    CHECK(l.repairs[0].was == "50000 frames" && l.repairs[0].now == "49520 frames");
+    CHECK(mentions(l.repairs[0].why, "crossfade at the region's end"));
     return 0;
 }
 

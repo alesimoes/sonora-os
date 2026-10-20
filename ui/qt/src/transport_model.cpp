@@ -133,18 +133,20 @@ void TransportModel::refreshTempo(bool force) {
     const model::TempoEntry& now = tempo_at(std::max<model::Frames>(0, position_), settings_);
     tempo_text_ = q(format_bpm(now.bpm));
     meter_text_ = q(format_meter(now));
+    // One map for the whole list: a reading per entry, each building its
+    // own, was quadratic in the map's length.
+    const std::vector<std::string> at = tempo_entry_positions(settings_);
     next_change_.clear();
     if (index + 1 < settings_.tempo.size()) {
         const model::TempoEntry& next = settings_.tempo[index + 1];
         next_change_ = QStringLiteral("%1  %2 at %3")
-                           .arg(q(format_bpm(next.bpm)), q(format_meter(next)),
-                                q(format_bars_beats(next.at, settings_)));
+                           .arg(q(format_bpm(next.bpm)), q(format_meter(next)), q(at[index + 1]));
     }
     tempo_map_.clear();
     for (std::size_t i = 0; i < settings_.tempo.size(); ++i) {
         const model::TempoEntry& e = settings_.tempo[i];
         QVariantMap m;
-        m.insert(QStringLiteral("at"), q(format_bars_beats(i == 0 ? 0 : e.at, settings_)));
+        m.insert(QStringLiteral("at"), q(at[i]));
         m.insert(QStringLiteral("bpm"), q(format_bpm(e.bpm)));
         m.insert(QStringLiteral("meter"), q(format_meter(e)));
         m.insert(QStringLiteral("current"), i == index);

@@ -65,6 +65,7 @@
 #include "sonora/playback_controller.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin_hosting.h"
+#include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
 
 using namespace sonora;
@@ -124,6 +125,9 @@ AddInsert insert_op(Id track, Id insert, uint8_t slot, const char* uri, std::vec
 struct Rig {
     std::unique_ptr<Session> session;
     std::unique_ptr<PlaybackController> ctl;
+    // The chains' probes go through the scan worker (amendment of
+    // 2026-10-19, item 3); no catalog scan here, only chain starts.
+    std::unique_ptr<PluginScanner> scanner;
     std::unique_ptr<PluginHosting> hosting;
     History history;
     std::vector<float> out[2];
@@ -162,11 +166,17 @@ struct Rig {
         hc.max_block_frames = 256;
         hc.max_stores = 16;
         hc.ready_timeout_ms = ready_timeout_ms;
-        hosting = std::make_unique<PluginHosting>(*session, hc);
+        PluginScannerConfig sc;
+        sc.host_path = a.host;
+        sc.bundles = a.bundles;
+        sc.scan_at_start = false;
+        scanner = std::make_unique<PluginScanner>(sc);
+        hosting = std::make_unique<PluginHosting>(*session, hc, *scanner);
         ctl->set_chain_resolver([this](const TrackEdit& t, uint32_t e, ChainBinding& b) { hosting->resolve(t, e, b); });
     }
     ~Rig() {
         hosting.reset();
+        scanner.reset();
         ctl.reset();
         session.reset();
         std::filesystem::remove_all(kDir);
@@ -197,6 +207,7 @@ struct Rig {
         b.callback_ns = now_ns();
         session->process(b);
         if (!session->reader().running() && !hold_reader) session->reader().run_pass();
+        scanner->exchange(false);
         PluginHosting::PollResult r = hosting->poll(now_ms(), history.current(), ctl->oldest_live_epoch());
         for (model::Operation& op : r.ops) {
             ops_seen.push_back(op);
@@ -355,6 +366,31 @@ int scenario_missing(const Args& a) {
     check(f.count(500) && f.at(500).find("not installed") != std::string::npos, "A's insert: not installed");
     check(f.count(501) && f.count(502) == 0, "B's missing insert faulted, eg-amp not");
     check((rig.hosting->insert_flags(500) & api::kInsertMissing) != 0, "the state block says missing");
+    return failures ? 1 : 0;
+}
+
+// Code-reviewer finding 3 on #95: a chain dropped because nothing of it is
+// left to run (its running insert moved away, a missing one stays) must
+// forget what it ran, or the moved insert is "not running" on its new
+// track, which A precedes in the chain map.
+int scenario_move_off_missing(const Args& a) {
+    std::printf("move_off_missing: eg-amp moved off a track that keeps a missing insert\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, "urn:sonora:test#not-installed"));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "A runs eg-amp without the missing one");
+    rig.apply(MoveInsert{500, 102, 0});
+    rig.show();
+    check(rig.until([&] { return rig.bound_at(1, kBlock); }, 15000), "eg-amp runs on B");
+    std::string why;
+    check(rig.hosting->set_param(500, "gain", -6.f, why), "a parameter change reaches it on B");
+    if (!why.empty()) std::printf("  why: %s\n", why.c_str());
+    float v = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", v) && v == -6.f; }, 5000),
+          "and its host reads the value");
     return failures ? 1 : 0;
 }
 
@@ -693,6 +729,7 @@ int scenario_server(const Args& a) {
     EngineControlServer::Options opts;
     opts.plugin_host = a.host;
     opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
     opts.initial_document = std::make_shared<Snapshot>(h.current());
     {
         InProcessEngine engine(session, &audio, opts);
@@ -712,13 +749,17 @@ int scenario_server(const Args& a) {
               "the state block shows the insert running");
         check((engine.state().transport().health_flags & api::kHealthPluginsDisabled) == 0,
               "the plugins-disabled health flag is down");
-        const PlaybackPlan* p = session.plans().current();
-        bool bound = false;
-        for (uint32_t i = 0; p && i < p->node_count; ++i)
-            bound = bound || (p->nodes[i].kind == NodeKind::InsertChain && p->nodes[i].latency_frames == kBlock &&
-                              p->nodes[i].channel_slot != kSilentChannelSlot &&
-                              p->nodes[i].channel_slot != kNoChannelSlot);
-        check(bound, "the playing plan binds the chain at 128");
+        // The state block says Running at Ready; the plan that binds the
+        // chain is adopted by the audio thread a turn or two later.
+        const auto bound = [&] {
+            const PlaybackPlan* p = session.plans().current();
+            for (uint32_t i = 0; p && i < p->node_count; ++i)
+                if (p->nodes[i].kind == NodeKind::InsertChain && p->nodes[i].latency_frames == kBlock &&
+                    p->nodes[i].channel_slot != kSilentChannelSlot && p->nodes[i].channel_slot != kNoChannelSlot)
+                    return true;
+            return false;
+        };
+        check(until(bound, 5000), "the playing plan binds the chain at 128");
         std::string last_fault = "none";
         for (const auto& ev : in.events)
             if (ev.kind == api::EventKind::PluginFault && ev.insert == 500) last_fault = ev.text;
@@ -789,6 +830,7 @@ int play_waits(const Args& a, const PlayWait& w) {
     EngineControlServer::Options opts;
     opts.plugin_host = w.host.empty() ? a.host : w.host;
     opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
     opts.plugin_open_wait_ms = w.wait_ms;
     opts.initial_document = std::make_shared<Snapshot>(h.current());
     {
@@ -965,6 +1007,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "repost_bypass_off") rc = scenario_repost_bypass_off(a);
     else if (a.scenario == "gesture_left_open") rc = scenario_gesture_left_open(a);
     else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
+    else if (a.scenario == "move_off_missing") rc = scenario_move_off_missing(a);
     else if (a.scenario == "state_not_restored") rc = scenario_state_not_restored(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);

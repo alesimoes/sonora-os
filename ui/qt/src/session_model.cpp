@@ -672,7 +672,9 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     if (!doc_.reset(std::move(loaded.snapshot), why)) return false;
     ctl_.document_replaced();
     file_ = file;
-    saved_revision_ = doc_.revision();
+    // A repaired session is not the file on disk: it reads as modified, so
+    // Save writes it and another Open asks first.
+    saved_revision_ = loaded.repairs.empty() ? doc_.revision() : UINT64_MAX;
     save_generation_ = loaded.save_generation;
     saved_bytes_ = std::move(bytes);
     seen_dirty_ = false;
@@ -682,12 +684,36 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     updateCounters(true);
     sync();
     emit sessionChanged();
+    QVariantList repairs;
+    for (const model::Repair& r : loaded.repairs) {
+        QVariantMap m;
+        m.insert(QStringLiteral("path"), q(r.path));
+        m.insert(QStringLiteral("was"), q(r.was));
+        m.insert(QStringLiteral("now"), q(r.now));
+        m.insert(QStringLiteral("why"), q(r.why));
+        repairs << m;
+    }
+    setRepairs(std::move(repairs));
     QString said = QStringLiteral("Opened ") + file_;
-    // An older build's file can need a repair to open; the operator hears
-    // what changed, and the next save writes it.
-    for (const std::string& r : loaded.repairs) said += QStringLiteral("; ") + q(r);
+    if (!loaded.repairs.empty()) {
+        said += QStringLiteral(", with %1 value%2 repaired to open (listed below); save to keep them")
+                    .arg(loaded.repairs.size())
+                    .arg(loaded.repairs.size() == 1 ? QString() : QStringLiteral("s"));
+    }
     emit notice(said);
     return true;
+}
+
+void SessionModel::setRepairs(QVariantList r) {
+    if (r.isEmpty() && repairs_.isEmpty()) return;
+    repairs_ = std::move(r);
+    emit repairsChanged();
+}
+
+void SessionModel::dismissRepair(int index) {
+    if (index < 0 || index >= repairs_.size()) return;
+    repairs_.removeAt(index);
+    emit repairsChanged();
 }
 
 void SessionModel::openWasLost() {
@@ -697,6 +723,8 @@ void SessionModel::openWasLost() {
     save_generation_ = 0;
     // Nothing on disk holds what is shown, so it reads as unsaved.
     saved_revision_ = UINT64_MAX;
+    // What is shown is the engine's document, not the repaired file.
+    setRepairs({});
     seen_revision_ = UINT64_MAX;
     sync();
     emit sessionChanged();

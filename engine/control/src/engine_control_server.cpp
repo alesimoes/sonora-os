@@ -15,6 +15,7 @@
 #include "sonora/model/replication.h"
 #include "sonora/playback_controller.h"
 #include "sonora/plugin_hosting.h"
+#include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
 
 namespace sonora {
@@ -87,16 +88,63 @@ static_assert(api::kInsertSlots == model::kInsertSlots,
 const char* const kNoHosting =
     "plugin hosting is not in this engine yet (engine/plugin_client, ADR-0012 checklist 4)";
 
-// With hosting up but no scan worker yet, the catalog is empty, so an insert
-// a client adds names a plugin the engine does not offer: refused, as the
-// conformance suite requires. A session that already holds inserts plays
-// them (ADR-0012 checklist 5; the scan worker and catalog are the next PR).
-const char* const kNoCatalog =
-    "the plugin catalog is empty until the scan worker lands (ADR-0012 checklist 5); inserts a "
-    "session already holds are hosted";
+// ADR-0012, amendment of 2026-10-19, item 6: an insert a client adds names
+// a plugin the catalog does not have yet, while the first scan of this run
+// has not completed.
+const char* const kScanRunning = "the plug-in scan is still running";
 
-bool starts_a_host(model::MemberRef op) {
-    return op.holds<model::AddInsert>() || op.holds<model::ReplaceInsert>();
+// Q3 (owner, 2026-10-19): never during a take.
+const char* const kNoRescanWhileRecording =
+    "not during a take: a plug-in scan runs plug-in code; stop the transport, then rescan";
+
+// By index and by ordered key, not by a walk of the whole catalog: a
+// compound of 256 inserts against thousands of plugins is one turn
+// (rt-engineer on #95).
+const api::PluginInfo* catalog_find(const PluginScanner::Catalog& c, model::PluginFormat format,
+                                    const std::string& id) {
+    return c.find_plugin(static_cast<api::PluginFormat>(format), id);
+}
+
+std::string host_id(const model::PluginRef& p) {
+    return p.format == model::PluginFormat::Vst3 ? "vst3:" + p.id : p.id;
+}
+
+// §6.1's "as scanned": the session file stores the catalog's words, never
+// the client's. From the catalog sent, or, as catalog_refusal accepts it,
+// from a probe this run finished (finding 4 on #95: during a first cold
+// scan every accepted insert is one of those).
+void as_scanned(model::PluginRef& ref, const PluginScanner::Catalog& c) {
+    if (const api::PluginInfo* p = catalog_find(c, ref.format, ref.id)) {
+        ref.name = p->name;
+        ref.version = p->version;
+        return;
+    }
+    if (const plugin::probe::Record* best = c.any_probe(host_id(ref))) {
+        ref.name = best->name.empty() ? ref.id : best->name;
+        ref.version = best->version;
+    }
+}
+
+void as_scanned(model::Operation& op, const PluginScanner::Catalog& c) {
+    if (auto* a = std::get_if<model::AddInsert>(&op)) as_scanned(a->plugin, c);
+    if (auto* r = std::get_if<model::ReplaceInsert>(&op)) as_scanned(r->plugin, c);
+    if (auto* k = std::get_if<model::Compound>(&op)) {
+        for (model::Member& m : k->ops) {
+            if (auto* a = std::get_if<model::AddInsert>(&m)) as_scanned(a->plugin, c);
+            if (auto* r = std::get_if<model::ReplaceInsert>(&m)) as_scanned(r->plugin, c);
+        }
+    }
+}
+
+// What a chain could run on `channels`: as many in as out, the track's, or
+// a mono plugin replicated (the host's rule, plugins/host chain.h).
+bool fits(uint32_t in, uint32_t out, uint16_t channels) {
+    return in == out && (in == channels || in == 1);
+}
+
+std::string fit_refusal(const std::string& name, uint32_t in, uint32_t out, uint16_t channels) {
+    return name + " has " + std::to_string(in) + " in and " + std::to_string(out) + " out; the track has " +
+           std::to_string(channels) + (channels == 1 ? " channel" : " channels");
 }
 
 uint64_t steady_ms_now() {
@@ -146,6 +194,29 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                              playback_.get(), [this](PunchRange& range) {
                                  return document_punch(document_->current(), range);
                              });
+    if (!opts_.plugin_host.empty()) {
+        // For the engine process's life (amendment of 2026-10-19, item 3):
+        // its catalog outlives a backend activation.
+        PluginScannerConfig sc;
+        sc.host_path = opts_.plugin_host;
+        sc.bundles = opts_.plugin_bundles;
+        sc.cache_path = opts_.plugin_cache;
+        sc.build_id = opts_.plugin_build_id;
+        sc.scan_at_start = opts_.plugin_scan_at_start;
+        sc.max_probes = opts_.plugin_probe_slots;
+        scanner_ = std::make_unique<PluginScanner>(sc);
+        registry_.install("plugin.rescan", ExplainingHandler([this](const CommandContext&, std::string& why) {
+                              // Item 5 and Q3: answered when queued, not when
+                              // it ends, and never during a take.
+                              if (session_.transport().state() == TransportState::Recording ||
+                                  playback_->record_requested()) {
+                                  why = kNoRescanWhileRecording;
+                                  return false;
+                              }
+                              scanner_->rescan();
+                              return true;
+                          }));
+    }
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
             implemented_.push_back(spec.id);
@@ -164,6 +235,8 @@ EngineControlServer::~EngineControlServer() {
     stop();
     // Hosts before the plans that name their slots are freed.
     hosting_.reset();
+    // Every probe child killed and reaped before its thread is joined.
+    scanner_.reset();
     // Its destructor waits for the reader to let go of the plans this side
     // still owns, so it goes while the session's reader is certainly there.
     playback_.reset();
@@ -181,7 +254,7 @@ void EngineControlServer::after_deactivate() {
 }
 
 void EngineControlServer::start_hosting() {
-    if (hosting_tried_ || opts_.plugin_host.empty()) return;
+    if (hosting_tried_ || !scanner_) return;
     const uint32_t frames = audio_ != nullptr ? audio_->buffer_frames() : opts_.plugin_block_frames;
     if (frames == 0) return;
     hosting_tried_ = true;
@@ -193,7 +266,7 @@ void EngineControlServer::start_hosting() {
     hc.block_frames = frames;
     hc.max_block_frames = session_.config().playback.max_block_frames;
     hc.max_stores = session_.config().playback.max_param_stores;
-    hosting_ = std::make_unique<PluginHosting>(session_, hc);
+    hosting_ = std::make_unique<PluginHosting>(session_, hc, *scanner_);
     if (!hosting_->ok()) {
         api::EngineEvent e;
         e.kind = api::EventKind::Notice;
@@ -511,15 +584,88 @@ void EngineControlServer::greet(Client& client) {
         api::wire::encode(to_wire(snap), bytes);
         send_to(client, bytes);
     }
-    // Empty until a scan exists to fill it (kNoHosting).
-    api::PluginCatalog catalog;
-    catalog.generation = 1;
-    if (api::wire::encode(catalog, bytes, why)) send_to(client, bytes);
+    send_catalog(client);
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
     for (const std::string* e : {&inputs_missing_, &take_failed_, &fatal_}) {
         if (!e->empty()) send_to(client, *e);
     }
+}
+
+void EngineControlServer::send_catalog(Client& client) {
+    std::string bytes, why;
+    if (!scanner_) {
+        // No host: nothing can be offered (kNoHosting).
+        api::PluginCatalog empty;
+        empty.generation = 1;
+        if (api::wire::encode(empty, bytes, why)) send_to(client, bytes);
+        return;
+    }
+    // Generation 0 and empty until the worker has read its cache. Encoded
+    // by the worker, never here (rt-engineer 2 on #95).
+    const auto& c = scanner_->catalog();
+    if (c->api_wire) send_to(client, *c->api_wire);
+    else if (api::wire::encode(c->api, bytes, why)) send_to(client, bytes);
+}
+
+void EngineControlServer::follow_scanner() {
+    if (!scanner_) return;
+    // Change D: no catalog probe starts while the transport records, or is
+    // about to.
+    const bool recording =
+        session_.transport().state() == TransportState::Recording || playback_->record_requested();
+    scanner_->exchange(recording);
+    for (const std::string& text : scanner_->take_notices()) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = text;
+        post_event(e);
+    }
+    const auto& c = scanner_->catalog();
+    if (c->generation != 0 && c->generation != catalog_sent_) {
+        // Item 5: again whenever a scan completes with a different result.
+        catalog_sent_ = c->generation;
+        if (c->api_wire) send(*c->api_wire);
+    }
+}
+
+std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {
+    const model::PluginRef* ref = nullptr;
+    const model::TrackEdit* on = nullptr;
+    if (const auto* a = member.get_if<model::AddInsert>()) {
+        ref = &a->plugin;
+        for (const auto& t : doc.edit->tracks)
+            if (t->id == a->track) on = t.get();
+    } else if (const auto* r = member.get_if<model::ReplaceInsert>()) {
+        ref = &r->plugin;
+        for (const auto& t : doc.edit->tracks)
+            for (const model::Insert& in : t->inserts)
+                if (in.id == r->insert) on = t.get();
+    } else {
+        return {};
+    }
+    // apply() names a track or insert that is not there.
+    if (on == nullptr) return {};
+    if (!scanner_) return kNoHosting;
+    const auto& c = scanner_->catalog();
+    if (!c->disabled.empty()) return c->disabled;
+    if (const api::PluginInfo* p = catalog_find(*c, ref->format, ref->id)) {
+        // The catalog's refusal words (§8).
+        if (!p->usable) return p->name + " cannot be used: " + p->refusal;
+        if (!fits(p->inputs, p->outputs, on->channels)) return fit_refusal(p->name, p->inputs, p->outputs, on->channels);
+        return {};
+    }
+    // Not in the catalog sent: a probe this run finished for it (a chain
+    // start, or the scan running) is as good.
+    if (const plugin::probe::Record* rec = c->any_probe(host_id(*ref))) {
+        const std::string name = rec->name.empty() ? ref->id : rec->name;
+        if (!rec->ok()) return name + " cannot be used: " + rec->reason;
+        if (!fits(rec->audio_in, rec->audio_out, on->channels))
+            return fit_refusal(name, rec->audio_in, rec->audio_out, on->channels);
+        return {};
+    }
+    if (!c->scanned) return kScanRunning;
+    return "no plugin " + ref->id + " is installed";
 }
 
 void EngineControlServer::start_threads() {
@@ -990,14 +1136,15 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Apply: {
                 model::Operation op;
                 if (!model::decode_operation(m.op, op, why)) break;
+                if (scanner_) as_scanned(op, *scanner_->catalog());
                 // Asked of each member of a compound with the state the
                 // members before it made (ADR-0009 update 2026-10-14).
                 bool no_host = false;
-                const model::MemberCheck check = [&](const model::Snapshot&,
+                const model::MemberCheck check = [&](const model::Snapshot& at,
                                                      model::MemberRef member) {
-                    if (starts_a_host(member)) {
-                        no_host = true;
-                        return std::string(hosting_ ? kNoCatalog : kNoHosting);
+                    if (std::string refusal = catalog_refusal(at, member); !refusal.empty()) {
+                        no_host = !scanner_;
+                        return refusal;
                     }
                     // Even one that leaves the document as it was: it ends a
                     // ride whose last ParameterChange need not be its value.
@@ -1066,6 +1213,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
 
 void EngineControlServer::tick() {
     pump_playback();
+
+    // The scan worker's catalog and notices (one try_lock), before the
+    // chains read its answers.
+    follow_scanner();
 
     // The plugin side: built once the backend's period is known, then
     // polled every turn (probes, hosts, retiring by epoch). Never waits.

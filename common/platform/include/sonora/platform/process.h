@@ -21,6 +21,16 @@ std::string executable_dir();
 // --engine-pid).
 int64_t current_process_id();
 
+// Lowers the calling thread only: its CPU priority to nice `nice` (a
+// thread already nicer stays as it is) and, with `idle_io`, the idle I/O
+// class. For a
+// background worker whose own file reads and whose children must not
+// compete with the session (the plugin scanner). Children it starts
+// inherit both. False, with `error`, when the OS refused; the thread keeps
+// running at its old priority. Irreversible without privileges: only for a
+// thread that stays background for good.
+bool lower_current_thread(int nice, bool idle_io, std::string& error);
+
 class ChildProcess {
 public:
     struct Impl;
@@ -50,6 +60,20 @@ public:
             int handle = -1;
         };
         std::vector<PassedHandle> handles;
+        // Background work (a plugin probe, ADR-0012 amendment of 2026-10-19,
+        // changes A and D): a lower CPU priority, and the idle I/O class, so
+        // it competes with neither the hosts nor the disk thread. POSIX:
+        // nice and, on Linux, IOPRIO_CLASS_IDLE. Never raises a priority;
+        // a child of a thread already lowered (lower_current_thread) starts
+        // lowered, with no window at the caller's priority.
+        int nice = 0;
+        bool idle_io = false;
+        // A process group of its own (POSIX setpgid(0, 0) at spawn): a
+        // Ctrl+C or a signal to the engine's group does not reach it, so
+        // only its owner ends it (code-reviewer finding 1 on #95); and
+        // terminate() and kill() signal the whole group, so what it forked
+        // ends with it.
+        bool own_group = false;
     };
 
     // argv[0] is the program's path. Fails with a reason, never silently.

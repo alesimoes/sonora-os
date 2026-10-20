@@ -6,7 +6,9 @@
 #include <lv2/core/lv2.h>
 #include <lv2/options/options.h>
 #include <lv2/parameters/parameters.h>
+#include <lv2/port-props/port-props.h>
 #include <lv2/state/state.h>
+#include <lv2/units/units.h>
 
 #include <algorithm>
 #include <cmath>
@@ -49,11 +51,22 @@ Lv2World::Lv2World() : world_(lilv_world_new()) {
     // lv2:isSideChain is defined in lv2core.ttl, but lv2/core/lv2.h (1.18.10
     // on trixie) has no macro for it, so the URI is spelled out.
     n.sidechain = lilv_new_uri(world_, LV2_CORE_PREFIX "isSideChain");
+    n.toggled = lilv_new_uri(world_, LV2_CORE__toggled);
+    n.enumeration = lilv_new_uri(world_, LV2_CORE__enumeration);
+    n.integer = lilv_new_uri(world_, LV2_CORE__integer);
+    n.logarithmic = lilv_new_uri(world_, LV2_PORT_PROPS__logarithmic);
+    n.not_automatic = lilv_new_uri(world_, LV2_PORT_PROPS__notAutomatic);
+    n.unit = lilv_new_uri(world_, LV2_UNITS__unit);
+    n.unit_symbol = lilv_new_uri(world_, LV2_UNITS__symbol);
+    n.minor_version = lilv_new_uri(world_, LV2_CORE__minorVersion);
+    n.micro_version = lilv_new_uri(world_, LV2_CORE__microVersion);
 }
 
 Lv2World::~Lv2World() {
     for (LilvNode* node : {n.audio, n.control, n.atom, n.cv, n.input, n.output, n.optional,
-                           n.reports_latency, n.latency_designation, n.enabled_designation, n.sidechain})
+                           n.reports_latency, n.latency_designation, n.enabled_designation, n.sidechain,
+                           n.toggled, n.enumeration, n.integer, n.logarithmic, n.not_automatic, n.unit,
+                           n.unit_symbol, n.minor_version, n.micro_version})
         lilv_node_free(node);
     lilv_world_free(world_);
 }
@@ -110,6 +123,59 @@ bool Lv2World::feature_supported(const std::string& uri) {
     return false;
 }
 
+// What the probe record says of a control input: toggle, choices with
+// their labels, integer steps, log scale, automatable, and its unit.
+void Lv2World::describe_control(const LilvPlugin* p, const LilvPort* port, PortInfo& pi) const {
+    pi.toggle = lilv_port_has_property(p, port, n.toggled);
+    pi.logarithmic = lilv_port_has_property(p, port, n.logarithmic);
+    pi.automatable = !lilv_port_has_property(p, port, n.not_automatic);
+    const bool integer = lilv_port_has_property(p, port, n.integer);
+    if (pi.toggle) {
+        pi.steps = 2;
+    } else if (lilv_port_has_property(p, port, n.enumeration)) {
+        // Labels only when the scale points are the evenly spaced values
+        // from min to max that contracts/api's `steps` describes; otherwise
+        // the choices cannot be named by index, and it reads as a range.
+        std::vector<std::pair<float, std::string>> points;
+        if (LilvScalePoints* sp = lilv_port_get_scale_points(p, port)) {
+            LILV_FOREACH (scale_points, i, sp) {
+                const LilvScalePoint* pt = lilv_scale_points_get(sp, i);
+                points.emplace_back(lilv_node_as_float(lilv_scale_point_get_value(pt)),
+                                    node_string(lilv_scale_point_get_label(pt)));
+            }
+            lilv_scale_points_free(sp);
+        }
+        std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        bool even = points.size() >= 2 && points.size() <= 4096 && points.front().first == pi.min &&
+                    points.back().first == pi.max;
+        const float step = even ? (pi.max - pi.min) / float(points.size() - 1) : 0.f;
+        for (std::size_t k = 0; even && k < points.size(); ++k)
+            even = std::fabs(points[k].first - (pi.min + step * float(k))) <= 1e-4f * std::max(1.f, std::fabs(step));
+        if (even) {
+            pi.enumeration = true;
+            pi.steps = uint32_t(points.size());
+            for (auto& pt : points) pi.labels.push_back(std::move(pt.second));
+        }
+    }
+    if (!pi.toggle && !pi.enumeration && integer && pi.max > pi.min && pi.max - pi.min < 4096.f &&
+        std::floor(pi.min) == pi.min && std::floor(pi.max) == pi.max)
+        pi.steps = uint32_t(pi.max - pi.min) + 1;
+    if (LilvNode* unit = lilv_port_get(p, port, n.unit)) {
+        // units.ttl gives each unit a symbol ("dB", "Hz"); a plugin's own
+        // unit is a blank node with one. A unit URI whose description is
+        // not installed falls back to its name.
+        if (LilvNode* sym = lilv_world_get(world_, unit, n.unit_symbol, nullptr)) {
+            pi.units = node_string(sym);
+            lilv_node_free(sym);
+        } else if (lilv_node_is_uri(unit)) {
+            const std::string u = node_string(unit);
+            const auto cut = u.find_last_of("#/");
+            pi.units = cut == std::string::npos ? u : u.substr(cut + 1);
+        }
+        lilv_node_free(unit);
+    }
+}
+
 PluginInfo Lv2World::describe(const LilvPlugin* p) const {
     PluginInfo info;
     info.format = "lv2";
@@ -119,6 +185,49 @@ PluginInfo Lv2World::describe(const LilvPlugin* p) const {
         lilv_node_free(name);
     }
     info.class_label = node_string(lilv_plugin_class_get_label(lilv_plugin_get_class(p)));
+    if (LilvNode* author = lilv_plugin_get_author_name(p)) {
+        info.vendor = node_string(author);
+        lilv_node_free(author);
+    }
+    // LV2 versions a plugin by lv2:minorVersion and lv2:microVersion; it has
+    // no major one (an incompatible plugin gets a new URI).
+    {
+        LilvNode* minor = lilv_world_get(world_, lilv_plugin_get_uri(p), n.minor_version, nullptr);
+        LilvNode* micro = lilv_world_get(world_, lilv_plugin_get_uri(p), n.micro_version, nullptr);
+        if (minor && lilv_node_is_int(minor))
+            info.version = std::to_string(lilv_node_as_int(minor)) + "." +
+                           std::to_string(micro && lilv_node_is_int(micro) ? lilv_node_as_int(micro) : 0);
+        lilv_node_free(minor);
+        lilv_node_free(micro);
+    }
+    // Its class and the class's ancestors, broadest first, without the root
+    // (lv2:Plugin says nothing a browser can group by).
+    {
+        const LilvPluginClasses* classes = lilv_world_get_plugin_classes(world_);
+        const LilvPluginClass* c = lilv_plugin_get_class(p);
+        std::vector<std::string> chain;
+        for (int guard = 0; c && guard < 16; ++guard) {
+            if (node_string(lilv_plugin_class_get_uri(c)) == LV2_CORE__Plugin) break;
+            // lv2core labels its classes "Dynamics Plugin", "Amplifier
+            // Plugin"; a browser groups by "Dynamics".
+            std::string label = node_string(lilv_plugin_class_get_label(c));
+            const std::string suffix = " Plugin";
+            if (label.size() > suffix.size() && label.compare(label.size() - suffix.size(), suffix.size(), suffix) == 0)
+                label.resize(label.size() - suffix.size());
+            if (!label.empty()) chain.push_back(std::move(label));
+            const LilvNode* parent = lilv_plugin_class_get_parent_uri(c);
+            if (!parent) break;
+            c = lilv_plugin_classes_get_by_uri(classes, parent);
+        }
+        info.categories.assign(chain.rbegin(), chain.rend());
+    }
+    if (const LilvNode* b = lilv_plugin_get_bundle_uri(p)) {
+        if (char* path = lilv_file_uri_parse(lilv_node_as_uri(b), nullptr)) {
+            info.bundle = path;
+            lilv_free(path);
+            while (info.bundle.size() > 1 && info.bundle.back() == '/') info.bundle.pop_back();
+        }
+    }
 
     const uint32_t count = lilv_plugin_get_num_ports(p);
     std::vector<float> mins(count), maxs(count), defs(count);
@@ -154,6 +263,7 @@ PluginInfo Lv2World::describe(const LilvPlugin* p) const {
         pi.max = std::isnan(maxs[i]) ? 0.f : maxs[i];
         pi.def = std::isnan(defs[i]) ? pi.min : defs[i];
         pi.reports_latency = static_cast<int>(i) == info.latency_port;
+        if (pi.kind == PortKind::Control && pi.input) describe_control(p, port, pi);
         pi.sidechain = pi.kind == PortKind::Audio && pi.input && lilv_port_has_property(p, port, n.sidechain);
         if (pi.sidechain) ++info.sidechain_in;
         else if (pi.kind == PortKind::Audio) (pi.input ? info.audio_in : info.audio_out)++;
@@ -354,6 +464,7 @@ public:
         return false;
     }
 
+    const PortInfo& param_port(uint32_t dense) const override { return info_.ports[dense_[dense]]; }
     std::string param_key(uint32_t dense) const override { return info_.ports[dense_[dense]].symbol; }
     std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_[dense]].symbol; }
     float param_default(uint32_t dense) const override { return info_.ports[dense_[dense]].def; }
