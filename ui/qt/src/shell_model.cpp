@@ -248,6 +248,16 @@ void ShellModel::invoke(const QString& command, int target) {
     report(router_.invoke(command.toStdString(), ctx));
 }
 
+bool ShellModel::invokeWith(const QString& command, int target, const QString& argument) {
+    CommandContext ctx;
+    ctx.target = target;
+    ctx.argument = argument.toStdString();
+    const RouteResult r = router_.invoke(command.toStdString(), ctx);
+    report(r);
+    // A Sent command has not run yet; only an interface command answers now.
+    return r.kind == RouteResult::Kind::Local && r.result == DispatchResult::Ok;
+}
+
 qreal ShellModel::scaleY(qreal db, qreal h) const {
     const float top = meter_over_band(static_cast<float>(h)) + 1.0f;
     const float span = static_cast<float>(h) - top;

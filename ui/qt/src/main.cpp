@@ -226,8 +226,10 @@ bool parse(QGuiApplication& app, Options& o) {
                                                       "around it (fades), or copy the snare's "
                                                       "crossfaded edit, paste it on the next "
                                                       "track and open the Edit menu "
-                                                      "(clipboard), for screenshots."),
-                                       QStringLiteral("fades|clipboard"));
+                                                      "(clipboard), or repeat the snare's "
+                                                      "region three times and open the Repeat "
+                                                      "dialog (repeat), for screenshots."),
+                                       QStringLiteral("fades|clipboard|repeat"));
     const QCommandLineOption mix_view({QStringLiteral("mix-view")},
                                       QStringLiteral("With --demo, solo Lead Vox and make Room "
                                                      "and Talkback solo safe (solo-safe), for "
@@ -278,8 +280,8 @@ bool parse(QGuiApplication& app, Options& o) {
     }
     o.edit_view = p.value(edit_view);
     if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades") &&
-        o.edit_view != QStringLiteral("clipboard")) {
-        std::fprintf(stderr, "sonora-ui: --edit-view must be fades or clipboard\n");
+        o.edit_view != QStringLiteral("clipboard") && o.edit_view != QStringLiteral("repeat")) {
+        std::fprintf(stderr, "sonora-ui: --edit-view must be fades, clipboard or repeat\n");
         return false;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
@@ -618,6 +620,18 @@ int main(int argc, char** argv) {
                     c.set_insertion(right->position);
                     for (int i = 0; i < 2; ++i) model.invoke(QStringLiteral("zoom.in"), -1);
                 }
+            }
+            // The snare's region repeated three times through the dialog's
+            // command, then Alt+R's dialog open again, offering 3.
+            if (a.opt.edit_view == QStringLiteral("repeat") && p && p->regions.size() > 1) {
+                // An id, not `p`: the repeat replaces the snapshot `p` is in.
+                const auto snare = p->regions[1].id;
+                session.controller().select_region(snare);
+                if (!model.invokeWith(QStringLiteral("edit.repeat"), -1, QStringLiteral("3")))
+                    std::fprintf(stderr, "sonora-ui: repeat: %s\n", qPrintable(model.statusText()));
+                model.invoke(QStringLiteral("zoom.fit_session"), -1);
+                session.controller().select_region(snare);
+                model.invoke(QStringLiteral("edit.repeat"), -1);
             }
             // The snare's two crossfaded regions copied and pasted after the
             // next track's last region, through the keys' commands, with the

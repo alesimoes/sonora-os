@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Cut, Copy, Paste, Duplicate and Clear on a time range, as compound
+// Cut, Copy, Paste, Duplicate, Repeat and Clear on a time range, as compound
 // operations (common/model's Compound, ADR-0009 update 2026-10-14). The
 // workflow is Pro Tools' (ADR-0004; Avid's Pro Tools Reference Guide,
 // "Editing" chapter: "Cut, Copy, Paste and Clear Commands", "Duplicate
-// Command"), never its code.
+// Command", "Repeat Command"), never its code.
 //
 // What the clipboard holds is interface state, as the selection is: the
 // regions under a range on one track, cut to it, with the fades and
@@ -59,10 +59,26 @@ void clear_range(const model::Playlist& p, model::Frames a, model::Frames b, con
 void paste_clip(const model::Playlist& p, model::Frames at, const Clip& clip, const NextId& id,
                 std::vector<model::Member>& out);
 
+// `count` copies of `clip` end to end from `at`: what lies under all of them
+// is cleared once, so a repeat costs one clear and a placement a region a
+// copy, not a paste's clear per copy.
+void repeat_clip(const model::Playlist& p, model::Frames at, const Clip& clip, int count,
+                 const NextId& id, std::vector<model::Member>& out);
+
+// How many members repeat_clip would append for `count` copies, without
+// building them, so an absurd count is refused before it is allocated.
+std::size_t repeat_members(const model::Playlist& p, model::Frames at, const Clip& clip,
+                           std::size_t count);
+
 // Empty when `clip` can be pasted on `track` of `s`; otherwise why not, in
 // the operator's words.
 std::string paste_problem(const model::Snapshot& s, const model::TrackEdit& track,
                           const Clip& clip);
+
+// Repeat's typed count: a whole number, with an optional sign and spaces
+// around it, that fits an int. "3x", "2.5" and "" are not counts; "0" and
+// "-1" are, and Repeat refuses them by value, saying what it needs.
+bool parse_repeat_count(const std::string& text, int& out);
 
 // The refusal of a gesture that needs more than one edit may hold
 // (model::kMaxCompoundMembers), empty when it fits: "Paste needs 300

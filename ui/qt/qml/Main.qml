@@ -358,7 +358,8 @@ Rectangle {
                     { name: "editCopy", label: "Copy", command: "edit.copy", on: true },
                     { name: "editPaste", label: "Paste", command: "edit.paste", on: root.session.canPaste },
                     { name: "editClear", label: "Clear", command: "edit.clear", on: true },
-                    { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true }
+                    { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true },
+                    { name: "editRepeat", label: "Repeat…", command: "edit.repeat", on: true }
                 ]
                 Item {
                     required property var modelData
@@ -383,6 +384,118 @@ Rectangle {
                             root.shell.invoke(modelData.command, -1)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // --- Repeat: the number of copies ------------------------------------------
+    // Pro Tools' Repeat dialog, asked for by edit.repeat with no count. OK
+    // and Return send edit.repeat with the number through the same router;
+    // a refused number leaves the dialog open with the reason on the status
+    // line, so it can be corrected rather than retyped. While the field has
+    // the keyboard the profile's keys are off (ShellModel::setTextEntry).
+    MouseArea {
+        anchors.fill: parent
+        visible: repeatPanel.visible
+        z: 9
+        onClicked: repeatPanel.close()
+    }
+    Rectangle {
+        id: repeatPanel
+        objectName: "repeatPanel"
+        property string what
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 340
+        height: repeatColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }  // a click inside does not close it
+
+        function show(count, what) {
+            repeatPanel.what = what
+            repeatInput.text = String(count)
+            visible = true
+            repeatInput.forceActiveFocus()
+            repeatInput.selectAll()
+        }
+        function close() {
+            visible = false
+            repeatInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith("edit.repeat", -1, repeatInput.text)) close()
+        }
+
+        Column {
+            id: repeatColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Repeat"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                objectName: "repeatWhat"
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Copies of " + repeatPanel.what + ", end to end after the selection. What they cover is replaced."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Number of repeats"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 72
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: repeatInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: repeatInput
+                        objectName: "repeatInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        horizontalAlignment: TextInput.AlignRight
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody; features: { "tnum": 1 } }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        Keys.onEscapePressed: repeatPanel.close()
+                        Keys.onReturnPressed: repeatPanel.accept()
+                        Keys.onEnterPressed: repeatPanel.accept()
+                    }
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "repeatCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: repeatPanel.close()
+                }
+                SButton {
+                    objectName: "repeatOk"
+                    text: "OK"
+                    implicitHeight: 24
+                    active: true
+                    onClicked: repeatPanel.accept()
                 }
             }
         }
@@ -473,5 +586,6 @@ Rectangle {
         target: root.session
         function onRefused(why) { root.shell.say(why) }
         function onNotice(text) { root.shell.say(text) }
+        function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
     }
 }

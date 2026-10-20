@@ -163,7 +163,8 @@ public:
     // edit is one compound, so one undo step labelled with its name; one
     // that needs more than model::kMaxCompoundMembers members is refused
     // before anything is sent. Shuffle would ripple every later region,
-    // which waits for ShiftRegions, so Cut, Paste and Duplicate refuse it.
+    // which waits for ShiftRegions, so Cut, Paste, Duplicate and Repeat
+    // refuse it.
     //
     // Copy changes no document and is no undo step, as in Pro Tools.
     bool copy(std::string& why);
@@ -175,6 +176,22 @@ public:
     // A copy of the selection placed straight after it on the same track,
     // which then becomes the selection. The clipboard is left alone.
     bool duplicate(std::string& why);
+    // Pro Tools' Repeat: `count` copies of the selection end to end straight
+    // after it, as one compound ("Repeat"), so one undo step. What they
+    // cover is overwritten, as Duplicate's copy overwrites. The copies then
+    // become the selection, as Duplicate's does. A count below 1 is refused;
+    // so is one needing more than model::kMaxCompoundMembers members, by
+    // the count, before anything is built.
+    bool repeat(int count, std::string& why);
+    // True when Repeat has something to repeat; otherwise false and why
+    // not, as repeat() would say it. The count dialog opens only when this is
+    // empty, so the operator is not asked for a number and then refused.
+    // `track` and `length`, when given, are what one copy would be: the
+    // name of the track it lands on and the range's length, for the dialog.
+    bool can_repeat(std::string& why, std::string* track = nullptr,
+                    model::Frames* length = nullptr) const;
+    // The count the last Repeat used, which the dialog offers next.
+    int repeat_count() const { return repeat_count_; }
     const Clip& clipboard() const { return clipboard_; }
     // Changes whenever the clipboard is replaced.
     uint64_t clipboard_serial() const { return clipboard_serial_; }
@@ -250,6 +267,7 @@ private:
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clip clipboard_;
+    int repeat_count_ = 1;
     uint64_t clipboard_serial_ = 0;
 };
 

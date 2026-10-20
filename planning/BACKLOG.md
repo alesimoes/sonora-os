@@ -137,8 +137,8 @@ playback can follow edits; it is in flight.
         `install_session_commands()` and in `FakeEngine::engine_commands()`
         together, and then leaves `planned_commands`. `edit.cut`/`copy`/
         `paste`/`duplicate` run in the interface as compounds (Track 3 item
-        1, PR #86); `edit.repeat`/`select_all`/`heal_separation`/
-        `consolidate` are still to build.
+        1, PR #86), and `edit.repeat` too (`t3f-repeat`);
+        `select_all`/`heal_separation`/`consolidate` are still to build.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -261,9 +261,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `model::kMaxCompoundMembers` (`feature/ui-clipboard`, PR #86;
              `edit_clipboard.h`, ui_clipboard). One track's selection, as
              the selection model has; Shuffle refused by name.
-       - [ ] Repeat (`edit.repeat`, a count dialog), multi-track selections
-             and their clipboard, and Shuffle's ripple once `ShiftRegions`
-             exists (ADR-0009 update 2026-10-14, item 5).
+       - [x] Repeat (`edit.repeat`, Alt+R, Edit > Repeat…): the key asks
+             for the number of repeats in a dialog (offering the last one)
+             only when there is something to repeat; the count comes back as
+             the command's argument. The copies go end to end after the
+             selection, overwriting what they cover, as one "Repeat"
+             `Compound` whose size is counted before it is built, so a typed
+             2147483647 is refused by its size; Shuffle refused by name
+             (`t3f-repeat`; ui_clipboard test_repeat, test_menu).
+       - [ ] Multi-track selections and their clipboard, and Shuffle's
+             ripple once `ShiftRegions` exists (ADR-0009 update 2026-10-14,
+             item 5).
        - [ ] A clipboard copied in another session pastes nothing today
              (refused by name: its sources are not in this pool). Pro Tools
              copies the audio across; that needs `AddSource` members and the
