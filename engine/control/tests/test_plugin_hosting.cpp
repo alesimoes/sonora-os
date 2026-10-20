@@ -755,15 +755,12 @@ int scenario_server(const Args& a) {
         check((engine.state().transport().health_flags & api::kHealthPluginsDisabled) == 0,
               "the plugins-disabled health flag is down");
         // The state block says Running at Ready; the plan that binds the
-        // chain is adopted by the audio thread a turn or two later.
-        const auto bound = [&] {
-            const PlaybackPlan* p = session.plans().current();
-            for (uint32_t i = 0; p && i < p->node_count; ++i)
-                if (p->nodes[i].kind == NodeKind::InsertChain && p->nodes[i].latency_frames == kBlock &&
-                    p->nodes[i].channel_slot != kSilentChannelSlot && p->nodes[i].channel_slot != kNoChannelSlot)
-                    return true;
-            return false;
-        };
+        // chain is adopted by the audio thread a turn or two later. Read
+        // through the state block, which the server's thread writes from
+        // the playing plan's report: the plan itself is that thread's, and
+        // reading it from here was a data race (TSan on #104). At open the
+        // chain is silent at latency 0, so 128 is the bound host's.
+        const auto bound = [&] { return engine.state().track(0).latency_frames == kBlock; };
         check(until(bound, 5000), "the playing plan binds the chain at 128");
         std::string last_fault = "none";
         for (const auto& ev : in.events)
