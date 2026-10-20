@@ -1492,6 +1492,62 @@ int scenario_nonfinite(const Args& a) {
     return 0;
 }
 
+// LV2 worker:schedule: the test plugin applies a gain only once work() has
+// answered for it, so the step reaches the output only through a worker
+// thread and a response handed back inside run(). The output is the input
+// times 1 until then, times 0.5 after, and nothing else: a response lost,
+// delivered twice or off the processing thread (the plugin then goes
+// silent) shows as a block that is neither.
+int scenario_worker(const Args& a) {
+    const std::vector<std::string> chain = {"urn:sonora:test#worker"};
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("worker: %s, gain 1 -> 0.5 at block 100 through work()\n", join(chain, ',').c_str());
+    Host host;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
+    const uint64_t total = 600, step = 100;
+    // Generous for a loaded CI box: the work itself sleeps 2 ms.
+    const uint64_t within = 100;
+    std::vector<std::vector<float>> inputs(total, std::vector<float>(kBlock));
+    Signal sig(1);
+    uint64_t unity = 0, halved = 0, other = 0, unity_after_half = 0;
+    int64_t first_half = -1;
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == step) host.send(0, 0, 0, 0.5f);
+        sig.sine(i, 440.0, 0.25f);
+        std::copy(sig.buf[0].begin(), sig.buf[0].begin() + kBlock, inputs[i].begin());
+        const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
+        if (from < 0) return true;
+        const float* o = sig.obuf[0].data();
+        const std::vector<float>& x = inputs[size_t(from)];
+        bool is_unity = true, is_half = true;
+        for (uint32_t s = 0; s < kBlock; ++s) {
+            if (o[s] != x[s]) is_unity = false;
+            if (o[s] != 0.5f * x[s]) is_half = false;
+        }
+        if (is_half) {
+            ++halved;
+            if (first_half < 0) first_half = from;
+        } else if (is_unity) {
+            ++unity;
+            if (first_half >= 0) ++unity_after_half;
+        } else {
+            ++other;
+        }
+        return true;
+    });
+    report_loop(st);
+    std::printf("  %llu blocks at unity, %llu halved (from block %lld), %llu neither\n",
+                (unsigned long long)unity, (unsigned long long)halved, (long long)first_half,
+                (unsigned long long)other);
+    check(other == 0, "every block is the input times 1 or times 0.5: the plugin never saw a broken worker");
+    check(first_half >= int64_t(step) && first_half < int64_t(step + within),
+          "the gain the work answered for reached the output within 100 blocks of the change");
+    check(unity_after_half == 0, "and stayed there");
+    check(unity >= step / 2, "before the change, the input passed at unity");
+    return 0;
+}
+
 bool wait_exit(Host& host, uint64_t timeout_ns) {
     const uint64_t end = monotonic_ns() + timeout_ns;
     while (host.alive() && monotonic_ns() < end) usleep(5000);
@@ -2903,6 +2959,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "crash") r = scenario_crash(a);
     else if (a.scenario == "deadline") r = scenario_deadline(a);
     else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
+    else if (a.scenario == "worker") r = scenario_worker(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "incompatible") r = scenario_incompatible(a);
     else if (a.scenario == "bypass") r = scenario_bypass(a);

@@ -9,3 +9,4 @@
 <urn:sonora:test#key>   a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .
 <urn:sonora:test#keyliar> a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .
 <urn:sonora:test#state> a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .
+<urn:sonora:test#worker> a lv2:Plugin ; lv2:binary <sonora_test.so> ; rdfs:seeAlso <sonora_test.ttl> .

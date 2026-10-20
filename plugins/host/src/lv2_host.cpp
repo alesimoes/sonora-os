@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "lv2_host.h"
 
+#include "lv2_worker.h"
+
 #include <lv2/atom/atom.h>
 #include <lv2/buf-size/buf-size.h>
 #include <lv2/core/lv2.h>
@@ -9,12 +11,14 @@
 #include <lv2/port-props/port-props.h>
 #include <lv2/state/state.h>
 #include <lv2/units/units.h>
+#include <lv2/worker/worker.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <system_error>
 
 namespace sonora::plugin_host {
@@ -60,13 +64,14 @@ Lv2World::Lv2World() : world_(lilv_world_new()) {
     n.unit_symbol = lilv_new_uri(world_, LV2_UNITS__symbol);
     n.minor_version = lilv_new_uri(world_, LV2_CORE__minorVersion);
     n.micro_version = lilv_new_uri(world_, LV2_CORE__microVersion);
+    n.worker_schedule = lilv_new_uri(world_, LV2_WORKER__schedule);
 }
 
 Lv2World::~Lv2World() {
     for (LilvNode* node : {n.audio, n.control, n.atom, n.cv, n.input, n.output, n.optional,
                            n.reports_latency, n.latency_designation, n.enabled_designation, n.sidechain,
                            n.toggled, n.enumeration, n.integer, n.logarithmic, n.not_automatic, n.unit,
-                           n.unit_symbol, n.minor_version, n.micro_version})
+                           n.unit_symbol, n.minor_version, n.micro_version, n.worker_schedule})
         lilv_node_free(node);
     lilv_world_free(world_);
 }
@@ -112,6 +117,8 @@ bool Lv2World::feature_supported(const std::string& uri) {
         LV2_URID__unmap,
         LV2_OPTIONS__options,
         LV2_BUF_SIZE__boundedBlockLength,
+        // work() on a thread of the host's, never the processing one.
+        LV2_WORKER__schedule,
         // Properties some plugins list as features; they ask nothing of us.
         LV2_CORE__hardRTCapable,
         LV2_CORE__isLive,
@@ -311,16 +318,13 @@ public:
         unmap_f_ = {LV2_URID__unmap, u.unmap_feature()};
         options_f_ = {LV2_OPTIONS__options, options_.data()};
         bounded_f_ = {LV2_BUF_SIZE__boundedBlockLength, nullptr};
-        features_[0] = &map_f_;
-        features_[1] = &unmap_f_;
-        features_[2] = &options_f_;
-        features_[3] = &bounded_f_;
-        features_[4] = nullptr;
         atom_sequence_ = u.map(LV2_ATOM__Sequence);
         atom_chunk_ = u.map(LV2_ATOM__Chunk);
     }
 
     ~Lv2Processor() override {
+        // work() must not outlive its instance, nor run beside deactivate().
+        if (worker_) worker_->stop();
         for (LilvInstance* inst : instances_) {
             if (active_) lilv_instance_deactivate(inst);
             lilv_instance_free(inst);
@@ -370,14 +374,30 @@ public:
             }
         }
 
+        // A plugin asking for the worker, required or optional, gets one
+        // queue pair per replica: each instance's schedule handle is its own.
+        if (lilv_plugin_has_feature(p, world.n.worker_schedule)) worker_ = std::make_unique<Lv2Worker>(replicas);
+        features_.resize(replicas);
         for (uint32_t r = 0; r < replicas; ++r) {
-            LilvInstance* inst = lilv_plugin_instantiate(p, sample_rate, features_);
+            Features& f = features_[r];
+            std::size_t k = 0;
+            for (const LV2_Feature* each : {&map_f_, &unmap_f_, &options_f_, &bounded_f_}) f.list[k++] = each;
+            if (worker_) f.list[k++] = worker_->feature(r);
+            f.list[k] = nullptr;
+        }
+
+        for (uint32_t r = 0; r < replicas; ++r) {
+            LilvInstance* inst = lilv_plugin_instantiate(p, sample_rate, features_[r].list);
             if (!inst) {
                 error.reason = Refusal::InstantiateFailed;
                 error.message = who + " failed to instantiate";
                 return false;
             }
             instances_.push_back(inst);
+            if (worker_)
+                worker_->start(r, lilv_instance_get_handle(inst),
+                               static_cast<const LV2_Worker_Interface*>(
+                                   lilv_instance_get_extension_data(inst, LV2_WORKER__interface)));
             uint32_t audio_in = 0, audio_out = 0, key_in = 0;
             for (const PortInfo& port : info_.ports) {
                 void* where = nullptr;
@@ -416,6 +436,9 @@ public:
         reset_atom_ports();
         for (LilvInstance* inst : instances_) lilv_instance_activate(inst);
         active_ = true;
+        // After activation, so work() never runs beside it; before a restore
+        // that may schedule, and before the first run().
+        if (worker_) worker_->start_thread();
         return true;
     }
 
@@ -423,7 +446,10 @@ public:
 
     void run(uint32_t frames) noexcept SONORA_RT override {
         reset_atom_ports();
-        for (LilvInstance* inst : instances_) lilv_instance_run(inst, frames);
+        for (std::size_t r = 0; r < instances_.size(); ++r) {
+            lilv_instance_run(instances_[r], frames);
+            if (worker_) worker_->deliver(static_cast<uint32_t>(r));
+        }
         if (info_.latency_port >= 0) {
             const float v = controls_[static_cast<std::size_t>(info_.latency_port)];
             latency_ = (std::isfinite(v) && v > 0.f) ? static_cast<uint32_t>(std::lround(v)) : 0;
@@ -437,6 +463,8 @@ public:
     // validates the chain again).
     // LV2's activate() cannot fail.
     bool reactivate() override {
+        std::unique_lock<std::mutex> no_work;
+        if (worker_) no_work = std::unique_lock<std::mutex>(worker_->instantiation_lock());
         for (LilvInstance* inst : instances_) lilv_instance_deactivate(inst);
         for (LilvInstance* inst : instances_) lilv_instance_activate(inst);
         return true;
@@ -488,7 +516,7 @@ public:
         UridMap& u = world_->urids();
         LilvState* state = lilv_state_new_from_instance(plugin_, instances_[0], u.map_feature(), nullptr,
                                                          nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                         LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE, features_);
+                                                         LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE, save_features_);
         if (!state) {
             error = info_.name + " <" + info_.uri + ">: its state could not be saved";
             return SaveResult::Failed;
@@ -530,7 +558,14 @@ public:
             lilv_state_free(state);
             return false;
         }
-        for (LilvInstance* inst : instances_) lilv_state_restore(state, inst, nullptr, nullptr, 0, features_);
+        {
+            // restore() is in the instantiation class: never beside work().
+            // What it schedules is answered in the first run().
+            std::unique_lock<std::mutex> no_work;
+            if (worker_) no_work = std::unique_lock<std::mutex>(worker_->instantiation_lock());
+            for (std::size_t r = 0; r < instances_.size(); ++r)
+                lilv_state_restore(state, instances_[r], nullptr, nullptr, 0, features_[r].list);
+        }
         lilv_state_free(state);
         return true;
     }
@@ -581,7 +616,16 @@ private:
     float rate_f_;
     std::vector<LV2_Options_Option> options_;
     LV2_Feature map_f_, unmap_f_, options_f_, bounded_f_;
-    const LV2_Feature* features_[5];
+    // Per replica, since the worker's schedule handle is per instance.
+    // Sized once in init, before any instance holds a pointer into it.
+    struct Features {
+        const LV2_Feature* list[6];
+    };
+    std::vector<Features> features_;
+    // save() runs beside run(), and only run() and restore() may schedule:
+    // a second producer would break the request ring, so no worker here.
+    const LV2_Feature* save_features_[5] = {&map_f_, &unmap_f_, &options_f_, &bounded_f_, nullptr};
+    std::unique_ptr<Lv2Worker> worker_;
     LV2_URID atom_sequence_, atom_chunk_;
 };
 

@@ -47,6 +47,7 @@ public:
         // For the probe record's parameter descriptions and version.
         LilvNode *toggled, *enumeration, *integer, *logarithmic, *not_automatic, *unit, *unit_symbol;
         LilvNode *minor_version, *micro_version;
+        LilvNode* worker_schedule;
     } n{};
 
 private:
