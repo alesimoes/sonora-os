@@ -153,6 +153,44 @@ int test_arming_locked_during_take() {
     return 0;
 }
 
+// PR #100 review: in a session of only MIDI tracks track.arm_all skipped
+// every track and still answered Ok, so the operator pressed it and nothing
+// happened, without a word. It refuses, naming why; one track it can arm
+// is enough for Ok, as before.
+int test_arm_all_with_nothing_to_arm_is_refused() {
+    Dir dir("sonora_test_session_commands_arm_none");
+    sonora::SessionConfig cfg;
+    cfg.dir = dir.path.string();
+    cfg.track_count = 3;
+    cfg.ring_seconds = 0.25;
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    std::size_t audio_tracks = 0;
+    sonora::install_session_commands(
+        reg, s, take, quit, nullptr, nullptr, nullptr,
+        [&audio_tracks](std::size_t engine_track, std::string& why) {
+            if (engine_track < audio_tracks) return true;
+            why = "\"Bass\" is a MIDI track; this version records audio only";
+            return false;
+        });
+
+    std::string why;
+    CHECK(reg.dispatch("track.arm_all", {}, why) == DispatchResult::Failed);
+    CHECK(mentions(why, "no track can be armed"));
+    CHECK(mentions(why, "\"Bass\" is a MIDI track"));
+    for (const auto& t : s.tracks()) CHECK(!t->rec_armed());
+
+    audio_tracks = 1;
+    why.clear();
+    CHECK(reg.dispatch("track.arm_all", {}, why) == DispatchResult::Ok);
+    CHECK(s.tracks()[0]->rec_armed());
+    CHECK(!s.tracks()[1]->rec_armed() && !s.tracks()[2]->rec_armed());
+    return 0;
+}
+
 // --- with a punch range (PunchFor) ------------------------------------------
 
 constexpr uint64_t kA = 3000, kB = 5000, kH = 1000;
@@ -456,6 +494,7 @@ int main() {
     int failures = 0;
     failures += test_session_commands();
     failures += test_arming_locked_during_take();
+    failures += test_arm_all_with_nothing_to_arm_is_refused();
     failures += test_record_rolling_past_the_punch_out_is_refused();
     failures += test_toggle_record_with_a_punch_range_punches();
     failures += test_punch_on_the_fly();

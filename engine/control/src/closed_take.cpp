@@ -482,6 +482,11 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         // model takes lands as its own step, and the audio of each it
         // refuses goes into the pool, where a save records it, and the
         // operator is told by track.
+        // Each landed file is its own undo step, so undoing this take takes
+        // several: the model names no member when it refuses a compound, so
+        // a compound of the survivors could be refused again for a reason
+        // nobody here knows, and that would cost them all. This path is a
+        // model bug; landing the takes outweighs a one-step undo.
         std::vector<std::size_t> failed;
         std::string first_why;
         for (std::size_t k = first; k < last; ++k) {
@@ -497,9 +502,19 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
                 return model::Operation{std::move(c)};
             };
             std::string alone;
-            if (document.apply(one(true), u, alone) ||
-                (!records[k].crossfades.empty() && document.apply(one(false), u, plain_why))) {
+            const std::shared_ptr<const model::EditState> was = document.current().edit;
+            if (document.apply(one(true), u, alone)) {
                 out.updates.push_back(std::move(u));
+                if (take.punched && placed[k]) {
+                    say_shortened_fades(*was, document.current(), records[k], numbers[k], which,
+                                        out.fade_notices);
+                }
+                continue;
+            }
+            if (!records[k].crossfades.empty() && document.apply(one(false), u, plain_why)) {
+                out.updates.push_back(std::move(u));
+                out.track_notices.push_back(which + " (track " + std::to_string(numbers[k]) +
+                                            ") was punched in without its crossfades: " + alone);
                 continue;
             }
             failed.push_back(k);

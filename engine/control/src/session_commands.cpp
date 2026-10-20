@@ -170,10 +170,21 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                 [&session, take_running, may_arm](const CommandContext&, std::string& why) {
         if (take_running(why)) return false;
         // Every track that may record; the others stay as they are.
+        std::size_t skipped = 0;
+        std::string first_refusal;
         for (std::size_t i = 0; i < session.tracks().size(); ++i) {
             std::string refused;
-            if (may_arm && !may_arm(i, refused)) continue;
+            if (may_arm && !may_arm(i, refused)) {
+                if (skipped++ == 0) first_refusal = refused;
+                continue;
+            }
             session.tracks()[i]->set_rec_armed(true);
+        }
+        // An Ok that armed nothing (a session of MIDI tracks) reads as a key
+        // that did nothing.
+        if (skipped != 0 && skipped == session.tracks().size()) {
+            why = "no track can be armed: " + first_refusal;
+            return false;
         }
         return true;
     });

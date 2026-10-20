@@ -396,6 +396,49 @@ int test_place_midi_region_shares_by_reference() {
     return 0;
 }
 
+// PR #100 review: a copy placed with data_from shares its sequence through
+// undo and redo too. Redo restores the copy holding the same sequence, not
+// one rebuilt from it, and an edit of the original, copied on write, never
+// reaches the copy on either side of an undo.
+int test_place_midi_region_sharing_survives_undo_redo() {
+    Fixture f;
+    CHECK(f.build());
+    Ids ids(f.h.current());
+    const Id copy = ids();
+    CHECK_APPLY(f.h, (PlaceMidiRegion{f.inst_pl, midi_region(copy, 0, 4 * kBeat, 0, nullptr), 0,
+                                      MidiDataRef{f.midi_pl, f.region}}));
+    EditMidi e;
+    e.playlist = f.midi_pl;
+    e.region = f.region;
+    e.add_notes = {note(kBeat / 4, kBeat / 4, 50)};
+    CHECK_APPLY(f.h, e);
+    const std::size_t depth = f.h.undo_depth();
+    const auto copy_data = [&f, copy]() -> const MidiSequence* {
+        const MidiRegion* r = find_midi(midi_playlist_of(f.h.current(), 2), copy);
+        return r == nullptr ? nullptr : r->data.get();
+    };
+    const auto original_data = [&f]() {
+        return find_midi(midi_playlist_of(f.h.current(), 1), f.region)->data.get();
+    };
+    CHECK(copy_data() == f.data.get());
+    CHECK(original_data() != f.data.get() && original_data()->notes.size() == 5);
+
+    CHECK(f.h.undo());
+    CHECK(original_data() == f.data.get() && copy_data() == f.data.get());
+    CHECK(f.h.undo());
+    CHECK(copy_data() == nullptr && original_data() == f.data.get());
+    CHECK(f.h.undo_depth() == depth - 2);
+
+    CHECK(f.h.redo());
+    CHECK(copy_data() == f.data.get());
+    CHECK(f.h.redo());
+    CHECK(copy_data() == f.data.get());
+    CHECK(original_data() != f.data.get() && original_data()->notes.size() == 5);
+    CHECK(f.h.undo_depth() == depth);
+    CHECK(invariants_hold(f.h.current()));
+    return 0;
+}
+
 int test_place_midi_region_refusals() {
     Fixture f;
     CHECK(f.build());
@@ -576,6 +619,7 @@ int main() {
     t(test_edit_midi_copies_on_write);
     t(test_stale_edit_midi_is_refused);
     t(test_place_midi_region_shares_by_reference);
+    t(test_place_midi_region_sharing_survives_undo_redo);
     t(test_place_midi_region_refusals);
     t(test_midi_sources_and_routing);
     t(test_inserts_on_midi_tracks);
