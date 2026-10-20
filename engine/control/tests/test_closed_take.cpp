@@ -655,10 +655,59 @@ int test_a_punch_captured_after_its_out_point_is_said() {
         CHECK(r.refused.empty());
         CHECK(r.track_notices.size() == 1);
         CHECK(mentions(r.track_notices[0], "take 1 is in the session's audio, not on the timeline"));
-        CHECK(mentions(r.track_notices[0], "after the punch-out"));
+        CHECK(mentions(r.track_notices[0], "after the punch-out at frame 5000"));
         const model::Playlist& pl = active_playlist(doc.current(), 0);
         CHECK(pl.regions.size() == 1 && pl.regions[0] == old);
         CHECK(doc.current().sources->sources.size() == 2);
+        CHECK(doc.history().undo_depth() == undo_depth);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// A punch that ends with nothing captured says so, and why: stopped before
+// its capture began, or (the #91 race past B + H) begun after its capture
+// ended, where the take's files close at once, empty, and the transport
+// drops out of record. Positions are "frame N" for the interface to format.
+int test_a_punch_that_captured_nothing_is_said() {
+    const SessionConfig cfg = punch_config("test_closed_take_punch_nothing");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        const std::size_t undo_depth = doc.history().undo_depth();
+
+        // Stopped at 1500, before A - H = 2000.
+        Punched early;
+        CHECK(punch(s, punch_range(), 1500, early));
+        CHECK(early.length == 0);
+        TakeAdded r = add_closed_take(doc, s, early.take);
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 1 captured nothing"));
+        CHECK(mentions(r.track_notices[0], "before frame 2000"));
+        CHECK(mentions(r.track_notices[0], "punch-in at frame 3000"));
+
+        // Take 2: pressed before B, its first block past B + H = 6000.
+        s.disk().start();
+        CHECK(s.start_punch(2, punch_range()));
+        s.transport().set_playhead(6100);
+        roll_to(s, 6200);
+        CHECK(s.follow_punch_out());
+        CHECK(s.transport().state() == TransportState::Rolling);
+        CHECK(s.stop());
+        std::vector<Session::ClosedTake> closed = s.closed_takes();
+        CHECK(closed.size() == 1 && closed[0].take == 2);
+        r = add_closed_take(doc, s, closed[0]);
+        CHECK(r.refused.empty());
+        CHECK(r.track_notices.size() == 1);
+        CHECK(mentions(r.track_notices[0], "take 2 captured nothing"));
+        CHECK(mentions(r.track_notices[0], "began at frame 6100"));
+        CHECK(mentions(r.track_notices[0], "ended at frame 6000"));
+        CHECK(mentions(r.track_notices[0], "punch-out at frame 5000"));
+
+        CHECK(doc.current().sources->sources.empty());
         CHECK(doc.history().undo_depth() == undo_depth);
     }
     std::filesystem::remove_all(cfg.dir);
@@ -717,11 +766,12 @@ int main() {
     failed += test_a_punch_the_model_refuses_crossfades_for_lands_without_them();
     failed += test_a_punch_stopped_before_a_places_nothing();
     failed += test_a_punch_captured_after_its_out_point_is_said();
+    failed += test_a_punch_that_captured_nothing_is_said();
     failed += test_the_document_punch();
     if (failed != 0) {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
     }
-    std::printf("closed_take: 14 passed\n");
+    std::printf("closed_take: 15 passed\n");
     return 0;
 }

@@ -170,6 +170,9 @@ public:
     QString selectionStart() const;
     QString selectionEnd() const;
     QString selectionLength() const;
+    // `text` with every "frame N" read in the main counter's format, as
+    // the counter shows that position (format_positions()).
+    std::string positionText(const std::string& text) const;
     qreal scrollY() const { return ctl_.view().scroll_y; }
     qreal trackHeight() const { return ctl_.view().track_height; }
     QString zoomText() const;

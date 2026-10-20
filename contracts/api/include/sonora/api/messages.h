@@ -152,6 +152,12 @@ struct Hello {
     std::vector<std::string> implemented_commands;
 };
 
+// Timeline positions in a CommandReply's message and an EngineEvent's text
+// are written "frame N", N decimal frames from the timeline's sample 0. The
+// counter format is the interface's own, which the engine does not know, so
+// an interface rewrites each one into it; a reader that does not still reads
+// samples. The encoding is unchanged, so this needs no protocol version.
+//
 // The answer to one CommandRequest, ParameterChange or ModelRequest.
 struct CommandReply {
     uint64_t seq = 0;

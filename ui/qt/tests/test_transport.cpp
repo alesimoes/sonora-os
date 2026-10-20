@@ -485,6 +485,31 @@ void test_window() {
     OK(!win->isVisible());
     OK(button->isVisible());
 
+    // The engine names positions "frame N"; the operator reads them in the
+    // main counter's format, on the status line and in the notices.
+    {
+        const SessionSettings& st = session.controller().snapshot().settings;
+        const std::string a = format_bars_beats(kAt96, st);
+        const std::string b = format_bars_beats(kAt96 + kBeat96, st);
+        engine.next_result = DispatchResult::Failed;
+        engine.next_message = "the punch range ends at frame " + std::to_string(kAt96) +
+                              ", before the playhead at frame " + std::to_string(kAt96 + kBeat96);
+        CommandContext none;
+        engine.send("transport.punch", none);
+        engine.next_result = DispatchResult::Ok;
+        engine.next_message.clear();
+        EngineEvent e;
+        e.kind = EngineEventKind::Notice;
+        e.text = "take 2 captured nothing: it began at frame " + std::to_string(kAt96);
+        engine.events.push_back(e);
+        model.tick();
+        OK(model.statusText() == QString::fromStdString("transport.punch: the punch range ends at " +
+                                                        a + ", before the playhead at " + b));
+        OK(!model.notices().isEmpty() &&
+           model.notices().last() == QString::fromStdString("take 2 captured nothing: it began at " + a));
+        OK(a.find('|') != std::string::npos);
+    }
+
     // Pro Tools' Window > Transport: Ctrl+1 on the keypad.
     key(view, Qt::Key_1, Qt::ControlModifier | Qt::KeypadModifier);
     OK(transport.open());

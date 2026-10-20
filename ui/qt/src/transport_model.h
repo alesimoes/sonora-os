@@ -38,7 +38,8 @@ class TransportModel;
 // Feeds both models from the shell's tick and publishes the window's
 // position text on the main counter's cue, so the counter in the bar and
 // the Transport window show one reading while rolling, not two a few ticks
-// apart. Replaces any transport sink the shell had.
+// apart. Replaces any transport sink the shell had. The positions in the
+// engine's refusals and notices read in the main counter's format too.
 void link_transport(ShellModel& shell, SessionModel& session, TransportModel& transport);
 
 class TransportModel : public QObject {

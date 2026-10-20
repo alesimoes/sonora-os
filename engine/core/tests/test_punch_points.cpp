@@ -272,6 +272,83 @@ int test_bad_ranges_are_refused() {
 
     CHECK(s.transport().state() == TransportState::Rolling);
     CHECK(!fs::exists(rig.file(0, take)));
+
+    // Positions are written "frame N", which an interface may show in its
+    // own counter format (contracts/api messages.h, CommandReply::message).
+    error.clear();
+    CHECK(!s.start_punch(take, passed, &error));
+    CHECK(error.find("playhead at frame " + std::to_string(p)) != std::string::npos);
+    error.clear();
+    CHECK(!s.start_punch(take, empty, &error));
+    CHECK(error.find("to frame " + std::to_string(p + 100)) != std::string::npos);
+    return 0;
+}
+
+// Past capture_to the take's files are closed, and the take is over: the
+// control thread's follow_punch_out() ends it as punch_out() does, the
+// transport rolling on, as Pro Tools' record button drops out at the
+// punch-out. Before then it leaves the take alone.
+int test_out_point_ends_the_take() {
+    Rig rig("out_point_ends", 1);
+    Session& s = *rig.session;
+    const int take = s.next_free_take();
+    PunchRange r;
+    r.capture_from = kBlock;
+    r.capture_to = 3 * kBlock + 5;
+    r.monitor_in = r.capture_from;
+    r.monitor_out = r.capture_to;
+    std::string error;
+    CHECK(s.start_punch(take, r, &error));
+    for (int b = 0; b < 3; ++b) rig.block();
+    CHECK(!s.follow_punch_out());
+    CHECK(s.transport().state() == TransportState::Recording);
+    rig.block();
+    CHECK(s.follow_punch_out());
+    CHECK(s.transport().state() == TransportState::Rolling);
+    CHECK(s.recording_take() == 0);
+    CHECK(!s.follow_punch_out());
+    rig.block();
+    s.disk().drain_once();
+    std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1 && closed[0].take == take && closed[0].punched);
+    CHECK(closed[0].files.size() == 1);
+    CHECK(closed[0].files[0].frames == r.capture_to - r.capture_from);
+    CHECK(closed[0].origin == r.capture_from);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+// The #91 race at its worst: the playhead start_punch() checked was before
+// B, but by the take's first block it is past B + H. Nothing can be
+// captured, so the files close at once, empty, and the take ends as at its
+// out point, carrying the frame it began at for the notice that says why.
+int test_range_passed_before_the_first_block() {
+    Rig rig("range_passed", 2);
+    Session& s = *rig.session;
+    const int take = s.next_free_take();
+    PunchRange r;
+    r.capture_from = kBlock;
+    r.capture_to = 2 * kBlock;
+    r.monitor_in = r.capture_from;
+    r.monitor_out = r.capture_to;
+    std::string error;
+    CHECK(s.start_punch(take, r, &error));
+    // This thread is the audio thread, the playhead's only writer.
+    s.transport().set_playhead(4 * kBlock);
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    s.disk().drain_once();
+    CHECK(rig.slots_free(0) && rig.slots_free(1));
+    CHECK(s.follow_punch_out());
+    CHECK(s.transport().state() == TransportState::Rolling);
+    std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1 && closed[0].take == take);
+    CHECK(closed[0].files.size() == 2);
+    for (const auto& f : closed[0].files) CHECK(f.frames == 0 && f.failure.empty());
+    CHECK(closed[0].origin == 4 * kBlock);
+    CHECK(s.boundary_overruns() == 0);
+    CHECK(s.stop(&error));
     return 0;
 }
 
@@ -727,6 +804,8 @@ int main(int argc, char** argv) {
         {"capture_inside_a_block", test_capture_inside_a_block},
         {"capture_from_behind_the_playhead", test_capture_from_behind_the_playhead},
         {"bad_ranges_are_refused", test_bad_ranges_are_refused},
+        {"out_point_ends_the_take", test_out_point_ends_the_take},
+        {"range_passed_before_the_first_block", test_range_passed_before_the_first_block},
         {"auto_monitor_crossfades", test_auto_monitor_crossfades_at_the_punch_points},
         {"other_switches_ramp", test_other_switches_ramp},
         {"burst_of_punches", test_burst_of_punches_keeps_the_running_range},

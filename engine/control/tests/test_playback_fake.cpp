@@ -679,6 +679,21 @@ int test_record_with_a_punch_range_punches() {
             if (blocks++ % 8 == 0) CHECK(reader_turn(s));
             CHECK(audio.run_blocks(1) == 1);
         }
+        // Past B + H the take's files are closed: the transport drops out of
+        // record and rolls on, as Pro Tools' does at the punch-out, rather
+        // than showing Recording while nothing records.
+        const auto await_rolling = [&]() {
+            for (int i = 0; i < 2500; ++i) {
+                engine.poll(c.inbox);
+                if (s.transport().state() == TransportState::Rolling) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return false;
+        };
+        CHECK(await_rolling());
+        CHECK(s.recording_take() == 0);
+        // Placed before any stop: the take closed in band.
+        CHECK(await_regions(3));
         CHECK(c.run("transport.stop"));
         CHECK(await_regions(3));
 
@@ -695,6 +710,26 @@ int test_record_with_a_punch_range_punches() {
         CHECK(p.crossfades.size() == 2);
         for (const model::Crossfade& x : p.crossfades) CHECK(x.length == kX);
         CHECK(s.tracks()[0]->overruns() == 0);
+
+        // transport.punch with the range set does the same past B + H.
+        CHECK(c.run("transport.return_to_zero"));
+        const uint64_t punch = c.send("transport.punch");
+        answered = false;
+        for (int i = 0; i < 2000 && !answered; ++i) {
+            CHECK(audio.run_blocks(1) == 1);
+            if (c.reply(punch) != nullptr) answered = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(c.await(punch, r));
+        if (r.result != DispatchResult::Ok) std::fprintf(stderr, "  %s\n", r.message.c_str());
+        CHECK(r.result == DispatchResult::Ok);
+        CHECK(s.transport().state() == TransportState::Recording);
+        while (s.transport().playhead() < static_cast<uint64_t>(kB + kH + kQuantum)) {
+            if (blocks++ % 8 == 0) CHECK(reader_turn(s));
+            CHECK(audio.run_blocks(1) == 1);
+        }
+        CHECK(await_rolling());
+        CHECK(c.run("transport.stop"));
 
         engine.shutdown();
         audio.deactivate();

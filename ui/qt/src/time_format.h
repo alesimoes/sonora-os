@@ -28,6 +28,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,12 @@ std::string format_min_sec(model::Frames f, uint32_t rate);
 std::string format_samples(model::Frames f);
 std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSettings& s);
 const char* time_format_name(TimeFormat fmt);
+// The engine's text with each position it names, written "frame N"
+// (contracts/api messages.h), replaced by `as(N)`: "ends at frame 96000"
+// reads "ends at 2|1|000". Only the whole word "frame" followed by digits;
+// "frames 12" and "last whole frame" are left alone.
+std::string format_positions(const std::string& text,
+                             const std::function<std::string(model::Frames)>& as);
 
 // Frames per beat and per bar at the tempo map's FIRST entry. A fixed step
 // for what needs one (the nudge); anything drawn or snapped against the

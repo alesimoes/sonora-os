@@ -325,6 +325,12 @@ QString SessionModel::selectionEnd() const {
     return q(format_time(main_fmt_, ctl_.selection().end, ctl_.snapshot().settings));
 }
 
+std::string SessionModel::positionText(const std::string& text) const {
+    return format_positions(text, [this](Frames f) {
+        return format_time(main_fmt_, f, ctl_.snapshot().settings);
+    });
+}
+
 QString SessionModel::selectionLength() const {
     const Selection& s = ctl_.selection();
     return q(format_min_sec(s.end - s.start, ctl_.snapshot().settings.sample_rate));
