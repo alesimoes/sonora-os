@@ -65,6 +65,7 @@ struct Options {
     QString insert_view;
     QString edit_view;
     QString mix_view;
+    QString open_file;
 };
 
 // The demo session's inserts, on the fake engine's catalog (fake_catalog()):
@@ -232,8 +233,13 @@ bool parse(QGuiApplication& app, Options& o) {
                                                      "and Talkback solo safe (solo-safe), for "
                                                      "screenshots."),
                                       QStringLiteral("solo-safe"));
+    const QCommandLineOption open({QStringLiteral("open")},
+                                  QStringLiteral("Open this session file once the window is up, "
+                                                 "as File > Open does (with --demo, instead of "
+                                                 "starting a take)."),
+                                  QStringLiteral("file"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions, socket, fake, insert_view, edit_view, mix_view});
+                  window, sessions, socket, fake, insert_view, edit_view, mix_view, open});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -265,6 +271,7 @@ bool parse(QGuiApplication& app, Options& o) {
         return false;
     }
     o.mix_view = p.value(mix_view);
+    o.open_file = p.value(open);
     if (!o.mix_view.isEmpty() && o.mix_view != QStringLiteral("solo-safe")) {
         std::fprintf(stderr, "sonora-ui: --mix-view must be solo-safe\n");
         return false;
@@ -564,7 +571,10 @@ int main(int argc, char** argv) {
         for (int t = 0; t < 8 && t < a.opt.tracks; ++t) model.invoke(QStringLiteral("track.toggle_arm"), t);
         // Not under --edit-view: a rolling transport pages the view to the
         // playhead, away from what the view is meant to show.
-        if (a.opt.edit_view.isEmpty()) model.invoke(QStringLiteral("transport.record"), -1);
+        // Nor under --open: a session does not open over a take.
+        if (a.opt.edit_view.isEmpty() && a.opt.open_file.isEmpty()) {
+            model.invoke(QStringLiteral("transport.record"), -1);
+        }
         // Once the window has its size: the whole session in view, and the
         // snare's second region selected, so a screenshot shows what a
         // selected region looks like.
@@ -635,6 +645,16 @@ int main(int argc, char** argv) {
                     menu->setProperty("visible", true);
                 }
             }
+        });
+    }
+    // After the demo has set its view, so what is shown is the file's.
+    if (!a.opt.open_file.isEmpty()) {
+        QTimer::singleShot(400, &app, [&session, &model, &a]() {
+            if (!session.openSession(a.opt.open_file, true)) {
+                std::fprintf(stderr, "sonora-ui: --open %s was refused\n",
+                             qPrintable(a.opt.open_file));
+            }
+            model.invoke(QStringLiteral("zoom.fit_session"), -1);
         });
     }
 

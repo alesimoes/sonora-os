@@ -59,13 +59,13 @@ const char* name_of(const Name<E> (&table)[N], E v) {
 // pure function on the parsed tree (session-format.md, "Versioning"). Each
 // gets a frozen fixture in common/model/tests/fixtures that must load
 // forever. What a step had to change rather than fill in, it reports in
-// `repairs`, one sentence each with its key path, for the opener to show.
-using Migration = bool (*)(Value& root, std::vector<std::string>& repairs, std::string& error);
+// `repairs`, by key path with the old and the new value, for the opener to show.
+using Migration = bool (*)(Value& root, std::vector<Repair>& repairs, std::string& error);
 
 // v1 -> v2 (ADR-0012 §6.2): every track gains "inserts": [], nothing else.
 // Whatever is not shaped like a track is left for the reader to refuse with
 // its own message and line.
-bool v1_to_v2(Value& root, std::vector<std::string>&, std::string& error) {
+bool v1_to_v2(Value& root, std::vector<Repair>&, std::string& error) {
     Value* tracks = root.find("tracks");
     if (tracks == nullptr || !tracks->is_array()) return true;
     for (std::size_t i = 0; i < tracks->items().size(); ++i) {
@@ -82,7 +82,7 @@ bool v1_to_v2(Value& root, std::vector<std::string>&, std::string& error) {
 }
 
 // v2 -> v3: every track gains "solo_safe": false, nothing else.
-bool v2_to_v3(Value& root, std::vector<std::string>&, std::string& error) {
+bool v2_to_v3(Value& root, std::vector<Repair>&, std::string& error) {
     Value* tracks = root.find("tracks");
     if (tracks == nullptr || !tracks->is_array()) return true;
     for (std::size_t i = 0; i < tracks->items().size(); ++i) {
@@ -104,7 +104,7 @@ bool v2_to_v3(Value& root, std::vector<std::string>&, std::string& error) {
 // new; the version 3 file, which the first save keeps as the pre-migration
 // backup, holds the original. A value v3 itself refuses is left for the
 // reader to refuse.
-bool v3_to_v4(Value& root, std::vector<std::string>& repairs, std::string&) {
+bool v3_to_v4(Value& root, std::vector<Repair>& repairs, std::string&) {
     Value* tempo = root.find("tempo");
     if (tempo == nullptr || !tempo->is_array()) return true;
     const std::string kept = "; the original stays in the version 3 file, which the "
@@ -118,10 +118,10 @@ bool v3_to_v4(Value& root, std::vector<std::string>& repairs, std::string&) {
         if (bpm != nullptr && bpm->is_number() && bpm->to_float(v)) {
             const float fitted = bpm_within_bounds(v);
             if (fitted != v) {
-                repairs.push_back(p + ".bpm: " + bpm->text() +
-                                  " bpm is outside the 1 to 1000 bpm this version counts "
-                                  "musical time in, and opens as " +
-                                  (fitted == kMinBpm ? "1" : "1000") + " bpm" + kept);
+                repairs.push_back({p + ".bpm", bpm->text() + " bpm",
+                                   std::string(fitted == kMinBpm ? "1" : "1000") + " bpm",
+                                   "outside the 1 to 1000 bpm this version counts musical "
+                                   "time in" + kept});
                 *bpm = Value::number_float(fitted);
             }
         }
@@ -133,9 +133,9 @@ bool v3_to_v4(Value& root, std::vector<std::string>& repairs, std::string&) {
         const std::uint32_t fitted = nearest_meter_denominator(static_cast<std::uint32_t>(d));
         if (fitted == static_cast<std::uint32_t>(d)) continue;
         const std::string beats = meter->items()[0].text();
-        repairs.push_back(p + ".meter: " + beats + "/" + beat.text() +
-                          " has a beat that is not a power of two from 1 to 64, and opens as " +
-                          beats + "/" + std::to_string(fitted) + kept);
+        repairs.push_back({p + ".meter", beats + "/" + beat.text(),
+                           beats + "/" + std::to_string(fitted),
+                           "the beat is not a power of two from 1 to 64" + kept});
         beat = Value::integer(fitted);
     }
     return true;
@@ -143,7 +143,7 @@ bool v3_to_v4(Value& root, std::vector<std::string>& repairs, std::string&) {
 
 const std::array<Migration, kFormatVersion - 1> kMigrations{{v1_to_v2, v2_to_v3, v3_to_v4}};
 
-bool migrate(Value& root, std::int64_t from, std::vector<std::string>& repairs,
+bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
     for (std::int64_t v = from; v < kFormatVersion; ++v) {
         if (!kMigrations[static_cast<std::size_t>(v - 1)](root, repairs, error)) return false;
@@ -432,14 +432,14 @@ public:
 
     Id max_id() const { return max_id_; }
 
-    void repaired(std::string what) { repairs_.push_back(std::move(what)); }
-    std::vector<std::string> take_repairs() { return std::move(repairs_); }
+    void repaired(Repair what) { repairs_.push_back(std::move(what)); }
+    std::vector<Repair> take_repairs() { return std::move(repairs_); }
 
 private:
     LoadError& error_;
     std::unordered_map<Id, std::string> ids_;
     Id max_id_ = 0;
-    std::vector<std::string> repairs_;
+    std::vector<Repair> repairs_;
 };
 
 bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
@@ -628,11 +628,12 @@ bool read_playlist(Reader& rd, const Value& v, const std::string& p,
     // interface saved it. The file still opens, with the fade shortened as
     // the edits now shorten it ("Backward compatibility: always").
     for (const detail::FadeFit& f : detail::fit_fades_to_crossfades(pl)) {
-        rd.repaired(index_path(p + ".regions", f.region) + ": its fade-" +
-                    (f.fade_in ? "in" : "out") + " shortened from " + std::to_string(f.from) +
-                    " to " + std::to_string(f.to) + " frames to meet the crossfade at its " +
-                    (f.fade_in ? "end" : "start") +
-                    ", which the engine would otherwise multiply with it");
+        rd.repaired({index_path(p + ".regions", f.region) +
+                         (f.fade_in ? ".fade_in.length" : ".fade_out.length"),
+                     std::to_string(f.from) + " frames", std::to_string(f.to) + " frames",
+                     std::string("the fade ran into the crossfade at the region's ") +
+                         (f.fade_in ? "end" : "start") +
+                         ", which the engine would otherwise multiply with it"});
     }
     std::string where;
     return rd.checked(detail::playlist_problem(pl, pool, channels, where), v, p, where);
@@ -972,13 +973,13 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
                            " does not exist; versions start at 1");
     }
     std::string why;
-    std::vector<std::string> migrated;
+    std::vector<Repair> migrated;
     if (!migrate(root, file_version, migrated, why)) {
         error.message = "migrating from format version " + std::to_string(file_version) +
                         ": " + why;
         return false;
     }
-    for (std::string& m : migrated) rd.repaired(std::move(m));
+    for (Repair& m : migrated) rd.repaired(std::move(m));
 
     if (!rd.keys(root, "",
                  {"sonora_session", "written_by", "save_generation", "name",
