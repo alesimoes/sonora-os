@@ -59,6 +59,7 @@ namespace sonora {
 
 class PlaybackController;
 class PluginHosting;
+class PluginScanner;
 class Session;
 namespace backend {
 class AudioBackend;
@@ -121,6 +122,17 @@ public:
         std::string plugin_host;
         std::vector<std::string> plugin_bundles;
         uint32_t plugin_block_frames = 0;
+        // The plugin catalog's cache file (ADR-0012, amendment of
+        // 2026-10-19, item 4 and change A: resolved by the entry layer).
+        // Empty: the catalog lives in memory for the run.
+        std::string plugin_cache;
+        // The image build id, in the cache header (change B).
+        std::string plugin_build_id;
+        // Q1: a scan at every engine start. Off only in tests of the chains.
+        bool plugin_scan_at_start = true;
+        // Probe slots, one of them reserved for chain starts (change E); 0
+        // is half the hardware threads, at least 2.
+        uint32_t plugin_probe_slots = 0;
         // How long play from a freshly opened session waits for its
         // plug-ins (the owner's decision of 2026-10-18; §5.3's Ready bound).
         // Record never waits.
@@ -278,6 +290,20 @@ private:
     // Built after document_ and destroyed before it; touched only by the
     // control thread, or before start() and after stop().
     std::unique_ptr<PlaybackController> playback_;
+    // The plugin scan worker (ADR-0012, amendment of 2026-10-19, item 3):
+    // for the life of the server, which is the engine process's, so a
+    // reopen at another period does not rescan. Null when no host is
+    // configured. Destroyed after hosting_, whose probes it answers.
+    std::unique_ptr<PluginScanner> scanner_;
+    // The catalog generation the clients were last sent.
+    uint64_t catalog_sent_ = 0;
+    // The catalog to clients, the scanner's notices said, once per turn.
+    void follow_scanner();
+    // The catalog a client is sent after the Snapshot.
+    void send_catalog(Client& client);
+    // Item 6: AddInsert and ReplaceInsert against the catalog. Empty when
+    // the plugin may be inserted; the refusal otherwise.
+    std::string catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const;
     // The plugin side, for one backend activation; null until the period is
     // known, and when no host is configured. Released in after_deactivate().
     std::unique_ptr<PluginHosting> hosting_;

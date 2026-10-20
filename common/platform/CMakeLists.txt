@@ -43,6 +43,13 @@ if(UNIX)
   target_link_libraries(test_platform_file_sync PRIVATE sonora_platform)
   add_test(NAME platform_file_sync COMMAND test_platform_file_sync)
 
+  # The plugin scanner's seam (ADR-0012, amendment of 2026-10-19): the
+  # cache folder, a status through a symlink with its change time, and a
+  # background thread and child at nice 10 and the idle I/O class.
+  add_executable(test_platform_background tests/test_background.cpp)
+  target_link_libraries(test_platform_background PRIVATE sonora_platform Threads::Threads)
+  add_test(NAME platform_background COMMAND test_platform_background)
+
   # The unsupported stub claims no exclusion; the other holder is a fork.
   add_executable(test_platform_folder_lock tests/test_folder_lock.cpp)
   target_link_libraries(test_platform_folder_lock PRIVATE sonora_platform)

@@ -34,12 +34,29 @@ struct PortInfo {
     float min = 0.f, max = 0.f, def = 0.f;
     bool reports_latency = false;
     uint32_t channels = 0;  // VST3 audio buses only
-    std::string units;      // VST3 parameters only
+    // A parameter's unit: VST3 ParameterInfo::units, LV2 units:unit's
+    // symbol. Empty when the plugin does not say.
+    std::string units;
+    // What the probe record says of a control input (contracts/plugin
+    // probe_record.h): a toggle, a choice among `labels`, a value shown on a
+    // log scale, and whether a host may automate it. `steps`: 0 continuous,
+    // otherwise the number of values evenly spaced from min to max.
+    bool toggle = false;
+    bool enumeration = false;
+    bool logarithmic = false;
+    bool automatable = true;
+    uint32_t steps = 0;
+    std::vector<std::string> labels;
 };
 
 struct PluginInfo {
     std::string format;  // "lv2" or "vst3"
     std::string uri, name, class_label;
+    // For the probe record: who made it, which release, what a browser
+    // groups it by (broadest first), and the bundle it was found in,
+    // absolute, which the engine fingerprints.
+    std::string vendor, version, bundle;
+    std::vector<std::string> categories;
     std::vector<PortInfo> ports;
     // Main audio only. A key input is counted apart: it does not decide
     // whether the plugin fits the chain's channels.
@@ -152,6 +169,8 @@ public:
         min = 0.f;
         max = 1.f;
     }
+    // The description of a dense parameter, as the plugin gave it.
+    virtual const PortInfo& param_port(uint32_t dense) const = 0;
 
     // The main thread, after instantiation. Touches from this plugin go to
     // `sink` as chain instance `instance`. A format without a source of

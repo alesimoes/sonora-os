@@ -432,10 +432,41 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              (`edit_keeps_old`, residency held); teardown asks every host
              first and waits once (2 s for the set).
        - [ ] pidfd instead of polling the host processes.
-       - [ ] Scan worker and catalog cache (ADR-0012 §4, §8): until then
-             the catalog is empty, so a client's AddInsert/ReplaceInsert is
-             refused (kNoCatalog) and only inserts a session already holds
-             are hosted.
+       - [x] Scan worker and catalog cache (ADR-0012 amendment of
+             2026-10-19, items 1-7, Q1-Q3; Q4 landed with #87):
+             `contracts/plugin`
+             probe_record.h (record version 1, one codec, golden line;
+             `--version` names `probe 1`); `--list` names each record's
+             bundle, `--bundles-only` runs no plugin code, `--only-given`
+             enumerates only the changed VST3 bundles; `PluginScanner`, one
+             thread owned by the control server, lowered to nice 10 and the
+             idle I/O class before its walk and its children, a try_lock
+             exchange that never drops a request, the cache in
+             `user_cache_dir()` resolved by engine/app (`--plugin-cache`;
+             header with the host line and the os-release build id),
+             fingerprints that follow symlinks and take max(mtime, ctime),
+             crashed and hung probes cached blocked, one slot reserved for
+             chain starts, no catalog child during a take, `plugin.rescan`
+             refused during a take; PluginHosting's probes through the
+             worker; AddInsert/ReplaceInsert resolved against the catalog
+             with its name and version stored. ctest plugin_probe_record,
+             platform_background, plugin_paths, plugin_scanner (15 rules
+             on a fake host), plugin_catalog, plugin_host_list_bundle,
+             plugin_host_list_bundles_only, plugin_host_probe_record,
+             plugin_host_probe_not_installed.
+       - [ ] Scan follow-ups (architect on #95): the image build writes
+             BUILD_ID into /etc/os-release, before OS 1 (also under Phase 1
+             below; the cache header reads it, empty until then).
+             PluginHosting keeps its probe answers for the run: a completed
+             rescan must drop the `probes_` entries whose bundle it probed
+             again, before any client exposes `plugin.rescan` to the
+             operator and before Track 4 closes (until then item 6's "the
+             next start finds it missing" does not hold, and a plugin
+             updated in place keeps its old parameter table until a
+             restart). Unverified 11 (warm time to generation 1 on the
+             stick, Debian's set plus a yabridge set) and 12 (researcher).
+             The PR that hosts editors moves the probe record version or
+             the host `--version` line (ADR-0012 item 2 note).
        - [ ] FlushPluginState through GetState and the saver thread's
              durable write; today it still answers from the document.
        - [x] Play waits for plug-ins at session open (owner, 2026-10-18):
@@ -683,8 +714,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [x] Start and stop hosts from the document diff (the set of active
          insert ids before and after each change), not from the op kind:
          `PluginHosting::show` after every document change (undo, redo,
-         SetInsertActive included); `starts_a_host()` now only refuses
-         AddInsert/ReplaceInsert while the catalog is empty.
+         SetInsertActive included); AddInsert/ReplaceInsert are resolved against
+         the scan worker's catalog (amendment of 2026-10-19, item 6).
        - Key an instance on (insert id, channel layout) in the plan builder.
        - `InsertChainRunner` over PluginClient is `PluginChainRunner`
          (done, see above). Left for checklist 5:
@@ -786,6 +817,10 @@ not start or extend those items before the Complete DAW closes (owner,
 
 ## Phase 1 (OS 1, after the Complete DAW)
 
+- [ ] The image writes `BUILD_ID` into `/etc/os-release`: the plugin
+      catalog cache's header carries it (ADR-0012, amendment of 2026-10-19,
+      change B); every cache is discarded once, with one Notice, when it
+      first appears.
 - [ ] Compile the engine on Debian trixie and fix what the compiler finds.
 - [ ] Run `ctest`; make the ring buffer and BWF tests pass.
 - [ ] `live-build` config: package list, RT kernel, PipeWire from backports.

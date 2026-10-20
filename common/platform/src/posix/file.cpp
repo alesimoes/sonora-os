@@ -2,10 +2,12 @@
 #include "sonora/platform/file.h"
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace sonora::platform {
@@ -70,6 +72,29 @@ FolderLock::Result FolderLock::acquire(const std::string& path, std::string& err
     }
     handle_ = fd;
     return Result::Held;
+}
+
+std::string user_cache_dir() {
+    // The XDG base directory rule: a relative XDG_CACHE_HOME is invalid and
+    // ignored.
+    if (const char* x = std::getenv("XDG_CACHE_HOME"); x != nullptr && x[0] == '/') {
+        return std::string(x) + "/sonora";
+    }
+    if (const char* h = std::getenv("HOME"); h != nullptr && *h != '\0') {
+        return std::string(h) + "/.cache/sonora";
+    }
+    return {};
+}
+
+bool path_status(const std::string& path, PathStatus& out) {
+    struct stat st {};
+    if (::stat(path.c_str(), &st) != 0) return false;
+    out.regular = S_ISREG(st.st_mode);
+    out.directory = S_ISDIR(st.st_mode);
+    out.size = static_cast<uint64_t>(st.st_size);
+    out.modified_ns = static_cast<int64_t>(st.st_mtim.tv_sec) * 1'000'000'000 + st.st_mtim.tv_nsec;
+    out.changed_ns = static_cast<int64_t>(st.st_ctim.tv_sec) * 1'000'000'000 + st.st_ctim.tv_nsec;
+    return true;
 }
 
 }  // namespace sonora::platform

@@ -586,7 +586,7 @@ public:
 struct Vst3Module {
     struct Class {
         char cid[16];
-        std::string id, name, category, sub_categories;
+        std::string id, name, category, sub_categories, vendor, version;
     };
     std::string bundle;
     void* library = nullptr;
@@ -676,8 +676,16 @@ Vst3Module* Vst3World::load(const std::string& bundle, std::string& error) {
         c.name = cstr(ci.name, sizeof ci.name);
         c.category = cstr(ci.category, sizeof ci.category);
         Steinberg::PClassInfo2 ci2{};
-        if (f2 && f2->getClassInfo2(i, &ci2) == Steinberg::kResultOk)
+        if (f2 && f2->getClassInfo2(i, &ci2) == Steinberg::kResultOk) {
             c.sub_categories = cstr(ci2.subCategories, sizeof ci2.subCategories);
+            c.vendor = cstr(ci2.vendor, sizeof ci2.vendor);
+            c.version = cstr(ci2.version, sizeof ci2.version);
+        }
+        // A class that names no vendor of its own is its factory's.
+        if (c.vendor.empty()) {
+            Steinberg::PFactoryInfo fi{};
+            if (m->factory->getFactoryInfo(&fi) == Steinberg::kResultOk) c.vendor = cstr(fi.vendor, sizeof fi.vendor);
+        }
         m->classes.push_back(std::move(c));
     }
     if (f2) f2->release();
@@ -771,6 +779,20 @@ public:
         info_.uri = cls_.id;
         info_.name = cls_.name;
         info_.class_label = cls_.sub_categories.empty() ? cls_.category : cls_.sub_categories;
+        info_.vendor = cls_.vendor;
+        info_.version = cls_.version;
+        // subCategories as the SDK spells them, "Fx|Dynamics": broadest first.
+        for (std::size_t at = 0; at <= cls_.sub_categories.size();) {
+            const std::size_t bar = std::min(cls_.sub_categories.find('|', at), cls_.sub_categories.size());
+            if (bar > at) info_.categories.push_back(cls_.sub_categories.substr(at, bar - at));
+            at = bar + 1;
+        }
+        {
+            std::error_code ec;
+            const fs::path b = fs::absolute(module_.bundle, ec);
+            info_.bundle = ec ? module_.bundle : b.lexically_normal().string();
+            while (info_.bundle.size() > 1 && info_.bundle.back() == '/') info_.bundle.pop_back();
+        }
         who_ = info_.name + " <" + info_.uri + ">";
         if (!add_instance(error)) return false;
         open_controller();
@@ -823,6 +845,25 @@ public:
                 p.min = 0.f;
                 p.max = 1.f;
                 p.def = static_cast<float>(pi.defaultNormalizedValue);
+                p.automatable = (pi.flags & V::ParameterInfo::kCanAutomate) != 0;
+                // stepCount: 0 continuous, 1 a toggle, n a choice of n + 1
+                // values; a list's values are named by the controller.
+                if (pi.stepCount > 0 && pi.stepCount < 4096) {
+                    p.steps = static_cast<uint32_t>(pi.stepCount) + 1;
+                    p.toggle = pi.stepCount == 1;
+                    if (pi.flags & V::ParameterInfo::kIsList) {
+                        p.enumeration = true;
+                        for (int32 k = 0; k <= pi.stepCount; ++k) {
+                            V::String128 s{};
+                            if (controller_->getParamStringByValue(pi.id, double(k) / double(pi.stepCount), s) !=
+                                Steinberg::kResultOk) {
+                                p.labels.clear();
+                                break;
+                            }
+                            p.labels.push_back(utf8(s, 128));
+                        }
+                    }
+                }
                 if (p.input) {
                     if ((pi.flags & V::ParameterInfo::kIsBypass) && bypass_dense_ < 0)
                         bypass_dense_ = static_cast<int>(dense_ids_.size());
@@ -1183,6 +1224,7 @@ public:
         return true;
     }
 
+    const PortInfo& param_port(uint32_t dense) const override { return info_.ports[dense_ports_[dense]]; }
     std::string param_key(uint32_t dense) const override { return std::to_string(dense_ids_[dense]); }
     std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].symbol; }
     float param_default(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].def; }

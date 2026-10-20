@@ -8,6 +8,10 @@ struct ChildProcess::Impl {};
 
 std::string executable_dir() { return {}; }
 int64_t current_process_id() { return 0; }
+bool lower_current_thread(int, bool, std::string& error) {
+    error = "lowering a thread's priority is not available on this platform yet (ADR-0008 §6)";
+    return false;
+}
 
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>&, const Options&,
                                                   std::string& error) {
