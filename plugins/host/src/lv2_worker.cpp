@@ -19,6 +19,10 @@ uint32_t round_up_pow2(uint32_t v) {
 // The worker sleeps at most this long between looks, so a wake lost to a
 // race costs one interval, never a stuck request.
 constexpr uint64_t kWorkerIdleNs = 100'000'000;
+// Under lock_memory a thread's whole stack is resident (ipc.h start_thread),
+// and the default is 8 MiB. Half the processing thread's: work() is the
+// plugin's file loading, which keeps its buffers on the heap.
+constexpr std::size_t kWorkerStack = std::size_t(512) << 10;
 
 }  // namespace
 
@@ -86,20 +90,23 @@ void Lv2Worker::start(uint32_t i, LV2_Handle handle, const LV2_Worker_Interface*
     queues_[i]->iface = iface && iface->work && iface->work_response ? iface : nullptr;
 }
 
-void Lv2Worker::start_thread() {
-    if (thread_.joinable()) return;
+bool Lv2Worker::start_thread() {
+    if (thread_) return true;
     for (const auto& q : queues_)
         if (q->iface) {
-            thread_ = std::thread([this] { loop(); });
-            return;
+            thread_ = plugin_host::start_thread([](void* w) { static_cast<Lv2Worker*>(w)->loop(); }, this,
+                                                kWorkerStack);
+            return thread_ != nullptr;
         }
+    return true;
 }
 
 void Lv2Worker::stop() {
-    if (!thread_.joinable()) return;
+    if (!thread_) return;
     stop_.store(true, std::memory_order_release);
     signal(word_);
-    thread_.join();
+    join_thread(thread_);
+    thread_ = nullptr;
 }
 
 // From run(), or from restore() when the plugin was handed the feature there;

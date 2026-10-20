@@ -17,7 +17,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <thread>
 #include <vector>
 
 namespace sonora::plugin_host {
@@ -68,9 +67,11 @@ public:
     const LV2_Feature* feature(uint32_t i) const { return &queues_[i]->feature; }
     // After instantiation, before anything can schedule: the instance and its
     // worker:interface (null when it has none, and then its schedule_work
-    // answers LV2_WORKER_ERR_UNKNOWN). Starts the thread when any has one.
+    // answers LV2_WORKER_ERR_UNKNOWN).
     void start(uint32_t i, LV2_Handle handle, const LV2_Worker_Interface* iface);
-    void start_thread();
+    // The thread, when any instance has an interface. False when the OS
+    // refused it: the plugin must then be refused, not run without one.
+    bool start_thread();
     // Joins the thread; what was still queued is dropped. Before the
     // instances are freed.
     void stop();
@@ -108,7 +109,7 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<uint64_t> refused_{0};
     std::mutex lock_;
-    std::thread thread_;
+    void* thread_ = nullptr;  // ipc.h start_thread
 };
 
 }  // namespace sonora::plugin_host

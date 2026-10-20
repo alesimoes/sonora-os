@@ -438,7 +438,11 @@ public:
         active_ = true;
         // After activation, so work() never runs beside it; before a restore
         // that may schedule, and before the first run().
-        if (worker_) worker_->start_thread();
+        if (worker_ && !worker_->start_thread()) {
+            error.reason = Refusal::InstantiateFailed;
+            error.message = who + ": its worker thread could not be started";
+            return false;
+        }
         return true;
     }
 

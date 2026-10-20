@@ -169,7 +169,7 @@ set(_plugin_tests
   plugin_host_rtt plugin_host_key
   plugin_host_control plugin_host_control_incompatible plugin_host_control_gain plugin_host_control_crash
   plugin_host_control_latency_chain plugin_host_state_lv2
-  plugin_host_worker plugin_host_worker_futex plugin_host_worker_control)
+  plugin_host_worker plugin_host_worker_futex plugin_host_worker_control plugin_host_worker_restore)
 # HostControl (contracts/plugin host_control.h, ADR-0012 §4): the socket on
 # --control-fd, with the driver as the engine's control thread. The same
 # scenarios as above through Load instead of the command line, and the
@@ -194,11 +194,13 @@ add_test(NAME plugin_host_crash_futex COMMAND ${_drive} --scenario crash --wake 
 add_test(NAME plugin_host_deadline COMMAND ${_drive} --scenario deadline)
 add_test(NAME plugin_host_deadline_futex COMMAND ${_drive} --scenario deadline --wake futex)
 add_test(NAME plugin_host_nonfinite COMMAND ${_drive} --scenario nonfinite)
-# LV2 worker:schedule: work() off the processing thread, its response
-# handed back inside run(), on both wakes and through Load.
+# LV2 worker:schedule: work() off the processing thread, its two responses
+# handed back inside run() and end_run() after it, on both wakes and through
+# Load; and a schedule from restore(), answered in the first run().
 add_test(NAME plugin_host_worker COMMAND ${_drive} --scenario worker)
 add_test(NAME plugin_host_worker_futex COMMAND ${_drive} --scenario worker --wake futex)
 add_test(NAME plugin_host_worker_control COMMAND ${_drive} --scenario worker --control 1)
+add_test(NAME plugin_host_worker_restore COMMAND ${_drive} --scenario worker_restore)
 # The RTSan build only: the host's block (run_block) is SONORA_RT, so the
 # plugins it runs are checked as the engine's callback is. The control for
 # that: the deadline scenario with the test plugin's sleep left unexempted
