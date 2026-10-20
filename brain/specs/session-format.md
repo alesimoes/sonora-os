@@ -50,7 +50,9 @@ Numbers, the place JSON usually goes wrong:
   session rate.** Never seconds, never timecode strings, never floats. A
   float position cannot round-trip a sample exactly past about 2^24 samples
   (six minutes at 48 kHz in single precision), and a one-sample error between
-  two mics is a comb filter.
+  two mics is a comb filter. For MIDI (version 5), the count is of ticks at
+  960,000 per quarter note instead, and every such key ends in `_ticks`
+  (`midi.md` §4.4), so no reader takes one for frames.
 - Integers are in `0 ≤ n ≤ 2^53 − 1`, so `jq`, Python and JavaScript read them
   exactly. At 192 kHz that is over 1,400 years of timeline. The reader rejects
   anything outside, any fraction, and any exponent on an integer field.
@@ -106,10 +108,14 @@ writes, does not matter at this size (see "Size").
   "transport": { ... },
   "monitor_bus": { ... },
   "sources": [ ... ],
+  "midi_sources": [ ... ],
   "tracks": [ ... ],
   "markers": [ ... ]
 }
 ```
+
+`midi_sources` (version 5): MIDI takes and imported SMFs, in the same id
+space as `sources` ([`midi.md`](midi.md) §4.2).
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -305,6 +311,13 @@ not referenced by any region in any playlist is *unused*. It stays.
   (Phase 3); the format carries them from the start so the Phase 3 change is
   behaviour, not format.
 - `inserts` (version 2): the track's plugin inserts. See "Inserts".
+- `kind` (version 5, second key): `"audio"`, `"midi"` or `"instrument"`.
+  The example above is an audio track. The key set depends on the kind,
+  strictly: a MIDI track has no `channels`, `input`, `gain_db`, `pan` or
+  `inserts`, and has `midi_input` and `midi_output`; an instrument track has
+  `midi_input` instead of `input`. A MIDI or instrument track's playlists
+  hold MIDI regions, in ticks, with no `crossfades` key. All of it, and the
+  top-level `midi_sources` after `sources`, is in [`midi.md`](midi.md) §4.
 
 ### Inserts
 
@@ -681,6 +694,11 @@ Nothing else changes. The frozen v3 fixture loads through it unchanged, and
 rate cannot be changed without resampling every source, and no backend this
 build drives runs there.
 
+**v4→v5 (MIDI, ADR-0014 §3, `midi.md` §4):** every track gains
+`"kind": "audio"` and the top level `"midi_sources": []`. Nothing else
+changes. The frozen v4 fixture loads through it; v5's is `v5-midi.sonora`,
+with one track of each kind.
+
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
 `pan_law_db`; each track gains `"output": <id of Main>` and empty `sends`
@@ -718,13 +736,12 @@ saved by this writer. The engine and the UI only ever open native files
 
 ## Not in version 1
 
-Inserts arrive in version 2 and solo safe in version 3 (above). Still not in
-the format: automation,
-sends, VCA, groups, MIDI, clip-based time
-stretch, video, interface state (zoom, scroll, window layout; ADR-0007 §5
-puts it outside the session), and the undo history. Each is a version bump
-when it arrives. MIDI is proposed as version 4 in [`midi.md`](midi.md)
-(ADR-0014, Proposed; not part of the format until accepted and landed).
+Inserts arrive in version 2, solo safe in version 3, the tempo bounds in
+version 4 and MIDI in version 5 (above; [`midi.md`](midi.md), ADR-0014).
+Still not in the format: automation, sends, VCA, groups, an instrument
+track's instrument (ADR-0014 M-5), clip-based time stretch, video,
+interface state (zoom, scroll, window layout; ADR-0007 §5 puts it outside
+the session), and the undo history. Each is a version bump when it arrives.
 
 ## Open questions
 

@@ -44,8 +44,10 @@ struct SetSettings {
 
 // --- undoable ---------------------------------------------------------------
 
-// Creates a track with one empty playlist. Its mix (input, monitor, faders)
-// is set at the same time and, like any mix, is not undone with it.
+// Creates a track with one empty playlist, of frames for an audio track and
+// of ticks for a MIDI or instrument one. Its mix (input, monitor, faders,
+// MIDI routing) is set at the same time and, like any mix, is not undone
+// with it. A MIDI track has 0 channels and no input.
 struct AddTrack {
     Id track = 0;
     std::string name;
@@ -53,6 +55,7 @@ struct AddTrack {
     Id playlist = 0;
     std::string playlist_name;
     TrackMix mix;   // mix.track is ignored; the new track's id is used
+    TrackKind kind = TrackKind::Audio;
 };
 
 // Places `region` over [position, end) on `playlist`, overwriting what is
@@ -77,31 +80,42 @@ struct RecordTake {
     std::vector<Crossfade> crossfades;
 };
 
+// The region operations by id below act on audio and MIDI regions alike.
+// Each that carries a position says in `timebase` whether it is frames or
+// ticks, and apply() refuses one that does not match the playlist's (A26):
+// both are int64_t, and a sender that got it wrong would otherwise
+// mis-scale the region by about 25 times without a word.
+
 // Moves a region on its playlist, overwriting what is beneath its new span.
 struct MoveRegion {
     Id playlist = 0;
     Id region = 0;
-    Frames position = 0;
+    Frames position = 0;   // in ticks on a MIDI playlist
     Id split_right_id = 0;
+    Timebase timebase = Timebase::Frames;
 };
 
 enum class Edge : std::uint8_t { Start, End };
 
-// Moves one edge of a region to timeline frame `to`, keeping the audio where
-// it is on the timeline. Extending over a neighbour overwrites it.
+// Moves one edge of a region to timeline position `to`, keeping the audio
+// or the notes where they are on the timeline. Extending over a neighbour
+// overwrites it.
 struct TrimRegion {
     Id playlist = 0;
     Id region = 0;
     Edge edge = Edge::End;
-    Frames to = 0;
+    Frames to = 0;         // in ticks on a MIDI playlist
+    Timebase timebase = Timebase::Frames;
 };
 
 // The left part keeps the region's id; the right part gets `new_right_id`.
+// A MIDI region's two parts share its sequence.
 struct SplitRegion {
     Id playlist = 0;
     Id region = 0;
-    Frames at = 0;
+    Frames at = 0;         // in ticks on a MIDI playlist
     Id new_right_id = 0;
+    Timebase timebase = Timebase::Frames;
 };
 
 struct RemoveRegion {
@@ -237,6 +251,47 @@ struct SetInsertState {
     std::optional<StateRef> state;
 };
 
+// --- MIDI (ADR-0014 §1, brain/specs/midi.md §3.1) --------------------------
+//
+// Every position here is in ticks, resolved by the sender: apply() never
+// reads the tempo map to place a region. A take is one compound, labelled
+// "Record": AddMidiSource and PlaceMidiRegion (replace), or AddMidiSource,
+// EditMidi and TrimRegion (merge).
+
+// Not undoable: the pool is outside undo, as AddSource's is.
+struct AddMidiSource {
+    MidiSource source;
+};
+
+// As PlaceRegion, overwrite included, on a MIDI playlist.
+struct PlaceMidiRegion {
+    Id playlist = 0;
+    MidiRegion region;
+    Id split_right_id = 0;
+};
+
+// Every note, event-list, quantize, transpose, velocity and legato edit
+// resolves to one of these. The removals are indices into the region's
+// current sequence, each list strictly increasing; the additions are
+// values, sorted in. The region gets a sequence of its own, so regions
+// that shared the old one (a split, a paste) keep it unchanged.
+struct EditMidi {
+    Id playlist = 0;
+    Id region = 0;
+    std::vector<std::uint32_t> remove_notes;
+    std::vector<midi::Note> add_notes;
+    std::vector<std::uint32_t> remove_events;
+    std::vector<MidiEvent> add_events;
+    std::vector<std::uint32_t> remove_sysex;
+    std::vector<MidiSysEx> add_sysex;
+};
+
+// Mix state, like `input`: saved, not undone (owner question O5).
+struct SetMidiRouting {
+    Id track = 0;
+    MidiRouting routing;
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -246,7 +301,8 @@ using Member =
                  AddPlaylist, SetActivePlaylist, AddMarker, MoveMarker,
                  RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
-                 SetInsertBypass, SetInsertParams, SetInsertState>;
+                 SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
+                 PlaceMidiRegion, EditMidi, SetMidiRouting>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -277,7 +333,8 @@ using Operation =
                  AddPlaylist, SetActivePlaylist, AddMarker, MoveMarker,
                  RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
-                 SetInsertBypass, SetInsertParams, SetInsertState, Compound>;
+                 SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
+                 PlaceMidiRegion, EditMidi, SetMidiRouting, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

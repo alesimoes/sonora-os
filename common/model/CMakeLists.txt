@@ -1,11 +1,13 @@
 # The session document (ADR-0007 §1, M8; ADR-0009). Layer 1. Standard C++17
 # only (ADR-0008) and never on the audio thread (ADR-0007 §2): it allocates,
 # shares ownership and holds strings. engine/control, ui/client and
-# interchange link it; engine/core sees only the plan built from it.
+# interchange link it; engine/core sees only the plan built from it. It links
+# common/midi for notes (ADR-0014, the model-to-midi edge).
 set(SONORA_MODEL_SOURCES
   src/apply.cpp
   src/history.cpp
   src/local_edit.cpp
+  src/midi_json.cpp
   src/model.cpp
   src/musical_map.cpp
   src/op_codec.cpp
@@ -14,7 +16,7 @@ set(SONORA_MODEL_SOURCES
 )
 add_library(sonora_model STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model PUBLIC include)
-target_link_libraries(sonora_model PRIVATE sonora_json)
+target_link_libraries(sonora_model PUBLIC sonora_midi PRIVATE sonora_json)
 # Debug builds audit every playlist edit (src/local_edit.h): the range-local
 # operators and check against the whole-playlist ones, aborting on any
 # difference.
@@ -25,7 +27,7 @@ target_compile_definitions(sonora_model PRIVATE $<$<CONFIG:Debug>:SONORA_MODEL_A
 # playlist_problem() after every member of every compound.
 add_library(sonora_model_audited STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model_audited PUBLIC include)
-target_link_libraries(sonora_model_audited PRIVATE sonora_json)
+target_link_libraries(sonora_model_audited PUBLIC sonora_midi PRIVATE sonora_json)
 target_compile_definitions(sonora_model_audited PRIVATE SONORA_MODEL_AUDIT=1)
 
 add_executable(test_model_apply tests/test_apply.cpp)
@@ -82,3 +84,14 @@ target_link_libraries(measure_musical_map PRIVATE sonora_model)
 # What a compound costs on a long playlist; run by hand, numbers in ADR-0009.
 add_executable(measure_compound tests/measure_compound.cpp)
 target_link_libraries(measure_compound PRIVATE sonora_model)
+
+# MIDI in the model (ADR-0014 M-1): track kinds, MIDI regions as windows onto
+# shared sequences, the timebase tag, the MIDI operations, the undo window.
+add_executable(test_model_midi tests/test_midi.cpp)
+target_link_libraries(test_model_midi PRIVATE sonora_model_audited)
+add_test(NAME model_midi COMMAND test_model_midi)
+
+# ADR-0014 Unverified 6: dense MIDI against the file caps and the undo
+# window; run by hand, numbers in the M-1 PR.
+add_executable(measure_midi_session tests/measure_midi_session.cpp)
+target_link_libraries(measure_midi_session PRIVATE sonora_model sonora_json)

@@ -246,6 +246,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
     muted_.assign(cfg_.tracks, false);
+    silent_.assign(cfg_.tracks, false);
     scripted_.assign(cfg_.tracks, -1.0f);
     clips_.assign(cfg_.tracks, 0);
 
@@ -319,6 +320,25 @@ void FakeEngine::apply_mix() {
         db = std::min(db, model::kMaxGainDb);
         gain_[i] = std::pow(10.0f, db / 20.0f);
         muted_[i] = m->mute;
+    }
+    uint32_t silent = 0;
+    for (std::size_t i = 0; i < silent_.size(); ++i) {
+        silent_[i] = i < tracks.size() && tracks[i]->kind != model::TrackKind::Audio;
+        if (silent_[i]) ++silent;
+    }
+    // The real engine's notice, said when the count changes
+    // (EngineControlServer::show_document).
+    if (silent != silent_said_) {
+        silent_said_ = silent;
+        if (silent > 0) {
+            EngineEvent e;
+            e.kind = EventKind::Notice;
+            e.text = "playback: " + std::to_string(silent) +
+                     (silent == 1 ? " MIDI or instrument track plays"
+                                  : " MIDI or instrument tracks play") +
+                     " nothing yet; this version edits and saves MIDI but does not play it";
+            post_event(e);
+        }
     }
 }
 
@@ -936,7 +956,7 @@ void FakeEngine::publish() {
         float peak = 0.0f;
         if (scripted_[i] >= 0.0f) {
             peak = scripted_[i];
-        } else if (cfg_.signal) {
+        } else if (cfg_.signal && !silent_[i]) {
             // The engine's peak is the maximum of every sample since the
             // last publish; the envelope sampled each millisecond is close
             // enough, and a transient between two publishes still shows.

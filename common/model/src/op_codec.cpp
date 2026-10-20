@@ -12,6 +12,8 @@
 #include <utility>
 #include <variant>
 
+#include "checks.h"
+#include "midi_json.h"
 #include "sonora/json/json.h"
 
 namespace sonora::model {
@@ -47,6 +49,11 @@ constexpr Name<PluginFormat> kPluginFormats[] = {{"lv2", PluginFormat::Lv2},
                                                  {"vst3", PluginFormat::Vst3}};
 constexpr Name<Edge> kEdges[] = {{"start", Edge::Start}, {"end", Edge::End}};
 constexpr Name<FadeEnd> kFadeEnds[] = {{"in", FadeEnd::In}, {"out", FadeEnd::Out}};
+constexpr Name<TrackKind> kTrackKinds[] = {{"audio", TrackKind::Audio},
+                                           {"midi", TrackKind::Midi},
+                                           {"instrument", TrackKind::Instrument}};
+constexpr Name<Timebase> kTimebases[] = {{"frames", Timebase::Frames},
+                                         {"ticks", Timebase::Ticks}};
 
 template <typename E, std::size_t N>
 Value name_of(const Name<E> (&table)[N], E v) {
@@ -121,6 +128,13 @@ Value source_value(const Source& s) {
     return v;
 }
 
+Value port_value(const std::string& port, std::uint8_t channel) {
+    Value v = Value::object();
+    v.set("port", Value::string(port));
+    v.set("channel", integer(channel));
+    return v;
+}
+
 Value mix_value(const TrackMix& m) {
     Value v = Value::object();
     v.set("track", id_value(m.track));
@@ -132,6 +146,70 @@ Value mix_value(const TrackMix& m) {
     v.set("mute", Value::boolean(m.mute));
     v.set("solo", Value::boolean(m.solo));
     v.set("solo_safe", Value::boolean(m.solo_safe));
+    v.set("midi_input", port_value(m.midi.in_port, m.midi.in_channel));
+    v.set("midi_output", port_value(m.midi.out_port, m.midi.out_channel));
+    return v;
+}
+
+Value midi_source_value(const MidiSource& s) {
+    Value v = Value::object();
+    v.set("id", id_value(s.id));
+    v.set("path", Value::string(s.path));
+    v.set("length", integer(s.length));
+    v.set("events", integer(static_cast<std::int64_t>(s.events)));
+    v.set("time_reference", integer(s.time_reference));
+    v.set("kind", name_of(kKinds, s.kind));
+    v.set("take", integer(s.take));
+    v.set("recorded_on_track", id_value(s.recorded_on_track));
+    v.set("latency_compensation", integer(s.latency_compensation));
+    return v;
+}
+
+Value notes_value(const std::vector<midi::Note>& notes) {
+    Value v = Value::array();
+    for (const midi::Note& n : notes) v.push(detail::note_row(n));
+    return v;
+}
+
+Value events_value(const std::vector<MidiEvent>& events) {
+    Value v = Value::array();
+    for (const MidiEvent& e : events) v.push(detail::event_row(e));
+    return v;
+}
+
+Value sysex_value(const std::vector<MidiSysEx>& sysex) {
+    Value v = Value::array();
+    for (const MidiSysEx& x : sysex) v.push(detail::sysex_row(x));
+    return v;
+}
+
+Value indices_value(const std::vector<std::uint32_t>& indices) {
+    Value v = Value::array();
+    for (const std::uint32_t i : indices) v.push(integer(i));
+    return v;
+}
+
+// The region's fields; its sequence inline in an operation, by index in
+// the undo window, which shares one sequence between regions and steps.
+Value midi_region_fields(const MidiRegion& r) {
+    Value v = Value::object();
+    v.set("id", id_value(r.id));
+    v.set("name", Value::string(r.name));
+    v.set("position_ticks", integer(r.position));
+    v.set("length_ticks", integer(r.length));
+    v.set("offset_ticks", integer(r.offset));
+    v.set("mute", Value::boolean(r.mute));
+    v.set("source", id_value(r.source));
+    return v;
+}
+
+Value midi_region_value(const MidiRegion& r) {
+    Value v = midi_region_fields(r);
+    static const MidiSequence kEmpty;
+    const MidiSequence& d = r.data ? *r.data : kEmpty;
+    v.set("notes", notes_value(d.notes));
+    v.set("events", events_value(d.events));
+    v.set("sysex", sysex_value(d.sysex));
     return v;
 }
 
@@ -258,6 +336,7 @@ struct Encoder {
         v.set("playlist", id_value(o.playlist));
         v.set("playlist_name", Value::string(o.playlist_name));
         v.set("mix", mix_value(o.mix));
+        v.set("kind", name_of(kTrackKinds, o.kind));
         return v;
     }
     Value operator()(const PlaceRegion& o) const {
@@ -283,6 +362,7 @@ struct Encoder {
         v.set("region", id_value(o.region));
         v.set("position", integer(o.position));
         v.set("split_right_id", id_value(o.split_right_id));
+        v.set("timebase", name_of(kTimebases, o.timebase));
         return v;
     }
     Value operator()(const TrimRegion& o) const {
@@ -291,6 +371,7 @@ struct Encoder {
         v.set("region", id_value(o.region));
         v.set("edge", name_of(kEdges, o.edge));
         v.set("to", integer(o.to));
+        v.set("timebase", name_of(kTimebases, o.timebase));
         return v;
     }
     Value operator()(const SplitRegion& o) const {
@@ -299,6 +380,7 @@ struct Encoder {
         v.set("region", id_value(o.region));
         v.set("at", integer(o.at));
         v.set("new_right_id", id_value(o.new_right_id));
+        v.set("timebase", name_of(kTimebases, o.timebase));
         return v;
     }
     Value operator()(const RemoveRegion& o) const {
@@ -422,6 +504,37 @@ struct Encoder {
         Value v = with_kind("SetInsertState");
         v.set("insert", id_value(o.insert));
         v.set("state", state_value(o.state));
+        return v;
+    }
+    Value operator()(const AddMidiSource& o) const {
+        Value v = with_kind("AddMidiSource");
+        v.set("source", midi_source_value(o.source));
+        return v;
+    }
+    Value operator()(const PlaceMidiRegion& o) const {
+        Value v = with_kind("PlaceMidiRegion");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", midi_region_value(o.region));
+        v.set("split_right_id", id_value(o.split_right_id));
+        return v;
+    }
+    Value operator()(const EditMidi& o) const {
+        Value v = with_kind("EditMidi");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", id_value(o.region));
+        v.set("remove_notes", indices_value(o.remove_notes));
+        v.set("add_notes", notes_value(o.add_notes));
+        v.set("remove_events", indices_value(o.remove_events));
+        v.set("add_events", events_value(o.add_events));
+        v.set("remove_sysex", indices_value(o.remove_sysex));
+        v.set("add_sysex", sysex_value(o.add_sysex));
+        return v;
+    }
+    Value operator()(const SetMidiRouting& o) const {
+        Value v = with_kind("SetMidiRouting");
+        v.set("track", id_value(o.track));
+        v.set("midi_input", port_value(o.routing.in_port, o.routing.in_channel));
+        v.set("midi_output", port_value(o.routing.out_port, o.routing.out_channel));
         return v;
     }
     // Each member exactly as it would be alone; no label key when there is
@@ -627,9 +740,86 @@ bool read_source(Reader& rd, const Value& obj, const std::string& path, Source& 
     return read_source_value(rd, *obj.find("source"), Reader::at(path, "source"), s);
 }
 
+bool read_port(Reader& rd, const Value& obj, const std::string& path, const char* key,
+               std::string& port, std::uint8_t& channel) {
+    const Value& v = *obj.find(key);
+    const std::string p = Reader::at(path, key);
+    return rd.keys(v, p, {"port", "channel"}) && rd.text(v, p, "port", port) &&
+           rd.small(v, p, "channel", channel);
+}
+
+bool read_routing(Reader& rd, const Value& obj, const std::string& path, MidiRouting& r) {
+    return read_port(rd, obj, path, "midi_input", r.in_port, r.in_channel) &&
+           read_port(rd, obj, path, "midi_output", r.out_port, r.out_channel);
+}
+
+template <typename T>
+bool read_rows(Reader& rd, const Value& obj, const std::string& path, const char* key,
+               bool (*read)(const Value&, std::vector<T>&, detail::RowError&),
+               std::vector<T>& out) {
+    detail::RowError e;
+    if (read(*obj.find(key), out, e)) return true;
+    return rd.fail(Reader::at(path, key) + e.where, e.message);
+}
+
+bool read_indices(Reader& rd, const Value& obj, const char* key, std::vector<std::uint32_t>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(obj, "", key, list)) return false;
+    for (const Value& e : list->items()) {
+        std::int64_t n = 0;
+        if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 0 || n > 0xFFFFFFFF) {
+            return rd.fail(key, "must hold indices from 0 to 4294967295");
+        }
+        out.push_back(static_cast<std::uint32_t>(n));
+    }
+    return true;
+}
+
+bool read_midi_source_value(Reader& rd, const Value& v, const std::string& p, MidiSource& s) {
+    std::int64_t events = 0;
+    const bool ok =
+        rd.keys(v, p, {"id", "path", "length", "events", "time_reference", "kind", "take",
+                       "recorded_on_track", "latency_compensation"}) &&
+        rd.id(v, p, "id", s.id) && rd.text(v, p, "path", s.path) &&
+        rd.frames(v, p, "length", s.length) &&
+        rd.integer(v, p, "events", kMaxInteger, events) &&
+        rd.integer(v, p, "time_reference", kMaxInteger, s.time_reference) &&
+        rd.choice(v, p, "kind", kKinds, s.kind) &&
+        rd.integer(v, p, "take", kMaxInteger, s.take) &&
+        rd.id(v, p, "recorded_on_track", s.recorded_on_track) &&
+        rd.frames(v, p, "latency_compensation", s.latency_compensation);
+    s.events = static_cast<std::uint64_t>(events);
+    return ok;
+}
+
+bool read_midi_region_fields(Reader& rd, const Value& v, const std::string& p, MidiRegion& r) {
+    return rd.id(v, p, "id", r.id) && rd.text(v, p, "name", r.name) &&
+           rd.frames(v, p, "position_ticks", r.position) &&
+           rd.frames(v, p, "length_ticks", r.length) &&
+           rd.frames(v, p, "offset_ticks", r.offset) && rd.flag(v, p, "mute", r.mute) &&
+           rd.id(v, p, "source", r.source);
+}
+
+bool read_midi_region_value(Reader& rd, const Value& v, const std::string& p, MidiRegion& r) {
+    if (!rd.keys(v, p, {"id", "name", "position_ticks", "length_ticks", "offset_ticks", "mute",
+                        "source", "notes", "events", "sysex"}) ||
+        !read_midi_region_fields(rd, v, p, r)) {
+        return false;
+    }
+    auto data = std::make_shared<MidiSequence>();
+    if (!read_rows(rd, v, p, "notes", detail::read_note_rows, data->notes) ||
+        !read_rows(rd, v, p, "events", detail::read_event_rows, data->events) ||
+        !read_rows(rd, v, p, "sysex", detail::read_sysex_rows, data->sysex)) {
+        return false;
+    }
+    r.data = std::move(data);
+    return true;
+}
+
 bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& m) {
     if (!rd.keys(v, p,
-                 {"track", "input", "monitor", "gain_db", "pan", "mute", "solo", "solo_safe"}) ||
+                 {"track", "input", "monitor", "gain_db", "pan", "mute", "solo", "solo_safe",
+                  "midi_input", "midi_output"}) ||
         !rd.id(v, p, "track", m.track)) {
         return false;
     }
@@ -645,7 +835,7 @@ bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& 
     return rd.choice(v, p, "monitor", kMonitors, m.monitor) &&
            rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
            rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo) &&
-           rd.flag(v, p, "solo_safe", m.solo_safe);
+           rd.flag(v, p, "solo_safe", m.solo_safe) && read_routing(rd, v, p, m.midi);
 }
 
 bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m) {
@@ -803,10 +993,11 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
     } else if (kind == "AddTrack") {
         AddTrack o;
         if (!rd.keys(v, "", {"op", "track", "name", "channels", "playlist", "playlist_name",
-                             "mix"}) ||
+                             "mix", "kind"}) ||
             !rd.id(v, "", "track", o.track) || !rd.text(v, "", "name", o.name) ||
             !rd.small(v, "", "channels", o.channels) || !rd.id(v, "", "playlist", o.playlist) ||
-            !rd.text(v, "", "playlist_name", o.playlist_name) || !read_mix(rd, v, "", o.mix)) {
+            !rd.text(v, "", "playlist_name", o.playlist_name) || !read_mix(rd, v, "", o.mix) ||
+            !rd.choice(v, "", "kind", kTrackKinds, o.kind)) {
             return false;
         }
         out = std::move(o);
@@ -837,26 +1028,30 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
         out = std::move(o);
     } else if (kind == "MoveRegion") {
         MoveRegion o;
-        if (!rd.keys(v, "", {"op", "playlist", "region", "position", "split_right_id"}) ||
+        if (!rd.keys(v, "", {"op", "playlist", "region", "position", "split_right_id",
+                             "timebase"}) ||
             !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
             !rd.frames(v, "", "position", o.position) ||
-            !rd.id(v, "", "split_right_id", o.split_right_id)) {
+            !rd.id(v, "", "split_right_id", o.split_right_id) ||
+            !rd.choice(v, "", "timebase", kTimebases, o.timebase)) {
             return false;
         }
         out = o;
     } else if (kind == "TrimRegion") {
         TrimRegion o;
-        if (!rd.keys(v, "", {"op", "playlist", "region", "edge", "to"}) ||
+        if (!rd.keys(v, "", {"op", "playlist", "region", "edge", "to", "timebase"}) ||
             !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
-            !rd.choice(v, "", "edge", kEdges, o.edge) || !rd.frames(v, "", "to", o.to)) {
+            !rd.choice(v, "", "edge", kEdges, o.edge) || !rd.frames(v, "", "to", o.to) ||
+            !rd.choice(v, "", "timebase", kTimebases, o.timebase)) {
             return false;
         }
         out = o;
     } else if (kind == "SplitRegion") {
         SplitRegion o;
-        if (!rd.keys(v, "", {"op", "playlist", "region", "at", "new_right_id"}) ||
+        if (!rd.keys(v, "", {"op", "playlist", "region", "at", "new_right_id", "timebase"}) ||
             !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
-            !rd.frames(v, "", "at", o.at) || !rd.id(v, "", "new_right_id", o.new_right_id)) {
+            !rd.frames(v, "", "at", o.at) || !rd.id(v, "", "new_right_id", o.new_right_id) ||
+            !rd.choice(v, "", "timebase", kTimebases, o.timebase)) {
             return false;
         }
         out = o;
@@ -998,6 +1193,43 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "AddMidiSource") {
+        AddMidiSource o;
+        if (!rd.keys(v, "", {"op", "source"}) ||
+            !read_midi_source_value(rd, *v.find("source"), "source", o.source)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "PlaceMidiRegion") {
+        PlaceMidiRegion o;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "split_right_id"}) ||
+            !rd.id(v, "", "playlist", o.playlist) ||
+            !read_midi_region_value(rd, *v.find("region"), "region", o.region) ||
+            !rd.id(v, "", "split_right_id", o.split_right_id)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "EditMidi") {
+        EditMidi o;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "remove_notes", "add_notes",
+                             "remove_events", "add_events", "remove_sysex", "add_sysex"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
+            !read_indices(rd, v, "remove_notes", o.remove_notes) ||
+            !read_rows(rd, v, "", "add_notes", detail::read_note_rows, o.add_notes) ||
+            !read_indices(rd, v, "remove_events", o.remove_events) ||
+            !read_rows(rd, v, "", "add_events", detail::read_event_rows, o.add_events) ||
+            !read_indices(rd, v, "remove_sysex", o.remove_sysex) ||
+            !read_rows(rd, v, "", "add_sysex", detail::read_sysex_rows, o.add_sysex)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "SetMidiRouting") {
+        SetMidiRouting o;
+        if (!rd.keys(v, "", {"op", "track", "midi_input", "midi_output"}) ||
+            !rd.id(v, "", "track", o.track) || !read_routing(rd, v, "", o.routing)) {
+            return false;
+        }
+        out = std::move(o);
     } else if (kind == "Compound") {
         return decode_compound(rd, v, out);
     } else {
@@ -1053,7 +1285,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 3: each step carries its label (ADR-0009 update 2026-10-14), for "Undo
 //    Paste" on a replica rebuilt from the window.
 // 4: each track's mix carries solo_safe.
-constexpr std::int64_t kWindowFormat = 4;
+// 5: MIDI (ADR-0014): track kinds, MIDI playlists, the sequences their
+//    regions share, MIDI routing in the mix, midi_sources.
+constexpr std::int64_t kWindowFormat = 5;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1110,6 +1344,8 @@ public:
     }
 
     Value playlists_ = Value::array();
+    Value sequences_ = Value::array();
+    Value midi_playlists_ = Value::array();
     Value tracks_ = Value::array();
     Value markers_ = Value::array();
     Value edits_ = Value::array();
@@ -1121,6 +1357,7 @@ private:
         if (!added) return ix;
         Value tv = Value::object();
         tv.set("id", id_value(t.id));
+        tv.set("kind", name_of(kTrackKinds, t.kind));
         tv.set("name", Value::string(t.name));
         tv.set("channels", integer(t.channels));
         tv.set("active_playlist", id_value(t.active_playlist));
@@ -1128,7 +1365,36 @@ private:
         for (const Insert& in : t.inserts) ins.push(insert_value(in));
         Value& ps = tv.set("playlists", Value::array());
         for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
+        Value& ms = tv.set("midi_playlists", Value::array());
+        for (const auto& p : t.midi_playlists) ms.push(index_value(midi_playlist(*p)));
         tracks_.push(std::move(tv));
+        return ix;
+    }
+    std::size_t midi_playlist(const MidiPlaylist& p) {
+        bool added = false;
+        const std::size_t ix = midi_ix_.index(&p, added);
+        if (!added) return ix;
+        Value v = Value::object();
+        v.set("id", id_value(p.id));
+        v.set("name", Value::string(p.name));
+        Value& rs = v.set("regions", Value::array());
+        for (const MidiRegion& r : p.regions) {
+            Value rv = midi_region_fields(r);
+            rv.set("sequence", index_value(sequence(*r.data)));
+            rs.push(std::move(rv));
+        }
+        midi_playlists_.push(std::move(v));
+        return ix;
+    }
+    std::size_t sequence(const MidiSequence& d) {
+        bool added = false;
+        const std::size_t ix = sequence_ix_.index(&d, added);
+        if (!added) return ix;
+        Value v = Value::object();
+        v.set("notes", notes_value(d.notes));
+        v.set("events", events_value(d.events));
+        v.set("sysex", sysex_value(d.sysex));
+        sequences_.push(std::move(v));
         return ix;
     }
     std::size_t playlist(const Playlist& p) {
@@ -1148,6 +1414,8 @@ private:
     }
 
     Table<Playlist> playlist_ix_;
+    Table<MidiSequence> sequence_ix_;
+    Table<MidiPlaylist> midi_ix_;
     Table<TrackEdit> track_ix_;
     Table<MarkerList> marker_ix_;
     Table<EditState> edit_ix_;
@@ -1184,7 +1452,15 @@ bool window_value(const History& h, Value& root, std::string& error) {
     if (cur.sources) {
         for (const Source& src : cur.sources->sources) sources.push(source_value(src));
     }
+    Value& midi_sources = root.set("midi_sources", Value::array());
+    if (cur.sources) {
+        for (const MidiSource& src : cur.sources->midi_sources) {
+            midi_sources.push(midi_source_value(src));
+        }
+    }
     root.set("playlists", std::move(w.playlists_));
+    root.set("sequences", std::move(w.sequences_));
+    root.set("midi_playlists", std::move(w.midi_playlists_));
     root.set("tracks", std::move(w.tracks_));
     root.set("markers", std::move(w.markers_));
     root.set("edits", std::move(w.edits_));
@@ -1234,22 +1510,89 @@ bool read_playlists(Reader& rd, const Value& root,
     return true;
 }
 
+bool read_sequences(Reader& rd, const Value& root,
+                    std::vector<std::shared_ptr<const MidiSequence>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "sequences", list)) return false;
+    for (const Value& e : list->items()) {
+        auto d = std::make_shared<MidiSequence>();
+        if (!rd.keys(e, "sequences", {"notes", "events", "sysex"}) ||
+            !read_rows(rd, e, "sequences", "notes", detail::read_note_rows, d->notes) ||
+            !read_rows(rd, e, "sequences", "events", detail::read_event_rows, d->events) ||
+            !read_rows(rd, e, "sequences", "sysex", detail::read_sysex_rows, d->sysex)) {
+            return false;
+        }
+        // Each once, here: the invariant check of the current state below
+        // does not see the sequences only older steps hold.
+        std::string where;
+        const std::string why = detail::sequence_problem(*d, where);
+        if (!why.empty()) return rd.fail("sequences." + where, why);
+        out.push_back(std::move(d));
+    }
+    return true;
+}
+
+bool read_midi_playlists(Reader& rd, const Value& root,
+                         const std::vector<std::shared_ptr<const MidiSequence>>& sequences,
+                         std::vector<std::shared_ptr<const MidiPlaylist>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "midi_playlists", list)) return false;
+    for (const Value& e : list->items()) {
+        auto p = std::make_shared<MidiPlaylist>();
+        const Value* rs = nullptr;
+        if (!rd.keys(e, "midi_playlists", {"id", "name", "regions"}) ||
+            !rd.id(e, "midi_playlists", "id", p->id) ||
+            !rd.text(e, "midi_playlists", "name", p->name) ||
+            !rd.array(e, "midi_playlists", "regions", rs)) {
+            return false;
+        }
+        for (const Value& r : rs->items()) {
+            const std::string rp = "midi_playlists.regions";
+            MidiRegion region;
+            std::size_t ix = 0;
+            if (!rd.keys(r, rp, {"id", "name", "position_ticks", "length_ticks", "offset_ticks",
+                                 "mute", "source", "sequence"}) ||
+                !read_midi_region_fields(rd, r, rp, region) ||
+                !table_index(rd, *r.find("sequence"), rp + ".sequence", sequences.size(), ix)) {
+                return false;
+            }
+            region.data = sequences[ix];
+            p->regions.push_back(std::move(region));
+        }
+        out.push_back(std::move(p));
+    }
+    return true;
+}
+
 bool read_tracks(Reader& rd, const Value& root,
                  const std::vector<std::shared_ptr<const Playlist>>& playlists,
+                 const std::vector<std::shared_ptr<const MidiPlaylist>>& midi_playlists,
                  std::vector<std::shared_ptr<const TrackEdit>>& out) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "tracks", list)) return false;
     for (const Value& e : list->items()) {
         auto t = std::make_shared<TrackEdit>();
         const Value* ps = nullptr;
+        const Value* ms = nullptr;
         const Value* ins = nullptr;
         if (!rd.keys(e, "tracks",
-                     {"id", "name", "channels", "active_playlist", "inserts", "playlists"}) ||
-            !rd.id(e, "tracks", "id", t->id) || !rd.text(e, "tracks", "name", t->name) ||
+                     {"id", "kind", "name", "channels", "active_playlist", "inserts", "playlists",
+                      "midi_playlists"}) ||
+            !rd.id(e, "tracks", "id", t->id) ||
+            !rd.choice(e, "tracks", "kind", kTrackKinds, t->kind) ||
+            !rd.text(e, "tracks", "name", t->name) ||
             !rd.small(e, "tracks", "channels", t->channels) ||
             !rd.id(e, "tracks", "active_playlist", t->active_playlist) ||
-            !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "playlists", ps)) {
+            !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "playlists", ps) ||
+            !rd.array(e, "tracks", "midi_playlists", ms)) {
             return false;
+        }
+        for (const Value& i : ms->items()) {
+            std::size_t ix = 0;
+            if (!table_index(rd, i, "tracks.midi_playlists", midi_playlists.size(), ix)) {
+                return false;
+            }
+            t->midi_playlists.push_back(midi_playlists[ix]);
         }
         for (const Value& i : ins->items()) {
             Insert in;
@@ -1324,8 +1667,9 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
                                             std::to_string(kWindowFormat));
     }
     if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
-                            "bus", "mix", "insert_mix", "sources", "playlists", "tracks",
-                            "markers", "edits", "steps"})) {
+                            "bus", "mix", "insert_mix", "sources", "midi_sources", "playlists",
+                            "sequences", "midi_playlists", "tracks", "markers", "edits",
+                            "steps"})) {
         return false;
     }
     Snapshot cur;
@@ -1358,13 +1702,23 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
         if (!read_source_value(rd, e, "sources", src)) return false;
         pool->sources.push_back(std::move(src));
     }
+    if (!rd.array(root, "", "midi_sources", list)) return false;
+    for (const Value& e : list->items()) {
+        MidiSource src;
+        if (!read_midi_source_value(rd, e, "midi_sources", src)) return false;
+        pool->midi_sources.push_back(std::move(src));
+    }
     cur.sources = std::move(pool);
 
     std::vector<std::shared_ptr<const Playlist>> playlists;
+    std::vector<std::shared_ptr<const MidiSequence>> sequences;
+    std::vector<std::shared_ptr<const MidiPlaylist>> midi_playlists;
     std::vector<std::shared_ptr<const TrackEdit>> tracks;
     std::vector<std::shared_ptr<const MarkerList>> markers;
     std::vector<std::shared_ptr<const EditState>> edits;
-    if (!read_playlists(rd, root, playlists) || !read_tracks(rd, root, playlists, tracks) ||
+    if (!read_playlists(rd, root, playlists) || !read_sequences(rd, root, sequences) ||
+        !read_midi_playlists(rd, root, sequences, midi_playlists) ||
+        !read_tracks(rd, root, playlists, midi_playlists, tracks) ||
         !read_marker_lists(rd, root, markers) || !read_edits(rd, root, tracks, markers, edits)) {
         return false;
     }
@@ -1468,7 +1822,8 @@ const char* const kNames[] = {
     "AddMarker",    "MoveMarker",   "RemoveMarker",    "SetTrackName",
     "ReorderTracks", "AddInsert",   "RemoveInsert",    "MoveInsert",
     "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
-    "SetInsertState", "Compound"};
+    "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
+    "SetMidiRouting", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

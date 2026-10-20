@@ -24,12 +24,6 @@
 
 namespace sonora::model {
 
-using Ticks = std::int64_t;
-
-// Pro Tools' published internal resolution. What decides it is that a tick
-// is shorter than a frame above 3 bpm at 48 kHz, so a recorded event comes
-// back to its frame (midi.md §1).
-constexpr Ticks kTicksPerQuarter = 960'000;
 // A beat of meter n/d lasts kTicksPerWhole / d ticks, an integer for every
 // denominator the bounds allow.
 constexpr Ticks kTicksPerWhole = 4 * kTicksPerQuarter;

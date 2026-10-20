@@ -20,7 +20,10 @@ namespace sonora::model {
 // 3: solo safe on tracks (BACKLOG Track 2 item 5).
 // 4: the tempo map inside the bounds musical time needs (ADR-0014 §2,
 //    brain/specs/midi.md §2.4); a version 3 map is brought inside them.
-constexpr std::int64_t kFormatVersion = 4;
+// 5: MIDI (ADR-0014 §3, midi.md §4): track kinds, MIDI playlists and
+//    regions in ticks with their events inline, MIDI routing by port name,
+//    midi_sources. A version 4 track is an audio track.
+constexpr std::int64_t kFormatVersion = 5;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

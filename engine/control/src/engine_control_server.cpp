@@ -331,6 +331,21 @@ void EngineControlServer::show_document(bool mix_changed) {
     std::string why;
     if (playback_->show(doc, why)) {
         if (hosting_) hosting_->built(playback_->last_built_epoch());
+        // Once per change in the count, not per edit: the operator needs to
+        // know MIDI is silent, not to be told so at every nudge.
+        const uint32_t silent = playback_->last_report().silent_midi_tracks;
+        if (silent != silent_midi_said_) {
+            silent_midi_said_ = silent;
+            if (silent > 0) {
+                api::EngineEvent e;
+                e.kind = api::EventKind::Notice;
+                e.text = "playback: " + std::to_string(silent) +
+                         (silent == 1 ? " MIDI or instrument track plays"
+                                      : " MIDI or instrument tracks play") +
+                         " nothing yet; this version edits and saves MIDI but does not play it";
+                post_event(e);
+            }
+        }
     } else {
         // What plays does not change; the operator must know the edit is
         // not what is heard.

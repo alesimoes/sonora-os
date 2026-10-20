@@ -155,9 +155,24 @@ playback can follow edits; it is in flight.
              window's tempo list reads one map (n log n, was n²); the
              Bars|Beats ruler thins labels by powers of two of bars instead
              of losing them past 4096 bar lines.
-       - [ ] After acceptance, ADR-0014 §9's phases in order: the rest of M-1
-             (track kinds, MIDI regions, timebase tags, `midi_sources`,
-             protocol 7, the format after 4; Unverified 6), M-2 backend MIDI ports, M-3 playback to ports,
+       - [x] M-1 model (`m1b-midi-model`): track kinds (audio, MIDI,
+             instrument); MIDI playlists of regions that are windows onto
+             shared, copy-on-write sequences in ticks, events inline;
+             `midi_sources`; `MidiRouting` by port name; the frames/ticks
+             timebase tag on `MoveRegion`, `TrimRegion`, `SplitRegion`,
+             refused by name on a mismatch (A26); `AddMidiSource`,
+             `PlaceMidiRegion`, `EditMidi`, `SetMidiRouting`; session format
+             5 (v4 → v5 fills `kind` and `midi_sources`; frozen
+             `v5-midi.sonora`), undo window format 5, `kProtocolVersion` 7;
+             FakeEngine and the engine leave MIDI tracks silent and say so.
+             `SetInstrument`/`RemoveInstrument` and the `instrument` key
+             move to M-5. Unverified 6 measured: over the caps (`midi.md`
+             §4.6).
+       - [ ] Unverified 6's decision, before M-4: sequences beside the
+             file, or another remedy, for sessions that save but do not
+             open past ~3 M DOM values and undo windows over 64 MiB
+             (owner and architect).
+       - [ ] ADR-0014 §9's phases in order: M-2 backend MIDI ports, M-3 playback to ports,
              M-4 recording and SMF take files, M-5 instruments
              (plugin layout 2, exit part 1), M-6 SMF interchange (exit
              part 2), M-7 the UI.
