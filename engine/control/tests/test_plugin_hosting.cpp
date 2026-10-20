@@ -1028,6 +1028,56 @@ int scenario_rescan_drops_stale(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// Code-reviewer on #104: a rescan that loses a running chain's plugin, or
+// now blocks it, must not touch the chain (ADR-0012): it keeps playing as
+// it is and follows the document's values; the new answer applies at its
+// next start.
+int rescan_keeps_running(const Args& a, plugin::probe::Outcome now) {
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "eg-amp running");
+    const uint32_t slot = rig.chain_node(0)->channel_slot;
+    const uint64_t dropped = rig.hosting->probe_answers_dropped();
+    auto c = std::make_shared<PluginScanner::Catalog>(*rig.scanner->catalog());
+    c->serial += 1000;
+    for (auto& [k, r] : c->probes) {
+        if (k.first != kEgAmp) continue;
+        r.outcome = now;
+        r.params.clear();
+        r.reason = now == plugin::probe::Outcome::Blocked ? "its probe crashed (signal 11)" : "";
+    }
+    rig.scanner->inject_catalog_for_test(std::move(c));
+    check(rig.until([&] { return rig.hosting->probe_answers_dropped() == dropped + 1; }, 2000),
+          "the rescan's answer replaces the cached one");
+    bool kept = true;
+    for (int i = 0; i < 40; ++i) {
+        rig.turn();
+        kept = kept && rig.bound_at(0, kBlock) && rig.chain_node(0)->channel_slot == slot && rig.hosting->hosts() == 1;
+    }
+    check(kept, "the running chain keeps playing, unchanged, on its own host");
+    check((rig.hosting->insert_flags(500) & api::kInsertRunning) != 0 && rig.hosting->faults().empty(),
+          "the insert shows running, with no fault");
+    rig.apply(SetInsertParams{500, {{"gain", -12.f}}});
+    rig.show(false);
+    float v = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", v) && v == -12.f; }, 2000),
+          "a value the document changes still reaches it");
+    check(rig.bound_at(0, kBlock) && rig.chain_node(0)->channel_slot == slot, "and it is still the same chain");
+    return failures ? 1 : 0;
+}
+
+int scenario_rescan_loses_running(const Args& a) {
+    std::printf("rescan_loses_running: a rescan finds a running chain's plugin gone\n");
+    return rescan_keeps_running(a, plugin::probe::Outcome::NotInstalled);
+}
+
+int scenario_rescan_blocks_running(const Args& a) {
+    std::printf("rescan_blocks_running: a rescan blocks a running chain's plugin\n");
+    return rescan_keeps_running(a, plugin::probe::Outcome::Blocked);
+}
+
 int main(int argc, char** argv) {
     Args a;
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -1067,6 +1117,8 @@ int main(int argc, char** argv) {
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);
     else if (a.scenario == "play_wait_cancel") rc = scenario_play_wait_cancel(a);
     else if (a.scenario == "rescan_drops_stale") rc = scenario_rescan_drops_stale(a);
+    else if (a.scenario == "rescan_loses_running") rc = scenario_rescan_loses_running(a);
+    else if (a.scenario == "rescan_blocks_running") rc = scenario_rescan_blocks_running(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

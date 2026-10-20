@@ -13,7 +13,10 @@
 // catalog cache already has costs no probe at all; a miss is asked of the
 // worker, ahead of its scan, and its answer read from the worker's catalog.
 // An answer kept for the run is dropped when a newer catalog changes its
-// record (a rescan); a running chain keeps its own table until it restarts.
+// record (a rescan). A running chain is not touched by that: while the
+// document describes it unchanged it keeps playing on its own table, even
+// when the rescan lost or blocked one of its plugins, and the new answer
+// applies at its next start.
 //
 // One chain per track with an active insert (§2). What a chain plays while
 // it has no Ready host follows the amendment's item 1: until its host is
@@ -189,6 +192,8 @@ private:
     // while a probe runs.
     bool desired_spec(const model::TrackEdit& track, const model::Snapshot& doc, Chain& c);
     void start_pending(Chain& c, const model::Snapshot& doc, const std::vector<Member>& want);
+    // The track's active inserts in slot order, whatever their probes say.
+    static std::vector<Member> document_members(const model::TrackEdit& track);
     void retire(std::unique_ptr<plugin_client::SupervisedChain> chain, uint32_t store, uint32_t node);
     // A start no plan names, let go: stopped without waiting, reaped from
     // poll(); its store and node state are free at once.
