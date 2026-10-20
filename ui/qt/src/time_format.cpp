@@ -44,87 +44,98 @@ double entry_beat_frames(const model::TempoEntry& t, uint32_t rate) {
     return static_cast<double>(rate) * 60.0 / bpm * 4.0 / den;
 }
 
-// Half a tick, in beats: closer than this to a bar line is on it. Bar lines
-// fall on fractional frames, so an entry placed on one by frame is a
-// fraction of a frame off it.
-constexpr double kOnLine = 0.5 / 960.0;
+// The map the windows read. A snapshot's settings passed the loader or
+// apply(), so they are inside the bounds and build as they are. A map that
+// never went through either (a test, a value still being typed) still reads
+// rather than going blank: an entry out of order is not a change, the first
+// governs from 0, and a bpm or beat outside the bounds is read as the v3
+// migration would open it. False only without a usable rate.
+//
+// A map is short (a song has tens of changes), so it is built per call on
+// the GUI thread rather than cached beside a document that can change under
+// the cache.
+bool reading_map(const model::SessionSettings& s, model::MusicalMap& m) {
+    std::string why;
+    if (m.build(s, why)) return true;
+    if (s.sample_rate == 0 || s.sample_rate > model::kMaxSampleRate) return false;
+    std::vector<model::TempoEntry> fixed;
+    for (const model::TempoEntry& e : s.tempo) {
+        if (!fixed.empty() && (e.at <= fixed.back().at || e.at > model::kMaxInteger)) continue;
+        model::TempoEntry f = e;
+        if (fixed.empty()) f.at = 0;
+        f.bpm = model::bpm_within_bounds(e.bpm);
+        if (!(std::isfinite(f.bpm) && f.bpm > 0)) f.bpm = kDefaultTempo.bpm;
+        if (f.meter[0] == 0 || f.meter[0] > 0xFFFF) f.meter[0] = kDefaultTempo.meter[0];
+        f.meter[1] = model::nearest_meter_denominator(e.meter[1]);
+        if (f.meter[1] == 0) f.meter[1] = kDefaultTempo.meter[1];
+        fixed.push_back(f);
+    }
+    if (fixed.empty()) fixed.push_back(kDefaultTempo);
+    return m.build(s.sample_rate, fixed, why);
+}
 
-// One entry's stretch of the timeline and where the count stands at its
-// start. A map is short (a song has tens of changes), so these are built per
-// call on the GUI thread rather than cached beside a document that can
-// change under the cache.
-struct Segment {
-    double start = 0;       // frames
-    double end = 0;         // frames; +inf for the last
-    double beat = 0;        // frames per beat
-    int num = 4;            // beats per bar
-    int64_t bar0 = 0;       // 0-based bar at `start`
-    double beat0 = 0;       // beats into that bar at `start`, [0, num)
-    std::size_t index = 0;  // into SessionSettings::tempo
-};
+MusicalTime reading_of(const model::BarsBeats& b) {
+    return {b.bar, static_cast<int>(b.beat), b.tick};
+}
 
-void build_segments(const model::SessionSettings& s, std::vector<Segment>& out) {
+// A grid value's step in ticks: whole numbers for every beat the bounds
+// allow (a sixteenth of a 1/64 beat is 15,000).
+model::Ticks grid_step_ticks(GridValue g, const model::MusicalMap::Entry& e) {
+    switch (g) {
+        case GridValue::Bar: return static_cast<model::Ticks>(e.beats) * e.beat_ticks;
+        case GridValue::Beat: return e.beat_ticks;
+        case GridValue::Eighth: return e.beat_ticks / 2;
+        case GridValue::Sixteenth: return e.beat_ticks / 4;
+    }
+    return e.beat_ticks;
+}
+
+// Frames a stretch of `ticks` lasts in entry `e`, for spacing only.
+double frames_of_ticks(model::Ticks ticks, const model::MusicalMap::Entry& e) {
+    return static_cast<double>(ticks) * static_cast<double>(e.den) / static_cast<double>(e.num);
+}
+
+model::Ticks ceil_div(model::Ticks a, model::Ticks b) {   // b > 0
+    model::Ticks q = a / b;
+    if (a % b != 0 && a > 0) ++q;
+    return q;
+}
+
+// The lines in [a, b] frames on `m`, as grid_lines() states them.
+void lines_on(const model::MusicalMap& m, double a, double b, GridValue g, bool bars_only,
+              std::vector<GridLine>& out, std::size_t max) {
     out.clear();
-    const uint32_t rate = s.sample_rate;
-    if (s.tempo.empty()) {
-        out.push_back({0, HUGE_VAL, entry_beat_frames(kDefaultTempo, rate), 4, 0, 0, 0});
-        return;
-    }
-    for (std::size_t i = 0; i < s.tempo.size(); ++i) {
-        const model::TempoEntry& e = s.tempo[i];
-        Segment g;
-        // The format puts the first entry at 0; one that is not still governs
-        // from 0, rather than leaving the start of the session uncounted.
-        g.start = i == 0 ? 0.0 : static_cast<double>(e.at);
-        g.end = HUGE_VAL;
-        g.beat = entry_beat_frames(e, rate);
-        g.num = meter_beats(e);
-        g.index = i;
-        if (!out.empty()) {
-            Segment& p = out.back();
-            if (g.start <= p.start) continue;  // unsorted or duplicate: not a change
-            p.end = g.start;
-            const double total = p.beat0 + (g.start - p.start) / p.beat;
-            double whole = std::floor(total / p.num);
-            double into = total - whole * p.num;
-            if (into > p.num - kOnLine) {
-                whole += 1;
-                into = 0;
-            } else if (into < kOnLine) {
-                into = 0;
-            }
-            g.bar0 = p.bar0 + static_cast<int64_t>(whole);
-            const bool meter_changes = s.tempo[p.index].meter != e.meter;
-            if (meter_changes && into > 0) {
-                // The bar the change cuts short is counted; the new meter's
-                // first bar starts here.
-                g.bar0 += 1;
-                into = 0;
-            }
-            g.beat0 = into;
+    // Whole frames only: a line is drawn at the frame nearest it. None
+    // before the timeline's 0, where entry 0 would otherwise extend.
+    const double lo = std::max(a, 0.0);
+    const double hi = std::min(b, static_cast<double>(model::kMaxInteger - 1));
+    if (!(hi >= lo)) return;
+    const auto fa = static_cast<model::Frames>(std::ceil(lo));
+    const auto fb = static_cast<model::Frames>(std::floor(hi));
+    model::Ticks ta = 0, tb = 0;
+    if (fb < fa || !m.tick_at(fa - 1, ta) || !m.tick_at(fb + 1, tb)) return;
+    // One tick either side of the frames' ticks holds every line whose
+    // frame is in [fa, fb], whether ticks are finer than frames or not.
+    ta = std::max<model::Ticks>(0, ta - 1);
+    ++tb;
+    const auto& entries = m.entries();
+    for (std::size_t k = m.entry_at_tick(ta); k < m.reachable(); ++k) {
+        const model::MusicalMap::Entry& e = entries[k];
+        if (e.tick > tb) break;
+        const model::Ticks end =
+            k + 1 < m.reachable() ? entries[k + 1].tick : model::kMaxMusical + 1;
+        const model::Ticks bar = static_cast<model::Ticks>(e.beats) * e.beat_ticks;
+        const model::Ticks step = bars_only ? bar : grid_step_ticks(g, e);
+        const model::Ticks from = std::max(ta, e.tick);
+        const model::Ticks to = std::min(tb, end - 1);
+        for (model::Ticks t = e.bar_tick + ceil_div(from - e.bar_tick, step) * step;
+             t <= to && out.size() < max; t += step) {
+            model::Frames f = 0;
+            if (!m.frame_at(t, f)) return;
+            if (f < fa || f > fb) continue;
+            out.push_back({static_cast<double>(f), (t - e.bar_tick) % bar == 0, t});
         }
-        out.push_back(g);
     }
-}
-
-std::size_t segment_at(const std::vector<Segment>& segs, double f) {
-    std::size_t i = 0;
-    while (i + 1 < segs.size() && segs[i + 1].start <= f) ++i;
-    return i;
-}
-
-MusicalTime musical_time_on(const std::vector<Segment>& segs, double at) {
-    const Segment& g = segs[segment_at(segs, at)];
-    const double beats = g.beat0 + (at - g.start) / g.beat;
-    // Rounded to the tick first, so a position exactly on a beat never reads
-    // as 959 ticks into the one before.
-    const int64_t ticks = static_cast<int64_t>(std::floor(beats * 960.0 + 1e-6));
-    const int64_t whole = ticks / 960;
-    MusicalTime t;
-    t.bar = g.bar0 + whole / g.num + 1;
-    t.beat = static_cast<int>(whole % g.num) + 1;
-    t.tick = static_cast<int>(ticks % 960);
-    return t;
 }
 
 double grid_step_beats(GridValue g, int num) {
@@ -182,34 +193,34 @@ double frames_per_bar(const model::SessionSettings& s) {
 }
 
 MusicalTime musical_time(model::Frames f, const model::SessionSettings& s) {
-    if (s.sample_rate == 0) return {};
-    std::vector<Segment> segs;
-    build_segments(s, segs);
-    return musical_time_on(segs, static_cast<double>(std::max<model::Frames>(0, f)));
+    model::MusicalMap m;
+    model::Ticks t = 0;
+    if (!reading_map(s, m) || !m.tick_at(std::max<model::Frames>(0, f), t)) return {};
+    return reading_of(m.bars_beats_at(t));
 }
 
 model::Frames frame_of(const MusicalTime& t, const model::SessionSettings& s) {
-    if (s.sample_rate == 0) return 0;
-    std::vector<Segment> segs;
-    build_segments(s, segs);
-    for (const Segment& g : segs) {
-        // A bar that ended before this segment began, and was not reached in
-        // the one before: a meter change cut it short, and what is left of it
-        // is the change's own frame, not a place inside the new meter's bars.
-        if (t.bar - 1 < g.bar0) return static_cast<model::Frames>(std::llround(g.start));
-        const double x = static_cast<double>(t.bar - 1 - g.bar0) * g.num + (t.beat - 1) +
-                         t.tick / 960.0 - g.beat0;
-        if (x < 0) return static_cast<model::Frames>(std::llround(g.start));
-        const double f = g.start + x * g.beat;
-        if (f < g.end) return static_cast<model::Frames>(std::llround(f));
+    model::MusicalMap m;
+    model::Ticks tick = 0;
+    model::Frames f = 0;
+    if (!reading_map(s, m) || !m.tick_of({t.bar, t.beat, t.tick}, tick) || !m.frame_at(tick, f)) {
+        return 0;
     }
-    return 0;
+    return f;
 }
 
 std::size_t tempo_index_at(model::Frames f, const model::SessionSettings& s) {
-    std::vector<Segment> segs;
-    build_segments(s, segs);
-    return segs[segment_at(segs, static_cast<double>(f))].index;
+    // As reading_map() reads the map: the first entry governs from 0, and
+    // one out of order is not a change.
+    std::size_t index = 0;
+    model::Frames start = 0;
+    for (std::size_t i = 1; i < s.tempo.size(); ++i) {
+        if (s.tempo[i].at <= start) continue;
+        if (s.tempo[i].at > f) break;
+        index = i;
+        start = s.tempo[i].at;
+    }
+    return index;
 }
 
 const model::TempoEntry& tempo_at(model::Frames f, const model::SessionSettings& s) {
@@ -293,38 +304,24 @@ double grid_frames(GridValue g, const model::SessionSettings& s) {
 void grid_lines(double a, double b, GridValue g, bool bars_only,
                 const model::SessionSettings& s, std::vector<GridLine>& out, std::size_t max) {
     out.clear();
-    if (s.sample_rate == 0 || b < a) return;
-    std::vector<Segment> segs;
-    build_segments(s, segs);
-    for (const Segment& seg : segs) {
-        if (seg.end <= a) continue;
-        if (seg.start > b) break;
-        const double step = bars_only ? seg.num : grid_step_beats(g, seg.num);
-        // In beats from the start of the segment's first bar.
-        const double from = (std::max(a, seg.start) - seg.start) / seg.beat + seg.beat0;
-        const double to = (std::min(b, seg.end) - seg.start) / seg.beat + seg.beat0;
-        for (auto k = static_cast<int64_t>(std::ceil(from / step - 1e-9));
-             k * step <= to + 1e-9 && out.size() < max; ++k) {
-            const double beats = static_cast<double>(k) * step;
-            const double f = seg.start + (beats - seg.beat0) * seg.beat;
-            if (f >= seg.end - 1e-6 || f > b || f < a) continue;
-            const double in_bar = std::fmod(beats, static_cast<double>(seg.num));
-            out.push_back({f, in_bar < kOnLine || in_bar > seg.num - kOnLine});
-        }
-    }
+    model::MusicalMap m;
+    if (b < a || !reading_map(s, m)) return;
+    lines_on(m, a, b, g, bars_only, out, max);
 }
 
 model::Frames snap_to_grid(model::Frames f, GridValue g, const model::SessionSettings& s) {
-    if (s.sample_rate == 0) return std::max<model::Frames>(0, f);
+    model::MusicalMap m;
+    if (!reading_map(s, m)) return std::max<model::Frames>(0, f);
     // Far enough either side to hold a line whatever the tempo there: the
     // longest step anywhere on the map.
-    std::vector<Segment> segs;
-    build_segments(s, segs);
     double reach = 0;
-    for (const Segment& seg : segs) reach = std::max(reach, grid_step_beats(g, seg.num) * seg.beat);
+    for (std::size_t k = 0; k < m.reachable(); ++k) {
+        const model::MusicalMap::Entry& e = m.entries()[k];
+        reach = std::max(reach, frames_of_ticks(grid_step_ticks(g, e), e));
+    }
     std::vector<GridLine> lines;
     const double at = static_cast<double>(f);
-    grid_lines(at - reach * 1.01, at + reach * 1.01, g, false, s, lines);
+    lines_on(m, at - reach * 1.01 - 1, at + reach * 1.01 + 1, g, false, lines, 4096);
     double best = 0;
     double best_d = HUGE_VAL;
     for (const GridLine& l : lines) {
@@ -383,13 +380,17 @@ double pick(const double* candidates, int n, double at_least) {
 void bar_ticks(double first, double fpp, double width, double need, double min_major_px,
                const model::SessionSettings& s, std::vector<RulerTick>& out) {
     const double last = first + width * fpp;
-    std::vector<Segment> segs;
-    build_segments(s, segs);
+    model::MusicalMap m;
+    if (!reading_map(s, m)) return;
     double min_beat = HUGE_VAL, min_bar = HUGE_VAL;
-    for (const Segment& seg : segs) {
-        if (seg.end <= first || seg.start > last) continue;
-        min_beat = std::min(min_beat, seg.beat);
-        min_bar = std::min(min_bar, seg.beat * seg.num);
+    for (std::size_t k = 0; k < m.reachable(); ++k) {
+        const model::MusicalMap::Entry& e = m.entries()[k];
+        const double start = static_cast<double>(e.at);
+        const double end = k + 1 < m.reachable() ? static_cast<double>(m.entries()[k + 1].at)
+                                                  : HUGE_VAL;
+        if (end <= first || start > last) continue;
+        min_beat = std::min(min_beat, frames_of_ticks(e.beat_ticks, e));
+        min_bar = std::min(min_bar, frames_of_ticks(e.beat_ticks * e.beats, e));
     }
     static const int kEvery[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
     const bool beat_majors = min_beat >= need;
@@ -409,13 +410,13 @@ void bar_ticks(double first, double fpp, double width, double need, double min_m
     const bool minor_bars = !beat_majors && min_bar / fpp >= 6.0;
     const GridValue sub = beat_majors ? GridValue::Sixteenth : GridValue::Beat;
     std::vector<GridLine> lines;
-    grid_lines(std::max(0.0, first), last, sub, !beat_majors && !minor_beats, s, lines);
+    lines_on(m, std::max(0.0, first), last, sub, !beat_majors && !minor_beats, lines, 4096);
     double last_major = -HUGE_VAL;
     for (const GridLine& l : lines) {
         if (out.size() >= 4096) break;
         const double x = (l.frame - first) / fpp;
         if (x < -1 || x > width + 1) continue;
-        const MusicalTime t = musical_time_on(segs, l.frame);
+        const MusicalTime t = reading_of(m.bars_beats_at(l.tick));
         bool major = beat_majors ? t.tick == 0 : l.bar && (t.bar - 1) % every == 0;
         if (major && x - last_major < min_major_px - 1.0) major = false;
         if (major) {

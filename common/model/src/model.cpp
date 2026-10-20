@@ -8,6 +8,7 @@
 
 #include "checks.h"
 #include "sonora/json/json.h"
+#include "sonora/model/musical_map.h"
 
 namespace sonora::model {
 
@@ -501,23 +502,10 @@ std::string settings_problem(const SessionSettings& s, std::string& where) {
         where = "timecode.origin";
         return "is out of range";
     }
-    if (s.tempo.empty()) {
-        where = "tempo";
-        return "needs at least one entry";
-    }
-    for (std::size_t i = 0; i < s.tempo.size(); ++i) {
-        const TempoEntry& t = s.tempo[i];
-        where = "tempo[" + str(static_cast<std::int64_t>(i)) + "]";
-        if (i == 0 && t.at != 0) return "the first entry must be at 0";
-        if (!in_range(t.at)) return "at is out of range";
-        if (i > 0 && t.at <= s.tempo[i - 1].at) {
-            return "entries must be sorted by at, without duplicates";
-        }
-        if (!(std::isfinite(t.bpm) && t.bpm > 0.0f)) {
-            return "bpm must be a positive number";
-        }
-        if (t.meter[0] == 0 || t.meter[1] == 0) return "meter must be two counts of at least 1";
-    }
+    // The map's shape and the bounds musical time needs (midi.md §2.4), in
+    // the one place MusicalMap::build also answers to.
+    std::string why = tempo_map_problem(s.sample_rate, s.tempo, where);
+    if (!why.empty()) return why;
     const Transport& tr = s.transport;
     for (const auto& range : {std::make_pair("transport.loop", tr.loop),
                               std::make_pair("transport.punch", tr.punch)}) {

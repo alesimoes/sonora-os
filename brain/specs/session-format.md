@@ -151,6 +151,14 @@ never move when the tempo changes.** Musical-time anchoring (for MIDI, later)
 is a separate field added with a version bump, not a reinterpretation of
 this one. `bpm` is the one other float in the file.
 
+Bounds (version 4, ADR-0014 §2, `midi.md` §2.4): `bpm` from 1 to 1000; a
+meter of at most 65535 beats, its denominator a power of two from 1 to 64;
+`sample_rate` at most 384,000. Inside them the conversion between frames,
+ticks and bars|beats (`MusicalMap` in `common/model`, one function for every
+reader) is exact in 128-bit integers; outside them it could not be. The
+loader and `SetSettings` refuse a value outside by key path; a version 3
+file is brought inside them instead ("Versioning").
+
 How the map is counted. The interface's counters, ruler and grid read it
 this way, and the click must put its downbeats in the same places:
 
@@ -657,7 +665,23 @@ else changes. The frozen v1 fixture loads through it.
 changes. The frozen v2 fixture loads through it; v3's is
 `v3-solo-safe.sonora`.
 
-Worked example, the expected v3→v4 (Phase 3 mixer): `monitor_bus` becomes
+**v3→v4 (tempo bounds, ADR-0014 §2, `midi.md` §2.4):** the tempo map is
+brought inside the bounds below. A `bpm` outside 1 to 1000 is clamped to the
+nearer end; a meter denominator that is not a power of two from 1 to 64 is
+rounded to the nearest one (halfway to the larger: x/3 opens as x/4, x/6 as
+x/8, anything above 64 as 64). Each change is reported at open with its key
+path, the old value and the new, and the version 3 file, kept as the
+pre-migration backup at the first save, holds the original (owner question
+O7). This is the first migration that changes a value rather than filling a
+default, and the reason is stated: no integer arithmetic is exact over an
+unbounded binary32 bpm, and a beat of 1/3 is not a whole number of ticks.
+Nothing else changes. The frozen v3 fixture loads through it unchanged, and
+`v3-tempo-out-of-bounds.sonora` checks the report; v4's is
+`v4-tempo-bounds.sonora`. A version 3 session above 384 kHz is refused: a
+rate cannot be changed without resampling every source, and no backend this
+build drives runs there.
+
+Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
 `pan_law_db`; each track gains `"output": <id of Main>` and empty `sends`
 (inserts already exist from v2), and buses gain empty `inserts`. Nothing about regions changes. If that migration turns out to

@@ -125,12 +125,20 @@ playback can follow edits; it is in flight.
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
-       - [x] ADR-0014 and `brain/specs/midi.md` written, **Proposed**
-             (`docs/midi-adr`); revised with the rt-engineer and plugin-engineer reviews (PR #93);
-             waits on the owner and O1–O8.
-       - [ ] After acceptance, ADR-0014 §9's phases in order: M-1 model
-             and format v4 (`MusicalMap`, track kinds, MIDI regions,
-             protocol 7), M-2 backend MIDI ports, M-3 playback to ports,
+       - [x] ADR-0014 and `brain/specs/midi.md` written (`docs/midi-adr`);
+             revised with the rt-engineer and plugin-engineer reviews (PR #93);
+             **accepted by the owner 2026-10-19**, O1–O8 as recommended (M-0).
+       - [x] M-1 timebase (`m1-timebase`): `MusicalMap` in `common/model`,
+             frames ↔ ticks ↔ bars|beats at 960,000 per quarter in portable
+             128-bit integers, 64-bit fast path, batch API, negative frames
+             by floor division, out-of-range refused; tempo bounds (O7) in
+             `settings_problem`; session format 4, v3 → v4 clamps bpm and
+             rounds meter denominators with a report per change; `ui/qt`
+             bars|beats, grid, snap and ruler on `MusicalMap`;
+             `measure_musical_map` (GCC; no MSVC toolchain here or in CI).
+       - [ ] After acceptance, ADR-0014 §9's phases in order: the rest of M-1
+             (track kinds, MIDI regions, timebase tags, `midi_sources`,
+             protocol 7, the format after 4; Unverified 6), M-2 backend MIDI ports, M-3 playback to ports,
              M-4 recording and SMF take files, M-5 instruments
              (plugin layout 2, exit part 1), M-6 SMF interchange (exit
              part 2), M-7 the UI.

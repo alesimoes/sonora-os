@@ -7,6 +7,7 @@ set(SONORA_MODEL_SOURCES
   src/history.cpp
   src/local_edit.cpp
   src/model.cpp
+  src/musical_map.cpp
   src/op_codec.cpp
   src/replication.cpp
   src/session_file.cpp
@@ -66,6 +67,17 @@ add_test(NAME model_compound COMMAND test_model_compound)
 add_executable(test_model_local_edit tests/test_local_edit.cpp)
 target_link_libraries(test_model_local_edit PRIVATE sonora_model_audited)
 add_test(NAME model_local_edit COMMAND test_model_local_edit)
+
+# MusicalMap (ADR-0014 §2, brain/specs/midi.md §2): exact conversions, bounds,
+# negative rounding, the batch API, bars|beats.
+add_executable(test_model_musical_map tests/test_musical_map.cpp)
+target_link_libraries(test_model_musical_map PRIVATE sonora_model_audited)
+add_test(NAME model_musical_map COMMAND test_model_musical_map)
+
+# What MusicalMap costs against the control thread's 10 ms; run by hand,
+# numbers in the M-1 PR.
+add_executable(measure_musical_map tests/measure_musical_map.cpp)
+target_link_libraries(measure_musical_map PRIVATE sonora_model)
 
 # What a compound costs on a long playlist; run by hand, numbers in ADR-0009.
 add_executable(measure_compound tests/measure_compound.cpp)

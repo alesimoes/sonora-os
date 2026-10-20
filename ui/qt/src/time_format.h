@@ -19,6 +19,11 @@
 // Change dialog appears to have a snap-to-bar option that can be off. Our
 // map holds frames either way, and a reading that moved the change would
 // put the bar lines somewhere the session does not.)
+//
+// The reading itself is common/model's MusicalMap (ADR-0014 §2,
+// brain/specs/midi.md §2.3), in integer ticks: the counters, the ruler, the
+// grid and a MIDI note at 5|1|000 are one function. What is left here is
+// formatting, and where to draw.
 #pragma once
 
 #include <cstddef>
@@ -27,6 +32,7 @@
 #include <vector>
 
 #include "model_access.h"
+#include "sonora/model/musical_map.h"
 
 namespace sonora::ui {
 
@@ -80,8 +86,9 @@ double grid_frames(GridValue g, const model::SessionSettings& s);
 model::Frames snap_to_grid(model::Frames f, GridValue g, const model::SessionSettings& s);
 
 struct GridLine {
-    double frame = 0;
+    double frame = 0;  // the frame nearest the line
     bool bar = false;  // a bar line, not only a line of the grid value
+    model::Ticks tick = 0;  // where the line is, exactly
 };
 // The lines in [a, b] frames, in order: every bar line, and with
 // `bars_only` false every line of `g` too. At most `max` of them.

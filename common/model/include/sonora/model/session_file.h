@@ -18,7 +18,9 @@ namespace sonora::model {
 // The format version this program writes, and the newest it reads.
 // 2: plugin inserts on tracks (ADR-0012 §6.2).
 // 3: solo safe on tracks (BACKLOG Track 2 item 5).
-constexpr std::int64_t kFormatVersion = 3;
+// 4: the tempo map inside the bounds musical time needs (ADR-0014 §2,
+//    brain/specs/midi.md §2.4); a version 3 map is brought inside them.
+constexpr std::int64_t kFormatVersion = 4;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to
@@ -44,7 +46,8 @@ struct Loaded {
     std::uint64_t save_generation = 0;
     std::int64_t file_version = 0;   // before migration
     // What the loader changed so that a file an older build wrote still
-    // opens, one sentence each with its key path, for the opener to show.
+    // opens, one sentence each with its key path and, where a value
+    // changed, the old and the new, for the opener to show.
     // Empty for a file this build would have written.
     std::vector<std::string> repairs;
 };

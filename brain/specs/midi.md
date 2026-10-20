@@ -1,8 +1,8 @@
 # MIDI: model, timebase, session format v4, real-time path, take files, SMF
 
-Status: design, written before the code. **Proposed** with
-[ADR-0014](../decisions/ADR-0014-midi-model-and-realtime-path.md); nothing
-here binds until the owner accepts it. Revised 2026-10-19 with the
+Status: design, written before the code. **Accepted** with
+[ADR-0014](../decisions/ADR-0014-midi-model-and-realtime-path.md) by the
+owner, 2026-10-19, O1–O8 as recommended. Revised 2026-10-19 with the
 rt-engineer's and plugin-engineer's reviews of PR #93 (each point is mapped
 in the PR thread). Builds on [`session-format.md`](session-format.md) (v3 on
 `main`), [`timeline-model.md`](timeline-model.md), ADR-0009 (snapshots,
@@ -23,6 +23,11 @@ layout 2" and "state layout N+1" below mean **the next free number when the
 PR lands**. ADR-0013 (Proposed) also names version numbers, and two
 Proposed ADRs must not both claim one. The implementing PR writes the
 number it took into this spec.
+
+Taken so far: **session format 4** by M-1's timebase PR, for the tempo
+bounds of §2.4 and the v3 → v4 migration that brings a map inside them
+(§4.5). The MIDI keys of §4 (track kinds, `midi_sources`, MIDI regions)
+therefore land in the next free number after it, not in 4.
 
 ## 1. Units
 
@@ -273,8 +278,10 @@ swap is a "MIDI changed" swap for every MIDI and instrument track (§5.3).
 
 ## 4. Session format version 4
 
-`sonora_session` becomes **4** (next free at landing). Everything in v3
-keeps its meaning, except the bounds of §2.4.
+`sonora_session` becomes the next free number at landing: 4 is taken by
+the bounds of §2.4 alone (see "Version numbers"), so "v4" below means the
+format that adds the MIDI keys. Everything in v3 keeps its meaning, except
+the bounds of §2.4.
 
 ### 4.1 Folder
 
@@ -391,7 +398,9 @@ A MIDI or instrument track's `playlists` hold MIDI regions and have no
 
 Every track gains `"kind": "audio"`; the top level gains
 `"midi_sources": []`; the tempo map is brought inside §2.4's bounds, each
-change reported at open. Nothing else changes. The frozen v3 fixture loads
+change reported at open. The tempo part has landed as format 3 → 4
+(`session-format.md`, "Versioning"; fixtures `v3-tempo-out-of-bounds.sonora`
+and `v4-tempo-bounds.sonora`); the rest is the step after it. Nothing else changes. The frozen v3 fixture loads
 through it, and a second v3 fixture with an out-of-range bpm and a meter of
 x/3 checks the report; v4's is `v4-midi.sonora` with one track of each kind.
 
