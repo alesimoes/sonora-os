@@ -2680,7 +2680,7 @@ int scenario_state(const Args& a) {
     const std::string dir = a.state_dir.empty() ? "/tmp/sonora-plugin-state-" + std::to_string(getpid()) : a.state_dir;
     ::mkdir(dir.c_str(), 0700);
     ::mkdir((dir + "/Plugin State").c_str(), 0700);
-    const std::string sha = pc::sha256_hex(saved.bytes);
+    const std::string sha = sonora::sha256_hex(saved.bytes);
     const std::string name = pc::state_file_name(sha);
     const std::string path = dir + "/" + name;
     if (std::FILE* f = std::fopen(path.c_str(), "wb")) {

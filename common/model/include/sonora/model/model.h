@@ -149,6 +149,25 @@ struct MidiSysEx {
     bool operator==(const MidiSysEx& o) const { return tick == o.tick && bytes == o.bytes; }
 };
 
+// A sequence's file beside the session, "MIDI Sequences/<sha256>.msq"
+// (ADR-0015 §3): what a MIDI region's "data" key holds. Named by the hash
+// of its bytes, so regions and saves that hold one sequence share one file.
+struct SequenceFileRef {
+    std::string file;     // midi_sequence_file(sha256)
+    std::string sha256;   // 64 lower-case hex digits
+    std::uint64_t bytes = 0;
+    std::uint64_t notes = 0;
+    std::uint64_t events = 0;
+    std::uint64_t sysex = 0;
+    bool operator==(const SequenceFileRef& o) const {
+        return file == o.file && sha256 == o.sha256 && bytes == o.bytes && notes == o.notes &&
+               events == o.events && sysex == o.sysex;
+    }
+};
+
+// "MIDI Sequences/<sha256>.msq"
+std::string midi_sequence_file(const std::string& sha256);
+
 // What one region plays, in data ticks. Immutable once a region holds it,
 // and shared: by the regions a split, duplicate or paste makes, and by
 // every snapshot that did not edit it.
@@ -158,10 +177,21 @@ struct MidiSequence {
     // select before its program change).
     std::vector<MidiEvent> events;
     std::vector<MidiSysEx> sysex;    // by tick, at one tick in stored order
+    // Set when the file this sequence was saved in was missing or damaged at
+    // open (ADR-0015 owner decision O2): the lists are empty, its regions are
+    // silent and not editable but keep their windows, and a save writes this
+    // reference back unchanged so the file can still be restored beside it.
+    std::optional<SequenceFileRef> missing;
     bool operator==(const MidiSequence& o) const {
-        return notes == o.notes && events == o.events && sysex == o.sysex;
+        return notes == o.notes && events == o.events && sysex == o.sysex && missing == o.missing;
     }
 };
+
+// Notes, events and SysEx messages: what ADR-0015 §5's budget counts. A
+// missing sequence holds none in memory.
+inline std::uint64_t midi_entries(const MidiSequence& s) {
+    return s.notes.size() + s.events.size() + s.sysex.size();
+}
 
 // A window onto a sequence, as an audio region is onto its source. A note
 // is heard if its start is in [offset, offset + length); notes outside stay

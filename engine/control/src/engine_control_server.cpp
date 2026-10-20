@@ -185,7 +185,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     take_ = session_.next_free_take();
     publisher_->set_take(take_);
     document_ = std::make_unique<model::Document>(
-        opts_.initial_document ? *opts_.initial_document : engine_document(session_));
+        opts_.initial_document ? *opts_.initial_document : engine_document(session_),
+        model::History::kDefaultBudget, opts_.midi_max_entries);
     playback_ = std::make_unique<PlaybackController>(session_, session_.config().dir);
     playback_->set_input_monitoring(opts_.input_monitoring);
     // Read as the take starts, which with the residency gate is in pump(),
@@ -358,6 +359,23 @@ void EngineControlServer::show_document(bool mix_changed) {
         e.text = "playback: the session as edited cannot be played: " + why;
         post_event(e);
     }
+}
+
+void EngineControlServer::warn_midi_budget() {
+    const model::History& h = document_->history();
+    const uint64_t max = h.midi_max_entries();
+    const uint64_t now = h.current_midi_entries();
+    // now >= 0.9 max, in integers.
+    const bool high = now * 10 >= max * 9;
+    if (high && !midi_warned_) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "MIDI holds " + std::to_string(now) + " of the " + std::to_string(max) +
+                 " notes and events this engine allows (midi_max_entries): past it undo history"
+                 " goes first, then edits and take placements are refused";
+        post_event(e);
+    }
+    midi_warned_ = high;
 }
 
 void EngineControlServer::show_inserts(bool new_session) {
@@ -1227,6 +1245,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 }
                 show_document(mix_changed);
                 show_inserts(m.action == api::ModelAction::Load);
+                warn_midi_budget();
             }
         }
         return;

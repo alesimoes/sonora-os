@@ -11,12 +11,13 @@ set(SONORA_MODEL_SOURCES
   src/model.cpp
   src/musical_map.cpp
   src/op_codec.cpp
+  src/sequence_file.cpp
   src/replication.cpp
   src/session_file.cpp
 )
 add_library(sonora_model STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model PUBLIC include)
-target_link_libraries(sonora_model PUBLIC sonora_midi PRIVATE sonora_json)
+target_link_libraries(sonora_model PUBLIC sonora_midi PRIVATE sonora_json sonora_sha256)
 # Debug builds audit every playlist edit (src/local_edit.h): the range-local
 # operators and check against the whole-playlist ones, aborting on any
 # difference.
@@ -27,7 +28,7 @@ target_compile_definitions(sonora_model PRIVATE $<$<CONFIG:Debug>:SONORA_MODEL_A
 # playlist_problem() after every member of every compound.
 add_library(sonora_model_audited STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model_audited PUBLIC include)
-target_link_libraries(sonora_model_audited PUBLIC sonora_midi PRIVATE sonora_json)
+target_link_libraries(sonora_model_audited PUBLIC sonora_midi PRIVATE sonora_json sonora_sha256)
 target_compile_definitions(sonora_model_audited PRIVATE SONORA_MODEL_AUDIT=1)
 
 add_executable(test_model_apply tests/test_apply.cpp)
@@ -55,7 +56,7 @@ add_executable(test_model_random_edits tests/test_random_edits.cpp)
 target_link_libraries(test_model_random_edits PRIVATE sonora_model_audited)
 add_test(NAME model_random_edits COMMAND test_model_random_edits)
 
-# The replication format: the op codec and Document/Replica (ADR-0009 �2).
+# The replication format: the op codec and Document/Replica (ADR-0009 §2).
 add_executable(test_model_replication tests/test_replication.cpp)
 target_link_libraries(test_model_replication PRIVATE sonora_model_audited)
 add_test(NAME model_replication COMMAND test_model_replication)
@@ -91,7 +92,14 @@ add_executable(test_model_midi tests/test_midi.cpp)
 target_link_libraries(test_model_midi PRIVATE sonora_model_audited)
 add_test(NAME model_midi COMMAND test_model_midi)
 
-# ADR-0014 Unverified 6: dense MIDI against the file caps and the undo
-# window; run by hand, numbers in the M-1 PR.
+# ADR-0014 Unverified 6 and ADR-0015 Unverified 2: dense MIDI against the
+# file caps and the undo window, and open and save at the 2^24-entry
+# target; run by hand, numbers in the PRs.
 add_executable(measure_midi_session tests/measure_midi_session.cpp)
-target_link_libraries(measure_midi_session PRIVATE sonora_model sonora_json)
+target_link_libraries(measure_midi_session PRIVATE sonora_model sonora_json sonora_sha256)
+
+# MIDI sequences beside the session file (ADR-0015 §3): the .msq bytes, the
+# decoder's refusals and a fuzz sweep, digests, and which files may go (O4).
+add_executable(test_model_sequence_file tests/test_sequence_file.cpp)
+target_link_libraries(test_model_sequence_file PRIVATE sonora_model_audited)
+add_test(NAME model_sequence_file COMMAND test_model_sequence_file)

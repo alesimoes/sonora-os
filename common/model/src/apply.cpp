@@ -772,6 +772,12 @@ public:
             }
             // Shared, already checked when it was first placed.
             region.data = from->data;
+        } else if (region.data && region.data->missing) {
+            // The operation codec carries the lists, not the reference, so a
+            // copy of a missing sequence would arrive as an empty one and
+            // its file could never be restored to it.
+            return fail("region " + str(region.id) +
+                        ": its MIDI data is missing; place it with data_from instead");
         }
         std::string why = detail::midi_region_problem(region, *before_.sources);
         if (why.empty() && !op.data_from) {
@@ -826,6 +832,12 @@ public:
             const std::size_t i = midi_region_index(p, op.region);
             if (i == kNone) return no_region(op.region, op.playlist);
             const MidiSequence& old = *p.regions[i].data;
+            if (old.missing) {
+                return fail("region " + str(op.region) + ": its MIDI data is missing (" +
+                            old.missing->file +
+                            "); it cannot be edited until the file is restored or it is"
+                            " rebuilt from its take");
+            }
             auto seq = std::make_shared<MidiSequence>();
             if (!kept(old.notes, op.remove_notes, "remove_notes", "note", seq->notes) ||
                 !kept(old.events, op.remove_events, "remove_events", "event", seq->events) ||

@@ -27,8 +27,35 @@ std::string read_fixture(const char* name) {
     return s.str();
 }
 
+// The fixtures folder as a session folder: "MIDI Sequences/<sha>.msq"
+// beside the fixtures. A test hides or damages one file to see a session
+// open without it.
+struct FixtureFolder : SequenceSource {
+    std::string hidden;     // a file read as absent
+    std::string damaged;    // a file read with its last byte changed
+    std::string truncated;  // a file read one byte short
+    int reads = 0;
+    bool read(const std::string& file, std::string& bytes, std::string& why) override {
+        ++reads;
+        if (file == hidden) {
+            why = "the file is not there";
+            return false;
+        }
+        bytes = read_fixture(file.c_str());
+        if (bytes.empty()) {
+            why = "the file is not there";
+            return false;
+        }
+        if (file == damaged) bytes.back() = static_cast<char>(bytes.back() ^ 1);
+        if (file == truncated) bytes.pop_back();
+        return true;
+    }
+};
+
+FixtureFolder g_folder;
+
 bool load(const std::string& text, Loaded& out, LoadError& err) {
-    return deserialize(text, out, err);
+    return deserialize(text, out, err, &g_folder);
 }
 
 bool save(const Loaded& l, std::string& out) {
@@ -102,8 +129,22 @@ std::string as_v5(const std::string& v4) {
     return s;
 }
 
-// The current version's frozen fixture: what this build writes.
-constexpr const char* kCurrent = "v5-midi.sonora";
+// What v5 -> v6 makes of a file with no MIDI region: the version alone.
+std::string as_v6(const std::string& v5) {
+    return edit(v5, "\"sonora_session\": 5,", "\"sonora_session\": 6,");
+}
+
+// A version 4 file with no MIDI region, as this build saves it.
+std::string as_current(const std::string& v4) { return as_v6(as_v5(v4)); }
+
+// The current version's frozen fixture: what this build writes. Its
+// sequence files are in fixtures/MIDI Sequences/.
+constexpr const char* kCurrent = "v6-midi.sonora";
+// The version 5 fixture, the same session with its MIDI inline: what the
+// inline reader still reads, and the source of the v5 -> v6 migration.
+constexpr const char* kInlineMidi = "v5-midi.sonora";
+const std::string kBassFile =
+    "MIDI Sequences/dc6e2eac578d3696f120d40fc46c6eb1f4e14483c8db63382bb1e08ab9fba9e9.msq";
 
 int test_fixture_is_canonical() {
     const std::string text = read_fixture(kCurrent);
@@ -111,19 +152,28 @@ int test_fixture_is_canonical() {
     Loaded l;
     LoadError e;
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 5);
+    CHECK(l.file_version == 6);
     CHECK(l.repairs.empty());
+    CHECK(l.missing_sequences.empty());
+    // Three regions' sequences, each file read once.
+    CHECK(l.verified_sequences.size() == 3 && g_folder.reads == 3);
     CHECK(l.save_generation == 42);
     CHECK(l.written_by == "sonora-engine 0.2.0");
     // Load, save, compare bytes: the writer is canonical.
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v5-midi.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v5-midi.out.sonora\n");
+        std::ofstream("v6-midi.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v6-midi.out.sonora\n");
     }
     CHECK(out == text);
+    // And each sequence encodes to the bytes of the file that names it.
+    SequenceDigests digests;
+    for (const NamedSequence& n : named_sequences(l.snapshot, digests)) {
+        CHECK(encode_sequence(*n.data) == read_fixture(n.ref.file.c_str()));
+    }
 
     const Snapshot& s = l.snapshot;
     CHECK(invariants_hold(s));
@@ -204,9 +254,11 @@ int test_fixture_is_canonical() {
 }
 
 // The key set is the kind's, and every MIDI value is checked at load with
-// its key path (midi.md §4.3, §4.4).
+// its key path (midi.md §4.3, §4.4). On the version 5 fixture, whose
+// inline lists the reader still reads and checks row by row, with the key
+// paths of that file.
 int test_malformed_midi() {
-    const std::string text = read_fixture(kCurrent);
+    const std::string text = read_fixture(kInlineMidi);
     const std::string bass = "      \"kind\": \"midi\",\n";
     CHECK(refused(edit(text, bass, bass + "      \"input\": [0],\n"), "unknown key \"input\"",
                   "tracks[2].input"));
@@ -271,6 +323,166 @@ int test_malformed_midi() {
     return 0;
 }
 
+// A version 6 region's "data" is a reference, checked by key path like
+// every other value before any file is read (ADR-0015 §3).
+int test_malformed_sequence_refs() {
+    const std::string text = read_fixture(kCurrent);
+    const char* data = "tracks[2].playlists[0].regions[0].data";
+    const std::string sha = "dc6e2eac578d3696f120d40fc46c6eb1f4e14483c8db63382bb1e08ab9fba9e9";
+    CHECK(refused(edit(text, "\"sha256\": \"" + sha, "\"sha256\": \"DC6E" + sha.substr(4)),
+                  "sha256 must be 64 lower-case hex digits", data));
+    CHECK(refused(edit(text, "\"file\": \"MIDI Sequences/dc6e", "\"file\": \"MIDI Files/dc6e"),
+                  "file must be \"MIDI Sequences/dc6e", data));
+    CHECK(refused(edit(text, "\"bytes\": 54,", "\"bytes\": -54,"), "must be an integer from 0",
+                  "tracks[2].playlists[0].regions[0].data.bytes"));
+    CHECK(refused(edit(text, "\"bytes\": 54,", ""), "missing required key \"bytes\"", data));
+    CHECK(refused(edit(text, "\"bytes\": 54,", "\"bytes\": 54, \"chunks\": 1,"),
+                  "unknown key \"chunks\"", "tracks[2].playlists[0].regions[0].data.chunks"));
+    // The inline lists are version 5's; a version 6 file cannot hold them.
+    const std::string inline_data = edit(
+        text,
+        "\"data\": {\n                \"file\": \"MIDI Sequences/1c9b",
+        "\"notes\": [],\n              \"data\": {\n                \"file\": \"MIDI Sequences/1c9b");
+    CHECK(refused(inline_data, "unknown key \"notes\"", "tracks[2].playlists[0].regions[1].notes"));
+    return 0;
+}
+
+// O5: PR #100's format 5 opens through v5 -> v6 with its inline sequences,
+// says once that they move beside the file, and its first save is exactly
+// the version 6 fixture and its files.
+int test_v5_migrates() {
+    const std::string v5 = read_fixture(kInlineMidi);
+    CHECK(!v5.empty());
+    Loaded l;
+    LoadError e;
+    g_folder.reads = 0;
+    if (!load(v5, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(v5, l, e));
+    CHECK(g_folder.reads == 0);   // nothing to read: the lists are in the file
+    CHECK(l.file_version == 5);
+    CHECK(l.missing_sequences.empty() && l.verified_sequences.empty());
+    CHECK(l.repairs.size() == 1);
+    CHECK(l.repairs[0].path == "MIDI regions" && l.repairs[0].was == "3 with their events inline");
+    CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
+    CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
+    Loaded current;
+    CHECK(load(read_fixture(kCurrent), current, e));
+    CHECK(same_document(l.snapshot, current.snapshot));
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == read_fixture(kCurrent));
+    SequenceDigests digests;
+    const std::vector<NamedSequence> named = named_sequences(l.snapshot, digests);
+    CHECK(named.size() == 3);
+    for (const NamedSequence& n : named) {
+        CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
+    }
+    std::int64_t version = 0;
+    CHECK(file_format_version(out, version) && version == 6);
+    // A version 5 file cannot carry what version 5 does not define.
+    CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
+                       "\"offset_ticks\": 480000,\n              \"data\": {},"),
+                  "migrating from format version 5: tracks[3].playlists[0].regions[0] has \"data\"",
+                  ""));
+    return 0;
+}
+
+// O2: a sequence file missing or damaged at open does not stop the session
+// opening or drop a region. Its regions keep their windows, silent, and the
+// next save writes their reference back as it was.
+int test_missing_sequence_opens() {
+    const std::string text = read_fixture(kCurrent);
+    struct Case {
+        const char* what;
+        std::string FixtureFolder::*how;
+        const char* why;
+    };
+    const Case cases[] = {
+        {"hidden", &FixtureFolder::hidden, "not there"},
+        {"damaged", &FixtureFolder::damaged, "checksum does not match"},
+        {"truncated", &FixtureFolder::truncated, "53 bytes and the session says 54"},
+    };
+    for (const Case& c : cases) {
+        g_folder.*(c.how) = kBassFile;
+        Loaded l;
+        LoadError e;
+        const bool ok = load(text, l, e);
+        (g_folder.*(c.how)).clear();
+        if (!ok) std::fprintf(stderr, "  %s: %s\n", c.what, e.text().c_str());
+        CHECK(ok);
+        CHECK(l.missing_sequences.size() == 1 && l.verified_sequences.size() == 2);
+        const MissingSequence& m = l.missing_sequences[0];
+        CHECK(m.ref.file == kBassFile && m.ref.notes == 3 && m.ref.events == 4);
+        CHECK(mentions(m.why, c.why));
+        CHECK(m.regions == std::vector<std::string>{"tracks[2].playlists[0].regions[0]"});
+        // It came from take 44, which the opener can offer to rebuild it from.
+        CHECK(m.sources == std::vector<Id>{44});
+        const MidiRegion& r = l.snapshot.edit->tracks[2]->midi_playlists[0]->regions[0];
+        CHECK(r.data->missing && r.data->missing->file == kBassFile);
+        CHECK(r.data->notes.empty() && r.data->events.empty());
+        CHECK(r.position == 15360000 && r.length == 30720000);
+        CHECK(invariants_hold(l.snapshot));
+        std::string out;
+        CHECK(save(l, out));
+        CHECK(out == text);
+        // Not editable until it is restored or rebuilt; still movable.
+        History h(l.snapshot);
+        EditMidi em;
+        em.playlist = 46;
+        em.region = r.id;
+        em.add_notes = {sonora::midi::Note{}};
+        em.add_notes[0].velocity = 100;
+        std::string why;
+        CHECK(!h.apply(em, why) && mentions(why, "MIDI data is missing"));
+        CHECK_APPLY(h, (MoveRegion{46, r.id, 0, 0, Timebase::Ticks}));
+    }
+    // Opened without its folder, every sequence is missing, and still opens.
+    Loaded l;
+    LoadError e;
+    CHECK(deserialize(text, l, e));
+    CHECK(l.missing_sequences.size() == 3);
+    CHECK(mentions(l.missing_sequences[0].why, "without its folder"));
+    return 0;
+}
+
+// What ModelAction::Load carries (protocol 8): the session file and the
+// sequence files it names, in one blob the engine decodes without a folder.
+int test_session_bundle() {
+    Loaded l;
+    LoadError e;
+    CHECK(load(read_fixture(kCurrent), l, e));
+    std::string bundle, err;
+    CHECK(encode_session_bundle(l.snapshot, WriteInfo{"sonora-ui", 1}, bundle, err));
+    Loaded back;
+    if (!decode_session_bundle(bundle, back, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(decode_session_bundle(bundle, back, e));
+    CHECK(back.missing_sequences.empty() && back.verified_sequences.size() == 3);
+    CHECK(same_document(back.snapshot, l.snapshot));
+    // A bare session file is a bundle with no sequence files.
+    CHECK(decode_session_bundle(read_fixture(kInlineMidi), back, e));
+    CHECK(same_document(back.snapshot, l.snapshot));
+    // Cut anywhere, it is refused, or opens with a sequence missing; it is
+    // never read past its end.
+    for (std::size_t n : {std::size_t{4}, std::size_t{12}, bundle.size() / 2, bundle.size() - 1}) {
+        Loaded cut;
+        if (decode_session_bundle(bundle.substr(0, n), cut, e)) {
+            CHECK(!cut.missing_sequences.empty());
+        }
+    }
+    CHECK(!decode_session_bundle(bundle + "x", back, e) && mentions(e.message, "bytes after"));
+    // A missing sequence crosses as its reference and arrives missing.
+    g_folder.hidden = kBassFile;
+    Loaded gap;
+    CHECK(load(read_fixture(kCurrent), gap, e));
+    g_folder.hidden.clear();
+    CHECK(encode_session_bundle(gap.snapshot, WriteInfo{"sonora-ui", 1}, bundle, err));
+    CHECK(decode_session_bundle(bundle, back, e));
+    CHECK(back.missing_sequences.size() == 1 && back.missing_sequences[0].ref.file == kBassFile);
+    CHECK(mentions(back.missing_sequences[0].why, "did not send it"));
+    CHECK(same_document(back.snapshot, gap.snapshot));
+    return 0;
+}
+
 // The frozen version-1 fixture loads forever, through v1 -> v2, which adds
 // an empty insert list to every track and changes nothing else.
 int test_v1_migrates() {
@@ -288,12 +500,12 @@ int test_v1_migrates() {
 
     for (const TrackMix& m : l.snapshot.mix.tracks) CHECK(!m.solo_safe);
 
-    // Saved, it is the same session at version 5: the version, one empty
+    // Saved, it is the same session at version 6: the version, one empty
     // list, one solo safe off and one audio kind per track, and an empty
     // midi_sources, are the whole difference.
     std::string out;
     CHECK(save(l, out));
-    const std::string expected = as_v5(
+    const std::string expected = as_current(
         edit(edit(edit(v1, "\"sonora_session\": 1,", "\"sonora_session\": 4,"),
                   "      \"active_playlist\": 11,\n",
                   "      \"solo_safe\": false,\n      \"active_playlist\": 11,\n"
@@ -308,7 +520,7 @@ int test_v1_migrates() {
     CHECK(out == expected);
     std::int64_t version = 0;
     CHECK(file_format_version(v1, version) && version == 1);
-    CHECK(file_format_version(out, version) && version == 5);
+    CHECK(file_format_version(out, version) && version == 6);
     CHECK(!file_format_version("{\"keymap\": 1}", version));
     CHECK(!file_format_version("not json", version));
 
@@ -335,7 +547,7 @@ int test_v2_migrates() {
 
     std::string out;
     CHECK(save(l, out));
-    const std::string expected = as_v5(
+    const std::string expected = as_current(
         edit(edit(edit(v2, "\"sonora_session\": 2,", "\"sonora_session\": 4,"),
                   "      \"solo\": false,\n      \"active_playlist\": 11,\n",
                   "      \"solo\": false,\n      \"solo_safe\": false,\n"
@@ -372,7 +584,7 @@ int test_v3_migrates() {
     CHECK(invariants_hold(l.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v5(edit(v3, "\"sonora_session\": 3,", "\"sonora_session\": 4,")));
+    CHECK(out == as_current(edit(v3, "\"sonora_session\": 3,", "\"sonora_session\": 4,")));
     return 0;
 }
 
@@ -394,11 +606,11 @@ int test_v4_migrates() {
     CHECK(l.snapshot.sources->midi_sources.empty());
     std::string out;
     CHECK(save(l, out));
-    if (out != as_v5(v4)) {
+    if (out != as_current(v4)) {
         std::ofstream("v4-migrated.out.sonora", std::ios::binary) << out;
         std::fprintf(stderr, "  migrated bytes differ; wrote v4-migrated.out.sonora\n");
     }
-    CHECK(out == as_v5(v4));
+    CHECK(out == as_current(v4));
     // A version-4 file cannot carry what version 4 does not define.
     CHECK(refused(edit(v4, "      \"name\": \"Keys\",", "      \"kind\": \"audio\",\n      \"name\": \"Keys\","),
                   "migrating from format version 4: tracks[1] has \"kind\"", ""));
@@ -449,7 +661,7 @@ int test_v3_tempo_brought_inside_bounds() {
     CHECK(save(l, out));
     Loaded again;
     CHECK(load(out, again, e));
-    CHECK(again.file_version == 5 && again.repairs.empty());
+    CHECK(again.file_version == 6 && again.repairs.empty());
     CHECK(again.snapshot.settings.tempo == t);
     return 0;
 }
@@ -546,22 +758,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 6,"),
-                  "format version 6, newer than this program, which reads up to version 5",
+    CHECK(refused(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 7,"),
+                  "format version 7, newer than this program, which reads up to version 6",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 7,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 8,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 5,",
+    CHECK(refused(edit(text, "\"sonora_session\": 6,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 5,", "\"sonora_session\": 5.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 6.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -574,8 +786,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 5,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 5,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 6,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 6,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -856,6 +1068,10 @@ int main() {
     t(test_malformed);
     t(test_malformed_inserts);
     t(test_malformed_midi);
+    t(test_malformed_sequence_refs);
+    t(test_v5_migrates);
+    t(test_missing_sequence_opens);
+    t(test_session_bundle);
     t(test_comma_locale);
     t(test_fade_into_crossfade_is_repaired_at_load);
     if (failed != 0) {

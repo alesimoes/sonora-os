@@ -624,7 +624,7 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     info.written_by = "sonora-ui";
     info.save_generation = save_generation_;
     std::string bytes, error;
-    if (!model::serialize(to_write, info, bytes, error)) {
+    if (!model::serialize(to_write, info, bytes, error, &sequences_.digests())) {
         why = "the session could not be saved: " + error;
         sync();
         return false;
@@ -632,8 +632,16 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     const bool nothing_new = file == file_ && bytes == saved_bytes_;
     if (!nothing_new) {
         info.save_generation = save_generation_ + 1;
-        if (!model::serialize(to_write, info, bytes, error)) {
+        if (!model::serialize(to_write, info, bytes, error, &sequences_.digests())) {
             why = "the session could not be saved: " + error;
+            sync();
+            return false;
+        }
+        // The sequence files first (ADR-0015 §3): the session file must never
+        // name one that is not durable. A failure here leaves the old session
+        // file as it was.
+        if (!sequences_.write(file, to_write, why)) {
+            why = "the session could not be saved: " + why;
             sync();
             return false;
         }
@@ -644,6 +652,14 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
         }
         if (!disk_caution.empty()) {
             caution = caution.empty() ? disk_caution : caution + "; " + disk_caution;
+        }
+        sequences_.saved(file, bytes);
+        // O4, held back while a take is open (§6): a deletion's journal
+        // commit is one more thing in front of the take's own syncs.
+        std::string clean_caution;
+        if (!overlay_.recording) sequences_.clean(clean_caution);
+        if (!clean_caution.empty()) {
+            caution = caution.empty() ? clean_caution : caution + "; " + clean_caution;
         }
         save_generation_ = info.save_generation;
         saved_bytes_ = std::move(bytes);
@@ -691,9 +707,11 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
               " Hz; it cannot play here until sample-rate conversion exists";
         return false;
     }
+    const std::shared_ptr<const model::SourcePool> pool = loaded.snapshot.sources;
     if (!doc_.reset(std::move(loaded.snapshot), why)) return false;
     ctl_.document_replaced();
     file_ = file;
+    sequences_.open(file, loaded.verified_sequences);
     // A repaired session is not the file on disk: it reads as modified, so
     // Save writes it and another Open asks first.
     saved_revision_ = loaded.repairs.empty() ? doc_.revision() : UINT64_MAX;
@@ -715,12 +733,34 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
         m.insert(QStringLiteral("why"), q(r.why));
         repairs << m;
     }
+    // O2: each missing sequence file shown as a repair is, held until
+    // dismissed. Its regions opened silent with their windows; nothing is
+    // dropped, and a save names the file again.
+    for (const model::MissingSequence& ms : loaded.missing_sequences) {
+        std::string where = ms.regions.front();
+        if (ms.regions.size() > 1) where += " and " + std::to_string(ms.regions.size() - 1) + " more";
+        std::string why_missing = ms.why;
+        const model::MidiSource* take =
+            ms.sources.empty() ? nullptr : pool->find_midi(ms.sources.front());
+        if (take != nullptr) why_missing += "; its take " + take->path + " is kept";
+        QVariantMap m;
+        m.insert(QStringLiteral("path"), q(where));
+        m.insert(QStringLiteral("was"), q(ms.ref.file));
+        m.insert(QStringLiteral("now"), QStringLiteral("MIDI data missing: silent, not editable"));
+        m.insert(QStringLiteral("why"), q(why_missing));
+        repairs << m;
+    }
     setRepairs(std::move(repairs));
     QString said = QStringLiteral("Opened ") + file_;
     if (!loaded.repairs.empty()) {
         said += QStringLiteral(", with %1 value%2 repaired to open (listed below); save to keep them")
                     .arg(loaded.repairs.size())
                     .arg(loaded.repairs.size() == 1 ? QString() : QStringLiteral("s"));
+    }
+    if (!loaded.missing_sequences.empty()) {
+        said += QStringLiteral(", with %1 MIDI sequence file%2 missing (listed below)")
+                    .arg(loaded.missing_sequences.size())
+                    .arg(loaded.missing_sequences.size() == 1 ? QString() : QStringLiteral("s"));
     }
     emit notice(said);
     return true;

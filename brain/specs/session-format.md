@@ -14,6 +14,8 @@ both are in [ADR-0009](../decisions/ADR-0009-timeline-snapshots-and-plan-swap.md
   Audio Files/                   every source, one BWF per take per track
   Session File Backups/          rotated saves, autosaves, pre-migration copies
   Plugin State/                  plugin state blobs, content-addressed (version 2, ADR-0012)
+  MIDI Files/                    MIDI takes and imported SMFs (version 5, ADR-0014)
+  MIDI Sequences/                each MIDI region's events, content-addressed (version 6, ADR-0015)
 ```
 
 The folder is the unit. It is what goes on the persistence partition, what
@@ -539,6 +541,34 @@ calls `write_file_durably(path, bytes)` in `common/platform`, whose POSIX
 implementation does steps 1–4. `std::filesystem::rename` alone is not
 enough, because it does not sync.
 
+**MIDI sequence files first (version 6, ADR-0015 §3).** Before step 1,
+each sequence the snapshot names that the saver does not hold as on disk
+is written to `MIDI Sequences/<sha256>.msq.tmp`, `fdatasync`ed and renamed
+to `<sha256>.msq`; one `fsync` of `MIDI Sequences/` covers them all. The
+name is the hash of the bytes, so a file torn by a crash never carries it,
+and a session file never names a sequence that is not durable. A sidecar
+that cannot be written fails the save by name and leaves the previous
+session file in place. What is on disk is the saver's set of hashes: those
+that verified at open, plus each it renamed, minus each it deleted; never
+object identities. A leftover `.msq.tmp` at open is an interrupted save
+and is deleted.
+
+**Cleaning up sequence files (owner decision O4).** Sequence files are
+derived state, not recordings: after a save is durable, the saver deletes
+each `MIDI Sequences/<sha256>.msq` that **no kept file names** (the main
+file, the autosave, each backup, each pre-migration copy). It holds each
+kept file's set of names in memory, drops a set when its file rotates out,
+and rebuilds them once at open by reading the kept files. While a kept file
+cannot be parsed nothing is deleted, and the operator is told. A crash
+during cleanup leaves extra files, never a missing one. While a take is
+open, cleanup waits for the transport to stop; the engine's saver also
+issues its syncs only just after a disk-thread checkpoint (ADR-0015 §6).
+*Until the engine has a saver thread the interface saves (`ui/qt`
+`session_files.cpp`): it writes sequence files and cleans up as above,
+holding cleanup back while it records, but it cannot see the disk thread's
+checkpoints, so its syncs are not paced.* Files in `MIDI Files/` are never
+deleted by this rule.
+
 **Autosave.** After every committed take (the `RecordTake` operation) and
 every 60 s while there are unsaved edits, the same procedure writes
 `Session File Backups/<name>.autosave.sonora`. Explicit save writes the main
@@ -647,7 +677,16 @@ lie:
    every missing file on screen. Refusing to open would be worse, because
    it would also stop the operator recording. A file shorter than `length`
    is reported the same way, and the regions past its end play silence.
-5. Orphan scan of `Audio Files/` (crash recovery above).
+5. Every MIDI sequence file (version 6) is read once, however many regions
+   share it, and checked against the region's `data`: size, SHA-256, a
+   strict decode, counts. One that is missing or damaged does not stop the
+   open or drop a region (owner decision O2): its regions keep their
+   windows, play nothing, cannot be edited, and the next save names the
+   file again; the opener lists each one, and the take file it came from
+   when there is one. A session holding more notes and events than the
+   engine's `midi_max_entries` (default 2^24) is refused by name with its
+   count, never opened half-loaded.
+6. Orphan scan of `Audio Files/` (crash recovery above).
 
 ## Versioning
 
@@ -698,6 +737,16 @@ build drives runs there.
 `"kind": "audio"` and the top level `"midi_sources": []`. Nothing else
 changes. The frozen v4 fixture loads through it; v5's is `v5-midi.sonora`,
 with one track of each kind.
+
+**v5→v6 (MIDI sequence files, ADR-0015 §3, owner decision O5):** each MIDI
+region's inline `notes`, `events` and `sysex` move under
+`"data": {"inline": {...}}`, a shape only this step makes, and the reader
+takes the sequence from them as version 5 did, with version 5's key paths
+in any error. The first save writes one file per sequence and replaces the
+lists with a reference (`midi.md` §4.4); the open says so once, and the
+version 5 file is kept as the pre-migration backup. Nothing else changes.
+The frozen v5 fixture loads through it and saves as `v6-midi.sonora` and
+its three files in `fixtures/MIDI Sequences/`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

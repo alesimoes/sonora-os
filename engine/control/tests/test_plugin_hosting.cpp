@@ -666,7 +666,7 @@ int scenario_state_not_restored(const Args& a) {
     // (Loaded: StateResult::Refused).
     std::string other, e;
     check(pc::encode_state_blob(pc::StateBlob{pc::Format::Lv2, kLookahead, {"x"}}, other, e), "a state blob");
-    const std::string theirs = pc::sha256_hex(other);
+    const std::string theirs = sonora::sha256_hex(other);
     write(theirs, other);
 
     const Id tracks[4] = {100, 102, 104, 106};

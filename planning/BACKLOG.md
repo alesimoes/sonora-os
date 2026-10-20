@@ -181,10 +181,37 @@ playback can follow edits; it is in flight.
              `SetInstrument`/`RemoveInstrument` and the `instrument` key
              move to M-5. Unverified 6 measured: over the caps (`midi.md`
              §4.6).
-       - [ ] Unverified 6's decision, before M-4: sequences beside the
-             file, or another remedy, for sessions that save but do not
-             open past ~3 M DOM values and undo windows over 64 MiB
-             (owner and architect).
+       - [x] Unverified 6's decision, before M-4: ADR-0015 (PR #102),
+             accepted by the owner 2026-10-20 with O1–O5 as recommended:
+             canonical chunks, binary sidecar files, a chunk table in the
+             window, a 2^24-entry budget.
+       - [x] M-1c PR 1, storage and format (`m1c-midi-storage`):
+             `sha256_hex` in `common/base`; the `.msq` codec, canonical,
+             bounded, fuzzed (`midi.md` §4.4.1); session format 6, each
+             sequence in `MIDI Sequences/<sha256>.msq`, v5 → v6 moving
+             #100's inline lists at the first save (O5); a missing or
+             damaged file opens its regions silent, not editable, kept
+             (O2), its reference in undo window format 6; the interface's
+             saver writes sidecars tmp + `fdatasync` + rename before the
+             session file with one folder `fsync`, a hash-keyed written
+             set and in-memory reference sets, and cleans up per O4,
+             never while recording; `ModelAction::Load` carries a session
+             bundle, `kProtocolVersion` 8; `midi_max_entries` (engine
+             setting, 2^24): undo evicted first, edits over it refused,
+             sessions over it refused at open, a Notice from 90 %.
+             Measured: ADR-0015 Unverified 2 and 6 (`midi.md` §4.6).
+       - [ ] M-1c PR 2, chunks and protocol: `MidiSequence` as a spine of
+             canonical 4-quarter chunks with cumulative counts, shared by
+             undo steps (§1, §2); the window's chunk table and a Snapshot
+             in parts of at most 16 MiB, encoded off the document thread
+             (§4); the budget counted per chunk; ADR-0015 Unverified 1, 3
+             and 7 (rt-engineer, ui-engineer).
+       - [ ] M-1c PR 3, with the engine's saver thread (item 3): sidecar
+             syncs only after a disk-thread checkpoint while a take is
+             open, "Saving after the next checkpoint", cleanup after the
+             transport stops; takes over the budget kept unplaced with a
+             Notice (M-4); rebuilding a missing sequence from its take
+             file (O2, with M-4's SMF reading); Unverified 5.
        - [ ] ADR-0014 §9's phases in order: M-2 backend MIDI ports, M-3 playback to ports,
              M-4 recording and SMF take files, M-5 instruments
              (plugin layout 2, exit part 1), M-6 SMF interchange (exit

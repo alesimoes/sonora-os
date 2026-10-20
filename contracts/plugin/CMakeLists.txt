@@ -20,7 +20,7 @@ add_test(NAME plugin_protocol COMMAND test_plugin_protocol)
 # OS calls (ADR-0008): the socket pair is common/platform's ControlChannel.
 add_library(sonora_plugin_host_control STATIC src/host_control.cpp
             include/sonora/plugin/host_control.h)
-target_link_libraries(sonora_plugin_host_control PUBLIC sonora_plugin_protocol)
+target_link_libraries(sonora_plugin_host_control PUBLIC sonora_plugin_protocol sonora_sha256)
 
 add_executable(test_plugin_host_control tests/test_host_control.cpp)
 target_link_libraries(test_plugin_host_control PRIVATE sonora_plugin_host_control)

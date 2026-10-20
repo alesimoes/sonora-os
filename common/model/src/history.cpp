@@ -95,14 +95,65 @@ std::size_t exclusive_bytes(const EditState& state, const EditState& previous) {
     return n;
 }
 
-History::History(Snapshot initial, std::size_t budget_bytes)
-    : current_(std::move(initial)), budget_(budget_bytes) {
-    steps_.push_back(Step{current_.edit, current_.revision, 0, {}});
+namespace {
+
+template <typename Visit>
+void each_sequence(const MidiPlaylist& p, Visit&& visit) {
+    for (const MidiRegion& r : p.regions) {
+        if (r.data) visit(r.data.get());
+    }
+}
+
+}  // namespace
+
+std::uint64_t state_midi_entries(const EditState& state) {
+    std::unordered_set<const MidiSequence*> seen;
+    std::uint64_t n = 0;
+    for (const auto& t : state.tracks) {
+        for (const auto& p : t->midi_playlists) {
+            each_sequence(*p, [&](const MidiSequence* s) {
+                if (seen.insert(s).second) n += midi_entries(*s);
+            });
+        }
+    }
+    return n;
+}
+
+std::uint64_t exclusive_midi_entries(const EditState& state, const EditState& previous) {
+    std::unordered_set<const void*> shared;
+    for (const auto& t : previous.tracks) {
+        shared.insert(t.get());
+        for (const auto& p : t->midi_playlists) {
+            shared.insert(p.get());
+            each_sequence(*p, [&](const MidiSequence* s) { shared.insert(s); });
+        }
+    }
+    std::uint64_t n = 0;
+    for (const auto& t : state.tracks) {
+        if (shared.count(t.get()) != 0) continue;
+        for (const auto& p : t->midi_playlists) {
+            if (shared.count(p.get()) != 0) continue;
+            each_sequence(*p, [&](const MidiSequence* s) {
+                if (shared.insert(s).second) n += midi_entries(*s);
+            });
+        }
+    }
+    return n;
+}
+
+History::History(Snapshot initial, std::size_t budget_bytes, std::uint64_t midi_max_entries)
+    : current_(std::move(initial)), budget_(budget_bytes), max_entries_(midi_max_entries) {
+    const std::uint64_t entries = state_midi_entries(*current_.edit);
+    steps_.push_back(Step{current_.edit, current_.revision, 0, {}, entries});
+    entries_ = entries;
 }
 
 History History::replica(Snapshot initial) {
-    return History(std::move(initial), std::numeric_limits<std::size_t>::max());
+    return History(std::move(initial), std::numeric_limits<std::size_t>::max(),
+                   std::numeric_limits<std::uint64_t>::max());
 }
+
+std::uint64_t History::current_midi_entries() const { return state_midi_entries(*current_.edit); }
 
 bool History::restore(Snapshot current, std::vector<WindowStep> steps, std::size_t position,
                       std::optional<History>& out, std::string& error) {
@@ -127,12 +178,17 @@ bool History::restore(Snapshot current, std::vector<WindowStep> steps, std::size
     History h = replica(std::move(current));
     h.steps_.clear();
     h.charged_ = 0;
+    h.entries_ = 0;
     for (std::size_t i = 0; i < steps.size(); ++i) {
         const std::size_t charge =
             i == 0 ? 0 : exclusive_bytes(*steps[i].edit, *h.steps_.back().edit);
-        h.steps_.push_back(
-            Step{std::move(steps[i].edit), steps[i].revision, charge, std::move(steps[i].label)});
+        const std::uint64_t entries =
+            i == 0 ? state_midi_entries(*steps[i].edit)
+                   : exclusive_midi_entries(*steps[i].edit, *h.steps_.back().edit);
+        h.steps_.push_back(Step{std::move(steps[i].edit), steps[i].revision, charge,
+                                std::move(steps[i].label), entries});
         h.charged_ += charge;
+        h.entries_ += entries;
     }
     h.pos_ = position;
     out.emplace(std::move(h));
@@ -167,6 +223,17 @@ bool History::apply(const Operation& op, std::string& error, const MemberCheck& 
     Snapshot next;
     if (!model::apply(current_, op, next, error, check)) return false;
     const bool undoable = is_undoable(op);
+    if (undoable && next.edit != current_.edit &&
+        max_entries_ != std::numeric_limits<std::uint64_t>::max()) {
+        const std::uint64_t n = state_midi_entries(*next.edit);
+        if (n > max_entries_) {
+            error = "the session would hold " + std::to_string(n) +
+                    " MIDI notes and events, over the engine's midi_max_entries of " +
+                    std::to_string(max_entries_) +
+                    " even with no undo history kept; raise the setting, or edit less at once";
+            return false;
+        }
+    }
     current_ = std::move(next);
     if (undoable) push(current_.edit, current_.revision, display_name(op));
     return true;
@@ -179,12 +246,15 @@ void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision
     bool dropped = false;
     while (steps_.size() > pos_ + 1) {
         charged_ -= steps_.back().charge;
+        entries_ -= steps_.back().entries;
         steps_.pop_back();
         dropped = true;
     }
     const std::size_t charge = exclusive_bytes(*edit, *steps_.back().edit);
-    steps_.push_back(Step{std::move(edit), revision, charge, std::move(label)});
+    const std::uint64_t entries = exclusive_midi_entries(*edit, *steps_.back().edit);
+    steps_.push_back(Step{std::move(edit), revision, charge, std::move(label), entries});
     charged_ += charge;
+    entries_ += entries;
     pos_ = steps_.size() - 1;
     // Two states always stay, the newest and the one before it, so the
     // last edit can be undone however large it was.
@@ -192,14 +262,25 @@ void History::push(std::shared_ptr<const EditState> edit, std::uint64_t revision
         pop_front();
         dropped = true;
     }
+    // MIDI's budget lets the last edit's undo go too (ADR-0015 §5): an edit
+    // or a take refused while history it could drop is kept would be worse.
+    // apply() has already refused a state over it on its own.
+    while (entries_ > max_entries_ && steps_.size() > 1) {
+        pop_front();
+        dropped = true;
+    }
     if (dropped) prune_insert_values();
 }
 
 void History::pop_front() {
+    entries_ -= steps_.front().entries;
     steps_.pop_front();
     // The new floor becomes the base the others are counted against.
     charged_ -= steps_.front().charge;
     steps_.front().charge = 0;
+    entries_ -= steps_.front().entries;
+    steps_.front().entries = state_midi_entries(*steps_.front().edit);
+    entries_ += steps_.front().entries;
     --pos_;
 }
 
