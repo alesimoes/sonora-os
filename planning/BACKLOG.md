@@ -189,11 +189,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        zoom; fades; clip gain; markers.
        - [x] Fades and crossfades (`feature/ui-fades`): keys, Smart Tool
              corners, Clear; still open: a Fades dialog, batch fades.
-       - [ ] A crossfade keeps the fade it hides at that end, so clearing the
-             crossfade brings it back, and it still takes room from the
-             other end (the interface clamps and refuses against it, naming
-             it). Pro Tools drops it: crossfade plus SetFade 0, sent as one
-             `Compound` (Track 2 item 7).
+       - [x] A crossfade made in the Edit window drops the fades at its
+             cut, as Pro Tools does: SetFade 0 for each, then the
+             SetCrossfade, as one "Crossfade" `Compound`, one undo step
+             (`t3-crossfade-drops-fades`; ui_edit
+             test_fades_against_crossfades). Hidden fades in documents made
+             elsewhere or by older builds are still counted and named.
        - [x] common/model refuses a crossfade that overlaps the region's
              own fade at its other end, in `playlist_problem`; edge-moving
              edits, crossfade clears and punches shorten the fade instead,
