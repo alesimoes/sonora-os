@@ -244,7 +244,7 @@ different tables. That is itself a schema problem (§4).
 | `comma` | `transport.rewind` | **Confirmed** | *Global Commands*: "Rewind — Comma (,)". |
 | `period` | `transport.fast_forward` | **Confirmed (chord); command approximate** | *Global Commands*: "**Forward** — Period (.)"; "**Fast Forward** — Shift-Period (.)". Logic distinguishes the two and our catalog does not. `.`→`transport.fast_forward` is the right pairing given the catalog, but it is Logic's *Forward*. If `transport.fast_forward` is ever split, `shift+period` is the real Fast Forward. |
 | `numpad_0` | `transport.stop` | **Confirmed** | *Global Commands*: "Stop — 𝍖 0", where Apple's note reads "𝍖 indicates that the key shown is available twice on an extended keyboard, and that you must press the one on the numeric keypad". Was unverified; it is right. |
-| `numpad_multiply` | `transport.record` | **Corrected (command)** | Chord right. *Global Commands*: "**Record/Record Toggle** — 𝍖 Asterisk (*)". Use **`transport.toggle_record`**; plain `transport.record` is `r`. |
+| `numpad_multiply` | `transport.record` | **Corrected (command)** | Chord right. *Global Commands*: "**Record/Record Toggle** — 𝍖 Asterisk (*)". Use **`transport.toggle_record`**; plain `transport.record` is `r`. Update 2026-10-19: bound to **`transport.punch`** once the catalog had it, since Record Toggle punches out with playback rolling on and `transport.toggle_record` stops the transport. |
 | `alt+return` | `transport.go_to_end` | **Confirmed** | *Global Commands*: "Go to End of Last Region — Option-Return (↩)". Was unverified; it is right, with the caveat that Logic's end is the end of the last region, not a fixed project end. |
 
 Also documented and unbound: `numpad_enter` = Play, `numpad_period` = Pause.

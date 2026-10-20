@@ -404,6 +404,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
     c.take.punched = range != nullptr;
     c.take.punch = range != nullptr ? *range : PunchRange{};
     recording_take_ = take_number;
+    newest_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.
     take_origin_.store(kNoOrigin, std::memory_order_relaxed);
@@ -421,7 +422,7 @@ bool Session::punch_out() {
 void Session::collect_closed() {
     if (!disk_->running()) disk_->drain_once();
     for (DiskThread::ClosedFile& f : disk_->take_closed()) {
-        if (!f.failure.empty()) failed_files_.push_back(f.path + ": " + f.failure);
+        if (!f.failure.empty()) failed_files_.push_back({f.take, f.path + ": " + f.failure});
         const auto it = closing_.find(f.take);
         if (it != closing_.end()) it->second.take.files.push_back(std::move(f));
     }
@@ -472,27 +473,33 @@ std::string describe_failures(const std::string& first, int more) {
 }  // namespace
 
 std::string Session::take_failure() const {
-    std::string first = failed_files_.empty() ? std::string() : failed_files_.front();
-    int more = failed_files_.empty() ? 0 : static_cast<int>(failed_files_.size()) - 1;
+    std::string first;
+    int more = 0;
+    const auto add = [&first, &more](const std::string& said) {
+        if (first.empty()) {
+            first = said;
+        } else {
+            ++more;
+        }
+    };
+    if (newest_take_ == 0) return first;
+    for (const FailedFile& f : failed_files_) {
+        if (f.take == newest_take_) add(f.what);
+    }
     for (const auto& t : tracks_) {
         for (int slot = 0; slot < Track::kWriterSlots; ++slot) {
             // The disk thread owns the writer while the slot holds a take.
             // failed() is an acquire load, so failure() is settled once it
             // is true; path() was set by this thread when it opened the file.
-            if (t->slot_take(slot) == 0) continue;
+            if (t->slot_take(slot) != newest_take_) continue;
             WavWriter& w = t->writer(slot);
             if (!w.failed()) continue;
             const std::string said = w.path() + ": " + w.failure();
             // Closed and collected, but its slot not yet given back.
-            if (std::find(failed_files_.begin(), failed_files_.end(), said) !=
-                failed_files_.end()) {
-                continue;
-            }
-            if (first.empty()) {
-                first = said;
-            } else {
-                ++more;
-            }
+            const bool collected =
+                std::any_of(failed_files_.begin(), failed_files_.end(),
+                            [&said](const FailedFile& f) { return f.what == said; });
+            if (!collected) add(said);
         }
     }
     return first.empty() ? first : describe_failures(first, more);
@@ -513,11 +520,11 @@ bool Session::stop(std::string* error) {
     collect_closed();
     recording_take_ = 0;
 
-    std::vector<std::string> failed;
-    failed.swap(failed_files_);
-    if (failed.empty()) return true;
-    const std::string why =
-        describe_failures(failed.front(), static_cast<int>(failed.size()) - 1);
+    // Every file is closed and collected, so only failed_files_ speaks.
+    const std::string why = take_failure();
+    failed_files_.clear();
+    newest_take_ = 0;
+    if (why.empty()) return true;
     std::fprintf(stderr, "sonora: take failed, %s\n", why.c_str());
     if (error) *error = why;
     return false;

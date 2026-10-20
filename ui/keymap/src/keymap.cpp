@@ -888,12 +888,14 @@ const std::vector<std::vector<std::string>>& KeyMap::essential_commands() {
     // Starting and stopping a take are separate groups because a profile can
     // put them on different keys -- Pro Tools starts on Command+Space and
     // stops on Space -- and one that can only start has no way to close the
-    // file short of quitting. transport.toggle_play is in the stop group:
+    // file short of quitting. transport.punch starts a take when stopped
+    // but never stops one: punching out leaves the transport rolling.
+    // transport.toggle_play is in the stop group:
     // its handler closes a running take (session_commands.cpp), and where a
     // build cannot run it, it does not count.
     static const std::vector<std::vector<std::string>> groups = {
         {"track.toggle_arm", "track.arm", "track.arm_all"},
-        {"transport.toggle_record", "transport.record"},
+        {"transport.toggle_record", "transport.record", "transport.punch"},
         {"transport.toggle_record", "transport.stop", "transport.toggle_play"},
         {"app.quit"},
     };

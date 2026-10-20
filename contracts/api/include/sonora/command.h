@@ -72,6 +72,8 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"transport.record", CommandTarget::None, "Start recording"},
         {"transport.toggle_record", CommandTarget::None,
          "Start recording, or stop and close the take if recording"},
+        {"transport.punch", CommandTarget::None,
+         "Punch in on the fly while rolling, or punch out and keep rolling"},
         {"transport.return_to_zero", CommandTarget::None,
          "Move the playhead to the session start"},
         {"transport.go_to_end", CommandTarget::None,

@@ -201,8 +201,9 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
     // fails if the two lists differ.
     static const std::vector<std::string> ids = {
         "track.arm_all",        "track.disarm_all",         "track.toggle_arm",
-        "transport.play",       "transport.record",         "transport.return_to_zero",
-        "transport.stop",       "transport.toggle_play",    "transport.toggle_record",
+        "transport.play",       "transport.punch",          "transport.record",
+        "transport.return_to_zero", "transport.stop",       "transport.toggle_play",
+        "transport.toggle_record",
     };
     return ids;
 }
@@ -831,6 +832,16 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             why = "no track is armed";
             return false;
         }
+        // A punch range set keeps the take inside it, as the real engine's
+        // start_punch() does: one that ends at or before the playhead would
+        // record only handle, or outside the range PUNCH shows lit.
+        const auto& range = document_->current().settings.transport.punch;
+        const uint64_t at = playhead();
+        if (range[0] >= 0 && range[1] > range[0] && static_cast<uint64_t>(range[1]) <= at) {
+            why = "the punch range ends at frame " + std::to_string(range[1]) +
+                  ", before the playhead at " + std::to_string(at);
+            return false;
+        }
         move(TransportState::Recording);
         return true;
     };
@@ -855,6 +866,12 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     const std::string& id = r.command;
     if (id == "transport.toggle_record") return recording ? finish() : start();
     if (id == "transport.record") return recording ? true : start();
+    if (id == "transport.punch") {
+        if (!recording) return start();
+        move(TransportState::Rolling);
+        ++take_;
+        return true;
+    }
     if (id == "transport.stop") return stop();
     if (id == "transport.play") return play();
     if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? play() : stop();

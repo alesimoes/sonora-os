@@ -549,6 +549,22 @@ int test_repair_keeps_what_works(const std::vector<KeyChord>& device,
         CHECK(says_cannot_quit);
     }
     {
+        // transport.punch starts a take when stopped (Logic's keypad *), so
+        // a profile whose only record key it is needs no start repair; it
+        // never stops one, so the stop group still wants its own key.
+        KeyMap m;
+        std::string err;
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "a": "track.arm_all",
+            "q": "app.quit",
+            "s": "transport.stop",
+            "r": "transport.punch" } })", m, err));
+        CHECK(m.ensure_essentials(device, implemented).empty());
+        CHECK(m.resolve("r")->command == "transport.punch");
+        const auto& stop = group_containing("transport.stop");
+        CHECK(std::find(stop.begin(), stop.end(), "transport.punch") == stop.end());
+    }
+    {
         // A free chord is used before one that is in use.
         KeyMap m;
         std::string err;
@@ -671,7 +687,7 @@ int test_profile_corrections() {
         {"logic.json", "ctrl+alt+]", nullptr},
         {"logic.json", "ctrl+alt+x", "edit.fade_selection"},
         {"logic.json", "cmd+f", nullptr},        // Show/Hide Flex Pitch/Time
-        {"logic.json", "numpad_multiply", "transport.toggle_record"},
+        {"logic.json", "numpad_multiply", "transport.punch"},
         {"logic.json", "cmd+d", nullptr},        // New Track with Duplicate Settings
         {"logic.json", "alt+pagedown", "tool.next"},
         {"logic.json", "t", nullptr},            // Show Tool Menu

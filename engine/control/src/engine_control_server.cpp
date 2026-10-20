@@ -57,7 +57,7 @@ constexpr auto kBusy = std::chrono::milliseconds(2);
 // "playback on the M4/M7 control server", item 4): an Ok for a take that
 // never started is a lost take the operator was told is recording.
 bool starts_a_take(const std::string& id) {
-    return id == "transport.record" || id == "transport.toggle_record";
+    return id == "transport.record" || id == "transport.toggle_record" || id == "transport.punch";
 }
 
 bool changes_arming(const std::string& id) {

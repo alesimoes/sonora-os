@@ -3,10 +3,13 @@
 // The handlers install_session_commands() puts on a real Session. Until M4
 // these lived in ui/keymap's test, which therefore linked engine/control;
 // the handlers are engine/control's, so their test is too.
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
@@ -267,6 +270,186 @@ int test_toggle_record_with_a_punch_range_punches() {
     return 0;
 }
 
+// The disk thread closes a take punched out while rolling on its own.
+std::vector<sonora::Session::ClosedTake> await_closed(sonora::Session& s) {
+    std::vector<sonora::Session::ClosedTake> closed;
+    for (int i = 0; i < 2000 && closed.empty(); ++i) {
+        closed = s.closed_takes();
+        if (closed.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return closed;
+}
+
+// transport.punch with no punch range, on the fly: rolling, it punches in
+// at the playhead; recording, it punches out and the transport rolls on,
+// the take closed in band and the next number taken; nothing armed is
+// refused by name with the roll left alone.
+int test_punch_on_the_fly() {
+    Dir dir("sonora_test_session_commands_punch_fly");
+    const sonora::SessionConfig cfg = punch_config(dir);
+    const fs::path first = dir.path / "Audio Files" / "Audio 1_01.wav";
+    const fs::path second = dir.path / "Audio Files" / "Audio 1_02.wav";
+    {
+        sonora::Session s(cfg);
+        CHECK(s.create_dirs());
+        CommandRegistry reg;
+        int take = 1;
+        bool quit = false;
+        sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
+                                         [](sonora::PunchRange&) { return false; });
+        CHECK(reg.implemented("transport.punch"));
+        s.disk().start();
+        s.play();
+        roll_to(s, kB + kH + 64);
+
+        std::string why;
+        CHECK(reg.dispatch("transport.punch", {}, why) == DispatchResult::Failed);
+        CHECK(mentions(why, "no track is armed"));
+        CHECK(s.transport().state() == sonora::TransportState::Rolling);
+
+        s.tracks()[0]->set_rec_armed(true);
+        CHECK(reg.dispatch("transport.punch", {}, why) == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        CHECK(take == 1);
+        roll_to(s, s.transport().playhead() + 640);
+        CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Rolling);
+        CHECK(take == 2);
+        roll_to(s, s.transport().playhead() + 64);
+        const auto closed = await_closed(s);
+        CHECK(closed.size() == 1 && closed[0].take == 1 && !closed[0].punched);
+        CHECK(closed[0].files.size() == 1 && closed[0].files[0].frames == 640);
+
+        CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        roll_to(s, s.transport().playhead() + 64);
+        CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Stopped);
+        CHECK(take == 3);
+        const auto again = s.closed_takes();
+        CHECK(again.size() == 1 && again[0].take == 2 && !again[0].punched);
+    }
+    CHECK(fs::exists(first) && fs::exists(second));
+    return 0;
+}
+
+// With a punch range set, the PUNCH indicator is lit and the take stays
+// inside [A, B) however it was started (Logic's Autopunch; ui-engineer
+// review on #97). Rolling from `from`, transport.punch arms the punch and
+// a second press, after B + H, punches out; the take is the punch's, its
+// capture [max(from, A - H), B + H) and its placement [A, B).
+int punch_rolling_from(const char* name, uint64_t from) {
+    Dir dir(name);
+    const sonora::SessionConfig cfg = punch_config(dir);
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
+                                     [](sonora::PunchRange& r) {
+                                         r = fixed_punch();
+                                         return true;
+                                     });
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    s.play();
+    roll_to(s, from);
+    const uint64_t pressed = s.transport().playhead();
+    CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Recording);
+    roll_to(s, kB + kH + 640);
+    CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Rolling);
+    CHECK(take == 2);
+    roll_to(s, s.transport().playhead() + 64);
+    const auto closed = await_closed(s);
+    CHECK(closed.size() == 1 && closed[0].punched);
+    CHECK(closed[0].punch.monitor_in == kA && closed[0].punch.monitor_out == kB);
+    CHECK(closed[0].files.size() == 1);
+    const uint64_t captured_from = pressed > kA - kH ? pressed : kA - kH;
+    if (closed[0].files[0].frames != (kB + kH) - captured_from) {
+        std::fprintf(stderr, "  from %llu: %llu frames, not %llu\n",
+                     static_cast<unsigned long long>(pressed),
+                     static_cast<unsigned long long>(closed[0].files[0].frames),
+                     static_cast<unsigned long long>((kB + kH) - captured_from));
+        return 1;
+    }
+    CHECK(s.stop());
+    return 0;
+}
+
+int test_punch_rolling_before_a_waits_for_the_range() {
+    return punch_rolling_from("sonora_test_session_commands_punch_before", 64);
+}
+
+int test_punch_rolling_inside_the_range_punches_out_at_b() {
+    return punch_rolling_from("sonora_test_session_commands_punch_inside", kA + 100);
+}
+
+// At or past B a punch would record outside the lit range, or only handle:
+// refused by name, the roll left alone and no file opened.
+int test_punch_rolling_past_b_is_refused() {
+    Dir dir("sonora_test_session_commands_punch_past");
+    const sonora::SessionConfig cfg = punch_config(dir);
+    const fs::path wav = dir.path / "Audio Files" / "Audio 1_01.wav";
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    uint64_t b = kB;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
+                                     [&b](sonora::PunchRange& r) {
+                                         r = fixed_punch(b);
+                                         return true;
+                                     });
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    s.play();
+    roll_to(s, kB + kH + 64);
+    const uint64_t playhead = s.transport().playhead();
+    for (const uint64_t out : {kB, playhead}) {
+        b = out;
+        std::string why;
+        CHECK(reg.dispatch("transport.punch", {}, why) == DispatchResult::Failed);
+        if (!mentions(why, "before the playhead")) {
+            std::fprintf(stderr, "  past B: %s\n", why.c_str());
+            return 1;
+        }
+        CHECK(s.transport().state() == sonora::TransportState::Rolling);
+        CHECK(!fs::exists(wav));
+    }
+    CHECK(take == 1);
+    return 0;
+}
+
+// Stopped, it records as transport.record does, the range included.
+int test_punch_stopped_records_the_range() {
+    Dir dir("sonora_test_session_commands_punch_stopped");
+    const sonora::SessionConfig cfg = punch_config(dir);
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
+                                     [](sonora::PunchRange& r) {
+                                         r = fixed_punch();
+                                         return true;
+                                     });
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Recording);
+    roll_to(s, kB + kH + 64);
+    CHECK(reg.dispatch("transport.stop") == DispatchResult::Ok);
+    const auto punched = s.closed_takes();
+    CHECK(punched.size() == 1 && punched[0].punched);
+    CHECK(punched[0].punch.monitor_in == kA && punched[0].punch.monitor_out == kB);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -275,6 +458,11 @@ int main() {
     failures += test_arming_locked_during_take();
     failures += test_record_rolling_past_the_punch_out_is_refused();
     failures += test_toggle_record_with_a_punch_range_punches();
+    failures += test_punch_on_the_fly();
+    failures += test_punch_rolling_before_a_waits_for_the_range();
+    failures += test_punch_rolling_inside_the_range_punches_out_at_b();
+    failures += test_punch_rolling_past_b_is_refused();
+    failures += test_punch_stopped_records_the_range();
     if (failures != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failures);
         return 1;

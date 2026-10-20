@@ -70,6 +70,27 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return start(why);
     });
 
+    // Logic's Record/Record Toggle. During a take it punches out with the
+    // transport still rolling, the take closed in band (ADR-0009).
+    // Otherwise it starts a take as transport.record does: on the fly at
+    // the playhead with no punch range, and with one, only inside [A, B),
+    // which is what the lit PUNCH indicator promises (Logic's Autopunch).
+    // Before A it waits for A, inside the range it punches in at the
+    // playhead and out at B, and at or past B start_punch() refuses it.
+    reg.install("transport.punch", [&session, &take, start,
+                                    playback](const CommandContext&, std::string& why) {
+        if (session.transport().state() == TransportState::Recording) {
+            session.punch_out();
+            ++take;
+            return true;
+        }
+        if (playback && playback->record_requested()) {
+            playback->cancel_record();
+            return true;
+        }
+        return start(why);
+    });
+
     // A roll is not a take: stopping it closes no file and uses no take
     // number.
     reg.install("transport.stop",
