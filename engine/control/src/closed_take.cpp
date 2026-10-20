@@ -502,8 +502,13 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
                 return model::Operation{std::move(c)};
             };
             std::string alone;
+            const std::shared_ptr<const model::EditState> was = document.current().edit;
             if (document.apply(one(true), u, alone)) {
                 out.updates.push_back(std::move(u));
+                if (take.punched && placed[k]) {
+                    say_shortened_fades(*was, document.current(), records[k], numbers[k], which,
+                                        out.fade_notices);
+                }
                 continue;
             }
             if (!records[k].crossfades.empty() && document.apply(one(false), u, plain_why)) {

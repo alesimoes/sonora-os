@@ -684,8 +684,8 @@ int test_a_punch_the_model_refuses_crossfades_for_lands_without_them() {
 
 // The fade the old take carries, which a take over it clamps or a punch
 // fits: fade-in to 10 frames before A, fade-out from 10 frames after B.
-bool fade_old_take(model::Document& doc) {
-    const model::Playlist& pl = active_playlist(doc.current(), 0);
+bool fade_old_take(model::Document& doc, std::size_t track = 0) {
+    const model::Playlist& pl = active_playlist(doc.current(), track);
     const model::Id playlist = pl.id;
     const model::Id region = pl.regions.at(0).id;
     model::ReplicationUpdate u;
@@ -815,6 +815,39 @@ int test_a_punch_without_its_crossfades_names_no_fade() {
     return 0;
 }
 
+// Arms both tracks, punches with `range` to past B + H, stops.
+bool punch_two(Session& s, const PunchRange& range, Session::ClosedTake& out) {
+    for (auto& t : s.tracks()) t->set_rec_armed(true);
+    s.disk().start();
+    if (!s.start_punch(1, range)) return false;
+    float block[64];
+    for (float& f : block) f = 0.5f;
+    const float* inputs[2] = {block, block};
+    backend::AudioBlock b{};
+    b.inputs = inputs;
+    b.input_count = 2;
+    b.nframes = 64;
+    while (s.transport().playhead() < static_cast<uint64_t>(kB + kH + 64)) s.process(b);
+    if (!s.stop()) return false;
+    std::vector<Session::ClosedTake> closed = s.closed_takes();
+    if (closed.size() != 1 || closed[0].files.size() != 2) return false;
+    out = closed[0];
+    return true;
+}
+
+// Track 1's take path, already in the pool: its file is refused with or
+// without crossfades, so a two-track part falls back to file by file.
+bool take_track_1s_path(model::Document& doc) {
+    model::AddSource taken;
+    taken.source.id = doc.current().next_id;
+    taken.source.path = "Audio Files/Audio 1_01.wav";
+    taken.source.length = 64;
+    taken.source.kind = model::SourceKind::Imported;
+    model::ReplicationUpdate u;
+    std::string why;
+    return doc.apply(taken, u, why);
+}
+
 // PR #100 review: when a part is refused even without its crossfades, its
 // files are retried one by one, and a file that the model then takes only
 // without its crossfades lost them with no word. Track 1's file names a
@@ -839,33 +872,16 @@ int test_a_file_retried_alone_without_its_crossfades_is_said() {
         model::Crossfade edit{first, second, kX, model::Align::Centre,
                               model::FadeShape::EqualPower};
         CHECK(doc.apply(model::SetCrossfade{playlist, edit}, u, why));
-        model::AddSource taken;
-        taken.source.id = doc.current().next_id;
-        taken.source.path = "Audio Files/Audio 1_01.wav";
-        taken.source.length = 64;
-        taken.source.kind = model::SourceKind::Imported;
-        CHECK(doc.apply(taken, u, why));
+        CHECK(take_track_1s_path(doc));
 
         PunchRange range = punch_range();
         range.monitor_in = 1030;
         range.capture_from = 30;
-        for (auto& t : s.tracks()) t->set_rec_armed(true);
-        s.disk().start();
-        CHECK(s.start_punch(1, range));
-        float block[64];
-        for (float& f : block) f = 0.5f;
-        const float* inputs[2] = {block, block};
-        backend::AudioBlock b{};
-        b.inputs = inputs;
-        b.input_count = 2;
-        b.nframes = 64;
-        while (s.transport().playhead() < static_cast<uint64_t>(kB + kH + 64)) s.process(b);
-        CHECK(s.stop());
-        const std::vector<Session::ClosedTake> closed = s.closed_takes();
-        CHECK(closed.size() == 1 && closed[0].files.size() == 2);
+        Session::ClosedTake take;
+        CHECK(punch_two(s, range, take));
 
         const std::size_t undo_depth = doc.history().undo_depth();
-        const TakeAdded r = add_closed_take(doc, s, closed[0]);
+        const TakeAdded r = add_closed_take(doc, s, take);
         CHECK(mentions(r.refused, "take 1 (track 1)"));
         CHECK(r.refused.find("track 2") == std::string::npos);
         CHECK(r.track_notices.size() == 1);
@@ -876,6 +892,38 @@ int test_a_file_retried_alone_without_its_crossfades_is_said() {
         CHECK(pl.regions.size() == 4);
         CHECK(pl.regions[2].position == 1030 && pl.regions[2].end() == kB);
         CHECK(pl.crossfades.size() == 1 && pl.crossfades[0] == edit);
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
+// PR #105 review: a file the retry lands with its crossfades named none
+// of the fades they shortened, which the same file landing in its part
+// does (PR #103). Track 2 carries the faded old take of the test above.
+int test_a_file_retried_alone_names_the_fades_it_shortened() {
+    SessionConfig cfg = punch_config("test_closed_take_punch_fades_alone");
+    cfg.track_count = 2;
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg, 1));
+        CHECK(fade_old_take(doc, 1));
+        CHECK(take_track_1s_path(doc));
+        Session::ClosedTake take;
+        CHECK(punch_two(s, punch_range(), take));
+
+        const TakeAdded r = add_closed_take(doc, s, take);
+        CHECK(mentions(r.refused, "take 1 (track 1)"));
+        CHECK(r.track_notices.empty());
+        const model::Playlist& pl = active_playlist(doc.current(), 1);
+        CHECK(pl.regions.size() == 3 && pl.crossfades.size() == 2);
+        CHECK(r.fade_notices.size() == 2);
+        CHECK(mentions(r.fade_notices[0], "take 1 shortened the fade-in of \"Old\" on track 2 "
+                                          "from 2990.0 ms to 2980.0 ms"));
+        CHECK(mentions(r.fade_notices[1], "take 1 shortened the fade-out of \"Old\" on track 2 "
+                                          "from 14990.0 ms to 14980.0 ms"));
     }
     std::filesystem::remove_all(cfg.dir);
     return 0;
@@ -1068,6 +1116,7 @@ int main() {
     failed += test_a_file_under_a_midi_track_is_left_out();
     failed += test_one_refused_file_does_not_sink_the_others();
     failed += test_a_file_retried_alone_without_its_crossfades_is_said();
+    failed += test_a_file_retried_alone_names_the_fades_it_shortened();
     failed += test_a_punch_goes_in_over_its_range();
     failed += test_a_punch_stopped_inside_its_range_ends_there();
     failed += test_a_punch_armed_late_starts_where_it_recorded();
