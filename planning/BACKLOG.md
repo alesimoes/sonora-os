@@ -33,10 +33,14 @@ playback can follow edits; it is in flight.
        record with the session's punch range set punches over
        [A − H, B + H), and the take goes in over [A, B) with a crossfade at
        each punch point that has the handle, one undo step.
-       - [x] `transport.punch`, punch in and out on the fly: rolling, it
-         punches in at the playhead; during a take, it punches out with the
-         transport rolling on; stopped, it records as `transport.record`
-         does. In the catalogue, `install_session_commands()` and
+       - [x] `transport.punch`, punch in and out on the fly: during a
+         take, it punches out with the transport rolling on; otherwise it
+         records as `transport.record` does. With no punch range that is at
+         the playhead; with one (PUNCH lit, Logic's Autopunch) the take
+         stays inside it: before A it punches in at A, inside [A, B) at the
+         playhead, out at B either way, and at or past B it is refused by
+         name (ui-engineer review on #97). In the start-a-take group of
+         `KeyMap::essential_commands()`, not the stop group. In the catalogue, `install_session_commands()` and
          `FakeEngine`; Logic's Record/Record Toggle (keypad `*`) bound to it.
          Pro Tools has no key for it outside QuickPunch mode, which is
          `transport.toggle_quickpunch`, not in the catalogue. A failed take

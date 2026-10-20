@@ -508,6 +508,39 @@ int check_punch_on_the_fly(Rig& rig) {
                        return t.state == TransportState::Stopped && t.take == take + 2;
                    }),
                    "stop did not close the second take");
+
+            // A punch range set (PUNCH lit) keeps the take inside it: past
+            // B the punch is refused by name and the roll goes on.
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            const auto set_punch = [&](model::Frames a, model::Frames b) {
+                model::SetSettings set;
+                set.settings = s.replica.current().settings;
+                set.settings.transport.punch = {{a, b}};
+                ModelRequest m;
+                std::string error;
+                CommandReply sr;
+                return model::encode_operation(set, m.op, error) &&
+                       s.await(rig_, s.engine->submit(m), sr) && sr.result == DispatchResult::Ok;
+            };
+            EXPECT(set_punch(1, 2), "the punch range was refused");
+            EXPECT(s.await(rig_, s.command("transport.play"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Rolling && t.playhead > 2;
+                   }),
+                   "the state block never showed a roll past the range");
+            EXPECT(s.await(rig_, s.command("transport.punch"), r), "no reply to the late punch");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "before the playhead"),
+                   "a punch past the range was not refused by name: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(v.transport().state == TransportState::Rolling && v.transport().take == take + 2,
+                   "the refused punch stopped the roll or used a take number");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(set_punch(0, 0), "clearing the punch range was refused");
             EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
                        r.result == DispatchResult::Ok,
                    "disarming failed: " + r.message);

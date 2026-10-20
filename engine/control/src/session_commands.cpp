@@ -15,34 +15,24 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // The counter is a hint, never trusted on its own: the folder may hold
     // takes from before a restart, and start_recording() refuses a name that
     // is taken, so the number is re-read from disk before every take.
-    const auto open = [&session, &take, may_record, punch_for](bool use_range, std::string& why) {
+    const auto open_take = [&session, &take, may_record, punch_for](std::string& why) {
         if (may_record && !may_record(why)) return false;
         const int free = session.next_free_take();
         if (take < free) take = free;
         PunchRange range;
-        if (use_range && punch_for && punch_for(range)) {
-            return session.start_punch(take, range, &why);
-        }
+        if (punch_for && punch_for(range)) return session.start_punch(take, range, &why);
         return session.start_recording(take, &why);
     };
-    const auto open_take = [open](std::string& why) { return open(true, why); };
-    // On the fly: where the playhead is when the key is pressed, whatever
-    // range is set.
-    const auto open_here = [open](std::string& why) { return open(false, why); };
     // With a playback controller a take starts behind its residency gate,
     // like a roll: what plays under it must be in memory, and a locate asked
     // just before must have landed, or the take starts somewhere else
     // (ADR-0009 §4.4). The request is answered from pump(); a refusal then
     // comes back through take_record_error().
-    const auto start_with = [playback](const PlaybackController::StartTake& how,
-                                       std::string& why) {
-        if (!playback) return how(why);
+    const auto start = [open_take, playback](std::string& why) {
+        if (!playback) return open_take(why);
         // Asked once already: a second press is the same request.
-        if (!playback->record_requested()) playback->record(how);
+        if (!playback->record_requested()) playback->record(open_take);
         return true;
-    };
-    const auto start = [start_with, open_take](std::string& why) {
-        return start_with(open_take, why);
     };
 
     // The transport stops whatever the take's fate. Failed reports the take,
@@ -80,15 +70,16 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return start(why);
     });
 
-    // Logic's Record Toggle, and Pro Tools' record key in QuickPunch: while
-    // rolling it punches in at the playhead, and during a take it punches
-    // out with the transport still rolling, the take closed in band
-    // (ADR-0009). Stopped, it starts a take as transport.record does, the
-    // punch range included.
-    reg.install("transport.punch", [&session, &take, start, start_with, open_here,
+    // Logic's Record/Record Toggle. During a take it punches out with the
+    // transport still rolling, the take closed in band (ADR-0009).
+    // Otherwise it starts a take as transport.record does: on the fly at
+    // the playhead with no punch range, and with one, only inside [A, B),
+    // which is what the lit PUNCH indicator promises (Logic's Autopunch).
+    // Before A it waits for A, inside the range it punches in at the
+    // playhead and out at B, and at or past B start_punch() refuses it.
+    reg.install("transport.punch", [&session, &take, start,
                                     playback](const CommandContext&, std::string& why) {
-        const TransportState state = session.transport().state();
-        if (state == TransportState::Recording) {
+        if (session.transport().state() == TransportState::Recording) {
             session.punch_out();
             ++take;
             return true;
@@ -97,7 +88,6 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
             playback->cancel_record();
             return true;
         }
-        if (state == TransportState::Rolling) return start_with(open_here, why);
         return start(why);
     });
 
