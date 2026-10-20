@@ -37,7 +37,8 @@
 //   chain_keeps_bundle_unwalked  a chain-start probe mid-walk never records
 //                      a bundle fingerprint (code-reviewer A)
 //   exchange_frees_nothing  the control thread hands old catalogs to the
-//                      worker to free (rt-engineer 1)
+//                      worker to free (rt-engineer 1): no destructor call
+//                      on it, counted rather than timed
 //   stop_signal        a probe a stop signal ended is never cached; a signal
 //                      to the engine's group does not reach it (finding 1)
 #include <signal.h>
@@ -670,16 +671,22 @@ void test_chain_keeps_bundle_unwalked() {
 
 // rt-engineer 1 on #95: the control thread never frees a catalog. The one
 // exchange() replaces goes back to the worker, so a large one costs the
-// control thread a pointer swap.
+// control thread a pointer swap. Counted, not timed: each injected catalog
+// says which thread destroyed it, so a slow machine cannot pass a free on
+// the control thread nor fail a swap that was only descheduled.
 void test_exchange_frees_nothing() {
     std::printf("exchange_frees_nothing\n");
     Fixture fx("retire");
     PluginScannerConfig c = fx.config(false);
     c.scan_at_start = false;
+    // Before the scanner: the catalog it holds last is freed by its
+    // destructor, which counts here.
+    const std::thread::id control = std::this_thread::get_id();
+    std::atomic<int> freed_here{0}, freed_elsewhere{0};
     PluginScanner s(c);
     check(until(s, [&] { return s.catalog()->ready && s.idle(); }, 5000), "ready");
-    const auto big = [](int tag) {
-        auto cat = std::make_shared<PluginScanner::Catalog>();
+    const auto big = [&](int tag) {
+        auto* cat = new PluginScanner::Catalog;
         cat->generation = uint64_t(tag);
         for (int i = 0; i < 1000; ++i) {
             pr::Record r;
@@ -703,24 +710,24 @@ void test_exchange_frees_nothing() {
             cat->api.plugins.push_back(catalog_entry(r));
             cat->probes[{r.uri, 2}] = std::move(r);
         }
-        return std::shared_ptr<const PluginScanner::Catalog>(std::move(cat));
+        return std::shared_ptr<const PluginScanner::Catalog>(cat, [&, control](const PluginScanner::Catalog* p) {
+            (std::this_thread::get_id() == control ? freed_here : freed_elsewhere).fetch_add(1);
+            delete p;
+        });
     };
-    std::weak_ptr<const PluginScanner::Catalog> first;
-    {
-        auto a = big(100);
-        first = a;
-        s.inject_catalog_for_test(std::move(a));
-    }
+    s.inject_catalog_for_test(big(100));
     s.exchange(false);
     check(s.catalog()->generation == 100, "the first large catalog taken");
-    s.inject_catalog_for_test(big(101));
-    const auto t0 = std::chrono::steady_clock::now();
-    const bool took = s.exchange(false);
-    const auto us =
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-    check(took && s.catalog()->generation == 101, "the second taken");
-    check(us < 5000, "exchange() frees nothing on the control thread (" + std::to_string(us) + " us)");
-    check(until(s, [&] { return first.expired(); }, 5000), "the worker freed the one it replaced");
+    for (int tag = 101; tag < 105; ++tag) {
+        s.inject_catalog_for_test(big(tag));
+        check(s.exchange(false) && s.catalog()->generation == uint64_t(tag),
+              "catalog " + std::to_string(tag) + " taken");
+    }
+    // The four replaced ones are the worker's to free.
+    check(until(s, [&] { return freed_elsewhere.load() == 4; }, 5000),
+          "the worker freed the four replaced (" + std::to_string(freed_elsewhere.load()) + ")");
+    check(freed_here.load() == 0,
+          "the control thread freed none (" + std::to_string(freed_here.load()) + " destructor calls on it)");
 }
 
 void test_vst3_list_fail() {

@@ -46,7 +46,7 @@ public:
     EngineControlServer& server() { return server_; }
 
 private:
-    void receive(std::string frame);
+    void receive(EngineControlServer::Frame frame);
     uint64_t deliver(const std::string& message, uint64_t seq);
     // The next whole message from the server, if its frames are here.
     bool next_message(std::string& message);
@@ -58,7 +58,7 @@ private:
     bool connected_ = false;
 
     std::mutex mutex_;
-    std::deque<std::string> inbound_;   // engine -> client, frames
+    std::deque<EngineControlServer::Frame> inbound_;   // engine -> client, frames
     api::wire::Reassembler reassembler_;   // the client thread's
 };
 

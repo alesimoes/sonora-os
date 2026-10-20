@@ -571,7 +571,12 @@ void EngineControlServer::send_to(Client& client, const std::string& bytes) {
     std::vector<std::string> frames;
     std::string error;
     if (!api::wire::split_frames(bytes, frames, error)) return;
-    for (std::string& f : frames) client.out(std::move(f));
+    for (std::string& f : frames) client.out(std::make_shared<const std::string>(std::move(f)));
+}
+
+void EngineControlServer::send_frames(Client& client, const std::vector<Frame>& frames) {
+    if (!client.out) return;
+    for (const Frame& f : frames) client.out(f);
 }
 
 void EngineControlServer::send_to(ClientId id, const std::string& bytes) {
@@ -622,9 +627,10 @@ void EngineControlServer::send_catalog(Client& client) {
         return;
     }
     // Generation 0 and empty until the worker has read its cache. Encoded
-    // by the worker, never here (rt-engineer 2 on #95).
+    // and split by the worker, never here (rt-engineer 2 on #95), and the
+    // same frames go to every client.
     const auto& c = scanner_->catalog();
-    if (c->api_wire) send_to(client, *c->api_wire);
+    if (c->api_frames) send_frames(client, *c->api_frames);
     else if (api::wire::encode(c->api, bytes, why)) send_to(client, bytes);
 }
 
@@ -645,7 +651,8 @@ void EngineControlServer::follow_scanner() {
     if (c->generation != 0 && c->generation != catalog_sent_) {
         // Item 5: again whenever a scan completes with a different result.
         catalog_sent_ = c->generation;
-        if (c->api_wire) send(*c->api_wire);
+        if (c->api_frames)
+            for (auto& [id, client] : clients_) send_frames(client, *c->api_frames);
     }
 }
 

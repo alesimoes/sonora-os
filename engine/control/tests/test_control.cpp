@@ -512,9 +512,9 @@ std::vector<api::EngineEvent> late_greeting(RealEngine& real, api::Inbox& in) {
     auto got = std::make_shared<Got>();
     EngineControlServer& server = real.engine().server();
     const auto id = server.attach(
-        [got](std::string frame) {
+        [got](EngineControlServer::Frame frame) {
             std::lock_guard<std::mutex> lock(got->mutex);
-            got->frames.push_back(std::move(frame));
+            got->frames.push_back(*frame);
         },
         {});
     // The control thread takes the attach before a request delivered after
@@ -764,7 +764,7 @@ void resync_applies_the_mix() {
     // The rider leaving mid-ride ends its ride: the document's gain is put
     // back. Here a second client rides track 1 and goes with no release.
     EngineControlServer& server = real.engine().server();
-    const auto rider = server.attach([](std::string) {}, {});
+    const auto rider = server.attach([](EngineControlServer::Frame) {}, {});
     api::ParameterChange stranded;
     stranded.seq = 1;
     stranded.track = 1;

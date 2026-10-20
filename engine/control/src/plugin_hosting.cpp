@@ -96,10 +96,15 @@ struct PluginHosting::Probe {
     std::vector<std::string> keys;  // dense order
     std::vector<float> defaults;
     std::string reason;
+    // The record this answer was taken from, encoded: a catalog whose record
+    // for the key differs, or has none, makes it stale. Empty when the
+    // answer is not the worker's (a malformed id).
+    std::string record;
 
     // The worker's record, as the chain needs it. A Blocked plugin (its
     // probe crashed or hung, §4) is refused for the chain, as before.
     void take(const plugin::probe::Record& r) {
+        record = plugin::probe::encode(r);
         keys.clear();
         defaults.clear();
         reason.clear();
@@ -143,10 +148,17 @@ struct PluginHosting::Chain {
     std::unique_ptr<SupervisedChain> running;
     uint32_t store = kNone, node = kNone;
     std::vector<Member> running_spec;
+    // Every active insert the document had when the running chain's spec
+    // was chosen, excluded ones included. While the document still says
+    // exactly this, the running chain stands whatever the probe answers say
+    // now: a rescan that loses or blocks one of its plugins must not touch
+    // it (ADR-0012), and the new answer applies at its next start.
+    std::vector<Member> running_doc;
 
     std::unique_ptr<SupervisedChain> pending;
     uint32_t pstore = kNone, pnode = kNone;
     std::vector<Member> pending_spec;
+    std::vector<Member> pending_doc;
     // What start_pending seeded the pending store with, by insert: the
     // document's values then. On Swapped it is what the store holds, so
     // what the document changed meanwhile is posted (B2 on #80).
@@ -291,6 +303,7 @@ void PluginHosting::abandon_pending(Chain& c) {
     retire(nullptr, c.pstore, c.pnode);
     c.pstore = c.pnode = kNone;
     c.pending_spec.clear();
+    c.pending_doc.clear();
     c.pending_seeded.clear();
     c.pending_state_lost.clear();
 }
@@ -300,6 +313,7 @@ void PluginHosting::drop_chain(Chain& c) {
     retire(std::move(c.running), c.store, c.node);
     c.store = c.node = kNone;
     c.running_spec.clear();
+    c.running_doc.clear();
     c.posted.clear();
     c.retry.clear();
     c.open_touches.clear();
@@ -345,6 +359,25 @@ void PluginHosting::start_probes() {
 bool PluginHosting::poll_probes() {
     bool finished = false;
     const auto& catalog = scanner_.catalog();
+    if (catalog->serial != catalog_serial_) {
+        // A rescan can change a plugin under the same id (an upgrade, a
+        // bundle replaced): the answer taken from its old record is dropped
+        // and taken again from the new one, or asked of the worker when the
+        // catalog no longer has it. Running chains are not touched: each
+        // keeps the table its host loaded until its next start.
+        catalog_serial_ = catalog->serial;
+        for (auto it = probes_.begin(); it != probes_.end();) {
+            const Probe& p = *it->second;
+            const plugin::probe::Record* r = p.record.empty() ? nullptr : catalog->find(p.id, p.channels);
+            if (p.record.empty() || (r && plugin::probe::encode(*r) == p.record)) {
+                ++it;
+                continue;
+            }
+            it = probes_.erase(it);
+            ++answers_dropped_;
+            finished = true;
+        }
+    }
     for (auto& [key, p] : probes_) {
         if (p->state != Probe::State::Running) continue;
         const plugin::probe::Record* r = catalog->find(p->id, p->channels);
@@ -353,6 +386,25 @@ bool PluginHosting::poll_probes() {
         finished = true;
     }
     return finished;
+}
+
+std::vector<PluginHosting::Member> PluginHosting::document_members(const model::TrackEdit& track) {
+    std::vector<const model::Insert*> active;
+    for (const model::Insert& in : track.inserts)
+        if (in.active) active.push_back(&in);
+    std::sort(active.begin(), active.end(), [](const model::Insert* a, const model::Insert* b) { return a->slot < b->slot; });
+    std::vector<Member> out;
+    for (const model::Insert* in : active) out.push_back({in->id, in->plugin});
+    return out;
+}
+
+bool PluginHosting::probe_answer_for_test(const std::string& host_id, std::vector<std::string>& keys) const {
+    for (auto it = probes_.lower_bound({host_id, 0}); it != probes_.end() && it->first.first == host_id; ++it) {
+        if (it->second->state != Probe::State::Ok) continue;
+        keys = it->second->keys;
+        return true;
+    }
+    return false;
 }
 
 // ---- the document
@@ -457,6 +509,7 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
     }
     c.pending = std::make_unique<SupervisedChain>(*supervisor_, std::move(spec), c.pstore, c.pnode);
     c.pending_spec = std::move(spec_members);
+    c.pending_doc = document_members(*track);
     c.pending_seeded = std::move(seeded);
     std::string error;
     if (c.pending->begin(error)) return;
@@ -510,6 +563,21 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
             it = still ? std::next(it) : c.host_refused.erase(it);
         }
         if (!ok_) continue;
+        // The running chain follows the document for the inserts it has,
+        // whatever starts beside it, and while a probe runs too.
+        post_values(c, doc);
+        if (c.running && !c.running->down() && !c.running_doc.empty() && c.running_doc == document_members(t)) {
+            // The document still describes the running chain: it stands,
+            // whatever a rescan made of its plugins since (code-reviewer on
+            // #104). Answers dropped meanwhile are asked again, for its next
+            // start; a start the document no longer wants is abandoned
+            // (change H).
+            for (const Member& m : c.running_doc) probe_for(m.plugin, t.channels);
+            abandon_pending(c);
+            c.start_failed.clear();
+            c.failed_spec.clear();
+            continue;
+        }
         if (!desired_spec(t, doc, c)) continue;  // a probe still runs
         std::vector<Member> want;
         std::vector<const model::Insert*> active;
@@ -526,9 +594,6 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
             c.failed_spec.clear();
             continue;
         }
-        // The running chain follows the document for the inserts it has,
-        // whatever starts beside it.
-        post_values(c, doc);
         const bool running_matches = c.running && !c.running->down() && c.running_spec == want;
         if (running_matches) {
             // An edit undone before its new host was Ready: that start is
@@ -666,6 +731,8 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.pstore = c.pnode = kNone;
                     c.running_spec = std::move(c.pending_spec);
                     c.pending_spec.clear();
+                    c.running_doc = std::move(c.pending_doc);
+                    c.pending_doc.clear();
                     c.ever_ready = true;
                     c.start_failed.clear();
                     c.failed_spec.clear();
