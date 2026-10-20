@@ -46,7 +46,8 @@ struct ReplicationUpdate {
 
 class Document {
 public:
-    explicit Document(Snapshot initial, std::size_t budget_bytes = History::kDefaultBudget);
+    explicit Document(Snapshot initial, std::size_t budget_bytes = History::kDefaultBudget,
+                      std::uint64_t midi_max_entries = History::kDefaultMidiMaxEntries);
 
     // On success `out` is the update to send to every replica: one for a
     // compound, whatever its size. On failure the document is unchanged and
@@ -68,12 +69,14 @@ public:
     // desynced. Fails only when the current state alone is too large.
     bool snapshot(ReplicationUpdate& out, std::string& error,
                   std::size_t max_bytes = SIZE_MAX);
-    // Another session: `session_file` is a session file's bytes
-    // (session_file.h), checked as strictly as a load from disk. The
-    // document becomes it, with a new history, because undo never crosses
-    // into another session; `out` is the Snapshot every replica is sent. A
-    // `sample_rate` other than 0 refuses a session at another rate. On
-    // failure the document is unchanged and `error` says why.
+    // Another session: `session_file` is a session bundle, or a bare
+    // session file (decode_session_bundle(), session_file.h), checked as
+    // strictly as a load from disk. The document becomes it, with a new
+    // history, because undo never crosses into another session; `out` is
+    // the Snapshot every replica is sent. A `sample_rate` other than 0
+    // refuses a session at another rate, and one over midi_max_entries is
+    // refused by name. On failure the document is unchanged and `error`
+    // says why.
     bool load(std::string_view session_file, std::uint32_t sample_rate, ReplicationUpdate& out,
               std::string& error, std::size_t max_bytes = SIZE_MAX);
 

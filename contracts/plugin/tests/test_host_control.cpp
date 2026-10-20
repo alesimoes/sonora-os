@@ -585,23 +585,7 @@ void state_blob_and_files() {
     StateBlob too_big{Format::Lv2, "urn:x", {std::string(kMaxStateBytes, 's')}};
     CHECK(!encode_state_blob(too_big, bytes, e));
 
-    // FIPS 180-4 examples.
-    CHECK(sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    CHECK(sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    CHECK(sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
-          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
-    CHECK(sha256_hex(std::string(1000000, 'a')) ==
-          "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
-    // Lengths around the padding boundary (55, 56, 63, 64) agree with a
-    // two-call split of the same bytes being impossible to get wrong: each is
-    // checked against its own re-hash of a copy.
-    for (std::size_t n : {55u, 56u, 63u, 64u, 65u, 119u, 120u}) {
-        const std::string x(n, 'q');
-        CHECK(sha256_hex(x).size() == 64 && sha256_hex(x) == sha256_hex(std::string(x)));
-    }
-    CHECK(sha256_hex(std::string(55, 'a')) != sha256_hex(std::string(56, 'a')));
-
-    const std::string h = sha256_hex(bytes);
+    const std::string h = sonora::sha256_hex(bytes);
     CHECK(state_file_name(h) == "Plugin State/" + h + ".state");
     CHECK(state_file_name("ABC").empty());
     CHECK(state_file_name(std::string(64, 'G')).empty());

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <unordered_map>
@@ -13,6 +14,7 @@
 #include "midi_json.h"
 #include "sonora/json/json.h"
 #include "sonora/model/musical_map.h"
+#include "sonora/sha256.h"
 
 namespace sonora::model {
 
@@ -168,8 +170,63 @@ bool v4_to_v5(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v5 -> v6 (ADR-0015 §3): a MIDI region's three inline lists move under
+// "data": {"inline": {...}}, the one shape of "data" only this step makes,
+// and the reader takes the sequence from them as version 5 did. No file is
+// written here (a migration is a pure function on the tree); the first
+// save writes one per sequence and keeps the version 5 file as a backup,
+// so this is reported.
+bool v5_to_v6(Value& root, std::vector<Repair>& repairs, std::string& error) {
+    Value* tracks = root.find("tracks");
+    if (tracks == nullptr || !tracks->is_array()) return true;
+    std::size_t moved = 0;
+    for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+        Value& t = tracks->items()[i];
+        const Value* kind = t.is_object() ? t.find("kind") : nullptr;
+        if (kind == nullptr || !kind->is_string() || kind->text() == "audio") continue;
+        Value* pls = t.find("playlists");
+        if (pls == nullptr || !pls->is_array()) continue;
+        for (std::size_t k = 0; k < pls->items().size(); ++k) {
+            Value& pl = pls->items()[k];
+            Value* regions = pl.is_object() ? pl.find("regions") : nullptr;
+            if (regions == nullptr || !regions->is_array()) continue;
+            for (std::size_t r = 0; r < regions->items().size(); ++r) {
+                Value& rv = regions->items()[r];
+                if (!rv.is_object()) continue;
+                if (rv.find("data") != nullptr) {
+                    error = "tracks[" + std::to_string(i) + "].playlists[" + std::to_string(k) +
+                            "].regions[" + std::to_string(r) +
+                            "] has \"data\", which version 5 does not define";
+                    return false;
+                }
+                Value lists = Value::object();
+                auto& members = rv.members();
+                for (auto it = members.begin(); it != members.end();) {
+                    if (it->first == "notes" || it->first == "events" || it->first == "sysex") {
+                        lists.set(it->first, std::move(it->second));
+                        it = members.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                Value data = Value::object();
+                data.set("inline", std::move(lists));
+                rv.set("data", std::move(data));
+                ++moved;
+            }
+        }
+    }
+    if (moved > 0) {
+        repairs.push_back({"MIDI regions", std::to_string(moved) + " with their events inline",
+                           "one file per sequence in \"MIDI Sequences/\", written at the next save",
+                           "format 6 keeps MIDI beside the session file, which a dense session "
+                           "otherwise outgrows; the version 5 file is kept as a backup"});
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
-    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5}};
+    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -259,8 +316,19 @@ Value port_value(const std::string& port, std::uint8_t channel) {
     return v;
 }
 
+Value sequence_ref_value(const SequenceFileRef& ref) {
+    Value v = Value::object();
+    v.set("file", Value::string(ref.file));
+    v.set("sha256", Value::string(ref.sha256));
+    v.set("bytes", integer(static_cast<std::int64_t>(ref.bytes)));
+    v.set("notes", integer(static_cast<std::int64_t>(ref.notes)));
+    v.set("events", integer(static_cast<std::int64_t>(ref.events)));
+    v.set("sysex", integer(static_cast<std::int64_t>(ref.sysex)));
+    return v;
+}
+
 // `source` only when there is one.
-Value midi_region_value(const MidiRegion& r) {
+Value midi_region_value(const MidiRegion& r, SequenceDigests& digests) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
     v.set("name", Value::string(r.name));
@@ -269,12 +337,7 @@ Value midi_region_value(const MidiRegion& r) {
     v.set("offset_ticks", integer(r.offset));
     v.set("mute", Value::boolean(r.mute));
     if (r.source != 0) v.set("source", id_value(r.source));
-    Value& notes = v.set("notes", Value::array());
-    for (const midi::Note& n : r.data->notes) notes.push(detail::note_row(n));
-    Value& events = v.set("events", Value::array());
-    for (const MidiEvent& e : r.data->events) events.push(detail::event_row(e));
-    Value& sysex = v.set("sysex", Value::array());
-    for (const MidiSysEx& x : r.data->sysex) sysex.push(detail::sysex_row(x));
+    v.set("data", sequence_ref_value(digests.ref(r.data)));
     return v;
 }
 
@@ -344,6 +407,11 @@ const Value* node_at(const Value* base, const std::string& where) {
 class Reader {
 public:
     explicit Reader(LoadError& error) : error_(error) {}
+
+    // The file's own version, before migration: where a key's meaning
+    // changed between versions, the reader asks it.
+    std::int64_t version() const { return version_; }
+    void set_version(std::int64_t v) { version_ = v; }
 
     bool fail(const Value& at, const std::string& path, const std::string& msg) {
         error_.message = msg;
@@ -507,6 +575,7 @@ public:
 
 private:
     LoadError& error_;
+    std::int64_t version_ = 0;
     std::unordered_map<Id, std::string> ids_;
     Id max_id_ = 0;
     std::vector<Repair> repairs_;
@@ -674,11 +743,138 @@ bool read_rows(Reader& rd, const Value& region, const std::string& path, const c
     return rd.fail(*e.at, key_path(path, key) + e.where, e.message);
 }
 
+// The sequence files a session names, each read and verified once however
+// many regions share it (ADR-0015 §3), and the ones that did not verify
+// (O2).
+class SequenceFiles {
+public:
+    explicit SequenceFiles(SequenceSource* source) : source_(source) {}
+
+    std::shared_ptr<const MidiSequence> resolve(const SequenceFileRef& ref,
+                                                const std::string& region, Id source) {
+        auto it = std::find_if(seen_.begin(), seen_.end(),
+                               [&](const Seen& s) { return s.ref == ref; });
+        if (it == seen_.end()) {
+            Seen s{ref, nullptr, kNone};
+            std::string why;
+            auto seq = std::make_shared<MidiSequence>();
+            if (read(ref, *seq, why)) {
+                verified_.insert(ref.sha256);
+            } else {
+                *seq = MidiSequence{};
+                seq->missing = ref;
+                s.missing = missing_.size();
+                missing_.push_back(MissingSequence{ref, why, {}, {}});
+            }
+            s.seq = std::move(seq);
+            seen_.push_back(std::move(s));
+            it = seen_.end() - 1;
+        }
+        if (it->missing != kNone) {
+            MissingSequence& m = missing_[it->missing];
+            m.regions.push_back(region);
+            if (source != 0 && std::find(m.sources.begin(), m.sources.end(), source) ==
+                                   m.sources.end()) {
+                m.sources.push_back(source);
+            }
+        }
+        return it->seq;
+    }
+
+    std::vector<MissingSequence> take_missing() { return std::move(missing_); }
+    std::set<std::string> take_verified() { return std::move(verified_); }
+
+private:
+    static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    struct Seen {
+        SequenceFileRef ref;
+        std::shared_ptr<const MidiSequence> seq;
+        std::size_t missing;
+    };
+
+    bool read(const SequenceFileRef& ref, MidiSequence& out, std::string& why) {
+        if (source_ == nullptr) {
+            why = "the session was opened without its folder";
+            return false;
+        }
+        std::string bytes;
+        if (!source_->read(ref.file, bytes, why)) return false;
+        if (bytes.size() != ref.bytes) {
+            why = "it is " + std::to_string(bytes.size()) + " bytes and the session says " +
+                  std::to_string(ref.bytes);
+            return false;
+        }
+        if (sha256_hex(bytes) != ref.sha256) {
+            why = "its checksum does not match its name";
+            return false;
+        }
+        std::string error;
+        if (!decode_sequence(bytes, out, error)) {
+            why = "it does not decode: " + error;
+            return false;
+        }
+        if (out.notes.size() != ref.notes || out.events.size() != ref.events ||
+            out.sysex.size() != ref.sysex) {
+            why = "it holds " + std::to_string(out.notes.size()) + " notes, " +
+                  std::to_string(out.events.size()) + " events and " +
+                  std::to_string(out.sysex.size()) + " SysEx messages, and the session says " +
+                  std::to_string(ref.notes) + ", " + std::to_string(ref.events) + " and " +
+                  std::to_string(ref.sysex);
+            return false;
+        }
+        return true;
+    }
+
+    SequenceSource* source_;
+    // Linear: a session names few distinct sequences beside its regions'
+    // events, and a file is read once whatever this costs.
+    std::vector<Seen> seen_;
+    std::vector<MissingSequence> missing_;
+    std::set<std::string> verified_;
+};
+
+// A version 5 region's lists, which v5_to_v6 moved under "data.inline".
+// Errors keep version 5's key paths, which are the file's.
+bool read_inline_sequence(Reader& rd, const Value& data, const std::string& p, MidiRegion& r) {
+    if (!rd.keys(data, p + ".data", {"inline"})) return false;
+    const Value& lists = *data.find("inline");
+    if (!rd.keys(lists, p, {"notes", "events", "sysex"})) return false;
+    auto seq = std::make_shared<MidiSequence>();
+    if (!read_rows(rd, lists, p, "notes", detail::read_note_rows, seq->notes)) return false;
+    if (!read_rows(rd, lists, p, "events", detail::read_event_rows, seq->events)) return false;
+    if (!read_rows(rd, lists, p, "sysex", detail::read_sysex_rows, seq->sysex)) return false;
+    std::string where;
+    if (!rd.checked(detail::sequence_problem(*seq, where), lists, p, where)) return false;
+    r.data = std::move(seq);
+    return true;
+}
+
+bool read_sequence_ref(Reader& rd, const Value& data, const std::string& p, SequenceFiles& files,
+                       MidiRegion& r) {
+    const std::string dp = p + ".data";
+    if (!rd.keys(data, dp, {"file", "sha256", "bytes", "notes", "events", "sysex"})) return false;
+    SequenceFileRef ref;
+    std::int64_t bytes = 0, notes = 0, events = 0, sysex = 0;
+    if (!rd.text(data, dp, "file", ref.file) || !rd.text(data, dp, "sha256", ref.sha256) ||
+        !rd.integer(data, dp, "bytes", kMaxInteger, bytes) ||
+        !rd.integer(data, dp, "notes", kMaxInteger, notes) ||
+        !rd.integer(data, dp, "events", kMaxInteger, events) ||
+        !rd.integer(data, dp, "sysex", kMaxInteger, sysex)) {
+        return false;
+    }
+    ref.bytes = static_cast<std::uint64_t>(bytes);
+    ref.notes = static_cast<std::uint64_t>(notes);
+    ref.events = static_cast<std::uint64_t>(events);
+    ref.sysex = static_cast<std::uint64_t>(sysex);
+    if (!rd.checked(detail::sequence_ref_problem(ref), data, dp, "")) return false;
+    r.data = files.resolve(ref, p, r.source);
+    return true;
+}
+
 bool read_midi_region(Reader& rd, const Value& v, const std::string& p, const SourcePool& pool,
-                      MidiRegion& r) {
+                      SequenceFiles& files, MidiRegion& r) {
     if (!rd.keys(v, p,
-                 {"id", "name", "position_ticks", "length_ticks", "offset_ticks", "mute", "notes",
-                  "events", "sysex"},
+                 {"id", "name", "position_ticks", "length_ticks", "offset_ticks", "mute", "data"},
                  {"source"})) {
         return false;
     }
@@ -695,18 +891,16 @@ bool read_midi_region(Reader& rd, const Value& v, const std::string& p, const So
             return rd.fail(*src, p + ".source", "must be at least 1; leave it out for none");
         }
     }
-    auto data = std::make_shared<MidiSequence>();
-    if (!read_rows(rd, v, p, "notes", detail::read_note_rows, data->notes)) return false;
-    if (!read_rows(rd, v, p, "events", detail::read_event_rows, data->events)) return false;
-    if (!read_rows(rd, v, p, "sysex", detail::read_sysex_rows, data->sysex)) return false;
-    std::string where;
-    if (!rd.checked(detail::sequence_problem(*data, where), v, p, where)) return false;
-    r.data = std::move(data);
+    const Value& data = *v.find("data");
+    if (!data.is_object()) return rd.fail(data, p + ".data", "must be an object");
+    const bool ok = rd.version() < 6 ? read_inline_sequence(rd, data, p, r)
+                                     : read_sequence_ref(rd, data, p, files, r);
+    if (!ok) return false;
     return rd.checked(detail::midi_region_problem(r, pool), v, p, "");
 }
 
 bool read_midi_playlist(Reader& rd, const Value& v, const std::string& p, const SourcePool& pool,
-                        MidiPlaylist& pl) {
+                        SequenceFiles& files, MidiPlaylist& pl) {
     if (!rd.keys(v, p, {"id", "name", "regions"})) return false;
     if (!rd.id(v, p, "id", pl.id)) return false;
     if (!rd.text(v, p, "name", pl.name)) return false;
@@ -717,7 +911,7 @@ bool read_midi_playlist(Reader& rd, const Value& v, const std::string& p, const 
         const Value& rv = regions->items()[i];
         const std::string rp = index_path(p + ".regions", i);
         MidiRegion r;
-        if (!read_midi_region(rd, rv, rp, pool, r)) return false;
+        if (!read_midi_region(rd, rv, rp, pool, files, r)) return false;
         if (!rd.claim(r.id, rv, rp)) return false;
         pl.regions.push_back(std::move(r));
     }
@@ -889,8 +1083,8 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
     return true;
 }
 
-bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditState& edit,
-                 MixState& mix) {
+bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, SequenceFiles& files,
+                 EditState& edit, MixState& mix) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "tracks", list)) return false;
     for (std::size_t i = 0; i < list->items().size(); ++i) {
@@ -989,7 +1183,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, EditStat
                 t->playlists.push_back(std::make_shared<Playlist>(std::move(pl)));
             } else {
                 MidiPlaylist pl;
-                if (!read_midi_playlist(rd, pls->items()[k], pp, pool, pl)) return false;
+                if (!read_midi_playlist(rd, pls->items()[k], pp, pool, files, pl)) return false;
                 active = active || pl.id == t->active_playlist;
                 t->midi_playlists.push_back(std::make_shared<MidiPlaylist>(std::move(pl)));
             }
@@ -1054,7 +1248,9 @@ bool file_format_version(std::string_view bytes, std::int64_t& version) {
 }
 
 bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
-               std::string& error) {
+               std::string& error, SequenceDigests* digests) {
+    SequenceDigests local;
+    if (digests == nullptr) digests = &local;
     std::string why;
     if (!check_invariants(s, why)) {
         error = "refusing to write a session that would not load: " + why;
@@ -1140,7 +1336,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
             pv.set("id", id_value(mp->id));
             pv.set("name", Value::string(mp->name));
             Value& regions = pv.set("regions", Value::array());
-            for (const MidiRegion& r : mp->regions) regions.push(midi_region_value(r));
+            for (const MidiRegion& r : mp->regions) regions.push(midi_region_value(r, *digests));
         }
         for (const auto& pp : t.playlists) {
             Value& pv = pls.push(Value::object());
@@ -1171,7 +1367,8 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     return json::write(root, out, error);
 }
 
-bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
+bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
+                 SequenceSource* sequences) {
     error = LoadError{};
     Value root;
     json::Error perr;
@@ -1220,6 +1417,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
         return false;
     }
     for (Repair& m : migrated) rd.repaired(std::move(m));
+    rd.set_version(file_version);
 
     if (!rd.keys(root, "",
                  {"sonora_session", "written_by", "save_generation", "name",
@@ -1242,7 +1440,8 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
     if (!read_sources(rd, root, *pool)) return false;
     if (!read_midi_sources(rd, root, *pool)) return false;
     auto edit = std::make_shared<EditState>();
-    if (!read_tracks(rd, root, *pool, *edit, mix)) return false;
+    SequenceFiles files(sequences);
+    if (!read_tracks(rd, root, *pool, files, *edit, mix)) return false;
     auto markers = std::make_shared<MarkerList>();
     if (!read_markers(rd, root, *markers)) return false;
     edit->markers = std::move(markers);
@@ -1255,6 +1454,8 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
     s.revision = 0;
     s.next_id = rd.max_id() + 1;
     loaded.repairs = rd.take_repairs();
+    loaded.missing_sequences = files.take_missing();
+    loaded.verified_sequences = files.take_verified();
     // Every check above ran with a line; this one is the net under them,
     // the same function apply() answers to.
     if (!check_invariants(s, why)) {
@@ -1263,6 +1464,107 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error) {
     }
     out = std::move(loaded);
     return true;
+}
+
+namespace {
+
+// "SNRLOAD" and the bundle's own version, 1. Then, little-endian: the
+// session file's length (u64) and bytes, the number of sequence files
+// (u32), and each one's length (u64) and bytes. A file is named by its
+// hash, so the bundle carries no names.
+constexpr char kBundleMagic[8] = {'S', 'N', 'R', 'L', 'O', 'A', 'D', '\x01'};
+
+void put_u64(std::string& out, std::uint64_t v) {
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<char>(v >> (8 * i)));
+}
+
+void put_u32(std::string& out, std::uint32_t v) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>(v >> (8 * i)));
+}
+
+bool get_le(std::string_view in, std::size_t& at, int bytes, std::uint64_t& out) {
+    if (in.size() - at < static_cast<std::size_t>(bytes)) return false;
+    out = 0;
+    for (int i = 0; i < bytes; ++i) {
+        out |= static_cast<std::uint64_t>(static_cast<unsigned char>(in[at + i])) << (8 * i);
+    }
+    at += static_cast<std::size_t>(bytes);
+    return true;
+}
+
+class BundleSource : public SequenceSource {
+public:
+    void add(std::string_view bytes) { files_[midi_sequence_file(sha256_hex(bytes))] = bytes; }
+    bool read(const std::string& file, std::string& bytes, std::string& why) override {
+        const auto it = files_.find(file);
+        if (it == files_.end()) {
+            why = "the interface did not send it: its file was missing there too";
+            return false;
+        }
+        bytes.assign(it->second.data(), it->second.size());
+        return true;
+    }
+
+private:
+    std::unordered_map<std::string, std::string_view> files_;
+};
+
+}  // namespace
+
+bool encode_session_bundle(const Snapshot& s, const WriteInfo& info, std::string& out,
+                           std::string& error, SequenceDigests* digests) {
+    SequenceDigests local;
+    if (digests == nullptr) digests = &local;
+    std::string session;
+    if (!serialize(s, info, session, error, digests)) return false;
+    std::vector<NamedSequence> named = named_sequences(s, *digests);
+    std::uint32_t count = 0;
+    for (const NamedSequence& n : named) count += n.data->missing ? 0 : 1;
+    out.assign(kBundleMagic, sizeof kBundleMagic);
+    put_u64(out, session.size());
+    out += session;
+    put_u32(out, count);
+    for (NamedSequence& n : named) {
+        if (n.data->missing) continue;
+        if (n.encoded.empty()) n.encoded = encode_sequence(*n.data);
+        put_u64(out, n.encoded.size());
+        out += n.encoded;
+    }
+    return true;
+}
+
+bool decode_session_bundle(std::string_view bytes, Loaded& out, LoadError& error) {
+    if (bytes.size() < sizeof kBundleMagic ||
+        std::memcmp(bytes.data(), kBundleMagic, sizeof kBundleMagic) != 0) {
+        return deserialize(bytes, out, error);
+    }
+    error = LoadError{};
+    std::size_t at = sizeof kBundleMagic;
+    std::uint64_t length = 0, count = 0;
+    if (!get_le(bytes, at, 8, length) || length > bytes.size() - at) {
+        error.message = "session bundle: the session file is cut short";
+        return false;
+    }
+    const std::string_view session = bytes.substr(at, static_cast<std::size_t>(length));
+    at += static_cast<std::size_t>(length);
+    if (!get_le(bytes, at, 4, count) || count > (bytes.size() - at) / 8) {
+        error.message = "session bundle: the sequence count is cut short or too large";
+        return false;
+    }
+    BundleSource source;
+    for (std::uint64_t i = 0; i < count; ++i) {
+        if (!get_le(bytes, at, 8, length) || length > bytes.size() - at) {
+            error.message = "session bundle: sequence file " + std::to_string(i) + " is cut short";
+            return false;
+        }
+        source.add(bytes.substr(at, static_cast<std::size_t>(length)));
+        at += static_cast<std::size_t>(length);
+    }
+    if (at != bytes.size()) {
+        error.message = "session bundle: bytes after the last sequence file";
+        return false;
+    }
+    return deserialize(session, out, error, &source);
 }
 
 }  // namespace sonora::model

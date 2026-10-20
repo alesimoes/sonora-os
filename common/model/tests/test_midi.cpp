@@ -9,6 +9,7 @@
 #include "model_test.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 
 using namespace model_test;
 namespace midi = sonora::midi;
@@ -604,6 +605,146 @@ int test_undo_charge_counts_sequences() {
     return 0;
 }
 
+// ADR-0015 §5: past midi_max_entries undo history goes first, oldest step
+// first and down to the current state alone; only an edit whose result is
+// over on its own is refused, by name, with nothing changed. A replica
+// follows the raised floor.
+int test_midi_budget_evicts_history_first() {
+    Document doc(new_session(settings()), History::kDefaultBudget, 100);
+    std::string error;
+    ReplicationUpdate u;
+    Ids ids(doc.current());
+    const AddTrack m = midi_track(ids, "Bass");
+    CHECK(doc.apply(m, u, error));
+    std::vector<MidiEvent> forty;
+    for (int i = 0; i < 40; ++i) forty.push_back(MidiEvent{i * 10, 0xB0, 1, 2});
+    const Id r = ids();
+    CHECK(doc.apply(PlaceMidiRegion{m.playlist,
+                                    midi_region(r, 0, 4 * kBeat, 0, sequence({}, forty)), 0},
+                    u, error));
+    CHECK(doc.snapshot(u, error));
+    Replica rep;
+    CHECK(rep.receive(u, error));
+    CHECK(doc.history().midi_entries() == 40);
+
+    const auto add_one = [&](Ticks at) {
+        EditMidi e;
+        e.playlist = m.playlist;
+        e.region = r;
+        e.add_notes = {note(at, 1, 60)};
+        return e;
+    };
+    CHECK(doc.apply(add_one(1), u, error));
+    CHECK(rep.receive(u, error));
+    // 40 held only by the step before, 41 by the current state.
+    CHECK(doc.history().midi_entries() == 81);
+    const std::uint64_t floor = doc.history().floor();
+    CHECK(doc.apply(add_one(2), u, error));
+    // 40 + 41 + 42 is over: the steps up to the one holding the 40 go,
+    // oldest first.
+    CHECK(doc.history().midi_entries() == 83);
+    CHECK(doc.history().floor() > floor);
+    CHECK(doc.history().step_count() == 2 && doc.history().can_undo());
+    CHECK(rep.receive(u, error));
+    CHECK(rep.history()->floor() == doc.history().floor());
+    CHECK(rep.history()->step_count() == 2);
+
+    // 42 held by the step before and 93 by the result is over too, though
+    // the result alone is not: the last edit's undo goes as well, because a
+    // refused edit (or take) would be worse than lost history.
+    EditMidi fifty;
+    fifty.playlist = m.playlist;
+    fifty.region = r;
+    for (int i = 0; i < 51; ++i) fifty.add_notes.push_back(note(100 + i, 1, 61));
+    CHECK(doc.apply(fifty, u, error));
+    CHECK(doc.history().current_midi_entries() == 93);
+    CHECK(doc.history().midi_entries() == 93 && !doc.history().can_undo());
+    CHECK(rep.receive(u, error));
+    CHECK(!rep.can_undo() && rep.current() == doc.current());
+
+    // Over on its own: refused by name, nothing changed.
+    EditMidi big;
+    big.playlist = m.playlist;
+    big.region = r;
+    for (int i = 0; i < 8; ++i) big.add_notes.push_back(note(200 + i, 1, 62));
+    const std::uint64_t revision = doc.current().revision;
+    CHECK(!doc.apply(big, u, error));
+    CHECK(mentions(error, "would hold 101 MIDI notes and events"));
+    CHECK(mentions(error, "over the engine's midi_max_entries of 100"));
+    CHECK(doc.current().revision == revision && doc.history().current_midi_entries() == 93);
+    return 0;
+}
+
+// A session over the budget is refused at open, whole, by name; under it,
+// the same file opens.
+int test_open_over_the_budget_is_refused() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack m = midi_track(ids, "Bass");
+    CHECK_APPLY(h, m);
+    std::vector<MidiEvent> fifty;
+    for (int i = 0; i < 50; ++i) fifty.push_back(MidiEvent{i, 0xB0, 1, 2});
+    CHECK_APPLY(h, (PlaceMidiRegion{m.playlist,
+                                    midi_region(ids(), 0, 4 * kBeat, 0, sequence({}, fifty)), 0}));
+    std::string bundle, error;
+    CHECK(encode_session_bundle(h.current(), WriteInfo{"test", 1}, bundle, error));
+    Document small(new_session(settings()), History::kDefaultBudget, 49);
+    const Snapshot before = small.current();
+    ReplicationUpdate u;
+    CHECK(!small.load(bundle, 0, u, error));
+    CHECK(mentions(error, "holds 50 MIDI notes and events"));
+    CHECK(mentions(error, "midi_max_entries of 49; raise the setting"));
+    CHECK(small.current() == before);
+    Document enough(new_session(settings()), History::kDefaultBudget, 50);
+    CHECK(enough.load(bundle, 0, u, error));
+    CHECK(enough.history().current_midi_entries() == 50);
+    return 0;
+}
+
+// O2 across the wire: a sequence whose file was missing at open reaches a
+// replica as its reference, silent there too, and is saved back from it.
+int test_window_carries_a_missing_sequence() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack m = midi_track(ids, "Bass");
+    CHECK_APPLY(h, m);
+    auto gone = std::make_shared<MidiSequence>();
+    gone->missing = sequence_ref(*sequence({note(0, 1, 60)}));
+    MidiRegion placed = midi_region(ids(), 0, 4 * kBeat, 0, sequence({}));
+    CHECK_APPLY(h, (PlaceMidiRegion{m.playlist, placed, 0}));
+    // As a load leaves it: the region's sequence is the missing one.
+    Snapshot s = h.current();
+    auto track = std::make_shared<TrackEdit>(*s.edit->tracks[0]);
+    auto pl = std::make_shared<MidiPlaylist>(*track->midi_playlists[0]);
+    pl->regions[0].data = gone;
+    track->midi_playlists[0] = pl;
+    auto edit = std::make_shared<EditState>(*s.edit);
+    edit->tracks[0] = track;
+    s.edit = edit;
+    CHECK(invariants_hold(s));
+    Document doc(s);
+    std::string error;
+    ReplicationUpdate u;
+    CHECK(doc.snapshot(u, error));
+    Replica rep;
+    CHECK(rep.receive(u, error));
+    const MidiRegion& there = rep.current().edit->tracks[0]->midi_playlists[0]->regions[0];
+    CHECK(there.data->missing && *there.data->missing == *gone->missing);
+    // A copy by value would lose the reference; only data_from may place it.
+    MidiRegion copy = there;
+    copy.id = doc.current().next_id;
+    copy.position = 8 * kBeat;
+    CHECK(!doc.apply(PlaceMidiRegion{m.playlist, copy, 0}, u, error));
+    CHECK(mentions(error, "place it with data_from"));
+    PlaceMidiRegion by_ref{m.playlist, copy, 0};
+    by_ref.region.data = nullptr;
+    by_ref.data_from = MidiDataRef{m.playlist, there.id};
+    CHECK(doc.apply(by_ref, u, error));
+    CHECK(rep.receive(u, error));
+    CHECK(rep.current() == doc.current());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -625,6 +766,9 @@ int main() {
     t(test_inserts_on_midi_tracks);
     t(test_window_carries_midi);
     t(test_undo_charge_counts_sequences);
+    t(test_midi_budget_evicts_history_first);
+    t(test_open_over_the_budget_is_refused);
+    t(test_window_carries_a_missing_sequence);
     if (failed != 0) {
         std::fprintf(stderr, "model_midi: %d of %d failed\n", failed, run);
         return 1;

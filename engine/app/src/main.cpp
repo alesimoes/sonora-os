@@ -417,6 +417,13 @@ int main(int argc, char** argv) {
             tui_path = argv[++i];
         } else if (std::strcmp(argv[i], "--no-memlock") == 0) {
             lock = false;
+        } else if (std::strcmp(argv[i], "--midi-max-entries") == 0 && i + 1 < argc) {
+            const long long n = std::atoll(argv[++i]);
+            if (n < 1) {
+                std::fprintf(stderr, "sonora: --midi-max-entries takes a count from 1\n");
+                return 2;
+            }
+            control.midi_max_entries = static_cast<uint64_t>(n);
         } else if (std::strcmp(argv[i], "--announce-versions") == 0 && i + 2 < argc) {
             control.protocol_version = static_cast<uint32_t>(std::atoi(argv[++i]));
             control.state_layout_version = static_cast<uint32_t>(std::atoi(argv[++i]));
@@ -447,6 +454,10 @@ int main(int argc, char** argv) {
                 "  --plugin-cache PATH  the plugin catalog cache (default:\n"
                 "                    ~/.cache/sonora/plugin-catalog.json; \"\": in memory)\n"
                 "  --keymap PATH     key map for the terminal interface\n"
+                "  --midi-max-entries N\n"
+                "                    MIDI notes and events a session may hold, undo\n"
+                "                    history included (default 16777216); a session\n"
+                "                    over it opens only once this is raised\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
                 "                    wait for a capture connection, or a USB\n"

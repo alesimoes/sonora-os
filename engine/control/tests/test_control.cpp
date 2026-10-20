@@ -784,6 +784,71 @@ void resync_applies_the_mix() {
 
 }  // namespace
 
+// ADR-0015 §5 on the real engine: Options::midi_max_entries is the budget,
+// a session over it is refused at open by name, whole, and one at 90 % of
+// it opens with a Notice, so the operator hears of it before a take.
+void midi_budget_at_open_and_its_notice() {
+    EngineControlServer::Options opts;
+    opts.midi_max_entries = 10;
+    RealEngine real(fresh_dir("midi_budget"), opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    // One MIDI track whose one region holds `n` controller events, as the
+    // interface sends a session: a bundle with its sequence file.
+    const auto bundle = [&](int n) {
+        model::SessionSettings settings;
+        settings.name = "Budget";
+        model::History h(model::new_session(settings));
+        model::AddTrack t;
+        t.track = 1;
+        t.playlist = 2;
+        t.name = "Bass";
+        t.playlist_name = "Bass.01";
+        t.kind = model::TrackKind::Midi;
+        t.channels = 0;
+        auto seq = std::make_shared<model::MidiSequence>();
+        for (int i = 0; i < n; ++i) seq->events.push_back(model::MidiEvent{i, 0xB0, 1, 2});
+        model::MidiRegion r;
+        r.id = 3;
+        r.name = "Bass_01";
+        r.length = model::kTicksPerQuarter;
+        r.data = seq;
+        std::string out, why;
+        CHECK(h.apply(t, why) && h.apply(model::PlaceMidiRegion{2, r, 0, {}}, why));
+        CHECK(model::encode_session_bundle(h.current(), model::WriteInfo{"test", 1}, out, why));
+        return out;
+    };
+    const auto load = [&](int n, api::CommandReply& out) {
+        api::ModelRequest m;
+        m.action = api::ModelAction::Load;
+        m.op = bundle(n);
+        const uint64_t seq = real.submit(m);
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq != seq) continue;
+                out = r;
+                return true;
+            }
+            return false;
+        });
+    };
+    api::CommandReply r;
+    CHECK(load(11, r) && r.result == DispatchResult::Failed);
+    CHECK(r.message.find("holds 11 MIDI notes and events") != std::string::npos);
+    CHECK(r.message.find("midi_max_entries of 10; raise the setting") != std::string::npos);
+    CHECK(load(9, r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        for (const auto& e : in.events) {
+            if (e.kind == api::EventKind::Notice &&
+                e.text.find("MIDI holds 9 of the 10 notes and events") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }));
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -800,6 +865,7 @@ int main() {
     housekeeping_and_early_events();
     no_plugin_hosting_yet();
     resync_applies_the_mix();
+    midi_budget_at_open_and_its_notice();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

@@ -124,7 +124,8 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     model::WriteInfo info;
     info.written_by = "sonora-ui";
     std::string bytes, error;
-    if (!model::serialize(s, info, bytes, error)) {
+    // With its sequence files: the engine reads nothing from this folder.
+    if (!model::encode_session_bundle(s, info, bytes, error)) {
         why = "the session could not be sent to the engine: " + error;
         return false;
     }

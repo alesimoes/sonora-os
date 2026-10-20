@@ -390,18 +390,25 @@ A MIDI or instrument track's `playlists` hold MIDI regions and have no
   "offset_ticks": 0,
   "mute": false,
   "source": 48,
-  "notes": [
-    [0, 480000, 0, 60, 96, 64],
-    [960000, 455000, 0, 64, 88, 64]
-  ],
-  "events": [
-    [0, 176, 64, 127],
-    [1920000, 176, 64, 0]
-  ],
-  "sysex": []
+  "data": {
+    "file": "MIDI Sequences/9b2e…41.msq",
+    "sha256": "9b2e…41",
+    "bytes": 54,
+    "notes": 2,
+    "events": 2,
+    "sysex": 0
+  }
 }
 ```
 
+- **Session format 6 (ADR-0015 §3): `data` names the region's sequence
+  file** in `MIDI Sequences/`, by the SHA-256 of its bytes: `file` is
+  exactly `"MIDI Sequences/<sha256>.msq"`, `sha256` 64 lower-case hex
+  digits, `bytes` its size and `notes`, `events`, `sysex` its counts, all
+  checked at open (§4.4.1). Regions that share a sequence (split,
+  duplicate, paste) share the file. Version 5 held the three lists inline
+  in the region, in the row forms below; v5 → v6 moves them to a file at
+  the first save (`session-format.md`, "Versioning").
 - Unit names carry `_ticks` so no reader takes them for frames, which every
   other position in the file is.
 - `notes`: `[start, length, channel, pitch, velocity, release_velocity]` in
@@ -423,6 +430,54 @@ A MIDI or instrument track's `playlists` hold MIDI regions and have no
   its window (§3).
 - **No meta events.** Tempo, meter and markers belong to the session;
   text, lyrics and key signatures from an SMF are reported and not kept.
+
+### 4.4.1 The sequence file, `.msq` (session format 6, ADR-0015 §3)
+
+Ours, little-endian, versioned and **canonical**: one sequence has exactly
+one encoding, so its hash, which names the file, is the same on every save
+and every machine. `common/model`'s `encode_sequence` / `decode_sequence`
+(`sequence_file.h`).
+
+| Bytes | What |
+|---|---|
+| 4 | magic `SMSQ` (`53 4d 53 51`) |
+| 1 | version, 1 |
+| LEB128 × 3 | the note, event and SysEx counts |
+| per note | start − the previous note's start (the first from 0), length, as LEB128; then channel, pitch, velocity, release velocity, one byte each |
+| per event | tick − the previous event's tick, as LEB128; then status, data1, data2 (0 for the two-byte messages) |
+| per SysEx | tick − the previous message's tick, and the message's size, as LEB128; then its bytes, `F0` to `F7` |
+
+Nothing follows the last SysEx message. Every LEB128 is unsigned and
+minimal, at most 2^53 − 1; each section is in the order §4.4 fixes, which
+is non-decreasing in its first key, so a delta is never negative. The
+decoder is bounded and never throws: it refuses a wrong magic or version, a
+non-minimal or oversized LEB128, counts the remaining bytes cannot hold
+(checked before anything is reserved), a tick past 2^53 − 1, a SysEx
+message over 4,096 bytes, trailing bytes, and any sequence §4.4's
+invariants refuse; what it accepts re-encodes to exactly the bytes it read
+(a fuzz sweep holds it to that). A controller event is about 5 bytes, a
+note about 10.
+
+The example sequence of `common/model/tests/test_sequence_file.cpp` (two
+notes, a bank select, a program change, a pitch bend and one SysEx) is
+these 50 bytes:
+
+```
+534d5351 01 02 03 01
+00 80a61d 00 24 60 40          note 0, 480000 long, ch 0, pitch 36, vel 96, rel 64
+80cc3a d8e21b 01 2b 58 00      note +960000, 455000 long, ch 1, pitch 43, vel 88, rel 0
+00 b0 00 01 | 00 c0 05 00 | 80ee05 e0 00 48
+80a61d 06 f07e7f0901f7
+```
+
+At open each file is read once, however many regions share it, and checked
+against the region's `data`: size, SHA-256, the strict decode, the counts.
+One that is not there or does not verify does not stop the open (owner
+decision O2): its regions keep their windows, play nothing and cannot be
+edited (`EditMidi` is refused by name; moving, trimming and splitting the
+window are not), a copy is placed only by reference (`data_from`), and the
+next save writes the same reference back. The undo window (format 6)
+carries the reference, so a replica holds the same silent regions.
 
 ### 4.5 Migration v3 → v4
 
@@ -461,10 +516,32 @@ charge the whole 64 MiB undo budget (each drag copies the sequence, about
 attach. Each drag costs 1.5 ms at most on the control thread.
 
 Both are over the caps, which ADR-0014 Unverified 6 says decides
-sequences beside the file. Nothing in this build can make such a session
-yet (no recording before M-4, no import before M-6, no MIDI editing in the
-interface before M-7), so the decision is due before M-4 lands, and is the
-owner's and the architect's.
+sequences beside the file. ADR-0015 decided it (accepted 2026-10-20), and
+M-1c PR 1 moved the sequences beside the file as format 6.
+
+**Measured in M-1c PR 1** (the same tool, Release, the build container on
+the owner's laptop, an i7-11800H, 2026-10-20; every track's sequence its
+own, so no file is shared):
+
+| Case | Session file | Sequence files | Opens |
+|---|---|---|---|
+| 18 tracks, 5 min, 30 controller events a second | 19.7 KiB, 667 DOM values | 1.3 MiB in 18 | yes, 21 ms |
+| same, 100 a second | 19.7 KiB, 667 DOM values | 3.5 MiB in 18 | yes, 60 ms (was: does not open) |
+
+At the 2^24-entry design target (ADR-0015 Unverified 2; 16.78 M notes and
+events as 64 tracks of 40 minutes, or 18 of 144, at 8 notes and 100
+controller events a second): **100.8 MiB of sequence files** and a 69 KiB
+session file. First save: encode 129 ms, SHA-256 368 ms (274 MiB/s, the
+portable code, no SHA extensions), the 64 files through tmp, `fdatasync`
+and rename plus one folder `fsync` 1,053 ms (18 files: 312 ms) on the
+container's overlay disk, not the stick. Open, apart, best of three with
+the page cache warm: read 63 ms, hash 384 ms, **decode 931 ms** (18 files:
+803 ms), inside the 1 s assumed; the whole open 1.97 s, the rest being the
+invariant check over every entry and building the document. Peak resident
+memory 657 MiB with the saved document and the opened one both held.
+`sha256_hex` alone: 292 MiB/s on 100 MiB. The undo window is unchanged by
+format 6 (132 MiB for the 200 drags): the chunks of ADR-0015 §1, in M-1c
+PR 2, change it.
 
 ## 5. The real-time path
 
