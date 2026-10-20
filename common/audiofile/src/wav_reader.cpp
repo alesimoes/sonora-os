@@ -30,6 +30,7 @@ void WavReader::close() {
 bool WavReader::open(const std::string& path, std::string& error) {
     close();
     time_reference_ = 0;
+    description_.clear();
     file_ = std::fopen(path.c_str(), "rb");
     if (!file_) {
         error = path + ": " + std::strerror(errno);
@@ -85,6 +86,10 @@ bool WavReader::open(const std::string& path, std::string& error) {
                 return fail("short bext chunk");
             }
             time_reference_ = u32(bext + 338) | (static_cast<uint64_t>(u32(bext + 342)) << 32);
+            // A Description that fills all 256 bytes has no NUL.
+            const char* d = reinterpret_cast<const char*>(bext);
+            const void* nul = std::memchr(d, 0, 256);
+            description_.assign(d, nul ? static_cast<const char*>(nul) - d : 256);
         } else if (std::memcmp(ck, "data", 4) == 0) {
             data_offset_ = body;
             data_bytes = size;

@@ -103,6 +103,15 @@ struct PunchRange {
     FadeCurve shape = FadeCurve::Linear;
 };
 
+// A take file's bext Description (session-format.md, "BWF metadata, both
+// ways"): "sonora take=<n> track=<id> session=<name>", " track=<id>" left
+// out when `track_id` is 0, plus " punch=<A>-<B>", the monitored range, for
+// a punch. At most 255 bytes, so the field keeps its NUL; a session name
+// that does not fit is cut on a UTF-8 character boundary, never the punch
+// range, which recovery needs to place the take.
+std::string take_description(int take, uint64_t track_id, const std::string& session,
+                             const PunchRange* punch);
+
 struct SessionConfig {
     std::string name = "Untitled";
     std::string dir;                 // session folder; audio goes in <dir>/Audio Files

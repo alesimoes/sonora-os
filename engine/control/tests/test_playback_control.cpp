@@ -927,6 +927,32 @@ int test_show_leaves_the_faders_alone() {
     return 0;
 }
 
+// Each engine track knows the document track it records for, which its
+// takes' bext Description names, after a reorder and an undo as before;
+// one past the document's end knows none.
+int test_tracks_know_their_document_ids() {
+    auto session = make_session(3);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    s.tracks()[2]->set_document_id(999);
+    CHECK(show(ctl, h.current(), error));
+    CHECK(s.tracks()[0]->document_id() == 100);
+    CHECK(s.tracks()[1]->document_id() == 102);
+    CHECK(s.tracks()[2]->document_id() == 0);
+    CHECK_APPLY(h, (ReorderTracks{{102, 100}}));
+    CHECK(ctl.show(h.current(), error));
+    CHECK(s.tracks()[0]->document_id() == 102);
+    CHECK(s.tracks()[1]->document_id() == 100);
+    CHECK(h.undo());
+    CHECK(ctl.show(h.current(), error));
+    CHECK(s.tracks()[0]->document_id() == 100);
+    return 0;
+}
+
 // The audio thread counts the solo of every engine track, document or not.
 // An undone AddTrack of a soloed track leaves its engine track holding that
 // solo, which would silence every other track while the interface shows no
@@ -1478,6 +1504,7 @@ int main() {
     if (test_record_waits_for_residency()) return 1;
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
+    if (test_tracks_know_their_document_ids()) return 1;
     if (test_undone_track_leaves_no_solo()) return 1;
     if (test_solo_safe_reaches_the_track()) return 1;
     if (test_removed_track_stays_muted_until_the_swap()) return 1;

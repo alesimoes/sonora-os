@@ -484,7 +484,7 @@ mapping.
 | `TimeReference` | `timecode.origin` + the timeline position of the file's **first frame**, after latency compensation: `origin + P0 − L`, where `P0` is the playhead when capture of this file began and `L` the round-trip latency. The default origin of 01:00:00:00 keeps this positive. |
 | `Version` | 1 once `umid` is written; 0 until then, as today. |
 | `UMID` | The source's `umid`. |
-| `Description` | `sonora take=<n> track=<id> session=<name>`, plus ` punch=<A>-<B>` (timeline samples, relative to `origin`) for a punch take. Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. |
+| `Description` | `sonora take=<n> track=<id> session=<name>`, plus ` punch=<A>-<B>` (timeline samples, relative to `origin`) for a punch take. Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. ` track=<id>` is left out when the engine has no document for the track: an engine track's position is not a track id. At most 255 bytes, so the field keeps its NUL: a session name that does not fit is cut on a UTF-8 character boundary, never the punch range. Built: `take_description()` in `engine/core`. |
 | `Originator` | `Sonora Engine`, as today. |
 | `OriginationDate/Time` | Wall clock when the take began. |
 

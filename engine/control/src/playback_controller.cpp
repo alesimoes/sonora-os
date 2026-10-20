@@ -139,6 +139,12 @@ void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {
 }
 
 bool PlaybackController::show(const model::Snapshot& snapshot, std::string& error) {
+    // Before the plan, which can be refused: the next take's files name
+    // their track by what the document says now either way.
+    const auto& tracks = snapshot.edit->tracks;
+    for (std::size_t i = 0; i < session_.tracks().size(); ++i) {
+        session_.tracks()[i]->set_document_id(i < tracks.size() ? tracks[i]->id : 0);
+    }
     PlaybackPlan* plan = nullptr;
     PlanReport report;
     const SourceSlot slot = [this](const model::Source& s, uint32_t& out, std::string& e) {

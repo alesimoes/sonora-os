@@ -832,6 +832,76 @@ int test_concurrent_punches() {
 }  // namespace
 
 // With a name, that test alone.
+// A take says what it is in its bext Description (session-format.md, "BWF
+// metadata, both ways"): take, the document's track id where the engine
+// knows it, session, and for a punch its range [A, B), written when the
+// file opens so a take killed mid-punch is still placed by its header.
+int test_take_describes_itself() {
+    Rig rig("describe", 2);
+    Session& s = *rig.session;
+    s.tracks()[1]->set_document_id(42);
+    s.play();
+    rig.block();
+    const uint64_t p = s.transport().playhead();
+    PunchRange r;
+    r.capture_from = p + kBlock;
+    r.capture_to = p + 6 * kBlock;
+    r.monitor_in = p + 2 * kBlock;
+    r.monitor_out = p + 5 * kBlock;
+    std::string error;
+    const int take = s.next_free_take();
+    CHECK(s.start_punch(take, r, &error));
+    const std::string head = "sonora take=" + std::to_string(take);
+    const std::string punch =
+        " punch=" + std::to_string(r.monitor_in) + "-" + std::to_string(r.monitor_out);
+    sonora::WavReader w;
+    // Before any block: the header is on disk from the open.
+    CHECK(w.open(rig.file(1, take), error));
+    CHECK(w.description() == head + " track=42 session=Untitled" + punch);
+    w.close();
+    for (int b = 0; b < 7; ++b) rig.block();
+    CHECK(s.stop(&error));
+    CHECK(w.open(rig.file(1, take), error));
+    CHECK(w.description() == head + " track=42 session=Untitled" + punch);
+    // The engine track's position is not a track id, so with none, no field.
+    CHECK(w.open(rig.file(0, take), error));
+    CHECK(w.description() == head + " session=Untitled" + punch);
+
+    s.closed_takes();
+    s.play();
+    const int whole = s.next_free_take();
+    CHECK(s.start_recording(whole, &error));
+    rig.block();
+    CHECK(s.stop(&error));
+    CHECK(w.open(rig.file(1, whole), error));
+    CHECK(w.description() == "sonora take=" + std::to_string(whole) + " track=42 session=Untitled");
+    return 0;
+}
+
+// A session name too long for the field is cut, on a UTF-8 character
+// boundary, so the punch range after it survives.
+int test_long_name_keeps_the_punch() {
+    PunchRange r;
+    r.monitor_in = 96000;
+    r.monitor_out = 144000;
+    const std::string name = std::string(203, 'n') + "\xc3\xa9" + std::string(40, 'z');
+    const std::string d = sonora::take_description(12, 7, name, &r);
+    const std::string head = "sonora take=12 track=7 session=";
+    const std::string tail = " punch=96000-144000";
+    CHECK(d.size() <= 255);
+    CHECK(d.size() > head.size() + tail.size());
+    CHECK(d.compare(0, head.size(), head) == 0);
+    CHECK(d.compare(d.size() - tail.size(), tail.size(), tail) == 0);
+    // 255 - 31 - 19 leaves the name 205 bytes: 203 and the two-byte e-acute
+    // fill it. One byte later the e-acute would straddle the cut, and goes.
+    const std::string kept = d.substr(head.size(), d.size() - head.size() - tail.size());
+    CHECK(kept == std::string(203, 'n') + "\xc3\xa9");
+    const std::string tight = sonora::take_description(12, 7, std::string(204, 'n') + "\xc3\xa9", &r);
+    CHECK(tight == head + std::string(204, 'n') + tail);
+    CHECK(sonora::take_description(1, 0, "Song", nullptr) == "sonora take=1 session=Song");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     struct Test {
         const char* name;
@@ -853,6 +923,8 @@ int main(int argc, char** argv) {
         {"whole_take_ignores_an_old_punch", test_whole_take_ignores_an_old_punch},
         {"two_sources_for_one_track", test_two_sources_for_one_track_are_refused},
         {"concurrent_punches", test_concurrent_punches},
+        {"take_describes_itself", test_take_describes_itself},
+        {"long_name_keeps_the_punch", test_long_name_keeps_the_punch},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;
