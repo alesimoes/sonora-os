@@ -13,6 +13,8 @@
 - Spec: [`midi.md`](../specs/midi.md). This ADR is the decision; the spec
   holds the formulas, keys, layouts and capacities.
 - Numbering: follows ADR-0013.
+- Amendment proposed (not accepted): [ADR-0015](ADR-0015-midi-sequence-storage-at-scale.md)
+  would replace §1's inline events, after Unverified 6 measured over the caps.
 - **Version numbers** (session format 4, protocol 7, plugin layout 2, clock
   layout 2, a state layout bump) mean the next free number when each PR
   lands. ADR-0013 is also Proposed and also names numbers; neither may
