@@ -805,6 +805,25 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          (`brain/research/plugin-host-vst3.md`, Finding 9). Isolate them:
          resolve the class in a child, as `--list` does, and load only the
          bundle that has it.
+       - [x] LV2 `worker:schedule` (required or optional): a request and a
+         response ring per instance (lock-free, 16 KiB each, a full ring
+         answers `LV2_WORKER_ERR_NO_SPACE`), one worker thread per
+         processor at the host's normal priority, woken by `signal()` like
+         `done_word`; responses and `end_run` inside the processing
+         thread's run, bounded by what had arrived when it began; work()
+         never beside restore() or re-activation (a lock the processing
+         thread never takes). Schedules from restore() are answered in the
+         first run. The worker thread has a 512 KiB stack (`start_thread`,
+         locked memory), and a plugin whose worker cannot start is refused.
+         ctest `plugin_host_worker{,_futex,_control}` (the test plugin
+         applies its gain only through work()'s two responses, and goes
+         silent if work() runs on the run thread, a response arrives
+         anywhere else, or a run() follows one without end_run; fails
+         refused without the feature), `plugin_host_worker_restore` (a
+         schedule from restore() answered in the first blocks),
+         `plugin_host_lv2_worker` (the ring).
+         Not yet: a work() that hangs holds the main thread at the next
+         restore or re-activation; the refused-message count is not shown.
 6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the

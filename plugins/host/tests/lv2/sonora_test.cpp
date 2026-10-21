@@ -17,11 +17,23 @@
 //   urn:sonora:test#state  mono pass-through that counts its run() calls and
 //                          keeps the count in its state (state:interface), so
 //                          a restored instance is told apart from a fresh one
+//   urn:sonora:test#worker  mono, `gain` (linear) applied only once its work
+//                          comes back: run() schedules each new value
+//                          (worker:schedule), work() sleeps 2 ms and responds,
+//                          work_response() applies it. Silent for good if
+//                          work() ever runs on the run() thread, a response
+//                          arrives anywhere else, only one of work()'s two
+//                          responses arrives, or a run() follows one without
+//                          end_run(). Its state is that gain, restored
+//                          through a schedule from restore()
 
 #include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
 #include <lv2/state/state.h>
 #include <lv2/urid/urid.h>
+#include <lv2/worker/worker.h>
+
+#include <pthread.h>
 
 #include <atomic>
 #include <cmath>
@@ -40,9 +52,10 @@
 
 namespace {
 
-enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar, kState };
+enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar, kState, kWorker };
 
 constexpr const char* kBlocksUri = "urn:sonora:test#blocks";
+constexpr const char* kLoadedUri = "urn:sonora:test#loaded";
 
 constexpr uint32_t kLookaheadFrames = 100;
 constexpr uint32_t kLookaheadRing = 256;  // a power of two above the delay
@@ -63,6 +76,17 @@ struct Plugin {
     // The state plugin: run() counts, save() may read beside it.
     std::atomic<int64_t> blocks{0};
     LV2_URID blocks_urid = 0, long_urid = 0;
+    // The worker plugin. `requested` and the pending response are run()'s
+    // alone; `applied` and `restored` are also read by save().
+    const LV2_Worker_Schedule* schedule = nullptr;
+    float requested = 1.f;
+    std::atomic<float> applied{1.f}, restored{1.f};
+    uint32_t pending_kind = 0;
+    float pending_value = 0.f;
+    bool ended = true;  // end_run() since the last run()
+    LV2_URID loaded_urid = 0, float_urid = 0;
+    std::atomic<pthread_t> run_thread{};
+    std::atomic<bool> run_seen{false}, broken{false};
 };
 
 // Read through a volatile so the compiler cannot prove the address is null
@@ -84,6 +108,21 @@ LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Fea
         }
         p->blocks_urid = map->map(map->handle, kBlocksUri);
         p->long_urid = map->map(map->handle, LV2_ATOM__Long);
+    }
+    if (K == kWorker) {
+        const LV2_URID_Map* map = nullptr;
+        for (int i = 0; features && features[i]; ++i) {
+            if (std::strcmp(features[i]->URI, LV2_WORKER__schedule) == 0)
+                p->schedule = static_cast<const LV2_Worker_Schedule*>(features[i]->data);
+            if (std::strcmp(features[i]->URI, LV2_URID__map) == 0)
+                map = static_cast<const LV2_URID_Map*>(features[i]->data);
+        }
+        if (!p->schedule || !map) {
+            delete p;
+            return nullptr;
+        }
+        p->loaded_urid = map->map(map->handle, kLoadedUri);
+        p->float_urid = map->map(map->handle, LV2_ATOM__Float);
     }
     p->rtsan_checks_sleep = std::getenv("SONORA_TEST_RTSAN_SLEEP") != nullptr;
     return p;
@@ -113,6 +152,94 @@ const LV2_State_Interface kStateInterface = {save, restore};
 
 const void* extension_data(const char* uri) {
     return std::strcmp(uri, LV2_STATE__interface) == 0 ? &kStateInterface : nullptr;
+}
+
+bool on_run_thread(const Plugin* p) {
+    return p->run_seen.load(std::memory_order_acquire) &&
+           pthread_equal(p->run_thread.load(std::memory_order_relaxed), pthread_self());
+}
+
+// What run() and restore() ask of the worker: a gain from the port ('G'),
+// or the one a restored state names ('R'). The answer is two responses, the
+// value and then a commit, so a host that keeps only one per work() call
+// never applies anything.
+struct WorkMsg {
+    uint32_t kind;
+    float value;
+};
+constexpr uint32_t kCommit = 'C';
+
+// The slow part a real plugin does here: reading a sample or an IR.
+LV2_Worker_Status work(LV2_Handle h, LV2_Worker_Respond_Function respond, LV2_Worker_Respond_Handle rh,
+                       uint32_t size, const void* data) {
+    auto* p = static_cast<Plugin*>(h);
+    if (size != sizeof(WorkMsg) || on_run_thread(p)) p->broken.store(true, std::memory_order_relaxed);
+    timespec ts{0, 2'000'000};
+    nanosleep(&ts, nullptr);
+    if (LV2_Worker_Status s = respond(rh, size, data)) return s;
+    return respond(rh, sizeof kCommit, &kCommit);
+}
+
+LV2_Worker_Status work_response(LV2_Handle h, uint32_t size, const void* data) {
+    auto* p = static_cast<Plugin*>(h);
+    bool ok = on_run_thread(p);
+    if (ok && size == sizeof(WorkMsg) && p->pending_kind == 0) {
+        WorkMsg m;
+        std::memcpy(&m, data, sizeof m);
+        p->pending_kind = m.kind;
+        p->pending_value = m.value;
+    } else if (ok && size == sizeof kCommit && p->pending_kind != 0) {
+        (p->pending_kind == 'R' ? p->restored : p->applied).store(p->pending_value, std::memory_order_relaxed);
+        p->pending_kind = 0;
+    } else {
+        ok = false;
+    }
+    if (!ok) p->broken.store(true, std::memory_order_relaxed);
+    return ok ? LV2_WORKER_SUCCESS : LV2_WORKER_ERR_UNKNOWN;
+}
+
+LV2_Worker_Status end_run(LV2_Handle h) {
+    static_cast<Plugin*>(h)->ended = true;
+    return LV2_WORKER_SUCCESS;
+}
+
+const LV2_Worker_Interface kWorkerInterface = {work, work_response, end_run};
+
+// The worker plugin's state is the gain its worker last applied. Restoring
+// it goes through the worker too, as a sampler re-loads its sample: from
+// the schedule feature restore() is handed (LV2 worker 1.2), answered in
+// the first run().
+LV2_State_Status worker_save(LV2_Handle h, LV2_State_Store_Function store, LV2_State_Handle handle, uint32_t,
+                             const LV2_Feature* const*) {
+    auto* p = static_cast<Plugin*>(h);
+    const float g = p->applied.load(std::memory_order_relaxed) * p->restored.load(std::memory_order_relaxed);
+    return store(handle, p->loaded_urid, &g, sizeof g, p->float_urid, LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
+}
+
+LV2_State_Status worker_restore(LV2_Handle h, LV2_State_Retrieve_Function retrieve, LV2_State_Handle handle,
+                                uint32_t, const LV2_Feature* const* features) {
+    auto* p = static_cast<Plugin*>(h);
+    size_t size = 0;
+    uint32_t type = 0, flags = 0;
+    const void* v = retrieve(handle, p->loaded_urid, &size, &type, &flags);
+    if (!v || size != sizeof(float) || type != p->float_urid) return LV2_STATE_ERR_NO_PROPERTY;
+    const LV2_Worker_Schedule* schedule = nullptr;
+    for (int i = 0; features && features[i]; ++i)
+        if (std::strcmp(features[i]->URI, LV2_WORKER__schedule) == 0)
+            schedule = static_cast<const LV2_Worker_Schedule*>(features[i]->data);
+    if (!schedule) return LV2_STATE_ERR_NO_FEATURE;
+    WorkMsg m{'R', 0.f};
+    std::memcpy(&m.value, v, sizeof m.value);
+    return schedule->schedule_work(schedule->handle, sizeof m, &m) == LV2_WORKER_SUCCESS ? LV2_STATE_SUCCESS
+                                                                                         : LV2_STATE_ERR_UNKNOWN;
+}
+
+const LV2_State_Interface kWorkerStateInterface = {worker_save, worker_restore};
+
+const void* worker_extension_data(const char* uri) {
+    if (std::strcmp(uri, LV2_WORKER__interface) == 0) return &kWorkerInterface;
+    if (std::strcmp(uri, LV2_STATE__interface) == 0) return &kWorkerStateInterface;
+    return nullptr;
 }
 
 void connect(LV2_Handle h, uint32_t port, void* data) {
@@ -192,6 +319,24 @@ void run(LV2_Handle h, uint32_t n) {
         if (p->latency) *p->latency = float(kLookaheadFrames);
         break;
     }
+    case kWorker: {
+        // Every run(): a host may validate on one thread and process on
+        // another; the audio class is whichever thread runs it now.
+        p->run_thread.store(pthread_self(), std::memory_order_relaxed);
+        p->run_seen.store(true, std::memory_order_release);
+        // A host that offers end_run calls it after every run().
+        if (!p->ended) p->broken.store(true, std::memory_order_relaxed);
+        p->ended = false;
+        const WorkMsg m{'G', p->control ? *p->control : 1.f};
+        if (m.value != p->requested &&
+            p->schedule->schedule_work(p->schedule->handle, sizeof m, &m) == LV2_WORKER_SUCCESS)
+            p->requested = m.value;
+        const float g = p->broken.load(std::memory_order_relaxed)
+                            ? 0.f
+                            : p->applied.load(std::memory_order_relaxed) * p->restored.load(std::memory_order_relaxed);
+        for (uint32_t i = 0; i < n; ++i) p->out[0][i] = g * p->in[0][i];
+        break;
+    }
     case kState:
         std::memcpy(p->out[0], p->in[0], n * sizeof(float));
         p->blocks.fetch_add(1, std::memory_order_relaxed);
@@ -224,6 +369,8 @@ const LV2_Descriptor kDescriptors[] = {
     {"urn:sonora:test#key", instantiate<kKey>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#keyliar", instantiate<kKeyLiar>, connect, nullptr, run, nullptr, cleanup, nullptr},
     {"urn:sonora:test#state", instantiate<kState>, connect, nullptr, run, nullptr, cleanup, extension_data},
+    {"urn:sonora:test#worker", instantiate<kWorker>, connect, nullptr, run, nullptr, cleanup,
+     worker_extension_data},
 };
 
 }  // namespace

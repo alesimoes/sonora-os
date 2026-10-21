@@ -60,7 +60,8 @@ target_include_directories(sonora_plugin_loader PUBLIC src)
 target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_LIBS})
 
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h
-               src/lv2_host.cpp src/lv2_host.h src/control.cpp src/control.h)
+               src/lv2_host.cpp src/lv2_host.h src/lv2_worker.cpp src/lv2_worker.h
+               src/control.cpp src/control.h)
 target_link_libraries(sonora-plugin-host PRIVATE sonora_plugin_ipc sonora_plugin_loader
                       sonora_urid_map sonora_plugin_host_control sonora_plugin_probe_record PkgConfig::LILV)
 if(VST3SDK_INCLUDE_DIR)
@@ -82,6 +83,13 @@ add_executable(test_urid_map tests/test_urid_map.cpp)
 target_link_libraries(test_urid_map PRIVATE sonora_urid_map Threads::Threads)
 add_test(NAME plugin_host_urid_map COMMAND test_urid_map)
 set_tests_properties(plugin_host_urid_map PROPERTIES LABELS plugins)
+
+# The LV2 worker's request and response ring (worker:schedule).
+add_executable(test_lv2_worker tests/test_lv2_worker.cpp src/lv2_worker.cpp)
+target_include_directories(test_lv2_worker PRIVATE src)
+target_link_libraries(test_lv2_worker PRIVATE sonora_plugin_ipc PkgConfig::LILV Threads::Threads)
+add_test(NAME plugin_host_lv2_worker COMMAND test_lv2_worker)
+set_tests_properties(plugin_host_lv2_worker PROPERTIES LABELS plugins)
 
 # The misbehaving plugins, as an LV2 bundle in the build tree. Never installed.
 set(SONORA_TEST_BUNDLE ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
@@ -160,7 +168,8 @@ set(_plugin_tests
   plugin_host_bypass plugin_host_bypass_latency plugin_host_bypass_lv2_enabled plugin_host_swap
   plugin_host_rtt plugin_host_key
   plugin_host_control plugin_host_control_incompatible plugin_host_control_gain plugin_host_control_crash
-  plugin_host_control_latency_chain plugin_host_state_lv2)
+  plugin_host_control_latency_chain plugin_host_state_lv2
+  plugin_host_worker plugin_host_worker_futex plugin_host_worker_control plugin_host_worker_restore)
 # HostControl (contracts/plugin host_control.h, ADR-0012 §4): the socket on
 # --control-fd, with the driver as the engine's control thread. The same
 # scenarios as above through Load instead of the command line, and the
@@ -185,6 +194,13 @@ add_test(NAME plugin_host_crash_futex COMMAND ${_drive} --scenario crash --wake 
 add_test(NAME plugin_host_deadline COMMAND ${_drive} --scenario deadline)
 add_test(NAME plugin_host_deadline_futex COMMAND ${_drive} --scenario deadline --wake futex)
 add_test(NAME plugin_host_nonfinite COMMAND ${_drive} --scenario nonfinite)
+# LV2 worker:schedule: work() off the processing thread, its two responses
+# handed back inside run() and end_run() after it, on both wakes and through
+# Load; and a schedule from restore(), answered in the first run().
+add_test(NAME plugin_host_worker COMMAND ${_drive} --scenario worker)
+add_test(NAME plugin_host_worker_futex COMMAND ${_drive} --scenario worker --wake futex)
+add_test(NAME plugin_host_worker_control COMMAND ${_drive} --scenario worker --control 1)
+add_test(NAME plugin_host_worker_restore COMMAND ${_drive} --scenario worker_restore)
 # The RTSan build only: the host's block (run_block) is SONORA_RT, so the
 # plugins it runs are checked as the engine's callback is. The control for
 # that: the deadline scenario with the test plugin's sleep left unexempted
