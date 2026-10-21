@@ -214,7 +214,14 @@ playback can follow edits; it is in flight.
              in parts of at most 16 MiB, encoded off the document thread
              (§4); the budget counted per chunk; ADR-0015 Unverified 1, 3
              and 7 (rt-engineer, ui-engineer).
-       - [ ] M-1c PR 3, with the engine's saver thread (item 3): sidecar
+       - [ ] M-1c PR 2 also carries Load in parts (client to engine), so
+             File > Open reaches the 2^24 budget; until then a bundle over
+             64 MiB is refused by name (ADR-0015 update of 2026-10-20).
+       - [ ] M-1c PR 3 **merges before the first M-4 PR that records
+             MIDI** (architect, #109), and makes the engine the sole owner
+             of `MIDI Sequences/`: the interface's sidecar writer and
+             cleanup go in the same PR. With the engine's saver thread
+             (item 3): sidecar
              syncs only after a disk-thread checkpoint while a take is
              open, "Saving after the next checkpoint", cleanup after the
              transport stops; takes over the budget kept unplaced with a

@@ -667,11 +667,14 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
         if (!disk_caution.empty()) {
             caution = caution.empty() ? disk_caution : caution + "; " + disk_caution;
         }
-        sequences_.saved(file, bytes);
-        // O4, held back while a take is open (§6): a deletion's journal
-        // commit is one more thing in front of the take's own syncs.
+        sequences_.saved(file, to_write);
+        // O4, after a durable save only: with the folder unsynced the old
+        // session file can come back after a power cut, and its sequence
+        // files must still be there. Held back too while a take is open
+        // (§6): a deletion's journal commit is one more thing in front of
+        // the take's own syncs.
         std::string clean_caution;
-        if (!overlay_.recording) sequences_.clean(clean_caution);
+        if (disk_caution.empty() && !overlay_.recording) sequences_.clean(clean_caution);
         if (!clean_caution.empty()) {
             caution = caution.empty() ? clean_caution : caution + "; " + clean_caution;
         }

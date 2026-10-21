@@ -76,7 +76,8 @@ public:
     std::string redo_label() const override { return shown_.redo_label(); }
     model::Id reserve_id() override;
     // Sends the session to the engine (ModelAction::Load) and shows it at
-    // once.
+    // once. A session whose bundle is over api::wire::kMaxModelBytes is
+    // refused by name instead, and nothing is shown or sent.
     bool reset(model::Snapshot s, std::string& why) override;
     // ModelAction::FlushPluginState. `done` runs from the receive() that
     // brings the engine's reply, after that call has applied the updates the
