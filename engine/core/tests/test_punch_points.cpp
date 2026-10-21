@@ -834,12 +834,14 @@ int test_concurrent_punches() {
 // With a name, that test alone.
 // A take says what it is in its bext Description (session-format.md, "BWF
 // metadata, both ways"): take, the document's track id where the engine
-// knows it, session, and for a punch its range [A, B), written when the
-// file opens so a take killed mid-punch is still placed by its header.
+// knows it, for a punch its range [A, B), and last the session's name,
+// written when the file opens so a take killed mid-punch is still placed
+// by its header.
 int test_take_describes_itself() {
     Rig rig("describe", 2);
     Session& s = *rig.session;
     s.tracks()[1]->set_document_id(42);
+    s.set_session_name("Song");
     s.play();
     rig.block();
     const uint64_t p = s.transport().playhead();
@@ -857,48 +859,52 @@ int test_take_describes_itself() {
     sonora::WavReader w;
     // Before any block: the header is on disk from the open.
     CHECK(w.open(rig.file(1, take), error));
-    CHECK(w.description() == head + " track=42 session=Untitled" + punch);
+    CHECK(w.description() == head + " track=42" + punch + " session=Song");
     w.close();
     for (int b = 0; b < 7; ++b) rig.block();
     CHECK(s.stop(&error));
     CHECK(w.open(rig.file(1, take), error));
-    CHECK(w.description() == head + " track=42 session=Untitled" + punch);
+    CHECK(w.description() == head + " track=42" + punch + " session=Song");
     // The engine track's position is not a track id, so with none, no field.
     CHECK(w.open(rig.file(0, take), error));
-    CHECK(w.description() == head + " session=Untitled" + punch);
+    CHECK(w.description() == head + punch + " session=Song");
 
     s.closed_takes();
+    s.set_session_name("Demo punch=0-48000");
     s.play();
     const int whole = s.next_free_take();
     CHECK(s.start_recording(whole, &error));
     rig.block();
     CHECK(s.stop(&error));
     CHECK(w.open(rig.file(1, whole), error));
-    CHECK(w.description() == "sonora take=" + std::to_string(whole) + " track=42 session=Untitled");
+    CHECK(w.description() ==
+          "sonora take=" + std::to_string(whole) + " track=42 session=Demo punch=0-48000");
     return 0;
 }
 
-// A session name too long for the field is cut, on a UTF-8 character
-// boundary, so the punch range after it survives.
-int test_long_name_keeps_the_punch() {
+// The session's name is the rest of the field, so a name that looks like a
+// field reads as a name: a whole take of a session called "Demo
+// punch=0-48000" is not a punch take. Too long for the field, the name is
+// cut on a UTF-8 character boundary; the punch range before it never is.
+int test_session_name_is_the_rest_of_the_field() {
     PunchRange r;
     r.monitor_in = 96000;
     r.monitor_out = 144000;
+    CHECK(sonora::take_description(1, 0, "Demo punch=0-48000", nullptr) ==
+          "sonora take=1 session=Demo punch=0-48000");
+    CHECK(sonora::take_description(2, 5, "Demo punch=0-48000", &r) ==
+          "sonora take=2 track=5 punch=96000-144000 session=Demo punch=0-48000");
+    const std::string head = "sonora take=12 track=7 punch=96000-144000 session=";
     const std::string name = std::string(203, 'n') + "\xc3\xa9" + std::string(40, 'z');
     const std::string d = sonora::take_description(12, 7, name, &r);
-    const std::string head = "sonora take=12 track=7 session=";
-    const std::string tail = " punch=96000-144000";
     CHECK(d.size() <= 255);
-    CHECK(d.size() > head.size() + tail.size());
     CHECK(d.compare(0, head.size(), head) == 0);
-    CHECK(d.compare(d.size() - tail.size(), tail.size(), tail) == 0);
-    // 255 - 31 - 19 leaves the name 205 bytes: 203 and the two-byte e-acute
-    // fill it. One byte later the e-acute would straddle the cut, and goes.
-    const std::string kept = d.substr(head.size(), d.size() - head.size() - tail.size());
-    CHECK(kept == std::string(203, 'n') + "\xc3\xa9");
-    const std::string tight = sonora::take_description(12, 7, std::string(204, 'n') + "\xc3\xa9", &r);
-    CHECK(tight == head + std::string(204, 'n') + tail);
-    CHECK(sonora::take_description(1, 0, "Song", nullptr) == "sonora take=1 session=Song");
+    // 255 - 50 leaves the name 205 bytes: 203 and the two-byte e-acute fill
+    // it. One byte later the e-acute would straddle the cut, and goes.
+    CHECK(d.substr(head.size()) == std::string(203, 'n') + "\xc3\xa9");
+    const std::string tight =
+        sonora::take_description(12, 7, std::string(204, 'n') + "\xc3\xa9", &r);
+    CHECK(tight == head + std::string(204, 'n'));
     return 0;
 }
 
@@ -924,7 +930,7 @@ int main(int argc, char** argv) {
         {"two_sources_for_one_track", test_two_sources_for_one_track_are_refused},
         {"concurrent_punches", test_concurrent_punches},
         {"take_describes_itself", test_take_describes_itself},
-        {"long_name_keeps_the_punch", test_long_name_keeps_the_punch},
+        {"session_name_is_the_rest", test_session_name_is_the_rest_of_the_field},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

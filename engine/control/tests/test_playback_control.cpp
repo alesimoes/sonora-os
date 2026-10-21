@@ -953,6 +953,22 @@ int test_tracks_know_their_document_ids() {
     return 0;
 }
 
+// The session name a take's Description gives is the document's, not the
+// engine's start-up default, which nothing sets.
+int test_takes_name_the_document_session() {
+    auto session = make_session(1);
+    Session& s = *session;
+    SessionSettings settings;
+    settings.name = "Song";
+    History h(new_session(settings));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(s.session_name() != "Song");
+    CHECK(ctl.show(h.current(), error));
+    CHECK(s.session_name() == "Song");
+    return 0;
+}
+
 // The audio thread counts the solo of every engine track, document or not.
 // An undone AddTrack of a soloed track leaves its engine track holding that
 // solo, which would silence every other track while the interface shows no
@@ -1505,6 +1521,7 @@ int main() {
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
     if (test_tracks_know_their_document_ids()) return 1;
+    if (test_takes_name_the_document_session()) return 1;
     if (test_undone_track_leaves_no_solo()) return 1;
     if (test_solo_safe_reaches_the_track()) return 1;
     if (test_removed_track_stays_muted_until_the_swap()) return 1;

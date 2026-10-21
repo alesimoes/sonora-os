@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sonora/disk_reader.h"
@@ -104,11 +105,12 @@ struct PunchRange {
 };
 
 // A take file's bext Description (session-format.md, "BWF metadata, both
-// ways"): "sonora take=<n> track=<id> session=<name>", " track=<id>" left
-// out when `track_id` is 0, plus " punch=<A>-<B>", the monitored range, for
-// a punch. At most 255 bytes, so the field keeps its NUL; a session name
-// that does not fit is cut on a UTF-8 character boundary, never the punch
-// range, which recovery needs to place the take.
+// ways"): "sonora take=<n> track=<id> punch=<A>-<B> session=<name>", with
+// " track=<id>" left out when `track_id` is 0 and " punch=<A>-<B>", the
+// monitored range, only for a punch. The name is last and is the rest of
+// the field, because a name may hold spaces and "=": "Demo punch=0-48000"
+// must not read as a punch. At most 255 bytes, so the field keeps its NUL;
+// a name that does not fit is cut on a UTF-8 character boundary.
 std::string take_description(int take, uint64_t track_id, const std::string& session,
                              const PunchRange* punch);
 
@@ -319,6 +321,10 @@ public:
     Transport& transport() { return *transport_; }
     const std::vector<std::unique_ptr<Track>>& tracks() const { return tracks_; }
     const SessionConfig& config() const { return cfg_; }
+    // The name a take's files give in their Description: config().name until
+    // set, then the document's (PlaybackController::show()). Control thread.
+    const std::string& session_name() const { return session_name_; }
+    void set_session_name(std::string name) { session_name_ = std::move(name); }
     DiskThread& disk() { return *disk_; }
     // The plan exchange and the disk reader, for engine/control's publisher.
     PlanExchange& plans() { return *plans_; }
@@ -444,6 +450,7 @@ private:
     }
 
     SessionConfig cfg_;
+    std::string session_name_;
     std::unique_ptr<Transport> transport_;
     std::vector<std::unique_ptr<Track>> tracks_;
     std::unique_ptr<RingBuffer<CaptureBoundary>> boundaries_;

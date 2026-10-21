@@ -161,13 +161,13 @@ int main() {
     {
         std::remove(path.c_str());
         sonora::WavWriter w;
-        w.set_description("sonora take=3 track=7 session=Song punch=96000-144000");
+        w.set_description("sonora take=3 track=7 punch=96000-144000 session=Song");
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         CHECK(w.close());
         const auto b = slurp(path);
         const long bext = find_chunk(b, "bext");
         CHECK(bext > 0);
-        const char want[] = "sonora take=3 track=7 session=Song punch=96000-144000";
+        const char want[] = "sonora take=3 track=7 punch=96000-144000 session=Song";
         CHECK(std::memcmp(b.data() + bext, want, sizeof want) == 0);
         sonora::WavReader r;
         std::string error;

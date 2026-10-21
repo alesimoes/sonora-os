@@ -91,21 +91,22 @@ std::string take_description(int take, uint64_t track_id, const std::string& ses
     constexpr std::size_t kMax = 255;
     std::string head = "sonora take=" + std::to_string(take);
     if (track_id != 0) head += " track=" + std::to_string(track_id);
+    if (punch != nullptr) {
+        head += " punch=" + std::to_string(punch->monitor_in) + "-" +
+                std::to_string(punch->monitor_out);
+    }
     head += " session=";
-    const std::string tail = punch == nullptr ? std::string()
-                                              : " punch=" + std::to_string(punch->monitor_in) +
-                                                    "-" + std::to_string(punch->monitor_out);
-    const std::size_t room = kMax - std::min(kMax, head.size() + tail.size());
+    const std::size_t room = kMax - std::min(kMax, head.size());
     std::size_t n = std::min(room, session.size());
     // Back off continuation bytes (10xxxxxx) so the cut lands before a
     // character's lead byte, not inside the character.
     if (n < session.size()) {
         while (n > 0 && (static_cast<unsigned char>(session[n]) & 0xC0) == 0x80) --n;
     }
-    return head + session.substr(0, n) + tail;
+    return head + session.substr(0, n);
 }
 
-Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)) {
+Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.name) {
     transport_ = std::make_unique<Transport>(cfg_.sample_rate);
 
     const auto ring_frames =
@@ -369,7 +370,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
             err = EBUSY;
         } else {
             WavWriter& w = t->writer(slot);
-            w.set_description(take_description(take_number, t->document_id(), cfg_.name, range));
+            w.set_description(take_description(take_number, t->document_id(), session_name_, range));
             if (!w.open(file, cfg_.sample_rate, t->channels(), cfg_.format, origin)) {
                 err = errno;
             }
