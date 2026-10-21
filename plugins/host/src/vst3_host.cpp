@@ -1074,7 +1074,7 @@ public:
     // latency is a main-thread read, here. An instance that will not
     // activate again is left off and the chain is refused: processing an
     // inactive component is outside the VST3 workflow.
-    bool reactivate() override {
+    bool reactivate(uint64_t, std::string&) override {
         for (Instance& i : inst_) {
             if (i.processing) i.processor->setProcessing(false);
             i.processing = false;
@@ -1181,7 +1181,7 @@ public:
     // Before the processing thread starts. The component of every replica,
     // then the controller told the component's state, then the controller's
     // own: the order VST3 hosts use when they load a project.
-    bool restore_state(const std::vector<std::string>& sections, std::string& error) override {
+    bool restore_state(const std::vector<std::string>& sections, uint64_t, std::string& error) override {
         if (sections.empty()) return true;
         if (sections.size() > 2) {
             error = who_ + ": a VST3 state has two sections, not " + std::to_string(sections.size());

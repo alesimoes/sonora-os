@@ -73,7 +73,8 @@ Lv2World::~Lv2World() {
                            n.toggled, n.enumeration, n.integer, n.logarithmic, n.not_automatic, n.unit,
                            n.unit_symbol, n.minor_version, n.micro_version, n.worker_schedule})
         lilv_node_free(node);
-    lilv_world_free(world_);
+    // lilv_world_free unloads the plugins' libraries.
+    if (!Lv2Worker::abandoned()) lilv_world_free(world_);
 }
 
 bool Lv2World::load_bundle(const std::string& dir, std::string& error) {
@@ -324,7 +325,13 @@ public:
 
     ~Lv2Processor() override {
         // work() must not outlive its instance, nor run beside deactivate().
-        if (worker_) worker_->stop();
+        // One that never returns keeps its instances, its worker and (in
+        // Lv2World) its library for the rest of the process: freeing them
+        // under it would turn a hung plugin into a crash.
+        if (worker_ && !worker_->stop()) {
+            (void)worker_.release();
+            return;
+        }
         for (LilvInstance* inst : instances_) {
             if (active_) lilv_instance_deactivate(inst);
             lilv_instance_free(inst);
@@ -465,10 +472,17 @@ public:
     // The latency port is an output written in run(), so the new latency is
     // read from the next block, which the caller runs (host --reactivate
     // validates the chain again).
-    // LV2's activate() cannot fail.
-    bool reactivate() override {
-        std::unique_lock<std::mutex> no_work;
-        if (worker_) no_work = std::unique_lock<std::mutex>(worker_->instantiation_lock());
+    // LV2's activate() cannot fail; a work() that has not returned by the
+    // deadline can, and then nothing is deactivated.
+    bool reactivate(uint64_t deadline_ns, std::string& error) override {
+        std::unique_lock<std::timed_mutex> no_work;
+        if (worker_) {
+            no_work = worker_->exclude_work(deadline_ns);
+            if (!no_work.owns_lock()) {
+                error = "was not re-activated: its worker never returned from work()";
+                return false;
+            }
+        }
         for (LilvInstance* inst : instances_) lilv_instance_deactivate(inst);
         for (LilvInstance* inst : instances_) lilv_instance_activate(inst);
         return true;
@@ -539,7 +553,8 @@ public:
 
     // Before the processing thread starts: restore() is in LV2's
     // instantiation threading class and must never run beside run().
-    bool restore_state(const std::vector<std::string>& sections, std::string& error) override {
+    bool restore_state(const std::vector<std::string>& sections, uint64_t deadline_ns,
+                       std::string& error) override {
         if (sections.empty()) return true;
         const std::string who = info_.name + " <" + info_.uri + ">";
         if (sections.size() != 1) {
@@ -565,8 +580,15 @@ public:
         {
             // restore() is in the instantiation class: never beside work().
             // What it schedules is answered in the first run().
-            std::unique_lock<std::mutex> no_work;
-            if (worker_) no_work = std::unique_lock<std::mutex>(worker_->instantiation_lock());
+            std::unique_lock<std::timed_mutex> no_work;
+            if (worker_) {
+                no_work = worker_->exclude_work(deadline_ns);
+                if (!no_work.owns_lock()) {
+                    error = who + ": its worker never returned from work(), so the state was not restored";
+                    lilv_state_free(state);
+                    return false;
+                }
+            }
             for (std::size_t r = 0; r < instances_.size(); ++r)
                 lilv_state_restore(state, instances_[r], nullptr, nullptr, 0, features_[r].list);
         }

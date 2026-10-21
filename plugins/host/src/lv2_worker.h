@@ -73,8 +73,12 @@ public:
     // refused it: the plugin must then be refused, not run without one.
     bool start_thread();
     // Joins the thread; what was still queued is dropped. Before the
-    // instances are freed.
-    void stop();
+    // instances are freed. A work() that has not returned within
+    // kStopWaitMs is abandoned instead of waited on: false, and then the
+    // instances, this worker and the plugin's library must outlive the
+    // process (abandoned()), since that work() still runs inside them.
+    static constexpr uint64_t kStopWaitMs = 1000;
+    bool stop();
 
     // The processing thread, after instance `i`'s run(): its responses, then
     // its end_run(). Bounded by what had arrived when it began.
@@ -82,8 +86,16 @@ public:
 
     // work() is in its own threading class, which LV2 forbids beside the
     // instantiation class (restore, activate, deactivate). The worker holds
-    // this around every work() call; the main thread holds it around those.
-    std::mutex& instantiation_lock() { return lock_; }
+    // the lock around every work() call; the main thread takes it around
+    // those, waiting no later than `deadline_ns` (monotonic_ns): a work()
+    // that never returns must not hold the main thread, which answers the
+    // engine. Not owned past the deadline: the caller refuses what it was
+    // about to do and says that work() did not return.
+    std::unique_lock<std::timed_mutex> exclude_work(uint64_t deadline_ns);
+
+    // A worker anywhere in the process was abandoned inside work(): the
+    // plugins' libraries must not be unloaded (Lv2World).
+    static bool abandoned() noexcept;
 
     // Requests and responses refused because their ring was full.
     uint64_t refused() const noexcept { return refused_.load(std::memory_order_relaxed); }
@@ -106,9 +118,10 @@ private:
     std::vector<std::unique_ptr<Queue>> queues_;
     std::vector<unsigned char> run_scratch_, work_scratch_;  // one message each
     std::atomic<uint32_t> word_{0};
+    std::atomic<uint32_t> exited_{0};  // 1 once loop() has returned
     std::atomic<bool> stop_{false};
     std::atomic<uint64_t> refused_{0};
-    std::mutex lock_;
+    std::timed_mutex lock_;
     void* thread_ = nullptr;  // ipc.h start_thread
 };
 

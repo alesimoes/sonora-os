@@ -25,7 +25,9 @@
 //                          arrives anywhere else, only one of work()'s two
 //                          responses arrives, or a run() follows one without
 //                          end_run(). Its state is that gain, restored
-//                          through a schedule from restore()
+//                          through a schedule from restore(). A gain of
+//                          exactly kHangGain makes work() never return, as
+//                          a plugin stuck on a network share does
 
 #include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
@@ -168,14 +170,18 @@ struct WorkMsg {
     float value;
 };
 constexpr uint32_t kCommit = 'C';
+constexpr float kHangGain = 0.25f;
 
 // The slow part a real plugin does here: reading a sample or an IR.
 LV2_Worker_Status work(LV2_Handle h, LV2_Worker_Respond_Function respond, LV2_Worker_Respond_Handle rh,
                        uint32_t size, const void* data) {
     auto* p = static_cast<Plugin*>(h);
     if (size != sizeof(WorkMsg) || on_run_thread(p)) p->broken.store(true, std::memory_order_relaxed);
+    WorkMsg m{};
+    if (size == sizeof m) std::memcpy(&m, data, sizeof m);
     timespec ts{0, 2'000'000};
-    nanosleep(&ts, nullptr);
+    do nanosleep(&ts, nullptr);
+    while (m.value == kHangGain);
     if (LV2_Worker_Status s = respond(rh, size, data)) return s;
     return respond(rh, sizeof kCommit, &kCommit);
 }
