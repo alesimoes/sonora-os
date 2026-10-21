@@ -2790,6 +2790,52 @@ int scenario_worker_restore(const Args& a) {
     return 0;
 }
 
+// A work() that never returns (the test plugin at gain 0.25) must not take
+// the host's main thread with it. Audio goes on meanwhile, since work() is
+// off the processing thread; a Reconfigure, which must not re-activate
+// beside work(), is answered with a Fault naming the plugin and the hung
+// work(), before the engine's bound would SIGKILL a host that gave no
+// reason; and the host still exits, Faulted, without waiting on work().
+int scenario_worker_hang(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    const std::vector<std::string> chain = {"urn:sonora:test#worker"};
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("worker_hang: %s, work() never returns at gain 0.25, then Reconfigure\n", chain[0].c_str());
+    Host host;
+    if (int r = start_ready(host, ca, clock, chain, 1)) return r;
+    const Halving h = play_halving(host, clock, 200, [&](uint64_t i) {
+        if (i == 20) host.send(0, 0, 0, 0.25f);
+    });
+    h.report();
+    check(h.other == 0 && h.halved == 0 && h.unity > 150,
+          "with work() hung, the processing thread plays on (at the gain last applied)");
+    const uint64_t asked = monotonic_ns();
+    host.queue(pc::Reconfigure{9});
+    pc::Fault f;
+    const bool faulted = host.expect_message(pc::Type::Fault, f, pc::kReconfigureTimeoutMs);
+    const uint64_t answered_ms = (monotonic_ns() - asked) / 1'000'000ull;
+    std::printf("  Fault after %llu ms: kind %d, instance %d, \"%s\"\n", (unsigned long long)answered_ms,
+                int(f.kind), f.instance, f.text.c_str());
+    check(faulted && f.kind == pc::FaultKind::Plugin && f.instance == 0 &&
+              f.text.find("work()") != std::string::npos,
+          "Reconfigure is answered, within the engine's bound, by a Fault naming the plugin's hung work()");
+    const uint64_t gone_from = monotonic_ns();
+    const bool exited = host.wait_exit_pumping(5'000'000'000ull);
+    std::printf("  host %s %llu ms after the Fault\n", host.death().c_str(),
+                (unsigned long long)((monotonic_ns() - gone_from) / 1'000'000ull));
+    check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitFaulted,
+          "and the host exits Faulted, the hung work() abandoned rather than waited on");
+    bool reconfigured = false;
+    for (const std::string& m : host.take_inbox()) {
+        pc::Type t;
+        reconfigured = reconfigured || (pc::peek_type(m, t) && t == pc::Type::Reconfigured);
+    }
+    check(!reconfigured, "never Reconfigured: nothing was re-activated beside work()");
+    return 0;
+}
+
 // Touches from a plugin's own controller (the VST3 touch class's "editor"
 // thread): every touch inside a gesture, a lone edit wrapped in one, the
 // read-only parameter dropped and counted, the gesture left open ended
@@ -3020,6 +3066,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
     else if (a.scenario == "worker") r = scenario_worker(a);
     else if (a.scenario == "worker_restore") r = scenario_worker_restore(a);
+    else if (a.scenario == "worker_hang") r = scenario_worker_hang(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "incompatible") r = scenario_incompatible(a);
     else if (a.scenario == "bypass") r = scenario_bypass(a);

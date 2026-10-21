@@ -136,8 +136,10 @@ public:
     // re-activates every instance, so a value that only takes effect at
     // activation (the latency-changing ones of ADR-0011 §1.5: an EQ's
     // phase mode, a limiter's look-ahead) does, and re-reads the latency.
-    // False when an instance refused to activate again: it must not run.
-    virtual bool reactivate() = 0;
+    // False when an instance refused to activate again, or could not be
+    // re-activated by `deadline_ns` (monotonic_ns; LV2: its worker still
+    // inside work()), with the reason in `error`: it must not run.
+    virtual bool reactivate(uint64_t deadline_ns, std::string& error) = 0;
     // Parameters by DENSE index (contracts/plugin, "Parameters"): the
     // writable parameters in the plugin's own order. LV2: input control
     // ports by port index. VST3: writable parameters in controller order.
@@ -184,8 +186,10 @@ public:
     // getState is a main-thread call, LV2 save() may run beside run()).
     virtual SaveResult save_state(std::vector<std::string>&, std::string&) { return SaveResult::Empty; }
     // The main thread, before the processing thread starts, never while
-    // run() may run. False, with the reason, when the plugin refused it.
-    virtual bool restore_state(const std::vector<std::string>& sections, std::string& error) {
+    // run() may run, and done by `deadline_ns` (monotonic_ns) or not at all.
+    // False, with the reason, when the plugin refused it or it was not done.
+    virtual bool restore_state(const std::vector<std::string>& sections, uint64_t /*deadline_ns*/,
+                               std::string& error) {
         if (sections.empty()) return true;
         error = "this plugin keeps no state of its own";
         return false;

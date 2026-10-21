@@ -319,13 +319,14 @@ void Chain::control() {
     for (auto& s : slots_) s->control();
 }
 
-bool Chain::reactivate(ChainError& error) {
+bool Chain::reactivate(uint64_t deadline_ns, ChainError& error) {
     for (std::size_t k = 0; k < slots_.size(); ++k) {
-        if (slots_[k]->reactivate()) continue;
+        std::string why;
+        if (slots_[k]->reactivate(deadline_ns, why)) continue;
         const PluginInfo& info = slots_[k]->info();
         error.reason = Refusal::InstantiateFailed;
         error.instance = static_cast<int>(k);
-        error.message = info.name + " <" + info.uri + "> failed to re-activate";
+        error.message = info.name + " <" + info.uri + "> " + (why.empty() ? "failed to re-activate" : why);
         return false;
     }
     error = ChainError{};

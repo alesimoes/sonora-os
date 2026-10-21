@@ -169,7 +169,8 @@ set(_plugin_tests
   plugin_host_rtt plugin_host_key
   plugin_host_control plugin_host_control_incompatible plugin_host_control_gain plugin_host_control_crash
   plugin_host_control_latency_chain plugin_host_state_lv2
-  plugin_host_worker plugin_host_worker_futex plugin_host_worker_control plugin_host_worker_restore)
+  plugin_host_worker plugin_host_worker_futex plugin_host_worker_control plugin_host_worker_restore
+  plugin_host_worker_hang)
 # HostControl (contracts/plugin host_control.h, ADR-0012 §4): the socket on
 # --control-fd, with the driver as the engine's control thread. The same
 # scenarios as above through Load instead of the command line, and the
@@ -201,6 +202,9 @@ add_test(NAME plugin_host_worker COMMAND ${_drive} --scenario worker)
 add_test(NAME plugin_host_worker_futex COMMAND ${_drive} --scenario worker --wake futex)
 add_test(NAME plugin_host_worker_control COMMAND ${_drive} --scenario worker --control 1)
 add_test(NAME plugin_host_worker_restore COMMAND ${_drive} --scenario worker_restore)
+# A work() that never returns: the Reconfigure after it is answered with a
+# Fault (about 9 s, the engine's bound less a second) and the host exits.
+add_test(NAME plugin_host_worker_hang COMMAND ${_drive} --scenario worker_hang)
 # The RTSan build only: the host's block (run_block) is SONORA_RT, so the
 # plugins it runs are checked as the engine's callback is. The control for
 # that: the deadline scenario with the test plugin's sleep left unexempted
