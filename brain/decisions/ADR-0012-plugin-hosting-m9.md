@@ -37,6 +37,37 @@
   already runs per-edge stereo delay lines sized by `max_delay_frames`.
   §7 builds on that shape. If #41 changes before it merges, §7 follows it.
 
+## Summary
+
+*Navigation only; the sections below are the decision. `grep -n '^#' <this
+file>` gives each section's line; subsections and amendments are bold lines
+(`grep -n '^\*\*5\.3\|^\*\*Amendment' <this file>`). Read from there with
+offset/limit.*
+
+- §1: one shared futex wake per callback, broadcast, provisional and gated
+  off; hosts run timer-paced until the bare-metal measurement passes.
+- §2: one host process per insert chain (up to 10 inserts), each with one
+  `SCHED_FIFO` 70 thread; parallelism comes from the kernel scheduler.
+- §3: a missed block plays silence, counted, and is ramped back in.
+- §4: the UI never talks to a host; `HostControl` is one `SOCK_SEQPACKET`
+  socketpair per host, owned by the engine's control thread (transport and
+  handshake amended 2026-10-13).
+- §5: the contract items: block-tagged parameters with a last-value table,
+  format-native values, a crashed host's region never reused, plan swaps,
+  versioning, the wake.
+- §6: inserts in `common/model`, session format version 2, the insert
+  operations. §7: `TrackSource`, `InsertChain` and `TrackFader` nodes, and
+  the builder sets `delay_frames` for PDC. §8: insert operations through the
+  control API, all additive.
+- Amendment 2026-10-14 (accepted 2026-10-18): the control server's chains.
+  Amendment 2026-10-19 (accepted): the scan worker and the plugin catalog.
+- For the owner: O1 insert edits undoable (default yes), O2 keys while a
+  plugin editor has focus.
+
+Sections: Context; Decision §1 to §8; Rationale; Consequences; Rulings of
+the rt-safety-auditor; For the owner; Unverified; Alternatives rejected;
+Implementation checklist, in order.
+
 ## Context
 
 Three gates block `engine/plugin_client`:

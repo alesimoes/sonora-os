@@ -14,6 +14,38 @@
   rests on a fact that note is expected to settle, the fact is listed under
   "Unverified" with the measurement that settles it.
 
+## Summary
+
+*Navigation only; the sections below are the decision, and its status is
+Proposed. `grep -n '^#' <this file>` gives each section's line; subsections
+are bold lines (`grep -n '^\*\*4\.4' <this file>`). Read from there with
+offset/limit.*
+
+- §1: our processors are ordinary plugins from one DSP codebase, built as
+  LV2 and VST3, loaded by Sonora's own host like any third-party plugin
+  (Sonora loads LV2 on Linux). The format layer sits behind our own
+  interface (DPF); nothing of ours runs in the engine's audio path except
+  meters, and moving a processor there is a named, gated step.
+- §2: new modules (`common/dsp`, `plugins/native/{sdk,format,<name>,measure,
+  models}`), the allowed edges, and one static parameter table per
+  processor from which everything is generated. Editors are Qt Quick panels
+  drawn by `sonora-ui`, not by the plugin.
+- §3: a measurement harness (`sonora-dsp-measure`) on generated signals,
+  thresholds, analog character from physical models checked against SPICE
+  references, golden files, a CPU budget per instance.
+- §4: AI chooses parameters, DSP makes the sound; four tiers; NAM-class amp
+  networks in fixed architectures in the plugin host; the mix and mastering
+  assistant; an optional Claude layer (Proposed); provenance for models,
+  captures and IRs.
+- §5: names are ours, never a third-party product's. §6: stages N0 to N7.
+- Amendment 1 (N0): the extra edges and the EQ modes. Amendment 2 (N1): the
+  DPF patch instead of the MIT-SDK fallback, block-accurate VST3
+  automation, an unrouted key input as no key.
+
+Sections: Context; Decision §1 to §6; Rationale; Consequences; Unverified;
+Alternatives rejected; For the owner; Amendment 1, 2026-10-13; Amendment 2,
+2026-10-13.
+
 ## Context
 
 **The request (owner, 2026-10-13).** The product ships its own plugin suite:
