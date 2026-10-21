@@ -31,8 +31,8 @@ Snapshot new_session_with_tracks(const SessionSettings& settings,
     return s;
 }
 
-Document::Document(Snapshot initial, std::size_t budget_bytes)
-    : history_(std::move(initial), budget_bytes) {}
+Document::Document(Snapshot initial, std::size_t budget_bytes, std::uint64_t midi_max_entries)
+    : history_(std::move(initial), budget_bytes, midi_max_entries) {}
 
 bool Document::apply(std::string_view op_bytes, ReplicationUpdate& out, std::string& error) {
     Operation op;
@@ -113,7 +113,7 @@ bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
                     ReplicationUpdate& out, std::string& error, std::size_t max_bytes) {
     Loaded loaded;
     LoadError why;
-    if (!deserialize(session_file, loaded, why)) {
+    if (!decode_session_bundle(session_file, loaded, why)) {
         error = "the session does not load: " + why.text();
         return false;
     }
@@ -123,8 +123,17 @@ bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
                 " Hz; it cannot play here until sample-rate conversion exists";
         return false;
     }
+    // Refused whole, never opened half-loaded (ADR-0015 §5). An engine
+    // setting rather than a session key, so the way in is to raise it.
+    const std::uint64_t entries = state_midi_entries(*loaded.snapshot.edit);
+    if (entries > history_.midi_max_entries()) {
+        error = "the session holds " + std::to_string(entries) +
+                " MIDI notes and events, over this engine's midi_max_entries of " +
+                std::to_string(history_.midi_max_entries()) + "; raise the setting to open it";
+        return false;
+    }
     History previous = std::move(history_);
-    history_ = History(std::move(loaded.snapshot), previous.budget());
+    history_ = History(std::move(loaded.snapshot), previous.budget(), previous.midi_max_entries());
     if (!snapshot(out, error, max_bytes)) {
         history_ = std::move(previous);
         return false;

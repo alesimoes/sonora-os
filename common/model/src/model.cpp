@@ -19,6 +19,14 @@ std::string str(std::uint64_t n) { return std::to_string(n); }
 
 bool in_range(std::int64_t n) { return n >= 0 && n <= kMaxInteger; }
 
+bool lower_hex(const std::string& s, std::size_t n) {
+    if (s.size() != n) return false;
+    for (const char c : s) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
 // Written so that NaN fails it.
 bool gain_in_range(float db) { return db >= kMinGainDb && db <= kMaxGainDb; }
 
@@ -166,6 +174,10 @@ std::string plugin_state_file(const std::string& sha256) {
     return "Plugin State/" + sha256 + ".state";
 }
 
+std::string midi_sequence_file(const std::string& sha256) {
+    return "MIDI Sequences/" + sha256 + ".msq";
+}
+
 Snapshot new_session(const SessionSettings& settings) {
     auto edit = std::make_shared<EditState>();
     edit->markers = std::make_shared<const MarkerList>();
@@ -284,10 +296,32 @@ bool note_before(const midi::Note& a, const midi::Note& b) {
     return a.end() < b.end();
 }
 
+std::string sequence_ref_problem(const SequenceFileRef& r) {
+    if (!lower_hex(r.sha256, 64)) return "sha256 must be 64 lower-case hex digits";
+    if (r.file != midi_sequence_file(r.sha256)) {
+        return "file must be \"" + midi_sequence_file(r.sha256) + "\"";
+    }
+    for (const std::uint64_t n : {r.bytes, r.notes, r.events, r.sysex}) {
+        if (n > static_cast<std::uint64_t>(kMaxInteger)) {
+            return "bytes, notes, events and sysex must be at most " + str(kMaxInteger);
+        }
+    }
+    return {};
+}
+
 std::string sequence_problem(const MidiSequence& s, std::string& where) {
     const auto at = [&](const char* list, std::size_t i) {
         where = std::string(list) + "[" + std::to_string(i) + "]";
     };
+    if (s.missing) {
+        where = "data";
+        if (!s.notes.empty() || !s.events.empty() || !s.sysex.empty()) {
+            return "a sequence whose file is missing holds no notes or events";
+        }
+        std::string why = sequence_ref_problem(*s.missing);
+        if (why.empty()) where.clear();
+        return why;
+    }
     for (std::size_t i = 0; i < s.notes.size(); ++i) {
         const midi::Note& n = s.notes[i];
         at("notes", i);

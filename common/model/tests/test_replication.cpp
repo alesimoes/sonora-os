@@ -554,8 +554,8 @@ int test_window_refuses_what_does_not_fit() {
         std::string err;
         return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 5", "\"window_format\": 4", "window_format"));
-    CHECK(refused("\"window_format\": 5", "\"window_format\": 6", "window_format"));
+    CHECK(refused("\"window_format\": 6", "\"window_format\": 5", "window_format"));
+    CHECK(refused("\"window_format\": 6", "\"window_format\": 7", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

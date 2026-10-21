@@ -25,6 +25,7 @@
 #include "edit_controller.h"
 #include "engine_adapter.h"
 #include "peak_source.h"
+#include "session_files.h"
 #include "time_format.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -290,6 +291,7 @@ private:
     bool synthetic_peaks_;
     QString sessions_dir_;
     SessionWriter writer_;
+    MidiSequenceFolder sequences_;   // the session folder's "MIDI Sequences/"
     QString file_;                 // empty until the session is saved or opened
     uint64_t saved_revision_ = 0;  // the revision the file holds
     uint64_t save_generation_ = 0;

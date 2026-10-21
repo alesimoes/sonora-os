@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "sonora/api/wire.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/session_file.h"
 
@@ -124,8 +125,19 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     model::WriteInfo info;
     info.written_by = "sonora-ui";
     std::string bytes, error;
-    if (!model::serialize(s, info, bytes, error)) {
+    // With its sequence files: the engine reads nothing from this folder.
+    if (!model::encode_session_bundle(s, info, bytes, error)) {
         why = "the session could not be sent to the engine: " + error;
+        return false;
+    }
+    // Checked before it is shown: over the cap the engine never receives
+    // it, and the screen would hold a session the engine did not load.
+    if (bytes.size() > api::wire::kMaxModelBytes) {
+        why = "the session is " + std::to_string(bytes.size()) +
+              " bytes with its MIDI sequence files, over the " +
+              std::to_string(api::wire::kMaxModelBytes) +
+              " bytes a Load can carry; it opens once a Load travels in parts, as a Snapshot"
+              " will (ADR-0015 M-1c PR 2)";
         return false;
     }
     Pending p;
