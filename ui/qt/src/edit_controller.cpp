@@ -980,9 +980,12 @@ bool EditController::paste(std::string& why) {
             return false;
         }
     }
+    // Only lanes that hold regions are lost by being left out: an empty one
+    // would have cleared a track that is not there.
     std::vector<std::string> left_out;
     for (int i = fit; i < lanes; ++i) {
-        left_out.push_back(clipboard_.lanes[static_cast<std::size_t>(i)].track);
+        const Clip& lane = clipboard_.lanes[static_cast<std::size_t>(i)];
+        if (!lane.empty()) left_out.push_back(lane.track);
     }
     const std::string last = track(n - 1)->name;
     if (!any) {
@@ -1002,7 +1005,7 @@ bool EditController::paste(std::string& why) {
     if (!submit_compound(std::move(members), "Paste", "pasted", why)) return false;
     select_span(sel_.track, fit, at, at + clipboard_.length());
     why.clear();
-    if (fit < lanes) {
+    if (!left_out.empty()) {
         why = "Pasted " + std::to_string(fit) + " of the clipboard's " + std::to_string(lanes) +
               " tracks: there is no track below " + last + " for what was copied from " +
               spoken_list(left_out) + ".";

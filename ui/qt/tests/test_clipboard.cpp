@@ -690,6 +690,23 @@ int test_several_tracks() {
     CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
     CHECK(c.undo(why));
 
+    // From the third track the empty second lane is left out too, but it
+    // held nothing, so only Keys' lane is named.
+    c.select_track(2);
+    c.set_insertion(12 * kBar);
+    CHECK(c.paste(why));
+    CHECK(has(why, "Pasted 1 of the clipboard's 3 tracks") && has(why, "copied from Keys"));
+    CHECK(!has(why, name_of(doc.snapshot(), 1).c_str()));
+    CHECK(c.undo(why));
+
+    // Only empty lanes left out: nothing was lost, so nothing to say.
+    c.select_range(0, kBar, 2 * kBar, 2);
+    CHECK(c.copy(why) && c.clipboard().lanes.size() == 2 && c.clipboard().lanes[1].empty());
+    c.select_track(2);
+    c.set_insertion(12 * kBar);
+    CHECK(c.paste(why) && why.empty());
+    CHECK(c.undo(why));
+
     // A clipboard whose regions would all fall past the last track pastes
     // nothing, rather than only clearing.
     c.select_range(1, kBar, 2 * kBar, 2);
@@ -923,7 +940,7 @@ int test_menu() {
     CHECK(lane(document.snapshot(), 0).regions.size() == 2);
 
     // Ctrl+A, Pro Tools' Select All: both tracks. Copied, then pasted from
-    // the second, the lane with no track below is said on the status line.
+    // the second: the second lane, empty, is left out and nothing is said.
     key(view, Qt::Key_A, Qt::ControlModifier);
     CHECK(session.controller().selection().track == 0 &&
           session.controller().selection().tracks == 2);
@@ -933,6 +950,16 @@ int test_menu() {
     session.controller().set_insertion(20 * kBar);
     key(view, Qt::Key_V, Qt::ControlModifier);
     CHECK(lane(document.snapshot(), 1).regions.size() == 2);
+    QTest::qWait(20);
+    CHECK(!model.statusText().contains(QStringLiteral("Pasted")));
+    // Again, now that the second track holds regions: the lane with no track
+    // below is said on the status line.
+    key(view, Qt::Key_A, Qt::ControlModifier);
+    key(view, Qt::Key_C, Qt::ControlModifier);
+    session.controller().select_track(1);
+    session.controller().set_insertion(60 * kBar);
+    key(view, Qt::Key_V, Qt::ControlModifier);
+    CHECK(lane(document.snapshot(), 1).regions.size() == 4);
     CHECK(QTest::qWaitFor([&model]() {
         return model.statusText().contains(QStringLiteral("Pasted 1 of the clipboard's 2 tracks"));
     }));
