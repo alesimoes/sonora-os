@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include "theme.h"
 
@@ -253,17 +254,21 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         draw_crossfades(*p, y, v, out);
     }
 
-    // A time range on the selected track, or the one being dragged out.
+    // A time range on the selected tracks, or the one being dragged out.
     Frames ra = sel.start, rb = sel.end;
-    int rt = sel.track;
+    int rt = sel.track, rn = sel.tracks;
     if (drag.kind == Drag::Kind::Range && drag.moved) {
         ra = drag.start;
         rb = drag.end;
-        rt = drag.track;
+        rt = std::min(drag.track, drag.track_end);
+        rn = std::abs(drag.track_end - drag.track) + 1;
     }
     if (rb > ra && rt >= 0 && sel.region == kNoId) {
         const double x0 = std::max(0.0, v.x_of(ra)), x1 = std::min(v.width, v.x_of(rb));
-        add(out.rects, x0, v.y_of_track(rt), x1 - x0, v.track_height, theme::kSelectionFill);
+        // One band over all of them: the range is one selection, not one per
+        // track.
+        add(out.rects, x0, v.y_of_track(rt), x1 - x0, v.track_height * rn,
+            theme::kSelectionFill);
     }
 }
 

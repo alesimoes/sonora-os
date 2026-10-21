@@ -9,12 +9,17 @@ namespace sonora::ui {
 
 using namespace model;
 
+bool Clipboard::empty() const {
+    return std::all_of(lanes.begin(), lanes.end(), [](const Clip& c) { return c.empty(); });
+}
+
 bool copy_range(const Snapshot& s, const TrackEdit& track, Frames a, Frames b, Clip& out) {
     const Playlist* p = active_playlist(&track);
     if (p == nullptr || b <= a) return false;
     Clip clip;
     clip.length = b - a;
     clip.channels = track.channels;
+    clip.track = track.name;
     for (const Region& r : p->regions) {
         if (r.position >= b || r.end() <= a) continue;
         const Frames from = std::max(a, r.position), to = std::min(b, r.end());
@@ -36,7 +41,10 @@ bool copy_range(const Snapshot& s, const TrackEdit& track, Frames a, Frames b, C
             if (const Source* src = s.sources->find(ch.source)) clip.sources.push_back(*src);
         }
     }
-    if (clip.regions.empty()) return false;
+    if (clip.regions.empty()) {
+        out = std::move(clip);
+        return false;
+    }
     const auto in_clip = [&clip](Id id) {
         return std::any_of(clip.regions.begin(), clip.regions.end(),
                            [id](const Region& r) { return r.id == id; });
@@ -137,8 +145,9 @@ std::string channels_text(std::uint16_t n) {
 std::string paste_problem(const Snapshot& s, const TrackEdit& track, const Clip& clip) {
     if (clip.empty()) return "the clipboard is empty; cut or copy a selection first";
     if (clip.channels != track.channels) {
-        return "the clipboard holds " + channels_text(clip.channels) + " audio and " + track.name +
-               " is " + channels_text(track.channels) + "; nothing was pasted";
+        const std::string from = clip.track.empty() ? "" : " from " + clip.track;
+        return "the clipboard holds " + channels_text(clip.channels) + " audio" + from + " and " +
+               track.name + " is " + channels_text(track.channels) + "; nothing was pasted";
     }
     for (const Source& src : clip.sources) {
         const Source* here = s.sources->find(src.id);

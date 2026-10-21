@@ -53,11 +53,17 @@ struct ViewState {
 
 struct Selection {
     int track = -1;              // display index; -1 is none
+    // How many tracks the insertion point or the range covers, from `track`
+    // down, as a Selector drag across lanes or Select All leaves it (Pro
+    // Tools' Edit selection on several tracks). A selected region is on
+    // one track.
+    int tracks = 1;
     model::Id region = kNoId;
     model::Frames insertion = 0;   // the edit cursor
-    model::Frames start = 0, end = 0;  // a time range on `track`; empty when equal
+    model::Frames start = 0, end = 0;  // a time range on those tracks; empty when equal
 
     bool has_range() const { return end > start; }
+    bool covers(int index) const { return index >= track && index < track + tracks; }
 };
 
 // FadeIn / FadeOut: the Smart Tool's top corners, as in Pro Tools.
@@ -80,6 +86,9 @@ struct Drag {
     double press_x = 0;
     model::Frames orig_start = 0, orig_end = 0;
     model::Frames start = 0, end = 0;  // the preview
+    // A Range drag's other end: the lane under the pointer, so the range
+    // covers every track from `track` to it.
+    int track_end = -1;
     bool moved = false;
     // A fade drag's length as the drop would set it; 0 removes the fade.
     model::Frames fade = 0;
@@ -137,9 +146,16 @@ public:
     void set_insertion(model::Frames f);
     // As a click with the Grabber: the region, its track, and its bounds.
     bool select_region(model::Id region);
-    // As a Selector drag from `a` to `b` on `track` leaves it.
-    void select_range(int track, model::Frames a, model::Frames b);
+    // As a Selector drag from `a` to `b` leaves it, on `count` tracks from
+    // `track` down (cut to the session's last track).
+    void select_range(int track, model::Frames a, model::Frames b, int count = 1);
+    // Pro Tools' Select All: every track, from the session start to the end
+    // of its last region. Refused when there is no region to select.
+    bool select_all(std::string& why);
     void clear_selection();
+    // After tracks were removed elsewhere: the selection covers only tracks
+    // that exist, so it never draws or edits a lane that is not there.
+    void clamp_selection();
 
     // --- mouse, in track-area pixels ---
     Hit hit(double x, double y) const;
@@ -159,7 +175,8 @@ public:
     bool nudge(int direction, std::string& why);
 
     // --- the clipboard (edit_clipboard.h) ---
-    // On a selected region, or a time range on the selected track. Each
+    // On a selected region, or a time range on the selected tracks, every
+    // track of it in the same compound. Each
     // edit is one compound, so one undo step labelled with its name; one
     // that needs more than model::kMaxCompoundMembers members is refused
     // before anything is sent. Shuffle would ripple every later region,
@@ -169,11 +186,14 @@ public:
     // Copy changes no document and is no undo step, as in Pro Tools.
     bool copy(std::string& why);
     bool cut(std::string& why);
-    // At the selection's start on the selected track, overwriting what the
+    // At the selection's start, the clipboard's first lane on the selected
+    // track and each next lane on the track below, overwriting what the
     // clipboard's whole length covers there; the pasted range is then
-    // selected.
+    // selected. Lanes with no track below to land on are left out, as Pro
+    // Tools leaves them: the paste goes ahead, and `why` then names what was
+    // not pasted, for the status line (empty when everything was).
     bool paste(std::string& why);
-    // A copy of the selection placed straight after it on the same track,
+    // A copy of the selection placed straight after it on the same tracks,
     // which then becomes the selection. The clipboard is left alone.
     bool duplicate(std::string& why);
     // Pro Tools' Repeat: `count` copies of the selection end to end straight
@@ -187,12 +207,12 @@ public:
     // not, as repeat() would say it. The count dialog opens only when this is
     // empty, so the operator is not asked for a number and then refused.
     // `track` and `length`, when given, are what one copy would be: the
-    // name of the track it lands on and the range's length, for the dialog.
+    // names of the tracks it lands on and the range's length, for the dialog.
     bool can_repeat(std::string& why, std::string* track = nullptr,
                     model::Frames* length = nullptr) const;
     // The count the last Repeat used, which the dialog offers next.
     int repeat_count() const { return repeat_count_; }
-    const Clip& clipboard() const { return clipboard_; }
+    const Clipboard& clipboard() const { return clipboard_; }
     // Changes whenever the clipboard is replaced.
     uint64_t clipboard_serial() const { return clipboard_serial_; }
     // Fades (Pro Tools' Fade to Start, Fade to End, and the crossfade
@@ -244,11 +264,25 @@ private:
                          std::string& why);
     // Clear on a range that is exactly one fade or crossfade removes it.
     bool clear_fade_at_selection(bool& done, std::string& why);
-    // The range a clipboard edit acts on: a selected region's bounds, else
-    // the selected track's time range. `nothing_was` finishes the refusal
-    // ("... Nothing was cut.").
-    bool edit_range(int& track_index, model::Frames& a, model::Frames& b,
-                    const char* nothing_was, std::string& why) const;
+    // The tracks and range a clipboard edit acts on.
+    struct Span {
+        int first = -1, count = 0;
+        model::Frames a = 0, b = 0;
+    };
+    // The selection's tracks that exist: none without a selected track.
+    int span() const;
+    // A command that acts on one track, refused by name on several rather
+    // than done on the top one only.
+    bool refuse_several(const char* gesture, std::string& why) const;
+    // A selected region's bounds on its track, else the selected tracks'
+    // time range. `nothing_was` finishes the refusal ("... Nothing was cut.").
+    bool edit_range(Span& span, const char* nothing_was, std::string& why) const;
+    // One lane per track of `span`; false, and why, when no lane holds a
+    // region.
+    bool copy_lanes(const Span& span, Clipboard& out, const char* nothing_was,
+                    std::string& why) const;
+    // `span` becomes the selection: a range on its tracks, no region.
+    void select_span(int first, int count, model::Frames a, model::Frames b);
     bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
     // One gesture's members as one Compound labelled `gesture`, refused
     // unsent past the member limit.
@@ -266,7 +300,7 @@ private:
     Drag drag_;
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
-    Clip clipboard_;
+    Clipboard clipboard_;
     int repeat_count_ = 1;
     uint64_t clipboard_serial_ = 0;
 };

@@ -228,8 +228,10 @@ bool parse(QGuiApplication& app, Options& o) {
                                                       "track and open the Edit menu "
                                                       "(clipboard), or repeat the snare's "
                                                       "region three times and open the Repeat "
-                                                      "dialog (repeat), for screenshots."),
-                                       QStringLiteral("fades|clipboard|repeat"));
+                                                      "dialog (repeat), or copy a range on the "
+                                                      "first three tracks and paste it later "
+                                                      "on them (multitrack), for screenshots."),
+                                       QStringLiteral("fades|clipboard|repeat|multitrack"));
     const QCommandLineOption mix_view({QStringLiteral("mix-view")},
                                       QStringLiteral("With --demo, solo Lead Vox and make Room "
                                                      "and Talkback solo safe (solo-safe), for "
@@ -280,8 +282,10 @@ bool parse(QGuiApplication& app, Options& o) {
     }
     o.edit_view = p.value(edit_view);
     if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades") &&
-        o.edit_view != QStringLiteral("clipboard") && o.edit_view != QStringLiteral("repeat")) {
-        std::fprintf(stderr, "sonora-ui: --edit-view must be fades, clipboard or repeat\n");
+        o.edit_view != QStringLiteral("clipboard") && o.edit_view != QStringLiteral("repeat") &&
+        o.edit_view != QStringLiteral("multitrack")) {
+        std::fprintf(stderr,
+                     "sonora-ui: --edit-view must be fades, clipboard, repeat or multitrack\n");
         return false;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
@@ -632,6 +636,28 @@ int main(int argc, char** argv) {
                 model.invoke(QStringLiteral("zoom.fit_session"), -1);
                 session.controller().select_region(snare);
                 model.invoke(QStringLiteral("edit.repeat"), -1);
+            }
+            // A range on the first three tracks copied and pasted after
+            // their last region, through the keys' commands: the pasted
+            // range stays selected across the three lanes.
+            if (a.opt.edit_view == QStringLiteral("multitrack") && p && p->regions.size() > 2 &&
+                session.trackCount() >= 3) {
+                EditController& c = session.controller();
+                const auto from = p->regions[1].position, to = p->regions[2].end();
+                c.select_range(0, from, to, 3);
+                model.invoke(QStringLiteral("edit.copy"), -1);
+                sonora::model::Frames after = to;
+                for (int i = 0; i < 3; ++i) {
+                    const auto* lane = active_playlist(c.snapshot().edit->tracks[i].get());
+                    if (lane && !lane->regions.empty())
+                        after = std::max(after, lane->regions.back().end());
+                }
+                const auto at = after + (to - from) / 4;
+                c.select_range(0, at, at, 3);
+                model.invoke(QStringLiteral("edit.paste"), -1);
+                model.invoke(QStringLiteral("zoom.fit_session"), -1);
+                if (c.selection().tracks != 3)
+                    std::fprintf(stderr, "sonora-ui: multitrack: %s\n", qPrintable(model.statusText()));
             }
             // The snare's two crossfaded regions copied and pasted after the
             // next track's last region, through the keys' commands, with the

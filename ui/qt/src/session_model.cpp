@@ -28,7 +28,8 @@ constexpr unsigned kCounterEvery = 4;
 QString q(const std::string& s) { return QString::fromStdString(s); }
 
 bool same(const Selection& a, const Selection& b) {
-    return a.track == b.track && a.region == b.region && a.insertion == b.insertion &&
+    return a.track == b.track && a.tracks == b.tracks && a.region == b.region &&
+           a.insertion == b.insertion &&
            a.start == b.start && a.end == b.end;
 }
 
@@ -40,7 +41,7 @@ bool same(const ViewState& a, const ViewState& b) {
 
 bool same(const Drag& a, const Drag& b) {
     return a.kind == b.kind && a.moved == b.moved && a.start == b.start && a.end == b.end &&
-           a.region == b.region;
+           a.region == b.region && a.track_end == b.track_end;
 }
 
 }  // namespace
@@ -124,7 +125,19 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
     simple("edit.cut", [this](const CommandContext&, Why& why) { return ctl_.cut(why); });
     simple("edit.copy", [this](const CommandContext&, Why& why) { return ctl_.copy(why); });
-    simple("edit.paste", [this](const CommandContext&, Why& why) { return ctl_.paste(why); });
+    // A paste that left lanes out still ran; what it left out goes on the
+    // status line rather than nowhere. Queued, because a key's success
+    // clears the status line once its handler returns.
+    simple("edit.paste", [this](const CommandContext&, Why& why) {
+        if (!ctl_.paste(why)) return false;
+        if (!why.empty()) {
+            QMetaObject::invokeMethod(
+                this, [this, said = q(why)]() { emit notice(said); }, Qt::QueuedConnection);
+        }
+        why.clear();
+        return true;
+    });
+    simple("edit.select_all", [this](const CommandContext&, Why& why) { return ctl_.select_all(why); });
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
     // Pro Tools' Repeat asks for the number of repeats first. The key sends
@@ -279,6 +292,7 @@ void SessionModel::documentUpdated() {
                find_region(s, ctl_.selection().region) == nullptr) {
         ctl_.clear_selection();
     }
+    ctl_.clamp_selection();
     // Another interface's edit can arrive at the revision an edit of ours
     // was shown at, so the revision alone does not say the content changed.
     seen_revision_ = UINT64_MAX;

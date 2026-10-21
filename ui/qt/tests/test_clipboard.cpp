@@ -132,7 +132,7 @@ int test_copy_paste() {
     const uint64_t r0 = doc.revision();
     CHECK(c.copy(why));
     CHECK(doc.revision() == r0 && !doc.can_undo());
-    CHECK(c.clipboard().regions.size() == 1 && c.clipboard().length == 2 * kBar);
+    CHECK(c.clipboard().lanes[0].regions.size() == 1 && c.clipboard().lanes[0].length == 2 * kBar);
 
     // Paste on track 2 at bar 8: one region, one undo step, "Paste".
     c.select_track(1);
@@ -154,8 +154,8 @@ int test_copy_paste() {
     select_range(c, 0, 2 * kBar, 4 * kBar + kBar / 2);
     CHECK(c.selection().has_range() && c.selection().region == kNoId);
     CHECK(c.copy(why));
-    CHECK(c.clipboard().regions.size() == 2 && c.clipboard().length == 2 * kBar + kBar / 2);
-    CHECK(c.clipboard().regions[1].position == 2 * kBar);
+    CHECK(c.clipboard().lanes[0].regions.size() == 2 && c.clipboard().lanes[0].length == 2 * kBar + kBar / 2);
+    CHECK(c.clipboard().lanes[0].regions[1].position == 2 * kBar);
     select_range(c, 0, 0, 0);
     c.set_insertion(kBar);
     CHECK(c.paste(why));
@@ -204,7 +204,7 @@ int test_cut_clear_duplicate() {
     CHECK(p.regions.size() == 3);
     CHECK(p.regions[0].id == 10 && p.regions[0].end() == kBar + kBar / 2);
     CHECK(p.regions[1].position == 2 * kBar + kBar / 2 && p.regions[1].end() == 3 * kBar);
-    CHECK(c.clipboard().regions.size() == 1 && c.clipboard().regions[0].source_offset == kBar + kBar / 2);
+    CHECK(c.clipboard().lanes[0].regions.size() == 1 && c.clipboard().lanes[0].regions[0].source_offset == kBar + kBar / 2);
     CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Cut");
     CHECK(valid(doc.snapshot()));
     CHECK(c.undo(why));
@@ -275,8 +275,8 @@ int test_fades_and_crossfades() {
     // is held whole.
     select_range(c, 0, 2 * kBar, 3 * kBar + kBar / 2);
     CHECK(c.copy(why));
-    CHECK(c.clipboard().regions[0].fade_in.length == 0);
-    CHECK(c.clipboard().crossfades.size() == 1);
+    CHECK(c.clipboard().lanes[0].regions[0].fade_in.length == 0);
+    CHECK(c.clipboard().lanes[0].crossfades.size() == 1);
     c.select_track(1);
     c.set_insertion(10 * kBar);
     CHECK(c.paste(why));
@@ -289,7 +289,7 @@ int test_fades_and_crossfades() {
     // A range that ends inside the crossfade does not take it.
     select_range(c, 0, 2 * kBar, 3 * kBar + 100);
     CHECK(c.copy(why));
-    CHECK(c.clipboard().crossfades.empty());
+    CHECK(c.clipboard().lanes[0].crossfades.empty());
     return 0;
 }
 
@@ -594,6 +594,201 @@ int test_limit() {
     return 0;
 }
 
+// --- several tracks ---------------------------------------------------------
+
+// Three mono tracks: A [1, 3) bars on the first, nothing on the second, C
+// [1, 2) bars on the third, all over source 100.
+Snapshot three_tracks() {
+    Snapshot s = make_empty_session(3, kRate);
+    auto pool = std::make_shared<SourcePool>();
+    Source take;
+    take.id = 100;
+    take.path = "Audio Files/Take 1.wav";
+    take.length = 40 * kBar;
+    pool->sources.push_back(take);
+    s.sources = pool;
+    s.next_id = 1000;
+    auto edit = std::make_shared<EditState>(*s.edit);
+    const auto fill = [&edit](std::size_t i, std::vector<Region> regions) {
+        auto t = std::make_shared<TrackEdit>(*edit->tracks[i]);
+        auto p = std::make_shared<Playlist>(*t->playlists[0]);
+        p->regions = std::move(regions);
+        t->playlists[0] = p;
+        edit->tracks[i] = t;
+    };
+    fill(0, {make_region(10, "A", kBar, 2 * kBar)});
+    fill(2, {make_region(12, "C", kBar, kBar)});
+    auto keys = std::make_shared<TrackEdit>(*edit->tracks[2]);
+    keys->name = "Keys";
+    edit->tracks[2] = keys;
+    s.edit = edit;
+    return s;
+}
+
+const std::string& name_of(const Snapshot& s, int track) {
+    return s.edit->tracks[static_cast<std::size_t>(track)]->name;
+}
+
+int test_several_tracks() {
+    ModelDocument doc(three_tracks());
+    CHECK(valid(doc.snapshot()));
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+
+    // A Selector drag from the third lane up to the first covers all three,
+    // whichever way it went.
+    c.set_tool(Tool::Select);
+    const double x0 = c.view().x_of(kBar + kBar / 2), x1 = c.view().x_of(2 * kBar + kBar / 2);
+    CHECK(c.press(x0, c.view().y_of_track(2) + 4, why));
+    c.move(x1, c.view().y_of_track(0) + 4);
+    CHECK(c.drag().track_end == 0);
+    CHECK(c.release(x1, c.view().y_of_track(0) + 4, why));
+    c.set_tool(Tool::Smart);
+    CHECK(c.selection().track == 0 && c.selection().tracks == 3);
+    CHECK(c.selection().start == kBar + kBar / 2 && c.selection().end == 2 * kBar + kBar / 2);
+    // A click on one track is one track again.
+    c.select_track(1);
+    CHECK(c.selection().tracks == 1 && !c.selection().has_range());
+
+    // Copy: one lane a track, the empty one keeping its place.
+    c.select_range(0, kBar + kBar / 2, 2 * kBar + kBar / 2, 3);
+    CHECK(c.copy(why));
+    CHECK(c.clipboard().lanes.size() == 3 && c.clipboard().length() == kBar);
+    CHECK(c.clipboard().lanes[0].regions.size() == 1 && c.clipboard().lanes[1].empty());
+    CHECK(c.clipboard().lanes[2].regions.size() == 1 &&
+          c.clipboard().lanes[2].regions[0].length == kBar / 2);
+    CHECK(c.clipboard().lanes[2].track == "Keys");
+
+    // Paste at bar 8 from the first track: each lane on its own track, one
+    // compound, one undo step.
+    c.select_track(0);
+    c.set_insertion(8 * kBar);
+    CHECK(c.paste(why) && why.empty());
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2 && lane(doc.snapshot(), 0).regions[1].position == 8 * kBar);
+    CHECK(lane(doc.snapshot(), 1).regions.empty());
+    CHECK(lane(doc.snapshot(), 2).regions.size() == 2 && lane(doc.snapshot(), 2).regions[1].position == 8 * kBar);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Paste");
+    CHECK(c.selection().track == 0 && c.selection().tracks == 3 &&
+          c.selection().start == 8 * kBar && c.selection().end == 9 * kBar);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 1 && lane(doc.snapshot(), 2).regions.size() == 1);
+
+    // From the second track, the third lane has no track to land on: Pro
+    // Tools leaves it out and pastes the rest; the paste says what it left.
+    // The empty lane clears what it lands on, as its gap would.
+    c.select_track(1);
+    c.set_insertion(kBar);
+    CHECK(c.paste(why));
+    CHECK(has(why, "Pasted 2 of the clipboard's 3 tracks") && has(why, "no track below Keys") &&
+          has(why, "copied from Keys"));
+    CHECK(lane(doc.snapshot(), 1).regions.size() == 1 && lane(doc.snapshot(), 1).regions[0].position == kBar);
+    CHECK(lane(doc.snapshot(), 2).regions.empty());   // C was under the empty lane
+    CHECK(c.selection().track == 1 && c.selection().tracks == 2);
+    CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // From the third track the empty second lane is left out too, but it
+    // held nothing, so only Keys' lane is named.
+    c.select_track(2);
+    c.set_insertion(12 * kBar);
+    CHECK(c.paste(why));
+    CHECK(has(why, "Pasted 1 of the clipboard's 3 tracks") && has(why, "copied from Keys"));
+    CHECK(!has(why, name_of(doc.snapshot(), 1).c_str()));
+    CHECK(c.undo(why));
+
+    // Only empty lanes left out: nothing was lost, so nothing to say.
+    c.select_range(0, kBar, 2 * kBar, 2);
+    CHECK(c.copy(why) && c.clipboard().lanes.size() == 2 && c.clipboard().lanes[1].empty());
+    c.select_track(2);
+    c.set_insertion(12 * kBar);
+    CHECK(c.paste(why) && why.empty());
+    CHECK(c.undo(why));
+
+    // A clipboard whose regions would all fall past the last track pastes
+    // nothing, rather than only clearing.
+    c.select_range(1, kBar, 2 * kBar, 2);
+    CHECK(c.copy(why) && c.clipboard().lanes.size() == 2 && c.clipboard().lanes[0].empty());
+    c.select_track(2);
+    c.set_insertion(6 * kBar);
+    uint64_t r0 = doc.revision();
+    CHECK(!c.paste(why) && has(why, "copied from Keys") && has(why, "nothing was pasted"));
+    CHECK(doc.revision() == r0);
+
+    // Cut on the three: both regions lose the range, one step.
+    c.select_range(0, kBar + kBar / 2, 2 * kBar + kBar / 2, 3);
+    CHECK(c.cut(why));
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Cut");
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2);
+    CHECK(lane(doc.snapshot(), 2).regions[0].end() == kBar + kBar / 2);
+    CHECK(c.clipboard().lanes.size() == 3 && c.selection().tracks == 3);
+    CHECK(c.undo(why) && !doc.can_undo());
+
+    // Clear on the three, one step; on three empty lanes, refused.
+    c.select_range(0, kBar + kBar / 2, 2 * kBar + kBar / 2, 3);
+    CHECK(c.clear(why) && doc.history().undo_depth() == 1 && doc.undo_label() == "Clear");
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2 && lane(doc.snapshot(), 2).regions[0].end() == kBar + kBar / 2);
+    CHECK(c.undo(why));
+    c.select_range(0, 20 * kBar, 21 * kBar, 3);
+    CHECK(!c.clear(why) && has(why, "any of its 3 tracks") && has(why, "nothing was cleared"));
+    CHECK(!c.copy(why) && has(why, "any of its 3 tracks"));
+
+    // Duplicate: each track's part straight after the range, one step.
+    c.select_range(0, kBar, 2 * kBar, 3);
+    CHECK(c.duplicate(why) && doc.history().undo_depth() == 1 && doc.undo_label() == "Duplicate");
+    CHECK(lane(doc.snapshot(), 2).regions.size() == 2 && lane(doc.snapshot(), 2).regions[1].position == 2 * kBar);
+    CHECK(c.selection().tracks == 3 && c.selection().start == 2 * kBar && c.selection().end == 3 * kBar);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // Repeat twice: one step; the dialog names every track it repeats on.
+    c.select_range(0, kBar, 2 * kBar, 3);
+    std::string names;
+    CHECK(c.can_repeat(why, &names) && names == name_of(doc.snapshot(), 0) + ", " +
+                                                    name_of(doc.snapshot(), 1) + " and Keys");
+    CHECK(c.repeat(2, why) && doc.history().undo_depth() == 1 && doc.undo_label() == "Repeat");
+    CHECK(lane(doc.snapshot(), 2).regions.size() == 3 && lane(doc.snapshot(), 2).regions[2].position == 3 * kBar);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // The limit is the whole gesture's: 150 repeats fit one track's edit,
+    // not two tracks' in one.
+    c.select_range(0, kBar, 2 * kBar, 1);
+    CHECK(c.repeat(150, why));
+    CHECK(c.undo(why));
+    c.select_range(0, kBar, 2 * kBar, 3);
+    r0 = doc.revision();
+    CHECK(!c.repeat(150, why) && has(why, "Repeat needs ") && has(why, "Nothing was repeated."));
+    CHECK(doc.revision() == r0);
+
+    // Separate on several tracks splits each at both ends, one step.
+    c.select_range(0, kBar + kBar / 2, 2 * kBar + kBar / 2, 3);
+    CHECK(c.separate(why) && doc.history().undo_depth() == 1);
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 3 && lane(doc.snapshot(), 2).regions.size() == 2);
+    CHECK(c.undo(why));
+
+    // One track's commands say so on several, rather than edit the top one.
+    c.select_range(0, kBar / 2, kBar + kBar / 2, 3);
+    r0 = doc.revision();
+    CHECK(!c.fade_selection(why) && has(why, "on several tracks is not built yet"));
+    CHECK(!c.fade_to_start(why) && has(why, "on several tracks"));
+    CHECK(!c.trim_start_to_insertion(why) && has(why, "on several tracks"));
+    CHECK(doc.revision() == r0);
+
+    // Shuffle refuses on several tracks as on one.
+    c.set_mode(EditMode::Shuffle);
+    CHECK(!c.paste(why) && has(why, "Shuffle"));
+    c.set_mode(EditMode::Slip);
+
+    // Select All: every track, from the start to the last region's end.
+    CHECK(c.select_all(why));
+    CHECK(c.selection().track == 0 && c.selection().tracks == 3 && c.selection().start == 0 &&
+          c.selection().end == 3 * kBar);
+    return 0;
+}
+
 // --- the Edit menu, in the real QML -----------------------------------------
 
 void key(QQuickView& view, int k, Qt::KeyboardModifiers m) {
@@ -743,6 +938,36 @@ int test_menu() {
     QTest::keyClick(&view, Qt::Key_Escape);
     CHECK(!panel->isVisible() && !model.textEntry());
     CHECK(lane(document.snapshot(), 0).regions.size() == 2);
+
+    // Ctrl+A, Pro Tools' Select All: both tracks. Copied, then pasted from
+    // the second: the second lane, empty, is left out and nothing is said.
+    key(view, Qt::Key_A, Qt::ControlModifier);
+    CHECK(session.controller().selection().track == 0 &&
+          session.controller().selection().tracks == 2);
+    key(view, Qt::Key_C, Qt::ControlModifier);
+    CHECK(session.controller().clipboard().lanes.size() == 2);
+    session.controller().select_track(1);
+    session.controller().set_insertion(20 * kBar);
+    key(view, Qt::Key_V, Qt::ControlModifier);
+    CHECK(lane(document.snapshot(), 1).regions.size() == 2);
+    QTest::qWait(20);
+    CHECK(!model.statusText().contains(QStringLiteral("Pasted")));
+    // Again, now that the second track holds regions: the lane with no track
+    // below is said on the status line.
+    key(view, Qt::Key_A, Qt::ControlModifier);
+    key(view, Qt::Key_C, Qt::ControlModifier);
+    session.controller().select_track(1);
+    session.controller().set_insertion(60 * kBar);
+    key(view, Qt::Key_V, Qt::ControlModifier);
+    CHECK(lane(document.snapshot(), 1).regions.size() == 4);
+    CHECK(QTest::qWaitFor([&model]() {
+        return model.statusText().contains(QStringLiteral("Pasted 1 of the clipboard's 2 tracks"));
+    }));
+    // Select All is on the Edit menu too.
+    session.controller().select_track(1);
+    click(view, button);
+    click(view, menu_item(root, QStringLiteral("editSelectAll")));
+    CHECK(session.controller().selection().tracks == 2);
     return 0;
 }
 
@@ -754,7 +979,7 @@ int main(int argc, char** argv) {
     if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() ||
         test_repeat_count_text() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() ||
-        test_limit() || test_menu()) {
+        test_limit() || test_several_tracks() || test_menu()) {
         return 1;
     }
     std::printf("ui clipboard: ok\n");

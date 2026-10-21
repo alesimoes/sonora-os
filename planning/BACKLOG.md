@@ -137,8 +137,9 @@ playback can follow edits; it is in flight.
         `install_session_commands()` and in `FakeEngine::engine_commands()`
         together, and then leaves `planned_commands`. `edit.cut`/`copy`/
         `paste`/`duplicate` run in the interface as compounds (Track 3 item
-        1, PR #86), and `edit.repeat` too (`t3f-repeat`);
-        `select_all`/`heal_separation`/`consolidate` are still to build.
+        1, PR #86), and `edit.repeat` and `edit.select_all` too
+        (`t3f-repeat`, `t3-multitrack-clipboard`);
+        `heal_separation`/`consolidate` are still to build.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -269,9 +270,26 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `Compound` whose size is counted before it is built, so a typed
              2147483647 is refused by its size; Shuffle refused by name
              (`t3f-repeat`; ui_clipboard test_repeat, test_menu).
-       - [ ] Multi-track selections and their clipboard, and Shuffle's
-             ripple once `ShiftRegions` exists (ADR-0009 update 2026-10-14,
-             item 5).
+       - [x] Multi-track selections and their clipboard: a Selector drag
+             across lanes, or Select All (`edit.select_all`, Ctrl+A, Edit >
+             Select All), leaves a range on several tracks (`Selection::
+             tracks`). Cut, Copy, Clear, Duplicate, Repeat and Separate act
+             on every track of it as one `Compound`, the member limit counted
+             over the whole gesture. The clipboard keeps one lane a track,
+             empty ones included; Paste puts lane i on the track i below the
+             selected one, as Pro Tools does, and like Pro Tools leaves out
+             lanes past the last track: the paste goes ahead and the status
+             line names what was left out ("Pasted 2 of the clipboard's 3
+             tracks: there is no track below Keys for what was copied from
+             Keys."); a paste whose regions would all fall past it is refused.
+             Fades and trims to the insertion point refuse several tracks by
+             name (`t3-multitrack-clipboard`; ui_clipboard
+             test_several_tracks, test_menu).
+       - [ ] Shuffle's ripple for the clipboard once `ShiftRegions` exists
+             (ADR-0009 update 2026-10-14, item 5).
+       - [ ] One clipboard lane pasted onto several selected tracks: pastes
+             on the first only today (the selection then shows it); check
+             Pro Tools' behaviour before filling every selected track.
        - [ ] A clipboard copied in another session pastes nothing today
              (refused by name: its sources are not in this pool). Pro Tools
              copies the audio across; that needs `AddSource` members and the
