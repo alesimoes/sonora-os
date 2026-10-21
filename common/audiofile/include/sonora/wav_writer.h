@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <ctime>
 #include <string>
+#include <utility>
 
 namespace sonora {
 
@@ -79,6 +80,12 @@ public:
     // the system's local time. Set before open().
     void set_clock(LocalClock clock) { clock_ = clock; }
 
+    // The bext Description (EBU Tech 3285 §2.3): what a take says about
+    // itself, for recovery and other DAWs' browsers. Bytes past the field's
+    // 256 are dropped. Kept for every later open() until replaced. Set
+    // before open().
+    void set_description(std::string description) { description_ = std::move(description); }
+
     // Tests lower this to reach the limit without writing 4 GiB; it cannot
     // be raised past kRiffSizeLimit. Set before open().
     void set_riff_size_limit(uint64_t bytes);
@@ -124,6 +131,7 @@ private:
     LocalClock clock_ = nullptr;
     SyncData sync_ = nullptr;
     uint64_t riff_size_limit_ = kRiffSizeLimit;
+    std::string description_;
     std::string failure_;
     std::atomic<bool> failed_{false};
 };

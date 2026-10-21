@@ -155,6 +155,38 @@ int main() {
         CHECK(read_u32(b, 4) == b.size() - 8);
     }
 
+    // --- the Description given before open() is the bext's first 256 bytes,
+    // NUL-padded, and reads back; one too long is cut at 256, never spilling
+    // into Originator
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        w.set_description("sonora take=3 track=7 punch=96000-144000 session=Song");
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(w.close());
+        const auto b = slurp(path);
+        const long bext = find_chunk(b, "bext");
+        CHECK(bext > 0);
+        const char want[] = "sonora take=3 track=7 punch=96000-144000 session=Song";
+        CHECK(std::memcmp(b.data() + bext, want, sizeof want) == 0);
+        sonora::WavReader r;
+        std::string error;
+        CHECK(r.open(path, error));
+        CHECK(r.description() == want);
+        r.close();
+
+        std::remove(path.c_str());
+        w.set_description(std::string(300, 'x'));
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(w.close());
+        const auto c = slurp(path);
+        const long bext2 = find_chunk(c, "bext");
+        CHECK(c[bext2 + 255] == 'x');
+        CHECK(std::memcmp(c.data() + bext2 + 256, "Sonora Engine", 13) == 0);
+        CHECK(r.open(path, error));
+        CHECK(r.description() == std::string(256, 'x'));
+    }
+
     // --- a NaN sample becomes silence instead of garbage ---
     {
         std::remove(path.c_str());

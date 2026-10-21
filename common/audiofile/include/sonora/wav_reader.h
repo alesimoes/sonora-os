@@ -37,6 +37,8 @@ public:
     // BWF TimeReference, the timeline sample of the first frame; 0 without
     // a bext chunk.
     uint64_t time_reference() const { return time_reference_; }
+    // BWF Description, up to its first NUL; empty without a bext chunk.
+    const std::string& description() const { return description_; }
 
     // Up to `count` interleaved frames from frame `start`, as float. Returns
     // how many were read: short at the end of the data, -1 on a read error.
@@ -51,6 +53,7 @@ private:
     uint32_t bytes_per_sample_ = 3;
     uint64_t data_offset_ = 0;
     uint64_t time_reference_ = 0;
+    std::string description_;
     std::vector<unsigned char> raw_;
 };
 

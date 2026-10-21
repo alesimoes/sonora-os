@@ -82,6 +82,13 @@ public:
     int current_slot() const { return current_slot_; }
     void set_current_slot(int slot) { current_slot_ = slot; }
 
+    // The control thread's: the document track this engine track records
+    // for, 0 if none is known. A take's file names it in its Description,
+    // so recovery finds the track after a reorder, which the position alone
+    // would not survive.
+    uint64_t document_id() const { return document_id_; }
+    void set_document_id(uint64_t id) { document_id_ = id; }
+
     // Written by the audio thread, inside a take's capture window only;
     // read by the disk thread; never reset (Session::process()).
     RingBuffer<float>& capture_ring() { return *capture_ring_; }
@@ -95,6 +102,7 @@ private:
     WavWriter writers_[kWriterSlots];
     std::atomic<int> slot_take_[kWriterSlots] = {{0}, {0}};
     int current_slot_ = 0;
+    uint64_t document_id_ = 0;
 
     std::atomic<bool> rec_armed_{false};
     std::atomic<bool> muted_{false};

@@ -36,9 +36,10 @@ public:
     // any plan still pending (ADR-0009 §4.2: only the newest waits). The
     // mix is not touched: a fader moved through a ParameterChange is a Track
     // atomic the document does not hold yet, and writing the document's mix
-    // on every edit would snap it back (item 3 of the update above). False,
-    // with `error`, if the plan cannot be built; what is playing does not
-    // change.
+    // on every edit would snap it back (item 3 of the update above). Each
+    // engine track's document_id(), and the session's name, follow the
+    // snapshot, built or not. False, with `error`, if the plan cannot be
+    // built; what is playing does not change.
     bool show(const model::Snapshot& snapshot, std::string& error);
     // The mix alone: gain, pan, mute, solo, monitor mode, bus gain. Gains and
     // pan are clamped to what the model allows, so a snapshot that never went

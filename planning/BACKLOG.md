@@ -60,8 +60,15 @@ playback can follow edits; it is in flight.
          format waits for structured positions (protocol 8, after #100);
          a free-text rewrite in the UI was dropped in review, since it would
          corrupt paths and plugin text.
-       Remain: the punch range in the take's bext Description
-       (session-format.md), loop, pre-roll and input monitoring.
+       - [x] The take's bext Description (`feature/punch-bext-description`):
+         `sonora take=<n> track=<id> punch=<A>-<B> session=<name>`, the
+         punch only for a punch, written when each file opens, so a take
+         killed mid-punch still says where it goes. The name is last and
+         the rest of the field (it may hold spaces and `=`). Track id and
+         name are the document's, set by `PlaybackController::show()`; the
+         id is left out when the engine has none. Reading it back at
+         recovery is `engine.record.orphan_offer`.
+       Remain: loop, pre-roll and input monitoring.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,

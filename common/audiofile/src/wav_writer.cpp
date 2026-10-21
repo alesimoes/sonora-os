@@ -38,6 +38,7 @@ int32_t float_to_int24(float s) {
 }
 
 constexpr uint32_t kBextSize = 602;  // fixed-size BWF v0 bext chunk
+constexpr std::size_t kDescriptionSize = 256;
 constexpr uint32_t kFmtSize = 16;
 
 // RIFF ckSize before the first sample: "WAVE" and the bext, fmt and data
@@ -176,6 +177,8 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
     put_u32(file_, kBextSize);
     time_reference_offset_ = std::ftell(file_) + 338;
     std::vector<char> bext(kBextSize, 0);
+    std::memcpy(bext.data(), description_.data(),
+                std::min<std::size_t>(description_.size(), kDescriptionSize));
     const char* originator = "Sonora Engine";
     std::memcpy(bext.data() + 256, originator, std::strlen(originator));
     std::tm now{};
