@@ -79,8 +79,8 @@
 | Punch in and out over an existing take, closing the take while rolling | Complete DAW / Engine core: record, play back, transport | `feature/transport-punch` | 3 |
 | tools/dev-wsl.sh: WSL2 Debian trixie with WSLg, builds engine and UI, starts PipeWire on onboard audio, runs both | Complete DAW / Development environment: WSL2 on the owner's laptop | `tools/dev-wsl` | 3 |
 | Waveform display with an overview cache | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 3 |
-| Selection, edit cursor, linked timeline/edit selection | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 1 |
-| Edit commands: cut, copy, paste, clear, duplicate, repeat, separate, insert and delete time | Complete DAW / Edit window and editing | `t3f-repeat` | 3 |
+| Selection, edit cursor, linked timeline/edit selection | Complete DAW / Edit window and editing | `t3-multitrack-clipboard` | 1 |
+| Edit commands: cut, copy, paste, clear, duplicate, repeat, separate, insert and delete time | Complete DAW / Edit window and editing | `t3-multitrack-clipboard` | 3 |
 | Edit modes: Shuffle, Slip, Spot, Grid | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 3 |
 | Smart Tool and the individual tools | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 3 |
 | Grid and nudge values | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 1 |
