@@ -215,6 +215,7 @@ bool write_session_file(const QString& file, const std::string& bytes, std::stri
 namespace {
 
 constexpr const char* kSequenceDir = "MIDI Sequences";
+constexpr const char* kBackupsDir = "Session File Backups";
 // A 16 M-entry session is about 100 MiB of sequence files in all (ADR-0015
 // §3), so one file past this is not one of ours.
 constexpr qint64 kMaxSequenceBytes = qint64{1} << 30;
@@ -284,30 +285,52 @@ private:
 
 }  // namespace
 
+// Sequence files live in the session folder whichever kept file names them.
+QString session_folder_of(const QString& file) {
+    const QString dir = QFileInfo(file).absolutePath();
+    if (QFileInfo(dir).fileName() == QLatin1String(kBackupsDir)) {
+        return QFileInfo(dir).absolutePath();
+    }
+    return dir;
+}
+
 void MidiSequenceFolder::enter(const QString& session_file) {
-    const QString folder = QFileInfo(session_file).absolutePath();
+    const QString folder = session_folder_of(session_file);
     if (folder == folder_) return;
     folder_ = folder;
     files_.clear();
+    known_.clear();
     const QDir dir(QDir(folder_).filePath(QLatin1String(kSequenceDir)));
     // Interrupted saves: no session file names a ".msq.tmp".
     for (const QString& name : dir.entryList({QStringLiteral("*.msq.tmp")}, QDir::Files)) {
         QFile::remove(dir.filePath(name));
     }
-    read_kept();
+    refresh_kept();
 }
 
-void MidiSequenceFolder::read_kept() {
+// Each kept file is parsed once, when it is first seen. One that has gone
+// since is dropped, so a deleted unreadable backup stops blocking cleanup.
+void MidiSequenceFolder::refresh_kept() {
+    std::set<QString> present;
     const QDir session(folder_);
-    QStringList kept;
     for (const QString& name : session.entryList({QStringLiteral("*.sonora")}, QDir::Files)) {
-        kept << session.filePath(name);
+        present.insert(QFileInfo(session.filePath(name)).absoluteFilePath());
     }
-    const QDir backups(session.filePath(QStringLiteral("Session File Backups")));
+    const QDir backups(session.filePath(QLatin1String(kBackupsDir)));
     for (const QString& name : backups.entryList({QStringLiteral("*.sonora")}, QDir::Files)) {
-        kept << backups.filePath(name);
+        present.insert(QFileInfo(backups.filePath(name)).absoluteFilePath());
     }
-    for (const QString& path : kept) {
+    for (auto it = known_.begin(); it != known_.end();) {
+        if (present.count(*it) != 0) {
+            ++it;
+            continue;
+        }
+        files_.dropped(text(*it));
+        it = known_.erase(it);
+    }
+    for (const QString& path : present) {
+        if (!known_.insert(path).second) continue;
+        ++kept_reads_;
         QFile in(path);
         std::set<std::string> refs;
         std::string why;
@@ -384,21 +407,23 @@ bool MidiSequenceFolder::write(const QString& session_file, const model::Snapsho
     return true;
 }
 
-void MidiSequenceFolder::saved(const QString& session_file, const std::string& bytes) {
+void MidiSequenceFolder::saved(const QString& session_file, const model::Snapshot& s) {
     enter(session_file);
+    // What the file names is what the snapshot holds: no file is read back.
     std::set<std::string> refs;
-    std::string why;
-    if (model::sequence_references(bytes, refs, why)) {
-        files_.kept(text(QFileInfo(session_file).absoluteFilePath()), std::move(refs));
-    } else {
-        files_.kept_unreadable(text(QFileInfo(session_file).absoluteFilePath()));
+    for (const model::NamedSequence& n : model::named_sequences(s, digests_)) {
+        refs.insert(n.ref.sha256);
     }
+    const QString main = QFileInfo(session_file).absoluteFilePath();
+    files_.kept(text(main), std::move(refs));
+    known_.insert(main);
     // A save may have kept a pre-migration copy, which is a kept file too.
-    read_kept();
+    refresh_kept();
 }
 
 int MidiSequenceFolder::clean(std::string& caution) {
     if (folder_.isEmpty()) return 0;
+    refresh_kept();
     const std::vector<std::string> unreadable = files_.unreadable();
     if (!unreadable.empty()) {
         caution = "no sequence file is cleaned up while " + unreadable.front() +
@@ -440,7 +465,7 @@ bool read_session_file(const QString& file, std::string& bytes, model::Loaded& o
     }
     bytes.assign(data.constData(), static_cast<std::size_t>(data.size()));
     model::LoadError error;
-    FolderSequences sequences(QFileInfo(file).absolutePath());
+    FolderSequences sequences(session_folder_of(file));
     if (!model::deserialize(bytes, out, error, &sequences)) {
         why = text(QFileInfo(file).fileName()) + ": " + error.text();
         return false;
