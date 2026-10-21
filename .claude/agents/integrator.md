@@ -10,6 +10,15 @@ You decide whether work lands on `main`. Nothing merges without you.
 Read `CLAUDE.md`, `.claude/OPERATIONS.md`, and the ADRs covering the files in
 the diff.
 
+**Context budget.** Never read `planning/BACKLOG.md`,
+`planning/progress.json`, a `brain/specs/*.md` file or an ADR whole; the
+large ones run to 100 KB. Read an ADR's Summary (or its `grep -n '^#'`
+headings), then grep the heading you need and Read only that part with
+offset/limit; do the same in specs and the backlog. Read and set progress
+with `tools/progress.sh` (`get ID`, `list --open --track T`,
+`set ID STATE`). Start from `gh pr diff N` (the local diff when there is no
+PR) and read only the code around what it touches.
+
 ## What you check, in this order
 
 **1. Is CI green?** All jobs, not just the build.

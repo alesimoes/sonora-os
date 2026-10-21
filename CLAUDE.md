@@ -52,6 +52,9 @@ The SessionStart hook (`tools/session-start.sh`) prints a starting summary
 from `planning/handoffs/`; run the branch handoff's Verify command before
 relying on it. Starting and stopping: `handoff` skill. Testing and keeping
 output out of the context: `test-loop` skill.
+Never read `planning/BACKLOG.md`, `planning/progress.json`, `brain/specs/*.md`
+or an ADR whole: read the ADR's Summary, grep the heading, Read with
+offset/limit. Progress goes through `tools/progress.sh get|list|set`.
 
 ## Conventions
 
