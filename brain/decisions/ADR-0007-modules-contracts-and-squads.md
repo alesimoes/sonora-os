@@ -10,6 +10,38 @@
 - Amended by the owner 2026-10-13: the §10 early-scope limit is lifted for
   the Complete DAW milestone (dated note at the end of §10).
 
+## Summary
+
+*Navigation only; the sections below are the decision. `grep -n '^#' <this
+file>` gives each heading's line; Read from there with offset/limit.*
+
+- §1: all C++ under one CMake root, organised by owner, with a layered
+  dependency graph; a path says who owns the code and whether it may run on
+  the audio thread.
+- §2: the real-time path is everything reachable from
+  `ProcessCallback::process()`; only the modules in §2's table may enter it.
+- §3 (owner): engine, UI and plugin host are separate processes. Control is
+  a `SOCK_SEQPACKET` socket; state is one `memfd` clients map read-only;
+  untrusted interchange files are parsed in `sonora-convert`.
+- §4: the contracts: control API (state pulled, events pushed), audio
+  backend, plugin host (never links a plugin SDK, never waits past a
+  deadline), control surfaces as plain clients, interchange offline.
+- §5: the command vocabulary lives in `contracts/api`, each command with an
+  `Engine` or `Interface` domain. §6: squads write only in their own
+  directories; additive contract changes need every owner's review,
+  breaking ones an ADR first. §7: every module tests against fakes in the
+  plain container. §8: one worktree per agent, contract PRs first.
+- §9: migration M0 to M11. §10: no hardware yet; the early-scope limit was
+  lifted for the Complete DAW (2026-10-13).
+
+Sections: Context; Decision §1 to §10 (§4.1 control API, §4.2 backend, §4.3
+plugin host, §4.4 surfaces, §4.5 interchange); Rationale; Consequences;
+Unverified; Alternatives rejected. Updates, as landed: the Unverified items
+measured; lessons from M1; portability (ADR-0008); the backend contract
+(M2); drivers/fake and conformance (M3); a period skipped without an xrun;
+`common/midi`; the control API (M4); the process split (M7); `StateView`
+waits on a section by the clock.
+
 ## Context
 
 The owner wants several squads (one agent on the interface, one on drivers,

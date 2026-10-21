@@ -38,8 +38,9 @@ makes the last commit on the branch, before asking for the gate: delete
 `planning/handoffs/<branch>.md` (lasting content is already in `brain/` and
 `STATUS.md`). The integrator refuses the merge if it is still there.
 
-If the PR flips an item in `planning/progress.json`, its `evidence` says
-"this PR", not a number: the number does not exist until the PR is opened,
+If the PR flips an item in `planning/progress.json`, flip it with
+`tools/progress.sh set ID done --evidence "this PR: ..."`, not by editing the
+file. Its `evidence` says "this PR", not a number: the number does not exist until the PR is opened,
 and CI rewrites "this PR" to "PR #N" on `main` at merge. That is not a
 reason to bounce or amend the PR.
 

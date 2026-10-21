@@ -13,6 +13,17 @@
                                    rewrite "this PR" in evidence to "PR #N"
     tools/progress.py --pr-from-subject SUBJECT
                                    print N from a squash subject "... (#N)"
+    tools/progress.py get ID       one item, in a few lines
+    tools/progress.py list [--open] [--track T]
+                                   one line per item; T is a module id
+                                   (daw.plugins or plugins) or an owner
+                                   (plugin-engineer)
+    tools/progress.py set ID STATE [--evidence TEXT] [--pr N] [--branch B]
+                                   edit one item in place; --pr N makes the
+                                   evidence "PR #N: TEXT"
+
+Agents read and set progress through get, list and set: the catalogue is too
+large to read whole, and set rewrites only the item's own line.
 
 PROGRESS.md is regenerated on main by CI after each merge and never in a
 PR: a generated file edited by every PR made each merge conflict with every
@@ -150,6 +161,128 @@ def pr_from_subject(subject):
     """
     m = SQUASH_SUFFIX.search(subject)
     return int(m.group(1)) if m else None
+
+
+def find_item(data, ident):
+    """(front, module, item) for an item id, else None."""
+    for front in data["fronts"]:
+        for module in front["modules"]:
+            for item in module["items"]:
+                if item["id"] == ident:
+                    return front, module, item
+    return None
+
+
+STRING = r'"(?:[^"\\]|\\.)*"'
+
+
+def set_field(line, key, value, after):
+    """Sets "key": value in an item's line, else inserts the pair after the
+    first key in `after` that the line has."""
+    encoded = json.dumps(value, ensure_ascii=False)
+    pair = re.compile(r'("%s": )%s' % (key, STRING))
+    if pair.search(line):
+        return pair.sub(lambda m: m.group(1) + encoded, line, count=1)
+    for prev in after:
+        m = re.search(r'"%s": %s' % (prev, STRING), line)
+        if m:
+            return '%s, "%s": %s%s' % (line[:m.end()], key, encoded,
+                                       line[m.end():])
+    raise Invalid("no place for %r in %s" % (key, line.strip()))
+
+
+def set_item(text, ident, status, evidence=None, branch=None):
+    r"""Returns text with one item's status, evidence and branch set and
+    every other byte as it was, so the hand-kept layout survives. Raises
+    Invalid for an unknown id or status, or a result --check would refuse.
+
+    >>> doc = ('{"sizes": {"S": 1}, "phases": {"1": "One"}, "fronts": ['
+    ...        '{"id": "f", "modules": [{"id": "f.m", "items": [\n'
+    ...        '  {"id": "a", "title": "A", "size": "S", "phase": 1, "status": "todo", "note": "n"},\n'
+    ...        '  {"id": "b", "title": "B", "size": "S", "phase": 1, "status": "done", "evidence": "PR #1"}\n'
+    ...        ']}]}]}')
+    >>> print(set_item(doc, "a", "doing", branch="t1-a").splitlines()[1])
+      {"id": "a", "title": "A", "size": "S", "phase": 1, "status": "doing", "branch": "t1-a", "note": "n"},
+    >>> print(set_item(doc, "a", "done", evidence='this PR: "x" 3/3').splitlines()[1])
+      {"id": "a", "title": "A", "size": "S", "phase": 1, "status": "done", "evidence": "this PR: \"x\" 3/3", "note": "n"},
+    >>> print(set_item(doc, "b", "done", evidence="PR #2").splitlines()[2])
+      {"id": "b", "title": "B", "size": "S", "phase": 1, "status": "done", "evidence": "PR #2"}
+    >>> set_item(doc, "b", "done") == doc
+    True
+    >>> set_item(doc, "a", "done")
+    Traceback (most recent call last):
+    progress.Invalid: item 'a' is done without evidence
+    >>> set_item(doc, "c", "todo")
+    Traceback (most recent call last):
+    progress.Invalid: unknown item id 'c'
+    >>> set_item(doc, "f.m", "todo")
+    Traceback (most recent call last):
+    progress.Invalid: unknown item id 'f.m'
+    >>> set_item(doc, "a", "finished")
+    Traceback (most recent call last):
+    progress.Invalid: unknown status 'finished'; one of todo, doing, done
+    """
+    if status not in STATUSES:
+        raise Invalid("unknown status %r; one of %s"
+                      % (status, ", ".join(STATUSES)))
+    if find_item(json.loads(text), ident) is None:
+        raise Invalid("unknown item id %r" % ident)
+    line_of = re.compile(r'^[ \t]*\{"id": %s, .*$'
+                         % re.escape(json.dumps(ident)), re.MULTILINE)
+    matches = list(line_of.finditer(text))
+    if len(matches) != 1:
+        raise Invalid("item %r is not on a line of its own; edit it by hand"
+                      % ident)
+    m = matches[0]
+    line = set_field(m.group(0), "status", status, ())
+    if branch is not None:
+        line = set_field(line, "branch", branch, ("status",))
+    if evidence is not None:
+        line = set_field(line, "evidence", evidence, ("branch", "status"))
+    out = text[:m.start()] + line + text[m.end():]
+    validate(json.loads(out))
+    return out
+
+
+def on_track(module, track):
+    """A module is on a track named by its id, the id without its front,
+    or one of its owners ("rt-engineer (model squad)" is rt-engineer)."""
+    t = track.lower()
+    ident = module["id"].lower()
+    owners = [o.split()[0] for o in
+              str(module.get("owner", "")).lower().split(",") if o.split()]
+    return t in (ident, ident.split(".", 1)[-1]) or t in owners
+
+
+def render_item(data, ident):
+    found = find_item(data, ident)
+    if found is None:
+        raise Invalid("unknown item id %r" % ident)
+    front, module, item = found
+    out = ["%s: %s" % (item["id"], item["title"]),
+           "status %s, size %s, phase %s; %s / %s (%s)" % (
+               item["status"], item["size"], item["phase"], front["title"],
+               module["title"], module.get("owner", "no owner"))]
+    out += ["%s: %s" % (key, item[key])
+            for key in ("branch", "evidence", "ref", "note") if item.get(key)]
+    return "\n".join(out) + "\n"
+
+
+def render_list(data, open_only, track):
+    out = []
+    for front in data["fronts"]:
+        for module in front["modules"]:
+            if track and not on_track(module, track):
+                continue
+            for item in module["items"]:
+                if open_only and item["status"] == "done":
+                    continue
+                title = item["title"]
+                if len(title) > 72:
+                    title = title[:69] + "..."
+                out.append("%-34s %-5s %s  %s" % (
+                    item["id"], item["status"], item["size"], title))
+    return "".join(line + "\n" for line in out)
 
 
 class Tally:
@@ -332,7 +465,27 @@ def main(argv=None):
                       help='print N from a subject ending "(#N)", else nothing')
     parser.add_argument("--ascii", action="store_true",
                         help="ASCII bars, for terminals without Unicode")
+    commands = parser.add_subparsers(dest="command")
+    get = commands.add_parser("get", help="print one item")
+    get.add_argument("id")
+    listing = commands.add_parser("list", help="one line per item")
+    listing.add_argument("--open", action="store_true",
+                         help="only items not done")
+    listing.add_argument("--track", metavar="T",
+                         help="module id (daw.plugins, plugins) or owner")
+    setter = commands.add_parser("set", help="change one item in place")
+    setter.add_argument("id")
+    setter.add_argument("state", choices=STATUSES)
+    setter.add_argument("--evidence", metavar="TEXT")
+    setter.add_argument("--pr", type=int, metavar="N",
+                        help='evidence becomes "PR #N: TEXT", or "PR #N"')
+    setter.add_argument("--branch", metavar="B",
+                        help="the branch, which doing needs")
     args = parser.parse_args(argv)
+    if args.command and any((args.markdown, args.check, args.check_generated,
+                             args.summary, args.resolve_this_pr is not None,
+                             args.pr_from_subject is not None)):
+        parser.error("%s takes no mode flag" % args.command)
 
     # Windows consoles default to a legacy code page that cannot encode the
     # bar characters; UTF-8 is what Git Bash's terminal renders.
@@ -351,7 +504,28 @@ def main(argv=None):
         sys.stderr.write("progress.json is invalid:\n%s\n" % e)
         return 1
 
-    if args.resolve_this_pr is not None:
+    if args.command == "set":
+        evidence = args.evidence
+        if args.pr is not None:
+            evidence = "PR #%d%s" % (args.pr, ": " + evidence if evidence else "")
+        with open(CATALOGUE, encoding="utf-8", newline="") as f:
+            text = f.read()
+        try:
+            text = set_item(text, args.id, args.state, evidence, args.branch)
+        except Invalid as e:
+            sys.stderr.write("progress: %s\n" % e)
+            return 1
+        with open(CATALOGUE, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        sys.stdout.write(render_item(json.loads(text), args.id))
+    elif args.command in ("get", "list"):
+        try:
+            sys.stdout.write(render_item(data, args.id) if args.command == "get"
+                             else render_list(data, args.open, args.track))
+        except Invalid as e:
+            sys.stderr.write("progress: %s\n" % e)
+            return 1
+    elif args.resolve_this_pr is not None:
         with open(CATALOGUE, encoding="utf-8", newline="") as f:
             text, count = resolve_this_pr(f.read(), args.resolve_this_pr)
         if count:
