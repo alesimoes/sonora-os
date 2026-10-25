@@ -162,7 +162,9 @@ void check_reset(Suite& s, const Config& c) {
             "on_reset clears all signal state");
 }
 
-void check_denormals(Suite& s, const Config& c) {
+// One interleaved measurement; returns the ratio, or a negative number if the
+// processor could not be prepared. Counts subnormal output samples in the tail.
+double denormal_ratio_once(Suite& s, const Config& c, std::size_t& subnormal_out) {
     // ADR-0011 §3.2: per-block CPU after 10 s of silence following signal,
     // against the active figure. The two are measured side by side, one
     // block of each in turn (the order alternating), rather than one after
@@ -173,7 +175,7 @@ void check_denormals(Suite& s, const Config& c) {
     const double fs = 48000.0;
     auto quiet = prepared(s, fs, c);
     auto active = prepared(s, fs, c);
-    if (!quiet || !active) return;
+    if (!quiet || !active) return -1.0;
     const Chans q_in = concat({noise(fs, -6.0, 10.0, 9u), silence(fs, 10.0)});
     const Chans a_in = noise(fs, -6.0, 20.0, 9u);
     const std::size_t n = q_in[0].size();
@@ -201,12 +203,33 @@ void check_denormals(Suite& s, const Config& c) {
         }
         // The last 5 s: at least 5 s into the silence.
         if (k >= 15 * blocks_per_s) {
+            for (int ch = 0; ch < 2; ++ch)
+                for (float v : out[ch]) subnormal_out += (std::fpclassify(v) == FP_SUBNORMAL) ? 1 : 0;
             q_us.push_back(tq);
             a_us.push_back(ta);
         }
     }
-    const double ratio = percentile(q_us, 0.5) / percentile(a_us, 0.5);
-    s.check_le("denormals: per-block CPU, silence after signal / active (median, interleaved)", ratio,
+    return percentile(q_us, 0.5) / percentile(a_us, 0.5);
+}
+
+void check_denormals(Suite& s, const Config& c) {
+    // Deterministic half: a processor with flushed denormals emits none in
+    // the tail (the output of `quiet` is the last block measured; counted
+    // over every tail block). Timing half: a wall-clock ratio on a shared CI
+    // runner read 1.275 against 1.2 on a healthy build, so the figure is the
+    // best of three interleaved runs; real denormal stalls are several-fold
+    // and show in all three, a noise burst does not.
+    std::size_t subnormals = 0;
+    double best = 1e300;
+    for (int i = 0; i < 3; ++i) {
+        const double r = denormal_ratio_once(s, c, subnormals);
+        if (r < 0.0) return;
+        best = std::min(best, r);
+        if (best <= s.bar("denormal_ratio")) break;
+    }
+    s.check_le("denormals: subnormal output samples in the silent tail", static_cast<double>(subnormals), 0.0,
+               "samples", "bit inspection, deterministic");
+    s.check_le("denormals: per-block CPU, silence after signal / active (median, interleaved, best of <=3)", best,
                s.bar("denormal_ratio"), "ratio",
                dsp::flush_to_zero_supported() ? "FTZ/DAZ on" : "no FTZ on this architecture");
 }
