@@ -53,7 +53,6 @@ SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool 
       peaks_(peaks),
       synthetic_peaks_(synthetic_peaks),
       sessions_dir_(default_sessions_dir()),
-      writer_(write_session_file),
       saved_revision_(doc.revision()),
       ctl_(doc) {
     updateCounters(true);
@@ -671,6 +670,18 @@ bool has_inserts(const Snapshot& s) {
 }  // namespace
 
 bool SessionModel::saveSession(std::string& why) {
+    if (save_writing_) {
+        // While a take is open the engine writes after its next checkpoint,
+        // and a large session takes a while on a stick: only an engine that
+        // has not answered in the patience is asked again. Saves are written
+        // in order, so a late answer to the first changes nothing on disk.
+        if (write_wait_.elapsed() < flush_patience_ms_) {
+            why = "a save is already being written by the engine";
+            return false;
+        }
+        save_writing_ = false;
+        ++write_ticket_;   // its answer, if it ever comes, is ignored
+    }
     if (save_waiting_) {
         if (save_wait_.elapsed() < flush_patience_ms_) {
             why = "a save is already waiting for the plugins' state from the engine";
@@ -766,59 +777,92 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     info.written_by = "sonora-ui";
     info.save_generation = save_generation_;
     std::string bytes, error;
-    if (!model::serialize(to_write, info, bytes, error, &sequences_.digests())) {
+    if (!model::serialize(to_write, info, bytes, error, &digests_)) {
         why = "the session could not be saved: " + error;
         sync();
         return false;
     }
-    const bool nothing_new = file == file_ && bytes == saved_bytes_;
-    if (!nothing_new) {
-        info.save_generation = save_generation_ + 1;
-        if (!model::serialize(to_write, info, bytes, error, &sequences_.digests())) {
-            why = "the session could not be saved: " + error;
-            sync();
-            return false;
-        }
-        // The sequence files first (ADR-0015 §3): the session file must never
-        // name one that is not durable. A failure here leaves the old session
-        // file as it was.
-        if (!sequences_.write(file, to_write, why)) {
-            why = "the session could not be saved: " + why;
-            sync();
-            return false;
-        }
-        std::string disk_caution;
-        if (!writer_(file, bytes, why, disk_caution)) {
-            sync();
-            return false;
-        }
-        if (!disk_caution.empty()) {
-            caution = caution.empty() ? disk_caution : caution + "; " + disk_caution;
-        }
-        sequences_.saved(file, to_write);
-        // O4, after a durable save only: with the folder unsynced the old
-        // session file can come back after a power cut, and its sequence
-        // files must still be there. Held back too while a take is open
-        // (§6): a deletion's journal commit is one more thing in front of
-        // the take's own syncs.
-        std::string clean_caution;
-        if (disk_caution.empty() && !overlay_.recording) sequences_.clean(clean_caution);
-        if (!clean_caution.empty()) {
-            caution = caution.empty() ? clean_caution : caution + "; " + clean_caution;
-        }
-        save_generation_ = info.save_generation;
-        saved_bytes_ = std::move(bytes);
+    Written w;
+    w.file = file;
+    w.revision = doc_.revision();
+    w.rename = rename;
+    w.settings = to_write.settings;
+    w.caution = std::move(caution);
+    if (file == file_ && bytes == saved_bytes_) {
+        w.generation = save_generation_;
+        w.bytes = std::move(bytes);
+        return finishSave(true, {}, std::move(w), why);
     }
-    file_ = file;
+    info.save_generation = save_generation_ + 1;
+    if (!model::serialize(to_write, info, bytes, error, &digests_)) {
+        why = "the session could not be saved: " + error;
+        sync();
+        return false;
+    }
+    w.generation = info.save_generation;
+    w.bytes = bytes;
+
+    // The engine writes the sequence files, then the session file, and
+    // cleans up (ADR-0015 §3, §6); it answers now (no engine in between) or
+    // from a later tick, which the first reports through `why` and the
+    // second on its own.
+    save_writing_ = true;
+    write_wait_.start();
+    const uint64_t ticket = ++write_ticket_;
+    struct Inline {
+        bool inside = true;
+        bool answered = false;
+        bool saved = false;
+        std::string why;
+    };
+    auto now = std::make_shared<Inline>();
+    auto pending = std::make_shared<Written>(std::move(w));
+    doc_.save_session(file.toStdString(), std::move(bytes),
+                      [this, ticket, now, pending](bool ok, const std::string& message) {
+                          if (ticket != write_ticket_) return;
+                          std::string why;
+                          const bool saved = finishSave(ok, message, std::move(*pending), why);
+                          if (now->inside) {
+                              now->answered = true;
+                              now->saved = saved;
+                              now->why = why;
+                          } else if (!saved && !why.empty()) {
+                              emit refused(q(why));
+                          }
+                      });
+    now->inside = false;
+    if (now->answered) {
+        why = now->why;
+        return now->saved;
+    }
+    sync();
+    return true;
+}
+
+bool SessionModel::finishSave(bool ok, const std::string& message, Written w, std::string& why) {
+    save_writing_ = false;
+    if (!ok) {
+        why = "the session could not be saved: " + message;
+        sync();
+        return false;
+    }
+    const bool nothing_new = w.file == file_ && w.bytes == saved_bytes_;
+    std::string caution = std::move(w.caution);
+    if (!message.empty()) caution = caution.empty() ? message : caution + "; " + message;
+    save_generation_ = w.generation;
+    saved_bytes_ = std::move(w.bytes);
+    file_ = w.file;
+    // An edit made while the engine wrote is not in the file.
+    const bool edited_since = doc_.revision() != w.revision;
     // The file is on disk under the new name; the document follows it. A
     // refusal here would be a model bug, and the file already says the name.
     std::string rename_why;
-    if (rename && !doc_.submit(model::SetSettings{to_write.settings}, rename_why)) {
+    if (w.rename && !doc_.submit(model::SetSettings{w.settings}, rename_why)) {
         caution = caution.empty() ? "the window keeps the old name: " + rename_why
                                   : caution + "; the window keeps the old name: " + rename_why;
     }
-    saved_revision_ = doc_.revision();
-    seen_dirty_ = false;
+    saved_revision_ = edited_since ? w.revision : doc_.revision();
+    seen_dirty_ = dirty();
     sync();
     emit sessionChanged();
     QString said = nothing_new ? QStringLiteral("Nothing to save: ") + file_ +
@@ -836,6 +880,10 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     }
     if (save_waiting_) {
         why = "a save is waiting for the plugins' state; open the session once it is saved";
+        return false;
+    }
+    if (save_writing_) {
+        why = "the engine is still writing a save; open the session once it is saved";
         return false;
     }
     if (dirty() && !discard) {
@@ -865,10 +913,8 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     before_open_.save_generation = save_generation_;
     before_open_.saved_bytes = saved_bytes_;
     before_open_.repairs = repairs_;
-    before_open_.sequences = sequences_;
     emit openNotice(QString());
     file_ = file;
-    sequences_.open(file, loaded.verified_sequences);
     // A repaired session is not the file on disk: it reads as modified, so
     // Save writes it and another Open asks first.
     saved_revision_ = loaded.repairs.empty() ? doc_.revision() : UINT64_MAX;
@@ -958,7 +1004,6 @@ void SessionModel::openWasRefused(const QString& why, bool later_load) {
     saved_revision_ = b.saved_revision;
     save_generation_ = b.save_generation;
     saved_bytes_ = std::move(b.saved_bytes);
-    sequences_ = std::move(b.sequences);
     seen_dirty_ = false;
     seen_revision_ = UINT64_MAX;
     seen_sel_valid_ = seen_view_valid_ = false;

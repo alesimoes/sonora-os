@@ -20,6 +20,7 @@
 #include "peak_source.h"
 #include "qt_keys.h"
 #include "session_files.h"
+#include "engine_saver.h"
 #include "session_model.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/fade_curve.h"
@@ -32,6 +33,7 @@
 using namespace sonora;
 using namespace sonora::ui;
 using namespace sonora::ui::model;
+using sonora::ui::testing::engine_saver;
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -1429,6 +1431,7 @@ int test_files() {
     std::string why;
 
     ModelDocument doc(make_demo_session(4, kRate));
+    doc.set_saver(engine_saver());
     SessionModel session(doc, peaks, true);
     session.setSessionsDir(dir.path());
     QStringList notices;
@@ -1436,8 +1439,9 @@ int test_files() {
     OK(session.sessionName() == QStringLiteral("Demo session · synthetic audio"));
     OK(!session.dirty());
 
-    // Ctrl+S is app.save, which the window runs itself until the engine has
-    // session commands.
+    // Ctrl+S is app.save, which the window runs: it names the file and
+    // serialises the session, and the engine (its saver, standing in here)
+    // writes it.
     KeyMap map;
     std::string err;
     CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
@@ -1481,6 +1485,7 @@ int test_files() {
     // Open it in another window's document: the same session, no undo
     // into the one that was there before, the selection back at track 1.
     ModelDocument other(make_empty_session(2, kRate));
+    other.set_saver(engine_saver());
     SessionModel opener(other, peaks, true);
     opener.setSessionsDir(dir.path());
     const QVariantList listed = opener.sessionList();
@@ -1520,6 +1525,7 @@ int test_files() {
 
     // A session at another rate cannot play here, and says so.
     ModelDocument slow(make_empty_session(1, 44100));
+    slow.set_saver(engine_saver());
     SessionModel slow_session(slow, peaks, true);
     slow_session.setSessionsDir(dir.path());
     OK(slow_session.saveSession(why));  // no name: "Untitled"
@@ -1528,6 +1534,7 @@ int test_files() {
     const QString untitled = dir.filePath(QStringLiteral("Untitled/Untitled.sonora"));
     OK(!opener.openSessionFile(untitled, true, why) && contains(why, "44100"));
     ModelDocument slow2(make_empty_session(1, 44100));
+    slow2.set_saver(engine_saver());
     SessionModel slow_session2(slow2, peaks, true);
     slow_session2.setSessionsDir(dir.path());
     OK(slow_session2.saveSession(why));
@@ -1622,66 +1629,55 @@ Snapshot named_session(const char* name) {
     return s;
 }
 
-// What a disk that fills up after the folder is made looks like: the real
-// writer, with the folder created and the file refused by the file system
-// (a name past NAME_MAX).
-bool failing_writer(const QString& file, const std::string& bytes, std::string& why,
-                    std::string& caution) {
-    const QString doomed = QFileInfo(file).absolutePath() + QLatin1Char('/') + QString(300, QLatin1Char('x'));
-    return write_session_file(doomed, bytes, why, caution);
+// What the engine says when the disk is full: the save did not happen.
+bool full_disk(const std::string&, const std::string&, const Snapshot&, std::string& why,
+               std::string&) {
+    why = "writing the session file failed: no space left on the device";
+    return false;
 }
 
 int test_save_failures() {
     QTemporaryDir dir;
     CHECK(dir.isValid());
     FlatPeaks peaks;
-    std::string why, caution;
+    std::string why;
     const QDir d(dir.path());
-
-    // The writer itself: a folder it made for a write that failed is removed,
-    // one that was there before is left alone.
-    OK(!failing_writer(session_file_path(dir.path(), QStringLiteral("Lost")), "{}", why, caution));
-    OK(!why.empty() && !d.exists(QStringLiteral("Lost")));
-    CHECK(d.mkpath(QStringLiteral("Kept")));
-    OK(!failing_writer(session_file_path(dir.path(), QStringLiteral("Kept")), "{}", why, caution));
-    OK(d.exists(QStringLiteral("Kept")));
-    caution = "stale";
-    OK(write_session_file(session_file_path(dir.path(), QStringLiteral("Kept")), "{}", why, caution));
-    OK(caution.empty());
 
     // A first save that fails leaves no folder and does not rename the
     // session, so the retry is "Foo", not "Foo 2" (nor "Foo 2 2").
     ModelDocument doc(named_session("Foo"));
+    doc.set_saver(full_disk);
     SessionModel session(doc, peaks, true);
     session.setSessionsDir(dir.path());
-    session.setSessionWriter(failing_writer);
     QStringList notices;
     QObject::connect(&session, &SessionModel::notice, [&notices](const QString& t) { notices << t; });
     for (int attempt = 0; attempt < 2; ++attempt) {
-        OK(!session.saveSession(why) && !why.empty());
+        OK(!session.saveSession(why) && contains(why, "no space left"));
         OK(doc.snapshot().settings.name == "Foo");
         OK(!d.exists(QStringLiteral("Foo")));
         OK(session.sessionFile().isEmpty());
+        OK(!session.saveWaiting());
     }
-    session.setSessionWriter(write_session_file);
+    doc.set_saver(engine_saver());
     OK(session.saveSession(why));
     OK(doc.snapshot().settings.name == "Foo");
     OK(session.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo")));
 
     // Taken by another session: a failed save still renames nothing.
     ModelDocument doc2(named_session("Foo"));
+    doc2.set_saver(full_disk);
     SessionModel session2(doc2, peaks, true);
     session2.setSessionsDir(dir.path());
-    session2.setSessionWriter(failing_writer);
     OK(!session2.saveSession(why));
     OK(doc2.snapshot().settings.name == "Foo");
     OK(!d.exists(QStringLiteral("Foo 2")));
 
     // A save whose rename landed but whose folder sync did not is a save,
     // said with its caveat; the next save goes to the same file.
-    session2.setSessionWriter([](const QString& file, const std::string& bytes, std::string& w,
-                                 std::string& c) {
-        const bool ok = write_session_file(file, bytes, w, c);
+    const ModelDocument::Saver real = engine_saver();
+    doc2.set_saver([real](const std::string& file, const std::string& bytes, const Snapshot& s,
+                          std::string& w, std::string& c) {
+        const bool ok = real(file, bytes, s, w, c);
         c = "the folder could not be synced";
         return ok;
     });
@@ -1694,6 +1690,13 @@ int test_save_failures() {
     OK(session2.saveSession(why));
     OK(session2.sessionFile() == session_file_path(dir.path(), QStringLiteral("Foo 2")));
     OK(!d.exists(QStringLiteral("Foo 3")));
+
+    // No engine to save to: refused, by name.
+    ModelDocument alone(named_session("Alone"));
+    SessionModel alone_session(alone, peaks, true);
+    alone_session.setSessionsDir(dir.path());
+    OK(!alone_session.saveSession(why) && contains(why, "no engine"));
+    OK(!d.exists(QStringLiteral("Alone")));
 
     // The name limit is bytes of the UTF-8 file name, not characters: 120
     // CJK characters are 360 bytes, past what a file name can hold.
@@ -1716,6 +1719,7 @@ int test_save_failures() {
     // The longest name the rule allows saves, temporary file and all.
     for (const QString& longest : {QString(80, QChar(0x97F3)), QString(241, QLatin1Char('a'))}) {
         ModelDocument ok_doc(named_session(""));
+        ok_doc.set_saver(engine_saver());
         SessionSettings s = ok_doc.snapshot().settings;
         s.name = longest.toStdString();
         OK(ok_doc.submit(SetSettings{s}, why));
@@ -1728,6 +1732,7 @@ int test_save_failures() {
     // not written under a name the folder cannot hold.
     {
         ModelDocument dup(named_session(""));
+        dup.set_saver(engine_saver());
         SessionSettings s = dup.snapshot().settings;
         s.name = std::string(241, 'a');
         OK(dup.submit(SetSettings{s}, why));
@@ -1736,64 +1741,6 @@ int test_save_failures() {
         OK(!dup_session.saveSession(why) && contains(why, "bytes"));
         OK(dup.snapshot().settings.name == std::string(241, 'a'));
     }
-    return 0;
-}
-
-// session-format.md, "Versioning": the first save over a file of an older
-// format version keeps the original, once, beside the session.
-int test_pre_migration_backup() {
-    QTemporaryDir dir;
-    CHECK(dir.isValid());
-    std::string why, caution;
-    const QString file = session_file_path(dir.path(), QStringLiteral("Old"));
-    const std::string v1 = "{\n  \"sonora_session\": 1,\n  \"name\": \"Old\"\n}\n";
-    CHECK(QDir().mkpath(QFileInfo(file).absolutePath()));
-    {
-        QFile out(file);
-        CHECK(out.open(QIODevice::WriteOnly));
-        CHECK(out.write(v1.data(), static_cast<qint64>(v1.size())) ==
-              static_cast<qint64>(v1.size()));
-    }
-    const QString kept = QDir(QFileInfo(file).absolutePath())
-                             .filePath(QStringLiteral("Session File Backups/Old.v1.sonora"));
-    const auto contents = [](const QString& f) {
-        QFile in(f);
-        return in.open(QIODevice::ReadOnly) ? in.readAll().toStdString() : std::string("<none>");
-    };
-    const std::string current =
-        "{\"sonora_session\": " + std::to_string(sonora::model::kFormatVersion) + "}\n";
-    OK(write_session_file(file, current, why, caution));
-    OK(contents(kept) == v1);
-    OK(contents(file) == current);
-    // Kept once: later saves neither replace the copy nor make another.
-    OK(write_session_file(file,
-                          "{\"sonora_session\": " +
-                              std::to_string(sonora::model::kFormatVersion) + ", \"x\": 1}\n",
-                          why, caution));
-    OK(contents(kept) == v1);
-    const QDir backups(QFileInfo(kept).absolutePath());
-    OK(backups.entryList(QDir::Files).size() == 1);
-    // A file of this version, or not a session file at all, is not kept.
-    const QString fresh = session_file_path(dir.path(), QStringLiteral("New"));
-    OK(write_session_file(fresh, "{}", why, caution));
-    OK(write_session_file(fresh, "{}", why, caution));
-    OK(!QFileInfo::exists(QDir(QFileInfo(fresh).absolutePath())
-                              .filePath(QStringLiteral("Session File Backups"))));
-
-    // A file of a newer version is refused, not replaced: this build cannot
-    // read what it would destroy (session-format.md, forward compatibility).
-    const QString newer = session_file_path(dir.path(), QStringLiteral("Newer"));
-    const std::string v99 = "{\n  \"sonora_session\": 99\n}\n";
-    CHECK(QDir().mkpath(QFileInfo(newer).absolutePath()));
-    {
-        QFile out(newer);
-        CHECK(out.open(QIODevice::WriteOnly));
-        CHECK(out.write(v99.data(), static_cast<qint64>(v99.size())) ==
-              static_cast<qint64>(v99.size()));
-    }
-    OK(!write_session_file(newer, current, why, caution));
-    OK(why.find("version 99") != std::string::npos && why.find("newer") != std::string::npos);
-    OK(contents(newer) == v99);
     return 0;
 }
 
@@ -1830,6 +1777,7 @@ int test_midi_sequence_files() {
     CHECK(h.apply(PlaceMidiRegion{t.playlist, r, 0, {}}, why));
 
     ModelDocument doc(h.current());
+    doc.set_saver(engine_saver());
     SessionModel session(doc, peaks, true);
     session.setSessionsDir(dir.path());
     OK(session.saveSession(why));
@@ -1855,6 +1803,7 @@ int test_midi_sequence_files() {
 
     // Opened elsewhere: the same notes, from the file.
     ModelDocument other(make_empty_session(1, kRate));
+    other.set_saver(engine_saver());
     SessionModel opener(other, peaks, true);
     opener.setSessionsDir(dir.path());
     OK(opener.openSessionFile(file, true, why));
@@ -1878,8 +1827,9 @@ int test_midi_sequence_files() {
     OK(!notices.isEmpty() && notices.back().contains(QStringLiteral("cannot be read")));
     QFile::remove(QDir(backups).filePath(QStringLiteral("Bass.v9.sonora")));
 
-    // An interrupted write is gone at the next open; a missing file opens
-    // silent, is listed, and the next save names it again.
+    // An interrupted write is gone once the engine next writes the folder;
+    // a missing file opens silent, is listed, and the next save names it
+    // again.
     const auto& latest = *other.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0].data;
     const QString c_file =
         seqs.filePath(QString::fromStdString(sequence_ref(latest).sha256) + QStringLiteral(".msq"));
@@ -1890,10 +1840,10 @@ int test_midi_sequence_files() {
     }
     CHECK(QFile::remove(c_file));
     ModelDocument third(make_empty_session(1, kRate));
+    third.set_saver(engine_saver());
     SessionModel reopener(third, peaks, true);
     reopener.setSessionsDir(dir.path());
     OK(reopener.openSessionFile(file, true, why));
-    OK(!QFileInfo::exists(c_file + QStringLiteral(".tmp")));
     OK(reopener.repairs().size() == 1);
     const QVariantMap missing = reopener.repairs()[0].toMap();
     OK(missing.value(QStringLiteral("now")).toString().contains(QStringLiteral("MIDI data missing")));
@@ -1903,6 +1853,13 @@ int test_midi_sequence_files() {
     const QByteArray held = file_bytes(file);
     OK(reopener.saveSession(why));
     OK(file_bytes(file) == held);
+    reopener.selectTrack(0);
+    OK(reopener.controller().set_gain(0, -2.0f, why));
+    OK(reopener.saveSession(why));
+    OK(file_bytes(file) != held);
+    OK(contains(file_bytes(file).toStdString(), sequence_ref(latest).sha256.c_str()));
+    OK(!QFileInfo::exists(c_file + QStringLiteral(".tmp")));
+    OK(!QFileInfo::exists(c_file));
     return 0;
 }
 
@@ -1944,9 +1901,11 @@ const MidiSequence& first_sequence(const TimelineDocument& d) {
     return *d.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0].data;
 }
 
-// #109 review: cleanup only after a durable save; kept files parsed once
-// and dropped when gone; a backup's sequences resolved in the session
-// folder.
+// #109 review, suspected 5: an autosave or a backup names the session
+// folder's sequence files, and Open reads them from there, not from
+// "Session File Backups/MIDI Sequences/". Cleanup itself, after a durable
+// save only and with each kept file parsed once, is the engine's saver's
+// and tested with it (common/session_files, engine/control).
 int test_midi_sequence_cleanup_follow_ups() {
     QTemporaryDir dir;
     CHECK(dir.isValid());
@@ -1954,71 +1913,16 @@ int test_midi_sequence_cleanup_follow_ups() {
     std::string why;
     Id playlist = 0, region = 0;
     ModelDocument doc(midi_session(20, playlist, region));
+    doc.set_saver(engine_saver());
     SessionModel session(doc, peaks, true);
     session.setSessionsDir(dir.path());
-    QStringList notices;
-    QObject::connect(&session, &SessionModel::notice, [&notices](const QString& n) { notices << n; });
     OK(session.saveSession(why));
     const QString file = session.sessionFile();
-    const QString a = msq(file, first_sequence(doc));
-    OK(QFileInfo::exists(a));
-    const auto edit_once = [&](int tick) {
-        EditMidi e;
-        e.playlist = playlist;
-        e.region = region;
-        e.add_events = {MidiEvent{100000 + tick, 0xB0, 1, 3}};
-        return doc.submit(e, why);
-    };
+    OK(QFileInfo::exists(msq(file, first_sequence(doc))));
 
-    // Code-reviewer must-fix 1: a save whose folder did not sync is not
-    // durable, so nothing the previous file named goes.
-    session.setSessionWriter([](const QString& f, const std::string& bytes, std::string& w,
-                                std::string& caution) {
-        const bool ok = write_session_file(f, bytes, w, caution);
-        caution = "the folder could not be synced; a power cut now could lose this save";
-        return ok;
-    });
-    OK(edit_once(1));
-    OK(session.saveSession(why));
-    OK(notices.back().contains(QStringLiteral("could not be synced")));
-    OK(QFileInfo::exists(a));
-    session.setSessionWriter(write_session_file);
-    OK(edit_once(2));
-    OK(session.saveSession(why));
-    OK(!QFileInfo::exists(a) && QFileInfo::exists(msq(file, first_sequence(doc))));
-
-    // Should-fix 4: each kept file parsed once, not at every save; a
-    // deleted unreadable backup stops blocking cleanup at the next save.
-    MidiSequenceFolder folder;
-    folder.open(file, {});
-    OK(folder.kept_reads() == 1);
     const QString backups =
         QDir(QFileInfo(file).absolutePath()).filePath(QStringLiteral("Session File Backups"));
     CHECK(QDir().mkpath(backups));
-    const QString junk = QDir(backups).filePath(QStringLiteral("Keys.v9.sonora"));
-    {
-        QFile out(junk);
-        CHECK(out.open(QIODevice::WriteOnly) && out.write("{not json") > 0);
-    }
-    const QString before = msq(file, first_sequence(doc));
-    OK(edit_once(3));
-    OK(folder.write(file, doc.snapshot(), why));
-    folder.saved(file, doc.snapshot());
-    std::string caution;
-    OK(folder.clean(caution) == 0 && contains(caution, "cannot be read"));
-    OK(QFileInfo::exists(before));
-    OK(folder.kept_reads() == 2);   // the junk, once
-    CHECK(QFile::remove(junk));
-    OK(edit_once(4));
-    OK(folder.write(file, doc.snapshot(), why));
-    folder.saved(file, doc.snapshot());
-    caution.clear();
-    OK(folder.clean(caution) == 2 && caution.empty());   // `before` and the edit-3 one
-    OK(!QFileInfo::exists(before) && QFileInfo::exists(msq(file, first_sequence(doc))));
-    OK(folder.kept_reads() == 2);
-
-    // Suspected 5: an autosave or backup names the session folder's
-    // sequence files, not "Session File Backups/MIDI Sequences/".
     std::string bytes;
     {
         sonora::model::WriteInfo info{"test", 9};
@@ -2038,6 +1942,21 @@ int test_midi_sequence_cleanup_follow_ups() {
     OK(read_session_file(autosave, read, loaded, why));
     OK(loaded.missing_sequences.empty() && loaded.verified_sequences.size() == 1);
     OK(!QFileInfo::exists(QDir(backups).filePath(QStringLiteral("MIDI Sequences"))));
+
+    // A save the engine refuses (here: the folder would not sync is a
+    // caution, a refusal is a failure) leaves the window naming what it did.
+    doc.set_saver([](const std::string&, const std::string&, const Snapshot&, std::string& w,
+                     std::string&) {
+        w = "the session names MIDI data the engine does not hold";
+        return false;
+    });
+    EditMidi e;
+    e.playlist = playlist;
+    e.region = region;
+    e.add_events = {MidiEvent{100000, 0xB0, 1, 3}};
+    OK(doc.submit(e, why));
+    OK(!session.saveSession(why) && contains(why, "does not hold"));
+    OK(session.dirty() && session.sessionFile() == file);
     return 0;
 }
 
@@ -2047,7 +1966,7 @@ int main(int argc, char** argv) {
         test_taper() ||
         test_time() || test_nudge_tempo_map() ||
         test_scene() || test_routing() || test_files() || test_save_failures() ||
-        test_pre_migration_backup() || test_midi_sequence_files() ||
+        test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups()) {
         return 1;
     }

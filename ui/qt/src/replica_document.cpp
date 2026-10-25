@@ -191,6 +191,22 @@ void ReplicaDocument::flush_plugin_state(model::Id insert, FlushDone done) {
     f.seq = send(api::ModelAction::FlushPluginState,
                  insert == kNoId ? std::string() : std::to_string(insert));
     f.done = std::move(done);
+    f.refused = "the engine could not collect the plugins' state";
+    f.lost = "the connection to the engine was lost before the plugins' state arrived";
+    flushes_.push_back(std::move(f));
+}
+
+void ReplicaDocument::save_session(const std::string& file, std::string bytes, SaveDone done) {
+    if (offline_) {
+        done(false, kOffline);
+        return;
+    }
+    Flush f;
+    f.seq = send(api::ModelAction::Save, api::wire::encode_save(file, bytes));
+    f.done = std::move(done);
+    f.refused = "the engine could not save the session";
+    f.lost = "the connection to the engine was lost before the save was answered; it may or may "
+             "not have been written, so save again";
     flushes_.push_back(std::move(f));
 }
 
@@ -204,9 +220,7 @@ bool ReplicaDocument::set_link(bool up) {
     // Whatever the old connection was asked to flush, it will never answer.
     std::vector<Flush> lost;
     lost.swap(flushes_);
-    for (Flush& f : lost) {
-        f.done(false, "the connection to the engine was lost before the plugins' state arrived");
-    }
+    for (Flush& f : lost) f.done(false, f.lost);
     std::size_t dropped = 0;
     bool load_dropped = false;
     for (const Pending& p : pending_) {
@@ -307,7 +321,7 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         if (f != flushes_.end()) {
             flushed.push_back({std::move(f->done), r.result == DispatchResult::Ok,
                                r.message.empty() && r.result != DispatchResult::Ok
-                                   ? "the engine could not collect the plugins' state"
+                                   ? std::string(f->refused)
                                    : r.message});
             flushes_.erase(f);
             continue;

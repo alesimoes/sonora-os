@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "control_adapter.h"
+#include "engine_saver.h"
 #include "key_router.h"
 #include "peak_source.h"
 #include "replica_document.h"
@@ -140,6 +141,7 @@ QString saved_midi_session(const QString& dir, const std::string& name, std::siz
     model::Snapshot made;
     if (checked ? !h.apply(place, why) : !model::apply(h.current(), place, made, why)) return {};
     ModelDocument doc(checked ? h.current() : made);
+    doc.set_saver(ui::testing::engine_saver());
     SyntheticPeakSource peaks(48000, 120.0);
     SessionModel s(doc, peaks, true);
     s.setSessionsDir(dir);

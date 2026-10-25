@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <functional>
 #include <limits>
 #include <map>
@@ -1432,6 +1435,57 @@ int check_flush_plugin_state(Rig& rig) {
     return C(rig, "flush plugin state").go();
 }
 
+// Save (protocol 11): the session file is in place when the reply says Ok;
+// what is not a session file, and a path that is not absolute, are refused.
+int check_save(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            namespace fs = std::filesystem;
+            static int n = 0;
+            std::error_code ec;
+            const fs::path root = fs::temp_directory_path(ec) /
+                                  ("sonora-conformance-save-" + std::to_string(
+                                       reinterpret_cast<std::uintptr_t>(this)) + "-" +
+                                   std::to_string(n++));
+            fs::remove_all(root, ec);
+            struct Gone {
+                fs::path p;
+                ~Gone() {
+                    std::error_code e;
+                    fs::remove_all(p, e);
+                }
+            } gone{root};
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            model::WriteInfo info{"conformance", 1};
+            std::string bytes, error;
+            EXPECT(model::serialize(s.replica.current(), info, bytes, error), error);
+            const fs::path file = root / "Conf" / "Conf.sonora";
+            ModelRequest save;
+            save.action = ModelAction::Save;
+            save.op = wire::encode_save(file.string(), bytes);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(save), r) && r.result == DispatchResult::Ok,
+                   "a save was refused: " + r.message);
+            std::ifstream in(file, std::ios::binary);
+            std::stringstream got;
+            got << in.rdbuf();
+            EXPECT(got.str() == bytes, "the session file does not hold what was saved");
+            save.op = wire::encode_save(file.string(), "{not json");
+            EXPECT(s.await(rig_, s.engine->submit(save), r) && r.result == DispatchResult::Failed,
+                   "a save of what is not a session file was accepted");
+            save.op = wire::encode_save("Conf.sonora", bytes);
+            EXPECT(s.await(rig_, s.engine->submit(save), r) && r.result == DispatchResult::Failed,
+                   "a save to a relative path was accepted");
+            EXPECT(mentions(r.message, "absolute path"), "the refusal does not say why");
+            return ok();
+        }
+    };
+    return C(rig, "save").go();
+}
+
 int check_take_failed(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -1630,6 +1684,7 @@ int run(Rig& rig) {
     failures += check_inserts(rig);
     failures += check_plugin_faults(rig);
     failures += check_flush_plugin_state(rig);
+    failures += check_save(rig);
     failures += check_take_failed(rig);
     failures += check_inputs_missing(rig);
     failures += check_peaks(rig);

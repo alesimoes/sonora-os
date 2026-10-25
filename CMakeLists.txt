@@ -66,6 +66,9 @@ add_subdirectory(common/midi)
 add_subdirectory(common/model)
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
+# A session folder on disk (ADR-0015 §3, §6), layer 2 on common/model and
+# common/platform: the engine's saver writes through it.
+add_subdirectory(common/session_files)
 # Neutral DSP for the native plugin suite and the meters (ADR-0011 §2.1),
 # layer 1 on common/base.
 add_subdirectory(common/dsp)

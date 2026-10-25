@@ -5,6 +5,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <set>
 #include <limits>
 #include <utility>
 #include <variant>
@@ -13,6 +16,7 @@
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/sequence_file.h"
 #include "sonora/model/session_file.h"
 
 namespace sonora::api::testing {
@@ -432,6 +436,77 @@ void FakeEngine::record_editor_values(uint64_t insert) {
     editor_moved_.erase(moved);
     std::string bytes, why;
     if (model::encode_operation(op, bytes, why)) apply_own(bytes, why);
+}
+
+namespace {
+
+// Through a temporary file and a rename, as the engine writes, unsynced.
+bool write_replacing(const std::filesystem::path& target, const std::string& bytes) {
+    const std::filesystem::path tmp = target.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        if (!out) return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
+    return !ec;
+}
+
+}  // namespace
+
+bool FakeEngine::save(const std::string& op, std::string& why) {
+    namespace fs = std::filesystem;
+    std::string file, bytes;
+    if (!wire::decode_save(op, file, bytes, why)) return false;
+    if (!save_failure_.empty()) {
+        why = save_failure_;
+        return false;
+    }
+    const fs::path path(file);
+    if (!path.is_absolute() || path.extension() != ".sonora") {
+        why = "a session file is an absolute path ending in \".sonora\", not \"" + file + "\"";
+        return false;
+    }
+    std::set<std::string> refs;
+    std::string parse_why;
+    if (!model::sequence_references(bytes, refs, parse_why)) {
+        why = "what was to be saved is not a session file: " + parse_why;
+        return false;
+    }
+    model::SequenceDigests digests;
+    std::vector<model::NamedSequence> named = model::named_sequences(document_->current(), digests);
+    for (const std::string& sha : refs) {
+        const bool held = std::any_of(named.begin(), named.end(), [&](const model::NamedSequence& n) {
+            return n.ref.sha256 == sha;
+        });
+        if (!held) {
+            why = "the session names MIDI data the engine does not hold (" + sha.substr(0, 12) +
+                  "...), perhaps from an edit it refused; save again";
+            return false;
+        }
+    }
+    std::error_code ec;
+    const fs::path dir = path.parent_path() / "MIDI Sequences";
+    fs::create_directories(path.parent_path(), ec);
+    for (model::NamedSequence& n : named) {
+        if (n.data->missing || refs.count(n.ref.sha256) == 0) continue;
+        const fs::path target = dir / (n.ref.sha256 + ".msq");
+        if (fs::exists(target, ec)) continue;
+        fs::create_directories(dir, ec);
+        if (n.encoded.empty()) n.encoded = model::encode_sequence(*n.data);
+        if (!write_replacing(target, n.encoded)) {
+            why = "writing " + target.string() + " failed";
+            return false;
+        }
+    }
+    if (!write_replacing(path, bytes)) {
+        why = "saving " + file + " failed";
+        return false;
+    }
+    ++saves_;
+    return true;
 }
 
 // ADR-0012 §8: values moved in an editor first, then the state, each as
@@ -875,6 +950,10 @@ void FakeEngine::handle(const std::string& bytes) {
             case ModelAction::FlushPluginState:
                 // Its updates are sent as it makes them, before this reply.
                 ok = flush_plugin_state(m.op, why);
+                reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+                return;
+            case ModelAction::Save:
+                ok = save(m.op, why);
                 reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
                 return;
         }

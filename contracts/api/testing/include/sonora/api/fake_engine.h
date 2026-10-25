@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // FakeEngine: the engine as a client sees it, with no audio, no thread and
-// no disk (ADR-0007 §7). Owned by the provider (rt-engineer), so it cannot
+// no disk but File > Save's (ADR-0007 §7). Owned by the provider
+// (rt-engineer), so it cannot
 // drift into agreeing with whatever a consumer believes: it is held to the
 // same conformance suite as InProcessEngine (contracts/api/conformance),
 // and engine/control's test checks that both implement the same commands.
@@ -28,6 +29,12 @@
 // plugin's own editor recorded as SetInsertParams at gesture end and on
 // close; FlushPluginState applying the state a plugin was scripted to
 // have. No audio passes through a plugin.
+//
+// ModelAction::Save writes the session file and each MIDI sequence file it
+// names that is not there yet, from the fake's document, through a
+// temporary file and a rename, as the engine does, but syncs nothing, keeps
+// no pre-migration copy and never cleans up: those are the engine's saver's
+// (engine/control session_saver.h), held to its own tests.
 //
 // The transport rolls on a script: play starts
 // the playhead from where it stands at the sample rate, stop holds it,
@@ -129,6 +136,11 @@ public:
     // stop reports the take as Failed. A later take that records cleanly
     // clears both, as the real engine's control thread does.
     void script_take_failure(bool fail) { fail_takes_ = fail; }
+    // While not empty, every Save is refused with `why` and writes nothing,
+    // as one the disk refused would be.
+    void script_save_failure(std::string why) { save_failure_ = std::move(why); }
+    // Saves written since construction.
+    uint32_t saves() const { return saves_; }
     // The capture inputs go away (`why` says how) or come back: an
     // InputsMissing event, the health flag and the per-track flags, as the
     // engine's housekeeping reports them.
@@ -198,6 +210,8 @@ private:
     // does not hold yet.
     void record_editor_values(uint64_t insert);
     bool flush_plugin_state(const std::string& which, std::string& why);
+    // ModelAction::Save: true once the session file is in place.
+    bool save(const std::string& op, std::string& why);
     // An operation the engine makes itself (op_codec bytes), applied and
     // sent to the replica.
     bool apply_own(const std::string& op, std::string& why);
@@ -245,6 +259,8 @@ private:
     std::vector<uint32_t> clips_;
     uint32_t health_ = 0;
     bool fail_takes_ = false;
+    std::string save_failure_;
+    uint32_t saves_ = 0;
     int32_t failed_take_ = 0;     // the take TakeFailed was said for
     bool take_failed_shown_ = false;
     bool inputs_connected_ = true;

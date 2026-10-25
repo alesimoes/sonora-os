@@ -93,6 +93,21 @@ public:
         done(true, {});
     }
 
+    // File > Save (ModelAction::Save, ADR-0015 update of 2026-10-25): the
+    // document's owner writes `bytes`, a canonical session file of
+    // snapshot(), to the absolute path `file`, with the MIDI sequence files
+    // it names, and cleans up. `done` is called exactly once, now or from a
+    // later tick: `ok` true once the file is in place, with `message` empty
+    // when the save is durable or a caution when it is not; `ok` false with
+    // the reason when the save did not happen and the previous file is as
+    // it was. The interface never writes a session folder itself.
+    using SaveDone = std::function<void(bool ok, const std::string& message)>;
+    virtual void save_session(const std::string& file, std::string bytes, SaveDone done) {
+        (void)file;
+        (void)bytes;
+        done(false, "there is no engine to save the session");
+    }
+
 protected:
     uint64_t session_generation_ = 0;
 };
@@ -119,7 +134,17 @@ public:
 
     const model::History& history() const override { return history_; }
 
+    // What stands in for the engine's saver: the tests give it
+    // common/session_files, which this library does not link. Unset, a save
+    // is refused.
+    using Saver = std::function<bool(const std::string& file, const std::string& bytes,
+                                     const model::Snapshot& document, std::string& why,
+                                     std::string& caution)>;
+    void set_saver(Saver saver) { saver_ = std::move(saver); }
+    void save_session(const std::string& file, std::string bytes, SaveDone done) override;
+
 private:
+    Saver saver_;
     std::size_t budget_;
     model::History history_;
     model::Id next_unreserved_ = 0;

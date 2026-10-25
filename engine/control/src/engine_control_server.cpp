@@ -19,6 +19,7 @@
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
+#include "sonora/session_saver.h"
 
 namespace sonora {
 
@@ -199,6 +200,15 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         model::History::kDefaultBudget, opts_.midi_max_entries);
     playback_ = std::make_unique<PlaybackController>(session_, session_.config().dir);
     playback_->set_input_monitoring(opts_.input_monitoring);
+    DiskThread& disk = session_.disk();
+    saver_ = std::make_unique<SessionSaver>([&disk]() { return disk.checkpoints(); },
+                                            [this]() {
+                                                {
+                                                    std::lock_guard<std::mutex> lock(mutex_);
+                                                    save_ready_ = true;
+                                                }
+                                                wake_.notify_all();
+                                            });
     // Read as the take starts, which with the residency gate is in pump(),
     // on this thread: the range then is the one the operator last set.
     install_session_commands(registry_, session_, take_, quit_, opts_.may_record,
@@ -1043,6 +1053,7 @@ void EngineControlServer::start_threads() {
         jobs_stop_ = false;
     }
     encoder_ = std::thread([this]() { encode_loop(); });
+    saver_->start();
     thread_ = std::thread([this]() { run(); });
 }
 
@@ -1081,6 +1092,10 @@ void EngineControlServer::stop() {
     }
     jobs_wake_.notify_all();
     if (encoder_.joinable()) encoder_.join();
+    // A save already handed over is finished, never dropped half-way; its
+    // reply has nobody to go to.
+    saver_->stop();
+    saver_->take_done();
     publisher_->stop();
     running_.store(false, std::memory_order_release);
     // No pump will open the gate now. Withdrawn, so a server started again
@@ -1320,9 +1335,12 @@ void EngineControlServer::run() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             wake_.wait_for(lock, playback_busy() || sending_snapshot_ ? kBusy : kIdle,
-                           [this]() { return stopping_ || snapshot_ready_ || !inbound_.empty(); });
+                           [this]() {
+                               return stopping_ || snapshot_ready_ || save_ready_ || !inbound_.empty();
+                           });
             if (stopping_) return;
             snapshot_ready_ = false;
+            save_ready_ = false;
             batch.swap(inbound_);
         }
         // One item per client in turn: a client with much queued cannot
@@ -1589,6 +1607,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 reply(from, m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed,
                       ok ? "" : why);
                 return;
+            case api::ModelAction::Save:
+                // Answered by follow_saver() once the saver is done.
+                if (!save(from, m, why)) reply(from, m.seq, DispatchResult::Failed, why);
+                return;
         }
         reply(from, m.seq, ok ? DispatchResult::Ok : refusal, ok ? "" : why);
         if (ok) {
@@ -1627,8 +1649,44 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                      std::to_string(static_cast<unsigned>(type)) + ")");
 }
 
+bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::string& why) {
+    SessionSaver::Job job;
+    if (!api::wire::decode_save(m.op, job.file, job.bytes, why)) return false;
+    job.client = from;
+    job.seq = m.seq;
+    // A copy that shares every state: the saver reads it while edits go on.
+    job.document = document_->current();
+    const bool take_open = session_.recording_take() != 0;
+    saver_->set_take_open(take_open);
+    if (take_open) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "Saving after the next checkpoint";
+        post_transient(e);
+    }
+    saver_->submit(std::move(job));
+    return true;
+}
+
+void EngineControlServer::follow_saver() {
+    saver_->set_take_open(session_.recording_take() != 0);
+    saver_->set_transport_stopped(session_.transport().state() == TransportState::Stopped);
+    for (SessionSaver::Done& d : saver_->take_done()) {
+        if (d.seq != 0) {
+            reply(d.client, d.seq, d.ok ? DispatchResult::Ok : DispatchResult::Failed, d.message);
+        }
+        if (!d.notice.empty()) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = d.notice;
+            post_transient(e);
+        }
+    }
+}
+
 void EngineControlServer::tick() {
     pump_playback();
+    follow_saver();
 
     // The scan worker's catalog and notices (one try_lock), before the
     // chains read its answers.

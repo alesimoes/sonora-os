@@ -82,6 +82,16 @@ bool ModelDocument::reset(Snapshot s, std::string&) {
     return true;
 }
 
+void ModelDocument::save_session(const std::string& file, std::string bytes, SaveDone done) {
+    if (!saver_) {
+        TimelineDocument::save_session(file, std::move(bytes), std::move(done));
+        return;
+    }
+    std::string why, caution;
+    const bool ok = saver_(file, bytes, history_.current(), why, caution);
+    done(ok, ok ? caution : why);
+}
+
 // --- sessions built from operations -------------------------------------------
 
 namespace {

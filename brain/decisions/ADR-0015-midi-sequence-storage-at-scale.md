@@ -29,6 +29,29 @@
   a backstop. For M-4: the take compound must not be refused in a way that
   loses data; the raw take file (§7.2) is kept and an over-cap chunk is
   reported, never dropped silently. Measurements in `midi.md` §4.6.
+- Update 2026-10-25 (M-1c PR 3), **accepted by the coordinator,
+  2026-10-25, on the recommended default**: **File >
+  Save is a request to the engine**, `ModelAction::Save` (protocol 11):
+  the session file's absolute path in the engine's filesystem and the
+  canonical bytes the interface serialised (the interface still picks the
+  name, the generation and "nothing to save"). The engine's saver thread
+  (`engine/control` `SessionSaver`) writes every sequence those bytes name
+  from its own document, then the session file (pre-migration copy, newer
+  version refused, tmp + sync + rename + folder sync), and cleans up per
+  O4; it replies when the save is durable, or Ok with a caution when the
+  folder would not sync. A sequence the bytes name that the engine's
+  document does not hold (an optimistic edit it refused) fails the save by
+  name. While a take is open the saver waits for the next bump of the disk
+  thread's checkpoint counter before it touches the disk, one batch per
+  bump, the clients are told "Saving after the next checkpoint", and
+  cleanup waits for the transport to stop. The folder logic moved from
+  `ui/qt` to a new layer-2 module, `common/session_files`
+  (`sonora_session_files`: common/model and common/platform, no Qt), so
+  the engine and the interface's tests share one implementation; the
+  interface binary no longer links it, so in the product only the engine
+  writes or deletes in `MIDI Sequences/`. `FakeEngine` writes the files
+  unsynced and never cleans up. Takes kept unplaced over the budget and
+  rebuilding a missing sequence from its take wait for M-4's SMF reading.
 - Date: 2026-10-20. Revised the same day with the rt-engineer's review of
   PR #102 ("accept with changes"); the PR thread maps each point to where
   it landed.
