@@ -2836,6 +2836,36 @@ int scenario_worker_hang(const Args& a) {
     return 0;
 }
 
+// A work() still running when the host stops, which returns (and maps a
+// URID) 1.5 s after the worker is abandoned: the host must not have freed
+// what it touches by then. It ends at the abandon, Faulted, without running
+// the destructors, rather than dying by a signal when work() comes back.
+int scenario_worker_slow_exit(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    const std::vector<std::string> chain = {"urn:sonora:test#worker"};
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("worker_slow_exit: %s, work() takes 2.6 s at gain 0.125, Shutdown meanwhile\n", chain[0].c_str());
+    Host host;
+    if (int r = start_ready(host, ca, clock, chain, 1)) return r;
+    play_halving(host, clock, 60, [&](uint64_t i) {
+        if (i == 10) host.send(0, 0, 0, 0.125f);
+    });
+    const uint64_t asked = monotonic_ns();
+    host.queue(pc::Shutdown{});
+    const bool exited = host.wait_exit_pumping(8'000'000'000ull);
+    const uint64_t ms = (monotonic_ns() - asked) / 1'000'000ull;
+    std::printf("  host %s %llu ms after Shutdown\n", host.death().c_str(), (unsigned long long)ms);
+    check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitFaulted,
+          "the host exits Faulted, not by a signal, with work() abandoned");
+    check(exited && ms < 2400, "at the abandon, before the slow work() returns");
+    // Past the work()'s return: a host still alive would have crashed by now.
+    usleep(2'000'000);
+    check(!host.alive(), "and nothing of it is left when work() would have returned");
+    return 0;
+}
+
 // Touches from a plugin's own controller (the VST3 touch class's "editor"
 // thread): every touch inside a gesture, a lone edit wrapped in one, the
 // read-only parameter dropped and counted, the gesture left open ended
@@ -3067,6 +3097,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "worker") r = scenario_worker(a);
     else if (a.scenario == "worker_restore") r = scenario_worker_restore(a);
     else if (a.scenario == "worker_hang") r = scenario_worker_hang(a);
+    else if (a.scenario == "worker_slow_exit") r = scenario_worker_slow_exit(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "incompatible") r = scenario_incompatible(a);
     else if (a.scenario == "bypass") r = scenario_bypass(a);

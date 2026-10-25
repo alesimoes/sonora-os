@@ -74,9 +74,10 @@ public:
     bool start_thread();
     // Joins the thread; what was still queued is dropped. Before the
     // instances are freed. A work() that has not returned within
-    // kStopWaitMs is abandoned instead of waited on: false, and then the
-    // instances, this worker and the plugin's library must outlive the
-    // process (abandoned()), since that work() still runs inside them.
+    // kStopWaitMs is abandoned instead of waited on: false, and then
+    // nothing that work() may still touch (its instance, this worker, the
+    // URID map, the plugin's library) may be freed, so the caller ends the
+    // process without running another destructor.
     static constexpr uint64_t kStopWaitMs = 1000;
     bool stop();
 
@@ -92,10 +93,6 @@ public:
     // engine. Not owned past the deadline: the caller refuses what it was
     // about to do and says that work() did not return.
     std::unique_lock<std::timed_mutex> exclude_work(uint64_t deadline_ns);
-
-    // A worker anywhere in the process was abandoned inside work(): the
-    // plugins' libraries must not be unloaded (Lv2World).
-    static bool abandoned() noexcept;
 
     // Requests and responses refused because their ring was full.
     uint64_t refused() const noexcept { return refused_.load(std::memory_order_relaxed); }

@@ -3,6 +3,8 @@
 
 #include "lv2_worker.h"
 
+#include "sonora/plugin/protocol.h"
+
 #include <lv2/atom/atom.h>
 #include <lv2/buf-size/buf-size.h>
 #include <lv2/core/lv2.h>
@@ -20,6 +22,8 @@
 #include <filesystem>
 #include <mutex>
 #include <system_error>
+
+#include <unistd.h>
 
 namespace sonora::plugin_host {
 
@@ -73,8 +77,7 @@ Lv2World::~Lv2World() {
                            n.toggled, n.enumeration, n.integer, n.logarithmic, n.not_automatic, n.unit,
                            n.unit_symbol, n.minor_version, n.micro_version, n.worker_schedule})
         lilv_node_free(node);
-    // lilv_world_free unloads the plugins' libraries.
-    if (!Lv2Worker::abandoned()) lilv_world_free(world_);
+    lilv_world_free(world_);
 }
 
 bool Lv2World::load_bundle(const std::string& dir, std::string& error) {
@@ -325,12 +328,14 @@ public:
 
     ~Lv2Processor() override {
         // work() must not outlive its instance, nor run beside deactivate().
-        // One that never returns keeps its instances, its worker and (in
-        // Lv2World) its library for the rest of the process: freeing them
-        // under it would turn a hung plugin into a crash.
+        // One that never returns may still touch this processor, the
+        // world's URID map or its library, and any destructor from here on
+        // frees one of them under it: a hung plugin would become a crash.
+        // The host ends now instead, Faulted; whatever Fault there was is
+        // already sent (the host's sends block until written).
         if (worker_ && !worker_->stop()) {
-            (void)worker_.release();
-            return;
+            std::fflush(nullptr);
+            _exit(plugin::kHostExitFaulted);
         }
         for (LilvInstance* inst : instances_) {
             if (active_) lilv_instance_deactivate(inst);

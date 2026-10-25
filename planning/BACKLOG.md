@@ -828,11 +828,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          kReconfigureTimeoutMs, less 1 s), and past it are refused with the
          reason (a Reconfigure answered by Fault{Plugin} naming the plugin's
          hung work(), the host exits Faulted). Teardown waits 1 s for the
-         worker, then abandons it: the instances, the worker and the
-         plugin's library are left to the process exit rather than freed
-         under a running work(). ctest `plugin_host_worker_hang` (the test
-         plugin's work() never returns at gain 0.25; fails without the
-         change: no answer for 10 s and a host that never exits).
+         worker, then abandons it and `_exit`s Faulted, running no
+         destructor that would free what a returning work() touches (its
+         instance, the URID map, the library; #111 review). ctest
+         `plugin_host_worker_hang` (the test plugin's work() never returns
+         at gain 0.25; fails without the change: no answer for 10 s and a
+         host that never exits), `plugin_host_worker_slow_exit` (a work()
+         that returns and maps a URID 1.5 s after the abandon; the host
+         has already exited Faulted, not by a signal).
        - [ ] The count of worker requests and responses refused because a
          ring was full (`Lv2Worker::refused()`) is not shown anywhere: it
          needs a place in the region's InstanceReport or a host message.

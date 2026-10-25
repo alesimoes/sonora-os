@@ -25,8 +25,6 @@ constexpr uint64_t kWorkerIdleNs = 100'000'000;
 // plugin's file loading, which keeps its buffers on the heap.
 constexpr std::size_t kWorkerStack = std::size_t(512) << 10;
 
-std::atomic<bool> g_abandoned{false};
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -114,16 +112,11 @@ bool Lv2Worker::stop() {
     for (uint64_t now = monotonic_ns(); exited_.load(std::memory_order_acquire) == 0 && now < end;
          now = monotonic_ns())
         wait_for_change(exited_, 0, end - now);
-    if (exited_.load(std::memory_order_acquire) == 0) {
-        g_abandoned.store(true, std::memory_order_release);
-        return false;
-    }
+    if (exited_.load(std::memory_order_acquire) == 0) return false;
     join_thread(thread_);
     thread_ = nullptr;
     return true;
 }
-
-bool Lv2Worker::abandoned() noexcept { return g_abandoned.load(std::memory_order_acquire); }
 
 std::unique_lock<std::timed_mutex> Lv2Worker::exclude_work(uint64_t deadline_ns) {
     std::unique_lock<std::timed_mutex> g(lock_, std::defer_lock);
