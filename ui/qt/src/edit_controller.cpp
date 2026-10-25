@@ -1321,6 +1321,21 @@ bool EditController::redo(std::string& why) {
     return true;
 }
 
+bool EditController::undo_to(std::size_t depth, std::string& why) {
+    const model::History& h = doc_.history();
+    if (depth >= h.step_count()) {
+        why = "that step is no longer in the undo history";
+        return false;
+    }
+    const std::size_t from = h.undo_depth();
+    const bool back = depth < from;
+    const std::size_t total = back ? from - depth : depth - from;
+    for (std::size_t done = 0; done < total; ++done) {
+        if (!(back ? undo(why) : redo(why))) return false;
+    }
+    return true;
+}
+
 // --- mix ---
 //
 // A mix operation replaces a track's whole TrackMix (operations.h, SetMix),

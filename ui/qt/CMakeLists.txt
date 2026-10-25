@@ -74,7 +74,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
-        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml
+        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
 )
 
 add_executable(sonora-ui src/main.cpp)
@@ -119,6 +119,15 @@ target_compile_definitions(test_ui_clipboard PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_clipboard COMMAND test_ui_clipboard)
 set_tests_properties(ui_clipboard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The Undo History window: its rows and jumps over the document's history,
+# then the window in the real QML, opened from the Edit menu.
+add_executable(test_ui_undo_history tests/test_undo_history.cpp)
+target_link_libraries(test_ui_undo_history PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_undo_history PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_undo_history COMMAND test_ui_undo_history)
+set_tests_properties(ui_undo_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,

@@ -53,6 +53,16 @@ class SessionModel : public QObject {
     // Paste", "Redo Trim"; "Can't Undo" when there is nothing to undo.
     Q_PROPERTY(QString undoText READ undoText NOTIFY contentChanged)
     Q_PROPERTY(QString redoText READ redoText NOTIFY contentChanged)
+    // Pro Tools' Undo History window: [{label, done}] for every step after
+    // the floor, oldest first; `done` false for the steps redo would bring
+    // back, which the window shows in italics.
+    Q_PROPERTY(QVariantList undoHistory READ undoHistory NOTIFY contentChanged)
+    // Older steps were dropped as the history filled (the floor is an edit,
+    // not the session as it was opened): undo cannot reach back to the start.
+    // Where the document is in undoHistory: the number of done rows.
+    Q_PROPERTY(int undoHistoryDepth READ undoHistoryDepth NOTIFY contentChanged)
+    Q_PROPERTY(bool undoHistoryTrimmed READ undoHistoryTrimmed NOTIFY contentChanged)
+    Q_PROPERTY(bool undoHistoryOpen READ undoHistoryOpen NOTIFY undoHistoryOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
@@ -174,6 +184,17 @@ public:
     bool canRedo() const { return doc_.can_redo(); }
     QString undoText() const;
     QString redoText() const;
+    QVariantList undoHistory() const;
+    int undoHistoryDepth() const { return static_cast<int>(doc_.history().undo_depth()); }
+    bool undoHistoryTrimmed() const;
+    bool undoHistoryOpen() const { return undo_history_open_; }
+    void setUndoHistoryOpen(bool on);
+    // A click on row `row` of undoHistory, as in Pro Tools: on a done step it
+    // undoes that step and every later one; on an undone step it redoes up
+    // to and including it.
+    Q_INVOKABLE bool undoHistoryClick(int row);
+    // Undo All and Redo All, from the window's buttons.
+    Q_INVOKABLE bool undoHistoryAll(bool undo);
     bool canPaste() const { return !ctl_.clipboard().empty(); }
     QString editMode() const { return QString::fromLatin1(edit_mode_name(ctl_.mode())); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
@@ -273,6 +294,7 @@ signals:
     void counterChanged();
     void sessionChanged();
     void repairsChanged();
+    void undoHistoryOpenChanged();
     // A refusal from a mouse gesture, for the status line. Keys report
     // through the router.
     void refused(const QString& why);
@@ -312,6 +334,7 @@ private:
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
+    bool undo_history_open_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);

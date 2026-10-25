@@ -122,6 +122,12 @@ void SessionModel::installCommands(CommandRegistry& local) {
 
     simple("edit.undo", [this](const CommandContext&, Why& why) { return ctl_.undo(why); });
     simple("edit.redo", [this](const CommandContext&, Why& why) { return ctl_.redo(why); });
+    // How the operator looks at the history, not the session: the
+    // interface's own, so it opens with the engine gone too.
+    local.install("window.undo_history", [this](const CommandContext&) {
+        setUndoHistoryOpen(!undo_history_open_);
+        return true;
+    });
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
     simple("edit.cut", [this](const CommandContext&, Why& why) { return ctl_.cut(why); });
     simple("edit.copy", [this](const CommandContext&, Why& why) { return ctl_.copy(why); });
@@ -276,6 +282,49 @@ QString SessionModel::redoText() const {
     if (!doc_.can_redo()) return QStringLiteral("Can't Redo");
     const std::string what = step_text(doc_.redo_label());
     return what.empty() ? QStringLiteral("Redo") : QStringLiteral("Redo ") + q(what);
+}
+
+QVariantList SessionModel::undoHistory() const {
+    const model::History& h = doc_.history();
+    QVariantList rows;
+    for (std::size_t i = 1; i < h.step_count(); ++i) {
+        const std::string what = step_text(h.step_label(i));
+        QVariantMap row;
+        row[QStringLiteral("label")] = what.empty() ? QStringLiteral("Edit") : q(what);
+        row[QStringLiteral("done")] = i <= h.undo_depth();
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+bool SessionModel::undoHistoryTrimmed() const {
+    const model::History& h = doc_.history();
+    return h.step_count() > 0 && !h.step_label(0).empty();
+}
+
+void SessionModel::setUndoHistoryOpen(bool on) {
+    if (on == undo_history_open_) return;
+    undo_history_open_ = on;
+    emit undoHistoryOpenChanged();
+}
+
+bool SessionModel::undoHistoryClick(int row) {
+    const model::History& h = doc_.history();
+    std::string why;
+    if (row < 0 || static_cast<std::size_t>(row) + 1 >= h.step_count()) {
+        return run(false, "that step is no longer in the undo history");
+    }
+    const std::size_t step = static_cast<std::size_t>(row) + 1;
+    const std::size_t depth = step <= h.undo_depth() ? step - 1 : step;
+    return run(ctl_.undo_to(depth, why), why);
+}
+
+bool SessionModel::undoHistoryAll(bool undo) {
+    const model::History& h = doc_.history();
+    std::string why;
+    if (undo && !h.can_undo()) return run(false, "nothing to undo");
+    if (!undo && !h.can_redo()) return run(false, "nothing to redo");
+    return run(ctl_.undo_to(undo ? 0 : h.step_count() - 1, why), why);
 }
 
 bool SessionModel::run(bool ok, const std::string& why) {

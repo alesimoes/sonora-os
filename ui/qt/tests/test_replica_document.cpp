@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "control_adapter.h"
+#include "edit_controller.h"
 #include "replica_document.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/model/op_codec.h"
@@ -375,6 +376,37 @@ int undo_and_redo_labels_follow_the_engine() {
     return 0;
 }
 
+// The Undo History window's jump on the engine's document: each step its own
+// Undo or Redo, all shown at once and in flight together, and the engine
+// ends where the window does. Refused outright with the link down.
+int a_history_jump_is_one_request_a_step() {
+    Rig r;
+    std::string error;
+    CHECK(r.engine.connect(error));
+    r.tick();
+    std::string why;
+    for (const char* name : {"One", "Two", "Three", "Four"}) {
+        CHECK(r.doc.submit(marker(r.doc.reserve_id(), name), why));
+    }
+    r.tick();
+    CHECK(r.doc.in_flight() == 0 && r.doc.history().undo_depth() == 4);
+    EditController c(r.doc);
+    CHECK(c.undo_to(1, why));
+    CHECK(markers(r.doc) == 1 && r.doc.in_flight() == 3);
+    r.tick();
+    CHECK(r.doc.in_flight() == 0 && markers(r.doc) == 1 && r.refused.empty());
+    CHECK(r.doc.history().undo_depth() == 1 && r.doc.redo_label() == "AddMarker");
+    CHECK(c.undo_to(3, why));
+    r.tick();
+    CHECK(markers(r.doc) == 3 && r.doc.history().undo_depth() == 3 && r.refused.empty());
+    CHECK(!c.undo_to(r.doc.history().step_count(), why) && !why.empty());
+    CHECK(!r.doc.set_link(false));
+    why.clear();
+    CHECK(!c.undo_to(0, why) && !why.empty());
+    CHECK(markers(r.doc) == 3);
+    return 0;
+}
+
 }  // namespace
 
 // One MIDI track on `base` whose region holds `sysex` messages of 4 KiB:
@@ -469,6 +501,7 @@ int main() {
     if (an_applied_undo_is_not_shown_twice_while_lost() != 0) return 1;
     if (a_refused_resync_is_said_and_asked_again() != 0) return 1;
     if (undo_and_redo_labels_follow_the_engine() != 0) return 1;
+    if (a_history_jump_is_one_request_a_step() != 0) return 1;
     std::printf("replica document: ok\n");
     return 0;
 }

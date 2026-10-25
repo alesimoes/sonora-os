@@ -130,6 +130,22 @@ Rectangle {
         }
     }
 
+    // --- the Undo History window, floating over either window ---
+    Loader {
+        id: undoHistoryLoader
+        objectName: "undoHistoryLoader"
+        // Below the Transport window's place, at the left of the timeline.
+        x: Theme.trackHeaderWidth + Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: UndoHistoryWindow {
+            objectName: "undoHistoryWindow"
+            shell: root.shell
+            session: root.session
+            mover: undoHistoryLoader
+        }
+    }
+
     // --- footer -------------------------------------------------------------------
     Rectangle {
         id: footer
@@ -353,6 +369,7 @@ Rectangle {
                 model: [
                     { name: "editUndo", label: root.session.undoText, command: "edit.undo", on: root.session.canUndo },
                     { name: "editRedo", label: root.session.redoText, command: "edit.redo", on: root.session.canRedo },
+                    { name: "editUndoHistory", label: "Undo History", command: "window.undo_history", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editCut", label: "Cut", command: "edit.cut", on: true },
                     { name: "editCopy", label: "Copy", command: "edit.copy", on: true },
