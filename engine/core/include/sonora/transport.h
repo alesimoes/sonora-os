@@ -52,6 +52,16 @@ public:
         return {state_of(w), take_of(w), (w & kPunched) != 0};
     }
 
+    // Rolling to Stopped, by the audio thread at a roll's end (post-roll).
+    // A compare-exchange, not a store: the control thread may have started
+    // a take since the block loaded the word, and that take must not be
+    // stopped. False, changing nothing, unless the word is still a roll.
+    bool stop_roll() noexcept SONORA_RT {
+        uint64_t rolling = word(TransportState::Rolling, 0);
+        return word_.compare_exchange_strong(rolling, word(TransportState::Stopped, 0),
+                                             std::memory_order_seq_cst);
+    }
+
     uint64_t playhead() const { return playhead_.load(std::memory_order_relaxed); }
     void set_playhead(uint64_t p) { playhead_.store(p, std::memory_order_relaxed); }
 

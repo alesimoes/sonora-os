@@ -789,6 +789,10 @@ bool document_punch(const model::Snapshot& document, PunchRange& out) {
     out.crossfade = static_cast<uint32_t>(x);
     // The shape session-format.md gives the punch crossfade.
     out.shape = FadeCurve::EqualPower;
+    const model::Frames pre = std::max<model::Frames>(t.pre_roll, 0);
+    const model::Frames post = std::max<model::Frames>(t.post_roll, 0);
+    out.start = static_cast<uint64_t>(a > pre ? a - pre : 0);
+    out.roll_end = static_cast<uint64_t>(b) + static_cast<uint64_t>(post);
     return true;
 }
 

@@ -154,6 +154,9 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
         !session_.set_loop(static_cast<uint64_t>(loop[0]), static_cast<uint64_t>(loop[1]))) {
         session_.set_loop(0, 0);
     }
+    const model::Transport& tr = snapshot.settings.transport;
+    pre_roll_ = static_cast<uint64_t>(std::max<model::Frames>(tr.pre_roll, 0));
+    post_roll_ = static_cast<uint64_t>(std::max<model::Frames>(tr.post_roll, 0));
     PlaybackPlan* plan = nullptr;
     PlanReport report;
     const SourceSlot slot = [this](const model::Source& s, uint32_t& out, std::string& e) {
@@ -203,8 +206,18 @@ bool PlaybackController::locate(uint64_t frame, std::string& error) {
 }
 
 void PlaybackController::play() {
+    session_.set_roll_end(Session::kNoRollEnd);
     play_requested_ = true;
     play_gen_ = serve();
+}
+
+bool PlaybackController::play_range(uint64_t from, uint64_t to, std::string& error) {
+    if (!locate(from > pre_roll_ ? from - pre_roll_ : 0, error)) return false;
+    play();
+    // After play(), which clears it. The roll starts only once the locate
+    // has landed, so no block rolls toward this end from where it was.
+    session_.set_roll_end(to + post_roll_);
+    return true;
 }
 
 void PlaybackController::record(StartTake start) {

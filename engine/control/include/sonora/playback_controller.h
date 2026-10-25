@@ -64,8 +64,14 @@ public:
     // still waiting when a take starts is dropped.
     bool locate(uint64_t frame, std::string& error);
     // Rolls from the playhead once the playing plan's window there is
-    // resident.
+    // resident, with no end: a range played before does not stop it.
     void play();
+    // Plays [from, to) with the pre-roll and post-roll of the snapshot last
+    // shown: located to `from` less the pre-roll (cut at 0), rolled as
+    // play() does, and stopped by the audio thread at `to` plus the
+    // post-roll (Session::set_roll_end()). False, asking nothing, where
+    // locate() refuses.
+    bool play_range(uint64_t from, uint64_t to, std::string& error);
     // Starts a take through `start` behind the same gate as play(): no plan
     // pending, every locate asked for applied, the window at the playhead
     // resident (ADR-0009 §4.4). `start` runs inside pump(); if it refuses,
@@ -157,6 +163,9 @@ private:
     uint64_t last_built_epoch_ = 0;
 
     bool input_monitoring_ = true;
+    // The document's transport.pre_roll and post_roll, from the last show().
+    uint64_t pre_roll_ = 0;
+    uint64_t post_roll_ = 0;
 
     uint64_t locate_target_ = 0;
     // The count of applied locates at which this one is applied. Only ever
