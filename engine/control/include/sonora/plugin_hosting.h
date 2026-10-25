@@ -68,6 +68,7 @@ class PluginScanner;
 namespace plugin_client {
 class PluginClient;
 class HostSupervisor;
+class HostProcess;
 class SupervisedChain;
 }  // namespace plugin_client
 namespace platform {
@@ -185,6 +186,44 @@ public:
     void handle_host_message(model::Id track, const std::string& bytes, const model::Snapshot& doc,
                              std::vector<model::Operation>& ops);
 
+    // ---- FlushPluginState (§8, contracts/api messages.h; host_control.h,
+    // State). The caller writes the states' files durably between
+    // take_flushes() and states_saved(), so the document never names a
+    // state the medium does not hold.
+
+    // One instance's state as its host answered GetState.
+    struct StateRead {
+        model::Id insert = 0;
+        std::string sha256;  // of `bytes`; empty: the plugin keeps no state of its own
+        std::string bytes;   // a StateBlob
+    };
+    struct Flush {
+        uint64_t id = 0;
+        std::vector<StateRead> states;
+        // One line per insert whose state could not be had, naming plugin,
+        // track and slot, for the client's Failed reply.
+        std::vector<std::string> failed;
+    };
+    // Sends GetState to the running host of each instance of `insert` (0:
+    // of every insert); never waits. An insert with no running instance
+    // (inactive, missing, its chain still starting) is left out: its last
+    // state is the document's. One whose chain is restarting or down is a
+    // failure. Returns the flush's id, never 0.
+    uint64_t request_states(model::Id insert, const model::Snapshot& doc);
+    // Flushes with every request answered or failed: a host that stops,
+    // restarts or is replaced before answering fails its requests, and one
+    // that has not answered within kReplyTimeoutMs fails them and is killed
+    // (host_control.h, timeouts), which takes the crash path.
+    std::vector<Flush> take_flushes();
+    // The flush's files are durable: SetInsertState for each insert still
+    // in `doc` whose state differs (none for a plugin that keeps no state),
+    // and each running chain holding the insert restarts from the new state
+    // after a crash, not from the one it started with.
+    std::vector<model::Operation> states_saved(const Flush& flush, const model::Snapshot& doc);
+    // SIGKILL to the running host of the chain on `track`, as a plugin's
+    // crash would end it. For tests; false when it has none.
+    bool kill_host_for_test(model::Id track);
+
     // The parameter keys of the probe answer cached for `host_id` (any
     // channel count); false when none is Ok. For tests.
     bool probe_answer_for_test(const std::string& host_id, std::vector<std::string>& keys) const;
@@ -234,6 +273,12 @@ private:
     void close_gestures(Chain& c, const model::Snapshot& doc, std::vector<model::Operation>& ops);
     uint32_t take_store();
     uint32_t take_node();
+    // GetState requests: a host that answers, a bound host that changes
+    // (restart, edit, chain dropped), one past its deadline.
+    void take_state_reply(model::Id track, const std::string& bytes);
+    void fail_state_requests(model::Id track, const std::string& why);
+    void follow_state_requests(uint64_t now_ms);
+    void finish_flush_if_done(uint64_t flush);
 
     Session& session_;
     PluginHostingConfig config_;
@@ -275,6 +320,24 @@ private:
     uint32_t loading_total_ = 0;
     uint64_t dropped_seen_ = 0;
     uint64_t last_repost_ms_ = 0;
+
+    // Outstanding GetState requests by request id, unique across hosts so a
+    // reply can only be the one asked for. `host` is the chain's bound host
+    // when asked; every event that unbinds it fails the request first, so
+    // it is never read after the host is gone.
+    struct StateRequest {
+        uint64_t flush = 0;
+        model::Id insert = 0;
+        model::Id track = 0;
+        plugin_client::HostProcess* host = nullptr;
+        uint64_t deadline_ms = 0;
+        std::string where;
+    };
+    std::map<uint32_t, StateRequest> state_requests_;
+    std::map<uint64_t, Flush> flushes_;  // waiting for answers
+    std::vector<Flush> flushes_done_;
+    uint64_t next_flush_ = 1;
+    uint32_t next_state_request_ = 1;
 };
 
 }  // namespace sonora

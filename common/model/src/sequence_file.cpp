@@ -475,10 +475,11 @@ std::vector<NamedSequence> named_sequences(const Snapshot& s, SequenceDigests& d
     return out;
 }
 
-bool sequence_references(std::string_view session_file, std::set<std::string>& out,
-                         std::string& why) {
-    out.clear();
-    json::Value root;
+namespace {
+
+// The root of a session file and its format version, without loading it.
+bool session_root(std::string_view session_file, json::Value& root, std::int64_t& version,
+                  std::string& why) {
     json::Error perr;
     if (!json::parse(session_file, root, perr)) {
         why = "line " + std::to_string(perr.line) + ", column " + std::to_string(perr.column) +
@@ -490,12 +491,22 @@ bool sequence_references(std::string_view session_file, std::set<std::string>& o
         why = "not a Sonora session";
         return false;
     }
-    std::int64_t version = 0;
     const json::Value& v = root.members().front().second;
     if (!v.is_integer_lexeme() || !v.to_int64(version)) {
         why = "its format version is not an integer";
         return false;
     }
+    return true;
+}
+
+}  // namespace
+
+bool sequence_references(std::string_view session_file, std::set<std::string>& out,
+                         std::string& why) {
+    out.clear();
+    json::Value root;
+    std::int64_t version = 0;
+    if (!session_root(session_file, root, version, why)) return false;
     if (version < 6) return true;
     const json::Value* tracks = root.find("tracks");
     if (tracks == nullptr || !tracks->is_array()) return true;
@@ -511,6 +522,26 @@ bool sequence_references(std::string_view session_file, std::set<std::string>& o
                     data != nullptr && data->is_object() ? data->find("sha256") : nullptr;
                 if (sha != nullptr && sha->is_string()) out.insert(sha->text());
             }
+        }
+    }
+    return true;
+}
+
+bool plugin_state_references(std::string_view session_file, std::set<std::string>& out,
+                             std::string& why) {
+    out.clear();
+    json::Value root;
+    std::int64_t version = 0;
+    if (!session_root(session_file, root, version, why)) return false;
+    const json::Value* tracks = root.find("tracks");
+    if (tracks == nullptr || !tracks->is_array()) return true;
+    for (const json::Value& t : tracks->items()) {
+        const json::Value* ins = t.is_object() ? t.find("inserts") : nullptr;
+        if (ins == nullptr || !ins->is_array()) continue;
+        for (const json::Value& in : ins->items()) {
+            const json::Value* st = in.is_object() ? in.find("state") : nullptr;
+            const json::Value* sha = st != nullptr && st->is_object() ? st->find("sha256") : nullptr;
+            if (sha != nullptr && sha->is_string()) out.insert(sha->text());
         }
     }
     return true;

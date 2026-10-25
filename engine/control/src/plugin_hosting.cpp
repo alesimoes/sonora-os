@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -320,6 +321,7 @@ void PluginHosting::abandon_pending(Chain& c) {
 }
 
 void PluginHosting::drop_chain(Chain& c) {
+    fail_state_requests(c.track, "its chain was removed or rebuilt before it answered");
     abandon_pending(c);
     retire(std::move(c.running), c.store, c.node);
     c.store = c.node = kNone;
@@ -744,6 +746,7 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     // it sent and the gestures it leaves open are taken.
                     if (take_messages(c, doc, result.ops)) result.replan = true;
                     close_gestures(c, doc, result.ops);
+                    fail_state_requests(c.track, "its chain was rebuilt (an edit) before it answered");
                     retire(std::move(c.running), c.store, c.node);
                     c.running = std::move(c.pending);
                     c.store = c.pstore;
@@ -816,7 +819,11 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
             if (take_messages(c, doc, result.ops)) result.replan = true;
             // The host died mid-gesture: its touches are in the store (kept
             // across the restart, change F), so the document gets them too.
-            if (host_lost) close_gestures(c, doc, result.ops);
+            if (host_lost) {
+                close_gestures(c, doc, result.ops);
+                // What it answered is in hand; the rest never will be.
+                fail_state_requests(c.track, "its plug-in host stopped before it answered");
+            }
             if (c.need_post) post_values(c, doc);
             if (post_epoch(c) != 0 && !c.running->down()) {
                 const uint64_t epoch = post_epoch(c);
@@ -833,6 +840,8 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
             }
         }
     }
+
+    follow_state_requests(now_ms);
 
     // A change the audio thread dropped: posted for a plan it replaced
     // before the change was drained (the plan moved between the post and
@@ -1021,6 +1030,7 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                 o = o->first.first == m.instance ? c.open_touches.erase(o) : std::next(o);
             break;
         }
+        case pc::Type::State: take_state_reply(track, bytes); break;
         case pc::Type::Fault: {
             pc::Fault m;
             if (!pc::decode(bytes, m, e)) break;
@@ -1062,6 +1072,153 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
         }
         default: break;
     }
+}
+
+// ---- FlushPluginState (§8)
+
+uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& doc) {
+    const uint64_t id = next_flush_++;
+    Flush& f = flushes_[id];
+    f.id = id;
+    const uint64_t deadline = steady_ms() + uint64_t(pc::kReplyTimeoutMs);
+    for (auto& [track, cp] : chains_) {
+        Chain& c = *cp;
+        const model::TrackEdit* t = nullptr;
+        for (const auto& tp : doc.edit->tracks)
+            if (tp->id == c.track) t = tp.get();
+        for (uint32_t i = 0; i < c.running_spec.size(); ++i) {
+            const model::Id insert = c.running_spec[i].insert;
+            if (only != 0 && insert != only) continue;
+            std::string who = "insert " + std::to_string(insert);
+            if (t) {
+                for (const model::Insert& in : t->inserts)
+                    if (in.id == insert) who = where(*t, in);
+            }
+            if (!c.running || c.running->down()) {
+                f.failed.push_back(who + ": its plug-in host is down, so its state could not be read");
+                continue;
+            }
+            if (c.running->restarting() || !c.running->host()) {
+                f.failed.push_back(who + ": its plug-in host is restarting; save again once it runs");
+                continue;
+            }
+            if (next_state_request_ == 0) next_state_request_ = 1;
+            const uint32_t request = next_state_request_++;
+            std::string bytes, e;
+            pc::encode(pc::GetState{request, i}, bytes);
+            if (!c.running->host()->send(bytes, e)) {
+                f.failed.push_back(who + ": its state could not be asked for: " + e);
+                continue;
+            }
+            state_requests_[request] = StateRequest{id, insert, c.track, c.running->host(), deadline, who};
+        }
+    }
+    finish_flush_if_done(id);
+    return id;
+}
+
+void PluginHosting::take_state_reply(model::Id track, const std::string& bytes) {
+    pc::State m;
+    std::string e;
+    if (!pc::decode(bytes, m, e)) return;
+    // The supervisor accepted it as the answer to a GetState this host has
+    // outstanding; ids are unique across hosts, so it is the one asked.
+    const auto it = state_requests_.find(m.request);
+    if (it == state_requests_.end() || it->second.track != track) return;
+    const StateRequest r = it->second;
+    state_requests_.erase(it);
+    Flush& f = flushes_[r.flush];
+    switch (m.status) {
+        case pc::StateStatus::Ok: {
+            std::string sha = sha256_hex(m.bytes);
+            f.states.push_back(StateRead{r.insert, std::move(sha), std::move(m.bytes)});
+            break;
+        }
+        case pc::StateStatus::Empty: f.states.push_back(StateRead{r.insert, {}, {}}); break;
+        case pc::StateStatus::Failed:
+            f.failed.push_back(r.where + ": the plug-in could not save its state" +
+                               (m.text.empty() ? std::string() : " (" + m.text + ")"));
+            break;
+    }
+    finish_flush_if_done(r.flush);
+}
+
+void PluginHosting::fail_state_requests(model::Id track, const std::string& why) {
+    std::set<uint64_t> touched;
+    for (auto it = state_requests_.begin(); it != state_requests_.end();) {
+        if (it->second.track != track) {
+            ++it;
+            continue;
+        }
+        flushes_[it->second.flush].failed.push_back(it->second.where + ": " + why);
+        touched.insert(it->second.flush);
+        it = state_requests_.erase(it);
+    }
+    for (const uint64_t f : touched) finish_flush_if_done(f);
+}
+
+void PluginHosting::follow_state_requests(uint64_t now_ms) {
+    std::set<model::Id> late;
+    for (const auto& [request, r] : state_requests_)
+        if (now_ms >= r.deadline_ms) late.insert(r.track);
+    for (const model::Id track : late) {
+        // host_control.h: a GetState unanswered past kReplyTimeoutMs is a
+        // hung host, killed; the crash path restarts it from the session's
+        // last saved state. `host` is still the bound one: anything that
+        // unbinds it fails its requests first.
+        for (const auto& [request, r] : state_requests_) {
+            if (r.track != track || now_ms < r.deadline_ms) continue;
+            r.host->signal_kill();
+            break;
+        }
+        fail_state_requests(track, "its plug-in did not hand over its state within " +
+                                       std::to_string(pc::kReplyTimeoutMs / 1000) +
+                                       " s, so its host was restarted");
+    }
+}
+
+void PluginHosting::finish_flush_if_done(uint64_t flush) {
+    for (const auto& [request, r] : state_requests_)
+        if (r.flush == flush) return;
+    const auto it = flushes_.find(flush);
+    if (it == flushes_.end()) return;
+    flushes_done_.push_back(std::move(it->second));
+    flushes_.erase(it);
+}
+
+std::vector<PluginHosting::Flush> PluginHosting::take_flushes() {
+    std::vector<Flush> out;
+    out.swap(flushes_done_);
+    return out;
+}
+
+std::vector<model::Operation> PluginHosting::states_saved(const Flush& flush, const model::Snapshot& doc) {
+    std::vector<model::Operation> ops;
+    for (const StateRead& s : flush.states) {
+        if (!insert_in(doc, s.insert)) continue;
+        std::optional<model::StateRef> want;
+        if (!s.sha256.empty()) want = model::StateRef{model::plugin_state_file(s.sha256), s.sha256, s.bytes.size()};
+        const model::InsertMix* m = doc.mix.find_insert(s.insert);
+        const std::optional<model::StateRef> have = m ? m->state : std::nullopt;
+        if (!(have == want)) ops.push_back(model::SetInsertState{s.insert, want});
+        // A restart of whichever chain holds the insert now restores this,
+        // the state the document is about to name.
+        for (auto& [track, cp] : chains_) {
+            Chain& c = *cp;
+            for (uint32_t i = 0; c.running && i < c.running_spec.size(); ++i)
+                if (c.running_spec[i].insert == s.insert) c.running->set_state(i, s.bytes);
+            for (uint32_t i = 0; c.pending && i < c.pending_spec.size(); ++i)
+                if (c.pending_spec[i].insert == s.insert) c.pending->set_state(i, s.bytes);
+        }
+    }
+    return ops;
+}
+
+bool PluginHosting::kill_host_for_test(model::Id track) {
+    const auto it = chains_.find(track);
+    if (it == chains_.end() || !it->second->running || !it->second->running->host()) return false;
+    it->second->running->host()->signal_kill();
+    return true;
 }
 
 // ---- what the operator is told (item 5)

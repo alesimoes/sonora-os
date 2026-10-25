@@ -72,6 +72,7 @@
 #include "sonora/api/wire.h"
 #include "sonora/command.h"
 #include "sonora/model/operations.h"
+#include "sonora/plugin_hosting.h"
 #include "sonora/session_commands.h"
 #include "sonora/state_publisher.h"
 
@@ -362,8 +363,34 @@ private:
     // after. Said again only after it has fallen below and risen again.
     void warn_midi_budget();
     bool midi_warned_ = false;
-    // A FlushPluginState: which inserts, and whether they can be flushed.
-    bool flush_plugin_state(const std::string& which, std::string& why);
+    // A FlushPluginState (ADR-0012 §8): which inserts, and whether they can
+    // be flushed. False, with `why`, to be answered Failed at once. With
+    // hosting the reply is held: the running plugins' states are read
+    // (PluginHosting::request_states), written by the saver thread, then
+    // named in the document, and only then answered (finish_flush).
+    bool flush_plugin_state(ClientId from, const api::ModelRequest& m, std::string& why);
+    struct PendingFlush {
+        ClientId to = 0;
+        uint64_t seq = 0;
+        // session_generation_ when asked: a session opened meanwhile has
+        // other inserts, possibly under the same ids, and gets nothing.
+        uint64_t generation = 0;
+        // hosting_'s flush id while its states are read; 0 once they are
+        // in `flush`, at the saver.
+        uint64_t reading = 0;
+        PluginHosting::Flush flush;
+    };
+    // By the server's own id, the saver job's: hosting_'s ids start again
+    // with each activation.
+    std::map<uint64_t, PendingFlush> flushes_;
+    uint64_t next_flush_ = 1;
+    // Hosting's finished reads, to the saver (or answered when there is
+    // nothing to write).
+    void follow_flushes();
+    // Reads hosting_ was asked for, forgotten when it goes.
+    void drop_reading_flushes();
+    // The saver wrote a flush's states (`written`), or could not (`why`).
+    void finish_flush(uint64_t id, bool written, const std::string& why);
     // Every take the disk thread has closed joins the document: at a stop,
     // a punch-out, or a take started over another.
     void follow_transport();

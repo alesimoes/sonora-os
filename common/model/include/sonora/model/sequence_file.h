@@ -126,6 +126,12 @@ std::vector<NamedSequence> named_sequences(const Snapshot& s, SequenceDigests& d
 bool sequence_references(std::string_view session_file, std::set<std::string>& out,
                          std::string& why);
 
+// The plugin state digests a session file's inserts name (ADR-0012 §6.1),
+// read the same way: what a saver must find in the file's own folder before
+// it writes the file. False, with `why`, as above.
+bool plugin_state_references(std::string_view session_file, std::set<std::string>& out,
+                             std::string& why);
+
 // --- what the saver keeps in memory between saves (ADR-0015 §3, §6) ---------
 
 // What is on disk is a set of hashes, the saver's own: those that verified

@@ -49,14 +49,26 @@ public:
     // Called on the saver thread each time a result is ready to take.
     using Ready = std::function<void()>;
 
+    // Save: File > Save, as above. States: a FlushPluginState's plugin
+    // states written to "Plugin State/" in the session folder `file`
+    // (ADR-0012 §6.1), paced as a save is and in the same queue, so a Save
+    // sent after the flush's reply finds them on the medium. No cleanup.
+    enum class Kind { Save, States };
     struct Job {
+        Kind kind = Kind::Save;
         uint64_t client = 0;
-        uint64_t seq = 0;
+        uint64_t seq = 0;   // States: the flush's id, never 0
         std::string file;
         std::string bytes;
         model::Snapshot document;
+        std::vector<session_files::StateFile> states;
+        // Save: the folder whose "Plugin State/" the flushes wrote (the
+        // engine's --dir); the states the bytes name are copied from it into
+        // the session file's own folder (SessionFolder::save, step 3).
+        std::string state_source;
     };
     struct Done {
+        Kind kind = Kind::Save;
         uint64_t client = 0;
         uint64_t seq = 0;   // 0: no reply, only `notice` (a deferred cleanup's)
         bool ok = false;

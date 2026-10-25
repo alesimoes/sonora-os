@@ -21,8 +21,8 @@
 //   - the host is watched by polling (ChildProcess, waitpid WNOHANG) from
 //     poll(); TODO(pidfd): a pidfd in the control server's poll set.
 //   - GetState for the instances that carry over an edit is the control
-//     server's (request_state); a restart starts from the store and the
-//     last state the server holds in spec.states.
+//     server's; a restart starts from the store and the last state the
+//     server gave (spec.states, then set_state after a FlushPluginState).
 // Hosts must be started from the control server's long-lived thread: the
 // host's death signal follows the thread that started it (plugins/host
 // ipc.h, die_with_parent).
@@ -402,6 +402,12 @@ public:
     // starts the chain without it), and which instance, or -1.
     bool refused() const { return refused_; }
     int32_t refused_instance() const { return refused_instance_; }
+
+    // What a restart restores for `instance` from now on: a StateBlob from a
+    // GetState whose file the session now names, or empty for none. A crash
+    // then recovers to the session's last saved state, not to the one the
+    // chain started with. Out of range: ignored.
+    void set_state(uint32_t instance, std::string blob);
 
     uint32_t restarts() const { return restarts_total_; }
     // The chain index named for the last removal or hang: the instance the

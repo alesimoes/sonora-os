@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/session_files/session_folder.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <map>
@@ -20,6 +21,9 @@ constexpr std::uintmax_t kMaxSessionBytes = std::uintmax_t{256} << 20;  // 60x t
 // A 16 M-entry session is about 100 MiB of sequence files in all (ADR-0015
 // §3), so one file past this is not one of ours.
 constexpr std::uintmax_t kMaxSequenceBytes = std::uintmax_t{1} << 30;
+// contracts/plugin's kMaxStateBytes, which this layer does not include: a
+// file past it is not a state the engine wrote.
+constexpr std::uintmax_t kMaxStateBytes = std::uintmax_t{16} << 20;
 
 bool read_file(const fs::path& path, std::uintmax_t max_bytes, std::string& out) {
     std::error_code ec;
@@ -128,6 +132,13 @@ bool ends_with(const std::string& s, const char* suffix) {
     return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0;
 }
 
+// Whether `file` is there with exactly the bytes `sha` names.
+bool state_on_disk(const fs::path& file, const std::string& sha) {
+    std::string there;
+    std::error_code ec;
+    return fs::exists(file, ec) && read_file(file, kMaxStateBytes, there) && sha256_hex(there) == sha;
+}
+
 }  // namespace
 
 std::string session_folder_of(const std::string& session_file) {
@@ -154,7 +165,51 @@ void SessionFolder::enter(const std::string& folder) {
             fs::remove(it->path(), rm);
         }
     }
+    sweep_states(folder_);
     refresh_kept();
+}
+
+void SessionFolder::sweep_states(const std::string& folder) {
+    if (!swept_.insert(folder).second) return;
+    std::error_code ec;
+    // Only this saver writes there, and never while it sweeps.
+    for (fs::directory_iterator it(fs::path(folder) / kPluginStateDir, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (ends_with(it->path().filename().string(), ".state.tmp")) {
+            std::error_code rm;
+            fs::remove(it->path(), rm);
+        }
+    }
+}
+
+bool SessionFolder::make_state_dir(const std::string& folder, std::string& why) {
+    const fs::path dir = fs::path(folder) / kPluginStateDir;
+    std::error_code ec;
+    const bool made_dir = !fs::exists(dir, ec);
+    fs::create_directories(dir, ec);
+    if (ec) {
+        why = "cannot create " + dir.string();
+        return false;
+    }
+    if (made_dir && !sync_directory_(folder)) {
+        why = "cannot sync the session folder after creating " + dir.string();
+        return false;
+    }
+    return true;
+}
+
+bool SessionFolder::sync_states(const std::string& folder, const std::vector<std::string>& paths,
+                                std::string& why) {
+    const bool covered = std::all_of(paths.begin(), paths.end(),
+                                     [&](const std::string& p) { return durable_states_.count(p) != 0; });
+    if (covered) return true;
+    const fs::path dir = fs::path(folder) / kPluginStateDir;
+    if (!sync_directory_(dir.string())) {
+        why = "cannot sync " + dir.string() + " after writing plugin states";
+        return false;
+    }
+    durable_states_.insert(paths.begin(), paths.end());
+    return true;
 }
 
 // Each kept file is parsed once, when it is first seen. One that has gone
@@ -201,7 +256,8 @@ bool SessionFolder::verified_on_disk(const std::string& sha) {
 }
 
 bool SessionFolder::save(const std::string& session_file, const std::string& bytes,
-                         const model::Snapshot& document, std::string& why, std::string& caution) {
+                         const model::Snapshot& document, std::string& why, std::string& caution,
+                         const std::string& state_source) {
     caution.clear();
     const fs::path file(session_file);
     if (!file.is_absolute() || file.extension() != ".sonora" || file.stem().empty()) {
@@ -210,7 +266,9 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
     }
     std::set<std::string> refs;
     std::string parse_why;
-    if (!model::sequence_references(bytes, refs, parse_why)) {
+    std::set<std::string> state_refs;
+    if (!model::sequence_references(bytes, refs, parse_why) ||
+        !model::plugin_state_references(bytes, state_refs, parse_why)) {
         why = "what was to be saved is not a session file: " + parse_why;
         return false;
     }
@@ -255,6 +313,10 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
             std::error_code rm;
             fs::remove_all(folder, rm);
             folder_.clear();
+            swept_.erase(folder.string());
+            const std::string under = (folder / "").string();
+            for (auto it = durable_states_.begin(); it != durable_states_.end();)
+                it = it->compare(0, under.size(), under) == 0 ? durable_states_.erase(it) : std::next(it);
         }
         why = std::move(reason);
         return false;
@@ -291,6 +353,42 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
         for (const std::string& sha : renamed) files_.wrote(sha);
     }
 
+    if (!state_refs.empty()) {
+        // The states a flush wrote sit in the engine's folder, which need
+        // not be this one: a session never points outside its own folder,
+        // so each is copied here before the file names it.
+        if (!make_state_dir(folder.string(), step_why)) return fail(step_why);
+        std::set<std::string> replaced;   // what the file being replaced names
+        bool replaced_read = false;
+        std::vector<std::string> placed;
+        for (const std::string& sha : state_refs) {
+            const fs::path target = folder / model::plugin_state_file(sha);
+            if (state_on_disk(target, sha)) {
+                placed.push_back(target.string());
+                continue;
+            }
+            std::string copy;
+            const fs::path source = fs::path(state_source) / model::plugin_state_file(sha);
+            if (state_source.empty() || !read_file(source, kMaxStateBytes, copy) || sha256_hex(copy) != sha) {
+                if (!replaced_read) {
+                    replaced_read = true;
+                    std::string old, ignored;
+                    if (read_file(file, kMaxSessionBytes, old)) model::plugin_state_references(old, replaced, ignored);
+                }
+                // Lost before this save, and said at open: refusing would
+                // leave a session that can never be saved again.
+                if (replaced.count(sha) != 0) continue;
+                return fail("the session names a plugin state (" + sha.substr(0, 12) +
+                            "...) that is neither in " + (folder / kPluginStateDir).string() +
+                            " nor where the engine keeps them; flush the plugins' state and save again");
+            }
+            if (!write_synced(target, copy, step_why)) return fail(step_why);
+            ++states_written_;
+            placed.push_back(target.string());
+        }
+        if (!sync_states(folder.string(), placed, step_why)) return fail(step_why);
+    }
+
     if (!write_synced(file, bytes, step_why)) return fail(step_why);
     // The rename has landed: the file holds the new session, so this is a
     // save. Reporting it as a failure would make a first save retry into
@@ -306,6 +404,30 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
     // A save may have kept a pre-migration copy, which is a kept file too.
     refresh_kept();
     return true;
+}
+
+bool SessionFolder::write_states(const std::string& folder, const std::vector<StateFile>& states,
+                                 std::string& why) {
+    if (states.empty()) return true;
+    sweep_states(folder);
+    if (!make_state_dir(folder, why)) return false;
+    std::vector<std::string> placed;
+    for (const StateFile& s : states) {
+        // The name is the hash: bytes that are not the digest's must never
+        // carry it, or the check at open refuses a state we wrote.
+        if (s.bytes.size() > kMaxStateBytes || sha256_hex(s.bytes) != s.sha256) {
+            why = "a plugin state does not match its digest " + s.sha256;
+            return false;
+        }
+        const fs::path file = fs::path(folder) / model::plugin_state_file(s.sha256);
+        placed.push_back(file.string());
+        std::string there;
+        std::error_code ec;
+        if (fs::exists(file, ec) && read_file(file, kMaxStateBytes, there) && there == s.bytes) continue;
+        if (!write_synced(file, s.bytes, why)) return false;
+        ++states_written_;
+    }
+    return sync_states(folder, placed, why);
 }
 
 int SessionFolder::clean(std::string& caution) {
