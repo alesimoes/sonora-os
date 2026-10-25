@@ -80,6 +80,16 @@
       "verified": false,
       "comment": "Window > Transport, Command+1 on the numeric keypad (Ctrl+1 on Windows). Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
     },
+    "numpad_enter": {
+      "command": "marker.add",
+      "verified": false,
+      "comment": "New Memory Location, Enter on the numeric keypad. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+numpad_5": {
+      "command": "window.memory_locations",
+      "verified": false,
+      "comment": "Window > Memory Locations, Command+5 on the numeric keypad (Ctrl+5 on Windows). Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "ctrl+q": {
       "command": "app.quit",
       "verified": false,

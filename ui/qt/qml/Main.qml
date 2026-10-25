@@ -146,6 +146,23 @@ Rectangle {
         }
     }
 
+    // --- the Memory Locations window, floating over either window ---
+    Loader {
+        id: memoryLocationsLoader
+        objectName: "memoryLocationsLoader"
+        // At the right, under the Transport window's place, so it leaves the
+        // rulers and the Undo History window's place in view.
+        x: root.width - width - Theme.space6
+        y: body.y + 200
+        z: 8
+        sourceComponent: MemoryLocationsWindow {
+            objectName: "memoryLocationsWindow"
+            shell: root.shell
+            session: root.session
+            mover: memoryLocationsLoader
+        }
+    }
+
     // --- footer -------------------------------------------------------------------
     Rectangle {
         id: footer
@@ -378,7 +395,10 @@ Rectangle {
                     { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true },
                     { name: "editRepeat", label: "Repeat…", command: "edit.repeat", on: true },
                     { name: "", label: "", command: "", on: false },
-                    { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true }
+                    { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
+                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations", on: true }
                 ]
                 Item {
                     required property var modelData
@@ -520,6 +540,122 @@ Rectangle {
         }
     }
 
+    // --- New Marker: its name ----------------------------------------------------
+    // Pro Tools' New Memory Location dialog, asked for by marker.add while
+    // stopped. OK and Return send marker.add with the name through the same
+    // router; an empty field takes the offered name.
+    MouseArea {
+        anchors.fill: parent
+        visible: markerPanel.visible
+        z: 9
+        onClicked: markerPanel.close()
+    }
+    Rectangle {
+        id: markerPanel
+        objectName: "markerPanel"
+        property string what
+        property string offered
+        property bool range
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 340
+        height: markerColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }  // a click inside does not close it
+
+        function show(name, what, range) {
+            markerPanel.what = what
+            markerPanel.range = range
+            markerPanel.offered = name
+            markerInput.text = name
+            visible = true
+            markerInput.forceActiveFocus()
+            markerInput.selectAll()
+        }
+        function close() {
+            visible = false
+            markerInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            const name = markerInput.text.trim().length > 0 ? markerInput.text : markerPanel.offered
+            if (root.shell.invokeWith("marker.add", -1, name)) close()
+        }
+
+        Column {
+            id: markerColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "New Marker"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                objectName: "markerWhat"
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: markerPanel.range
+                      ? "A selection marker " + markerPanel.what + ": recalling it selects that range again."
+                      : "A marker " + markerPanel.what + "."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Name"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 240
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: markerInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: markerInput
+                        objectName: "markerInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        Keys.onEscapePressed: markerPanel.close()
+                        Keys.onReturnPressed: markerPanel.accept()
+                        Keys.onEnterPressed: markerPanel.accept()
+                    }
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "markerCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: markerPanel.close()
+                }
+                SButton {
+                    objectName: "markerOk"
+                    text: "OK"
+                    implicitHeight: 24
+                    active: true
+                    onClicked: markerPanel.accept()
+                }
+            }
+        }
+    }
+
     // --- the Keys menu: every profile in the key map folder -------------------
     // A file that would be refused is listed with the reason, and choosing it
     // says why on the status line, rather than being offered and then
@@ -606,5 +742,6 @@ Rectangle {
         function onRefused(why) { root.shell.say(why) }
         function onNotice(text) { root.shell.say(text) }
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
+        function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

@@ -36,7 +36,7 @@ enum class CommandTarget {
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
     Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport,
-                // window.undo_history, app.quit
+                // window.undo_history, window.memory_locations, app.quit
 };
 
 struct CommandSpec {
@@ -172,6 +172,13 @@ inline const std::vector<CommandSpec>& command_catalog() {
          "Fade from the insertion point to the region end"},
         {"edit.fade_selection", CommandTarget::None, "Fade or crossfade the selection"},
 
+        // --- markers (Pro Tools' Memory Locations) ---
+        // A marker is session state, an undoable AddMarker. Stopped, the
+        // window asks for its name first and the name comes back as the
+        // argument, as edit.repeat's count does; rolling, it is named at
+        // once, so the take is not interrupted by a dialog.
+        {"marker.add", CommandTarget::None, "Add a marker, or a selection marker over a range"},
+
         // --- plugins (ADR-0012 §8) ---
         {"plugin.rescan", CommandTarget::None, "Scan the installed plugins again"},
         // Argument: "<slot> <parent token>", the slot 0..9 (A..J) and the
@@ -199,6 +206,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // and redo it sends are edit.undo's and edit.redo's.
         {"window.undo_history", CommandTarget::None, "Show or hide the Undo History window",
          false, CommandDomain::Interface},
+        // Pro Tools' Window > Memory Locations: a view of the markers. What
+        // it changes goes through marker operations, undoable like any edit.
+        {"window.memory_locations", CommandTarget::None,
+         "Show or hide the Memory Locations window", false, CommandDomain::Interface},
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},

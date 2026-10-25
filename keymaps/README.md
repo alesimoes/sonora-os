@@ -222,7 +222,13 @@ and `window.transport`, the Transport window (`ctrl+numpad_1` in
 no key for it until Logic's own is confirmed, and the bar's Transport
 button opens it there), and `window.undo_history`, the Undo History window
 (Edit > Undo History; neither Pro Tools nor Logic documents a default key for
-it, so no profile binds one).
+it, so no profile binds one), and the markers: `marker.add` (`numpad_enter`
+in `protools.json`, Pro Tools' New Memory Location, `"verified": false`;
+stopped, it asks for the name in a dialog, rolling, it drops a named marker at
+the playhead at once) and `window.memory_locations`, the Memory Locations
+window (`ctrl+numpad_5` in `protools.json`, `"verified": false`). Both are on
+the Edit menu; `logic.json` binds neither until Logic's own keys are
+confirmed.
 A track command bound without a target acts on the selected track there, so
 `shift+r`, `shift+s` and `shift+m` work in the window and still report that
 they failed at a tty, which has no selection.
@@ -232,7 +238,7 @@ they failed at a tty, which has no selection.
 The window sends a command where its `CommandSpec::domain` says
 (`contracts/api/include/sonora/command.h`, ADR-0007 §5). An Interface command
 (`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `window.transport`,
-`window.undo_history`, `app.quit`) runs in the window
+`window.undo_history`, `window.memory_locations`, `app.quit`) runs in the window
 and never reaches the engine, even if an engine lists it. An Engine command
 goes to the engine over the control API once the engine's Hello lists it;
 until then a handler the window installed stands in (the Edit window's edits,

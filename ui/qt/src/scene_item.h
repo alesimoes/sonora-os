@@ -101,4 +101,14 @@ private:
     int format_ = 0;
 };
 
+// The Markers ruler: the session's markers and selection markers.
+class MarkerRulerItem : public SceneItem {
+    Q_OBJECT
+public:
+    using SceneItem::SceneItem;
+
+protected:
+    void buildContent(Scene& out) override;
+};
+
 }  // namespace sonora::ui

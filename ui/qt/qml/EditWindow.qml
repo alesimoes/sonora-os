@@ -193,6 +193,41 @@ Item {
                 }
             }
         }
+        // Markers: a click on one recalls it, Alt-click clears it, as
+        // Option-click does in Pro Tools; "+" adds one, as Enter does.
+        Item {
+            width: rulers.width
+            height: Theme.rulerHeight
+            Rectangle {
+                width: Theme.trackHeaderWidth; height: parent.height
+                color: Theme.panel
+                Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                SButton {
+                    objectName: "markerAdd"
+                    anchors { left: parent.left; leftMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                    text: "+"; implicitWidth: 20; implicitHeight: 16; fontPx: Theme.textSmall
+                    onClicked: edit.shell.invoke("marker.add", -1)
+                }
+                Text {
+                    anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                    text: "Markers"
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+                }
+            }
+            MarkerRuler {
+                objectName: "markerRuler"
+                x: Theme.trackHeaderWidth
+                width: parent.width - Theme.trackHeaderWidth
+                height: parent.height
+                session: edit.session
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: (m) => edit.session.markerRulerClick(m.x, (m.modifiers & Qt.AltModifier) !== 0)
+                }
+            }
+        }
     }
 
     // --- tracks ---------------------------------------------------------------

@@ -82,6 +82,8 @@ if [[ "$MODE" == screenshot ]]; then
   shoot "$base-nudge.png" --window edit --edit-view nudge
   # A few edits, the last one undone, and the Undo History window open.
   shoot "$base-undo-history.png" --window edit --edit-view undo-history
+  # Five markers, one a selection marker recalled, and the Memory Locations window.
+  shoot "$base-markers.png" --window edit --edit-view markers
   # The Mix window with the plugin chooser open, and with a parameter panel.
   shoot "${mix%.png}-browser.png" --window mix --insert-view browser
   shoot "${mix%.png}-panel.png" --window mix --insert-view panel
@@ -140,7 +142,7 @@ if [[ "$MODE" == screenshot ]]; then
   kill "$pid" 2>/dev/null || true; wait "$pid" || true
   rm -rf "$engine_dir"
   echo "saved /out/$base-refusal.png and /out/$base-refusal-reconnect.png"
-  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-repeat.png, $base-multitrack.png, $base-nudge.png, $base-undo-history.png, $base-keys.png and $base-repairs.png"
+  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-repeat.png, $base-multitrack.png, $base-nudge.png, $base-undo-history.png, $base-markers.png, $base-keys.png and $base-repairs.png"
   exit 0
 fi
 

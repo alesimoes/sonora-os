@@ -63,6 +63,11 @@ class SessionModel : public QObject {
     Q_PROPERTY(int undoHistoryDepth READ undoHistoryDepth NOTIFY contentChanged)
     Q_PROPERTY(bool undoHistoryTrimmed READ undoHistoryTrimmed NOTIFY contentChanged)
     Q_PROPERTY(bool undoHistoryOpen READ undoHistoryOpen NOTIFY undoHistoryOpenChanged)
+    // Pro Tools' Memory Locations window: [{id, number, name, start, end,
+    // length, range}] for every marker, in time order, the times in the main
+    // counter's format; `range` true for a selection marker.
+    Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
@@ -195,6 +200,17 @@ public:
     Q_INVOKABLE bool undoHistoryClick(int row);
     // Undo All and Redo All, from the window's buttons.
     Q_INVOKABLE bool undoHistoryAll(bool undo);
+    QVariantList markers() const;
+    bool memoryLocationsOpen() const { return memory_locations_open_; }
+    void setMemoryLocationsOpen(bool on);
+    // A row of `markers`: recalled (the selection moves to it), or cleared,
+    // one undo step.
+    Q_INVOKABLE bool recallMarker(int row);
+    Q_INVOKABLE bool removeMarker(int row);
+    // A click on the Markers ruler: on a marker it recalls it, and with Alt
+    // clears it, as Pro Tools' Option-click does; elsewhere it places the
+    // insertion point, as the other rulers do.
+    Q_INVOKABLE void markerRulerClick(qreal x, bool alt);
     bool canPaste() const { return !ctl_.clipboard().empty(); }
     QString editMode() const { return QString::fromLatin1(edit_mode_name(ctl_.mode())); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
@@ -283,6 +299,7 @@ public:
     void buildTimeline(Scene& out) const;
     void buildOverlay(std::vector<SceneRect>& out) const;
     void buildRuler(TimeFormat fmt, double height, Scene& out) const;
+    void buildMarkerRuler(double height, Scene& out) const;
 
 signals:
     void windowChanged();
@@ -295,6 +312,12 @@ signals:
     void sessionChanged();
     void repairsChanged();
     void undoHistoryOpenChanged();
+    void markersChanged();
+    void memoryLocationsOpenChanged();
+    // marker.add with no name, stopped: the window asks for one, offering
+    // `name`, and sends marker.add again with it. `what` says where the
+    // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
+    void markerRequested(const QString& name, const QString& what, bool range);
     // A refusal from a mouse gesture, for the status line. Keys report
     // through the router.
     void refused(const QString& why);
@@ -335,6 +358,7 @@ private:
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
     bool undo_history_open_ = false;
+    bool memory_locations_open_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);
