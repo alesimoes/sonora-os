@@ -133,7 +133,7 @@ set_tests_properties(plugin_host_list_bundles_only PROPERTIES PASS_REGULAR_EXPRE
 # flags. eg-amp is from Debian's lv2-examples.
 add_test(NAME plugin_host_probe_record COMMAND sonora-plugin-host --probe http://lv2plug.in/plugins/eg-amp --channels 2)
 set_tests_properties(plugin_host_probe_record PROPERTIES PASS_REGULAR_EXPRESSION
-  "^{\"record\":1,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 1 probe 1\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
+  "^{\"record\":1,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 2 probe 1\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
 add_test(NAME plugin_host_probe_not_installed COMMAND sonora-plugin-host --probe "urn:sonora:test#absent")
 set_tests_properties(plugin_host_probe_not_installed PROPERTIES PASS_REGULAR_EXPRESSION
   "\"ok\":false,\"reason\":\"not installed\"[^\n]*\"outcome\":\"not_installed\"")
@@ -153,7 +153,7 @@ set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is n
                      LABELS plugins)
 # The versions the engine checks at start-up (ADR-0012 §5.5).
 add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
-set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 1 probe 1\n$"
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 2 probe 1\n$"
                      LABELS plugins)
 # Hosts are timer-paced by default: the audio thread's futex wake ships gated
 # off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex
@@ -170,7 +170,7 @@ set(_plugin_tests
   plugin_host_control plugin_host_control_incompatible plugin_host_control_gain plugin_host_control_crash
   plugin_host_control_latency_chain plugin_host_state_lv2
   plugin_host_worker plugin_host_worker_futex plugin_host_worker_control plugin_host_worker_restore
-  plugin_host_worker_hang plugin_host_worker_slow_exit)
+  plugin_host_worker_hang plugin_host_worker_slow_exit plugin_host_worker_flood)
 # HostControl (contracts/plugin host_control.h, ADR-0012 §4): the socket on
 # --control-fd, with the driver as the engine's control thread. The same
 # scenarios as above through Load instead of the command line, and the
@@ -208,6 +208,9 @@ add_test(NAME plugin_host_worker_hang COMMAND ${_drive} --scenario worker_hang)
 # A work() that returns 1.5 s after the stopping host abandons it: the host
 # has already exited Faulted, its destructors not run.
 add_test(NAME plugin_host_worker_slow_exit COMMAND ${_drive} --scenario worker_slow_exit)
+# Requests past the worker's ring, every block: said as Fault{WorkRefused},
+# at most once a second.
+add_test(NAME plugin_host_worker_flood COMMAND ${_drive} --scenario worker_flood)
 # The RTSan build only: the host's block (run_block) is SONORA_RT, so the
 # plugins it runs are checked as the engine's callback is. The control for
 # that: the deadline scenario with the test plugin's sleep left unexempted

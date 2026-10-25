@@ -510,7 +510,7 @@ void a_pair_crosses_exec_to_a_child() {
     CHECK(parent->receive(got, 1000, nullptr, 1000, error) == IoStatus::Closed);
 
     // A descriptor nobody asked for is refused, not silently closed
-    // (HostControl wire 1 carries none; rt-engineer low on PR #51).
+    // (HostControl wire 2 carries none; rt-engineer low on PR #51).
     {
         std::unique_ptr<ControlChannel> a;
         int b_fd = -1;

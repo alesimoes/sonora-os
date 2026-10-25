@@ -497,7 +497,7 @@ IoStatus ControlChannel::receive(std::string& datagram, std::size_t max_bytes,
     if (fd >= 0) {
         if (region == nullptr) {
             // Nobody here asked for one: a peer that sends a descriptor
-            // anyway breaks its contract (HostControl wire 1, the control
+            // anyway breaks its contract (HostControl wire 2, the control
             // API). Closed, and the datagram refused, never ignored.
             drop_fd();
             error = "a descriptor came with a datagram where none is expected";

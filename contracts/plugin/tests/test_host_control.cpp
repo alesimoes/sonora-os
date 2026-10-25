@@ -21,7 +21,7 @@
 using namespace sonora::plugin;
 using namespace sonora::plugin::control;
 
-static_assert(kHostWireVersion == 1, "the golden encodings below describe wire version 1");
+static_assert(kHostWireVersion == 2, "the golden encodings below describe wire version 2");
 
 namespace {
 
@@ -93,14 +93,14 @@ M round_trip(const M& m, const char* name) {
 void hellos_are_pinned() {
     std::string b;
     encode(EngineHello{}, b);
-    CHECK(hex(b) == "01" "01000000" "01000000" "01000000");
+    CHECK(hex(b) == "01" "02000000" "01000000" "01000000");
     uint32_t w = 0;
-    CHECK(decode_wire_version(b, w) && w == 1);
+    CHECK(decode_wire_version(b, w) && w == 2);
     Hello h;
     h.pid = 0x0102030405060708ull;
     encode(h, b);
-    CHECK(hex(b) == "40" "01000000" "01000000" "01000000" "0807060504030201");
-    CHECK(decode_wire_version(b, w) && w == 1);
+    CHECK(hex(b) == "40" "02000000" "01000000" "01000000" "0807060504030201");
+    CHECK(decode_wire_version(b, w) && w == 2);
     // A newer engine's hello with fields this version does not know: the
     // version is still readable, the message is not.
     std::string newer;
@@ -168,6 +168,7 @@ void every_message_round_trips() {
     round_trip(LatencyChanged{3, 1152}, "LatencyChanged");
     round_trip(Reconfigured{9, 4, 2048}, "Reconfigured");
     round_trip(Fault{FaultKind::EventsDropped, 0, 12, "touches on read-only parameters"}, "Fault");
+    round_trip(Fault{FaultKind::WorkRefused, 1, 3, "worker messages refused"}, "Fault");
 }
 
 // Each field's bound, one forged message at a time.
@@ -194,6 +195,9 @@ void untrusted_fields_are_refused() {
     refuse(Refused{static_cast<Refusal>(99), 0, ""}, "an unknown refusal");
     refuse(Refused{Refusal::NotFound, int32_t(kMaxInstances), ""}, "a refusal instance past the chain");
     refuse(Fault{FaultKind::Plugin, -2, 0, ""}, "a fault instance below -1");
+    refuse(Fault{FaultKind::WorkRefused, -1, 3, ""}, "a WorkRefused fault naming no plugin");
+    refuse(Fault{FaultKind::WorkRefused, 0, 0, ""}, "a WorkRefused fault counting nothing");
+    refuse(Fault{static_cast<FaultKind>(4), 0, 1, ""}, "an unknown fault kind");
     refuse(State{0, 0, StateStatus::Empty, "bytes", ""}, "state bytes with status Empty");
     // Plugin ids.
     Load bad;
@@ -596,7 +600,7 @@ void state_blob_and_files() {
 void version_line() {
     char buf[96];
     CHECK(format_host_version_line(buf, sizeof buf) > 0);
-    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 1");
+    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 2");
     uint32_t l = 0, c = 0, w = 0;
     CHECK(parse_host_version_line(buf, l, c, w) && l == kLayoutVersion && c == kClockLayoutVersion &&
           w == kHostWireVersion);

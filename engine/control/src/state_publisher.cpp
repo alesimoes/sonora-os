@@ -16,6 +16,7 @@ StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* au
       period_ns_(period_ns),
       input_connected_(new std::atomic<bool>[session.tracks().size()]),
       insert_flags_(new std::atomic<uint32_t>[session.tracks().size() * api::kInsertSlots]),
+      insert_work_refused_(new std::atomic<uint32_t>[session.tracks().size() * api::kInsertSlots]),
       track_latency_(new std::atomic<uint32_t>[session.tracks().size()]),
       track_shortfall_(new std::atomic<uint32_t>[session.tracks().size()]),
       tracks_(session.tracks().size()),
@@ -28,6 +29,7 @@ StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* au
     }
     for (std::size_t i = 0; i < session.tracks().size() * api::kInsertSlots; ++i) {
         insert_flags_[i].store(0, std::memory_order_relaxed);
+        insert_work_refused_[i].store(0, std::memory_order_relaxed);
     }
 }
 
@@ -50,6 +52,12 @@ void StatePublisher::set_input_connected(uint32_t track, bool connected) {
 void StatePublisher::set_insert_flags(uint32_t track, uint32_t slot, uint32_t flags) {
     if (track < session_.tracks().size() && slot < api::kInsertSlots) {
         insert_flags_[track * api::kInsertSlots + slot].store(flags, std::memory_order_relaxed);
+    }
+}
+
+void StatePublisher::set_insert_work_refused(uint32_t track, uint32_t slot, uint32_t count) {
+    if (track < session_.tracks().size() && slot < api::kInsertSlots) {
+        insert_work_refused_[track * api::kInsertSlots + slot].store(count, std::memory_order_relaxed);
     }
 }
 
@@ -141,6 +149,8 @@ void StatePublisher::publish_once() {
         for (uint32_t k = 0; k < api::kInsertSlots; ++k) {
             f.inserts[k].flags =
                 insert_flags_[i * api::kInsertSlots + k].load(std::memory_order_relaxed);
+            f.inserts[k].work_refused =
+                insert_work_refused_[i * api::kInsertSlots + k].load(std::memory_order_relaxed);
         }
     }
     writer_.publish(t, tracks_.data(), peaks_.data());

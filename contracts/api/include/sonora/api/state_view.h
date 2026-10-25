@@ -49,6 +49,7 @@ struct InsertSnapshot {
     uint32_t misses = 0;
     uint32_t worst_run_us = 0;
     uint32_t nonfinite = 0;
+    uint32_t work_refused = 0;
 
     bool present() const { return (flags & kInsertPresent) != 0; }
     bool faulted() const { return (flags & kInsertFaulted) != 0; }

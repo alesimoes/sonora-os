@@ -473,6 +473,7 @@ public:
     }
 
     uint32_t latency() const noexcept SONORA_RT override { return latency_; }
+    uint64_t work_refused() const noexcept override { return worker_ ? worker_->refused() : 0; }
 
     // The latency port is an output written in run(), so the new latency is
     // read from the next block, which the caller runs (host --reactivate

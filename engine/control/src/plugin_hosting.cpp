@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -209,6 +210,11 @@ struct PluginHosting::Chain {
     };
     std::map<model::Id, LostState> state_lost;
     std::map<model::Id, LostState> pending_state_lost;
+
+    // Inserts already told, this run, that their worker refused messages
+    // (ADR-0012 change G, as for non-finite output): one Notice per run.
+    // A run is one build of the chain; a restart of it is the same run.
+    std::set<model::Id> work_noticed;
 };
 
 PluginHosting::PluginHosting(Session& session, PluginHostingConfig config, PluginScanner& scanner)
@@ -323,6 +329,7 @@ void PluginHosting::drop_chain(Chain& c) {
     c.restart_swapped = false;
     c.restart_retire_epoch = 0;
     c.state_lost.clear();
+    c.work_noticed.clear();
 }
 
 // ---- probes: the scan worker's (amendment of 2026-10-19, item 3)
@@ -538,6 +545,10 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
         for (auto& [track, c] : chains_) drop_chain(*c);
         chains_.clear();
         loading_total_ = 0;
+        // Keyed by insert id too: the new document's insert of the same id
+        // is another insert, with nothing refused yet (#115 review).
+        work_refused_.clear();
+        notices_.clear();
     }
     std::set<model::Id> seen;
     for (const auto& tp : doc.edit->tracks) {
@@ -745,6 +756,7 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.pending_seeded.clear();
                     c.state_lost = std::move(c.pending_state_lost);
                     c.pending_state_lost.clear();
+                    c.work_noticed.clear();
                     note_refused_states(c, doc);
                     c.retry.clear();
                     c.store_epoch = 0;
@@ -998,6 +1010,26 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                 o = o->first.first == m.instance ? c.open_touches.erase(o) : std::next(o);
             break;
         }
+        case pc::Type::Fault: {
+            pc::Fault m;
+            if (!pc::decode(bytes, m, e) || m.kind != pc::FaultKind::WorkRefused) break;
+            if (m.instance < 0 || uint32_t(m.instance) >= c.running_spec.size()) break;
+            const model::Id insert = c.running_spec[uint32_t(m.instance)].insert;
+            uint64_t& n = work_refused_[insert];
+            n = m.count > std::numeric_limits<uint64_t>::max() - n ? std::numeric_limits<uint64_t>::max() : n + m.count;
+            // The plugin plays on, so nothing stands: said once a run, and
+            // the count carries the rest (ADR-0012 change G).
+            if (!c.work_noticed.insert(insert).second) break;
+            for (const auto& tp : doc.edit->tracks) {
+                if (tp->id != track) continue;
+                for (const model::Insert& in : tp->inserts)
+                    if (in.id == insert)
+                        notices_.push_back(where(*tp, in) +
+                                           ": its worker refused messages (its queue was full), so work the "
+                                           "plugin asked for may not have been done");
+            }
+            break;
+        }
         default: break;
     }
 }
@@ -1085,6 +1117,17 @@ void PluginHosting::recompute_faults(const model::Snapshot& doc) {
         }
     }
     faults_.swap(faults);
+}
+
+uint64_t PluginHosting::work_refused(model::Id insert) const {
+    const auto it = work_refused_.find(insert);
+    return it == work_refused_.end() ? 0 : it->second;
+}
+
+std::vector<std::string> PluginHosting::take_notices() {
+    std::vector<std::string> out;
+    out.swap(notices_);
+    return out;
 }
 
 uint32_t PluginHosting::insert_flags(model::Id insert) const {

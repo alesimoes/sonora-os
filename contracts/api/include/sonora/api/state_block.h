@@ -30,7 +30,9 @@ namespace sonora::api {
 // Bump on any change to the layout below, and to what a field means.
 // 2 (ADR-0012 §8): an InsertState per insert slot on every track, and the
 //   session's delay compensation in the header.
-constexpr uint32_t kStateLayoutVersion = 2;
+// 3: InsertState::work_refused, the LV2 worker messages a plugin's host
+//   refused (ADR-0012 change G, as for non-finite output).
+constexpr uint32_t kStateLayoutVersion = 3;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -95,6 +97,7 @@ struct InsertState {
     std::atomic<uint32_t> misses;           // blocks not collected; monotonic
     std::atomic<uint32_t> worst_run_us;     // the longest block its host took; monotonic
     std::atomic<uint32_t> nonfinite;        // NaN or Inf samples replaced; monotonic
+    std::atomic<uint32_t> work_refused;     // worker messages refused, its ring full; monotonic
 };
 
 // A slot packs the publish tick's low 32 bits above the peak's float bits,
@@ -234,6 +237,7 @@ struct InsertFields {
     uint32_t misses = 0;
     uint32_t worst_run_us = 0;
     uint32_t nonfinite = 0;
+    uint32_t work_refused = 0;
 };
 
 struct TrackFields {

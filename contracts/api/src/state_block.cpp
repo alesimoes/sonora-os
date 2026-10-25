@@ -61,6 +61,7 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
             in.misses.store(0, std::memory_order_relaxed);
             in.worst_run_us.store(0, std::memory_order_relaxed);
             in.nonfinite.store(0, std::memory_order_relaxed);
+            in.work_refused.store(0, std::memory_order_relaxed);
         }
     }
     // Everything above happens-before a reader that learns of the block
@@ -140,9 +141,11 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
                 to.worst_run_us.store(from.worst_run_us, rel);
             }
             if (from.nonfinite != was.nonfinite) to.nonfinite.store(from.nonfinite, rel);
+            if (from.work_refused != was.work_refused) to.work_refused.store(from.work_refused, rel);
             was.misses = from.misses;
             was.worst_run_us = from.worst_run_us;
             was.nonfinite = from.nonfinite;
+            was.work_refused = from.work_refused;
         }
     }
 

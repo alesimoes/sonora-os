@@ -912,9 +912,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          host that never exits), `plugin_host_worker_slow_exit` (a work()
          that returns and maps a URID 1.5 s after the abandon; the host
          has already exited Faulted, not by a signal).
-       - [ ] The count of worker requests and responses refused because a
-         ring was full (`Lv2Worker::refused()`) is not shown anywhere: it
-         needs a place in the region's InstanceReport or a host message.
+       - [x] Worker requests and responses refused because a ring was full
+         are told to the operator, as ADR-0012 change G treats non-finite
+         output: the host sends Fault{WorkRefused} (HostControl wire 2)
+         naming the plugin, the first at once and the rest summed at most
+         once per second, and the rest after its last run(); the engine
+         posts one non-standing Notice per run of the chain naming plugin,
+         track and slot, and carries the count in InsertState::work_refused
+         (state layout 3, only rises). No fault stands. ctest
+         `plugin_host_worker_flood` (the test plugin schedules 1536
+         requests a block, 1 ms of work() each, at gain 0.0625),
+         `plugin_hosting_work_refused`, `plugin_hosting_server_work_refused`
+         (the count in the state block, one Notice at the client, no
+         PluginFault); each fails without the change.
+         Not yet: Fault{EventsDropped} is still not shown by the engine.
 6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the
