@@ -164,7 +164,7 @@ private:
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
-constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::LoadPart);
+constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Save);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::PluginFault);
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
@@ -510,6 +510,31 @@ bool decode_into(std::string_view bytes, Inbox& inbox, std::string& error) {
     error = "message type " + std::to_string(static_cast<unsigned>(type)) +
             " is not one an engine sends to a client";
     return false;
+}
+
+std::string encode_save(std::string_view file, std::string_view session) {
+    std::string out;
+    out.reserve(file.size() + 1 + session.size());
+    out.append(file.data(), file.size());
+    out.push_back('\0');
+    out.append(session.data(), session.size());
+    return out;
+}
+
+bool decode_save(std::string_view op, std::string& file, std::string& session,
+                 std::string& error) {
+    const std::size_t end = op.find('\0');
+    if (end == std::string_view::npos) {
+        error = "a save that names no session file";
+        return false;
+    }
+    if (end == 0 || end > kMaxSavePath) {
+        error = "a save whose path is empty or over " + std::to_string(kMaxSavePath) + " bytes";
+        return false;
+    }
+    file.assign(op.data(), end);
+    session.assign(op.data() + end + 1, op.size() - end - 1);
+    return true;
 }
 
 std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_version,

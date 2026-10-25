@@ -238,18 +238,25 @@ playback can follow edits; it is in flight.
              the charges); ADR-0015 Unverified 3's attach time over the M7
              socket is unmeasured; a single chunk, or a single sequence
              file in a Load, over 16 MiB is refused by name, not split.
-       - [ ] Sequence-file fsyncs run on the UI thread until the saver thread exists: announce a slow save ("Saving: writing N MIDI sequence files") before a batch over a few MiB (ui-engineer, #109).
+       - [x] Sequence-file fsyncs run on the UI thread until the saver thread exists (ui-engineer, #109): gone with M-1c PR 3; the engine's saver thread writes them.
        - [ ] A MIDI region whose sequence file is missing is not drawn differently: the first MIDI region drawing marks it ("MIDI missing") and refuses edits on it by name (ui-engineer, #109).
-       - [ ] M-1c PR 3 **merges before the first M-4 PR that records
-             MIDI** (architect, #109), and makes the engine the sole owner
-             of `MIDI Sequences/`: the interface's sidecar writer and
-             cleanup go in the same PR. With the engine's saver thread
-             (item 3): sidecar
-             syncs only after a disk-thread checkpoint while a take is
-             open, "Saving after the next checkpoint", cleanup after the
-             transport stops; takes over the budget kept unplaced with a
-             Notice (M-4); rebuilding a missing sequence from its take
-             file (O2, with M-4's SMF reading); Unverified 5.
+       - [x] M-1c PR 3 (`m1c3-engine-saver`), **before the first M-4 PR
+             that records MIDI** (architect, #109): the engine is the sole
+             owner of `MIDI Sequences/`. File > Save is `ModelAction::Save`
+             (protocol 11, path and bytes); the engine's saver thread
+             (`engine/control` `session_saver.h`) writes sequence files,
+             the session file and cleans up through `common/session_files`
+             (new, layer 2; the interface's writer and cleanup are gone);
+             while a take is open it waits for the disk thread's checkpoint
+             counter to move, one save per bump, says "Saving after the
+             next checkpoint", and cleans up after the transport stops.
+       - [ ] M-1c PR 3 leftovers, with M-4: takes over the budget kept
+             unplaced with a Notice; rebuilding a missing sequence from its
+             take file (O2, with M-4's SMF reading); ADR-0015 Unverified 5
+             (capture overruns with paced sidecar writes during loop
+             recording on 8 audio and 4 MIDI tracks) needs M-4's MIDI
+             takes and the laptop; the session file's rotated backups and
+             autosave are still item 3's.
        - [ ] ADR-0014 §9's phases in order: M-2 backend MIDI ports, M-3 playback to ports,
              M-4 recording and SMF take files, M-5 instruments
              (plugin layout 2, exit part 1), M-6 SMF interchange (exit

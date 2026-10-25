@@ -94,6 +94,23 @@ void round_trips() {
         wire::encode(m, bytes);
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.action == ModelAction::FlushPluginState && back.op == "42");
+        // Save (protocol 11): a path, a NUL, then bytes that may hold NULs.
+        m.action = ModelAction::Save;
+        m.op = wire::encode_save("/home/a/Sessions/Bass/Bass.sonora", std::string("{\0}", 3));
+        wire::encode(m, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.action == ModelAction::Save);
+        std::string file, session;
+        CHECK(wire::decode_save(back.op, file, session, error));
+        CHECK(file == "/home/a/Sessions/Bass/Bass.sonora" && session == std::string("{\0}", 3));
+        CHECK(!wire::decode_save("no separator", file, session, error));
+        CHECK(!wire::decode_save(std::string("\0{}", 3), file, session, error));
+        CHECK(!wire::decode_save(std::string(wire::kMaxSavePath + 1, 'a') + std::string(1, '\0'),
+                                 file, session, error));
+        // An action past the last this protocol has is refused.
+        m.action = static_cast<ModelAction>(static_cast<uint32_t>(ModelAction::Save) + 1);
+        wire::encode(m, bytes);
+        CHECK(!wire::decode(bytes, back, error));
     }
     {
         CommandReply r;
@@ -248,25 +265,25 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // A Snapshot and a Load in parts (ADR-0015 M-1c PR 2) are version 10;
-    // 9 is loop record's. An older interface cannot reassemble a Snapshot in
-    // parts, nor send a Load in parts, so it reads this engine's Hello and
-    // refuses it at connect, naming both numbers. Its check is this function
-    // with its own constants, passed here.
-    CHECK(kProtocolVersion == 10);
+    // Save (ADR-0015 M-1c PR 3) is version 11; a Snapshot and a Load in
+    // parts are 10, loop record 9. An older interface cannot ask the engine
+    // to save, so it reads this engine's Hello and refuses it at connect,
+    // naming both numbers. Its check is this function with its own
+    // constants, passed here.
+    CHECK(kProtocolVersion == 11);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
-    CHECK(mentions(v8, "the engine speaks control protocol version 10 and this interface "
+    CHECK(mentions(v8, "the engine speaks control protocol version 11 and this interface "
                        "speaks version 8"));
     CHECK(mentions(v8, "same build"));
     // And this interface refuses a version-8 engine the same way.
     CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
                    "the engine speaks control protocol version 8 and this interface "
-                   "speaks version 10"));
+                   "speaks version 11"));
 }
 
 void domains() {

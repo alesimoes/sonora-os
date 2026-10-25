@@ -26,6 +26,7 @@
 #include "engine_adapter.h"
 #include "peak_source.h"
 #include "session_files.h"
+#include "sonora/model/sequence_file.h"
 #include "time_format.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -114,15 +115,13 @@ public:
     void setSessionsDir(const QString& dir) { sessions_dir_ = dir; }
     const QString& sessionsDir() const { return sessions_dir_; }
 
-    // What File > Save writes with: write_session_file, or a stand-in that
-    // fails the way a full or read-only disk does, for the tests.
-    using SessionWriter = std::function<bool(const QString& file, const std::string& bytes,
-                                             std::string& why, std::string& caution)>;
-    void setSessionWriter(SessionWriter writer) { writer_ = std::move(writer); }
-
     // File > Save: to the file the session came from, or, the first time, to
     // a new folder named after the session ("Untitled" when it has no
     // name). A save with nothing changed since the last one writes nothing.
+    // The engine writes the folder (TimelineDocument::save_session, ADR-0015
+    // update of 2026-10-25): the bytes are serialised here and the file is
+    // named here, and the save is done when the engine answers, which while
+    // a take is open is after its next checkpoint.
     //
     // A session with inserts is first brought up to date with its running
     // plugins (TimelineDocument::flush_plugin_state, ADR-0012 §8): the file
@@ -132,12 +131,15 @@ public:
     // have every plugin's state still saves, and the notice names what is
     // not current.
     bool saveSession(std::string& why);
-    bool saveWaiting() const { return save_waiting_; }
+    // Waiting for the plugins' state, or for the engine to write the file.
+    bool saveWaiting() const { return save_waiting_ || save_writing_; }
     // How long a save waits for the engine's FlushPluginState reply before
     // the operator is told, and a second Save may write without it. The
     // engine bounds each GetState itself (ADR-0012 §8) and answers well
     // inside this; past it the engine is wedged, and the session matters
-    // more than one plugin's latest state. Tests shorten it.
+    // more than one plugin's latest state. The same patience bounds the
+    // wait for the engine's answer to the Save itself, after which a second
+    // Save asks again. Tests shorten it.
     void setFlushPatienceMs(qint64 ms) { flush_patience_ms_ = ms; }
     // File > Open. Refused while a take is open, at another sample rate
     // than this session's, and over unsaved changes unless `discard`. A
@@ -150,8 +152,8 @@ public:
     void openWasLost();
     // The engine refused the File > Open just made, and kept its session,
     // which is shown again. The window names that session's file again,
-    // with its saved bytes, repairs and sequence folder, so Save writes it
-    // and never the refused file, and cleanup never runs in the refused
+    // with its saved bytes and repairs, so Save writes it and never the
+    // refused file, and the engine's cleanup never runs in the refused
     // file's folder. `later_load`: another Open is in flight and shown, so
     // the window keeps naming it, and that one's refusal can only clear.
     void openWasRefused(const QString& why, bool later_load);
@@ -337,20 +339,36 @@ private:
     bool run(bool ok, const std::string& why);
     void updateCounters(bool force);
     // The save itself, once the document holds what the file must;
-    // `caution` is said with the result.
+    // `caution` is said with the result. True when it was done, or handed to
+    // the engine, whose answer is then said on its own.
     bool writeSession(std::string& why, std::string caution);
+    // What a save the engine has answered leaves behind.
+    struct Written {
+        QString file;
+        std::string bytes;
+        uint64_t generation = 0;
+        uint64_t revision = 0;   // the document's when the bytes were made
+        bool rename = false;
+        model::SessionSettings settings;   // the name the file holds, when renamed
+        std::string caution;
+    };
+    bool finishSave(bool ok, const std::string& message, Written w, std::string& why);
 
     TimelineDocument& doc_;
     const PeakSource& peaks_;
     bool synthetic_peaks_;
     QString sessions_dir_;
-    SessionWriter writer_;
-    MidiSequenceFolder sequences_;   // the session folder's "MIDI Sequences/"
+    // What the saves of this window have hashed, so serialize() hashes only
+    // what changed since (ADR-0015 §3).
+    model::SequenceDigests digests_;
     QString file_;                 // empty until the session is saved or opened
     uint64_t saved_revision_ = 0;  // the revision the file holds
     uint64_t save_generation_ = 0;
     std::string saved_bytes_;      // what the file holds, to skip a save that changes nothing
     bool save_waiting_ = false;    // a save waits for the plugins' state
+    bool save_writing_ = false;    // a save waits for the engine to write it
+    uint64_t write_ticket_ = 0;    // which save the engine's answer is for
+    QElapsedTimer write_wait_;
     uint64_t save_ticket_ = 0;     // which save a flush answers, so an abandoned one is ignored
     QElapsedTimer save_wait_;
     qint64 flush_patience_ms_ = 10'000;
@@ -373,7 +391,6 @@ private:
         uint64_t save_generation = 0;
         std::string saved_bytes;
         QVariantList repairs;
-        MidiSequenceFolder sequences;
     };
     BeforeOpen before_open_;
 

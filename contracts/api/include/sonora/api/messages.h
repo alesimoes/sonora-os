@@ -57,7 +57,9 @@ namespace sonora::api {
 //   7, sequences as spines of chunks); a Load as ModelAction::LoadPart
 //   requests, slices of the same chunk table, ahead of a Load that carries
 //   their index by sequence and the bare session file.
-constexpr uint32_t kProtocolVersion = 10;
+// 11 (ADR-0015 update of 2026-10-25, M-1c PR 3): ModelAction::Save; the
+//   engine writes the session folder.
+constexpr uint32_t kProtocolVersion = 11;
 
 // --- client -> engine -------------------------------------------------------
 
@@ -157,6 +159,20 @@ enum class ModelAction : uint32_t {
     // the parts before it are dropped and the Load is refused with its
     // reason. The parts are this client's alone until its next Load.
     LoadPart = 6,
+    // File > Save (ADR-0015 update of 2026-10-25, protocol 11): `op` is
+    // wire::encode_save(), the session file's absolute path in the engine's
+    // filesystem (the control socket is local) and the canonical bytes the
+    // client serialised from the document it shows. The engine's saver
+    // thread writes each MIDI sequence file those bytes name, from the
+    // engine's own document, then the session file, atomically, and deletes
+    // sequence files no kept session file names. The reply comes when the
+    // save is done: Ok with an empty message when it is durable, Ok with a
+    // caution when the file was written but not made durable, Failed with
+    // the reason, the previous file as it was, otherwise. A sequence the
+    // bytes name that the engine's document does not hold (an edit it
+    // refused) fails the save. While a take is open the save waits for the
+    // disk thread's next checkpoint, and every client is told so.
+    Save = 7,
 };
 
 struct ModelRequest {

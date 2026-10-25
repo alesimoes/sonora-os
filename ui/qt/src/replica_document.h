@@ -93,6 +93,10 @@ public:
     // engine sent before it (the engine replies after the last of them); a
     // lost link fails it. Refused at once while the link is down.
     void flush_plugin_state(model::Id insert, FlushDone done) override;
+    // ModelAction::Save. `done` runs from the receive() that brings the
+    // engine's reply; a lost link fails it. Refused at once while the link
+    // is down.
+    void save_session(const std::string& file, std::string bytes, SaveDone done) override;
 
     // What the engine sent since the last call, in arrival order. Returns
     // true when what is shown changed.
@@ -150,11 +154,15 @@ private:
     model::Replica replica_;
     model::History shown_;
     std::deque<Pending> pending_;
+    // A FlushPluginState or a Save, awaiting the engine's reply: what to say
+    // when the engine refuses without a reason, and when the link goes.
     struct Flush {
         uint64_t seq = 0;
         FlushDone done;
+        const char* refused = "";
+        const char* lost = "";
     };
-    std::vector<Flush> flushes_;   // awaiting the engine's reply
+    std::vector<Flush> flushes_;
     model::Id next_unreserved_ = 0;
     bool offline_ = false;
     bool resync_pending_ = false;   // one Resync per loss, not one per failed update

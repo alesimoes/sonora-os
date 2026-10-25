@@ -4,8 +4,8 @@
 // the .msq encoding, the hash that names each file, and what a saver keeps
 // in memory to know which files to write and which it may delete.
 //
-// No I/O, like the rest of common/model: the saver (ui/qt today, the
-// engine's saver thread once it has one) reads, writes, syncs and deletes,
+// No I/O, like the rest of common/model: the saver (the engine's saver
+// thread, through common/session_files) reads, writes, syncs and deletes,
 // and this says what. Never on the audio thread: it allocates.
 #pragma once
 

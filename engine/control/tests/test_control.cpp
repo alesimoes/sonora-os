@@ -401,6 +401,69 @@ void take_failure_reaches_the_interface() {
     CHECK(replied(real.send(stop), DispatchResult::Ok));
 }
 
+// ADR-0015 §6 on the real engine: a Save while a take is open is said to
+// wait, and is answered only after the disk thread's next checkpoint; with
+// the transport stopped it is answered at once.
+void a_save_during_a_take_follows_a_checkpoint() {
+    const fs::path dir = fresh_dir("save_take");
+    RealEngine real(dir, {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answer = [&](uint64_t seq, std::chrono::seconds within) -> const api::CommandReply* {
+        const auto end = Clock::now() + within;
+        while (Clock::now() < end) {
+            real.poll(in);
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return &r;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return nullptr;
+    };
+    model::SessionSettings settings;
+    settings.name = "Saved";
+    std::string bytes;
+    CHECK(model::serialize(model::new_session(settings), model::WriteInfo{"test", 1}, bytes, error));
+    const fs::path file = dir / "Saved" / "Saved.sonora";
+    api::ModelRequest save;
+    save.action = api::ModelAction::Save;
+    save.op = api::wire::encode_save(file.string(), bytes);
+
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    const api::CommandReply* r = answer(real.send(arm), std::chrono::seconds(2));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    r = answer(real.send(rec), std::chrono::seconds(2));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+
+    const uint32_t before = real.session().disk().checkpoints();
+    r = answer(real.submit(save), std::chrono::seconds(6));   // sync_seconds is 2
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    CHECK(real.session().disk().checkpoints() > before);
+    CHECK(fs::exists(file));
+    const bool said = std::any_of(in.events.begin(), in.events.end(), [](const api::EngineEvent& e) {
+        return e.kind == api::EventKind::Notice && e.text == "Saving after the next checkpoint";
+    });
+    CHECK(said);
+
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    r = answer(real.send(stop), std::chrono::seconds(2));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    in.events.clear();
+    const auto asked = Clock::now();
+    r = answer(real.submit(save), std::chrono::seconds(2));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    CHECK(Clock::now() - asked < std::chrono::seconds(1));
+    CHECK(std::none_of(in.events.begin(), in.events.end(), [](const api::EngineEvent& e) {
+        return e.text == "Saving after the next checkpoint";
+    }));
+}
+
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m);
 
 // ADR-0016 end to end: with the document's loop range set, transport.record
@@ -1280,6 +1343,7 @@ int main() {
     what_waits_behind_a_snapshot_is_bounded();
     resyncs_share_one_snapshot();
     a_sequence_over_a_part_opens_in_parts();
+    a_save_during_a_take_follows_a_checkpoint();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

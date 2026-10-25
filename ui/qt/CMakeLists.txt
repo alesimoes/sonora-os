@@ -111,7 +111,9 @@ set_tests_properties(ui_keys PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 # and keys into operations, zoom and scroll mapping, the fader taper, time
 # formats, and which rectangle covers which pixel.
 add_executable(test_ui_edit tests/test_edit.cpp)
-target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt)
+# common/session_files stands in for the engine behind ModelDocument
+# (tests/engine_saver.h); the interface itself does not link it.
+target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
@@ -182,7 +184,7 @@ set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscree
 # File > Open on FakeEngine (#109 review): a refused Open gives the window
 # back to the session it had, and both Open refusals are held notices.
 add_executable(test_ui_session_open tests/test_session_open.cpp)
-target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt sonora_session_files)
 add_test(NAME ui_session_open COMMAND test_ui_session_open)
 set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 

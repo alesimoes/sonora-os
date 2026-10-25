@@ -42,6 +42,12 @@
 // answered only once the gate resolves: Ok when it has started, Failed with
 // the reason when it was refused, Failed "cancelled" when it was withdrawn.
 //
+// File > Save (ModelAction::Save, ADR-0015 update of 2026-10-25) is the
+// saver thread's (session_saver.h): the control thread hands it the bytes
+// and the document as it is, and answers the client when the save is done,
+// in order with whatever else that client is sent. While a take is open
+// every client is told "Saving after the next checkpoint".
+//
 // Nothing here runs on the audio thread. The handlers reach it only
 // through the atomics Track and Transport already have, the plan exchange
 // and the session's command ring; the publisher reads those atomics on its
@@ -74,6 +80,7 @@ namespace sonora {
 class PlaybackController;
 class PluginHosting;
 class PluginScanner;
+class SessionSaver;
 class Session;
 namespace backend {
 class AudioBackend;
@@ -472,6 +479,14 @@ private:
     // Set by the worker when a Snapshot is ready; under mutex_, so the
     // control thread's wait sees it.
     bool snapshot_ready_ = false;
+    // File > Save (ModelAction::Save) on the saver thread, which sets
+    // save_ready_ under mutex_ when a result waits; answered in tick().
+    std::unique_ptr<SessionSaver> saver_;
+    bool save_ready_ = false;
+    // A Save, handed to the saver; false when it was refused at once.
+    bool save(ClientId from, const api::ModelRequest& m, std::string& why);
+    // Results to their clients, and the saver told what the transport does.
+    void follow_saver();
     std::atomic<uint64_t> snapshots_encoded_{0};
     std::atomic<uint64_t> snapshots_asked_{0};
     std::atomic<uint64_t> longest_copy_us_{0};

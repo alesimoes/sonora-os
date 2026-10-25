@@ -563,11 +563,20 @@ cannot be parsed nothing is deleted, and the operator is told. A crash
 during cleanup leaves extra files, never a missing one. While a take is
 open, cleanup waits for the transport to stop; the engine's saver also
 issues its syncs only just after a disk-thread checkpoint (ADR-0015 §6).
-*Until the engine has a saver thread the interface saves (`ui/qt`
-`session_files.cpp`): it writes sequence files and cleans up as above,
-holding cleanup back while it records, but it cannot see the disk thread's
-checkpoints, so its syncs are not paced.* Files in `MIDI Files/` are never
-deleted by this rule.
+*As built (ADR-0015 update of 2026-10-25, protocol 11):* File > Save is
+`ModelAction::Save`, the session file's absolute path and the bytes the
+interface serialised; the engine's saver thread (`engine/control`
+`session_saver.h`, through `common/session_files`) writes the sequence
+files those bytes name from the engine's own document, then the session
+file by steps 1–4 (tmp, `fdatasync`, rename, folder `fsync`), keeps the
+pre-migration copy, and cleans up, and only then answers. Saves run in
+order, one at a time; the interface sends no second save while one is
+unanswered. While a take is open the saver waits for the disk thread's
+checkpoint counter to move before it touches the disk, at most one save
+per checkpoint, and every client is told "Saving after the next
+checkpoint". Not built yet: step 5's rotated backups and the autosave
+(BACKLOG Track 2 item 3). Files in `MIDI Files/` are never deleted by
+this rule.
 
 **Autosave.** After every committed take (the `RecordTake` operation) and
 every 60 s while there are unsaved edits, the same procedure writes

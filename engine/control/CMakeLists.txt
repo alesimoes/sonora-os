@@ -13,6 +13,7 @@ add_library(sonora_control STATIC
   src/plugin_hosting.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
+  src/session_saver.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -22,9 +23,19 @@ target_include_directories(sonora_control PUBLIC include)
 # supervisor, PluginClient's control API): the edge ADR-0012's amendment of
 # 2026-10-14 (change E) draws into the ADR-0007 graph. The RT half is
 # reached only through engine/core's PluginChainRunner. common/json reads
-# the probes' answers.
+# the probes' answers. common/session_files is what the saver thread writes
+# a session folder with (ADR-0015 update of 2026-10-25).
 target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_platform
-  sonora_model sonora_plugin_client sonora_plugin_probe_record PRIVATE sonora_json)
+  sonora_model sonora_session_files sonora_plugin_client sonora_plugin_probe_record PRIVATE sonora_json)
+
+# The saver thread (ADR-0015 §6, update of 2026-10-25): syncs only after a
+# checkpoint while a take is open, cleanup after the transport stops.
+if(UNIX)
+  add_executable(test_session_saver tests/test_session_saver.cpp)
+  target_include_directories(test_session_saver PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+  target_link_libraries(test_session_saver PRIVATE sonora_control Threads::Threads)
+  add_test(NAME session_saver COMMAND test_session_saver)
+endif()
 
 # Here rather than in engine/core because it also drives the session through
 # the installed commands, and control may link core but not the reverse.

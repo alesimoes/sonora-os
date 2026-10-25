@@ -1826,3 +1826,16 @@ about a millisecond later, and a read of a writer stopped mid-section took
   stale until it runs again, and on a loaded host the switch-count excuse
   covers much of the run. A double-buffered state block (layout bump) is
   the fix, in `planning/BACKLOG.md`.
+
+## Update, 2026-10-25: `common/session_files` (ADR-0015 M-1c PR 3)
+
+A new module, `common/session_files` (`sonora_session_files`, layer 2,
+links `common/model` and `common/platform`), owned by rt-engineer: a
+session folder on disk, the sequence files of `MIDI Sequences/` written
+before the session file, the pre-migration copy, and cleanup (ADR-0015 §3,
+§6). It does I/O, which `common/model` may not, and has no thread of its
+own. `engine/control` links it for its saver thread; `ui/qt`'s **tests**
+link it to stand in for the engine behind `ModelDocument`, and the
+`sonora_ui_qt` library and the `sonora-ui` binary do not, so in the
+product only the engine writes a session folder. Never on the audio
+thread.

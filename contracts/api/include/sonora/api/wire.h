@@ -107,6 +107,16 @@ std::string version_mismatch(uint32_t protocol_version, uint32_t state_layout_ve
                              uint32_t client_protocol_version = kProtocolVersion,
                              uint32_t client_state_layout_version = kStateLayoutVersion);
 
+// --- ModelAction::Save's `op` -------------------------------------------------
+//
+// The session file's path, a NUL byte, then the session file's bytes: a path
+// holds no NUL, so the first one ends it. The path is at most kMaxSavePath
+// bytes and not empty; the bytes may be anything (the engine parses them).
+constexpr std::size_t kMaxSavePath = 4096;
+std::string encode_save(std::string_view file, std::string_view session);
+bool decode_save(std::string_view op, std::string& file, std::string& session,
+                 std::string& error);
+
 // --- frames ------------------------------------------------------------------
 //
 // One frame is one datagram: a u32 length of the whole message, a u32

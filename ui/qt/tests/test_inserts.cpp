@@ -16,6 +16,7 @@
 //   - File > Save sends FlushPluginState and writes only after its reply;
 //   - the QML: slots on the strips, the chooser with typing that does not
 //     reach the key map, Escape, a drag between strips, the panel.
+#include <QFile>
 #include <QGuiApplication>
 #include <QQuickItem>
 #include <QQuickView>
@@ -73,11 +74,6 @@ struct Rig {
     InsertModel inserts{doc, session};
     std::vector<std::string> refused;
     std::vector<std::string> notices;
-    struct Written {
-        QString file;
-        std::string bytes;
-    };
-    std::vector<Written> written;
     QTemporaryDir dir;
 
     static api::testing::FakeEngine::Config config() {
@@ -88,11 +84,6 @@ struct Rig {
 
     Rig() {
         session.setSessionsDir(dir.path());
-        session.setSessionWriter([this](const QString& file, const std::string& bytes,
-                                        std::string&, std::string&) {
-            written.push_back({file, bytes});
-            return true;
-        });
         engine.setModelSink([this](const std::vector<api::ModelUpdate>& u,
                                    const std::vector<api::CommandReply>& r) {
             if (doc.receive(u, r)) session.documentUpdated();
@@ -440,9 +431,12 @@ int save_flushes_first() {
     Rig r;
     CHECK(r.connect());
     std::string why;
-    // No insert: written at once, nothing to wait for.
+    // No insert: nothing to wait for but the engine, which writes it.
     CHECK(r.session.saveSession(why));
-    CHECK(r.written.size() == 1 && !r.session.saveWaiting());
+    r.settle();
+    CHECK(r.fake.saves() == 1 && !r.session.saveWaiting());
+    const QString file = r.session.sessionFile();
+    CHECK(!file.isEmpty());
 
     CHECK(r.ctl().add(0, 0, kComp, why));
     r.settle();
@@ -451,17 +445,19 @@ int save_flushes_first() {
     r.fake.script_editor_change(comp, "1", 0.4f);   // moved, gesture not ended
     CHECK(r.session.saveSession(why));
     // Waiting for the engine: nothing written yet, and a second save waits too.
-    CHECK(r.written.size() == 1 && r.session.saveWaiting());
+    CHECK(r.fake.saves() == 1 && r.session.saveWaiting());
     CHECK(!r.session.saveSession(why) && why.find("waiting") != std::string::npos);
-    CHECK(!r.session.openSessionFile(r.written[0].file, true, why));
+    CHECK(!r.session.openSessionFile(file, true, why));
     r.settle();
     CHECK(!r.session.saveWaiting());
-    CHECK(r.written.size() == 2);
+    CHECK(r.fake.saves() == 2);
     // What was written is what the flush brought: the state file and the
     // editor's value.
     model::Loaded loaded;
     model::LoadError error;
-    CHECK(model::deserialize(r.written[1].bytes, loaded, error));
+    QFile in(file);
+    CHECK(in.open(QIODevice::ReadOnly));
+    CHECK(model::deserialize(in.readAll().toStdString(), loaded, error));
     const model::InsertMix* m = loaded.snapshot.mix.find_insert(comp);
     CHECK(m != nullptr && m->state.has_value() && m->state->sha256 == kSha);
     CHECK(m != nullptr && m->params.size() == 1 && m->params[0].key == "1");
@@ -474,11 +470,25 @@ int save_flushes_first() {
     r.settle();
     CHECK(r.session.saveSession(why));
     r.settle();
-    CHECK(r.written.size() == 3);
+    CHECK(r.fake.saves() == 3);
     CHECK(r.notices.back().find("as last recorded") != std::string::npos);
 
+    // A save the engine refuses is said, and the session stays modified.
+    r.fake.script_save_failure("writing the session file failed: no space left on the device");
+    CHECK(r.ctl().add(3, 0, kGain, why));
+    r.settle();
+    const std::size_t refusals = r.refused.size();
+    CHECK(r.session.saveSession(why));
+    r.settle();
+    CHECK(!r.session.saveWaiting() && r.session.dirty());
+    CHECK(r.refused.size() == refusals + 1 &&
+          r.refused.back().find("no space left") != std::string::npos);
+    r.fake.script_save_failure({});
+
     // An engine that never answers: the operator is told once the patience
-    // is spent, and a second Save then writes without the plugins' state.
+    // is spent, and a second Save then asks for the file without the
+    // plugins' state. A dead engine writes nothing, so that save waits in
+    // turn, and once the patience is spent again a third Save asks again.
     r.session.setFlushPatienceMs(50);
     CHECK(r.ctl().add(2, 0, kGain, why));
     r.settle();
@@ -488,10 +498,11 @@ int save_flushes_first() {
     QTest::qWait(120);
     CHECK(r.refused.size() == refused_before + 1 &&
           r.refused.back().find("Save again") != std::string::npos);
-    CHECK(r.written.size() == 3);
-    CHECK(r.session.saveSession(why));
-    CHECK(r.written.size() == 4 && !r.session.saveWaiting());
-    CHECK(r.notices.back().find("never sent") != std::string::npos);
+    CHECK(r.session.saveSession(why) && r.session.saveWaiting());
+    CHECK(!r.session.saveSession(why) && why.find("being written") != std::string::npos);
+    QTest::qWait(120);
+    CHECK(r.session.saveSession(why) && r.session.saveWaiting());
+    CHECK(r.fake.saves() == 3);
     std::printf("  save flushes the plugins first: ok\n");
     return 0;
 }
