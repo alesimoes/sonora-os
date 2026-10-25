@@ -253,7 +253,8 @@ void domains() {
         const std::string id = spec.id;
         const bool interface = id.rfind("tool.", 0) == 0 || id.rfind("zoom.", 0) == 0 ||
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
-                               id == "app.quit" || id == "window.transport";
+                               id == "app.quit" || id == "window.transport" ||
+                               id == "window.undo_history";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
             ++failures;

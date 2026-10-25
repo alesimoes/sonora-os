@@ -74,6 +74,8 @@ public:
     bool can_redo() const override { return shown_.can_redo(); }
     std::string undo_label() const override { return shown_.undo_label(); }
     std::string redo_label() const override { return shown_.redo_label(); }
+    // What is shown: the engine's steps with the requests in flight on top.
+    const model::History& history() const override { return shown_; }
     model::Id reserve_id() override;
     // Sends the session to the engine (ModelAction::Load) and shows it at
     // once.

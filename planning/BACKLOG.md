@@ -324,6 +324,19 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              update, and keeps the last good document on screen while it
              waits, refusing edits meanwhile (PR #75 ui-engineer review;
              PR #86, ui_replica_document).
+       - [x] The Undo History window (`window.undo_history`, Edit > Undo
+             History; no profile key, since neither Pro Tools nor Logic
+             documents one): every step undo can reach, oldest first, the
+             undone ones in italics below a line. A click on a done step
+             undoes it and every later one, on an undone step redoes up to
+             it, as Pro Tools does; Undo All and Redo All. Each step is its
+             own Undo or Redo request, as the key pressed that many times;
+             the first refusal stops the jump and says how far it got. A
+             history that has dropped its oldest steps says undo stops at
+             step 1 (`t3i-undo-history`; ui_undo_history,
+             ui_replica_document a_history_jump_is_one_request_a_step).
+             Still open: Pro Tools' creation times, and Clear Undo Queue,
+             which needs an engine request.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain

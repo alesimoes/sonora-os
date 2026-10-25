@@ -130,7 +130,7 @@
             {"id": "ui.editing.clip_gain", "title": "Clip gain: line, nudge, render; region gain", "size": "M", "phase": 2, "status": "todo", "ref": "PT-RG: Clip gain; LP-UG: Edit region parameters"},
             {"id": "ui.editing.names_colours", "title": "Track, clip and region names and colours", "size": "S", "phase": 2, "status": "todo", "ref": "PT-RG: Track and clip colour; LP-UG: Track basics"},
             {"id": "ui.editing.markers", "title": "Markers and memory locations: create, recall, with zoom and selection", "size": "M", "phase": 2, "status": "todo", "ref": "PT-RG: Memory Locations; LP-UG: Markers"},
-            {"id": "ui.editing.undo_history", "title": "Undo history window over the ADR-0009 undo stack", "size": "S", "phase": 2, "status": "todo", "ref": "PT-RG: Undo History; LP-UG: Undo and redo edits"},
+            {"id": "ui.editing.undo_history", "title": "Undo history window over the ADR-0009 undo stack", "size": "S", "phase": 2, "status": "doing", "branch": "t3i-undo-history", "ref": "PT-RG: Undo History; LP-UG: Undo and redo edits"},
             {"id": "ui.editing.import", "title": "Import audio files with sample-rate conversion; a file browser for the session's audio", "size": "M", "phase": 2, "status": "todo", "ref": "PT-RG: Importing audio; LP-UG: Import and search for files, Project Audio Browser"},
             {"id": "ui.editing.strip_silence", "title": "Strip silence", "size": "S", "phase": 3, "status": "todo", "ref": "PT-RG: Strip Silence; LP-UG: Remove silent passages"},
             {"id": "ui.editing.clip_groups", "title": "Clip groups and clip looping; region loops and folders", "size": "M", "phase": 3, "status": "todo", "ref": "PT-RG: Clip groups, Clip looping; LP-UG: Loop regions"},

@@ -220,7 +220,9 @@ engine has session commands) and `window.toggle_mix_edit` (`ctrl+equal` in `prot
 and `window.transport`, the Transport window (`ctrl+numpad_1` in
 `protools.json`, Window > Transport, `"verified": false`; `logic.json` has
 no key for it until Logic's own is confirmed, and the bar's Transport
-button opens it there).
+button opens it there), and `window.undo_history`, the Undo History window
+(Edit > Undo History; neither Pro Tools nor Logic documents a default key for
+it, so no profile binds one).
 A track command bound without a target acts on the selected track there, so
 `shift+r`, `shift+s` and `shift+m` work in the window and still report that
 they failed at a tty, which has no selection.
@@ -229,7 +231,8 @@ they failed at a tty, which has no selection.
 
 The window sends a command where its `CommandSpec::domain` says
 (`contracts/api/include/sonora/command.h`, ADR-0007 §5). An Interface command
-(`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `app.quit`) runs in the window
+(`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `window.transport`,
+`window.undo_history`, `app.quit`) runs in the window
 and never reaches the engine, even if an engine lists it. An Engine command
 goes to the engine over the control API once the engine's Hello lists it;
 until then a handler the window installed stands in (the Edit window's edits,

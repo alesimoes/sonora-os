@@ -233,6 +233,12 @@ public:
     void set_crossfade_shape(model::FadeShape s) { crossfade_shape_ = s; }
     bool undo(std::string& why);
     bool redo(std::string& why);
+    // The Undo History window's jump: undo or redo, one step at a time, until
+    // History::undo_depth() is `depth`, as Pro Tools does from its list.
+    // Each step is its own Undo or Redo, as pressing the key that many times
+    // would be. Stops at the first refusal, and `why` says how many steps
+    // were taken before it. A depth past the newest step is refused.
+    bool undo_to(std::size_t depth, std::string& why);
 
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
