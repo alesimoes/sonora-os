@@ -130,6 +130,14 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                     [playback](const CommandContext&, std::string& why) {
             return playback->locate(0, why);
         });
+        // Marker recall. Rolling, the roll goes on from the frame once its
+        // window is resident, as return to zero's does.
+        reg.install("transport.locate",
+                    [playback](const CommandContext& ctx, std::string& why) {
+            uint64_t frame = 0;
+            if (!parse_locate_frame(ctx.argument, frame, why)) return false;
+            return playback->locate(frame, why);
+        });
     }
 
     // Arming is fixed for the length of a take. process() writes a track

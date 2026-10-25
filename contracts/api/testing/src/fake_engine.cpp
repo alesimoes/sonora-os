@@ -202,9 +202,9 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
     // fails if the two lists differ.
     static const std::vector<std::string> ids = {
         "track.arm_all",        "track.disarm_all",         "track.toggle_arm",
-        "transport.play",       "transport.punch",          "transport.record",
-        "transport.return_to_zero", "transport.stop",       "transport.toggle_play",
-        "transport.toggle_record",
+        "transport.locate",     "transport.play",           "transport.punch",
+        "transport.record",     "transport.return_to_zero", "transport.stop",
+        "transport.toggle_play", "transport.toggle_record",
     };
     return ids;
 }
@@ -900,14 +900,20 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     if (id == "transport.stop") return stop();
     if (id == "transport.play") return play();
     if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? play() : stop();
-    if (id == "transport.return_to_zero") {
+    const auto locate = [&](uint64_t frame) {
         if (recording) {
             why = "locate during a take is not supported yet; stop first";
             return false;
         }
-        position_ = 0;
+        position_ = frame;
         moved_ns_ = now();
         return true;
+    };
+    if (id == "transport.return_to_zero") return locate(0);
+    if (id == "transport.locate") {
+        uint64_t frame = 0;
+        if (!parse_locate_frame(r.argument, frame, why)) return false;
+        return locate(frame);
     }
 
     const auto take_running = [&]() {

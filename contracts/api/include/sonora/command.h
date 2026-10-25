@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -77,6 +78,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
          "Punch in on the fly while rolling, or punch out and keep rolling"},
         {"transport.return_to_zero", CommandTarget::None,
          "Move the playhead to the session start"},
+        // Argument: the frame, decimal (parse_locate_frame()). What marker
+        // recall sends; a key may name a fixed frame too.
+        {"transport.locate", CommandTarget::None, "Move the playhead to a frame", true},
         {"transport.go_to_end", CommandTarget::None,
          "Move the playhead to the session end"},
         {"transport.rewind", CommandTarget::None, "Rewind"},
@@ -231,6 +235,43 @@ inline const CommandSpec* find_command(const std::string& id) {
 inline bool is_engine_command(const std::string& id) {
     const CommandSpec* spec = find_command(id);
     return spec != nullptr && spec->domain == CommandDomain::Engine;
+}
+
+// The last frame transport.locate moves to. Past the session end is a
+// playhead over silence, as in Pro Tools, and is allowed; this bound keeps
+// the reader's window arithmetic, in int64_t frames, far from overflow. At
+// 192 kHz it is over 46 years.
+constexpr uint64_t kMaxLocateFrame = uint64_t{1} << 48;
+
+// transport.locate's argument: decimal digits only, no sign, no space. Out
+// of range is refused, not clamped: a marker past the bound is a corrupt
+// document, and moving somewhere else would hide it.
+inline bool parse_locate_frame(const std::string& argument, uint64_t& frame,
+                               std::string& why) {
+    if (!argument.empty() && argument[0] == '-') {
+        why = "a frame cannot be negative: " + argument;
+        return false;
+    }
+    if (argument.empty()) {
+        why = "no frame given to locate to";
+        return false;
+    }
+    uint64_t f = 0;
+    for (const char c : argument) {
+        if (c < '0' || c > '9') {
+            why = "\"" + argument + "\" is not a frame";
+            return false;
+        }
+        f = f * 10 + static_cast<uint64_t>(c - '0');
+        // Checked per digit, so a long argument stops before it wraps.
+        if (f > kMaxLocateFrame) {
+            why = "frame " + argument + " is past the last frame the timeline holds (" +
+                  std::to_string(kMaxLocateFrame) + ")";
+            return false;
+        }
+    }
+    frame = f;
+    return true;
 }
 
 // What a command was invoked with. Commands that do not take a target ignore

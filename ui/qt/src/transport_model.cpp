@@ -168,6 +168,12 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
                      &TransportModel::followCounter);
 }
 
+void link_marker_locate(ShellModel& shell, SessionModel& session) {
+    session.controller().set_locator([&shell](model::Frames frame) {
+        shell.invokeWith(QStringLiteral("transport.locate"), -1, QString::number(frame));
+    });
+}
+
 QString TransportModel::positionSource() const {
     if (!alive_) return QStringLiteral("insertion point (no engine)");
     return rolling_ ? QStringLiteral("playhead") : QStringLiteral("insertion point");

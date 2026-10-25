@@ -87,6 +87,7 @@ bool EditController::recall_marker(Id marker, std::string& why) {
             clamp_scroll();
         }
     }
+    if (locate_) locate_(m->position);
     return true;
 }
 

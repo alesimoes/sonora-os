@@ -30,6 +30,7 @@
 #include "theme.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
+#include "transport_model.h"
 
 using namespace sonora;
 using namespace sonora::ui;
@@ -96,6 +97,9 @@ int test_add_recall_clear() {
     // and not snapped, even in Grid.
     const Id chorus_id = chorus->id;
     const Id verse_id = named_marker(doc, "Verse")->id;
+    // The playhead follows: every recall locates there, as Pro Tools does.
+    std::vector<Frames> located;
+    c.set_locator([&located](Frames f) { located.push_back(f); });
     c.set_mode(EditMode::Grid);
     c.select_track(1);
     CHECK(c.add_marker("Odd", {48001, 0}, why));
@@ -108,6 +112,8 @@ int test_add_recall_clear() {
     c.set_insertion(0);
     CHECK(c.recall_marker(chorus_id, why));
     CHECK(c.selection().start == 96000 && c.selection().end == 144000);
+    // A selection marker locates to its start; neither is snapped.
+    CHECK(located.size() == 2 && located[0] == 48001 && located[1] == 96000);
 
     // Off screen: the view pages to it, a tenth in from the left.
     CHECK(c.add_marker("Far", {48000 * 600, 0}, why));
@@ -121,7 +127,9 @@ int test_add_recall_clear() {
     CHECK(markers(doc).markers.size() == before - 1);
     CHECK(doc.undo_label() == "RemoveMarker");
     CHECK(!c.remove_marker(verse_id, why) && why.find("no longer") != std::string::npos);
+    const std::size_t sent = located.size();
     CHECK(!c.recall_marker(verse_id, why));
+    CHECK(located.size() == sent);   // a marker that is gone locates nowhere
     CHECK(c.undo(why));
     CHECK(named_marker(doc, "Verse") != nullptr);
     return 0;
@@ -272,6 +280,13 @@ int test_window() {
     session.installCommands(router.local());
     router.prepare(qt_device_chords(true));
     ShellModel model(engine, router);
+    link_marker_locate(model, session);   // as main.cpp wires them
+    const auto last_locate = [&engine]() -> std::string {
+        for (auto it = engine.sent.rbegin(); it != engine.sent.rend(); ++it) {
+            if (it->command == "transport.locate") return it->argument;
+        }
+        return "none";
+    };
 
     QQuickView view;
     view.resize(1280, 720);
@@ -333,6 +348,8 @@ int test_window() {
     session.controller().set_insertion(0);
     click_at(view, rows[1], QPointF(60, 12), Qt::NoModifier);
     CHECK(session.controller().selection().insertion == 480000);
+    // And the engine's playhead is sent there.
+    CHECK(last_locate() == "480000");
 
     // Its × clears it, one undo step.
     click(view, named(rows[1], QStringLiteral("memoryLocationRemove")));
@@ -344,8 +361,12 @@ int test_window() {
     const double vx = session.controller().view().x_of(96000);
     click_at(view, ruler, QPointF(vx + 3, 6), Qt::NoModifier);
     CHECK(session.controller().selection().insertion == 96000);
+    CHECK(last_locate() == "96000");
+    const std::size_t sent = engine.sent.size();
     click_at(view, ruler, QPointF(vx + 3, 6), Qt::AltModifier);
     CHECK(markers(doc).markers.empty());
+    // Clearing a marker is not recalling it: nothing is located.
+    CHECK(engine.sent.size() == sent);
 
     click(view, named(win, QStringLiteral("memoryLocationsClose")));
     CHECK(!session.memoryLocationsOpen() && !win->isVisible());
