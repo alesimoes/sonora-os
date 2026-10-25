@@ -571,7 +571,8 @@ files those bytes name from the engine's own document, then the session
 file by steps 1–4 (tmp, `fdatasync`, rename, folder `fsync`), keeps the
 pre-migration copy, and cleans up, and only then answers. Saves run in
 order, one at a time; the interface sends no second save while one is
-unanswered. While a take is open the saver waits for the disk thread's
+unanswered until its patience runs out (`SessionModel::saveSession()`),
+and a save sent then is queued behind the first and written after it. While a take is open the saver waits for the disk thread's
 checkpoint counter to move before it touches the disk, at most one save
 per checkpoint, and every client is told "Saving after the next
 checkpoint". Not built yet: step 5's rotated backups and the autosave

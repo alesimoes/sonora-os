@@ -1829,8 +1829,11 @@ about a millisecond later, and a read of a writer stopped mid-section took
 
 ## Update, 2026-10-25: `common/session_files` (ADR-0015 M-1c PR 3)
 
+Accepted by the coordinator, 2026-10-25, on the recommended default.
+
 A new module, `common/session_files` (`sonora_session_files`, layer 2,
-links `common/model` and `common/platform`), owned by rt-engineer: a
+links `common/model` publicly and `common/platform` and `sonora_sha256`
+privately), owned by rt-engineer: a
 session folder on disk, the sequence files of `MIDI Sequences/` written
 before the session file, the pre-migration copy, and cleanup (ADR-0015 §3,
 §6). It does I/O, which `common/model` may not, and has no thread of its

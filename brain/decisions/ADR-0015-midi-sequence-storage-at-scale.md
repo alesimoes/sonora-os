@@ -29,7 +29,8 @@
   a backstop. For M-4: the take compound must not be refused in a way that
   loses data; the raw take file (§7.2) is kept and an over-cap chunk is
   reported, never dropped silently. Measurements in `midi.md` §4.6.
-- Update 2026-10-25 (M-1c PR 3), for the owner's acceptance: **File >
+- Update 2026-10-25 (M-1c PR 3), **accepted by the coordinator,
+  2026-10-25, on the recommended default**: **File >
   Save is a request to the engine**, `ModelAction::Save` (protocol 11):
   the session file's absolute path in the engine's filesystem and the
   canonical bytes the interface serialised (the interface still picks the

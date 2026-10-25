@@ -257,6 +257,13 @@ playback can follow edits; it is in flight.
              recording on 8 audio and 4 MIDI tracks) needs M-4's MIDI
              takes and the laptop; the session file's rotated backups and
              autosave are still item 3's.
+       - [ ] Save over the 64 MiB message cap (#127 review, suspected, not
+             traced): a Save is one `ModelRequest.op`, capped at
+             `kMaxModelBytes` (64 MiB), while session files may reach
+             256 MiB. Check what `ReplicaDocument::send` does when
+             `split_frames` refuses an oversize message; if it drops it
+             silently, Save waits out the patience and retries forever.
+             Refuse it by name up front instead.
        - [ ] ADR-0014 §9's phases in order: M-2 backend MIDI ports, M-3 playback to ports,
              M-4 recording and SMF take files, M-5 instruments
              (plugin layout 2, exit part 1), M-6 SMF interchange (exit
