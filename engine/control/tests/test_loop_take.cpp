@@ -20,6 +20,8 @@
 #include "sonora/model/replication.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
+#include "sonora/wav_writer.h"
+#include "sonora/wrap_sidecar.h"
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -257,6 +259,52 @@ int test_a_lost_wrap_is_placed_by_loop_length() {
     return 0;
 }
 
+// Code review of PR #117, N1. Track 2's Open was lost to a full ring until
+// after wrap 1, so its window opened inside pass 2, at A + 250, and its list
+// is [lost, 1750, 3750] (DiskThread::wrap() keeps wrap 1's place). Its
+// playlists are named by the take's pass, P2 to P4, under track 1's P2 to
+// P4, not renumbered from P1.
+int test_a_late_window_keeps_the_take_s_pass_numbers() {
+    Rig rig("sonora_test_loop_take_late", 2);
+    CHECK(rig.loop_take(500, 6750));
+    Session::ClosedTake take = rig.take();
+    CHECK(take.loop_wraps == 3);
+    CHECK(take.files.size() == 2);
+    // Track 2's file as that window leaves it: from block 11 of 27.
+    DiskThread::ClosedFile& f = take.files[0].track == 1 ? take.files[0] : take.files[1];
+    CHECK(f.track == 1);
+    const uint64_t late_frames = 6750 - 2750;
+    fs::remove(f.path);
+    fs::remove(WrapSidecar::path_for(f.path));
+    {
+        WavWriter w;
+        CHECK(w.open(f.path, rig.cfg.sample_rate, 1, rig.cfg.format, kA + 250));
+        const std::vector<float> silence(late_frames, 0.0f);
+        CHECK(w.write(silence.data(), late_frames));
+        CHECK(w.close());
+    }
+    f.frames = late_frames;
+    f.wraps = {WrapSidecar::kLostWrap, 1750, 3750};
+
+    model::Document doc(engine_document(*rig.session));
+    const TakeAdded r = add_closed_take(doc, *rig.session, take);
+    CHECK(r.refused.empty());
+    const model::TrackEdit& first = *doc.current().edit->tracks[0];
+    const model::TrackEdit& late = *doc.current().edit->tracks[1];
+    CHECK(first.playlists.size() == 5);
+    for (std::size_t k = 1; k <= 4; ++k) {
+        CHECK(first.playlists[k]->name == first.name + ".T1.P" + std::to_string(k));
+    }
+    CHECK(late.playlists.size() == 4);
+    for (std::size_t k = 1; k <= 3; ++k) {
+        CHECK(late.playlists[k]->name == late.name + ".T1.P" + std::to_string(k + 1));
+    }
+    CHECK(late.playlists[1]->regions[0].position == static_cast<model::Frames>(kA + 250));
+    CHECK(late.playlists[1]->regions[0].length == 1750);
+    CHECK(late.playlists[2]->regions[0].source_offset == 1750);
+    return 0;
+}
+
 // O2: past the cap the passes stay in the file, and the stop says how many.
 int test_passes_past_the_cap_are_said() {
     Rig rig("sonora_test_loop_take_cap", 1, 0, 2);
@@ -381,6 +429,7 @@ int main() {
     if (test_passes_go_on_their_playlists()) return 1;
     if (test_crossfades_need_the_take_s_handle()) return 1;
     if (test_a_lost_wrap_is_placed_by_loop_length()) return 1;
+    if (test_a_late_window_keeps_the_take_s_pass_numbers()) return 1;
     if (test_passes_past_the_cap_are_said()) return 1;
     if (test_no_complete_pass()) return 1;
     if (test_the_document_loop()) return 1;

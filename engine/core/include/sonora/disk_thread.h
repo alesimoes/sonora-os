@@ -103,12 +103,13 @@ public:
     void set_checkpoint_interval(std::chrono::nanoseconds interval) {
         checkpoint_interval_ = interval;
     }
-    // Checkpoints every file a slot holds, now, with a drain_once() after
-    // each. The running thread's, every interval; also the caller's, while
+    // Checkpoints every file a slot holds, now, and a loop take's wrap
+    // list after its file, with a drain_once() after each sync. The running
+    // thread's, every interval; also the caller's, while
     // the thread is not running.
     void checkpoint_all();
-    // Passes of checkpoint_all() so far, and the longest one file's
-    // checkpoint took: a pass drains between files, so this is the longest
+    // Passes of checkpoint_all() so far, and the longest one sync took: a
+    // pass drains between syncs, so this is the longest
     // the rings waited, which their depth must cover (ADR-0009 Unverified
     // 8). sonora-engine prints it at exit and on its RESULT line. Any
     // thread.

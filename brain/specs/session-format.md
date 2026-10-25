@@ -651,15 +651,19 @@ provides them:
   **unused source**, never placed over existing material automatically.
 - **Loop takes keep their wraps beside them** (ADR-0016 §2, §5). A loop
   take is one file per track through every pass, and `<take file>.wraps`
-  next to it lists the file frame of each wrap: a 24-byte header ("SNWR",
-  version 1, A and B as little-endian u64) and one 8-byte little-endian
+  next to it lists the file frame of each wrap: a 32-byte header ("SNWR",
+  version 1, A and B as little-endian u64, then L as a little-endian u32
+  and four zero bytes) and one 8-byte little-endian
   record per wrap, append-only, `~0` for a wrap whose boundary record a
   full ring lost (`common/audiofile` `WrapSidecar`). The disk thread
   appends each wrap as it comes and syncs the list after the take's own
-  checkpoint, so the loss window covers the wraps too. Recovery
+  checkpoint, so the loss window covers the wraps too. A wrap can reach the
+  medium before the audio it ends, by writeback; recovery drops a wrap past
+  the file's end and cuts short the pass whose end it lacks. Recovery
   (`engine/core` `recover_loop_wraps()`) reads them and derives what the
   list is missing, or all of it when there is no list, from the
-  Description's `loop=<A>-<B>`, the TimeReference and L: the first wrap at
+  Description's `loop=<A>-<B>`, the TimeReference and the list's L (0
+  when there is no list, the only L recorded so far): the first wrap at
   file frame B - TimeReference + L, each later one B - A after the one
   before, and the offer says those passes were placed by loop length. That
   is exact only if the take had no capture overrun. The offer itself is

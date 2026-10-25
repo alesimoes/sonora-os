@@ -228,28 +228,38 @@ void DiskThread::finish(std::size_t i, int slot) {
 }
 
 void DiskThread::checkpoint_all() {
+    // Each sync is followed by a drain, so the rings wait for one sync and
+    // never for the sum of them: 18 tracks on a slow stick would come close
+    // to the ring's depth.
+    const auto timed = [this](auto&& sync) {
+        const auto begin = std::chrono::steady_clock::now();
+        sync();
+        const auto ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - begin)
+                .count());
+        if (ns > longest_checkpoint_ns_.load(std::memory_order_relaxed)) {
+            longest_checkpoint_ns_.store(ns, std::memory_order_relaxed);
+        }
+        drain_once();
+    };
     for (Track* t : tracks_) {
         for (int slot = 0; slot < Track::kWriterSlots; ++slot) {
             // A slot with a take is this thread's (Track::slot_take()),
             // whether or not its window has opened yet. A failure marks the
             // take failed, which Session::take_failure() reports.
-            if (t->slot_take(slot) == 0 || !t->writer(slot).is_open()) continue;
-            const auto begin = std::chrono::steady_clock::now();
-            t->writer(slot).checkpoint();
-            // After the take's own sync, so no wrap is on the medium ahead of
-            // the audio it ends (ADR-0016 C1).
-            if (t->sidecar(slot).is_open()) t->sidecar(slot).checkpoint();
-            const auto ns = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - begin)
-                    .count());
-            if (ns > longest_checkpoint_ns_.load(std::memory_order_relaxed)) {
-                longest_checkpoint_ns_.store(ns, std::memory_order_relaxed);
+            const int take = t->slot_take(slot);
+            if (take == 0 || !t->writer(slot).is_open()) continue;
+            timed([&] { t->writer(slot).checkpoint(); });
+            // Synced after the take's own sync, so the take's loss window
+            // covers its wraps (ADR-0016 C1). A wrap can still reach the
+            // medium first, by writeback after append()'s flush; recovery
+            // drops a wrap past the file's end and cuts short the pass whose
+            // end the file lacks. Only while the drain above has not
+            // finished the take: then the slot is the control thread's.
+            if (t->slot_take(slot) == take && t->sidecar(slot).is_open()) {
+                timed([&] { t->sidecar(slot).checkpoint(); });
             }
-            // Between files, so the rings wait for one sync and never for
-            // the sum of them: 18 tracks on a slow stick would come close to
-            // the ring's depth. A file this drain closes is skipped above.
-            drain_once();
         }
     }
     checkpoints_.fetch_add(1, std::memory_order_relaxed);

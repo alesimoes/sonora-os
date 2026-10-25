@@ -27,17 +27,19 @@ uint64_t get_le(const unsigned char* p, int bytes) {
 
 WrapSidecar::~WrapSidecar() { close(); }
 
-bool WrapSidecar::open(const std::string& path, uint64_t loop_from, uint64_t loop_to) {
+bool WrapSidecar::open(const std::string& path, uint64_t loop_from, uint64_t loop_to,
+                       uint32_t latency) {
     if (file_) return false;
     file_ = platform::create_exclusive(path);
     if (!file_) return false;
     path_ = path;
     failure_.clear();
-    unsigned char h[kHeaderBytes];
+    unsigned char h[kHeaderBytes] = {};
     std::memcpy(h, kMagic, 4);
     put_le(h + 4, kVersion, 4);
     put_le(h + 8, loop_from, 8);
     put_le(h + 16, loop_to, 8);
+    put_le(h + 24, latency, 4);
     if (std::fwrite(h, 1, sizeof h, file_) != sizeof h || std::fflush(file_) != 0) {
         const int err = errno;
         std::fclose(file_);
@@ -100,6 +102,7 @@ bool read_wrap_sidecar(const std::string& path, WrapList& out, std::string& erro
     WrapList list;
     list.loop_from = get_le(h + 8, 8);
     list.loop_to = get_le(h + 16, 8);
+    list.latency = static_cast<uint32_t>(get_le(h + 24, 4));
     unsigned char r[8];
     while (std::fread(r, 1, sizeof r, f) == sizeof r) list.wraps.push_back(get_le(r, 8));
     std::fclose(f);

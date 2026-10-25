@@ -68,22 +68,26 @@ std::vector<LoopPass> loop_passes(const std::vector<uint64_t>& wraps, uint64_t f
     if (loop_to <= loop_from) return out;
     const uint64_t len = loop_to - loop_from;
     // [offset, offset + length) of the file, playing `at` frames after A.
-    const auto add = [&](uint64_t offset, uint64_t at, uint64_t want, bool whole) {
+    const auto add = [&](std::size_t pass, uint64_t offset, uint64_t at, uint64_t want,
+                         bool whole) {
         if (offset >= frames || want == 0) return;
         LoopPass p;
+        p.pass = pass;
         p.offset = offset;
         p.at = at;
         p.length = std::min(want, frames - offset);
         p.complete = whole && p.length == len;
         out.push_back(p);
     };
-    for (const uint64_t w : wraps) {
+    // Wrap k ends pass k + 1: a lost wrap keeps its place in the list.
+    for (std::size_t k = 0; k < wraps.size(); ++k) {
+        const uint64_t w = wraps[k];
         if (w == kLost) continue;
         // A track whose window opened late, inside this pass: the part it has.
         if (w < len) {
-            add(0, len - w, w, false);
+            add(k + 1, 0, len - w, w, false);
         } else {
-            add(w - len, 0, len, w <= frames);
+            add(k + 1, w - len, 0, len, w <= frames);
         }
     }
     uint64_t tail = kLost;
@@ -97,11 +101,11 @@ std::vector<LoopPass> loop_passes(const std::vector<uint64_t>& wraps, uint64_t f
         tail = s >= 0 ? static_cast<uint64_t>(s) : 0;
         at = s >= 0 ? 0 : static_cast<uint64_t>(-s);
     }
-    if (tail != kLost && at < len) add(tail, at, len - at, false);
+    if (tail != kLost && at < len) add(wraps.size() + 1, tail, at, len - at, false);
     return out;
 }
 
-bool recover_loop_wraps(const std::string& take_path, uint32_t latency, RecoveredLoop& out) {
+bool recover_loop_wraps(const std::string& take_path, RecoveredLoop& out) {
     WavReader file;
     std::string error;
     if (!file.open(take_path, error)) return false;
@@ -117,10 +121,12 @@ bool recover_loop_wraps(const std::string& take_path, uint32_t latency, Recovere
         // is not this take's.
         r.why = WrapSidecar::path_for(take_path) + ": its loop is not the take's";
         list.wraps.clear();
+        list.latency = 0;
     }
+    r.latency = list.latency;
     bool derived = false;
     r.wraps = complete_wraps(list.wraps, kWrapsUntilEnd, r.frames, r.from, r.to, r.time_reference,
-                             latency, derived);
+                             r.latency, derived);
     r.by_length = derived;
     out = std::move(r);
     return true;

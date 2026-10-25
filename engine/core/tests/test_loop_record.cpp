@@ -13,15 +13,28 @@
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
 #include "sonora/wrap_sidecar.h"
+
+// The word hook is private to Session; only a test defines this.
+namespace sonora {
+struct SessionTestAccess {
+    static void set_word_hook(Session& s, Session::WordHook hook, void* context) {
+        s.word_hook_ = hook;
+        s.word_hook_context_ = context;
+    }
+};
+}  // namespace sonora
 
 namespace {
 
@@ -35,6 +48,8 @@ using sonora::WrapSidecar;
 constexpr uint32_t kChunk = 256;
 constexpr uint32_t kBlock = 64;
 constexpr uint32_t kMaxBlock = 256;
+// A callback longer than the mix's block, which a backend may still deliver.
+constexpr uint32_t kLongest = 2 * kMaxBlock;
 
 struct Rig {
     fs::path dir;
@@ -46,7 +61,7 @@ struct Rig {
     uint64_t count = 0;   // samples each track's input has produced
 
     Rig(const std::string& name, int tracks, uint32_t boundary_records = 0,
-        uint32_t pass_cap = 99) {
+        uint32_t pass_cap = 99, uint32_t pool_chunks = 96) {
         dir = fs::temp_directory_path() / ("sonora_test_loop_record_" + name);
         fs::remove_all(dir);
         sonora::SessionConfig cfg;
@@ -58,15 +73,15 @@ struct Rig {
         cfg.loop_pass_cap = pass_cap;
         cfg.playback.chunk_frames = kChunk;
         cfg.playback.window_seconds = 0.02;
-        cfg.playback.pool_chunks = 96;
+        cfg.playback.pool_chunks = pool_chunks;
         cfg.playback.max_block_frames = kMaxBlock;
         session = std::make_unique<Session>(cfg);
         session->create_dirs();
-        in.assign(tracks, std::vector<float>(kBlock, 0.0f));
+        in.assign(tracks, std::vector<float>(kLongest, 0.0f));
         for (auto& v : in) in_ptrs.push_back(v.data());
         for (auto& t : session->tracks()) t->set_rec_armed(true);
         for (int o = 0; o < 2; ++o) {
-            out[o].assign(kBlock, 0.0f);
+            out[o].assign(kLongest, 0.0f);
             out_ptrs[o] = out[o].data();
         }
     }
@@ -76,17 +91,17 @@ struct Rig {
         fs::remove_all(dir, ec);
     }
 
-    void block() {
+    void block(uint32_t n = kBlock) {
         for (auto& v : in) {
-            for (uint32_t i = 0; i < kBlock; ++i) v[i] = static_cast<float>(count + i);
+            for (uint32_t i = 0; i < n; ++i) v[i] = static_cast<float>(count + i);
         }
-        count += kBlock;
+        count += n;
         sonora::backend::AudioBlock b{};
         b.inputs = in_ptrs.data();
         b.input_count = static_cast<uint32_t>(in_ptrs.size());
         b.outputs = out_ptrs;
         b.output_count = 2;
-        b.nframes = kBlock;
+        b.nframes = n;
         sonora::backend::ProcessCallback& cb = *session;
         t_counting = true;
         cb.process(b);
@@ -155,26 +170,27 @@ Session::ClosedTake only_take(Session& s) {
     return closed.size() == 1 ? closed.front() : Session::ClosedTake{};
 }
 
-int wraps_case(const char* name, const LoopRange& l, int blocks) {
+int wraps_case(const char* name, const LoopRange& l, int blocks, uint32_t n = kBlock) {
     Rig rig(name, 2);
     Session& s = *rig.session;
     const int take = s.next_free_take();
     std::string error;
     CHECK(s.start_loop(take, l, &error));
     reset_heap_counts();
-    rig.block();
+    rig.block(n);
     CHECK(s.take_origin() == l.start);
-    uint64_t timeline = l.start + kBlock;
+    uint64_t timeline = l.start + n;
+    while (timeline >= l.to) timeline -= l.to - l.from;
     for (int b = 1; b < blocks; ++b) {
-        rig.block();
-        timeline += kBlock;
+        rig.block(n);
+        timeline += n;
         while (timeline >= l.to) timeline -= l.to - l.from;
         // The playhead never leaves the loop once it is in it.
         CHECK(s.transport().playhead() == timeline);
     }
     CHECK(heap_untouched());
     CHECK(s.stop(&error));
-    const uint64_t frames = static_cast<uint64_t>(blocks) * kBlock;
+    const uint64_t frames = static_cast<uint64_t>(blocks) * n;
     const std::vector<uint64_t> want = expected_wraps(l, frames);
     const Session::ClosedTake c = only_take(s);
     CHECK(c.take == take);
@@ -369,8 +385,8 @@ int test_pass_cap() {
 
 // What plays across the wrap is the timeline at B, then at A: an unarmed
 // track's region reads the frames just before B, then A's.
-int test_playback_follows_the_wrap() {
-    Rig rig("playback", 2);
+int playback_case(const char* name, const LoopRange& l, int blocks, uint32_t pool_chunks) {
+    Rig rig(name, 2, 0, 99, pool_chunks);
     Session& s = *rig.session;
     s.tracks()[0]->set_rec_armed(true);
     s.tracks()[1]->set_rec_armed(false);
@@ -388,11 +404,11 @@ int test_playback_follows_the_wrap() {
     CHECK(publish_plan(s, make_plan(s.plans().next_epoch(), 2, {sp}, kChunk)));
     // The faders ramp up from silence in the session's first block.
     for (int b = 0; b < 2; ++b) rig.block();
-    const LoopRange l = loop_of(1000, 1300, 100);
     const int take = s.next_free_take();
     CHECK(s.start_loop(take, l, &error));
+    s.reader().run_pass();
     uint64_t timeline = l.start;
-    for (int b = 0; b < 20; ++b) {
+    for (int b = 0; b < blocks; ++b) {
         rig.block();
         s.reader().run_pass();
         for (uint32_t i = 0; i < kBlock; ++i) {
@@ -407,6 +423,115 @@ int test_playback_follows_the_wrap() {
         }
     }
     CHECK(s.playback_misses() == 0);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+int test_playback_follows_the_wrap() {
+    return playback_case("playback", loop_of(1000, 1300, 100), 20, 96);
+}
+
+// Code review of PR #117, B1. A loop longer than two reader windows (W is
+// 1216 frames here) over a pool too small to hold it: A's chunks would be
+// evicted long before B, and every track not recording would play silence
+// at the top of each pass. The reader holds [A, A + W) for the take.
+int test_playback_holds_the_loop_start() {
+    const LoopRange l = loop_of(1000, 7000, 100);
+    // Three wraps and a little more.
+    const int blocks = static_cast<int>((l.to - l.start + 2 * (l.to - l.from) + 600) / kBlock);
+    return playback_case("loop_start", l, blocks, 20);
+}
+
+// RT audit of PR #117: a callback longer than one pass wraps more than once.
+// Each wrap gets its own record, consecutive ordinals, `at` one loop
+// length after the last.
+int test_wraps_in_one_callback() {
+    if (wraps_case("two_in_one", loop_of(1000, 1000 + kMaxBlock, 0), 8, kLongest)) return 1;
+    return wraps_case("two_in_one_latency", loop_of(1000, 1000 + kMaxBlock, 2 * kMaxBlock + 17, 9),
+                      9, kLongest);
+}
+
+// RT audit of PR #117, highest risk. The disk thread held for 300 ms (a
+// slow sync on a stick), with 18 tracks recording the shortest loop allowed
+// (one block), loses no wrap: the boundary ring is sized by the wrap rate.
+int test_a_stalled_disk_thread_loses_no_wrap() {
+    Rig rig("stall", 18);
+    Session& s = *rig.session;
+    const LoopRange l = loop_of(1000, 1000 + kMaxBlock, 0);
+    std::string error;
+    const int take = s.next_free_take();
+    CHECK(s.start_loop(take, l, &error));
+    // 300 ms at 48 kHz, with nothing drained.
+    const int blocks = static_cast<int>(48000 * 3 / 10 / kBlock);
+    for (int b = 0; b < blocks; ++b) rig.block();
+    CHECK(s.boundary_overruns() == 0);
+    CHECK(s.stop(&error));
+    const uint64_t frames = static_cast<uint64_t>(blocks) * kBlock;
+    const std::vector<uint64_t> want = expected_wraps(l, frames);
+    CHECK(want.size() > 50);
+    const Session::ClosedTake c = only_take(s);
+    CHECK(c.loop_wraps == want.size());
+    CHECK(c.files.size() == 18);
+    for (const auto& f : c.files) {
+        CHECK(f.frames == frames);
+        CHECK(f.wraps == want);
+    }
+    return 0;
+}
+
+// Holds the callback it is called from, right after the transport is
+// loaded, while armed.
+struct Hold {
+    std::atomic<bool> armed{false};
+    std::atomic<bool> held{false};
+    std::atomic<bool> release{false};
+};
+void hold_hook(void* context) noexcept SONORA_RT {
+    auto* h = static_cast<Hold*>(context);
+    if (!h->armed.exchange(false, std::memory_order_acq_rel)) return;
+    h->held.store(true, std::memory_order_release);
+    while (!h->release.load(std::memory_order_acquire)) {
+    }
+}
+
+// Code review of PR #117, N2. A callback that loaded Rolling before
+// start_loop() stopped the transport must not drain the loop's locate and
+// roll a block on from it: pass 1 would start after the pre-roll's start,
+// and with a pre-roll under a block, after A. start_loop() waits it out.
+int test_a_callback_in_flight_keeps_pass_one_whole() {
+    Rig rig("in_flight", 1);
+    Session& s = *rig.session;
+    Hold hold;
+    sonora::SessionTestAccess::set_word_hook(s, hold_hook, &hold);
+    s.play();
+    for (int b = 0; b < 4; ++b) rig.block();
+    CHECK(s.transport().state() == TransportState::Rolling);
+    hold.armed.store(true, std::memory_order_release);
+    std::thread audio([&] { rig.block(); });
+    for (int i = 0; i < 5000 && !hold.held.load(std::memory_order_acquire); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(hold.held.load(std::memory_order_acquire));
+    const LoopRange l = loop_of(1000, 1300, 10);
+    std::atomic<bool> started{false};
+    bool ok = false;
+    std::string error;
+    std::thread control([&] {
+        ok = s.start_loop(s.next_free_take(), l, &error);
+        started.store(true, std::memory_order_release);
+    });
+    // Long enough for start_loop() to finish if it does not wait for the
+    // callback; it must, so this is the callback's release.
+    for (int i = 0; i < 200 && !started.load(std::memory_order_acquire); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    hold.release.store(true, std::memory_order_release);
+    audio.join();
+    control.join();
+    CHECK(ok);
+    rig.block();
+    CHECK(s.take_origin() == l.start);
+    sonora::SessionTestAccess::set_word_hook(s, nullptr, nullptr);
     CHECK(s.stop(&error));
     return 0;
 }
@@ -442,6 +567,11 @@ int main(int argc, char** argv) {
         {"lost_wrap_keeps_its_place", test_lost_wrap_keeps_its_place},
         {"pass_cap", test_pass_cap},
         {"playback_follows_the_wrap", test_playback_follows_the_wrap},
+        {"playback_holds_the_loop_start", test_playback_holds_the_loop_start},
+        {"wraps_in_one_callback", test_wraps_in_one_callback},
+        {"a_stalled_disk_thread_loses_no_wrap", test_a_stalled_disk_thread_loses_no_wrap},
+        {"a_callback_in_flight_keeps_pass_one_whole",
+         test_a_callback_in_flight_keeps_pass_one_whole},
         {"description_says_loop", test_description_says_loop},
     };
     for (const Test& t : tests) {

@@ -28,7 +28,9 @@ struct PlaybackConfig {
     // ADR-0009 Unverified 1 settles both; placeholders until then.
     uint32_t chunk_frames = 16384;
     double window_seconds = 4.0;
-    // 0: two plans' windows for every track channel, plus a margin.
+    // 0: two plans' windows for every track channel, each at the playhead
+    // and at a loop take's start (DiskReader::hold_loop()), plus a
+    // margin.
     uint32_t pool_chunks = 0;
     uint32_t max_sources = 1024;
     uint32_t max_segments = 65536;          // per plan
@@ -145,8 +147,16 @@ struct SessionConfig {
     // Seconds of headroom in each capture ring before an overrun is possible.
     double ring_seconds = 4.0;
     // Capture boundary records the disk thread may fall behind by. 0: eight
-    // per track, at least 64. A full ring is an overrun, never a wait.
+    // per track, at least 64, plus the Wrap records a loop take pushes
+    // while the disk thread stalls for disk_stall_seconds. A full ring is an
+    // overrun, never a wait.
     uint32_t boundary_records = 0;
+    // The longest the disk thread is assumed to stop draining (one sync on
+    // a slow stick). The shortest loop is one max_block_frames block, so a
+    // loop take pushes at most one Wrap per track per block: the ring holds
+    // that many for this long. 0.5 s is a placeholder until ADR-0009
+    // Unverified 8 measures the sync.
+    double disk_stall_seconds = 0.5;
     // How often the disk thread checkpoints every open take: header patched
     // to the frames written, data synced (WavWriter::checkpoint()). With the
     // capture ring's depth this is the stated loss window per track at a

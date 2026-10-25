@@ -85,9 +85,19 @@ public:
     uint64_t serve(PlaybackPlan* playing, PlaybackPlan* pending,
                    int64_t locate_target = 0, uint64_t locate_serial = 0);
     uint64_t adopted() const { return adopted_.load(std::memory_order_acquire); }
+    // While a loop take runs (ADR-0016 §2): the playhead jumps from B to A
+    // at every wrap, so [A, A + window) is made resident for both plans and
+    // protected, as a locate target is, from the next pass until released.
+    // Without it, a loop longer than the pool holds finds A's chunks
+    // evicted at each wrap (PR #117 review, B1). Meanwhile nothing at or
+    // past B is read for the playhead, and only the protected ranges are
+    // kept: what lies ahead of the window is read again before the
+    // playhead reaches it.
+    void hold_loop(int64_t loop_from, int64_t loop_to);
+    void release_loop();
     // The newest generation whose plans were found resident: every chunk
     // the playing and the pending plan play from the playhead (and from the
-    // locate target) through the window linked.
+    // locate target, and a held loop start) through the window linked.
     uint64_t resident() const { return resident_.load(std::memory_order_acquire); }
     // Wakes the thread now rather than at its next tick.
     void wake();
@@ -161,9 +171,9 @@ private:
     void detach(PlaybackPlan* plan);
     void link(PlaybackPlan* plan, uint32_t slot, uint32_t buffer);
     void unlink_buffer(uint32_t buffer);
-    // Links or reads every chunk `plan` plays in [from, from + window).
-    void fill(PlaybackPlan* plan, int64_t from);
-    bool window_resident(const PlaybackPlan* plan, int64_t from) const;
+    // Links or reads every chunk `plan` plays in [from, to).
+    void fill(PlaybackPlan* plan, int64_t from, int64_t to);
+    bool window_resident(const PlaybackPlan* plan, int64_t from, int64_t to) const;
     uint32_t take_buffer(int64_t playhead);
     void evict_behind(int64_t playhead);
     bool protected_chunk(const PlanSegment& seg, uint64_t chunk) const;
@@ -202,6 +212,7 @@ private:
     PlaybackPlan* pending_ = nullptr;
     Range protect_[3] = {};
     int protect_count_ = 0;
+    bool looping_ = false;   // this pass holds a loop
 
     // Control <-> reader mailbox. Never touched by the audio thread.
     std::mutex mutex_;
@@ -223,6 +234,11 @@ private:
     std::atomic<uint64_t> read_errors_{0};
     std::atomic<uint64_t> max_read_us_{0};
     std::atomic<uint32_t> linked_{0};
+    // Control thread to reader: one word, so a pass never reads one
+    // loop's A with another's B. A and B each below 2^32 frames (a day at
+    // 48 kHz): a loop past that is not held, and its wraps may miss,
+    // counted. 0 for none.
+    std::atomic<uint64_t> loop_{0};
 };
 
 // The audio thread's read of a slot: seq_cst, see above.

@@ -138,32 +138,47 @@ int test_recovery_reads_the_take() {
     CHECK(!take.empty());
     {
         WrapSidecar side;
-        CHECK(side.open(WrapSidecar::path_for(take), kA, kB));
+        CHECK(side.open(WrapSidecar::path_for(take), kA, kB, 0));
         CHECK(side.append(400));
         CHECK(side.append(700));
         CHECK(side.append(1000));
         CHECK(side.close());
     }
     sonora::RecoveredLoop r;
-    CHECK(sonora::recover_loop_wraps(take, 0, r));
+    CHECK(sonora::recover_loop_wraps(take, r));
     CHECK(r.from == kA && r.to == kB && r.time_reference == kStart && r.frames == 1000);
     CHECK((r.wraps == std::vector<uint64_t>{400, 700, 1000}));
     CHECK(!r.by_length);
 
     // Killed before the last wrap reached the list.
     fs::resize_file(WrapSidecar::path_for(take), WrapSidecar::kHeaderBytes + 8);
-    CHECK(sonora::recover_loop_wraps(take, 0, r));
+    CHECK(sonora::recover_loop_wraps(take, r));
     CHECK((r.wraps == std::vector<uint64_t>{400, 700, 1000}));
     CHECK(r.by_length);
 
     fs::remove(WrapSidecar::path_for(take));
-    CHECK(sonora::recover_loop_wraps(take, 0, r));
+    CHECK(sonora::recover_loop_wraps(take, r));
     CHECK((r.wraps == std::vector<uint64_t>{400, 700, 1000}));
+    CHECK(r.by_length);
+
+    // Code review of PR #117, N4: an orphan's L comes from its list. Killed
+    // before its first wrap reached the list, every wrap is derived from
+    // the header's L, not from one the caller supplies.
+    const std::string late = write_take(dir, "Audio 1_06.wav", 1100, true);
+    CHECK(!late.empty());
+    {
+        WrapSidecar side;
+        CHECK(side.open(WrapSidecar::path_for(late), kA, kB, 50));
+        CHECK(side.close());
+    }
+    CHECK(sonora::recover_loop_wraps(late, r));
+    CHECK(r.latency == 50);
+    CHECK((r.wraps == std::vector<uint64_t>{450, 750, 1050}));
     CHECK(r.by_length);
 
     // Not a loop take: nothing to place by pass.
     const std::string plain = write_take(dir, "Audio 1_05.wav", 1000, false);
-    CHECK(!sonora::recover_loop_wraps(plain, 0, r));
+    CHECK(!sonora::recover_loop_wraps(plain, r));
     std::error_code ec;
     fs::remove_all(dir, ec);
     return 0;

@@ -401,7 +401,9 @@ LoopFile loop_file(const model::Snapshot& document, const Session::ClosedTake& t
     op.active_playlist = t.active_playlist;
     std::size_t chosen = passes.size();
     for (std::size_t k = 0; k < passes.size(); ++k) {
-        const std::string pass = ".P" + std::to_string(k + 1);
+        // By the take's pass, so the comping lanes line up the same pass
+        // under the same name on every track (PR #117 review, N1).
+        const std::string pass = ".P" + std::to_string(passes[k].pass);
         model::LoopTakePass p;
         p.playlist = next++;
         p.name = t.name + ".T" + std::to_string(take.take) + pass;

@@ -154,9 +154,15 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.n
     const auto tracks_n = static_cast<uint32_t>(cfg_.track_count);
     // timeline-model.md: at least four records per track; a take started
     // over another pushes two at once, and the disk thread wakes every 10 ms.
+    // A loop take adds a Wrap per track per pass, and start_loop() holds a
+    // pass to one block at least (RT audit of PR #117).
+    const double stall_blocks =
+        std::ceil(std::max(0.0, cfg_.disk_stall_seconds) * cfg_.sample_rate /
+                  std::max<uint32_t>(1, cfg_.playback.max_block_frames));
     const uint32_t records = cfg_.boundary_records
                                  ? cfg_.boundary_records
-                                 : std::max<uint32_t>(64, 8 * tracks_n);
+                                 : std::max<uint32_t>(64, 8 * tracks_n) +
+                                       tracks_n * static_cast<uint32_t>(stall_blocks);
     boundaries_ = std::make_unique<RingBuffer<CaptureBoundary>>(records);
     // One more than it holds: the ring keeps a slot empty.
     punches_ = std::make_unique<RingBuffer<PunchRecord>>(cfg_.playback.punch_capacity + 1);
@@ -191,10 +197,11 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.n
     rc.window_frames = window_frames_;
     rc.max_sources = pb.max_sources;
     // A track's demand is channels x (ceil(overlap / C) + 1) per window
-    // (ADR-0009 §4.3); two plans may need disjoint chunks.
+    // (ADR-0009 §4.3); two plans may need disjoint chunks, and during a
+    // loop take each needs a second window at A.
     rc.pool_chunks = pb.pool_chunks
                          ? pb.pool_chunks
-                         : 2 * tracks * cfg_.channels_per_track * (window_chunks + 1) + 16;
+                         : 4 * tracks * cfg_.channels_per_track * (window_chunks + 1) + 16;
     plans_ = std::make_unique<PlanExchange>();
     reader_ = std::make_unique<DiskReader>(rc, *plans_, *transport_);
     commands_ = std::make_unique<RingBuffer<RtCommand>>(pb.command_capacity);
@@ -447,7 +454,8 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             if (!w.open(file, cfg_.sample_rate, t->channels(), cfg_.format, origin)) {
                 err = errno;
             } else if (loop != nullptr &&
-                       !t->sidecar(slot).open(WrapSidecar::path_for(file), loop->from, loop->to)) {
+                       !t->sidecar(slot).open(WrapSidecar::path_for(file), loop->from, loop->to,
+                                              loop->latency)) {
                 // Recovery would have to place this take's passes by loop
                 // length alone; a take that cannot keep its wraps is refused
                 // like one that cannot keep its audio.
@@ -508,9 +516,15 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     if (loop != nullptr) {
         // Stopped first, so no block rolls on between the locate and the
         // take: the take's first block applies the locate before it takes
-        // its origin, and pass 1 is whole however short the pre-roll.
+        // its origin, and pass 1 is whole however short the pre-roll. A
+        // callback that loaded Rolling before the store would still drain
+        // the locate and roll a block on from it, so it is waited out
+        // before the locate is posted (PR #117 review, N2).
         if (transport_->state() == TransportState::Rolling) {
             transport_->set_state(TransportState::Stopped);
+            if (!wait_for_callback()) {
+                return refuse_after_open("the audio callback did not return within 1 s");
+            }
         }
         if (!post_locate(loop->start)) {
             return refuse_after_open("the audio thread has not taken the last locates yet");
@@ -537,6 +551,11 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     c.take.end = kNoOrigin;
     recording_take_ = take_number;
     loop_running_ = loop != nullptr;
+    if (loop != nullptr) {
+        reader_->hold_loop(static_cast<int64_t>(loop->from), static_cast<int64_t>(loop->to));
+    } else {
+        reader_->release_loop();
+    }
     newest_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.
@@ -554,6 +573,7 @@ bool Session::punch_out() {
     transport_->set_state(TransportState::Rolling);
     keep_origin(end);
     recording_take_ = 0;
+    reader_->release_loop();
     return true;
 }
 
@@ -678,6 +698,7 @@ bool Session::stop(std::string* error) {
     collect_closed();
     keep_origin(end);
     recording_take_ = 0;
+    reader_->release_loop();
 
     // Every file is closed and collected, so only failed_files_ speaks.
     const std::string why = take_failure();

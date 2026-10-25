@@ -38,7 +38,7 @@ fs::path scratch(const char* name) {
 int test_round_trip() {
     const std::string path = scratch("Audio 1_03.wav.wraps").string();
     WrapSidecar w;
-    CHECK(w.open(path, 48000, 96000));
+    CHECK(w.open(path, 48000, 96000, 37));
     CHECK(w.append(144000));
     CHECK(w.append(WrapSidecar::kLostWrap));
     CHECK(w.append(240000));
@@ -50,6 +50,9 @@ int test_round_trip() {
     std::string error;
     CHECK(read_wrap_sidecar(path, list, error));
     CHECK(list.loop_from == 48000 && list.loop_to == 96000);
+    // ADR-0016 §2: the list says which L its wraps carry, so recovery of an
+    // orphan, whose bext has none, does not need it from its caller.
+    CHECK(list.latency == 37);
     CHECK((list.wraps == std::vector<uint64_t>{144000, WrapSidecar::kLostWrap, 240000}));
     return 0;
 }
@@ -59,7 +62,7 @@ int test_round_trip() {
 int test_torn_record_is_dropped() {
     const std::string path = scratch("torn.wraps").string();
     WrapSidecar w;
-    CHECK(w.open(path, 0, 4800));
+    CHECK(w.open(path, 0, 4800, 0));
     CHECK(w.append(4800));
     CHECK(w.close());
     std::FILE* f = std::fopen(path.c_str(), "ab");
@@ -81,7 +84,7 @@ int test_never_over_a_file() {
     std::fputs("keep", f);
     std::fclose(f);
     WrapSidecar w;
-    CHECK(!w.open(path, 0, 4800));
+    CHECK(!w.open(path, 0, 4800, 0));
     CHECK(errno == EEXIST);
     CHECK(fs::file_size(path) == 4);
     return 0;

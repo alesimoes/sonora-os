@@ -34,12 +34,16 @@ std::vector<uint64_t> complete_wraps(const std::vector<uint64_t>& known, std::si
 
 // One pass: the file's frames [offset, offset + length), which play from
 // `at` frames after A: 0 unless the track's window opened inside the pass.
-// Complete when it is B - A long and all of it reached the file.
+// Complete when it is B - A long and all of it reached the file. `pass`
+// is which of the take's passes it is, from 1, the same on every track: a
+// track whose window opened late, or whose wrap was lost, skips numbers
+// rather than renumbering the passes it has.
 struct LoopPass {
     uint64_t offset = 0;
     uint64_t at = 0;
     uint64_t length = 0;
     bool complete = false;
+    std::size_t pass = 0;
 };
 
 // Pass k ends at wrap k; the pass after the last wrap, if the file goes on
@@ -56,6 +60,8 @@ struct RecoveredLoop {
     uint64_t to = 0;
     uint64_t time_reference = 0;
     uint64_t frames = 0;
+    // The wrap list's L; 0 without a list, the only L recorded so far.
+    uint32_t latency = 0;
     std::vector<uint64_t> wraps;   // complete_wraps(), to the file's end
     // Some wraps were derived: the wrap list was missing, stopped early, or
     // held lost wraps. The offer says the passes were placed by loop length.
@@ -64,8 +70,8 @@ struct RecoveredLoop {
 };
 
 // The take at `take_path` as a loop take: A and B from its Description's
-// loop=, the wraps from `<take_path>.wraps`, the rest derived with
-// `latency`. False if the file does not read or is not a loop take's.
-bool recover_loop_wraps(const std::string& take_path, uint32_t latency, RecoveredLoop& out);
+// loop=, the wraps and L from `<take_path>.wraps`, the rest derived. False
+// if the file does not read or is not a loop take's.
+bool recover_loop_wraps(const std::string& take_path, RecoveredLoop& out);
 
 }  // namespace sonora
