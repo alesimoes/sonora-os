@@ -151,9 +151,16 @@ public:
     // LV2 worker messages refused for an insert because a ring was full
     // (host_control.h Fault{WorkRefused}), over every run; only rises.
     uint64_t work_refused(model::Id insert) const;
+    // Touches of a parameter an insert's plugin offers no dense index for
+    // (Fault{ParamUnmapped}), over every run; only rises.
+    uint64_t param_unmapped(model::Id insert) const;
+    // Touches lost in a track's host before they reached the engine
+    // (Fault{EventsDropped}), over every run; only rises.
+    uint64_t touches_lost(model::Id track) const;
     // Non-standing notices since the last call (ADR-0012 change G): the
-    // first worker refusal of an insert in a run. The server posts each
-    // once, to the clients attached then.
+    // first worker refusal, unmapped touch or lost touch of an insert (a
+    // chain, for lost touches) in a run. The server posts each once, to the
+    // clients attached then.
     std::vector<std::string> take_notices();
 
     // Chains still starting with the session (for "Loading plug-ins (n of
@@ -262,6 +269,8 @@ private:
 
     std::map<model::Id, std::string> faults_;
     std::map<model::Id, uint64_t> work_refused_;
+    std::map<model::Id, uint64_t> param_unmapped_;
+    std::map<model::Id, uint64_t> touches_lost_;  // by track
     std::vector<std::string> notices_;
     uint32_t loading_total_ = 0;
     uint64_t dropped_seen_ = 0;

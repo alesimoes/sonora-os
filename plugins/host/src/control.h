@@ -79,17 +79,20 @@ public:
     void touch(uint32_t instance, TouchKind kind, uint32_t dense, float value) noexcept override;
     // The main thread: what came since the last call, in order.
     void drain(std::vector<Event>& out);
-    // Touches dropped so far: lost ones (not queued) and Unmapped ones.
-    uint64_t dropped() const { return lost() + unmapped_.load(std::memory_order_relaxed); }
     // Touches that could not be queued: one of them may have been an end.
     uint64_t lost() const { return lost_.load(std::memory_order_acquire); }
+    // Unmapped touches by one plugin of the chain so far.
+    uint64_t unmapped(uint32_t instance) const {
+        return instance < plugin::kMaxInstances ? unmapped_[instance].load(std::memory_order_relaxed) : 0;
+    }
 
 private:
     static constexpr uint32_t kCapacity = 1024;
     std::mutex mutex_;
     Event ring_[kCapacity] = {};
     uint32_t head_ = 0, count_ = 0;
-    std::atomic<uint64_t> lost_{0}, unmapped_{0};
+    std::atomic<uint64_t> lost_{0};
+    std::atomic<uint64_t> unmapped_[plugin::kMaxInstances] = {};
 };
 
 // The main thread's gesture rules (host_control.h, "Parameter touches"):

@@ -925,7 +925,23 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          `plugin_hosting_work_refused`, `plugin_hosting_server_work_refused`
          (the count in the state block, one Notice at the client, no
          PluginFault); each fails without the change.
-         Not yet: Fault{EventsDropped} is still not shown by the engine.
+       - [x] Touches the engine never got are told to the operator the same
+         way (HostControl wire 3): Fault{EventsDropped} now counts only
+         touches lost in the host's queue (instance -1, per chain), and
+         touches of a parameter with no dense index are
+         Fault{ParamUnmapped} naming the plugin. The host throttles all
+         three counted faults alike (first at once, then summed at most
+         once per second, the rest sent before it stops). The engine counts
+         them (`PluginHosting::touches_lost(track)`,
+         `param_unmapped(insert)`) and posts one non-standing Notice per run
+         of the chain: the track for lost touches, plugin, track and slot
+         for unmapped ones. No fault stands. ctest
+         `plugin_hosting_touch_faults`, `plugin_host_vst3_gesture` (the
+         read-only touch is ParamUnmapped for instance 0, no
+         EventsDropped), `contract_host_control`.
+       - [ ] The lost and unmapped touch counts are not in the state block
+         (InsertState has `work_refused` only; lost touches are per track):
+         a state layout change with the UI's co-review.
 6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the

@@ -109,7 +109,10 @@ bool ControlLink::send(const std::string& message) {
 
 void TouchQueue::touch(uint32_t instance, TouchKind kind, uint32_t dense, float value) noexcept {
     if (kind == TouchKind::Unmapped) {
-        unmapped_.fetch_add(1, std::memory_order_relaxed);
+        if (instance < plugin::kMaxInstances)
+            unmapped_[instance].fetch_add(1, std::memory_order_relaxed);
+        else
+            lost_.fetch_add(1, std::memory_order_release);
         notify_control();
         return;
     }

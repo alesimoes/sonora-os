@@ -2968,7 +2968,8 @@ int scenario_gesture(const Args& a) {
         float value;
     };
     std::vector<Ev> ev;
-    uint64_t dropped = 0;
+    uint64_t dropped = 0, lost = 0;
+    bool unmapped_named = true;
     for (const std::string& m : host.take_inbox()) {
         pc::Type t;
         std::string e;
@@ -2984,7 +2985,12 @@ int scenario_gesture(const Args& a) {
             if (pc::decode(m, g, e)) ev.push_back({t, g.instance, g.param, g.value});
         } else if (t == pc::Type::Fault) {
             pc::Fault f;
-            if (pc::decode(m, f, e) && f.kind == pc::FaultKind::EventsDropped) dropped += f.count;
+            if (!pc::decode(m, f, e)) continue;
+            if (f.kind == pc::FaultKind::ParamUnmapped) {
+                dropped += f.count;
+                unmapped_named = unmapped_named && f.instance == 0;
+            }
+            if (f.kind == pc::FaultKind::EventsDropped) lost += f.count;
         }
     }
     for (const Ev& e : ev)
@@ -3008,7 +3014,9 @@ int scenario_gesture(const Args& a) {
     ok = is(pc::Type::GestureBegin, 0, true) && is(pc::Type::ParamTouched, 0.125f) &&
          is(pc::Type::GestureEnd, 0.125f) && i == ev.size();
     check(ok, "the gesture left open is ended, with its last value, before the host stops");
-    check(dropped == 1, "the touch on the read-only parameter is dropped and counted (Fault{EventsDropped})");
+    check(dropped == 1 && unmapped_named,
+          "the touch on the read-only parameter is dropped and counted, naming the plugin (Fault{ParamUnmapped})");
+    check(lost == 0, "and is not counted as a touch lost on the way (Fault{EventsDropped})");
     check(WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 0, "the host exits 0");
     return 0;
 }

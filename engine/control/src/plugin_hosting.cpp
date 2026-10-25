@@ -215,6 +215,11 @@ struct PluginHosting::Chain {
     // (ADR-0012 change G, as for non-finite output): one Notice per run.
     // A run is one build of the chain; a restart of it is the same run.
     std::set<model::Id> work_noticed;
+    // The same for touches of a parameter the session cannot record, per
+    // insert, and for touches lost on the way, per chain (the host's touch
+    // queue is the chain's, not one plugin's).
+    std::set<model::Id> unmapped_noticed;
+    bool lost_noticed = false;
 };
 
 PluginHosting::PluginHosting(Session& session, PluginHostingConfig config, PluginScanner& scanner)
@@ -330,6 +335,8 @@ void PluginHosting::drop_chain(Chain& c) {
     c.restart_retire_epoch = 0;
     c.state_lost.clear();
     c.work_noticed.clear();
+    c.unmapped_noticed.clear();
+    c.lost_noticed = false;
 }
 
 // ---- probes: the scan worker's (amendment of 2026-10-19, item 3)
@@ -548,6 +555,8 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
         // Keyed by insert id too: the new document's insert of the same id
         // is another insert, with nothing refused yet (#115 review).
         work_refused_.clear();
+        param_unmapped_.clear();
+        touches_lost_.clear();
         notices_.clear();
     }
     std::set<model::Id> seen;
@@ -757,6 +766,8 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.state_lost = std::move(c.pending_state_lost);
                     c.pending_state_lost.clear();
                     c.work_noticed.clear();
+                    c.unmapped_noticed.clear();
+                    c.lost_noticed = false;
                     note_refused_states(c, doc);
                     c.retry.clear();
                     c.store_epoch = 0;
@@ -1012,21 +1023,40 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
         }
         case pc::Type::Fault: {
             pc::Fault m;
-            if (!pc::decode(bytes, m, e) || m.kind != pc::FaultKind::WorkRefused) break;
+            if (!pc::decode(bytes, m, e)) break;
+            const auto add = [](uint64_t& n, uint64_t count) {
+                n = count > std::numeric_limits<uint64_t>::max() - n ? std::numeric_limits<uint64_t>::max()
+                                                                     : n + count;
+            };
+            const model::TrackEdit* t = nullptr;
+            for (const auto& tp : doc.edit->tracks)
+                if (tp->id == track) t = tp.get();
+            if (m.kind == pc::FaultKind::EventsDropped) {
+                add(touches_lost_[track], m.count);
+                if (c.lost_noticed || !t) break;
+                c.lost_noticed = true;
+                notices_.push_back(t->name +
+                                   ": parameter moves from a plug-in editor on this track were lost on the way to "
+                                   "the engine; each move was ended at the plug-in's value, so the session has "
+                                   "it, but one move may have become two undo steps");
+                break;
+            }
+            if (m.kind != pc::FaultKind::WorkRefused && m.kind != pc::FaultKind::ParamUnmapped) break;
             if (m.instance < 0 || uint32_t(m.instance) >= c.running_spec.size()) break;
             const model::Id insert = c.running_spec[uint32_t(m.instance)].insert;
-            uint64_t& n = work_refused_[insert];
-            n = m.count > std::numeric_limits<uint64_t>::max() - n ? std::numeric_limits<uint64_t>::max() : n + m.count;
+            const bool work = m.kind == pc::FaultKind::WorkRefused;
+            add(work ? work_refused_[insert] : param_unmapped_[insert], m.count);
             // The plugin plays on, so nothing stands: said once a run, and
             // the count carries the rest (ADR-0012 change G).
-            if (!c.work_noticed.insert(insert).second) break;
-            for (const auto& tp : doc.edit->tracks) {
-                if (tp->id != track) continue;
-                for (const model::Insert& in : tp->inserts)
-                    if (in.id == insert)
-                        notices_.push_back(where(*tp, in) +
-                                           ": its worker refused messages (its queue was full), so work the "
-                                           "plugin asked for may not have been done");
+            if (!(work ? c.work_noticed : c.unmapped_noticed).insert(insert).second || !t) break;
+            for (const model::Insert& in : t->inserts) {
+                if (in.id != insert) continue;
+                notices_.push_back(where(*t, in) +
+                                   (work ? ": its worker refused messages (its queue was full), so work the "
+                                           "plugin asked for may not have been done"
+                                         : ": its editor changed a parameter it does not offer for recording "
+                                           "(read-only or undeclared), so the session did not record that "
+                                           "change; check it after the session is reopened"));
             }
             break;
         }
@@ -1122,6 +1152,16 @@ void PluginHosting::recompute_faults(const model::Snapshot& doc) {
 uint64_t PluginHosting::work_refused(model::Id insert) const {
     const auto it = work_refused_.find(insert);
     return it == work_refused_.end() ? 0 : it->second;
+}
+
+uint64_t PluginHosting::param_unmapped(model::Id insert) const {
+    const auto it = param_unmapped_.find(insert);
+    return it == param_unmapped_.end() ? 0 : it->second;
+}
+
+uint64_t PluginHosting::touches_lost(model::Id track) const {
+    const auto it = touches_lost_.find(track);
+    return it == touches_lost_.end() ? 0 : it->second;
 }
 
 std::vector<std::string> PluginHosting::take_notices() {
