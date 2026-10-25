@@ -93,7 +93,7 @@
 | Plugin presets and state saved in the session | Complete DAW / Plugin hosting and PDC | `t4-worker-refused-shown` | 3 |
 | dsp-engineer charter and ADR-0011 | Complete DAW / Native plugins (ADR-0011) | `docs/adr-native-plugins` | 1 |
 | FET peak limiter (Sonora FET): the published gain-reduction stage and side chain, solved per sample against ngspice | Complete DAW / Native plugins (ADR-0011) | `feature/dsp-n2-fet` | 3 |
-| MIDI sequences at scale (ADR-0015): sequence files beside the session, canonical chunks shared by undo, a chunk table and Snapshot in parts, a 2^24-entry budget | Complete DAW / MIDI and virtual instruments | `m1c-midi-storage` | 8 |
+| MIDI sequences at scale (ADR-0015): sequence files beside the session, canonical chunks shared by undo, a chunk table and Snapshot in parts, a 2^24-entry budget | Complete DAW / MIDI and virtual instruments | `m1c2-midi-chunks` | 8 |
 | Takes open in another DAW at the right timecode | Complete DAW / Interchange, import and export | `test/bwf-interop` | 1 |
 | Kiosk compositor for the Qt shell, plus its ADR | OS packaging / Bootable image and kiosk (ADR-0005, ADR-0010) | `docs/adr-compositor` | 3 |
 
