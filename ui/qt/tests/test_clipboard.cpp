@@ -542,6 +542,24 @@ int test_limit() {
                      " in one edit. Nothing was pasted.");
     CHECK(doc.revision() == r0 && lane(doc.snapshot(), 1).regions.empty());
 
+    // One lane onto two tracks counts both tracks' placements: half the
+    // limit each fits, one more each does not.
+    const Frames far = 2 * span(kLimit + 44);
+    select_range(c, 0, 0, span(kLimit / 2));
+    CHECK(c.copy(why));
+    c.select_range(0, far, far + kStep, 2);
+    CHECK(c.paste(why));
+    CHECK(lane(doc.snapshot(), 1).regions.size() == kLimit / 2 && doc.history().undo_depth() == 1);
+    CHECK(c.undo(why));
+    select_range(c, 0, 0, span(kLimit / 2 + 1));
+    CHECK(c.copy(why));
+    c.select_range(0, far, far + kStep, 2);
+    r0 = doc.revision();
+    CHECK(!c.paste(why));
+    CHECK(why == "Paste needs " + std::to_string(kLimit + 2) + " changes; at most " + limit +
+                     " in one edit. Nothing was pasted.");
+    CHECK(doc.revision() == r0 && lane(doc.snapshot(), 1).regions.empty());
+
     // Cut: one RemoveRegion a region. A refused Cut leaves the clipboard.
     select_range(c, 0, 0, span(kLimit));
     CHECK(c.cut(why));
@@ -698,6 +716,43 @@ int test_several_tracks() {
     CHECK(has(why, "Pasted 1 of the clipboard's 3 tracks") && has(why, "copied from Keys"));
     CHECK(!has(why, name_of(doc.snapshot(), 1).c_str()));
     CHECK(c.undo(why));
+
+    // One track's clipboard into a selection on several fills each of them,
+    // as Pro Tools does: one compound, one undo step, the selection kept.
+    c.select_range(0, kBar, 2 * kBar, 1);
+    CHECK(c.copy(why) && c.clipboard().lanes.size() == 1);
+    c.select_range(0, 10 * kBar, 11 * kBar, 3);
+    CHECK(c.paste(why) && why.empty());
+    for (int t = 0; t < 3; ++t) {
+        CHECK(lane(doc.snapshot(), t).regions.back().position == 10 * kBar);
+        CHECK(lane(doc.snapshot(), t).regions.back().length == kBar);
+    }
+    CHECK(lane(doc.snapshot(), 1).regions.size() == 1);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Paste");
+    CHECK(c.selection().track == 0 && c.selection().tracks == 3 &&
+          c.selection().start == 10 * kBar && c.selection().end == 11 * kBar);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+    // From an insertion point on two tracks, the two only.
+    c.select_range(1, 12 * kBar, 12 * kBar, 2);
+    CHECK(c.paste(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 1);
+    CHECK(lane(doc.snapshot(), 1).regions.size() == 1 && lane(doc.snapshot(), 2).regions.size() == 2);
+    CHECK(c.undo(why));
+    // A clipboard of several lanes keeps its layout on a wider selection.
+    c.select_range(0, kBar, 2 * kBar, 2);
+    CHECK(c.copy(why) && c.clipboard().lanes.size() == 2);
+    c.select_range(0, 10 * kBar, 11 * kBar, 3);
+    CHECK(c.paste(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2 && lane(doc.snapshot(), 2).regions.size() == 1);
+    CHECK(c.undo(why));
+    // A selected region is one track, whatever the clipboard.
+    c.select_range(0, kBar, 2 * kBar, 1);
+    CHECK(c.copy(why));
+    CHECK(c.select_region(10));
+    CHECK(c.paste(why) && c.selection().tracks == 1);
+    CHECK(lane(doc.snapshot(), 2).regions.size() == 1);
+    CHECK(c.undo(why) && !doc.can_undo());
 
     // Only empty lanes left out: nothing was lost, so nothing to say.
     c.select_range(0, kBar, 2 * kBar, 2);
