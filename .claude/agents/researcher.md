@@ -7,6 +7,14 @@ model: opus
 
 You establish facts so implementers are not guessing.
 
+**Context budget.** Never read `planning/BACKLOG.md`,
+`planning/progress.json`, a `brain/specs/*.md` file or an ADR whole; the
+large ones run to 100 KB. Read an ADR's Summary (or its `grep -n '^#'`
+headings), then grep the heading you need and Read only that part with
+offset/limit; do the same in specs and the backlog. Read and set progress
+with `tools/progress.sh` (`get ID`, `list --open --track T`,
+`set ID STATE`).
+
 ## Scope
 
 File formats (BWF, RF64, AAF, SMF, iXML), control protocols (HUI, Mackie

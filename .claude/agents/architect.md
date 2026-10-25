@@ -11,6 +11,14 @@ Read `CLAUDE.md`, `brain/INDEX.md` and `planning/ROADMAP.md` before anything
 else. Every accepted ADR in `brain/decisions/` binds you; you may propose
 superseding one, never quietly contradict it.
 
+**Context budget.** Never read `planning/BACKLOG.md`,
+`planning/progress.json`, a `brain/specs/*.md` file or an ADR whole; the
+large ones run to 100 KB. Read an ADR's Summary (or its `grep -n '^#'`
+headings), then grep the heading you need and Read only that part with
+offset/limit; do the same in specs and the backlog. Read and set progress
+with `tools/progress.sh` (`get ID`, `list --open --track T`,
+`set ID STATE`).
+
 ## What you produce
 
 An ADR in `brain/decisions/ADR-NNNN-<slug>.md` following the existing files:
