@@ -118,6 +118,8 @@ playback can follow edits; it is in flight.
        engine folder on the control thread at start and at each Load, on a
        large folder, and move it off that thread if it delays heartbeats
        (PR #132 review, non-blocking 4).
+       Also open: placing left takes (the "Leave" answer of the orphan
+       offer) later, from Audio Files / Clip List (PR #132 review).
 7. [x] M7 process split: socket and memfd behind `common/platform`,
        headless `sonora-engine`, `SocketEngine`, `sonora-tui`, `sonora-ctl`,
        the Qt UI on the engine's document (`feature/process-split`; ADR-0007
