@@ -2,7 +2,7 @@
 #pragma once
 
 // ============================================================================
-//  HostControl, wire version 2 (ADR-0012 §4, §5.5; checklist item 1).
+//  HostControl, wire version 3 (ADR-0012 §4, §5.5; checklist item 1).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6), like
 //  protocol.h. A change to a message, a field, a cap or an ordering rule
@@ -89,7 +89,7 @@
 //  so either side can name a mismatch whatever changed after them.
 //
 // The start-up check (ADR-0012 §5.5): `sonora-plugin-host --version` prints
-// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 2",
+// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 3",
 // and the engine parses it with parse_host_version_line, which requires all
 // three; a mismatch disables plugin hosting for the run, loudly.
 //
@@ -145,9 +145,18 @@
 //    that instant; counted in Fault{EventsDropped}). When the host sees any
 //    drop, it ends every gesture still open at once, each with the plugin's
 //    current value read on its main thread, before it sends that Fault. A
-//    later touch of such a gesture starts a new one; a later end of it is
-//    ignored. So every GestureBegin gets its GestureEnd, and the engine
-//    records SetInsertParams for every parameter that moved.
+//    later touch of such a gesture starts a new one; a later end of it at
+//    the value already sent is ignored, and at another value is sent as a
+//    gesture of its own (Begin, Touched, End), as is an end whose begin was
+//    lost. A lone edit lost leaves nothing to end, so after a drop the host
+//    also compares, once the ended gestures have had time to come back
+//    (about 100 ms, and before it stops), every parameter's and bypass's
+//    value in the plugin with the engine's last value, and sends each that
+//    differs, with no gesture open on it, as a gesture of its own. So every
+//    GestureBegin gets its GestureEnd, and the engine records
+//    SetInsertParams for every parameter that moved; a move whose touches
+//    were lost may be recorded as two gestures (two undo steps) instead of
+//    one.
 //  - The engine does not trust the host to coalesce (M2). It enforces, per
 //    host: at most kMaxTouchesPerSecondPerParam ParamTouched per (instance,
 //    param), and at most kMaxGestureEndsPerSecond GestureEnd in any
@@ -168,7 +177,13 @@
 //    is sent as kBypassParam with 1 = bypassed, 0 = not, so the engine
 //    records SetInsertBypass, never a parameter. A touch on a parameter the
 //    host has no dense index for (read-only, unknown) is dropped and counted
-//    (Fault{EventsDropped}). Values are format-native and finite.
+//    per plugin (Fault{ParamUnmapped}): nothing was lost on the way, but the
+//    session cannot record what the plugin changed. Values are
+//    format-native and finite.
+//  - Counted faults (EventsDropped, ParamUnmapped, WorkRefused) are sent
+//    once at the first, then summed, at most once per (kind, instance) per
+//    kCountedFaultIntervalMs, and what is left is sent before the host
+//    stops: a plugin that does it every block cannot flood the engine.
 //  - Gesture events are sent only after Loaded; earlier ones are held.
 //  - Keys. Loaded lists every instance's dense parameters with their stable
 //    keys and ranges (ParamDesc). The engine resolves a client's
@@ -267,7 +282,10 @@ namespace sonora::plugin::control {
 
 // 2: Fault{WorkRefused}, so a plugin whose worker messages were refused is
 // named to the operator (Track 4 item 5).
-inline constexpr uint32_t kHostWireVersion = 2;
+// 3: Fault{ParamUnmapped} split from EventsDropped, which now counts only
+// touches lost on the way, so each can be told to the operator for what it
+// is (Track 4 item 5).
+inline constexpr uint32_t kHostWireVersion = 3;
 
 // --- caps (untrusted input is checked against these before anything is held)
 inline constexpr std::size_t kMaxIdBytes = 1024;            // LV2 URI; VST3 is 32 hex digits
@@ -549,15 +567,23 @@ struct Reconfigured {
 enum class FaultKind : uint8_t {
     Plugin = 0,         // a plugin misbehaved; the host exits kHostExitFaulted
     Protocol = 1,       // the engine broke this contract; the host exits kHostExitUsage
-    EventsDropped = 2,  // touches the host could not queue or map; `count` of them
+    // Touches the host could not queue (its ring full, or the main thread
+    // holding it), `count` more since the last; `instance` is -1, the queue
+    // being the host's. The host recovered the values those touches carried
+    // from the plugin ("Parameter touches"), so the document has the final
+    // values, but a move may be split into more than one gesture.
+    EventsDropped = 2,
     // LV2 worker:schedule requests and work() responses refused because
     // their ring was full (LV2_WORKER_ERR_NO_SPACE), `count` more of them
     // since the last; `instance` is the plugin's. The plugin keeps running,
     // but work it asked for was not done, so the engine names the insert.
-    // At most one per instance per kWorkRefusedIntervalMs.
     WorkRefused = 3,
+    // Touches of a parameter the host has no dense index for (read-only,
+    // unknown), `count` more since the last; `instance` is the plugin's.
+    ParamUnmapped = 4,
 };
-inline constexpr uint32_t kWorkRefusedIntervalMs = 1000;
+inline constexpr uint32_t kCountedFaultIntervalMs = 1000;
+inline constexpr uint32_t kWorkRefusedIntervalMs = kCountedFaultIntervalMs;
 
 struct Fault {
     FaultKind kind = FaultKind::Plugin;

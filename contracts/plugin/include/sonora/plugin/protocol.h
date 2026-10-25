@@ -1025,10 +1025,13 @@ inline bool pop_param(ChannelHeader& h, ParamChange& out) noexcept {
 
 // What the host remembers between blocks, in its own memory. `applied`
 // holds map.param_slots values and `applied_bypass` kMaxInstances: what was
-// last applied to each slot, for the table comparison.
+// last applied to each slot, for the table comparison. Atomic because the
+// host's control thread reads them too: after a lost touch it compares the
+// plugin with what was applied, not with a table change still in flight.
+// Stored with release after the plugin has the value.
 struct HostValues {
-    float* applied = nullptr;
-    float applied_bypass[kMaxInstances] = {};
+    std::atomic<float>* applied = nullptr;
+    std::atomic<float> applied_bypass[kMaxInstances] = {};
     uint32_t seen_seq = 0;
 };
 
@@ -1077,8 +1080,8 @@ uint32_t consume_block_params(ChannelHeader& h, const std::atomic<float>* table,
             ++rejected;
             continue;
         }
-        if (bypass) v.applied_bypass[p.instance] = p.value;
-        else v.applied[slot] = p.value;
+        if (bypass) v.applied_bypass[p.instance].store(p.value, std::memory_order_release);
+        else v.applied[slot].store(p.value, std::memory_order_release);
     }
     // Loaded BEFORE the table is read (M3): a write landing during the read
     // bumps it again and is caught next block.
@@ -1090,13 +1093,14 @@ uint32_t consume_block_params(ChannelHeader& h, const std::atomic<float>* table,
                 const int64_t slot = param_slot(m, i, k);
                 if (slot < 0) break;
                 const float x = table[slot].load(std::memory_order_relaxed);
-                if (same_bits(x, v.applied[slot])) continue;
-                if (finite_bits(x) && replace(i, k, x)) v.applied[slot] = x;
+                if (same_bits(x, v.applied[slot].load(std::memory_order_relaxed))) continue;
+                if (finite_bits(x) && replace(i, k, x)) v.applied[slot].store(x, std::memory_order_release);
                 else ++rejected;
             }
             const float b = h.bypass[i].load(std::memory_order_relaxed);
-            if (!same_bits(b, v.applied_bypass[i])) {
-                if (finite_bits(b) && replace(i, kBypassParam, b)) v.applied_bypass[i] = b;
+            if (!same_bits(b, v.applied_bypass[i].load(std::memory_order_relaxed))) {
+                if (finite_bits(b) && replace(i, kBypassParam, b))
+                    v.applied_bypass[i].store(b, std::memory_order_release);
                 else ++rejected;
             }
         }

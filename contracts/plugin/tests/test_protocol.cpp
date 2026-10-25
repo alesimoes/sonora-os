@@ -279,7 +279,7 @@ struct Fixture {
     ChannelHeader* h = init_header(r.base, layout, 48000, 128, 2, counts, 0);
     std::atomic<float>* table = value_table(r.base, layout);
     EngineChannel e = make_engine_channel(128);
-    std::vector<float> applied = std::vector<float>(map.param_slots, 0.f);
+    std::vector<std::atomic<float>> applied = std::vector<std::atomic<float>>(map.param_slots);
     HostValues v;
     std::vector<Applied> log;
     Fixture() { v.applied = applied.data(); }

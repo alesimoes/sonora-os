@@ -43,7 +43,7 @@ struct Plugin {
 };
 
 struct World {
-    std::string version = "sonora-plugin-host layout 1 clock 1 wire 2 probe 1";
+    std::string version = "sonora-plugin-host layout 1 clock 1 wire 3 probe 1";
     std::vector<Plugin> plugins;
     std::vector<std::pair<std::string, std::string>> listfail;
 };

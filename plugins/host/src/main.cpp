@@ -589,6 +589,9 @@ void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_
 
 // Idle wake period in futex mode: bounds how stale the heartbeat can be.
 constexpr uint64_t kIdleWaitNs = 100'000'000;
+// After a lost touch, how long the gestures it ended get to come back through
+// the engine's value table before the plugin's values are compared with it.
+constexpr uint64_t kRecoverDelayNs = 100'000'000;
 // Timer mode (ADR-0012 §1.3). How long after a callback's start the host
 // looks for its submit (placeholder), the step while that callback is late,
 // and the sleep while the engine is not calling back at all.
@@ -1045,7 +1048,8 @@ int serve(const Options& o) {
     // validation, so the latency reported is the one of these values.
     Session s{h, clock, chain, layout, map, mode, period_ns, plugin::value_table(region.base, layout),
               {}, {}, {}, ipc_frames, o.engine_pid, h.block_frames};
-    std::vector<float> applied(map.param_slots, 0.f);
+    // Atomic: the control thread's sweep after a lost touch reads it too.
+    std::vector<std::atomic<float>> applied(map.param_slots);
     s.values.applied = applied.data();
     s.values.seen_seq = h.values_seq.load(std::memory_order_acquire);
     for (uint32_t i = 0; i < map.instance_count; ++i)
@@ -1053,7 +1057,7 @@ int serve(const Options& o) {
             const int64_t slot = plugin::param_slot(map, i, k);
             if (slot < 0) break;
             const float v = s.table[slot].load(std::memory_order_relaxed);
-            applied[std::size_t(slot)] = v;
+            applied[std::size_t(slot)].store(v, std::memory_order_relaxed);
             if (plugin::finite_bits(v)) chain.replace_param(i, k, v);
         }
     for (const Options::Set& set : o.sets)
@@ -1069,7 +1073,7 @@ int serve(const Options& o) {
     chain.prepare_bypass();
     for (uint32_t i = 0; i < map.instance_count; ++i) {
         const float b = h.bypass[i].load(std::memory_order_relaxed);
-        s.values.applied_bypass[i] = b;
+        s.values.applied_bypass[i].store(b, std::memory_order_relaxed);
         if (b > 0.5f) chain.set_bypass(i, true, 0);
     }
     for (std::size_t i = 0; i < chain.size(); ++i)
@@ -1159,15 +1163,24 @@ int serve(const Options& o) {
     }
     bool engine_gone = !link->send_message(loaded_message(h, chain, spec));
     uint32_t latency_sent = h.latency_generation.load(std::memory_order_acquire);
-    uint64_t dropped_sent = 0, lost_seen = 0;
-    // Per instance: refused worker messages already said, and when last.
-    std::vector<uint64_t> refused_sent(chain.size(), 0), refused_at(chain.size(), 0);
+    uint64_t lost_seen = 0;
+    // A counted fault's total already said, and when last (host_control.h:
+    // the first at once, the rest summed at most once per interval).
+    struct Said {
+        uint64_t sent = 0, at = 0;
+    };
+    Said lost_said;
+    std::vector<Said> refused_said(chain.size()), unmapped_said(chain.size());
     // The plugin's value now, on this (its main) thread, for a gesture
     // ended without its own end.
     auto current = [&](uint32_t instance, uint32_t param, float& v) {
         return chain.current_touch_value(instance, param, v);
     };
     GestureTracker gestures;
+    // After a drop, the plugin's values against the engine's last ones, once
+    // the gestures end_all ended have had time to come back through the
+    // table (a few blocks), so they are not recorded twice.
+    uint64_t recover_due = 0;
     std::vector<TouchQueue::Event> events;
     int protocol_exit = -1;
     auto send = [&](const std::string& bytes) {
@@ -1178,12 +1191,45 @@ int serve(const Options& o) {
         pc::encode(pc::Fault{kind, instance, count, text.substr(0, pc::kMaxTextBytes)}, b);
         send(b);
     };
-    auto say_refused = [&](std::size_t i, uint64_t now) {
-        const uint64_t r = chain.work_refused(i);
-        send_fault(pc::FaultKind::WorkRefused, static_cast<int32_t>(i), r - refused_sent[i],
-                   "worker messages refused because the plugin's worker queue was full");
-        refused_sent[i] = r;
-        refused_at[i] = now;
+    // now == 0: the host is stopping, so whatever is left goes at once.
+    auto say_counted = [&](pc::FaultKind kind, int32_t instance, uint64_t total, Said& said, uint64_t now,
+                           const char* text) {
+        if (total == said.sent) return;
+        if (now != 0 && said.at != 0 && now - said.at < uint64_t(pc::kCountedFaultIntervalMs) * 1'000'000ull)
+            return;
+        send_fault(kind, instance, total - said.sent, text);
+        said.sent = total;
+        said.at = now;
+    };
+    auto say_counts = [&](uint64_t now) {
+        say_counted(pc::FaultKind::EventsDropped, -1, touches.lost(), lost_said, now,
+                    "parameter touches that could not be queued");
+        for (std::size_t i = 0; i < chain.size(); ++i) {
+            say_counted(pc::FaultKind::WorkRefused, static_cast<int32_t>(i), chain.work_refused(i),
+                        refused_said[i], now, "worker messages refused because the plugin's worker queue was full");
+            say_counted(pc::FaultKind::ParamUnmapped, static_cast<int32_t>(i), touches.unmapped(uint32_t(i)),
+                        unmapped_said[i], now, "touches of a parameter with no dense index (read-only or unknown)");
+        }
+    };
+    auto recover = [&] {
+        const auto count = [&](uint32_t i) { return i < map.instance_count ? map.count[i] : 0u; };
+        // What was applied is read before the table: a change applied
+        // between the two reads then shows as in flight, never as settled
+        // at a value the plugin has not been given.
+        const auto engine = [&](uint32_t i, uint32_t p, float& table, float& applied) {
+            if (p == plugin::kBypassParam) {
+                applied = s.values.applied_bypass[i].load(std::memory_order_acquire);
+                table = h.bypass[i].load(std::memory_order_relaxed);
+                return true;
+            }
+            const int64_t slot = plugin::param_slot(map, i, p);
+            if (slot < 0) return false;
+            applied = s.values.applied[slot].load(std::memory_order_acquire);
+            table = s.table[slot].load(std::memory_order_relaxed);
+            return true;
+        };
+        gestures.recover(uint32_t(chain.size()), count, engine, current, send);
+        recover_due = 0;
     };
     auto stop_processing = [&] {
         s.stop.store(true, std::memory_order_release);
@@ -1220,7 +1266,7 @@ int serve(const Options& o) {
         }
         chain.prepare_bypass();
         for (uint32_t i = 0; i < map.instance_count; ++i)
-            if (s.values.applied_bypass[i] > 0.5f) chain.set_bypass(i, true, 0);
+            if (s.values.applied_bypass[i].load(std::memory_order_relaxed) > 0.5f) chain.set_bypass(i, true, 0);
         publish_latency(h, chain, ipc_frames);
         const uint32_t gen = h.latency_generation.load(std::memory_order_acquire);
         const uint32_t frames = h.latency_frames.load(std::memory_order_relaxed);
@@ -1341,22 +1387,14 @@ int serve(const Options& o) {
         if (lost != lost_seen) {
             gestures.end_all(current, send);
             lost_seen = lost;
+            recover_due = now + kRecoverDelayNs;
         }
-        const uint64_t touch_due = gestures.flush(now, send);
-        if (const uint64_t d = touches.dropped(); d != dropped_sent) {
-            send_fault(pc::FaultKind::EventsDropped, -1, d - dropped_sent,
-                       "parameter touches that could not be queued, or with no dense index");
-            dropped_sent = d;
-        }
-        // A plugin that refills a full ring every block would otherwise
-        // send a Fault every pass; the first is said at once, the rest at
-        // most once per interval, summed.
-        for (std::size_t i = 0; i < chain.size(); ++i) {
-            if (chain.work_refused(i) == refused_sent[i] || (refused_at[i] != 0 && now - refused_at[i] <
-                                                                   uint64_t(pc::kWorkRefusedIntervalMs) * 1'000'000ull))
-                continue;
-            say_refused(i, now);
-        }
+        if (recover_due && now >= recover_due) recover();
+        uint64_t touch_due = gestures.flush(now, send);
+        if (recover_due && (touch_due == 0 || recover_due < touch_due)) touch_due = recover_due;
+        // A plugin that refills a full ring, or touches a meter, every block
+        // would otherwise send a Fault every pass.
+        say_counts(now);
         // Region first: the generation was bumped before this reads it.
         if (const uint32_t gen = h.latency_generation.load(std::memory_order_acquire); gen != latency_sent) {
             std::string b;
@@ -1375,11 +1413,11 @@ int serve(const Options& o) {
     touches.drain(events);
     for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
     gestures.end_all(current, send);
+    if (recover_due || touches.lost() != lost_seen) recover();
     stop_processing();
     join_thread(processing);
-    // After the last run(): no schedule can come later and go unsaid.
-    for (std::size_t i = 0; i < chain.size(); ++i)
-        if (chain.work_refused(i) != refused_sent[i]) say_refused(i, 0);
+    // After the last run(): no schedule or touch can come later and go unsaid.
+    say_counts(0);
     if (exit_code == plugin::kHostExitFaulted) send_fault(pc::FaultKind::Plugin, s.fault.instance, 0, s.fault.message);
     link->close();
     return protocol_exit >= 0 ? protocol_exit : exit_code;

@@ -133,7 +133,7 @@ set_tests_properties(plugin_host_list_bundles_only PROPERTIES PASS_REGULAR_EXPRE
 # flags. eg-amp is from Debian's lv2-examples.
 add_test(NAME plugin_host_probe_record COMMAND sonora-plugin-host --probe http://lv2plug.in/plugins/eg-amp --channels 2)
 set_tests_properties(plugin_host_probe_record PROPERTIES PASS_REGULAR_EXPRESSION
-  "^{\"record\":1,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 2 probe 1\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
+  "^{\"record\":1,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 3 probe 1\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
 add_test(NAME plugin_host_probe_not_installed COMMAND sonora-plugin-host --probe "urn:sonora:test#absent")
 set_tests_properties(plugin_host_probe_not_installed PROPERTIES PASS_REGULAR_EXPRESSION
   "\"ok\":false,\"reason\":\"not installed\"[^\n]*\"outcome\":\"not_installed\"")
@@ -153,7 +153,7 @@ set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is n
                      LABELS plugins)
 # The versions the engine checks at start-up (ADR-0012 §5.5).
 add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
-set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 2 probe 1\n$"
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 3 probe 1\n$"
                      LABELS plugins)
 # Hosts are timer-paced by default: the audio thread's futex wake ships gated
 # off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex

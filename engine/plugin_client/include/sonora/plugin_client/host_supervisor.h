@@ -6,7 +6,7 @@
 // break. Never on the audio thread: everything here allocates, starts
 // processes or waits.
 //
-// The host speaks contracts/plugin/host_control.h (wire 2) on descriptor 3,
+// The host speaks contracts/plugin/host_control.h (wire 3) on descriptor 3,
 // with its regions at 4 and 5 (--control-fd 3 --shm-fd 4 --clock-fd 5; the
 // 2026-10-13 amendment of ADR-0012 §4): the engine writes EngineHello and
 // Load first, checks the host's Hello (versions, pid) and its Loaded (one

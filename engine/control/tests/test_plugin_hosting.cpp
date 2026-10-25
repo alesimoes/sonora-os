@@ -47,6 +47,11 @@
 //                        slot, a count that only rises, no standing fault
 //                        (ADR-0012 change G); another worker plugin counts
 //                        nothing
+//   touch_faults         a host's touches lost on the way (per chain) and
+//                        touches of a parameter with no dense index (per
+//                        insert): each counted, one notice per run naming
+//                        what it can, no standing fault; a fault naming no
+//                        plugin of the chain is ignored
 //   work_refused_new_session  a session opened with the same insert id:
 //                        none of the last one's count or notices
 //   server_work_refused  the same through the server: the count in the
@@ -782,6 +787,95 @@ int scenario_work_refused(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// Fault{EventsDropped} and Fault{ParamUnmapped} (HostControl wire 3) as the
+// host sends them, handed to track A's chain as the server's poll does; the
+// host's own sending is plugin_host_vst3_gesture's.
+int scenario_touch_faults(const Args& a) {
+    std::printf("touch_faults: lost and unmapped touches from A's host are counted and said once a run\n");
+    namespace pc = plugin::control;
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, kEgAmp));
+    rig.apply(insert_op(102, 502, 0, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock); }, 20000), "both run");
+    rig.hosting->take_notices();
+    const auto send = [&](const pc::Fault& f) {
+        std::string bytes;
+        std::vector<model::Operation> ops;
+        pc::encode(f, bytes);
+        rig.hosting->handle_host_message(100, bytes, rig.history.current(), ops);
+        return ops.empty();
+    };
+    bool no_ops = send(pc::Fault{pc::FaultKind::EventsDropped, -1, 3, "touches not queued"});
+    no_ops = send(pc::Fault{pc::FaultKind::EventsDropped, -1, 2, "touches not queued"}) && no_ops;
+    no_ops = send(pc::Fault{pc::FaultKind::ParamUnmapped, 1, 4, "no dense index"}) && no_ops;
+    no_ops = send(pc::Fault{pc::FaultKind::ParamUnmapped, 1, 1, "no dense index"}) && no_ops;
+    // Instance 2 is no plugin of A's chain of two.
+    no_ops = send(pc::Fault{pc::FaultKind::ParamUnmapped, 2, 7, "no dense index"}) && no_ops;
+    check(no_ops, "no document operation from any of them");
+    check(rig.hosting->touches_lost(100) == 5, "A's lost touches are counted, summed: 5");
+    check(rig.hosting->touches_lost(102) == 0, "  B's count nothing");
+    check(rig.hosting->param_unmapped(501) == 5, "slot B's unmapped touches are counted, summed: 5");
+    check(rig.hosting->param_unmapped(500) == 0 && rig.hosting->param_unmapped(502) == 0,
+          "  the other inserts', and the one past the chain, count nothing");
+    std::vector<std::string> notices = rig.hosting->take_notices();
+    for (const std::string& n : notices) std::printf("  notice: %s\n", n.c_str());
+    check(notices.size() == 2, "two notices: one for the chain, one for the insert");
+    const auto has = [&](const char* a1, const char* a2) {
+        for (const std::string& n : notices)
+            if (n.find(a1) != std::string::npos && n.find(a2) != std::string::npos) return true;
+        return false;
+    };
+    check(has("A: ", "were lost on the way") && has("A: ", "read back and recorded"),
+          "  the lost touches name the track, and say the values were read back");
+    check(has("(A, slot B)", "did not record that change"), "  the unmapped ones name the plugin, track and slot");
+    bool standing = false;
+    for (int i = 0; i < 100; ++i) {
+        rig.turn();
+        standing = standing || rig.hosting->faults().count(500) || rig.hosting->faults().count(501);
+    }
+    check(!standing, "no fault stands for them");
+    const uint32_t flags = rig.hosting->insert_flags(501);
+    check((flags & api::kInsertRunning) && !(flags & api::kInsertFaulted), "  slot B shown running, not faulted");
+    // A new run: the chain built again says them again; the counts only rise.
+    const uint32_t old_slot = rig.chain_node(0)->channel_slot;
+    rig.apply(SetInsertActive{500, false});
+    rig.show(false);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.chain_node(0)->channel_slot != old_slot; }, 20000),
+          "the chain built again without slot A");
+    rig.hosting->take_notices();
+    send(pc::Fault{pc::FaultKind::EventsDropped, -1, 1, ""});
+    send(pc::Fault{pc::FaultKind::ParamUnmapped, 0, 1, ""});  // slot B is the chain's first now
+    notices = rig.hosting->take_notices();
+    check(notices.size() == 2, "a new run: both said again");
+    check(rig.hosting->touches_lost(100) == 6 && rig.hosting->param_unmapped(501) == 6,
+          "  the counts kept and rising");
+    // Ids are per session (#121 review): a session opened with the same
+    // track and insert ids starts from 0, with none of the last one's notices.
+    send(pc::Fault{pc::FaultKind::EventsDropped, -1, 1, ""});  // its notices left untaken
+    rig.history = History(new_session(SessionSettings{}));
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 501, 0, kEgAmp));
+    rig.show(true);
+    // The last session's host plays until a plan without it: wait for this
+    // session's own.
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && (rig.hosting->insert_flags(501) & api::kInsertRunning); },
+                    20000),
+          "a new session: its insert 501 runs");
+    check(rig.hosting->touches_lost(100) == 0 && rig.hosting->param_unmapped(501) == 0,
+          "  with counts of 0, not the last session's");
+    check(rig.hosting->take_notices().empty(), "  and none of its notices");
+    send(pc::Fault{pc::FaultKind::ParamUnmapped, 0, 2, ""});
+    send(pc::Fault{pc::FaultKind::EventsDropped, -1, 3, ""});
+    check(rig.hosting->take_notices().size() == 2 && rig.hosting->param_unmapped(501) == 2 &&
+              rig.hosting->touches_lost(100) == 3,
+          "  its own faults: said afresh, counted from 0");
+    return failures ? 1 : 0;
+}
+
 // Ids are per session: a session opened with an insert of the same id as
 // one that was refused in the last carries none of its count, and none of
 // its notices not yet taken; a refusal in the new one is said afresh.
@@ -1299,6 +1393,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "work_refused") rc = scenario_work_refused(a);
     else if (a.scenario == "server_work_refused") rc = scenario_server_work_refused(a);
     else if (a.scenario == "work_refused_new_session") rc = scenario_work_refused_new_session(a);
+    else if (a.scenario == "touch_faults") rc = scenario_touch_faults(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);

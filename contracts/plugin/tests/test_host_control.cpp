@@ -21,7 +21,7 @@
 using namespace sonora::plugin;
 using namespace sonora::plugin::control;
 
-static_assert(kHostWireVersion == 2, "the golden encodings below describe wire version 2");
+static_assert(kHostWireVersion == 3, "the golden encodings below describe wire version 3");
 
 namespace {
 
@@ -93,14 +93,14 @@ M round_trip(const M& m, const char* name) {
 void hellos_are_pinned() {
     std::string b;
     encode(EngineHello{}, b);
-    CHECK(hex(b) == "01" "02000000" "01000000" "01000000");
+    CHECK(hex(b) == "01" "03000000" "01000000" "01000000");
     uint32_t w = 0;
-    CHECK(decode_wire_version(b, w) && w == 2);
+    CHECK(decode_wire_version(b, w) && w == 3);
     Hello h;
     h.pid = 0x0102030405060708ull;
     encode(h, b);
-    CHECK(hex(b) == "40" "02000000" "01000000" "01000000" "0807060504030201");
-    CHECK(decode_wire_version(b, w) && w == 2);
+    CHECK(hex(b) == "40" "03000000" "01000000" "01000000" "0807060504030201");
+    CHECK(decode_wire_version(b, w) && w == 3);
     // A newer engine's hello with fields this version does not know: the
     // version is still readable, the message is not.
     std::string newer;
@@ -167,7 +167,8 @@ void every_message_round_trips() {
     round_trip(GestureEnd{0, kBypassParam, 1.f}, "GestureEnd");
     round_trip(LatencyChanged{3, 1152}, "LatencyChanged");
     round_trip(Reconfigured{9, 4, 2048}, "Reconfigured");
-    round_trip(Fault{FaultKind::EventsDropped, 0, 12, "touches on read-only parameters"}, "Fault");
+    round_trip(Fault{FaultKind::EventsDropped, -1, 12, "touches not queued"}, "Fault");
+    round_trip(Fault{FaultKind::ParamUnmapped, 2, 4, "touches on read-only parameters"}, "Fault");
     round_trip(Fault{FaultKind::WorkRefused, 1, 3, "worker messages refused"}, "Fault");
 }
 
@@ -197,7 +198,11 @@ void untrusted_fields_are_refused() {
     refuse(Fault{FaultKind::Plugin, -2, 0, ""}, "a fault instance below -1");
     refuse(Fault{FaultKind::WorkRefused, -1, 3, ""}, "a WorkRefused fault naming no plugin");
     refuse(Fault{FaultKind::WorkRefused, 0, 0, ""}, "a WorkRefused fault counting nothing");
-    refuse(Fault{static_cast<FaultKind>(4), 0, 1, ""}, "an unknown fault kind");
+    refuse(Fault{FaultKind::ParamUnmapped, -1, 3, ""}, "a ParamUnmapped fault naming no plugin");
+    refuse(Fault{FaultKind::ParamUnmapped, 0, 0, ""}, "a ParamUnmapped fault counting nothing");
+    refuse(Fault{FaultKind::EventsDropped, 0, 3, ""}, "an EventsDropped fault naming a plugin");
+    refuse(Fault{FaultKind::EventsDropped, -1, 0, ""}, "an EventsDropped fault counting nothing");
+    refuse(Fault{static_cast<FaultKind>(5), 0, 1, ""}, "an unknown fault kind");
     refuse(State{0, 0, StateStatus::Empty, "bytes", ""}, "state bytes with status Empty");
     // Plugin ids.
     Load bad;
@@ -600,13 +605,13 @@ void state_blob_and_files() {
 void version_line() {
     char buf[96];
     CHECK(format_host_version_line(buf, sizeof buf) > 0);
-    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 2");
+    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 3");
     uint32_t l = 0, c = 0, w = 0;
     CHECK(parse_host_version_line(buf, l, c, w) && l == kLayoutVersion && c == kClockLayoutVersion &&
           w == kHostWireVersion);
     // protocol.h's parser still reads it, skipping `wire`.
     CHECK(parse_version_line(buf, l, c) && l == 1 && c == 1);
-    CHECK(parse_host_version_line("sonora-plugin-host wire 2 clock 1 layout 1 extra 9\n", l, c, w) && w == 2);
+    CHECK(parse_host_version_line("sonora-plugin-host wire 3 clock 1 layout 1 extra 9\n", l, c, w) && w == 3);
     CHECK(!parse_host_version_line("sonora-plugin-host layout 1 clock 1", l, c, w));  // a pre-wire host
     CHECK(!parse_host_version_line("sonora-plugin-host layout 1 clock 1 wire 1 wire 1", l, c, w));
     CHECK(!parse_host_version_line("sonora-plugin-host layout 1 clock 1 wire", l, c, w));

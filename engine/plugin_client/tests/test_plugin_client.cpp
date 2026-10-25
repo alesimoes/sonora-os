@@ -73,7 +73,7 @@ public:
         base_ = std::aligned_alloc(plugin::kCacheLine, bytes_);
         std::memset(base_, 0, bytes_);
         h = plugin::init_header(base_, layout_, 48000, kBlock, uint32_t(params_.size()), params_.data(), 0);
-        applied_.assign(map_.param_slots, 0.f);
+        applied_ = std::vector<std::atomic<float>>(map_.param_slots);
         values_.applied = applied_.data();
     }
     ~ScriptedHost() { std::free(base_); }
@@ -130,7 +130,7 @@ private:
     plugin::Layout layout_;
     std::size_t bytes_ = 0;
     void* base_ = nullptr;
-    std::vector<float> applied_;
+    std::vector<std::atomic<float>> applied_;
     plugin::HostValues values_;
 };
 

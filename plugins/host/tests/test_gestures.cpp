@@ -6,8 +6,11 @@
 //    plugin reports at the end, not the last touch the host queued;
 //  - a lost end must not leave a gesture open for ever (and SetInsertParams
 //    unrecorded): after any drop the host ends every open gesture with the
-//    plugin's current value, a late end of it is ignored, and a later touch
-//    starts a new gesture.
+//    plugin's current value, a late end of it at that value is ignored, and
+//    a later touch starts a new gesture.
+// And of the #121 review: a value moved in no gesture the host saw (a lone
+// edit lost, or a begin and its touches lost before the end) is recorded as
+// a one-shot gesture, so the session keeps the change.
 #include "control.h"
 
 #include <cstdio>
@@ -118,12 +121,124 @@ void touches_are_coalesced_and_flushed() {
     CHECK(w.seen.size() == 3 && w.seen[2].type == pc::Type::ParamTouched && w.seen[2].value == 0.3f);
 }
 
+// Case 2 of the #121 review: beginEdit and performEdit were both lost, and
+// endEdit was queued. The end is the only word of the move: it is recorded
+// as a gesture of its own at the end's value.
+void an_end_with_its_begin_lost_is_recorded() {
+    GestureTracker g;
+    Wire w;
+    auto send = [&](const std::string& b) { w(b); };
+    g.apply(ev(TouchKind::End, 3, 0.8f), 100 * kMs, send);
+    CHECK(w.seen.size() == 3);
+    if (w.seen.size() == 3) {
+        CHECK(w.seen[0].type == pc::Type::GestureBegin && w.seen[0].param == 3);
+        CHECK(w.seen[1].type == pc::Type::ParamTouched && w.seen[1].value == 0.8f);
+        CHECK(w.seen[2].type == pc::Type::GestureEnd && w.seen[2].value == 0.8f);
+    }
+    CHECK(!g.any_open());
+    // A gesture ended after a drop whose plugin moved on before its own end:
+    // the end's value is newer than the one recorded, so it is recorded too.
+    g.apply(ev(TouchKind::Begin, 4, 0.1f), 200 * kMs, send);
+    g.end_all(
+        [](uint32_t, uint32_t, float& v) {
+            v = 0.2f;
+            return true;
+        },
+        send);
+    const std::size_t before = w.seen.size();
+    g.apply(ev(TouchKind::End, 4, 0.6f), 300 * kMs, send);
+    CHECK(w.seen.size() == before + 3 && w.seen.back().type == pc::Type::GestureEnd && w.seen.back().param == 4 &&
+          w.seen.back().value == 0.6f);
+}
+
+// Case 1 of the #121 review: a performEdit outside any gesture was lost, so
+// nothing was opened and end_all has nothing to end. After the drop the host
+// compares each parameter's value in the plugin with the engine's last value
+// and records the ones that differ, skipping a gesture still open.
+void a_lost_lone_edit_is_recovered_from_the_plugin() {
+    GestureTracker g;
+    Wire w;
+    auto send = [&](const std::string& b) { w(b); };
+    g.apply(ev(TouchKind::Begin, 2, 0.f), 100 * kMs, send);  // open: its own end will say
+    w.seen.clear();
+    // Engine: every parameter at 0.25 and the bypass off. The plugin: param 1
+    // moved to 0.9 (the lost edit), param 2 moved inside its open gesture,
+    // the bypass on.
+    const auto engine = [](uint32_t, uint32_t p, float& table, float& applied) {
+        table = applied = p == sonora::plugin::kBypassParam ? 0.f : 0.25f;
+        return true;
+    };
+    const auto settled = [](uint32_t, uint32_t p, float& v) {
+        v = p == sonora::plugin::kBypassParam ? 0.f : 0.25f;
+        return true;
+    };
+    const auto current = [](uint32_t, uint32_t p, float& v) {
+        v = p == 1 ? 0.9f : p == 2 ? 0.7f : p == sonora::plugin::kBypassParam ? 1.f : 0.25f;
+        return true;
+    };
+    g.recover(1, [](uint32_t) { return 4u; }, engine, current, send);
+    CHECK(w.seen.size() == 6);
+    if (w.seen.size() == 6) {
+        CHECK(w.seen[0].type == pc::Type::GestureBegin && w.seen[0].param == 1);
+        CHECK(w.seen[1].type == pc::Type::ParamTouched && w.seen[1].param == 1 && w.seen[1].value == 0.9f);
+        CHECK(w.seen[2].type == pc::Type::GestureEnd && w.seen[2].param == 1 && w.seen[2].value == 0.9f);
+        CHECK(w.seen[3].param == sonora::plugin::kBypassParam && w.seen[5].type == pc::Type::GestureEnd &&
+              w.seen[5].value == 1.f);
+    }
+    CHECK(g.any_open());  // param 2's gesture is left to its own end
+    // Nothing moved: nothing recorded.
+    w.seen.clear();
+    g.recover(1, [](uint32_t) { return 4u; }, engine, settled, send);
+    CHECK(w.seen.empty());
+}
+
+// Blocking finding on #121: the engine writes its table before the
+// processing thread applies it at the next block. A change in flight (table
+// written, not applied yet) left the plugin at its old value, which differed
+// from the table, so the sweep recorded the old value as a move and reverted
+// the operator's change. The plugin is compared with what was applied, and a
+// slot whose table differs from it is skipped.
+void a_change_in_flight_is_not_recorded_as_a_plugin_move() {
+    GestureTracker g;
+    Wire w;
+    auto send = [&](const std::string& b) { w(b); };
+    // Every slot: the operator moved the table to 0.8 (bypass to on); the
+    // processing thread still holds 0.25 (bypass off), and so does the plugin.
+    const auto in_flight = [](uint32_t, uint32_t p, float& table, float& applied) {
+        const bool bypass = p == sonora::plugin::kBypassParam;
+        table = bypass ? 1.f : 0.8f;
+        applied = bypass ? 0.f : 0.25f;
+        return true;
+    };
+    const auto old = [](uint32_t, uint32_t p, float& v) {
+        v = p == sonora::plugin::kBypassParam ? 0.f : 0.25f;
+        return true;
+    };
+    g.recover(1, [](uint32_t) { return 4u; }, in_flight, old, send);
+    CHECK(w.seen.empty());
+    // Once applied, a plugin that then moved on its own is recorded.
+    const auto applied_now = [](uint32_t, uint32_t p, float& table, float& applied) {
+        table = applied = p == sonora::plugin::kBypassParam ? 1.f : 0.8f;
+        return true;
+    };
+    const auto moved = [](uint32_t, uint32_t p, float& v) {
+        v = p == 3 ? 0.1f : p == sonora::plugin::kBypassParam ? 1.f : 0.8f;
+        return true;
+    };
+    g.recover(1, [](uint32_t) { return 4u; }, applied_now, moved, send);
+    CHECK(w.seen.size() == 3 && w.seen.back().type == pc::Type::GestureEnd && w.seen.back().param == 3 &&
+          w.seen.back().value == 0.1f);
+}
+
 }  // namespace
 
 int main() {
     a_lost_touch_does_not_make_the_end_stale();
     a_lost_end_does_not_leave_a_gesture_open();
     touches_are_coalesced_and_flushed();
+    an_end_with_its_begin_lost_is_recorded();
+    a_lost_lone_edit_is_recovered_from_the_plugin();
+    a_change_in_flight_is_not_recorded_as_a_plugin_move();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;
