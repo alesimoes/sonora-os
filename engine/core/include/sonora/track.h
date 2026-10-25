@@ -8,6 +8,7 @@
 #include "sonora/ringbuffer.h"
 #include "sonora/rt.h"
 #include "sonora/wav_writer.h"
+#include "sonora/wrap_sidecar.h"
 
 namespace sonora {
 
@@ -75,6 +76,9 @@ public:
         slot_take_[slot].store(take, std::memory_order_release);
     }
     WavWriter& writer(int slot) { return writers_[slot]; }
+    // A loop take's wrap list, beside its writer and handed over with it
+    // (ADR-0016 §2). Not open for any other take.
+    WrapSidecar& sidecar(int slot) { return sidecars_[slot]; }
     // The control thread's: the slot of the take it opened last, which
     // start_recording() reuses when it is free, so a limit set on writer()
     // between takes applies to the next one.
@@ -100,6 +104,7 @@ private:
 
     std::unique_ptr<RingBuffer<float>> capture_ring_;
     WavWriter writers_[kWriterSlots];
+    WrapSidecar sidecars_[kWriterSlots];
     std::atomic<int> slot_take_[kWriterSlots] = {{0}, {0}};
     int current_slot_ = 0;
     uint64_t document_id_ = 0;

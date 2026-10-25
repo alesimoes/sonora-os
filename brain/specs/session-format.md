@@ -486,7 +486,7 @@ mapping.
 | `TimeReference` | `timecode.origin` + the timeline position of the file's **first frame**, after latency compensation: `origin + P0 − L`, where `P0` is the playhead when capture of this file began and `L` the round-trip latency. The default origin of 01:00:00:00 keeps this positive. |
 | `Version` | 1 once `umid` is written; 0 until then, as today. |
 | `UMID` | The source's `umid`. |
-| `Description` | `sonora take=<n> track=<id> punch=<A>-<B> session=<name>`. ` punch=<A>-<B>` (timeline samples, relative to `origin`) only for a punch take. ` track=<id>` is left out when the engine has no document for the track: an engine track's position is not a track id. `session=` is always last and its value is the **rest of the field**: a session name may hold spaces and `=`, so a reader takes the fields before it one word at a time and everything after `session=` as the name; "Demo punch=0-48000" is a name, not a punch. The name is the document's (`settings.name`). Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. At most 255 bytes, so the field keeps its NUL: a name that does not fit is cut on a UTF-8 character boundary. Built: `take_description()` in `engine/core`. |
+| `Description` | `sonora take=<n> track=<id> punch=<A>-<B> session=<name>`. ` punch=<A>-<B>` (timeline samples, relative to `origin`) only for a punch take; a loop take says ` loop=<A>-<B>` in its place (ADR-0016 §4), so a take killed mid-loop says it was one, and `loop_of_description()` reads it back from before `session=`. ` track=<id>` is left out when the engine has no document for the track: an engine track's position is not a track id. `session=` is always last and its value is the **rest of the field**: a session name may hold spaces and `=`, so a reader takes the fields before it one word at a time and everything after `session=` as the name; "Demo punch=0-48000" is a name, not a punch. The name is the document's (`settings.name`). Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. At most 255 bytes, so the field keeps its NUL: a name that does not fit is cut on a UTF-8 character boundary. Built: `take_description()` in `engine/core`. |
 | `Originator` | `Sonora Engine`, as today. |
 | `OriginationDate/Time` | Wall clock when the take began. |
 
@@ -649,6 +649,26 @@ provides them:
   that punch, over `[A, B)` with the session's punch crossfades. Without
   that field, or if its length cannot cover `[A, B)`, it is recovered as an
   **unused source**, never placed over existing material automatically.
+- **Loop takes keep their wraps beside them** (ADR-0016 §2, §5). A loop
+  take is one file per track through every pass, and `<take file>.wraps`
+  next to it lists the file frame of each wrap: a 32-byte header ("SNWR",
+  version 1, A and B as little-endian u64, then L as a little-endian u32
+  and four zero bytes) and one 8-byte little-endian
+  record per wrap, append-only, `~0` for a wrap whose boundary record a
+  full ring lost (`common/audiofile` `WrapSidecar`). The disk thread
+  appends each wrap as it comes and syncs the list after the take's own
+  checkpoint, so the loss window covers the wraps too. A wrap can reach the
+  medium before the audio it ends, by writeback; recovery drops a wrap past
+  the file's end and cuts short the pass whose end it lacks. Recovery
+  (`engine/core` `recover_loop_wraps()`) reads them and derives what the
+  list is missing, or all of it when there is no list, from the
+  Description's `loop=<A>-<B>`, the TimeReference and the list's L (0
+  when there is no list, the only L recorded so far): the first wrap at
+  file frame B - TimeReference + L, each later one B - A after the one
+  before, and the offer says those passes were placed by loop length. That
+  is exact only if the take had no capture overrun. The offer itself is
+  `engine.record.orphan_offer`'s; it places a loop take as its passes on
+  new playlists, never as one region.
 
 What is lost in a power cut: edits since the last autosave, the undo
 history, which is never saved, and at most the loss window of audio at the

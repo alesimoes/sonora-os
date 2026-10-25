@@ -12,14 +12,28 @@ namespace sonora {
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record,
                               PlaybackController* playback, PunchFor punch_for,
-                              MayArm may_arm) {
+                              MayArm may_arm, LoopFor loop_for) {
+    const auto loop_take = [loop_for](LoopRange& loop, std::string& refusal) {
+        refusal.clear();
+        return loop_for && loop_for(loop, refusal);
+    };
     // The counter is a hint, never trusted on its own: the folder may hold
     // takes from before a restart, and start_recording() refuses a name that
     // is taken, so the number is re-read from disk before every take.
-    const auto open_take = [&session, &take, may_record, punch_for](std::string& why) {
+    const auto open_take = [&session, &take, may_record, punch_for,
+                            loop_take](std::string& why) {
         if (may_record && !may_record(why)) return false;
         const int free = session.next_free_take();
         if (take < free) take = free;
+        // Asked again here: the ranges are the ones set when the take
+        // starts, which behind the gate is later than the press.
+        LoopRange loop;
+        std::string refusal;
+        if (loop_take(loop, refusal)) return session.start_loop(take, loop, &why);
+        if (!refusal.empty()) {
+            why = refusal;
+            return false;
+        }
         PunchRange range;
         if (punch_for && punch_for(range)) return session.start_punch(take, range, &why);
         return session.start_recording(take, &why);
@@ -29,10 +43,23 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // just before must have landed, or the take starts somewhere else
     // (ADR-0009 §4.4). The request is answered from pump(); a refusal then
     // comes back through take_record_error().
-    const auto start = [open_take, playback](std::string& why) {
+    const auto start = [open_take, playback, loop_take](std::string& why) {
+        LoopRange loop;
+        std::string refusal;
+        const bool looped = loop_take(loop, refusal);
+        // ADR-0016 C3: refused at the press, before anything waits.
+        if (!refusal.empty()) {
+            why = refusal;
+            return false;
+        }
         if (!playback) return open_take(why);
         // Asked once already: a second press is the same request.
-        if (!playback->record_requested()) playback->record(open_take);
+        if (!playback->record_requested()) {
+            // A loop take records from its pre-roll (ADR-0016 §1): the gate
+            // then waits for that window too, and start_loop() lands there.
+            if (looped && !playback->locate(loop.start, why)) return false;
+            playback->record(open_take);
+        }
         return true;
     };
 
@@ -78,9 +105,12 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // which is what the lit PUNCH indicator promises (Logic's Autopunch).
     // Before A it waits for A, inside the range it punches in at the
     // playhead and out at B, and at or past B start_punch() refuses it.
-    reg.install("transport.punch", [&session, &take, start,
+    reg.install("transport.punch", [&session, &take, start, finish,
                                     playback](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Recording) {
+            // Rolling on out of a loop take would leave the loop with the
+            // playhead past B; stop ends a loop take (ADR-0016 §1).
+            if (session.loop_take_running()) return finish(why);
             session.punch_out();
             ++take;
             return true;

@@ -55,6 +55,18 @@ void DiskReader::wake() {
     cv_.notify_all();
 }
 
+void DiskReader::hold_loop(int64_t loop_from, int64_t loop_to) {
+    if (loop_from < 0 || loop_to <= loop_from || loop_to > int64_t{0xFFFFFFFF}) {
+        release_loop();
+        return;
+    }
+    loop_.store((static_cast<uint64_t>(loop_to) << 32) | static_cast<uint64_t>(loop_from),
+                std::memory_order_release);
+    wake();
+}
+
+void DiskReader::release_loop() { loop_.store(0, std::memory_order_release); }
+
 bool DiskReader::add_source(const std::string& path, uint32_t& slot, std::string& error) {
     const uint32_t n = source_count_.load(std::memory_order_relaxed);
     if (n >= max_sources_) {
@@ -252,16 +264,16 @@ bool DiskReader::protected_chunk(const PlanSegment& seg, uint64_t chunk) const {
     return false;
 }
 
-// Never a chunk the playing plan needs in [playhead, playhead + W) or at a
-// locate target in flight; those are exactly the protected ranges. A buffer
-// is evicted only if no slot that names it, in either live plan, is
-// protected or ahead of the playhead.
+// Never a chunk the playing plan needs in [playhead, playhead + W), at a
+// locate target in flight or at a held loop start; those are exactly the
+// protected ranges. A buffer is evicted only if no slot that names it, in
+// either live plan, is protected or ahead of the playhead.
 void DiskReader::evict_behind(int64_t playhead) {
     if (!playing_) return;
     uint32_t evicted = 0;
     for (uint32_t si = 0; si < playing_->segment_count && evicted < max_coalesce_; ++si) {
         const PlanSegment& seg = playing_->segments[si];
-        if (seg.start >= playhead) break;
+        if (!looping_ && seg.start >= playhead) break;
         for (uint32_t c = 0; c < seg.channels; ++c) {
             for (uint32_t k = 0; k < seg.chunk_count[c]; ++k) {
                 const uint32_t slot = seg.first_chunk_slot[c] + k;
@@ -284,7 +296,8 @@ void DiskReader::evict_behind(int64_t playhead) {
                                     s2.end, s2.start + (static_cast<int64_t>(chunk + 1) *
                                                             chunk_frames_ -
                                                         s2.source_offset));
-                                if (end > playhead || protected_chunk(s2, chunk)) {
+                                if ((!looping_ && end > playhead) ||
+                                    protected_chunk(s2, chunk)) {
                                     keep = true;
                                     break;
                                 }
@@ -327,9 +340,8 @@ void for_each_window_slot(const PlaybackPlan* plan, int64_t from, int64_t to,
 
 }  // namespace
 
-void DiskReader::fill(PlaybackPlan* plan, int64_t from) {
+void DiskReader::fill(PlaybackPlan* plan, int64_t from, int64_t to) {
     if (!plan) return;
-    const int64_t to = from + window_frames_;
     std::vector<Wanted> missing;
     const auto link_or_note = [&](bool note) {
         for_each_window_slot(plan, from, to, chunk_frames_,
@@ -436,10 +448,10 @@ void DiskReader::read_run(uint32_t source, uint64_t first_chunk, uint32_t count,
     chunks_read_.fetch_add(count, std::memory_order_relaxed);
 }
 
-bool DiskReader::window_resident(const PlaybackPlan* plan, int64_t from) const {
+bool DiskReader::window_resident(const PlaybackPlan* plan, int64_t from, int64_t to) const {
     if (!plan) return true;
     bool all = true;
-    for_each_window_slot(plan, from, from + window_frames_, chunk_frames_,
+    for_each_window_slot(plan, from, to, chunk_frames_,
                          [&](const PlanSegment&, uint32_t, uint64_t, uint32_t slot) {
         if (plan->chunk_slots[slot].load(std::memory_order_relaxed) == kNoChunk) all = false;
     });
@@ -453,23 +465,41 @@ void DiskReader::pass(const Request& req) {
     const uint64_t applied = transport_.locates_applied();
     const auto playhead = static_cast<int64_t>(transport_.playhead());
     const bool locating = req.locate_serial != 0 && applied < req.locate_serial;
+    const uint64_t loop = loop_.load(std::memory_order_acquire);
+    const auto loop_from = static_cast<int64_t>(loop & 0xFFFFFFFFu);
+    const auto loop_to = static_cast<int64_t>(loop >> 32);
+    looping_ = loop != 0;
+
+    // Inside a held loop the playhead never reaches B: past it, the window
+    // goes on at A, which the loop start's own window covers.
+    int64_t ahead = playhead + window_frames_;
+    if (looping_ && playhead < loop_to && ahead > loop_to) ahead = loop_to;
+    const int64_t target = req.locate_target;
+    const int64_t loop_ahead = loop_from + window_frames_;
 
     protect_count_ = 0;
-    protect_[protect_count_++] = {playhead, playhead + window_frames_};
-    if (locating) {
-        protect_[protect_count_++] = {req.locate_target, req.locate_target + window_frames_};
+    protect_[protect_count_++] = {playhead, ahead};
+    if (locating) protect_[protect_count_++] = {target, target + window_frames_};
+    if (looping_) protect_[protect_count_++] = {loop_from, loop_ahead};
+
+    // What is heard now first, then where the next wrap lands, then what
+    // gates the next swap or locate.
+    fill(playing_, playhead, ahead);
+    if (looping_) fill(playing_, loop_from, loop_ahead);
+    if (locating) fill(playing_, target, target + window_frames_);
+    fill(pending_, playhead, ahead);
+    if (looping_) fill(pending_, loop_from, loop_ahead);
+    if (locating) fill(pending_, target, target + window_frames_);
+
+    bool ok = window_resident(playing_, playhead, ahead) &&
+              window_resident(pending_, playhead, ahead);
+    if (looping_) {
+        ok = ok && window_resident(playing_, loop_from, loop_ahead) &&
+             window_resident(pending_, loop_from, loop_ahead);
     }
-
-    // What is heard now first, then what gates the next swap or locate.
-    fill(playing_, playhead);
-    if (locating) fill(playing_, req.locate_target);
-    fill(pending_, playhead);
-    if (locating) fill(pending_, req.locate_target);
-
-    bool ok = window_resident(playing_, playhead) && window_resident(pending_, playhead);
     if (locating) {
-        ok = ok && window_resident(playing_, req.locate_target) &&
-             window_resident(pending_, req.locate_target);
+        ok = ok && window_resident(playing_, target, target + window_frames_) &&
+             window_resident(pending_, target, target + window_frames_);
     }
     if (ok) resident_.store(req.generation, std::memory_order_release);
     // Release: what this pass linked is visible to whoever sees the count.

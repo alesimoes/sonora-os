@@ -28,7 +28,9 @@ struct PlaybackConfig {
     // ADR-0009 Unverified 1 settles both; placeholders until then.
     uint32_t chunk_frames = 16384;
     double window_seconds = 4.0;
-    // 0: two plans' windows for every track channel, plus a margin.
+    // 0: two plans' windows for every track channel, each at the playhead
+    // and at a loop take's start (DiskReader::hold_loop()), plus a
+    // margin.
     uint32_t pool_chunks = 0;
     uint32_t max_sources = 1024;
     uint32_t max_segments = 65536;          // per plan
@@ -104,15 +106,36 @@ struct PunchRange {
     FadeCurve shape = FadeCurve::Linear;
 };
 
+// A loop take (ADR-0016 §1, §2): it records from `start`, A less the
+// pre-roll, through every wrap of the playhead from B back to A, until it
+// is stopped. In timeline frames.
+struct LoopRange {
+    uint64_t from = 0;   // A
+    uint64_t to = 0;     // B
+    uint64_t start = 0;  // at most A
+    // The input latency L in frames: a wrap's boundary record counts the
+    // capture to the sample that lines up with A, which arrives L frames
+    // after the playhead wraps (C7). Until the loopback measurement lands,
+    // the backend's reported figure, as for a punch.
+    uint32_t latency = 0;
+    // The pass handle H: B - A shorter than this is refused (C4).
+    uint32_t handle = 0;
+};
+
 // A take file's bext Description (session-format.md, "BWF metadata, both
 // ways"): "sonora take=<n> track=<id> punch=<A>-<B> session=<name>", with
 // " track=<id>" left out when `track_id` is 0 and " punch=<A>-<B>", the
-// monitored range, only for a punch. The name is last and is the rest of
+// monitored range, only for a punch. A loop take says " loop=<A>-<B>" in
+// its place (ADR-0016 §4). The name is last and is the rest of
 // the field, because a name may hold spaces and "=": "Demo punch=0-48000"
 // must not read as a punch. At most 255 bytes, so the field keeps its NUL;
 // a name that does not fit is cut on a UTF-8 character boundary.
 std::string take_description(int take, uint64_t track_id, const std::string& session,
-                             const PunchRange* punch);
+                             const PunchRange* punch, const LoopRange* loop = nullptr);
+// The loop range a Description written by take_description() gives, read
+// from before its " session=", so a session name cannot fake one. False
+// when it is not a loop take's.
+bool loop_of_description(const std::string& description, uint64_t& from, uint64_t& to);
 
 struct SessionConfig {
     std::string name = "Untitled";
@@ -124,8 +147,16 @@ struct SessionConfig {
     // Seconds of headroom in each capture ring before an overrun is possible.
     double ring_seconds = 4.0;
     // Capture boundary records the disk thread may fall behind by. 0: eight
-    // per track, at least 64. A full ring is an overrun, never a wait.
+    // per track, at least 64, plus the Wrap records a loop take pushes
+    // while the disk thread stalls for disk_stall_seconds. A full ring is an
+    // overrun, never a wait.
     uint32_t boundary_records = 0;
+    // The longest the disk thread is assumed to stop draining (one sync on
+    // a slow stick). The shortest loop is one max_block_frames block, so a
+    // loop take pushes at most one Wrap per track per block: the ring holds
+    // that many for this long. 0.5 s is a placeholder until ADR-0009
+    // Unverified 8 measures the sync.
+    double disk_stall_seconds = 0.5;
     // How often the disk thread checkpoints every open take: header patched
     // to the frames written, data synced (WavWriter::checkpoint()). With the
     // capture ring's depth this is the stated loss window per track at a
@@ -133,6 +164,10 @@ struct SessionConfig {
     // placeholder until the sync's cost on a stick is measured (ADR-0009
     // Unverified 8).
     double sync_seconds = 2.0;
+    // The passes a loop take places (ADR-0016 O2). The take records on past
+    // it; the wrap list each closed file carries is sized to it here, and
+    // the wraps after it are on disk only.
+    uint32_t loop_pass_cap = 99;
     PlaybackConfig playback;
 };
 
@@ -186,6 +221,15 @@ public:
     // nowhere (add_closed_take()). A capture_from
     // already passed records from the audio thread's next block.
     bool start_punch(int take_number, const PunchRange& range, std::string* error = nullptr);
+    // start_recording(), as a loop take (ADR-0016): the take records from
+    // loop.start, located there first wherever the playhead is, and the
+    // audio thread wraps the playhead from B to A until stop(), marking
+    // each wrap in band on every armed track. Each file gets a wrap list
+    // next to it (WrapSidecar). Refused, with nothing opened, during a
+    // take, for an empty range, a start after A, or a loop shorter than
+    // its handle or than one block (PlaybackConfig::max_block_frames), so
+    // no callback within that bound holds two wraps.
+    bool start_loop(int take_number, const LoopRange& loop, std::string* error = nullptr);
     // Ends the running take and leaves the transport rolling (punch out on
     // the fly). The audio thread ends it at its next block; the disk thread
     // closes its files after that, and closed_takes() reports it. False if
@@ -218,6 +262,14 @@ public:
         // [monitor_in, monitor_out) only, not over all it captured.
         bool punched = false;
         PunchRange punch;
+        // Started by start_loop(), with this range; each file's wraps are
+        // in DiskThread::ClosedFile::wraps.
+        bool looped = false;
+        LoopRange loop;
+        // The wraps the audio thread made in it, whatever reached the files:
+        // a file's list shorter than this, or holding a lost wrap, lost
+        // records to a full boundary ring (ADR-0016 §5).
+        uint32_t loop_wraps = 0;
         // The frame its first block recorded from (take_origin()), or
         // kNoOrigin if it ended before the audio thread ran a block of it.
         // With no frame in any file, what says why nothing was captured.
@@ -234,6 +286,8 @@ public:
     std::vector<ClosedTake> closed_takes();
     // The take being recorded, as the control thread last set it; 0 if none.
     int recording_take() const { return recording_take_; }
+    // Whether that take was started by start_loop(). Control thread.
+    bool loop_take_running() const { return recording_take_ != 0 && loop_running_; }
     // Empty, or which file of the newest take failed and why, in the words
     // stop() will use: the running take's, or, after a punch-out, the take
     // just ended, until the next take starts (ADR-0007: the next clean take
@@ -383,7 +437,9 @@ private:
     // No take: a track with no capture window, a punch record for none.
     static constexpr uint32_t kNoWindowTake = ~uint32_t{0};
     // A take's PunchRange as it travels to the audio thread, tagged with
-    // its take. Trivial, so the ring can hold it as bytes.
+    // its take. Trivial, so the ring can hold it as bytes. A loop take's
+    // captures and hears all of the take, and wraps over [loop_from,
+    // loop_to) when loop_to > loop_from.
     struct PunchRecord {
         uint32_t take;
         uint32_t crossfade;
@@ -392,19 +448,32 @@ private:
         uint64_t capture_to;
         uint64_t monitor_in;
         uint64_t monitor_out;
+        uint64_t loop_from;
+        uint64_t loop_to;
+        uint32_t latency;
     };
     // What a take started without a range records and hears: all of it.
     static constexpr PunchRecord kWholeTake = {kNoWindowTake, 0, FadeCurve::Linear, 0,
-                                               PunchRange::kOpenEnd, 0, PunchRange::kOpenEnd};
+                                               PunchRange::kOpenEnd, 0, PunchRange::kOpenEnd,
+                                               0, 0, 0};
     // A punched take whose range the audio thread does not hold, which the
     // table's sizing rules out: it records nothing and hears playback,
     // rather than recording outside a range it cannot see.
     static constexpr PunchRecord kNoCapture = {kNoWindowTake,        0, FadeCurve::Linear,
                                                PunchRange::kOpenEnd, PunchRange::kOpenEnd,
-                                               PunchRange::kOpenEnd, PunchRange::kOpenEnd};
+                                               PunchRange::kOpenEnd, PunchRange::kOpenEnd,
+                                               0, 0, 0};
 
-    // start_recording() and start_punch(); `range` null for a whole take.
-    bool begin_take(int take_number, const PunchRange* range, std::string* error);
+    // start_recording(), start_punch() and start_loop(); `range` and
+    // `loop` null for a whole take.
+    bool begin_take(int take_number, const PunchRange* range, const LoopRange* loop,
+                    std::string* error);
+    // The timeline frame `off` frames into a block that starts at
+    // `playhead`, with this block's loop applied.
+    uint64_t loop_frame(uint64_t playhead, uint64_t off) const noexcept SONORA_RT;
+    // render_track() for a span the timeline does not wrap inside.
+    void render_span(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from, uint32_t n,
+                     float* const out[2]) noexcept SONORA_RT;
     // The capture windows: boundary records and the frames inside them,
     // opened and closed at punch_'s frames.
     // `first`: the take's first block.
@@ -464,6 +533,7 @@ private:
     };
     std::map<int, Closing> closing_;
     int recording_take_ = 0;
+    bool loop_running_ = false;
     // The take take_failure() and stop() speak for: the last one started,
     // kept after a punch-out (PR #60, code review 3) and replaced by the
     // next, so take K's failure is never said as take K + 1's (review 4).
@@ -533,6 +603,14 @@ private:
     uint64_t punch_count_ = 0;
     // This block's: the running take's range, kWholeTake, or kNoCapture.
     const PunchRecord* punch_ = &kWholeTake;
+    // This block's loop, from punch_: [0, 0) when the playhead does not
+    // wrap. The running loop take's wraps so far, and this block's: how
+    // many, and the first one's offset in the block.
+    uint64_t loop_from_ = 0;
+    uint64_t loop_to_ = 0;
+    uint32_t loop_wrap_count_ = 0;
+    uint32_t block_wraps_ = 0;
+    uint32_t block_wrap_offset_ = 0;
     // Per engine track, where its monitor source stands, 0 playback and 1
     // input, and the callback that last moved it. A track not rendered in
     // the callback before starts where its source is, with no ramp: it has
@@ -600,6 +678,10 @@ private:
     // Reset by start_recording() before it publishes the take; set by the
     // audio thread in the take's first block.
     std::atomic<uint64_t> take_origin_{kNoOrigin};
+    // The running loop take's wraps, for ClosedTake::loop_wraps. Reset by
+    // begin_take() before it publishes the take; written by the audio
+    // thread alone.
+    std::atomic<uint32_t> loop_wraps_{0};
     // The punched take whose capture_to the audio thread has passed, or 0.
     // Its only writer is the audio thread; begin_take() clears it before
     // the take it starts can be seen.

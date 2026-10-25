@@ -13,6 +13,7 @@ add_library(sonora_core STATIC
   src/session.cpp
   src/track.cpp
   src/disk_thread.cpp
+  src/loop_take.cpp
   src/playback_plan.cpp
   src/plan_graph.cpp
   src/plan_exchange.cpp
@@ -72,6 +73,20 @@ add_test(NAME take_boundaries COMMAND test_take_boundaries)
 add_executable(test_punch_points tests/test_punch_points.cpp)
 target_link_libraries(test_punch_points PRIVATE sonora_core)
 add_test(NAME punch_points COMMAND test_punch_points)
+
+# Loop record (ADR-0016): one file per track through every wrap, each wrap
+# marked in band and kept in the take's wrap list, a lost one keeping its
+# place, the pass cap, the short-loop refusals, playback across the wrap.
+add_executable(test_loop_record tests/test_loop_record.cpp)
+target_link_libraries(test_loop_record PRIVATE sonora_core)
+add_test(NAME loop_record COMMAND test_loop_record)
+
+# A loop take's passes from its wraps (ADR-0016 §5): lost wraps and a wrap
+# list that stops early or is missing derived from the loop length, and
+# recovery reading a take's file and list.
+add_executable(test_loop_passes tests/test_loop_passes.cpp)
+target_link_libraries(test_loop_passes PRIVATE sonora_core)
+add_test(NAME loop_passes COMMAND test_loop_passes)
 
 # ADR-0012 checklist 5: plugin parameter changes from the control thread to
 # the InsertChain node that names their store, the backend's callback_ns as

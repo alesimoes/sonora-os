@@ -87,11 +87,13 @@ int take_of(const std::string& name) {
 }  // namespace
 
 std::string take_description(int take, uint64_t track_id, const std::string& session,
-                             const PunchRange* punch) {
+                             const PunchRange* punch, const LoopRange* loop) {
     constexpr std::size_t kMax = 255;
     std::string head = "sonora take=" + std::to_string(take);
     if (track_id != 0) head += " track=" + std::to_string(track_id);
-    if (punch != nullptr) {
+    if (loop != nullptr) {
+        head += " loop=" + std::to_string(loop->from) + "-" + std::to_string(loop->to);
+    } else if (punch != nullptr) {
         head += " punch=" + std::to_string(punch->monitor_in) + "-" +
                 std::to_string(punch->monitor_out);
     }
@@ -104,6 +106,35 @@ std::string take_description(int take, uint64_t track_id, const std::string& ses
         while (n > 0 && (static_cast<unsigned char>(session[n]) & 0xC0) == 0x80) --n;
     }
     return head + session.substr(0, n);
+}
+
+bool loop_of_description(const std::string& description, uint64_t& from, uint64_t& to) {
+    const std::size_t name = description.find(" session=");
+    const std::string head = description.substr(0, name);
+    const std::string key = " loop=";
+    const std::size_t at = head.find(key);
+    if (head.compare(0, 7, "sonora ") != 0 || at == std::string::npos) return false;
+    const std::size_t begin = at + key.size();
+    const std::size_t dash = head.find('-', begin);
+    if (dash == std::string::npos) return false;
+    std::size_t end = head.find(' ', dash);
+    if (end == std::string::npos) end = head.size();
+    const auto number = [&head](std::size_t b, std::size_t e, uint64_t& out) {
+        if (b == e || e - b > 19) return false;
+        uint64_t v = 0;
+        for (std::size_t i = b; i < e; ++i) {
+            if (head[i] < '0' || head[i] > '9') return false;
+            v = v * 10 + static_cast<uint64_t>(head[i] - '0');
+        }
+        out = v;
+        return true;
+    };
+    uint64_t a = 0;
+    uint64_t b = 0;
+    if (!number(begin, dash, a) || !number(dash + 1, end, b) || b <= a) return false;
+    from = a;
+    to = b;
+    return true;
 }
 
 Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.name) {
@@ -123,9 +154,15 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.n
     const auto tracks_n = static_cast<uint32_t>(cfg_.track_count);
     // timeline-model.md: at least four records per track; a take started
     // over another pushes two at once, and the disk thread wakes every 10 ms.
+    // A loop take adds a Wrap per track per pass, and start_loop() holds a
+    // pass to one block at least (RT audit of PR #117).
+    const double stall_blocks =
+        std::ceil(std::max(0.0, cfg_.disk_stall_seconds) * cfg_.sample_rate /
+                  std::max<uint32_t>(1, cfg_.playback.max_block_frames));
     const uint32_t records = cfg_.boundary_records
                                  ? cfg_.boundary_records
-                                 : std::max<uint32_t>(64, 8 * tracks_n);
+                                 : std::max<uint32_t>(64, 8 * tracks_n) +
+                                       tracks_n * static_cast<uint32_t>(stall_blocks);
     boundaries_ = std::make_unique<RingBuffer<CaptureBoundary>>(records);
     // One more than it holds: the ring keeps a slot empty.
     punches_ = std::make_unique<RingBuffer<PunchRecord>>(cfg_.playback.punch_capacity + 1);
@@ -141,7 +178,8 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.n
     captured_.reset(new uint64_t[tracks_n + 1]());
 
     // 64 kframes per disk write keeps syscall count low without stalling.
-    disk_ = std::make_unique<DiskThread>(std::move(raw), 65536, *boundaries_);
+    disk_ = std::make_unique<DiskThread>(std::move(raw), 65536, *boundaries_,
+                                         cfg_.loop_pass_cap);
     disk_->set_checkpoint_interval(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(cfg_.sync_seconds)));
 
@@ -159,10 +197,11 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.n
     rc.window_frames = window_frames_;
     rc.max_sources = pb.max_sources;
     // A track's demand is channels x (ceil(overlap / C) + 1) per window
-    // (ADR-0009 §4.3); two plans may need disjoint chunks.
+    // (ADR-0009 §4.3); two plans may need disjoint chunks, and during a
+    // loop take each needs a second window at A.
     rc.pool_chunks = pb.pool_chunks
                          ? pb.pool_chunks
-                         : 2 * tracks * cfg_.channels_per_track * (window_chunks + 1) + 16;
+                         : 4 * tracks * cfg_.channels_per_track * (window_chunks + 1) + 16;
     plans_ = std::make_unique<PlanExchange>();
     reader_ = std::make_unique<DiskReader>(rc, *plans_, *transport_);
     commands_ = std::make_unique<RingBuffer<RtCommand>>(pb.command_capacity);
@@ -282,7 +321,7 @@ int Session::next_free_take() const {
 }
 
 bool Session::start_recording(int take_number, std::string* error) {
-    return begin_take(take_number, nullptr, error);
+    return begin_take(take_number, nullptr, nullptr, error);
 }
 
 bool Session::start_punch(int take_number, const PunchRange& range, std::string* error) {
@@ -315,10 +354,43 @@ bool Session::start_punch(int take_number, const PunchRange& range, std::string*
         return refuse("the punch range ends at " + frame(range.monitor_out) +
                       ", before the playhead at " + frame(playhead));
     }
-    return begin_take(take_number, &range, error);
+    return begin_take(take_number, &range, nullptr, error);
 }
 
-bool Session::begin_take(int take_number, const PunchRange* range, std::string* error) {
+bool Session::start_loop(int take_number, const LoopRange& loop, std::string* error) {
+    const auto refuse = [error](const std::string& why) {
+        std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
+        if (error) *error = why;
+        return false;
+    };
+    // A loop take is a span of its own, from its pre-roll: started over a
+    // take, the locate below would be dropped and its passes misplaced.
+    if (transport_->state() == TransportState::Recording) {
+        return refuse("a loop take cannot start during another take; stop first");
+    }
+    const std::string range = "the loop from " + frame_text(loop.from) + " to " + frame_text(loop.to);
+    if (loop.to <= loop.from) return refuse(range + " is empty");
+    if (loop.start > loop.from) {
+        return refuse(range + " begins before its pre-roll, which starts at " +
+                      frame_text(loop.start));
+    }
+    // ADR-0016 C4: a pass shorter than a block would put two wraps in one
+    // callback, and one shorter than its handle has none to crossfade on.
+    const uint64_t length = loop.to - loop.from;
+    const uint64_t block = cfg_.playback.max_block_frames;
+    if (length < block) {
+        return refuse(range + " is " + std::to_string(length) + " frames, shorter than one block (" +
+                      std::to_string(block) + " frames)");
+    }
+    if (length < loop.handle) {
+        return refuse(range + " is " + std::to_string(length) + " frames, shorter than its handle (" +
+                      std::to_string(loop.handle) + " frames)");
+    }
+    return begin_take(take_number, nullptr, &loop, error);
+}
+
+bool Session::begin_take(int take_number, const PunchRange* range, const LoopRange* loop,
+                         std::string* error) {
     // Provisional: the disk thread writes the frame the audio thread
     // recorded first, from the take's open boundary record.
     const uint64_t origin = transport_->playhead();
@@ -353,6 +425,12 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
             const std::string path = w.path();
             w.close();
             std::remove(path.c_str());
+            WrapSidecar& side = o.first->sidecar(o.second);
+            if (side.is_open()) {
+                const std::string wraps = side.path();
+                side.close();
+                std::remove(wraps.c_str());
+            }
         }
     };
     for (auto& t : tracks_) {
@@ -365,14 +443,26 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
         }
         const std::string file =
             audio_dir(cfg_.dir) + "/" + take_file_name(t->name(), take_number);
+        std::string failed = file;
         int err = 0;
         if (slot < 0) {
             err = EBUSY;
         } else {
             WavWriter& w = t->writer(slot);
-            w.set_description(take_description(take_number, t->document_id(), session_name_, range));
+            w.set_description(
+                take_description(take_number, t->document_id(), session_name_, range, loop));
             if (!w.open(file, cfg_.sample_rate, t->channels(), cfg_.format, origin)) {
                 err = errno;
+            } else if (loop != nullptr &&
+                       !t->sidecar(slot).open(WrapSidecar::path_for(file), loop->from, loop->to,
+                                              loop->latency)) {
+                // Recovery would have to place this take's passes by loop
+                // length alone; a take that cannot keep its wraps is refused
+                // like one that cannot keep its audio.
+                err = errno;
+                failed = WrapSidecar::path_for(file);
+                w.close();
+                std::remove(file.c_str());
             }
         }
         if (err != 0) {
@@ -380,7 +470,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
             // operator would find out at playback. Undo and say so instead.
             undo_open(opened);
             const std::string why =
-                file + ": " +
+                failed + ": " +
                 (err == EEXIST  ? "a take with this name is already on disk"
                  : err == EBUSY ? "the take before it is still being closed"
                                 : std::strerror(err));
@@ -395,24 +485,49 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
         if (error) *error = "no track is armed";
         return false;
     }
+    const auto refuse_after_open = [&](const std::string& why) {
+        undo_open(opened);
+        std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
+        if (error) *error = why;
+        return false;
+    };
     // Ahead of the take, so the audio thread has the range by the block it
     // first sees the take in: the ring's release is ordered before the
     // transport's store below. Never waits; a full ring is refused.
-    if (range != nullptr) {
-        PunchRecord r{};
+    if (range != nullptr || loop != nullptr) {
+        PunchRecord r = kWholeTake;
         r.take = static_cast<uint32_t>(take_number);
-        r.crossfade = range->crossfade;
-        r.shape = range->shape;
-        r.capture_from = range->capture_from;
-        r.capture_to = range->capture_to;
-        r.monitor_in = range->monitor_in;
-        r.monitor_out = range->monitor_out;
+        if (range != nullptr) {
+            r.crossfade = range->crossfade;
+            r.shape = range->shape;
+            r.capture_from = range->capture_from;
+            r.capture_to = range->capture_to;
+            r.monitor_in = range->monitor_in;
+            r.monitor_out = range->monitor_out;
+        } else {
+            r.loop_from = loop->from;
+            r.loop_to = loop->to;
+            r.latency = loop->latency;
+        }
         if (punches_->write(&r, 1) != 1) {
-            undo_open(opened);
-            const std::string why = "the audio thread has not taken the last punches yet";
-            std::fprintf(stderr, "sonora: not recording, %s\n", why.c_str());
-            if (error) *error = why;
-            return false;
+            return refuse_after_open("the audio thread has not taken the last punches yet");
+        }
+    }
+    if (loop != nullptr) {
+        // Stopped first, so no block rolls on between the locate and the
+        // take: the take's first block applies the locate before it takes
+        // its origin, and pass 1 is whole however short the pre-roll. A
+        // callback that loaded Rolling before the store would still drain
+        // the locate and roll a block on from it, so it is waited out
+        // before the locate is posted (PR #117 review, N2).
+        if (transport_->state() == TransportState::Rolling) {
+            transport_->set_state(TransportState::Stopped);
+            if (!wait_for_callback()) {
+                return refuse_after_open("the audio callback did not return within 1 s");
+            }
+        }
+        if (!post_locate(loop->start)) {
+            return refuse_after_open("the audio thread has not taken the last locates yet");
         }
     }
     // Only now may the disk thread see these writers; until here the
@@ -429,15 +544,26 @@ bool Session::begin_take(int take_number, const PunchRange* range, std::string* 
     c.take.files.clear();
     c.take.punched = range != nullptr;
     c.take.punch = range != nullptr ? *range : PunchRange{};
+    c.take.looped = loop != nullptr;
+    c.take.loop = loop != nullptr ? *loop : LoopRange{};
+    c.take.loop_wraps = 0;
     c.take.origin = kNoOrigin;
     c.take.end = kNoOrigin;
     recording_take_ = take_number;
+    loop_running_ = loop != nullptr;
+    if (loop != nullptr) {
+        reader_->hold_loop(static_cast<int64_t>(loop->from), static_cast<int64_t>(loop->to));
+    } else {
+        reader_->release_loop();
+    }
     newest_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.
     take_origin_.store(kNoOrigin, std::memory_order_relaxed);
     punch_passed_.store(0, std::memory_order_relaxed);
-    transport_->set_recording(static_cast<uint32_t>(take_number), range != nullptr);
+    loop_wraps_.store(0, std::memory_order_relaxed);
+    transport_->set_recording(static_cast<uint32_t>(take_number),
+                              range != nullptr || loop != nullptr);
     return true;
 }
 
@@ -447,6 +573,7 @@ bool Session::punch_out() {
     transport_->set_state(TransportState::Rolling);
     keep_origin(end);
     recording_take_ = 0;
+    reader_->release_loop();
     return true;
 }
 
@@ -464,6 +591,9 @@ void Session::keep_origin(uint64_t end) {
     if (it == closing_.end()) return;
     it->second.take.origin = take_origin();
     it->second.take.end = end;
+    if (it->second.take.looped) {
+        it->second.take.loop_wraps = loop_wraps_.load(std::memory_order_acquire);
+    }
 }
 
 void Session::collect_closed() {
@@ -568,6 +698,7 @@ bool Session::stop(std::string* error) {
     collect_closed();
     keep_origin(end);
     recording_take_ = 0;
+    reader_->release_loop();
 
     // Every file is closed and collected, so only failed_files_ speaks.
     const std::string why = take_failure();
@@ -783,8 +914,29 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         const uint64_t origin =
             punch_->capture_from > playhead ? punch_->capture_from : playhead;
         take_origin_.store(origin, std::memory_order_release);
+        loop_wrap_count_ = 0;
+    }
+    // A loop take's playhead wraps from B to A inside the block (ADR-0016
+    // §2). start_loop() holds B - A to at least max_block_ frames, so a
+    // callback within that bound wraps at most once; a longer one is
+    // followed all the same.
+    loop_from_ = 0;
+    loop_to_ = 0;
+    block_wraps_ = 0;
+    if (recording && punch_->loop_to > punch_->loop_from && playhead < punch_->loop_to) {
+        loop_from_ = punch_->loop_from;
+        loop_to_ = punch_->loop_to;
+        const uint64_t to_end = loop_to_ - playhead;
+        if (to_end <= nframes) {
+            block_wrap_offset_ = static_cast<uint32_t>(to_end);
+            block_wraps_ = 1 + static_cast<uint32_t>((nframes - to_end) / (loop_to_ - loop_from_));
+        }
     }
     capture(block, recording, word.take, playhead, first);
+    if (block_wraps_ != 0) {
+        loop_wrap_count_ += block_wraps_;
+        loop_wraps_.store(loop_wrap_count_, std::memory_order_release);
+    }
     // Said every block from here until the control thread ends the take;
     // kWholeTake and kNoCapture end at kOpenEnd, which no block reaches.
     if (punched && playhead + nframes >= punch_->capture_to) {
@@ -819,7 +971,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (uint32_t off = 0; plan_valid_ && off < nframes;) {
         const uint32_t n = nframes - off < max_block_ ? nframes - off : max_block_;
         block_done_ = off;
-        mix(*plan, block, off, n, rolling, recording, playhead + off);
+        mix(*plan, block, off, n, rolling, recording, loop_frame(playhead, off));
         reseek_ = false;
         off += n;
     }
@@ -828,8 +980,13 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     params_count_ = 0;
 
-    if (rolling) transport_->advance(nframes);
-    expected_playhead_ = playhead + (rolling ? nframes : 0);
+    const uint64_t next = rolling ? loop_frame(playhead, nframes) : playhead;
+    if (rolling && loop_to_ != 0) {
+        transport_->set_playhead(next);
+    } else if (rolling) {
+        transport_->advance(nframes);
+    }
+    expected_playhead_ = next;
     // Release is enough here, not at entry: a stop() whose load reads this
     // value reads it before the next callback's seq_cst entry in the single
     // total order, so that callback's transport load sees Stopped.
@@ -906,11 +1063,29 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         // Capture is pre-fader by design: the fader is a monitoring decision
         // and must not be baked into the recorded file.
         const float* in = i < block.input_count ? block.inputs[i] : nullptr;
+        const uint64_t block_start = captured_[i];
         if (in) {
             const auto count = static_cast<std::size_t>(to - from);
             const std::size_t wrote = t.capture_ring().write(in + (from - playhead), count);
             captured_[i] += wrote;
             if (wrote < count) t.note_overrun();
+        }
+        // After the samples before it, as an Open or a Close is. A loop
+        // take captures its whole block, so the sample at the wrap's offset
+        // is block_start plus that offset; the one that lines up with A
+        // arrives `latency` samples later (ADR-0016 C7).
+        for (uint32_t k = 0; k < block_wraps_ && window == take; ++k) {
+            b.kind = CaptureBoundary::Kind::Wrap;
+            b.take = window;
+            b.ordinal = loop_wrap_count_ + 1 + k;
+            b.at = block_start + block_wrap_offset_ +
+                   static_cast<uint64_t>(k) * (loop_to_ - loop_from_) + punch_->latency;
+            b.timeline = loop_from_;
+            // Lost, its place in the take's wrap list stays empty, and
+            // engine/control places that pass by loop length (ADR-0016 §5).
+            if (boundaries_->write(&b, 1) != 1) {
+                boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
+            }
         }
         // The out point: the file closes at its frame, in band, and the
         // transport rolls on.
@@ -1326,8 +1501,32 @@ void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const flo
 // The segments under [from, from + n), found from a cursor that only moves
 // forward while rolling; reset by binary search after a locate, a new plan
 // or a jump in the playhead.
+uint64_t Session::loop_frame(uint64_t playhead, uint64_t off) const noexcept SONORA_RT {
+    const uint64_t f = playhead + off;
+    if (loop_to_ <= loop_from_ || f < loop_to_) return f;
+    return loop_from_ + (f - loop_to_) % (loop_to_ - loop_from_);
+}
+
 void Session::render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
                            uint32_t n, float* const out[2]) noexcept SONORA_RT {
+    // Split where a loop take's playhead wraps: the cursor reseeks at A by
+    // itself, since the span after the wrap does not start where it ended.
+    uint64_t at = from;
+    for (uint32_t done = 0; done < n;) {
+        uint32_t span = n - done;
+        if (loop_to_ > loop_from_ && at < loop_to_ && at + span > loop_to_) {
+            span = static_cast<uint32_t>(loop_to_ - at);
+        }
+        float* const part[2] = {out[0] + done, out[1] + done};
+        render_span(plan, plan_track, at, span, part);
+        done += span;
+        at += span;
+        if (loop_to_ > loop_from_ && at == loop_to_) at = loop_from_;
+    }
+}
+
+void Session::render_span(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
+                          uint32_t n, float* const out[2]) noexcept SONORA_RT {
     std::memset(out[0], 0, n * sizeof(float));
     std::memset(out[1], 0, n * sizeof(float));
     const PlanTrack& pt = plan.tracks[plan_track];
