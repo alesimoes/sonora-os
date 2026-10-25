@@ -341,6 +341,58 @@ void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState&
     }
 }
 
+void build_conductor_ruler_scene(ConductorRuler kind, const model::SessionSettings& s,
+                                 const ViewState& v, double height, Scene& out) {
+    out.clear();
+    if (v.width <= 0 || height <= 0) return;
+    add(out.rects, 0, 0, v.width, height, theme::kPanel);
+    add(out.rects, 0, height - 1, v.width, 1, theme::kBorderSubtle);
+
+    struct Change {
+        Frames at;
+        std::string label;
+    };
+    static thread_local std::vector<Change> changes;
+    changes.clear();
+    const std::vector<TempoEntry> fallback{TempoEntry{}};
+    const std::vector<TempoEntry>& map = s.tempo.empty() ? fallback : s.tempo;
+    Frames start = 0;
+    for (std::size_t i = 0; i < map.size(); ++i) {
+        const TempoEntry& e = map[i];
+        if (i > 0 && e.at <= start) continue;
+        const Frames at = i == 0 ? 0 : e.at;
+        start = at;
+        std::string label = kind == ConductorRuler::Tempo ? format_bpm(e.bpm) : format_meter(e);
+        if (!changes.empty() && changes.back().label == label) continue;
+        changes.push_back({at, std::move(label)});
+    }
+
+    const double label_y = std::floor((height - theme::kTextCaption) / 2) - 1;
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        const double x = std::floor(v.x_of(changes[i].at));
+        if (x > v.width) break;
+        const double next = i + 1 < changes.size() ? std::floor(v.x_of(changes[i + 1].at))
+                                                   : v.width + 1000;
+        if (x < 0) {
+            // In force at the left edge: pinned there, dimmer than a change.
+            if (next < 60) continue;
+            const double room = std::min(next - 4 - 6, v.width - 6);
+            out.labels.push_back({6.0f, static_cast<float>(label_y), static_cast<float>(room),
+                                  changes[i].label, theme::kTextSecondary, theme::kTextCaption});
+            continue;
+        }
+        add(out.rects, x, 2, 1, height - 3, theme::kConductor);
+        add(out.rects, x - 2, height - 6, 5, 4, theme::kConductor);
+        const double lx = x + 5;
+        const double room = std::min(next - lx - 4, v.width - lx);
+        if (room >= 12) {
+            out.labels.push_back({static_cast<float>(lx), static_cast<float>(label_y),
+                                  static_cast<float>(room), changes[i].label, theme::kText,
+                                  theme::kTextCaption});
+        }
+    }
+}
+
 const SceneRect* rect_at(const std::vector<SceneRect>& rects, float x, float y) {
     for (auto it = rects.rbegin(); it != rects.rend(); ++it) {
         if (x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) return &*it;

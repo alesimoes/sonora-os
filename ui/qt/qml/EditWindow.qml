@@ -193,6 +193,40 @@ Item {
                 }
             }
         }
+        // Tempo and Meter, from the session's tempo map: what the bars and
+        // the grid above and below are read through. A click puts the
+        // insertion point there, as on the time rulers; editing a change is
+        // still to come (BACKLOG Track 3 item 3).
+        Repeater {
+            model: ["Tempo", "Meter"]
+            Item {
+                required property int index
+                required property string modelData
+                width: rulers.width
+                height: Theme.rulerHeight
+                Rectangle {
+                    width: Theme.trackHeaderWidth; height: parent.height
+                    color: Theme.panel
+                    Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                    Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                    Text {
+                        anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                        text: modelData
+                        color: Theme.textSecondary
+                        font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+                    }
+                }
+                ConductorRuler {
+                    objectName: index === 0 ? "tempoRuler" : "meterRuler"
+                    x: Theme.trackHeaderWidth
+                    width: parent.width - Theme.trackHeaderWidth
+                    height: parent.height
+                    session: edit.session
+                    kind: index
+                    MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
+                }
+            }
+        }
         // Markers: a click on one recalls it, Alt-click clears it, as
         // Option-click does in Pro Tools; "+" adds one, as Enter does.
         Item {

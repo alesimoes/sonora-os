@@ -127,20 +127,38 @@ Rectangle {
             color: Theme.sunken
             border.color: Theme.borderSubtle
 
+            // The format menu's stand-in: a click anywhere but the digits
+            // cycles the format, as the arrow beside Pro Tools' counter
+            // picks one.
+            MouseArea { anchors.fill: parent; onClicked: bar.session.cycleMainCounter() }
             Column {
                 anchors { left: parent.left; leftMargin: Theme.space3; verticalCenter: parent.verticalCenter }
                 Text {
-                    text: bar.session.mainCounterFormat
-                    color: Theme.textTertiary
-                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; capitalization: Font.AllUppercase; letterSpacing: 0.6 }
+                    objectName: "mainCounterCaption"
+                    // Open, the caption says what the field takes, or why
+                    // what was typed is not a position.
+                    width: 220
+                    elide: Text.ElideRight
+                    text: mainCounter.refused ? mainCounter.reason
+                        : mainCounter.editing ? bar.session.counterEntryHint
+                        : bar.session.mainCounterFormat + " ▾"
+                    color: mainCounter.refused ? Theme.alarm
+                         : mainCounter.editing ? Theme.textSecondary : Theme.textTertiary
+                    font {
+                        family: Theme.fontFamily; pixelSize: Theme.textCaption; letterSpacing: 0.6
+                        capitalization: mainCounter.editing ? Font.MixedCase : Font.AllUppercase
+                    }
                 }
-                Text {
+                CounterField {
+                    id: mainCounter
                     objectName: "mainCounter"
+                    width: 190
+                    shell: bar.shell
+                    session: bar.session
                     // A dead engine's playhead is not current; the counter
                     // then shows the insertion point, which is ours.
                     text: bar.session.mainCounter
-                    color: bar.shell.recording ? Theme.record : Theme.text
-                    font { family: Theme.fontFamily; pixelSize: Theme.textCounter; weight: Font.Medium; features: { "tnum": 1 } }
+                    textColour: bar.shell.recording ? Theme.record : Theme.text
                 }
             }
             Column {
@@ -158,7 +176,6 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textBody; features: { "tnum": 1 } }
                 }
             }
-            MouseArea { anchors.fill: parent; onClicked: bar.session.cycleMainCounter() }
         }
 
         // --- loop, punch, tempo: state only ---

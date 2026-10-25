@@ -79,16 +79,25 @@ bool EditController::recall_marker(Id marker, std::string& why) {
     sel_.region = kNoId;
     sel_.insertion = sel_.start = m->position;
     sel_.end = m->position + m->length;
-    if (view_.width > 0) {
-        const double x = view_.x_of(m->position);
-        if (x < 0 || x > view_.width - 16) {
-            // As follow() pages: the marker a tenth in from the left edge.
-            view_.scroll = static_cast<double>(m->position) - view_.width * 0.1 * view_.fpp;
-            clamp_scroll();
-        }
-    }
+    reveal(m->position);
     if (locate_) locate_(m->position);
     return true;
+}
+
+void EditController::locate_to(Frames frame) {
+    sel_.region = kNoId;
+    sel_.insertion = sel_.start = sel_.end = std::max<Frames>(0, frame);
+    reveal(sel_.insertion);
+    if (locate_) locate_(sel_.insertion);
+}
+
+void EditController::reveal(Frames frame) {
+    if (view_.width <= 0) return;
+    const double x = view_.x_of(frame);
+    if (x < 0 || x > view_.width - 16) {
+        view_.scroll = static_cast<double>(frame) - view_.width * 0.1 * view_.fpp;
+        clamp_scroll();
+    }
 }
 
 Id EditController::marker_at(double x) const {

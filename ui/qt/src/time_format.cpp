@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+
+#include "sonora/command.h"
 
 namespace sonora::ui {
 
@@ -323,6 +326,234 @@ const char* time_format_name(TimeFormat fmt) {
         case TimeFormat::BarsBeats: return "Bars|Beats";
         case TimeFormat::MinSec: return "Min:Secs";
         case TimeFormat::Samples: return "Samples";
+    }
+    return "";
+}
+
+// --- counter entry ---
+
+namespace {
+
+std::string trimmed(const std::string& t) {
+    const auto first = t.find_first_not_of(" \t");
+    if (first == std::string::npos) return {};
+    return t.substr(first, t.find_last_not_of(" \t") - first + 1);
+}
+
+// Splits `t` at any of `seps` into fields of digits. False for an empty
+// field or anything that is not a digit; each field at most 15 digits, so
+// no field overflows before its own range check.
+bool digit_fields(const std::string& t, const char* seps, std::vector<int64_t>& out) {
+    out.clear();
+    std::string field;
+    auto close = [&]() {
+        if (field.empty() || field.size() > 15) return false;
+        out.push_back(std::stoll(field));
+        field.clear();
+        return true;
+    };
+    for (const char c : t) {
+        if (c >= '0' && c <= '9') {
+            field.push_back(c);
+        } else if (std::strchr(seps, c) != nullptr) {
+            if (!close()) return false;
+        } else {
+            return false;
+        }
+    }
+    return close();
+}
+
+bool within_locate(model::Frames f, const std::string& text, model::Frames& out,
+                   std::string& why) {
+    if (f < 0) {
+        why = text + " is before the session start";
+        return false;
+    }
+    if (static_cast<uint64_t>(f) > kMaxLocateFrame) {
+        why = text + " is past the last frame the timeline holds";
+        return false;
+    }
+    out = f;
+    return true;
+}
+
+bool parse_bars_beats(const std::string& t, const model::SessionSettings& s, model::Frames& out,
+                      std::string& why) {
+    std::vector<int64_t> v;
+    if (!digit_fields(t, "|.: ", v) || v.size() > 3) {
+        why = "\"" + t + "\" is not bar|beat|tick";
+        return false;
+    }
+    model::MusicalMap m;
+    if (!reading_map(s, m)) {
+        why = "the session has no sample rate to read bars at";
+        return false;
+    }
+    const int64_t bar = v[0];
+    const int64_t beat = v.size() > 1 ? v[1] : 1;
+    const int64_t tick = v.size() > 2 ? v[2] : 0;
+    model::Ticks at = 0;
+    if (bar < 1 || !m.tick_of({bar, 1, 0}, at)) {
+        why = "there is no bar " + std::to_string(bar) + " on the tempo map";
+        return false;
+    }
+    const model::MusicalMap::Entry& e = m.entries()[m.entry_at_tick(at)];
+    if (beat < 1 || beat > static_cast<int64_t>(e.beats)) {
+        why = "bar " + std::to_string(bar) + " has beats 1 to " + std::to_string(e.beats) +
+              ", not " + std::to_string(beat);
+        return false;
+    }
+    if (tick >= model::kDisplayTicksPerBeat) {
+        why = "a beat has ticks 0 to " + std::to_string(model::kDisplayTicksPerBeat - 1) +
+              ", not " + std::to_string(tick);
+        return false;
+    }
+    model::Frames f = 0;
+    if (!m.tick_of({bar, beat, static_cast<int>(tick)}, at) || !m.frame_at(at, f)) {
+        why = "\"" + t + "\" is past the end of the tempo map's range";
+        return false;
+    }
+    // frame_at() is the nearest frame, and a reading floors: where a tick
+    // is not a whole number of frames (31.25 at 96 bpm) the nearest can read
+    // a tick early. The first frame that reads what was typed is a frame or
+    // two on. A beat past a meter change in a bar it cut short reads as a
+    // later bar, so this never runs on.
+    const MusicalTime typed{bar, static_cast<int>(beat), static_cast<int>(tick)};
+    const auto before = [](const MusicalTime& a, const MusicalTime& b) {
+        if (a.bar != b.bar) return a.bar < b.bar;
+        if (a.beat != b.beat) return a.beat < b.beat;
+        return a.tick < b.tick;
+    };
+    for (int i = 0; i < 2 && before(musical_time_on(m, f), typed); ++i) ++f;
+    return within_locate(f, t, out, why);
+}
+
+bool parse_timecode(const std::string& t, const model::SessionSettings& s, model::Frames& out,
+                    std::string& why) {
+    std::vector<int64_t> v;
+    if (!digit_fields(t, ":;.", v) || v.size() != 4) {
+        why = "\"" + t + "\" is not timecode: type all four fields, HH:MM:SS:FF";
+        return false;
+    }
+    if (s.sample_rate == 0) {
+        why = "the session has no sample rate to read timecode at";
+        return false;
+    }
+    const FrameRate r = frame_rate(s.timecode.fps);
+    const int64_t hh = v[0], mm = v[1], ss = v[2], ff = v[3];
+    if (hh > 23 || mm > 59 || ss > 59 || ff >= r.base) {
+        why = "\"" + t + "\" is not a timecode label at " + std::to_string(r.base) +
+              " frames a second";
+        return false;
+    }
+    const int64_t minutes = hh * 60 + mm;
+    int64_t n = (minutes * 60 + ss) * r.base + ff;
+    if (r.drop) {
+        // Labels ;00 and ;01 do not exist at the start of a minute that is
+        // not a tenth: refusing is honest, moving to ;02 is a guess.
+        if (ss == 0 && ff < 2 && mm % 10 != 0) {
+            why = t + " is a label drop-frame timecode skips";
+            return false;
+        }
+        n -= 2 * (minutes - minutes / 10);
+    }
+    // The first sample whose label is n: format_timecode() floors.
+    const int64_t rate = s.sample_rate;
+    const int64_t scaled = n * r.den * rate;
+    const int64_t since_midnight = (scaled + r.num - 1) / r.num;
+    const int64_t day = kDaySeconds * rate;
+    int64_t origin = s.timecode.origin % day;
+    if (origin < 0) origin += day;
+    return within_locate(since_midnight - origin, t, out, why);
+}
+
+bool parse_min_secs(const std::string& t, const model::SessionSettings& s, model::Frames& out,
+                    std::string& why) {
+    const std::string bad = "\"" + t + "\" is not minutes:seconds";
+    // The seconds, with any fraction, are the last field.
+    const auto colon = t.rfind(':');
+    const std::string secs_text = colon == std::string::npos ? t : t.substr(colon + 1);
+    std::vector<int64_t> upper;
+    if (colon != std::string::npos &&
+        (!digit_fields(t.substr(0, colon), ":", upper) || upper.size() > 2)) {
+        why = bad;
+        return false;
+    }
+    const auto dot = secs_text.find('.');
+    const std::string whole = secs_text.substr(0, dot);
+    const std::string frac =
+        dot == std::string::npos ? std::string() : secs_text.substr(dot + 1);
+    std::vector<int64_t> w;
+    const bool frac_ok =
+        frac.size() <= 9 && frac.find_first_not_of("0123456789") == std::string::npos;
+    if (!digit_fields(whole, "", w) || !frac_ok) {
+        why = bad;
+        return false;
+    }
+    if (s.sample_rate == 0) {
+        why = "the session has no sample rate to read seconds at";
+        return false;
+    }
+    int64_t seconds = w[0];
+    if (!upper.empty()) {
+        if (seconds > 59 || (upper.size() == 2 && upper[1] > 59)) {
+            why = bad + ": minutes and seconds run 0 to 59";
+            return false;
+        }
+        const int64_t minutes = upper.size() == 2 ? upper[0] * 60 + upper[1] : upper[0];
+        seconds += minutes * 60;
+    }
+    const int64_t rate = s.sample_rate;
+    if (seconds > static_cast<int64_t>(kMaxLocateFrame) / rate) {
+        why = t + " is past the last frame the timeline holds";
+        return false;
+    }
+    // Nanoseconds as an integer, so "1.5" is exactly half a second's frames.
+    int64_t nanos = 0;
+    for (std::size_t i = 0; i < 9; ++i) {
+        nanos = nanos * 10 + (i < frac.size() ? frac[i] - '0' : 0);
+    }
+    const model::Frames f = seconds * rate + (nanos * rate + 500000000) / 1000000000;
+    return within_locate(f, t, out, why);
+}
+
+}  // namespace
+
+bool parse_time(TimeFormat fmt, const std::string& text, const model::SessionSettings& s,
+                model::Frames& out, std::string& why) {
+    const std::string t = trimmed(text);
+    if (t.empty()) {
+        why = "type a position first";
+        return false;
+    }
+    if (t[0] == '-') {
+        why = "a position cannot be negative: " + t;
+        return false;
+    }
+    switch (fmt) {
+        case TimeFormat::BarsBeats: return parse_bars_beats(t, s, out, why);
+        case TimeFormat::Timecode: return parse_timecode(t, s, out, why);
+        case TimeFormat::MinSec: return parse_min_secs(t, s, out, why);
+        case TimeFormat::Samples: {
+            std::vector<int64_t> v;
+            if (!digit_fields(t, "", v)) {
+                why = "\"" + t + "\" is not a sample count";
+                return false;
+            }
+            return within_locate(v[0], t, out, why);
+        }
+    }
+    why = "no such counter format";
+    return false;
+}
+
+const char* time_entry_hint(TimeFormat fmt) {
+    switch (fmt) {
+        case TimeFormat::BarsBeats: return "bar|beat|tick: 17|3|480, or 17";
+        case TimeFormat::Timecode: return "HH:MM:SS:FF, all four fields";
+        case TimeFormat::MinSec: return "minutes:seconds: 1:23.456, or 83.5";
+        case TimeFormat::Samples: return "a sample count";
     }
     return "";
 }

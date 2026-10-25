@@ -2,8 +2,9 @@
 //
 // The Transport window: Pro Tools' expanded Transport, floating over the
 // Edit or Mix window. Buttons send exactly what their keys send, through the
-// router; the counter is in the main counter's format (a click cycles it,
-// as the bar's does), and beside it the position in every format at once, the way Logic's LCD shows bars and timecode
+// router; the counter is in the main counter's format (a click on the
+// digits takes a position typed, Enter locates; beside them it cycles the
+// format, as the bar's does), and beside it the position in every format at once, the way Logic's LCD shows bars and timecode
 // together. The tempo and meter are the map's at that position.
 //
 // Pre/post-roll and the click are shown for what they are: saved values the
@@ -140,11 +141,29 @@ Rectangle {
                 radius: Theme.radius
                 color: Theme.sunken
                 border.color: Theme.borderSubtle
+                // Beside the digits, a click cycles the format; on them, it
+                // opens the counter for a position, as the bar's does.
+                MouseArea { anchors.fill: parent; onClicked: win.session.cycleMainCounter() }
                 Column {
                     anchors { left: parent.left; leftMargin: Theme.space3; verticalCenter: parent.verticalCenter }
-                    Caption { text: win.session.mainCounterFormat + " · " + win.transport.positionSource }
-                    Text {
+                    Caption {
+                        objectName: "transportCounterCaption"
+                        width: 240
+                        elide: Text.ElideRight
+                        text: transportCounter.refused ? transportCounter.reason
+                            : transportCounter.editing ? win.session.counterEntryHint + " · Enter locates"
+                            : win.session.mainCounterFormat + " ▾ · " + win.transport.positionSource
+                        color: transportCounter.refused ? Theme.alarm
+                             : transportCounter.editing ? Theme.textSecondary : Theme.textTertiary
+                        font.capitalization: transportCounter.editing ? Font.MixedCase : Font.AllUppercase
+                    }
+                    CounterField {
+                        id: transportCounter
                         objectName: "transportCounter"
+                        width: 236
+                        shell: win.shell
+                        session: win.session
+                        fontPx: Theme.textDisplay
                         // In the main counter's format, from the same reading
                         // as the column beside it: two clocks a tick apart
                         // would show two different times side by side.
@@ -155,11 +174,9 @@ Rectangle {
                                  : f === "Samples" ? win.transport.samples
                                  : win.transport.barsBeats
                         }
-                        color: win.transport.recording ? Theme.record : Theme.text
-                        font { family: Theme.fontFamily; pixelSize: Theme.textDisplay; weight: Font.Medium; features: { "tnum": 1 } }
+                        textColour: win.transport.recording ? Theme.record : Theme.text
                     }
                 }
-                MouseArea { anchors.fill: parent; onClicked: win.session.cycleMainCounter() }
             }
             Grid {
                 anchors.verticalCenter: parent.verticalCenter

@@ -22,6 +22,7 @@ inline void register_types() {
     qmlRegisterType<TimelineItem>("Sonora", 1, 0, "Timeline");
     qmlRegisterType<RulerItem>("Sonora", 1, 0, "Ruler");
     qmlRegisterType<MarkerRulerItem>("Sonora", 1, 0, "MarkerRuler");
+    qmlRegisterType<ConductorRulerItem>("Sonora", 1, 0, "ConductorRuler");
     qmlRegisterUncreatableType<TransportModel>("Sonora", 1, 0, "TransportModel",
                                                QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<ShellModel>("Sonora", 1, 0, "ShellModel",

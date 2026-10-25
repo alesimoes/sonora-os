@@ -70,6 +70,16 @@ void build_ruler_scene(TimeFormat fmt, const model::SessionSettings& s, const Vi
 void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState& view,
                               double height, Scene& out);
 
+// Pro Tools' Tempo and Meter rulers (Logic's Tempo and Signature tracks),
+// read from the session's tempo map: a mark at each change of that value
+// with the value beside it, running to the next change. The value in force
+// at the view's left edge is pinned there, so a view between changes still
+// says what it is in. Read as tempo_index_at() reads the map: an entry out
+// of order is not a change, and one that repeats the value is not drawn.
+enum class ConductorRuler { Tempo, Meter };
+void build_conductor_ruler_scene(ConductorRuler kind, const model::SessionSettings& s,
+                                 const ViewState& view, double height, Scene& out);
+
 // The topmost rectangle containing (x, y), or nullptr. For tests.
 const SceneRect* rect_at(const std::vector<SceneRect>& rects, float x, float y);
 

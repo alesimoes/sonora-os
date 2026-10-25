@@ -94,6 +94,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString mainCounterFormat READ mainCounterFormat NOTIFY counterChanged)
     Q_PROPERTY(QString subCounter READ subCounter NOTIFY counterChanged)
     Q_PROPERTY(QString subCounterFormat READ subCounterFormat NOTIFY counterChanged)
+    // What the main counter takes typed, in its format.
+    Q_PROPERTY(QString counterEntryHint READ counterEntryHint NOTIFY counterChanged)
     Q_PROPERTY(bool loopOn READ loopOn NOTIFY contentChanged)
     Q_PROPERTY(bool punchOn READ punchOn NOTIFY contentChanged)
     Q_PROPERTY(QString tempoText READ tempoText NOTIFY sessionChanged)
@@ -243,6 +245,7 @@ public:
     QString mainCounterFormat() const { return QString::fromLatin1(time_format_name(main_fmt_)); }
     QString subCounter() const { return sub_counter_; }
     QString subCounterFormat() const { return QString::fromLatin1(time_format_name(sub_fmt_)); }
+    QString counterEntryHint() const { return QString::fromLatin1(time_entry_hint(main_fmt_)); }
     bool loopOn() const;
     bool punchOn() const;
     QString tempoText() const;
@@ -265,6 +268,13 @@ public:
     Q_INVOKABLE void cycleFadeShape();
     Q_INVOKABLE void cycleCrossfadeShape();
     Q_INVOKABLE void cycleMainCounter();
+    // Counter entry (Pro Tools: click the main counter, type, Enter): `text`
+    // in the main counter's format. The insertion point moves there and the
+    // playhead follows through transport.locate. False, with the reason on
+    // the status line, for text that is not a position, and during a take:
+    // the engine refuses that locate, and the insertion point would have
+    // moved under a counter that shows the playhead.
+    Q_INVOKABLE bool enterCounter(const QString& text);
     Q_INVOKABLE void setWindow(const QString& w);
 
     // --- File ---
@@ -302,6 +312,7 @@ public:
     void buildOverlay(std::vector<SceneRect>& out) const;
     void buildRuler(TimeFormat fmt, double height, Scene& out) const;
     void buildMarkerRuler(double height, Scene& out) const;
+    void buildConductorRuler(ConductorRuler kind, double height, Scene& out) const;
 
 signals:
     void windowChanged();
