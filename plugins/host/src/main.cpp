@@ -1048,7 +1048,8 @@ int serve(const Options& o) {
     // validation, so the latency reported is the one of these values.
     Session s{h, clock, chain, layout, map, mode, period_ns, plugin::value_table(region.base, layout),
               {}, {}, {}, ipc_frames, o.engine_pid, h.block_frames};
-    std::vector<float> applied(map.param_slots, 0.f);
+    // Atomic: the control thread's sweep after a lost touch reads it too.
+    std::vector<std::atomic<float>> applied(map.param_slots);
     s.values.applied = applied.data();
     s.values.seen_seq = h.values_seq.load(std::memory_order_acquire);
     for (uint32_t i = 0; i < map.instance_count; ++i)
@@ -1056,7 +1057,7 @@ int serve(const Options& o) {
             const int64_t slot = plugin::param_slot(map, i, k);
             if (slot < 0) break;
             const float v = s.table[slot].load(std::memory_order_relaxed);
-            applied[std::size_t(slot)] = v;
+            applied[std::size_t(slot)].store(v, std::memory_order_relaxed);
             if (plugin::finite_bits(v)) chain.replace_param(i, k, v);
         }
     for (const Options::Set& set : o.sets)
@@ -1072,7 +1073,7 @@ int serve(const Options& o) {
     chain.prepare_bypass();
     for (uint32_t i = 0; i < map.instance_count; ++i) {
         const float b = h.bypass[i].load(std::memory_order_relaxed);
-        s.values.applied_bypass[i] = b;
+        s.values.applied_bypass[i].store(b, std::memory_order_relaxed);
         if (b > 0.5f) chain.set_bypass(i, true, 0);
     }
     for (std::size_t i = 0; i < chain.size(); ++i)
@@ -1212,14 +1213,19 @@ int serve(const Options& o) {
     };
     auto recover = [&] {
         const auto count = [&](uint32_t i) { return i < map.instance_count ? map.count[i] : 0u; };
-        const auto engine = [&](uint32_t i, uint32_t p, float& v) {
+        // What was applied is read before the table: a change applied
+        // between the two reads then shows as in flight, never as settled
+        // at a value the plugin has not been given.
+        const auto engine = [&](uint32_t i, uint32_t p, float& table, float& applied) {
             if (p == plugin::kBypassParam) {
-                v = h.bypass[i].load(std::memory_order_relaxed) > 0.5f ? 1.f : 0.f;
+                applied = s.values.applied_bypass[i].load(std::memory_order_acquire);
+                table = h.bypass[i].load(std::memory_order_relaxed);
                 return true;
             }
             const int64_t slot = plugin::param_slot(map, i, p);
             if (slot < 0) return false;
-            v = s.table[slot].load(std::memory_order_relaxed);
+            applied = s.values.applied[slot].load(std::memory_order_acquire);
+            table = s.table[slot].load(std::memory_order_relaxed);
             return true;
         };
         gestures.recover(uint32_t(chain.size()), count, engine, current, send);
@@ -1260,7 +1266,7 @@ int serve(const Options& o) {
         }
         chain.prepare_bypass();
         for (uint32_t i = 0; i < map.instance_count; ++i)
-            if (s.values.applied_bypass[i] > 0.5f) chain.set_bypass(i, true, 0);
+            if (s.values.applied_bypass[i].load(std::memory_order_relaxed) > 0.5f) chain.set_bypass(i, true, 0);
         publish_latency(h, chain, ipc_frames);
         const uint32_t gen = h.latency_generation.load(std::memory_order_acquire);
         const uint32_t frames = h.latency_frames.load(std::memory_order_relaxed);

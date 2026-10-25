@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -120,8 +121,10 @@ public:
     // gesture the host saw (a lone edit lost; host_control.h). For every
     // instance below `instances`, its `count(i)` dense parameters and its
     // bypass: where no gesture is open and `current(i, p, float&)` differs
-    // from the engine's last value, `engine(i, p, float&)`, the plugin's
-    // value is recorded as a one-shot gesture.
+    // from the value last applied to the plugin, the plugin's value is
+    // recorded as a one-shot gesture. `engine(i, p, float& table, float&
+    // applied)` gives the engine's table value and the one applied; a slot
+    // where they differ is a change in flight and is skipped.
     template <class Count, class Engine, class Current, class Send>
     void recover(uint32_t instances, Count&& count, Engine&& engine, Current&& current, Send&& send);
     bool any_open() const { return !open_.empty(); }
@@ -246,8 +249,13 @@ template <class Count, class Engine, class Current, class Send>
 void GestureTracker::recover(uint32_t instances, Count&& count, Engine&& engine, Current&& current, Send&& send) {
     const auto check = [&](uint32_t i, uint32_t p) {
         if (open_.count({i, p})) return;
-        float was = 0.f, now = 0.f;
-        if (!engine(i, p, was) || !current(i, p, now) || !std::isfinite(now) || now == was) return;
+        float table = 0.f, was = 0.f, now = 0.f;
+        if (!engine(i, p, table, was)) return;
+        // The engine writes its table before the next block applies it: a
+        // slot still in flight holds the operator's change, and the plugin
+        // its old value, which is no move of the plugin's (#121).
+        if (std::memcmp(&table, &was, sizeof table) != 0) return;
+        if (!current(i, p, now) || !std::isfinite(now) || now == was) return;
         // A format's own rounding (a stepped parameter) is no move.
         if (std::fabs(now - was) <= 1e-6f * std::max(1.f, std::fabs(was))) return;
         // end_all sent this value, and the engine has not posted it back yet.

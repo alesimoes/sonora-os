@@ -164,7 +164,11 @@ void a_lost_lone_edit_is_recovered_from_the_plugin() {
     // Engine: every parameter at 0.25 and the bypass off. The plugin: param 1
     // moved to 0.9 (the lost edit), param 2 moved inside its open gesture,
     // the bypass on.
-    const auto engine = [](uint32_t, uint32_t p, float& v) {
+    const auto engine = [](uint32_t, uint32_t p, float& table, float& applied) {
+        table = applied = p == sonora::plugin::kBypassParam ? 0.f : 0.25f;
+        return true;
+    };
+    const auto settled = [](uint32_t, uint32_t p, float& v) {
         v = p == sonora::plugin::kBypassParam ? 0.f : 0.25f;
         return true;
     };
@@ -184,8 +188,46 @@ void a_lost_lone_edit_is_recovered_from_the_plugin() {
     CHECK(g.any_open());  // param 2's gesture is left to its own end
     // Nothing moved: nothing recorded.
     w.seen.clear();
-    g.recover(1, [](uint32_t) { return 4u; }, engine, engine, send);
+    g.recover(1, [](uint32_t) { return 4u; }, engine, settled, send);
     CHECK(w.seen.empty());
+}
+
+// Blocking finding on #121: the engine writes its table before the
+// processing thread applies it at the next block. A change in flight (table
+// written, not applied yet) left the plugin at its old value, which differed
+// from the table, so the sweep recorded the old value as a move and reverted
+// the operator's change. The plugin is compared with what was applied, and a
+// slot whose table differs from it is skipped.
+void a_change_in_flight_is_not_recorded_as_a_plugin_move() {
+    GestureTracker g;
+    Wire w;
+    auto send = [&](const std::string& b) { w(b); };
+    // Every slot: the operator moved the table to 0.8 (bypass to on); the
+    // processing thread still holds 0.25 (bypass off), and so does the plugin.
+    const auto in_flight = [](uint32_t, uint32_t p, float& table, float& applied) {
+        const bool bypass = p == sonora::plugin::kBypassParam;
+        table = bypass ? 1.f : 0.8f;
+        applied = bypass ? 0.f : 0.25f;
+        return true;
+    };
+    const auto old = [](uint32_t, uint32_t p, float& v) {
+        v = p == sonora::plugin::kBypassParam ? 0.f : 0.25f;
+        return true;
+    };
+    g.recover(1, [](uint32_t) { return 4u; }, in_flight, old, send);
+    CHECK(w.seen.empty());
+    // Once applied, a plugin that then moved on its own is recorded.
+    const auto applied_now = [](uint32_t, uint32_t p, float& table, float& applied) {
+        table = applied = p == sonora::plugin::kBypassParam ? 1.f : 0.8f;
+        return true;
+    };
+    const auto moved = [](uint32_t, uint32_t p, float& v) {
+        v = p == 3 ? 0.1f : p == sonora::plugin::kBypassParam ? 1.f : 0.8f;
+        return true;
+    };
+    g.recover(1, [](uint32_t) { return 4u; }, applied_now, moved, send);
+    CHECK(w.seen.size() == 3 && w.seen.back().type == pc::Type::GestureEnd && w.seen.back().param == 3 &&
+          w.seen.back().value == 0.1f);
 }
 
 }  // namespace
@@ -196,6 +238,7 @@ int main() {
     touches_are_coalesced_and_flushed();
     an_end_with_its_begin_lost_is_recorded();
     a_lost_lone_edit_is_recovered_from_the_plugin();
+    a_change_in_flight_is_not_recorded_as_a_plugin_move();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;
