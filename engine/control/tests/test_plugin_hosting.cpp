@@ -47,6 +47,8 @@
 //                        slot, a count that only rises, no standing fault
 //                        (ADR-0012 change G); another worker plugin counts
 //                        nothing
+//   work_refused_new_session  a session opened with the same insert id:
+//                        none of the last one's count or notices
 //   server_work_refused  the same through the server: the count in the
 //                        state block's InsertState, one Notice, no fault
 //   rescan_drops_stale   a catalog in which a plugin's record changed (a
@@ -780,6 +782,44 @@ int scenario_work_refused(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// Ids are per session: a session opened with an insert of the same id as
+// one that was refused in the last carries none of its count, and none of
+// its notices not yet taken; a refusal in the new one is said afresh.
+int scenario_work_refused_new_session(const Args& a) {
+    std::printf("work_refused_new_session: refusals in session A, then B with the same insert id\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kWorker, {{"gain", 0.0625f}}));  // the test plugin's flood
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.hosting->work_refused(500) > 0; }, 20000),
+          "session A: insert 500's refused worker messages are counted");
+    // Its notice is left untaken, as one would be if the open came first.
+    rig.history = History(new_session(SessionSettings{}));
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kWorker, {{"gain", 1.f}}));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 20000), "session B: its insert 500 runs");
+    bool zero = true;
+    for (int i = 0; i < 200; ++i) {
+        rig.turn();
+        zero = zero && rig.hosting->work_refused(500) == 0;
+    }
+    check(zero, "  with a count of 0, not session A's");
+    check(rig.hosting->take_notices().empty(), "  and none of session A's notices");
+    rig.apply(SetInsertParams{500, {{"gain", 0.0625f}}});
+    rig.show(false);
+    std::vector<std::string> notices;
+    check(rig.until(
+              [&] {
+                  for (std::string& n : rig.hosting->take_notices()) notices.push_back(std::move(n));
+                  return !notices.empty();
+              },
+              5000),
+          "flooding in B: a fresh notice");
+    check(notices.size() == 1 && rig.hosting->work_refused(500) > 0, "  one, and B's own count");
+    return failures ? 1 : 0;
+}
+
 // The same through EngineControlServer: the count reaches the state block's
 // InsertState, the Notice reaches the client once, and no PluginFault is
 // posted for the insert.
@@ -1258,6 +1298,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "state_not_restored") rc = scenario_state_not_restored(a);
     else if (a.scenario == "work_refused") rc = scenario_work_refused(a);
     else if (a.scenario == "server_work_refused") rc = scenario_server_work_refused(a);
+    else if (a.scenario == "work_refused_new_session") rc = scenario_work_refused_new_session(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);

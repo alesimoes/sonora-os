@@ -545,6 +545,10 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
         for (auto& [track, c] : chains_) drop_chain(*c);
         chains_.clear();
         loading_total_ = 0;
+        // Keyed by insert id too: the new document's insert of the same id
+        // is another insert, with nothing refused yet (#115 review).
+        work_refused_.clear();
+        notices_.clear();
     }
     std::set<model::Id> seen;
     for (const auto& tp : doc.edit->tracks) {
