@@ -25,7 +25,11 @@
 //                          arrives anywhere else, only one of work()'s two
 //                          responses arrives, or a run() follows one without
 //                          end_run(). Its state is that gain, restored
-//                          through a schedule from restore()
+//                          through a schedule from restore(). A gain of
+//                          exactly kHangGain makes work() never return, as
+//                          a plugin stuck on a network share does; at
+//                          kSlowGain it returns after kSlowWorkMs and then
+//                          maps a URID, as a load finishing late does
 
 #include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
@@ -85,6 +89,7 @@ struct Plugin {
     float pending_value = 0.f;
     bool ended = true;  // end_run() since the last run()
     LV2_URID loaded_urid = 0, float_urid = 0;
+    const LV2_URID_Map* map = nullptr;
     std::atomic<pthread_t> run_thread{};
     std::atomic<bool> run_seen{false}, broken{false};
 };
@@ -121,6 +126,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Fea
             delete p;
             return nullptr;
         }
+        p->map = map;
         p->loaded_urid = map->map(map->handle, kLoadedUri);
         p->float_urid = map->map(map->handle, LV2_ATOM__Float);
     }
@@ -168,14 +174,22 @@ struct WorkMsg {
     float value;
 };
 constexpr uint32_t kCommit = 'C';
+constexpr float kHangGain = 0.25f;
+constexpr float kSlowGain = 0.125f;
+constexpr long kSlowWorkMs = 2600;
 
 // The slow part a real plugin does here: reading a sample or an IR.
 LV2_Worker_Status work(LV2_Handle h, LV2_Worker_Respond_Function respond, LV2_Worker_Respond_Handle rh,
                        uint32_t size, const void* data) {
     auto* p = static_cast<Plugin*>(h);
     if (size != sizeof(WorkMsg) || on_run_thread(p)) p->broken.store(true, std::memory_order_relaxed);
+    WorkMsg m{};
+    if (size == sizeof m) std::memcpy(&m, data, sizeof m);
     timespec ts{0, 2'000'000};
-    nanosleep(&ts, nullptr);
+    if (m.value == kSlowGain) ts = {kSlowWorkMs / 1000, (kSlowWorkMs % 1000) * 1'000'000};
+    do nanosleep(&ts, nullptr);
+    while (m.value == kHangGain);
+    if (m.value == kSlowGain) p->map->map(p->map->handle, kLoadedUri);
     if (LV2_Worker_Status s = respond(rh, size, data)) return s;
     return respond(rh, sizeof kCommit, &kCommit);
 }

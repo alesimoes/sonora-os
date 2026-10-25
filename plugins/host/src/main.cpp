@@ -596,6 +596,11 @@ constexpr uint64_t kTimerOffsetNs = 150'000;
 constexpr uint64_t kLatePollNs = 50'000;
 constexpr uint64_t kStaleSleepNs = 10'000'000;
 constexpr uint64_t kParentCheckNs = 100'000'000;
+// How long the main thread waits for a plugin's work() before it gives up on
+// a restore or a re-activation: the engine's own bound on the answer, less
+// this, so a hung worker is named in the answer instead of being found by
+// the engine's SIGKILL with no reason given.
+constexpr uint64_t kAnswerMarginNs = 1'000'000'000;
 
 // The timer-paced wait, the default until the futex wake is measured on
 // bare metal (ADR-0012 §1.3, auditor A1). Hosts wake on a guess: the next
@@ -993,6 +998,7 @@ int serve(const Options& o) {
 
     // Loading runs at normal priority: plugins read files and allocate when
     // they are instantiated, and that must not happen at SCHED_FIFO.
+    const uint64_t load_deadline = monotonic_ns() + uint64_t(pc::kLoadTimeoutMs) * 1'000'000ull - kAnswerMarginNs;
     Catalog catalog;
     load_bundles(catalog, o);
     ChainConfig cfg;
@@ -1029,7 +1035,7 @@ int serve(const Options& o) {
     for (std::size_t i = 0; i < chain.size(); ++i) {
         if (spec.states[i].empty()) continue;
         std::string why;
-        if (!chain.restore_state(i, spec.states[i], why)) {
+        if (!chain.restore_state(i, spec.states[i], load_deadline, why)) {
             std::fprintf(stderr, "sonora-plugin-host: instance %zu: state refused: %s\n", i, why.c_str());
             spec.state_results[i] = pc::StateResult::Refused;
         }
@@ -1056,7 +1062,7 @@ int serve(const Options& o) {
                          set.symbol.c_str());
     if (!chain.validate(cerr)) return refused(cerr);
     if (spec.reactivate) {
-        if (!chain.reactivate(cerr) || !chain.validate(cerr)) return refused(cerr);
+        if (!chain.reactivate(load_deadline, cerr) || !chain.validate(cerr)) return refused(cerr);
     }
     // After any re-activation: the delay lines are sized from the latency
     // the plugins report now.
@@ -1194,7 +1200,7 @@ int serve(const Options& o) {
             return;
         }
         ChainError e;
-        if (!chain.reactivate(e) || !chain.validate(e)) {
+        if (!chain.reactivate(end - kAnswerMarginNs, e) || !chain.validate(e)) {
             // A plugin that will not come back must not run inactive.
             refuse(h, e, plugin::HostState::Faulted);
             send_fault(pc::FaultKind::Plugin, e.instance, 0, e.message);
