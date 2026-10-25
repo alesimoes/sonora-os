@@ -141,6 +141,15 @@ public:
         // plug-ins (the owner's decision of 2026-10-18; §5.3's Ready bound).
         // Record never waits.
         uint64_t plugin_open_wait_ms = 10000;
+        // MIDI's budget (ADR-0015 §5, owner decision O3): notes, events and
+        // SysEx messages in the document, undo history's own included. Over
+        // it undo history goes first; a session over it is refused at open,
+        // and an edit still over it once history is gone is refused. A
+        // Notice warns from 90 %. An engine setting, not a session key, so
+        // a session over it is opened by raising this. 2^24, as
+        // model::History::kDefaultMidiMaxEntries, which this header does
+        // not see.
+        uint64_t midi_max_entries = uint64_t{1} << 24;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -272,6 +281,11 @@ private:
     // inactive). With `new_session`, every standing fault is cleared first:
     // the ids are another session's.
     void show_inserts(bool new_session);
+    // A Notice once the document's MIDI reaches 90 % of midi_max_entries
+    // (ADR-0015 §5), so the operator learns of the budget before a take, not
+    // after. Said again only after it has fallen below and risen again.
+    void warn_midi_budget();
+    bool midi_warned_ = false;
     // A FlushPluginState: which inserts, and whether they can be flushed.
     bool flush_plugin_state(const std::string& which, std::string& why);
     // Every take the disk thread has closed joins the document: at a stop,

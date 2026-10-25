@@ -1302,7 +1302,10 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 4: each track's mix carries solo_safe.
 // 5: MIDI (ADR-0014): track kinds, MIDI playlists, the sequences their
 //    regions share, MIDI routing in the mix, midi_sources.
-constexpr std::int64_t kWindowFormat = 5;
+// 6: a sequence whose file was missing at open carries its reference
+//    (ADR-0015 O2), so a replica shows the same regions silent and saves
+//    them back with it.
+constexpr std::int64_t kWindowFormat = 6;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1409,6 +1412,16 @@ private:
         v.set("notes", notes_value(d.notes));
         v.set("events", events_value(d.events));
         v.set("sysex", sysex_value(d.sysex));
+        if (d.missing) {
+            const SequenceFileRef& r = *d.missing;
+            Value& m = v.set("missing", Value::object());
+            m.set("file", Value::string(r.file));
+            m.set("sha256", Value::string(r.sha256));
+            m.set("bytes", integer(static_cast<std::int64_t>(r.bytes)));
+            m.set("notes", integer(static_cast<std::int64_t>(r.notes)));
+            m.set("events", integer(static_cast<std::int64_t>(r.events)));
+            m.set("sysex", integer(static_cast<std::int64_t>(r.sysex)));
+        }
         sequences_.push(std::move(v));
         return ix;
     }
@@ -1531,7 +1544,28 @@ bool read_sequences(Reader& rd, const Value& root,
     if (!rd.array(root, "", "sequences", list)) return false;
     for (const Value& e : list->items()) {
         auto d = std::make_shared<MidiSequence>();
-        if (!rd.keys(e, "sequences", {"notes", "events", "sysex"}) ||
+        const bool missing = e.is_object() && e.find("missing") != nullptr;
+        if (missing) {
+            const Value& m = *e.find("missing");
+            const std::string mp = "sequences.missing";
+            SequenceFileRef r;
+            std::int64_t bytes = 0, notes = 0, events = 0, sysex = 0;
+            if (!rd.keys(e, "sequences", {"notes", "events", "sysex", "missing"}) ||
+                !rd.keys(m, mp, {"file", "sha256", "bytes", "notes", "events", "sysex"}) ||
+                !rd.text(m, mp, "file", r.file) || !rd.text(m, mp, "sha256", r.sha256) ||
+                !rd.integer(m, mp, "bytes", kMaxInteger, bytes) ||
+                !rd.integer(m, mp, "notes", kMaxInteger, notes) ||
+                !rd.integer(m, mp, "events", kMaxInteger, events) ||
+                !rd.integer(m, mp, "sysex", kMaxInteger, sysex)) {
+                return false;
+            }
+            r.bytes = static_cast<std::uint64_t>(bytes);
+            r.notes = static_cast<std::uint64_t>(notes);
+            r.events = static_cast<std::uint64_t>(events);
+            r.sysex = static_cast<std::uint64_t>(sysex);
+            d->missing = std::move(r);
+        }
+        if ((!missing && !rd.keys(e, "sequences", {"notes", "events", "sysex"})) ||
             !read_rows(rd, e, "sequences", "notes", detail::read_note_rows, d->notes) ||
             !read_rows(rd, e, "sequences", "events", detail::read_event_rows, d->events) ||
             !read_rows(rd, e, "sequences", "sysex", detail::read_sysex_rows, d->sysex)) {

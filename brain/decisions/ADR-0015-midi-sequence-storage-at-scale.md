@@ -1,7 +1,21 @@
 # ADR-0015 — MIDI sequences at scale: canonical chunks in memory, binary sidecar files on disk, a chunk table in the replicated window
 
 - Status: **Accepted by the owner, 2026-10-20**, with every recommended
-  default for O1–O5 ("For the owner"). Not implemented.
+  default for O1–O5 ("For the owner"). Implementation, M-1c: PR 1
+  (`m1c-midi-storage`) lands §3, §5 and §6's cleanup, storage and format
+  first as the work allows; §1, §2 and §4 (chunks, the chunk table,
+  Snapshot in parts) are PR 2; the saver's pacing behind checkpoints waits
+  for the engine's saver thread (PR 3). BACKLOG Track 2 item 4 tracks
+  each.
+- Update 2026-10-20 (M-1c PR 1, #109), **accepted by the owner,
+  2026-10-21**: `ModelAction::Load` carries a session bundle (the session
+  file and its sequence files; protocol 8, window format 6) because the
+  engine reads nothing from the interface's folder, so §4's "only attach
+  and resync carry sequence bytes" adds Load, and PR 2's ≤ 16 MiB parts
+  apply to Load as well as Snapshot (until then Open is refused by name
+  over 64 MiB); §6's sync pacing moves to PR 3 with the engine saver,
+  which also makes the engine sole owner of `MIDI Sequences/`, and must
+  merge before M-4 records MIDI.
 - Date: 2026-10-20. Revised the same day with the rt-engineer's review of
   PR #102 ("accept with changes"); the PR thread maps each point to where
   it landed.

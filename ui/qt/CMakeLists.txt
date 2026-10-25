@@ -155,6 +155,13 @@ target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# File > Open on FakeEngine (#109 review): a refused Open gives the window
+# back to the session it had, and both Open refusals are held notices.
+add_executable(test_ui_session_open tests/test_session_open.cpp)
+target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt)
+add_test(NAME ui_session_open COMMAND test_ui_session_open)
+set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The Mix window on the monitor bus, on FakeEngine: typed gain and pan,
 # strips by display order, fader rides (ParameterChange per step, one SetMix
 # at release), Alt- and Ctrl-clicks on solo and mute; then the QML.

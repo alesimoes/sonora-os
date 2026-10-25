@@ -76,7 +76,8 @@ public:
     std::string redo_label() const override { return shown_.redo_label(); }
     model::Id reserve_id() override;
     // Sends the session to the engine (ModelAction::Load) and shows it at
-    // once.
+    // once. A session whose bundle is over api::wire::kMaxModelBytes is
+    // refused by name instead, and nothing is shown or sent.
     bool reset(model::Snapshot s, std::string& why) override;
     // ModelAction::FlushPluginState. `done` runs from the receive() that
     // brings the engine's reply, after that call has applied the updates the
@@ -103,9 +104,15 @@ public:
     std::size_t in_flight() const { return pending_.size(); }
     // Why the engine refused a request; for the status line.
     std::function<void(const std::string&)> on_refused;
-    // A File > Open was among the dropped requests: the window must stop
-    // naming that file, or Save would write the engine's document over it.
-    std::function<void()> on_load_abandoned;
+    // A File > Open did not happen, and what is shown is no longer its
+    // session: the window must stop naming that file, or Save would write
+    // another document over it. `refused` is empty when the request was
+    // dropped with the link (what the engine holds is unknown until its
+    // Snapshot), and is the engine's reason when the engine refused it (the
+    // engine kept the session it had). `later_load`: another Open is still
+    // in flight, so what is shown is that one's session. Called once the
+    // replica is rebuilt; while unset, a refusal goes to `on_refused`.
+    std::function<void(const std::string& refused, bool later_load)> on_load_abandoned;
 
 private:
     struct Pending {
@@ -119,8 +126,8 @@ private:
 
     uint64_t send(api::ModelAction action, std::string bytes);
     void request_resync();
-    // True, with `why`, when an edit must be refused now: offline, or behind
-    // the engine. A Resync the engine refused is asked for again here, on the
+    // True, with `why`, when an edit must be refused now: offline, a Load
+    // the engine has not answered, or behind the engine. A Resync the engine refused is asked for again here, on the
     // operator's next edit, so a refusal never leaves the window waiting on
     // nothing, and a refusing engine is not asked in a loop.
     bool refuse_while_lost(std::string& why);

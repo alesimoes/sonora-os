@@ -1799,13 +1799,256 @@ int test_pre_migration_backup() {
 
 }  // namespace
 
+// ADR-0015 §3, §6 and O2, O4: File > Save writes each MIDI sequence to
+// "MIDI Sequences/<sha>.msq" before the session file, Open reads them back,
+// a file no kept session file names is deleted, nothing is while a kept
+// file cannot be read, and a missing one opens silent and is named again.
+int test_midi_sequence_files() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why;
+
+    Snapshot base = make_empty_session(1, kRate);
+    base.settings.name = "Bass";
+    sonora::model::History h(base);
+    sonora::model::AddTrack t;
+    t.track = h.current().next_id;
+    t.playlist = t.track + 1;
+    t.name = "Synth";
+    t.playlist_name = "Synth.01";
+    t.kind = TrackKind::Midi;
+    t.channels = 0;
+    CHECK(h.apply(t, why));
+    auto first = std::make_shared<MidiSequence>();
+    for (int i = 0; i < 20; ++i) first->events.push_back(MidiEvent{i * 1000, 0xB0, 1, 2});
+    MidiRegion r;
+    r.id = h.current().next_id;
+    r.name = "Synth_01";
+    r.length = 4 * kTicksPerQuarter;
+    r.data = first;
+    CHECK(h.apply(PlaceMidiRegion{t.playlist, r, 0, {}}, why));
+
+    ModelDocument doc(h.current());
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    OK(session.saveSession(why));
+    const QString file = session.sessionFile();
+    const QDir seqs(QDir(QFileInfo(file).absolutePath()).filePath(QStringLiteral("MIDI Sequences")));
+    const SequenceFileRef a = sequence_ref(*first);
+    const QString a_file = seqs.filePath(QString::fromStdString(a.sha256) + QStringLiteral(".msq"));
+    OK(file_bytes(a_file).toStdString() == encode_sequence(*first));
+    OK(seqs.entryList(QDir::Files).size() == 1);   // no ".tmp" left behind
+    OK(contains(file_bytes(file).toStdString(), a.sha256.c_str()));
+
+    // An edit makes another sequence; once saved, nothing names the first.
+    EditMidi e;
+    e.playlist = t.playlist;
+    e.region = r.id;
+    e.add_events = {MidiEvent{30000, 0xB0, 1, 3}};
+    OK(doc.submit(e, why));
+    OK(session.saveSession(why));
+    const auto& now = *doc.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0].data;
+    const SequenceFileRef b = sequence_ref(now);
+    const QString b_file = seqs.filePath(QString::fromStdString(b.sha256) + QStringLiteral(".msq"));
+    OK(QFileInfo::exists(b_file) && !QFileInfo::exists(a_file));
+
+    // Opened elsewhere: the same notes, from the file.
+    ModelDocument other(make_empty_session(1, kRate));
+    SessionModel opener(other, peaks, true);
+    opener.setSessionsDir(dir.path());
+    OK(opener.openSessionFile(file, true, why));
+    OK(same_document(other.snapshot(), doc.snapshot()));
+    OK(opener.repairs().isEmpty());
+
+    // A kept file that cannot be read stops every deletion, and says so.
+    const QString backups = QDir(QFileInfo(file).absolutePath()).filePath(QStringLiteral("Session File Backups"));
+    CHECK(QDir().mkpath(backups));
+    {
+        QFile junk(QDir(backups).filePath(QStringLiteral("Bass.v9.sonora")));
+        CHECK(junk.open(QIODevice::WriteOnly) && junk.write("{not json") > 0);
+    }
+    QStringList notices;
+    QObject::connect(&opener, &SessionModel::notice, [&notices](const QString& n) { notices << n; });
+    OK(opener.openSessionFile(file, true, why));
+    e.add_events = {MidiEvent{31000, 0xB0, 1, 4}};
+    OK(other.submit(e, why));
+    OK(opener.saveSession(why));
+    OK(QFileInfo::exists(b_file));
+    OK(!notices.isEmpty() && notices.back().contains(QStringLiteral("cannot be read")));
+    QFile::remove(QDir(backups).filePath(QStringLiteral("Bass.v9.sonora")));
+
+    // An interrupted write is gone at the next open; a missing file opens
+    // silent, is listed, and the next save names it again.
+    const auto& latest = *other.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0].data;
+    const QString c_file =
+        seqs.filePath(QString::fromStdString(sequence_ref(latest).sha256) + QStringLiteral(".msq"));
+    OK(QFileInfo::exists(c_file));
+    {
+        QFile tmp(c_file + QStringLiteral(".tmp"));
+        CHECK(tmp.open(QIODevice::WriteOnly) && tmp.write("torn") > 0);
+    }
+    CHECK(QFile::remove(c_file));
+    ModelDocument third(make_empty_session(1, kRate));
+    SessionModel reopener(third, peaks, true);
+    reopener.setSessionsDir(dir.path());
+    OK(reopener.openSessionFile(file, true, why));
+    OK(!QFileInfo::exists(c_file + QStringLiteral(".tmp")));
+    OK(reopener.repairs().size() == 1);
+    const QVariantMap missing = reopener.repairs()[0].toMap();
+    OK(missing.value(QStringLiteral("now")).toString().contains(QStringLiteral("MIDI data missing")));
+    OK(missing.value(QStringLiteral("why")).toString().contains(QStringLiteral("not there")));
+    const MidiRegion& silent = third.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0];
+    OK(silent.data->missing && silent.data->events.empty());
+    const QByteArray held = file_bytes(file);
+    OK(reopener.saveSession(why));
+    OK(file_bytes(file) == held);
+    return 0;
+}
+
+// A session of one audio track and one MIDI track whose region holds
+// `events` controller events, its region id in `region`.
+Snapshot midi_session(int events, Id& playlist, Id& region) {
+    Snapshot base = make_empty_session(1, kRate);
+    base.settings.name = "Keys";
+    sonora::model::History h(base);
+    sonora::model::AddTrack t;
+    t.track = h.current().next_id;
+    t.playlist = t.track + 1;
+    t.name = "Synth";
+    t.playlist_name = "Synth.01";
+    t.kind = TrackKind::Midi;
+    t.channels = 0;
+    std::string why;
+    h.apply(t, why);
+    auto seq = std::make_shared<MidiSequence>();
+    for (int i = 0; i < events; ++i) seq->events.push_back(MidiEvent{i * 1000, 0xB0, 1, 2});
+    MidiRegion r;
+    r.id = h.current().next_id;
+    r.name = "Synth_01";
+    r.length = 4 * kTicksPerQuarter;
+    r.data = seq;
+    h.apply(PlaceMidiRegion{t.playlist, r, 0, {}}, why);
+    playlist = t.playlist;
+    region = r.id;
+    return h.current();
+}
+
+QString msq(const QString& session_file, const MidiSequence& s) {
+    return QDir(QFileInfo(session_file).absolutePath())
+        .filePath(QStringLiteral("MIDI Sequences/") + QString::fromStdString(sequence_ref(s).sha256) +
+                  QStringLiteral(".msq"));
+}
+
+const MidiSequence& first_sequence(const TimelineDocument& d) {
+    return *d.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0].data;
+}
+
+// #109 review: cleanup only after a durable save; kept files parsed once
+// and dropped when gone; a backup's sequences resolved in the session
+// folder.
+int test_midi_sequence_cleanup_follow_ups() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why;
+    Id playlist = 0, region = 0;
+    ModelDocument doc(midi_session(20, playlist, region));
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    QStringList notices;
+    QObject::connect(&session, &SessionModel::notice, [&notices](const QString& n) { notices << n; });
+    OK(session.saveSession(why));
+    const QString file = session.sessionFile();
+    const QString a = msq(file, first_sequence(doc));
+    OK(QFileInfo::exists(a));
+    const auto edit_once = [&](int tick) {
+        EditMidi e;
+        e.playlist = playlist;
+        e.region = region;
+        e.add_events = {MidiEvent{100000 + tick, 0xB0, 1, 3}};
+        return doc.submit(e, why);
+    };
+
+    // Code-reviewer must-fix 1: a save whose folder did not sync is not
+    // durable, so nothing the previous file named goes.
+    session.setSessionWriter([](const QString& f, const std::string& bytes, std::string& w,
+                                std::string& caution) {
+        const bool ok = write_session_file(f, bytes, w, caution);
+        caution = "the folder could not be synced; a power cut now could lose this save";
+        return ok;
+    });
+    OK(edit_once(1));
+    OK(session.saveSession(why));
+    OK(notices.back().contains(QStringLiteral("could not be synced")));
+    OK(QFileInfo::exists(a));
+    session.setSessionWriter(write_session_file);
+    OK(edit_once(2));
+    OK(session.saveSession(why));
+    OK(!QFileInfo::exists(a) && QFileInfo::exists(msq(file, first_sequence(doc))));
+
+    // Should-fix 4: each kept file parsed once, not at every save; a
+    // deleted unreadable backup stops blocking cleanup at the next save.
+    MidiSequenceFolder folder;
+    folder.open(file, {});
+    OK(folder.kept_reads() == 1);
+    const QString backups =
+        QDir(QFileInfo(file).absolutePath()).filePath(QStringLiteral("Session File Backups"));
+    CHECK(QDir().mkpath(backups));
+    const QString junk = QDir(backups).filePath(QStringLiteral("Keys.v9.sonora"));
+    {
+        QFile out(junk);
+        CHECK(out.open(QIODevice::WriteOnly) && out.write("{not json") > 0);
+    }
+    const QString before = msq(file, first_sequence(doc));
+    OK(edit_once(3));
+    OK(folder.write(file, doc.snapshot(), why));
+    folder.saved(file, doc.snapshot());
+    std::string caution;
+    OK(folder.clean(caution) == 0 && contains(caution, "cannot be read"));
+    OK(QFileInfo::exists(before));
+    OK(folder.kept_reads() == 2);   // the junk, once
+    CHECK(QFile::remove(junk));
+    OK(edit_once(4));
+    OK(folder.write(file, doc.snapshot(), why));
+    folder.saved(file, doc.snapshot());
+    caution.clear();
+    OK(folder.clean(caution) == 2 && caution.empty());   // `before` and the edit-3 one
+    OK(!QFileInfo::exists(before) && QFileInfo::exists(msq(file, first_sequence(doc))));
+    OK(folder.kept_reads() == 2);
+
+    // Suspected 5: an autosave or backup names the session folder's
+    // sequence files, not "Session File Backups/MIDI Sequences/".
+    std::string bytes;
+    {
+        sonora::model::WriteInfo info{"test", 9};
+        std::string error;
+        CHECK(serialize(doc.snapshot(), info, bytes, error));
+    }
+    const QString autosave = QDir(backups).filePath(QStringLiteral("Keys.autosave.sonora"));
+    {
+        QFile out(autosave);
+        CHECK(out.open(QIODevice::WriteOnly) &&
+              out.write(bytes.data(), static_cast<qint64>(bytes.size())) ==
+                  static_cast<qint64>(bytes.size()));
+    }
+    OK(session_folder_of(autosave) == QFileInfo(file).absolutePath());
+    Loaded loaded;
+    std::string read;
+    OK(read_session_file(autosave, read, loaded, why));
+    OK(loaded.missing_sequences.empty() && loaded.verified_sequences.size() == 1);
+    OK(!QFileInfo::exists(QDir(backups).filePath(QStringLiteral("MIDI Sequences"))));
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
         test_taper() ||
         test_time() || test_nudge_tempo_map() ||
         test_scene() || test_routing() || test_files() || test_save_failures() ||
-        test_pre_migration_backup()) {
+        test_pre_migration_backup() || test_midi_sequence_files() ||
+        test_midi_sequence_cleanup_follow_ups()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

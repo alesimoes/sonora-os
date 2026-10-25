@@ -25,6 +25,7 @@
 #include "edit_controller.h"
 #include "engine_adapter.h"
 #include "peak_source.h"
+#include "session_files.h"
 #include "time_format.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -132,6 +133,13 @@ public:
     // lost first). What is shown is the engine's document, not that file's,
     // so the window stops naming the file and Save never writes over it.
     void openWasLost();
+    // The engine refused the File > Open just made, and kept its session,
+    // which is shown again. The window names that session's file again,
+    // with its saved bytes, repairs and sequence folder, so Save writes it
+    // and never the refused file, and cleanup never runs in the refused
+    // file's folder. `later_load`: another Open is in flight and shown, so
+    // the window keeps naming it, and that one's refusal can only clear.
+    void openWasRefused(const QString& why, bool later_load);
 
     // The interface's editing commands, installed before KeyRouter::prepare().
     void installCommands(CommandRegistry& local);
@@ -270,6 +278,8 @@ signals:
     void refused(const QString& why);
     // Something done that the operator should see confirmed: "Saved ...".
     void notice(const QString& text);
+    // Why an Open did not happen, held until the next Open (empty).
+    void openNotice(const QString& text);
     // edit.repeat without a count, with something to repeat: the window
     // asks for the number, offering `count` (the last one used), and sends
     // edit.repeat again with it. `what` says what one copy is ("2.000 s of
@@ -290,6 +300,7 @@ private:
     bool synthetic_peaks_;
     QString sessions_dir_;
     SessionWriter writer_;
+    MidiSequenceFolder sequences_;   // the session folder's "MIDI Sequences/"
     QString file_;                 // empty until the session is saved or opened
     uint64_t saved_revision_ = 0;  // the revision the file holds
     uint64_t save_generation_ = 0;
@@ -304,6 +315,20 @@ private:
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);
+
+    // What the window named before the Open the engine has not answered,
+    // given back if the engine refuses it.
+    struct BeforeOpen {
+        bool valid = false;
+        QString opened;   // the file that Open named
+        QString file;
+        uint64_t saved_revision = 0;
+        uint64_t save_generation = 0;
+        std::string saved_bytes;
+        QVariantList repairs;
+        MidiSequenceFolder sequences;
+    };
+    BeforeOpen before_open_;
 
     TransportOverlay overlay_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;

@@ -45,7 +45,11 @@ namespace sonora::api {
 //   PlaceMidiRegion, EditMidi and SetMidiRouting; AddTrack carries `kind`;
 //   MoveRegion, TrimRegion and SplitRegion carry `timebase`; a track's mix
 //   carries its MIDI routing; the undo window's format 5.
-constexpr uint32_t kProtocolVersion = 7;
+// 8 (ADR-0015 M-1c): Load carries a session bundle, the session file with
+//   the MIDI sequence files it names (session format 6); the undo window's
+//   format 6, where a sequence whose file was missing at open carries its
+//   reference.
+constexpr uint32_t kProtocolVersion = 8;
 
 // --- client -> engine -------------------------------------------------------
 
@@ -113,11 +117,13 @@ enum class ModelAction : uint32_t {
     Undo = 1,
     Redo = 2,
     Resync = 3,  // send me the whole document; I lost track of the revisions
-    // Open another session: `op` is a session file's bytes (common/model's
-    // session_file.h). The engine's document becomes it, with a new undo
-    // history, and every replica gets a Snapshot. Bytes rather than a path,
-    // so the engine needs no view of the interface's filesystem and File >
-    // Open's checks stay where the dialog is. Protocol version 2.
+    // Open another session: `op` is a session bundle, the session file with
+    // the MIDI sequence files it names, or a bare session file (common/
+    // model's session_file.h, decode_session_bundle). The engine's document
+    // becomes it, with a new undo history, and every replica gets a
+    // Snapshot. Bytes rather than a path, so the engine needs no view of the
+    // interface's filesystem and File > Open's checks stay where the dialog
+    // is. Protocol version 2; a bundle since 8.
     Load = 4,
     // Bring the document's plugin values up to date with the running
     // plugins (ADR-0012 §8): before File > Save, and before an insert is
