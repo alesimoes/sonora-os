@@ -38,7 +38,8 @@ public:
     // atomic the document does not hold yet, and writing the document's mix
     // on every edit would snap it back (item 3 of the update above). Each
     // engine track's document_id(), and the session's name, follow the
-    // snapshot, built or not. False, with `error`, if the plan cannot be
+    // snapshot, built or not, and so does the session's playback loop
+    // (Session::set_loop()). False, with `error`, if the plan cannot be
     // built; what is playing does not change.
     bool show(const model::Snapshot& snapshot, std::string& error);
     // The mix alone: gain, pan, mute, solo, monitor mode, bus gain. Gains and
@@ -80,10 +81,12 @@ public:
     // to Session::stop().
     void stop();
 
-    // Publishes a resident pending plan, sends a resident locate, starts a
-    // requested roll, and frees what is retired. Call often.
+    // Publishes a resident pending plan, sends a resident locate and a loop
+    // range whose start is resident, starts a requested roll, and frees what
+    // is retired. Call often.
     void pump();
-    // pump() until nothing is pending, locating or waiting to roll, or the
+    // pump() until nothing is pending, locating, waiting to roll or holding
+    // a loop range back, or the
     // timeout passes. For headless runs and tests.
     bool settle(double seconds);
 

@@ -52,6 +52,14 @@ struct ReaderConfig {
     uint32_t wake_ms = 5;
 };
 
+// A loop range [from, to) the reader holds, empty when to <= from.
+struct LoopHold {
+    int64_t from = 0;
+    int64_t to = 0;
+    bool held() const { return to > from; }
+    bool operator==(const LoopHold& o) const { return from == o.from && to == o.to; }
+};
+
 class DiskReader {
 public:
     DiskReader(const ReaderConfig& cfg, PlanExchange& exchange, const Transport& transport);
@@ -85,19 +93,29 @@ public:
     uint64_t serve(PlaybackPlan* playing, PlaybackPlan* pending,
                    int64_t locate_target = 0, uint64_t locate_serial = 0);
     uint64_t adopted() const { return adopted_.load(std::memory_order_acquire); }
-    // While a loop take runs (ADR-0016 §2): the playhead jumps from B to A
-    // at every wrap, so [A, A + window) is made resident for both plans and
-    // protected, as a locate target is, from the next pass until released.
+    // While the playhead loops, rolling (engine.transport.loop) or in a
+    // loop take (ADR-0016 §2): it jumps from B to A at every wrap, so
+    // [A, A + window), cut at B, is made resident for both plans and
+    // protected, as a locate target is, until another hold replaces it.
     // Without it, a loop longer than the pool holds finds A's chunks
     // evicted at each wrap (PR #117 review, B1). Meanwhile nothing at or
-    // past B is read for the playhead, and only the protected ranges are
-    // kept: what lies ahead of the window is read again before the
-    // playhead reaches it.
-    void hold_loop(int64_t loop_from, int64_t loop_to);
-    void release_loop();
+    // past B is read for a playhead short of it, and only the protected
+    // ranges are kept: what lies ahead of the window is read again before
+    // the playhead reaches it. A loop shorter than the window is then
+    // [A, B) entire, read once.
+    // `previous` is a range the audio thread still plays: it stays held,
+    // and the window ahead runs to the later of the two Bs, until
+    // Transport::loops_applied() reaches `previous_until`, the count at
+    // which the audio thread takes `loop` instead. So the old range plays
+    // whole while the new one's start is read, and the playhead finds
+    // what lies past the old B when the new range moves B on.
+    // Returns this request's generation: resident() at or past it says
+    // `loop`'s start is resident for both plans.
+    uint64_t hold_loop(LoopHold loop, LoopHold previous = {}, uint64_t previous_until = 0);
+    uint64_t release_loop() { return hold_loop(LoopHold{}); }
     // The newest generation whose plans were found resident: every chunk
     // the playing and the pending plan play from the playhead (and from the
-    // locate target, and a held loop start) through the window linked.
+    // locate target, and each held loop start) through the window linked.
     uint64_t resident() const { return resident_.load(std::memory_order_acquire); }
     // Wakes the thread now rather than at its next tick.
     void wake();
@@ -151,6 +169,9 @@ private:
         int64_t locate_target = 0;
         uint64_t locate_serial = 0;
         uint64_t generation = 0;
+        LoopHold loop;
+        LoopHold previous;
+        uint64_t previous_until = 0;
     };
 
     struct Range {
@@ -210,7 +231,8 @@ private:
     std::vector<float> read_scratch_;
     PlaybackPlan* playing_ = nullptr;
     PlaybackPlan* pending_ = nullptr;
-    Range protect_[3] = {};
+    // The playhead's window, a locate target's, two held loop starts.
+    Range protect_[4] = {};
     int protect_count_ = 0;
     bool looping_ = false;   // this pass holds a loop
 
@@ -234,11 +256,6 @@ private:
     std::atomic<uint64_t> read_errors_{0};
     std::atomic<uint64_t> max_read_us_{0};
     std::atomic<uint32_t> linked_{0};
-    // Control thread to reader: one word, so a pass never reads one
-    // loop's A with another's B. A and B each below 2^32 frames (a day at
-    // 48 kHz): a loop past that is not held, and its wraps may miss,
-    // counted. 0 for none.
-    std::atomic<uint64_t> loop_{0};
 };
 
 // The audio thread's read of a slot: seq_cst, see above.

@@ -66,6 +66,12 @@ public:
     uint64_t locates_applied() const { return locates_.load(std::memory_order_acquire); }
     // Audio thread only, after set_playhead().
     void note_locate() { locates_.fetch_add(1, std::memory_order_release); }
+    // How many playback loop ranges the callback has applied, at a block
+    // start: the reader holds the range before it until this reaches the
+    // new one's count (DiskReader::hold_loop()).
+    uint64_t loops_applied() const { return loops_.load(std::memory_order_acquire); }
+    // Audio thread only, once the block's loop range is the new one.
+    void note_loop() { loops_.fetch_add(1, std::memory_order_release); }
 
     double seconds() const {
         return static_cast<double>(playhead()) / sample_rate_;
@@ -89,6 +95,7 @@ private:
     std::atomic<uint64_t> word_{0};
     std::atomic<uint64_t> playhead_{0};
     std::atomic<uint64_t> locates_{0};
+    std::atomic<uint64_t> loops_{0};
 };
 
 // The callback loads the state and advances the playhead every period; a

@@ -379,6 +379,82 @@ int test_undo_while_rolling() {
     return 0;
 }
 
+// engine.transport.loop: the document's loop range loops the roll at the
+// sample, through PlaybackController's gate; cleared, or too short for the
+// session to loop, the roll plays straight through.
+int test_the_document_loop_loops_the_roll() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 30 * kChunk, 0), 0}));
+    const auto set_loop = [&](Frames a, Frames b) {
+        SetSettings op{h.current().settings};
+        op.settings.transport.loop = {{a, b}};
+        std::string why;
+        return h.apply(op, why);
+    };
+    CHECK(set_loop(1000, 1700));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    CHECK(!s.loop_pending());
+    CHECK(ctl.locate(900, error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    run_block(s, o);  // ramps settle
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    int64_t t = 900;
+    for (int blk = 0; blk < 40; ++blk) {
+        run_block(s, o);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            if (o.l[i] != value(1, t)) {
+                std::fprintf(stderr, "  block %d frame %u: %f, want frame %lld\n", blk, i, o.l[i],
+                             static_cast<long long>(t));
+                return 1;
+            }
+            if (++t == 1700) t = 1000;
+        }
+        s.reader().run_pass();
+        ctl.pump();
+    }
+    CHECK(s.transport().playhead() == static_cast<uint64_t>(t));
+
+    const auto roll = [&](int blocks) {
+        for (int blk = 0; blk < blocks; ++blk) {
+            run_block(s, o);
+            s.reader().run_pass();
+            ctl.pump();
+        }
+    };
+    CHECK(set_loop(0, 0));
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    roll(20);
+    CHECK(s.transport().playhead() > 1700);
+
+    // Shorter than one 256-frame block: not looped.
+    CHECK(set_loop(2000, 2100));
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    CHECK(!s.loop_pending());
+    ctl.stop();
+    CHECK(ctl.locate(1900, error));
+    CHECK(ctl.settle(2.0));
+    run_block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    roll(10);
+    CHECK(s.transport().playhead() == 1900 + 10 * kBlock);
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
 int test_locate_and_cancel() {
     auto session = make_session(1);
     Session& s = *session;
@@ -1597,6 +1673,7 @@ int main() {
     if (test_crossfade_past_the_handle_is_refused()) return 1;
     if (test_limits_are_named()) return 1;
     if (test_undo_while_rolling()) return 1;
+    if (test_the_document_loop_loops_the_roll()) return 1;
     if (test_locate_and_cancel()) return 1;
     if (test_transport_commands()) return 1;
     if (test_locate_command()) return 1;
