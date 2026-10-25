@@ -12,6 +12,7 @@
 #include "sonora/disk_thread.h"
 #include "sonora/fade_curve.h"
 #include "sonora/insert_chain_runner.h"
+#include "sonora/latency_probe.h"
 #include "sonora/plan_exchange.h"
 #include "sonora/process_callback.h"
 #include "sonora/ringbuffer.h"
@@ -125,8 +126,7 @@ struct LoopRange {
     uint64_t start = 0;  // at most A
     // The input latency L in frames: a wrap's boundary record counts the
     // capture to the sample that lines up with A, which arrives L frames
-    // after the playhead wraps (C7). Until the loopback measurement lands,
-    // the backend's reported figure, as for a punch.
+    // after the playhead wraps (C7). The session's input_latency() (ADR-0019).
     uint32_t latency = 0;
     // The pass handle H: B - A shorter than this is refused (C4).
     uint32_t handle = 0;
@@ -289,6 +289,12 @@ public:
         // past capture_from with no frame captured is an overrun, not an
         // early stop. kNoOrigin until it ends.
         uint64_t end = kNoOrigin;
+        // The round trip its files were compensated by (ADR-0019 §2): a
+        // plain or punched take captured this much later on the playhead
+        // than the timeline frames its files are labelled with. A loop
+        // take's is loop.latency, applied to its wraps instead, and this
+        // says the same.
+        uint32_t latency = 0;
     };
     // The takes closed since the last call, oldest first: by stop(), or by
     // the disk thread after punch_out() or a take started over it. Control
@@ -324,6 +330,22 @@ public:
     static constexpr uint64_t kNoRollEnd = ~uint64_t{0};
     void set_roll_end(uint64_t frame) { roll_end_.store(frame, std::memory_order_release); }
     uint64_t roll_end() const { return roll_end_.load(std::memory_order_acquire); }
+
+    // The round trip L in frames, from a sample the callback writes to the
+    // sample it reads back (ADR-0019): the input sample that lines up with
+    // timeline frame t arrives at playhead t + L. A plain or punched take
+    // captures its timeline range L frames later on the playhead and labels
+    // its files with the frames they line up with, so its TimeReference is
+    // P0 - L (session-format.md); a loop take counts its wraps with it
+    // (ADR-0016 §2). Monitoring is not moved by it. The audio thread reads
+    // it at a take's first block. Refused, changing nothing, during a take
+    // and above one second. Control thread.
+    bool set_input_latency(uint32_t frames, std::string* error = nullptr);
+    uint32_t input_latency() const { return input_latency_.load(std::memory_order_relaxed); }
+    // Measures L through a cable from an output to an input; the session
+    // runs it at the end of every callback (latency_probe.h). The result is
+    // not applied: the caller decides, and set_input_latency() does it.
+    LatencyProbe& latency_probe() { return *probe_; }
 
     // Queues a locate for the audio thread, which applies it at the start of
     // a block. False if the queue is full. engine/control sends it only once
@@ -656,6 +678,12 @@ private:
     uint64_t punch_count_ = 0;
     // This block's: the running take's range, kWholeTake, or kNoCapture.
     const PunchRecord* punch_ = &kWholeTake;
+    // The running take's L, latched from input_latency_ at its first block;
+    // 0 for a loop take, whose wraps carry L instead. Its capture range on
+    // the playhead: the timeline range plus that, saturating at kOpenEnd.
+    uint64_t take_latency_ = 0;
+    uint64_t capture_from_ = 0;
+    uint64_t capture_to_ = PunchRange::kOpenEnd;
     // This block's loop, from punch_: [0, 0) when the playhead does not
     // wrap. The running loop take's wraps so far, and this block's: how
     // many, and the first one's offset in the block.
@@ -749,6 +777,11 @@ private:
     // once it has stopped the roll, so an end the control thread sets for
     // the next roll meanwhile is kept.
     std::atomic<uint64_t> roll_end_{kNoRollEnd};
+    // set_input_latency(). Stored only while no take runs, so the store is
+    // ordered before the next take's publication, which the take's first
+    // block reads it after.
+    std::atomic<uint32_t> input_latency_{0};
+    std::unique_ptr<LatencyProbe> probe_;
     // Odd while process() runs; each callback adds one on entry and one on
     // exit. stop() waits, after storing Stopped, for the callback in flight
     // to return, so none that read the take before the store is still

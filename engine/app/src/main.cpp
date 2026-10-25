@@ -62,6 +62,53 @@ std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
     return nullptr;
 }
 
+// --measure-latency: the round trip from out_<output> to in_<input>, which
+// the operator has cabled together, before anything records (ADR-0019 §4).
+// Measured, it is the session's L; otherwise L stays as it was and the
+// operator is told why. 1-based, as the ports are named.
+void measure_latency(sonora::Session& session, uint32_t output, uint32_t input) {
+    sonora::LatencyProbe& probe = session.latency_probe();
+    sonora::LatencyProbe::Settings settings;
+    settings.output = output - 1;
+    settings.input = input - 1;
+    const uint32_t rate = session.config().sample_rate;
+    const std::string which =
+        "--measure-latency out_" + std::to_string(output) + " to in_" + std::to_string(input);
+    std::string error;
+    if (!probe.start(settings, &error)) {
+        std::fprintf(stderr, "sonora: %s: %s\n", which.c_str(), error.c_str());
+        return;
+    }
+    // Two windows a ping, and three more for each restart it allows, then
+    // two seconds for the server to start the periods.
+    const uint64_t window = settings.window != 0 ? settings.window : rate / 4;
+    const uint64_t frames = (2 * settings.pings + 3 * (settings.pings + 2)) * window;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(1000 * frames / std::max<uint32_t>(rate, 1) + 2000);
+    sonora::LatencyProbe::Result result{};
+    while (!probe.poll(result)) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            probe.cancel();
+            std::fprintf(stderr, "sonora: %s: no result; is the audio server running periods?\n",
+                         which.c_str());
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const std::string said = sonora::LatencyProbe::describe(result, rate);
+    if (result.outcome != sonora::LatencyProbe::Outcome::Measured) {
+        std::fprintf(stderr, "sonora: %s: %s. Takes are compensated by %u frames.\n", which.c_str(),
+                     said.c_str(), session.input_latency());
+        return;
+    }
+    if (!session.set_input_latency(result.frames, &error)) {
+        std::fprintf(stderr, "sonora: %s: %s: %s\n", which.c_str(), said.c_str(), error.c_str());
+        return;
+    }
+    std::fprintf(stderr, "sonora: %s: %s. Takes are compensated by it.\n", which.c_str(),
+                 said.c_str());
+}
+
 // Process-wide setup a backend needs before any thread exists.
 void prepare_backend(const std::string& name) {
     if (name == "jack") sonora::JackBackend::prepare_process();
@@ -352,6 +399,10 @@ int main(int argc, char** argv) {
     std::vector<int> arm_tracks;
     std::vector<std::string> place_files;
     bool no_input_monitoring = false;
+    // ADR-0019 §4: L given, and the cabled pair to measure it on (0: none).
+    long input_latency = -1;
+    uint32_t probe_output = 0;
+    uint32_t probe_input = 0;
     std::string keymap_path;
     std::string capture_device;
     std::string backend_name = "jack";
@@ -396,6 +447,21 @@ int main(int argc, char** argv) {
             place_files.emplace_back(argv[++i]);
         } else if (std::strcmp(argv[i], "--no-input-monitoring") == 0) {
             no_input_monitoring = true;
+        } else if (std::strcmp(argv[i], "--input-latency") == 0 && i + 1 < argc) {
+            input_latency = std::atol(argv[++i]);
+            if (input_latency < 0) {
+                std::fprintf(stderr, "sonora: --input-latency takes a frame count from 0\n");
+                return 2;
+            }
+        } else if (std::strcmp(argv[i], "--measure-latency") == 0 && i + 1 < argc) {
+            unsigned out = 0, in = 0;
+            char rest = 0;
+            if (std::sscanf(argv[++i], "%u:%u%c", &out, &in, &rest) != 2 || out == 0 || in == 0) {
+                std::fprintf(stderr, "sonora: --measure-latency takes OUT:IN, port numbers from 1\n");
+                return 2;
+            }
+            probe_output = out;
+            probe_input = in;
         } else if (std::strcmp(argv[i], "--plugin-host") == 0 && i + 1 < argc) {
             control.plugin_host = argv[++i];
         } else if (std::strcmp(argv[i], "--plugin-bundle") == 0 && i + 1 < argc) {
@@ -448,6 +514,12 @@ int main(int argc, char** argv) {
                 "                    its BWF time reference (repeatable: tracks 2, 3...)\n"
                 "  --no-input-monitoring\n"
                 "                    armed tracks send nothing to the monitor bus\n"
+                "  --input-latency FRAMES\n"
+                "                    the round trip out and back in; takes are placed\n"
+                "                    that much earlier (default 0)\n"
+                "  --measure-latency OUT:IN\n"
+                "                    measure it on out_OUT, cabled to in_IN, at start\n"
+                "                    (impulses at -20 dBFS on out_OUT)\n"
                 "  --plugin-host PATH  the plugin host (default: sonora-plugin-host\n"
                 "                    beside this binary; none: inserts show faulted)\n"
                 "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
@@ -656,9 +728,15 @@ int main(int argc, char** argv) {
     // open() refuses a server at any rate but the session's, since a
     // mismatch would write wrong-pitch files, and refuses to guess between
     // two USB interfaces.
-    // Two outputs: the fixed stereo monitor bus (ADR-0009 §4.6).
-    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count), 2,
-                      cfg.sample_rate, capture_device},
+    // Two outputs: the fixed stereo monitor bus (ADR-0009 §4.6), and as far
+    // as the latency probe's if it is past them.
+    if (probe_input > static_cast<uint32_t>(cfg.track_count)) {
+        std::fprintf(stderr, "sonora: --measure-latency: there is no in_%u with %d tracks\n",
+                     probe_input, cfg.track_count);
+        return 2;
+    }
+    if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count),
+                      std::max<uint32_t>(2, probe_output), cfg.sample_rate, capture_device},
                      session, backend_error) ||
         !audio->activate(backend_error)) {
         std::fprintf(stderr, "sonora: %s\n", backend_error.c_str());
@@ -706,6 +784,16 @@ int main(int argc, char** argv) {
                          why.c_str());
         }
     }
+    // Before the first take can start: L is fixed during one.
+    if (input_latency >= 0) {
+        std::string why;
+        if (!session.set_input_latency(static_cast<uint32_t>(std::min<long>(input_latency, 0xFFFFFFFFL)),
+                                       &why)) {
+            std::fprintf(stderr, "sonora: --input-latency: %s\n", why.c_str());
+            return 2;
+        }
+    }
+    if (probe_output != 0 && !audio->fatal()) measure_latency(session, probe_output, probe_input);
     session.disk().start();
     // Separate from the capture writer: a slow read never delays a drain.
     session.reader().start();

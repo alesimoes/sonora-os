@@ -140,6 +140,7 @@ bool loop_of_description(const std::string& description, uint64_t& from, uint64_
 
 Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.name) {
     transport_ = std::make_unique<Transport>(cfg_.sample_rate);
+    probe_ = std::make_unique<LatencyProbe>(cfg_.sample_rate);
 
     const auto ring_frames =
         static_cast<std::size_t>(cfg_.ring_seconds * cfg_.sample_rate);
@@ -278,6 +279,22 @@ void Session::stop_playback() {
     if (transport_->state() == TransportState::Rolling) {
         transport_->set_state(TransportState::Stopped);
     }
+}
+
+bool Session::set_input_latency(uint32_t frames, std::string* error) {
+    if (recording_take_ != 0) {
+        if (error) *error = "the round-trip latency cannot change during a take";
+        return false;
+    }
+    if (frames > cfg_.sample_rate) {
+        if (error) {
+            *error = "a round trip of " + std::to_string(frames) +
+                     " frames is over one second, longer than any interface's";
+        }
+        return false;
+    }
+    input_latency_.store(frames, std::memory_order_relaxed);
+    return true;
 }
 
 bool Session::post_locate(uint64_t frame) {
@@ -591,6 +608,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     c.take.loop_wraps = 0;
     c.take.origin = kNoOrigin;
     c.take.end = kNoOrigin;
+    c.take.latency = loop != nullptr ? loop->latency : input_latency();
     recording_take_ = take_number;
     loop_running_ = loop != nullptr;
     if (loop != nullptr) {
@@ -961,11 +979,27 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     const uint64_t playhead = transport_->playhead();
     const bool first = recording && !take_started;
     if (first) {
+        // Fixed for the take: set_input_latency() refuses while one runs.
+        take_latency_ = punch_->loop_to > punch_->loop_from
+                            ? 0
+                            : input_latency_.load(std::memory_order_relaxed);
+    }
+    // The input that lines up with timeline frame t arrives at playhead
+    // t + L, so the take's timeline range is captured that much later.
+    capture_from_ = punch_->capture_from > PunchRange::kOpenEnd - take_latency_
+                        ? PunchRange::kOpenEnd
+                        : punch_->capture_from + take_latency_;
+    capture_to_ = punch_->capture_to > PunchRange::kOpenEnd - take_latency_
+                      ? PunchRange::kOpenEnd
+                      : punch_->capture_to + take_latency_;
+    if (first) {
         origin_take_ = word.take;
-        // Its first sample: the range's start, or this block's if that has
-        // passed (capture()).
-        const uint64_t origin =
-            punch_->capture_from > playhead ? punch_->capture_from : playhead;
+        // Its first sample, in timeline frames: the range's start, or this
+        // block's if that has passed (capture()). kNoCapture's open end is
+        // kNoOrigin, and stays it.
+        const uint64_t origin = capture_from_ == PunchRange::kOpenEnd ? kNoOrigin
+                                : capture_from_ > playhead ? capture_from_ - take_latency_
+                                                           : playhead - take_latency_;
         take_origin_.store(origin, std::memory_order_release);
         loop_wrap_count_ = 0;
     }
@@ -1013,7 +1047,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     // Said every block from here until the control thread ends the take;
     // kWholeTake and kNoCapture end at kOpenEnd, which no block reaches.
-    if (punched && playhead + nframes >= punch_->capture_to) {
+    if (punched && playhead + nframes >= capture_to_) {
         punch_passed_.store(word.take, std::memory_order_release);
     }
 
@@ -1053,6 +1087,8 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     bus_applied_ = bus_target_;
 
     params_count_ = 0;
+    // After the mix, which it overwrites on its own output while it runs.
+    probe_->process(block);
 
     // A roll that stops on B stays on B rather than wrapping to A.
     const uint64_t next =
@@ -1075,21 +1111,22 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
     // The frames of this block the take records: its range, cut to the
     // block. Empty before the range and after it.
     const uint64_t end = playhead + nframes;
-    const uint64_t from = punch_->capture_from > playhead ? punch_->capture_from : playhead;
-    const uint64_t to = punch_->capture_to < end ? punch_->capture_to : end;
+    const uint64_t from = capture_from_ > playhead ? capture_from_ : playhead;
+    const uint64_t to = capture_to_ < end ? capture_to_ : end;
     const bool in_range = recording && from < to;
     // Started too late to record anything (the files open after
     // start_punch() checked the playhead, and the transport rolls on).
     // Without a window no close record would ever reach these files, which
     // stop() alone would then close.
-    const bool passed = first && playhead >= punch_->capture_to;
+    const bool passed = first && playhead >= capture_to_;
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track& t = *tracks_[i];
         uint32_t& window = window_take_[i];
         const bool wanted = in_range && t.rec_armed();
         CaptureBoundary b{};
         b.track = static_cast<uint32_t>(i);
-        b.timeline = playhead;
+        // Timeline frames are the playhead's less the take's L (ADR-0019 §2).
+        b.timeline = playhead > take_latency_ ? playhead - take_latency_ : 0;
         // A take started over another closes it and opens itself on the
         // same sample: nothing lost or repeated between the two files.
         if (window != kNoWindow && (!wanted || window != take)) {
@@ -1121,7 +1158,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
             b.at = captured_[i];
-            b.timeline = from;
+            b.timeline = from - take_latency_;
             if (boundaries_->write(&b, 1) == 1) {
                 window = take;
             } else {
@@ -1165,11 +1202,11 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         }
         // The out point: the file closes at its frame, in band, and the
         // transport rolls on.
-        if (to == punch_->capture_to) {
+        if (to == capture_to_) {
             b.kind = CaptureBoundary::Kind::Close;
             b.take = window;
             b.at = captured_[i];
-            b.timeline = to;
+            b.timeline = to - take_latency_;
             if (boundaries_->write(&b, 1) != 1) {
                 boundary_overruns_.fetch_add(1, std::memory_order_relaxed);
             }

@@ -523,6 +523,68 @@ int test_thread_mode() {
 
 }  // namespace
 
+// A cable from out_1 back into capture channel 2, 300 frames late: not a
+// whole number of periods, as a converter's delay is not. The other
+// channels keep their tones, and what the server lost to an xrun is lost
+// on the cable too.
+int test_loopback_carries_the_output_late() {
+    FakeBackend::Config c;
+    c.loopbacks = {{0, 0, 2, 300}};
+    FakeBackend f(c);
+    Capture cap(3);
+    cap.write_outputs = true;
+    CHECK(start(f, cap, 3, 1));
+    CHECK(f.connect_inputs_in_order() == 3);
+    CHECK(f.run_blocks(8) == 8);
+    for (uint32_t i = 0; i < 8 * 128; ++i) {
+        CHECK(cap.samples[2][i] == (i >= 300 ? static_cast<float>(i - 300) : 0.0f));
+    }
+    CHECK(carries_tones(cap, {0, 1}, 0));
+
+    f.inject_xrun(1000);
+    CHECK(f.run_blocks(8) == 8);
+    // Frames 1024.. of the capture are server frames 2024..; the output
+    // wrote nothing over 1024..2023, so the cable carries silence until
+    // 2324.
+    for (uint32_t i = 1024; i < 16 * 128; ++i) {
+        const uint64_t frame = i + 1000;
+        const float want = frame >= 2024 + 300 ? static_cast<float>(i - 300) : 0.0f;
+        CHECK(cap.samples[2][i] == want);
+    }
+    return 0;
+}
+
+// A cable shorter than the period carries nothing the callback has not
+// written yet: those frames are silence, never a sample from the future.
+int test_loopback_shorter_than_a_period() {
+    FakeBackend::Config c;
+    c.loopbacks = {{0, 0, 0, 100}};
+    FakeBackend f(c);
+    Capture cap(1);
+    cap.write_outputs = true;
+    CHECK(start(f, cap, 1, 1));
+    CHECK(f.connect_inputs_in_order() == 1);
+    CHECK(f.run_blocks(3) == 3);
+    for (uint32_t i = 0; i < 3 * 128; ++i) {
+        const uint32_t period_start = i / 128 * 128;
+        const bool written = i >= 100 && i - 100 < period_start;
+        CHECK(cap.samples[0][i] == (written ? static_cast<float>(i - 100) : 0.0f));
+    }
+    return 0;
+}
+
+// A loopback from an output the backend was not opened with is refused.
+int test_loopback_needs_its_output() {
+    FakeBackend::Config c;
+    c.loopbacks = {{4, 0, 0, 256}};
+    FakeBackend f(c);
+    Capture cap(1);
+    std::string error;
+    CHECK(!f.open({"test", 1, 2, 48000, ""}, cap, error));
+    CHECK(error.find("out_5") != std::string::npos);
+    return 0;
+}
+
 int main() {
     int failed = 0;
     failed += test_umc1820_shape();
@@ -550,6 +612,9 @@ int main() {
     failed += test_server_loss_takes_the_ports();
     failed += test_stall_is_seen_after_a_second();
     failed += test_thread_mode();
+    failed += test_loopback_carries_the_output_late();
+    failed += test_loopback_shorter_than_a_period();
+    failed += test_loopback_needs_its_output();
     if (failed == 0) std::printf("fake_backend: all tests passed\n");
     return failed == 0 ? 0 : 1;
 }

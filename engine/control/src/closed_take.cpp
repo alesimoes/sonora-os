@@ -341,7 +341,9 @@ std::string why_nothing(const Session::ClosedTake& take) {
                ", plus its handle): the transport passed the punch range while the take's"
                " files were being opened";
     }
-    if (take.end <= p.capture_from) {
+    // The end is a playhead, and the capture ran L later on it than its
+    // range (ADR-0019 §2); the origin is a timeline frame already.
+    if (take.end <= p.capture_from + take.latency) {
         return "it ended before " + frame(p.capture_from) + ", where its capture was to begin"
                " (the punch-in at " + frame(p.monitor_in) + ", less its handle)";
     }
@@ -539,6 +541,9 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
             numbers.push_back(number);
             continue;
         }
+        // Its file is labelled P0 - L already (ADR-0019 §2): placed at its
+        // TimeReference, it lines up with what was played.
+        src.source.latency_compensation = take.latency;
         model::RecordTake rec;
         rec.track = t->id;
         rec.playlist = t->active_playlist;

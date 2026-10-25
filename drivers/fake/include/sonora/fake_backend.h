@@ -55,6 +55,20 @@ public:
         uint64_t appears_after_ns = 0;
     };
 
+    // A cable from an output of the callback's back to a capture port, as a
+    // loopback measurement patches one (ADR-0019 §4): capture channel
+    // `capture` of devices[device] carries what process() wrote to
+    // outputs[output] `frames` server frames earlier. That is the whole round
+    // trip, the server's buffering and the converters folded into one
+    // figure. A frame the callback has not written yet (a cable shorter than
+    // the period) or never wrote (lost to an xrun) is silence.
+    struct Loopback {
+        uint32_t output = 0;
+        uint32_t device = 0;
+        uint32_t capture = 0;
+        uint32_t frames = 0;
+    };
+
     // The target: a Behringer UMC1820, 18 in / 20 out over USB. The name is
     // the node description pw-jack gives a Pro Audio node, which is what a
     // JACK client sees as the client part of a port name.
@@ -83,6 +97,9 @@ public:
         // when it is a buffer of silence: the contract allows both, so a
         // callback has to cope with both.
         bool silence_for_unconnected = false;
+        // Each one replaces its capture port's signal. open() refuses one
+        // whose output it is not given.
+        std::vector<Loopback> loopbacks;
     };
 
     // Two-input onboard shape in one call: Config with devices {onboard()}.

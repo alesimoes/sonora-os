@@ -257,9 +257,14 @@ The latency term: the take's source is shifted earlier on the timeline by
 the round-trip latency `L` (capture plus playback), so that what was played
 lines up with what was heard. In model terms N's `source_offset` is
 `(A − capture_start_position) + L`. `L` comes from the loopback measurement
-(Phase 2 backlog: input monitoring with latency compensation). Until that
-exists it is the backend's reported latency, and the source records which
-figure was used (`latency_compensation`).
+(ADR-0019): `sonora-engine --measure-latency OUT:IN`, or `--input-latency`,
+0 when neither is given; the source records the figure used
+(`latency_compensation`). The audio thread applies it at capture: the
+range `[A − H, B + H)` above is in timeline frames and is captured over
+`[A − H + L, B + H + L)` on the playhead, its file labelled with the
+timeline frame each sample lines up with, so `capture_start_position` is
+`A − H` and the file holds the whole handle at both ends. Monitoring is
+not moved by L (ADR-0019 §3).
 
 ### Pre-roll and post-roll
 
