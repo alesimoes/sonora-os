@@ -136,6 +136,9 @@ std::string session_folder_of(const std::string& session_file) {
     return dir.string();
 }
 
+SessionFolder::SessionFolder(SyncDirectory sync_directory)
+    : sync_directory_(sync_directory != nullptr ? sync_directory : platform::sync_directory) {}
+
 void SessionFolder::enter(const std::string& folder) {
     if (folder == folder_) return;
     folder_ = folder;
@@ -218,7 +221,7 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
         const std::string sha = n.ref.sha256;
         held.emplace(sha, std::move(n));
     }
-    const fs::path folder = file.parent_path();
+    const fs::path folder = session_folder_of(file.string());
     enter(folder.string());
     std::vector<model::NamedSequence*> todo;
     for (const std::string& sha : refs) {
@@ -257,7 +260,7 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
         return false;
     };
     // A new folder's own entry is only durable once its parent is synced.
-    if (created && !platform::sync_directory(folder.parent_path().string())) {
+    if (created && !sync_directory_(folder.parent_path().string())) {
         return fail("cannot sync the sessions folder after creating " + folder.string());
     }
     std::string step_why;
@@ -268,7 +271,7 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
         const bool made_dir = !fs::exists(dir, ec);
         fs::create_directories(dir, ec);
         if (ec) return fail("cannot create " + dir.string());
-        if (made_dir && !platform::sync_directory(folder.string())) {
+        if (made_dir && !sync_directory_(folder.string())) {
             return fail("cannot sync the session folder after creating " + dir.string());
         }
         std::vector<std::string> renamed;
@@ -282,7 +285,7 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
             ++sequences_written_;
         }
         // One sync for the batch, before any session file names what it holds.
-        if (!platform::sync_directory(dir.string())) {
+        if (!sync_directory_(dir.string())) {
             return fail("cannot sync " + dir.string() + " after writing its sequence files");
         }
         for (const std::string& sha : renamed) files_.wrote(sha);
@@ -292,7 +295,9 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
     // The rename has landed: the file holds the new session, so this is a
     // save. Reporting it as a failure would make a first save retry into
     // "<Name> 2" next to the file it just wrote.
-    if (!platform::sync_directory(folder.string())) {
+    // The directory the rename landed in: "Session File Backups/" for a
+    // file opened from there.
+    if (!sync_directory_(file.parent_path().string())) {
         caution = "the folder could not be synced; a power cut now could lose this save";
     }
     // What the file names is what `bytes` names: it is not read back.

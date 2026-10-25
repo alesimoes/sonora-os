@@ -266,6 +266,34 @@ int test_versions() {
     return 0;
 }
 
+// A file opened from "Session File Backups/" is saved in place, but its
+// sequence files go to the session folder above, where every loader
+// (session_folder_of) looks for them.
+int test_backup_file_saves_sequences_in_the_session_folder() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Keys";
+    const fs::path file = folder / "Keys.sonora";
+    const fs::path backup = folder / "Session File Backups" / "Keys.v5.sonora";
+    Midi m(20);
+    SessionFolder f;
+    std::string why, caution;
+    CHECK(f.save(file.string(), m.bytes(), m.h.current(), why, caution));
+    const fs::path a = msq(folder, m.sequence());
+    write(backup, m.bytes(2));
+    CHECK(m.edit(1));
+    CHECK(f.save(backup.string(), m.bytes(3), m.h.current(), why, caution));
+    CHECK(caution.empty());
+    CHECK(read(backup) == m.bytes(3));
+    CHECK(f.folder() == folder.string());
+    const fs::path b = msq(folder, m.sequence());
+    CHECK(fs::exists(b));
+    CHECK(!fs::exists(folder / "Session File Backups" / "MIDI Sequences"));
+    // Keys.sonora still names the first, the backup the second.
+    CHECK(f.clean(caution) == 0 && caution.empty());
+    CHECK(fs::exists(a) && fs::exists(b));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -281,6 +309,7 @@ int main() {
     t(test_interrupted_write_deleted_at_entry);
     t(test_unreadable_kept_file_blocks_cleanup);
     t(test_versions);
+    t(test_backup_file_saves_sequences_in_the_session_folder);
     if (failed != 0) {
         std::fprintf(stderr, "session_folder: %d of %d failed\n", failed, run);
         return 1;

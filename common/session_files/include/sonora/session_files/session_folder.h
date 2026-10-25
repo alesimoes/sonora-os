@@ -34,6 +34,12 @@ std::string session_folder_of(const std::string& session_file);
 
 class SessionFolder {
 public:
+    // Syncs a directory; true on success. A test passes one that fails, to
+    // reach the paths a medium that will not sync takes.
+    using SyncDirectory = bool (*)(const std::string& path);
+    // Null: platform::sync_directory.
+    explicit SessionFolder(SyncDirectory sync_directory = nullptr);
+
     // Writes `bytes`, a canonical session file of `document`
     // (model::serialize), to `session_file`, an absolute path ending in
     // ".sonora", in this order:
@@ -79,6 +85,7 @@ private:
     // hashes: a file renamed into place only after it was synced.
     bool verified_on_disk(const std::string& sha);
 
+    SyncDirectory sync_directory_;
     std::string folder_;
     model::SequenceDigests digests_;
     model::SequenceFileSet files_;

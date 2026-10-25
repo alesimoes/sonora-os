@@ -16,6 +16,7 @@
 
 #include "model_test.h"
 #include "sonora/model/session_file.h"
+#include "sonora/platform/file.h"
 #include "sonora/session_saver.h"
 
 using namespace model_test;
@@ -94,10 +95,19 @@ fs::path msq(const fs::path& folder, const MidiSequence& s) {
     return folder / "MIDI Sequences" / (sequence_ref(s).sha256 + ".msq");
 }
 
+// Set, the session folder will not sync; "MIDI Sequences/" still does.
+std::atomic<bool> folder_sync_fails{false};
+
+bool sync_unless_failing(const std::string& path) {
+    if (folder_sync_fails.load() && fs::path(path).filename() != "MIDI Sequences") return false;
+    return sonora::platform::sync_directory(path);
+}
+
 struct Rig {
     std::atomic<uint32_t> checkpoints{0};
     std::atomic<int> ready{0};
-    SessionSaver saver{[this]() { return checkpoints.load(); }, [this]() { ++ready; }};
+    SessionSaver saver{[this]() { return checkpoints.load(); }, [this]() { ++ready; },
+                       std::chrono::milliseconds(2), sync_unless_failing};
     Rig() { saver.start(); }
 
     // The results, once `n` have come or two seconds have passed.
@@ -230,6 +240,47 @@ int test_refusal_answered() {
     return 0;
 }
 
+// A cleanup deferred behind a take is dropped when a later save is not
+// durable: the file on disk may still be the one the deferred cleanup's
+// save replaced, and after a power cut it names what cleanup would delete.
+int test_undurable_save_drops_the_deferred_cleanup() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Keys";
+    const fs::path file = folder / "Keys.sonora";
+    Midi m;
+    Rig rig;
+    rig.saver.submit(m.job(file, 1));
+    CHECK(rig.wait(1).size() == 1);
+    const fs::path a = msq(folder, m.sequence());
+
+    rig.saver.set_take_open(true);
+    rig.saver.set_transport_stopped(false);
+    rig.checkpoints = 1;
+    CHECK(m.edit(1));
+    rig.saver.submit(m.job(file, 2));
+    CHECK(rig.quiet(30));
+    rig.checkpoints = 2;
+    auto done = rig.wait(1);
+    CHECK(done.size() == 1 && done[0].ok && done[0].message.empty());
+    const fs::path b = msq(folder, m.sequence());
+
+    folder_sync_fails = true;
+    CHECK(m.edit(2));
+    rig.saver.submit(m.job(file, 3));
+    CHECK(rig.quiet(30));
+    rig.checkpoints = 3;
+    done = rig.wait(1);
+    folder_sync_fails = false;
+    CHECK(done.size() == 1 && done[0].ok && mentions(done[0].message, "power cut"));
+
+    rig.saver.set_take_open(false);
+    rig.saver.set_transport_stopped(true);
+    CHECK(rig.quiet(60));
+    CHECK(rig.saver.cleanups() == 1);   // the first save's, none since
+    CHECK(fs::exists(a) && fs::exists(b));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -244,6 +295,7 @@ int main() {
     t(test_take_closing_ends_the_wait);
     t(test_stop_finishes_what_was_handed_over);
     t(test_refusal_answered);
+    t(test_undurable_save_drops_the_deferred_cleanup);
     if (failed != 0) {
         std::fprintf(stderr, "session_saver: %d of %d failed\n", failed, run);
         return 1;

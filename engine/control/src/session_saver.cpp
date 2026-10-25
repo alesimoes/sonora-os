@@ -5,8 +5,12 @@
 
 namespace sonora {
 
-SessionSaver::SessionSaver(Checkpoints checkpoints, Ready ready, std::chrono::milliseconds poll)
-    : checkpoints_(std::move(checkpoints)), ready_(std::move(ready)), poll_(poll) {}
+SessionSaver::SessionSaver(Checkpoints checkpoints, Ready ready, std::chrono::milliseconds poll,
+                           session_files::SessionFolder::SyncDirectory sync_directory)
+    : checkpoints_(std::move(checkpoints)),
+      ready_(std::move(ready)),
+      poll_(poll),
+      folder_(sync_directory) {}
 
 SessionSaver::~SessionSaver() { stop(); }
 
@@ -124,6 +128,9 @@ void SessionSaver::run() {
             job = Job{};
             lock.lock();
             if (durable && defer_clean) clean_pending_ = true;
+            // The file on disk may still be the one a deferred cleanup's save
+            // replaced; the next durable save's cleanup covers it.
+            if (!durable) clean_pending_ = false;
             done_.push_back(std::move(d));
             lock.unlock();
             if (ready_) ready_();

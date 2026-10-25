@@ -68,8 +68,10 @@ public:
         bool paced = false;
     };
 
+    // `sync_directory` is for the tests (SessionFolder::SyncDirectory).
     SessionSaver(Checkpoints checkpoints, Ready ready,
-                 std::chrono::milliseconds poll = std::chrono::milliseconds(2));
+                 std::chrono::milliseconds poll = std::chrono::milliseconds(2),
+                 session_files::SessionFolder::SyncDirectory sync_directory = nullptr);
     ~SessionSaver();
     SessionSaver(const SessionSaver&) = delete;
     SessionSaver& operator=(const SessionSaver&) = delete;
