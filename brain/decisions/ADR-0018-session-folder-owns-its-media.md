@@ -1,7 +1,7 @@
 # ADR-0018 — The session folder owns its media: the engine records, flushes and reads in the open session's folder
 
-- Status: **Proposed**, 2026-10-25. Each owner question below has a
-  recommended default, which the coordinator may accept.
+- Status: **Accepted**, 2026-10-25, by the coordinator on the recommended
+  defaults (owner's standing rule), including O1–O3 as recommended.
 - Date: 2026-10-25
 - Proposed by: architect, from the root cause the code review of PR #131
   found (B1, #issuecomment-6401920193): plugin states and takes are
@@ -386,6 +386,8 @@ start (control thread, before any file opens):
    local, but it is not tested.
 
 ## For the owner
+
+Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
 
 - **O1.** After an untitled session's first Save copies it to another
   volume, is the untitled folder kept? *Recommended: keep it and list it
