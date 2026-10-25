@@ -5,7 +5,8 @@
 // that frame and nothing played past it; a take running across the frame
 // is never stopped, and once it has punched out the transport stops at its
 // next block without moving back; a roll with no end plays on. Nothing in
-// it touches the heap.
+// it touches the heap. A playback loop the roll does not reach before its
+// end leaves the end armed; one it wraps at first switches it off.
 #define PLAYBACK_TEST_COUNT_HEAP 1
 
 #include <cstdio>
@@ -77,6 +78,17 @@ struct Rig {
         r.run_pass();
         session->tracks()[0]->set_pan(-1.0f);
         return true;
+    }
+
+    // Through the residency gate, as engine/control's pump does it.
+    bool loop(uint64_t a, uint64_t b) {
+        Session& s = *session;
+        if (!s.set_loop(a, b)) return false;
+        for (int k = 0; k < 8 && s.loop_pending(); ++k) {
+            s.reader().run_pass();
+            s.pump_loop();
+        }
+        return !s.loop_pending();
     }
 
     void block(uint32_t n = kBlock) {
@@ -189,6 +201,80 @@ int test_survives_a_stop() {
     return 0;
 }
 
+// A loop set later on the timeline: the roll reaches its end long before
+// the loop's start, so it stops there instead of running on into the loop
+// and wrapping for ever.
+int test_a_later_loop_keeps_it() {
+    Rig rig;
+    CHECK(rig.load());
+    Session& s = *rig.session;
+    CHECK(rig.loop(8 * kChunk, 12 * kChunk));
+    reset_heap_counts();
+    const uint64_t end = 3 * kBlock + 17;
+    s.set_roll_end(end);
+    s.play();
+    for (int i = 0; i < 4; ++i) rig.block();
+    for (uint32_t i = 0; i < 17; ++i) CHECK(rig.out[0][i] == played(3 * kBlock + i));
+    for (uint32_t i = 17; i < kBlock; ++i) CHECK(rig.out[0][i] == 0.0f);
+    CHECK(s.transport().state() == TransportState::Stopped);
+    CHECK(s.transport().playhead() == end);
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// The end on the loop's B: the roll stops there, with the playhead on B,
+// not wrapped back to A.
+int test_an_end_on_the_wrap_point() {
+    Rig rig;
+    CHECK(rig.load());
+    Session& s = *rig.session;
+    const uint64_t b = 6 * kBlock;
+    CHECK(rig.loop(kBlock, b));
+    s.set_roll_end(b);
+    s.play();
+    for (int i = 0; i < 6; ++i) rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == played(5 * kBlock + i));
+    CHECK(s.transport().state() == TransportState::Stopped);
+    CHECK(s.transport().playhead() == b);
+    return 0;
+}
+
+// An end past the loop's B: the roll wraps before it gets there, and while
+// looping post-roll does not apply (ADR-0016), so it plays on.
+int test_an_end_past_the_loop_loops() {
+    Rig rig;
+    CHECK(rig.load());
+    Session& s = *rig.session;
+    const uint64_t b = 6 * kBlock;
+    CHECK(rig.loop(kBlock, b));
+    s.set_roll_end(b + 1);
+    s.play();
+    for (int i = 0; i < 20; ++i) rig.block();
+    CHECK(s.transport().state() == TransportState::Rolling);
+    CHECK(s.transport().playhead() < b);
+    CHECK(s.roll_end() == b + 1);
+    return 0;
+}
+
+// A take that punched out past the end with a loop set later: the next
+// block stops the transport where it is, loop or not.
+int test_a_later_loop_after_a_take() {
+    Rig rig;
+    CHECK(rig.load());
+    Session& s = *rig.session;
+    CHECK(rig.loop(8 * kChunk, 12 * kChunk));
+    s.set_roll_end(kBlock + 5);
+    s.transport().set_state(TransportState::Recording);
+    for (int i = 0; i < 4; ++i) rig.block();
+    CHECK(s.transport().state() == TransportState::Recording);
+    s.transport().set_state(TransportState::Rolling);
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == 0.0f);
+    CHECK(s.transport().state() == TransportState::Stopped);
+    CHECK(s.transport().playhead() == 4 * kBlock);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -197,6 +283,10 @@ int main() {
     if (test_a_take_runs_past_it()) return 1;
     if (test_no_end_plays_on()) return 1;
     if (test_survives_a_stop()) return 1;
+    if (test_a_later_loop_keeps_it()) return 1;
+    if (test_an_end_on_the_wrap_point()) return 1;
+    if (test_an_end_past_the_loop_loops()) return 1;
+    if (test_a_later_loop_after_a_take()) return 1;
     std::printf("roll_end: ok; heap counter: %s\n", heap_counter_scope());
     return 0;
 }

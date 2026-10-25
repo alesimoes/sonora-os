@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "sonora/api/messages.h"
+
 namespace sonora::ui {
 
 namespace {
@@ -27,6 +29,11 @@ KeyMap keymap_or_built_in(const std::string& path, std::string& refusal) {
     if (KeyMap::load_file(path, loaded, err)) return loaded;
     refusal = "key map refused, using the built-in keys: " + err;
     return KeyMap::built_in_default();
+}
+
+std::string play_range_argument(int64_t start, int64_t end) {
+    if (start < 0 || end <= start) return {};
+    return std::to_string(start) + "-" + std::to_string(end);
 }
 
 KeyRouter::KeyRouter(KeyMap map, std::vector<std::string> engine_implemented, Send send)
@@ -153,6 +160,12 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
     // Engine command, the window's stand-in for it is no longer used.
     if (spec != nullptr && !is_interface(spec) &&
         std::find(engine_.begin(), engine_.end(), command) != engine_.end()) {
+        if ((command == "transport.play" || command == "transport.toggle_play") &&
+            ctx.argument.empty() && play_range_ &&
+            std::find(caps_.begin(), caps_.end(), api::kCapabilityPlayRange) != caps_.end()) {
+            ctx.argument = play_range_();
+            r.ctx = ctx;
+        }
         r.kind = RouteResult::Kind::Sent;
         r.seq = send_(command, ctx);
         return r;

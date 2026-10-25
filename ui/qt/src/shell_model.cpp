@@ -56,6 +56,7 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     events_.reserve(16);
     xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
     seen_focus_ = router_.commandsFocus();
+    router_.setEngineCapabilities(engine_.info().capabilities);
 }
 
 void ShellModel::start(int hz) {
@@ -312,6 +313,9 @@ void ShellModel::tick() {
     // A handful of short strings, compared without allocating; they differ
     // only after a reconnect to an engine that is another build.
     if (engine_.info().implemented_commands != router_.engineCommands()) followEngineCommands();
+    if (engine_.info().capabilities != router_.engineCapabilities()) {
+        router_.setEngineCapabilities(engine_.info().capabilities);
+    }
     const EngineInfo& info = engine_.info();
     const bool reformatted = info.sample_rate != sized_rate_ ||
                              info.buffer_frames != sized_buffer_ ||

@@ -282,9 +282,17 @@ selection. There is no separate on/off switch in the format; 0 is off.
   compare-exchange of Rolling to Stopped, so a take started meanwhile is
   never stopped). During a take nothing stops: a punched take records to
   `B + H`, drops to Rolling, and stops at the next block if `B + post_roll`
-  is already behind it. A loop that wraps has no post-roll (ADR-0016).
-- Not yet: pre-roll for a plain take (no range), and the interface sending
-  its selection as the play argument.
+  is already behind it. A loop that wraps has no post-roll (ADR-0016):
+  under a playback loop the stop applies only while `B + post_roll` is at
+  or before the loop's end, the wrap point. A loop further on the timeline
+  does not keep a roll from ending, and a roll stopping on the loop's end
+  stays there rather than wrapping. An end past the loop's end is never
+  reached, so the roll loops.
+- **The interface sends its Edit selection** as that argument, and only to
+  an engine whose Hello lists the capability `transport.play.range`
+  (`api::kCapabilityPlayRange`, protocol 12). An older engine ignores the
+  argument and plays on with no end, so it is sent nothing.
+- Not yet: pre-roll for a plain take (no range).
 
 ### Closing a take while rolling: in-band boundaries
 

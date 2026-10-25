@@ -206,6 +206,15 @@ target_compile_definitions(test_ui_keymaps PRIVATE
 add_test(NAME ui_keymaps COMMAND test_ui_keymaps)
 set_tests_properties(ui_keymaps PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Play of the Edit selection: its range sent with transport.play only to an
+# engine whose Hello announces it, on FakeEngine and across a reconnect.
+add_executable(test_ui_play_range tests/test_play_range.cpp)
+target_link_libraries(test_ui_play_range PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_play_range PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_play_range COMMAND test_ui_play_range)
+set_tests_properties(ui_play_range PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)
 target_compile_definitions(test_ui_shell PRIVATE

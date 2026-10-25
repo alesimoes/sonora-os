@@ -494,6 +494,11 @@ int main(int argc, char** argv) {
         [&session]() { return session.controller().selection().insertion; });
     transport.installCommands(router.local());
     router.setSelection([&session]() { return session.selectedTrackForCommands(); });
+    // Pro Tools plays a timeline selection, with pre- and post-roll.
+    router.setPlayRange([&session]() {
+        const auto& sel = session.controller().selection();
+        return play_range_argument(sel.start, sel.end);
+    });
     const std::vector<std::string> notices =
         router.prepare(qt_device_chords(qt_scan_codes_are_xkb(QGuiApplication::platformName())));
 

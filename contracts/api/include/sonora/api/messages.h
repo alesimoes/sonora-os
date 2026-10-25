@@ -59,7 +59,15 @@ namespace sonora::api {
 //   their index by sequence and the bare session file.
 // 11 (ADR-0015 update of 2026-10-25, M-1c PR 3): ModelAction::Save; the
 //   engine writes the session folder.
-constexpr uint32_t kProtocolVersion = 11;
+// 12 (ADR-0016 pre-roll and post-roll): Hello::capabilities, appended, so a
+//   version-11 peer's decoder refuses this Hello and this one refuses its.
+constexpr uint32_t kProtocolVersion = 12;
+
+// Hello::capabilities: transport.play and transport.toggle_play take an
+// "A-B" frame range as their argument and play it with pre- and post-roll.
+// An engine without it ignores the argument and plays from the playhead with
+// no end, so an interface sends the range only to an engine announcing this.
+inline constexpr const char* kCapabilityPlayRange = "transport.play.range";
 
 // --- client -> engine -------------------------------------------------------
 
@@ -196,6 +204,9 @@ struct Hello {
     // Engine-domain commands with a handler. Together with the client's own
     // registry this is ensure_essentials()'s `implemented` (ADR-0007 §5).
     std::vector<std::string> implemented_commands;
+    // What the engine does beyond the command ids, named by the kCapability
+    // constants above; an id this build does not know is ignored.
+    std::vector<std::string> capabilities;
 };
 
 // The answer to one CommandRequest, ParameterChange or ModelRequest.

@@ -227,6 +227,11 @@ void same_commands_as_the_fake() {
                      " update the fake in the same change as the handlers\n");
         ++failures;
     }
+    // An interface sends its selection as play's range only to an engine
+    // announcing it (ADR-0007 §6); the fake announces what the engine does.
+    CHECK(real.hello().capabilities ==
+          std::vector<std::string>{api::kCapabilityPlayRange});
+    CHECK(real.hello().capabilities == api::testing::FakeEngine::Config{}.capabilities);
     // app.quit is installed by install_session_commands but belongs to the
     // interface (ADR-0007 §5): never announced, and refused if sent.
     CHECK(std::find(a.begin(), a.end(), "app.quit") == a.end());

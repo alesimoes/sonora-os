@@ -49,6 +49,10 @@ struct RouteResult {
 // and the reason. `refusal` is empty when nothing was refused.
 KeyMap keymap_or_built_in(const std::string& path, std::string& refusal);
 
+// transport.play's "A-B" argument for the frames [start, end), or "" when
+// that is no range to play.
+std::string play_range_argument(int64_t start, int64_t end);
+
 class KeyRouter {
 public:
     using Send = std::function<uint64_t(const std::string&, const CommandContext&)>;
@@ -64,6 +68,14 @@ public:
     // Who a track command given no track acts on: the selected track, or -1
     // when nothing is selected (and the command then fails, as before).
     void setSelection(std::function<int()> selected) { selected_ = std::move(selected); }
+    // What transport.play and transport.toggle_play play when given no
+    // argument: play_range_argument() of the Edit selection, "" for none.
+    // Sent only to an engine whose Hello announces api::kCapabilityPlayRange;
+    // an older one would ignore it and play on past the selection.
+    void setPlayRange(std::function<std::string()> range) { play_range_ = std::move(range); }
+    // api::Hello::capabilities, replaced on each new Hello.
+    void setEngineCapabilities(std::vector<std::string> caps) { caps_ = std::move(caps); }
+    const std::vector<std::string>& engineCapabilities() const { return caps_; }
 
     // The interface's own commands. Installed before prepare().
     CommandRegistry& local() { return local_; }
@@ -121,6 +133,8 @@ private:
     std::vector<std::string> help_;
     std::vector<KeyChord> device_;
     std::function<int()> selected_;
+    std::function<std::string()> play_range_;
+    std::vector<std::string> caps_;
     bool commands_focus_ = true;
 };
 

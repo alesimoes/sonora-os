@@ -13,6 +13,7 @@ bool ControlAdapter::connect(std::string& error) {
     info_.buffer_frames = h.buffer_frames;
     info_.track_count = h.track_count;
     info_.implemented_commands = h.implemented_commands;
+    info_.capabilities = h.capabilities;
     if (probe_) connection_ = probe_();
     return true;
 }
@@ -111,6 +112,7 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         info_.buffer_frames = h.buffer_frames;
         info_.track_count = h.track_count;
         info_.implemented_commands = h.implemented_commands;
+    info_.capabilities = h.capabilities;
     }
     if (link_sink_) link_sink_(now != 0);
 }

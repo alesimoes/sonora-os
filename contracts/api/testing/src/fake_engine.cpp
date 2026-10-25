@@ -249,6 +249,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
         hello_.track_names.push_back("Audio " + std::to_string(i + 1));
     }
     hello_.implemented_commands = engine_commands();
+    hello_.capabilities = cfg_.capabilities;
     for (const std::string& id : cfg_.planned_commands) {
         const auto& have = hello_.implemented_commands;
         if (!is_engine_command(id) || std::find(have.begin(), have.end(), id) != have.end()) {

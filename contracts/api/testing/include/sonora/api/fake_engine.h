@@ -98,6 +98,9 @@ public:
         // the catalog are not announced. Empty by default, so --fake-engine
         // never claims a command nothing runs.
         std::vector<std::string> planned_commands;
+        // Hello's capabilities. The fake parses a play range as the engine
+        // does; clear this to stand in for an engine that predates it.
+        std::vector<std::string> capabilities = {kCapabilityPlayRange};
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
