@@ -64,7 +64,8 @@
 //                        a crashed host restarts from the flushed state, and
 //                        the session file written and reopened restores it
 //   server_state_flush   the same through the server: the reply after the
-//                        file and the update; an unknown insert refused
+//                        file and the update; an unknown insert refused;
+//                        a save into another folder carries the state
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -85,10 +86,12 @@
 #include <vector>
 
 #include "sonora/api/state_block.h"
+#include "sonora/api/wire.h"
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
 #include "sonora/model/history.h"
 #include "sonora/model/operations.h"
+#include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
 #include "sonora/playback_controller.h"
 #include "sonora/plugin/host_control.h"
@@ -950,6 +953,64 @@ int scenario_server_state_flush(const Args& a) {
             matches = matches && pc::state_matches(s.str(), name.substr(0, name.size() - 6));
         }
         check(files == 1 && matches, "one state file, holding the bytes its name hashes");
+
+        // #131 B1: the session file saved into a folder other than --dir,
+        // as File > Save puts "Mix" in ~/Sessions/Mix, must hold the states
+        // it names; a copy of that folder alone reopens with them.
+        Replica replica;
+        for (const api::ModelUpdate& m : in.model) {
+            ReplicationUpdate u;
+            u.kind = static_cast<ReplicationUpdate::Kind>(m.kind);
+            u.part_count = m.part_count;
+            u.part_bytes = m.part_bytes;
+            u.revision = m.revision;
+            u.undo_floor = m.undo_floor;
+            u.next_id = m.next_id;
+            u.bytes = m.bytes;
+            u.label = m.label;
+            std::string why;
+            replica.receive(u, why);
+        }
+        check(replica.synced(), "the replica follows the document");
+        const std::filesystem::path elsewhere = std::filesystem::absolute(kDir + "_elsewhere");
+        std::filesystem::remove_all(elsewhere);
+        std::string bytes;
+        check(replica.synced() && serialize(replica.current(), WriteInfo{"test", 1}, bytes, error), "serialised");
+        api::ModelRequest save;
+        save.action = api::ModelAction::Save;
+        save.op = api::wire::encode_save((elsewhere / "Mix" / "Mix.sonora").string(), bytes);
+        const uint64_t save_seq = engine.submit(save);
+        api::CommandReply save_reply;
+        check(until(
+                  [&] {
+                      for (const auto& r : in.replies)
+                          if (r.seq == save_seq) save_reply = r;
+                      return save_reply.seq == save_seq;
+                  },
+                  10000),
+              "the save answered");
+        if (!save_reply.message.empty()) std::printf("  message: %s\n", save_reply.message.c_str());
+        check(save_reply.result == DispatchResult::Ok, "the save into another folder: Ok");
+        const std::filesystem::path copy = std::filesystem::absolute(kDir + "_copy");
+        std::filesystem::remove_all(copy);
+        std::filesystem::copy(elsewhere / "Mix", copy, std::filesystem::copy_options::recursive, ec);
+        Loaded loaded;
+        LoadError load_error;
+        std::ifstream sf(copy / "Mix.sonora", std::ios::binary);
+        std::ostringstream ss;
+        ss << sf.rdbuf();
+        const bool opened = deserialize(ss.str(), loaded, load_error);
+        check(opened, "the copy opens");
+        const InsertMix* im = opened ? loaded.snapshot.mix.find_insert(500) : nullptr;
+        check(im != nullptr && im->state, "  and names the insert's state");
+        if (im != nullptr && im->state) {
+            std::ifstream st(copy / im->state->file, std::ios::binary);
+            std::ostringstream sb;
+            sb << st.rdbuf();
+            check(pc::state_matches(sb.str(), im->state->sha256), "  with the bytes its name hashes");
+        }
+        std::filesystem::remove_all(elsewhere);
+        std::filesystem::remove_all(copy);
         engine.shutdown();
         audio.deactivate();
         engine.server().after_deactivate();

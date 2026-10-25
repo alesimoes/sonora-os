@@ -7,7 +7,8 @@
 // refused with nothing written; cleanup deletes what no kept file names and
 // nothing while a kept file cannot be read; an interrupted write is deleted
 // when the folder is entered; the pre-migration copy and the newer-version
-// refusal; plugin state files written once each and never cleaned.
+// refusal; plugin state files written once each and never cleaned, copied
+// into the session file's own folder, synced until durable, ".tmp" swept.
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -342,6 +343,149 @@ int test_plugin_states() {
     return 0;
 }
 
+// An audio track with one insert whose state is `state`: what a session
+// saved after a FlushPluginState names.
+struct Plugged {
+    History h{new_session(settings())};
+    explicit Plugged(const std::string& state) {
+        Ids ids(h.current());
+        const AddTrack t = add_track(ids, "Gtr");
+        std::string why;
+        h.apply(t, why);
+        AddInsert in;
+        in.track = t.track;
+        in.insert = ids();
+        in.slot = 0;
+        in.plugin = PluginRef{PluginFormat::Lv2, "urn:test#state", "urn:test#state", "test"};
+        h.apply(in, why);
+        const std::string sha = sonora::sha256_hex(state);
+        h.apply(SetInsertState{in.insert, StateRef{plugin_state_file(sha), sha, state.size()}}, why);
+    }
+    std::string bytes() const {
+        std::string out, error;
+        serialize(h.current(), WriteInfo{"test", 1}, out, error);
+        return out;
+    }
+};
+
+// #131 B1: a flush writes states into the engine's folder, which need not
+// be the session file's. The save copies each state the file names into
+// the file's own folder first, so a copy of that folder reopens with them.
+int test_states_follow_the_session_file() {
+    TempDir tmp;
+    const fs::path engine_dir = tmp.path / "Untitled";
+    const std::string blob = "a plugin's state blob";
+    const std::string sha = sonora::sha256_hex(blob);
+    const Plugged p(blob);
+    CHECK(mentions(p.bytes(), sha.c_str()));
+    SessionFolder f;
+    std::string why, caution;
+    CHECK(f.write_states(engine_dir.string(), {{sha, blob}}, why));
+
+    const fs::path file = tmp.path / "Mix" / "Mix.sonora";
+    CHECK(f.save(file.string(), p.bytes(), p.h.current(), why, caution, engine_dir.string()));
+    CHECK(caution.empty());
+    CHECK(read(tmp.path / "Mix" / "Plugin State" / (sha + ".state")) == blob);
+    CHECK(entries(tmp.path / "Mix" / "Plugin State") == 1);
+    CHECK(f.states_written() == 2);
+    // Saved again: already there, not copied again.
+    CHECK(f.save(file.string(), p.bytes(), p.h.current(), why, caution, engine_dir.string()));
+    CHECK(f.states_written() == 2);
+
+    // Reopened from a copy, nowhere near the engine's folder.
+    const fs::path copy = tmp.path / "Stick" / "Mix";
+    fs::create_directories(copy.parent_path());
+    fs::copy(tmp.path / "Mix", copy, fs::copy_options::recursive);
+    fs::remove_all(engine_dir);
+    Loaded loaded;
+    LoadError error;
+    CHECK(deserialize(read(copy / "Mix.sonora"), loaded, error));
+    const Snapshot& s = loaded.snapshot;
+    CHECK(s.edit->tracks.size() == 1 && s.edit->tracks[0]->inserts.size() == 1);
+    const InsertMix* m = s.mix.find_insert(s.edit->tracks[0]->inserts[0].id);
+    CHECK(m != nullptr && m->state);
+    CHECK(read(copy / m->state->file) == blob);
+    CHECK(sonora::sha256_hex(read(copy / m->state->file)) == m->state->sha256);
+    return 0;
+}
+
+// A named state found in neither folder refuses the save, and the folder
+// the save made is taken back; one the replaced file already named (lost
+// before, said at open) does not block saving.
+int test_missing_state_refused() {
+    TempDir tmp;
+    const std::string blob = "state";
+    const std::string sha = sonora::sha256_hex(blob);
+    const Plugged p(blob);
+    SessionFolder f;
+    std::string why, caution;
+    const fs::path file = tmp.path / "Mix" / "Mix.sonora";
+    CHECK(!f.save(file.string(), p.bytes(), p.h.current(), why, caution, (tmp.path / "Untitled").string()));
+    CHECK(mentions(why, "plugin state") && mentions(why, sha.substr(0, 12).c_str()));
+    CHECK(!fs::exists(tmp.path / "Mix"));
+
+    // A source whose file does not hash to its name is no source.
+    write(tmp.path / "Untitled" / "Plugin State" / (sha + ".state"), "torn");
+    CHECK(!f.save(file.string(), p.bytes(), p.h.current(), why, caution, (tmp.path / "Untitled").string()));
+    CHECK(!fs::exists(tmp.path / "Mix"));
+
+    write(tmp.path / "Untitled" / "Plugin State" / (sha + ".state"), blob);
+    CHECK(f.save(file.string(), p.bytes(), p.h.current(), why, caution, (tmp.path / "Untitled").string()));
+    fs::remove(tmp.path / "Mix" / "Plugin State" / (sha + ".state"));
+    fs::remove_all(tmp.path / "Untitled");
+    CHECK(f.save(file.string(), p.bytes(), p.h.current(), why, caution, (tmp.path / "Untitled").string()));
+    return 0;
+}
+
+int g_state_dir_syncs = 0;
+bool g_fail_state_dir_sync = false;
+bool counting_sync(const std::string& path) {
+    if (fs::path(path).filename() != "Plugin State") return true;
+    ++g_state_dir_syncs;
+    return !g_fail_state_dir_sync;
+}
+
+// #131 N1: a state renamed into place before a folder sync that failed is
+// not a durable entry. The next flush finds its bytes there and must still
+// sync the folder before answering Ok; once a sync has covered it, not again.
+int test_state_folder_synced_until_durable() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    const std::string blob = "state";
+    SessionFolder f(counting_sync);
+    std::string why;
+    g_state_dir_syncs = 0;
+    g_fail_state_dir_sync = true;
+    CHECK(!f.write_states(folder.string(), {{sonora::sha256_hex(blob), blob}}, why));
+    g_fail_state_dir_sync = false;
+    CHECK(f.write_states(folder.string(), {{sonora::sha256_hex(blob), blob}}, why));
+    CHECK(g_state_dir_syncs == 2);
+    CHECK(f.write_states(folder.string(), {{sonora::sha256_hex(blob), blob}}, why));
+    CHECK(g_state_dir_syncs == 2);
+    return 0;
+}
+
+// #131 N2: a crash inside a state write leaves "<sha>.state.tmp"; it goes
+// the first time the folder is seen, by a flush or by a save.
+int test_interrupted_state_write_swept() {
+    TempDir tmp;
+    const std::string blob = "state";
+    const fs::path flushed = tmp.path / "Untitled" / "Plugin State" / (std::string(64, 'a') + ".state.tmp");
+    const fs::path saved = tmp.path / "Mix" / "Plugin State" / (std::string(64, 'b') + ".state.tmp");
+    write(flushed, "half");
+    write(saved, "half");
+    write(tmp.path / "Mix" / "Plugin State" / "notes.txt", "not ours");
+    SessionFolder f;
+    std::string why, caution;
+    CHECK(f.write_states((tmp.path / "Untitled").string(), {{sonora::sha256_hex(blob), blob}}, why));
+    CHECK(!fs::exists(flushed));
+    Midi m(1);
+    CHECK(f.save((tmp.path / "Mix" / "Mix.sonora").string(), m.bytes(), m.h.current(), why, caution));
+    CHECK(!fs::exists(saved));
+    CHECK(fs::exists(tmp.path / "Mix" / "Plugin State" / "notes.txt"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -359,6 +503,10 @@ int main() {
     t(test_versions);
     t(test_backup_file_saves_sequences_in_the_session_folder);
     t(test_plugin_states);
+    t(test_states_follow_the_session_file);
+    t(test_missing_state_refused);
+    t(test_state_folder_synced_until_durable);
+    t(test_interrupted_state_write_swept);
     if (failed != 0) {
         std::fprintf(stderr, "session_folder: %d of %d failed\n", failed, run);
         return 1;

@@ -589,9 +589,12 @@ one `fsync` of `Plugin State/` for the batch, paced behind a checkpoint as
 a save is. Only then does the document name them (`SetInsertState`), and
 only then is the flush answered, so the save after it never names a state
 the medium does not hold. A state already on disk with its bytes is not
-written again. State files are never deleted by cleanup. They go to the
-engine's session folder: a Save As into another folder does not carry them
-yet (BACKLOG Track 4 item 5).
+written again. State files are never deleted by cleanup. A flush writes
+them to the engine's folder (`--dir`); the save then copies each state the
+session file names into the file's own `Plugin State/` by the same steps,
+before the file is written, so a session never points outside its own
+folder. A state found in neither folder refuses the save, unless the file
+being replaced already names it (lost before, and reported at open).
 
 **Autosave.** After every committed take (the `RecordTake` operation) and
 every 60 s while there are unsaved edits, the same procedure writes

@@ -126,7 +126,7 @@ void SessionSaver::run() {
             const bool defer_clean = take_open_;
             lock.unlock();
             std::string why, caution;
-            d.ok = folder_.save(job.file, job.bytes, job.document, why, caution);
+            d.ok = folder_.save(job.file, job.bytes, job.document, why, caution, job.state_source);
             d.message = d.ok ? caution : why;
             // O4, after a durable save only: with the folder unsynced the old
             // session file can come back after a power cut, and its sequence

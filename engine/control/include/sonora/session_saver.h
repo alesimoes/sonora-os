@@ -62,6 +62,10 @@ public:
         std::string bytes;
         model::Snapshot document;
         std::vector<session_files::StateFile> states;
+        // Save: the folder whose "Plugin State/" the flushes wrote (the
+        // engine's --dir); the states the bytes name are copied from it into
+        // the session file's own folder (SessionFolder::save, step 3).
+        std::string state_source;
     };
     struct Done {
         Kind kind = Kind::Save;

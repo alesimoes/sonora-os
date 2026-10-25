@@ -1037,9 +1037,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          `plugin_host_worker_restore`). No protocol change.
        - [ ] Untested: the GetState timeout (no test plugin hangs in
          save()); add a `#state` variant whose save() sleeps past 5 s.
-       - [ ] States go to the engine's session folder: a Save As into
-         another folder does not carry `Plugin State/`. Copy or write them
-         with the session file when the save names another folder.
+       - [x] States go to the engine's session folder, the session file
+         wherever the UI saves it: the saver now copies each state the
+         file names into its own folder (tmp, fdatasync, rename, one
+         `Plugin State/` fsync) before writing it, and refuses the save,
+         by name, when one is in neither folder (#131 B1). The folder
+         sync is repeated until one has covered every state (N1), and
+         `Plugin State/*.state.tmp` is swept when a folder is first seen
+         (N2). ctest `session_folder`, `plugin_hosting_server_state_flush`.
+       - [ ] Recorded audio has the same root cause (#131 review): takes
+         land in the engine's `--dir`, the session file wherever the UI
+         saves it, so a session saved elsewhere names audio its folder
+         does not hold. Fix at the root: the engine follows the session
+         folder (open/save moves `--dir`), which would also retire the
+         state copy above.
        - [ ] LV2 states that hold files (`state:mapPath`, `makePath`,
          `freePath`): the host offers none, so such plugins save absolute
          paths or fail. Map into the session folder.

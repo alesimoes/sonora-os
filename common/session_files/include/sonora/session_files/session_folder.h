@@ -58,16 +58,26 @@ public:
     //   2. each sequence file `bytes` names that is not known to be on disk
     //      is encoded from `document`, written to "<sha>.msq.tmp", synced and
     //      renamed to "<sha>.msq", then "MIDI Sequences/" is synced once;
-    //   3. `bytes` to "<file>.tmp", synced, renamed over `session_file`, and
+    //   3. each plugin state `bytes` names that is not in the folder's
+    //      "Plugin State/" with its bytes is copied there from
+    //      `state_source`'s (the engine's --dir, where a FlushPluginState
+    //      wrote it) the same way, then "Plugin State/" is synced once
+    //      unless every one is already known durable: a session never points
+    //      outside its own folder;
+    //   4. `bytes` to "<file>.tmp", synced, renamed over `session_file`, and
     //      the folder synced.
     // False, with `why`, when the save did not happen: the previous session
     // file is as it was, and a session folder this call created is removed
     // again so a retry finds the name free. A sequence `bytes` names that
-    // `document` does not hold fails the save by name. True once the rename
+    // `document` does not hold fails the save by name, and so does a plugin
+    // state found in neither folder, unless the file being replaced already
+    // names it (its state was lost before, and the operator told at open).
+    // True once the rename
     // has landed; `caution` then says what could not be made durable (the
     // folder would not sync), and empty means the save is durable.
     bool save(const std::string& session_file, const std::string& bytes,
-              const model::Snapshot& document, std::string& why, std::string& caution);
+              const model::Snapshot& document, std::string& why, std::string& caution,
+              const std::string& state_source = std::string());
 
     // Deletes each sequence file no kept session file names (this one, the
     // autosave, each copy in "Session File Backups/"); nothing while a kept
@@ -99,9 +109,17 @@ public:
     std::size_t sequences_written() const { return sequences_written_; }
 
 private:
-    // Entering a folder: an interrupted save (".msq.tmp") is deleted, and
-    // every kept file's references read.
+    // Entering a folder: an interrupted save (".msq.tmp", ".state.tmp") is
+    // deleted, and every kept file's references read.
     void enter(const std::string& folder);
+    // Deletes "Plugin State/*.state.tmp" in `folder`, once per folder.
+    void sweep_states(const std::string& folder);
+    // Creates "<folder>/Plugin State/", its entry synced when new.
+    bool make_state_dir(const std::string& folder, std::string& why);
+    // Syncs "<folder>/Plugin State/" unless every one of `paths` is in
+    // durable_states_, then adds them: a file found there, or renamed there
+    // before a sync that failed, is not yet a durable entry.
+    bool sync_states(const std::string& folder, const std::vector<std::string>& paths, std::string& why);
     void refresh_kept();
     // Whether "<sha>.msq" is already there with exactly the bytes its name
     // hashes: a file renamed into place only after it was synced.
@@ -115,6 +133,8 @@ private:
     std::size_t kept_reads_ = 0;
     std::size_t sequences_written_ = 0;
     std::size_t states_written_ = 0;
+    std::set<std::string> durable_states_;   // state files a folder sync has covered
+    std::set<std::string> swept_;            // folders whose "Plugin State/" was swept
 };
 
 }  // namespace sonora::session_files

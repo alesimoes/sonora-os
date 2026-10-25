@@ -1739,6 +1739,7 @@ bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::s
     job.seq = m.seq;
     // A copy that shares every state: the saver reads it while edits go on.
     job.document = document_->current();
+    job.state_source = session_.config().dir;
     const bool take_open = session_.recording_take() != 0;
     saver_->set_take_open(take_open);
     if (take_open) {
