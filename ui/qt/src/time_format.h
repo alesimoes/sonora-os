@@ -76,8 +76,8 @@ std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSet
 const char* time_format_name(TimeFormat fmt);
 
 // Frames per beat and per bar at the tempo map's FIRST entry. A fixed step
-// for what needs one (the nudge); anything drawn or snapped against the
-// timeline uses grid_lines(), which follows the whole map.
+// for what needs one (a ruler's spacing); anything drawn, snapped or nudged
+// against the timeline follows the whole map.
 double frames_per_beat(const model::SessionSettings& s);
 double frames_per_bar(const model::SessionSettings& s);
 
@@ -86,6 +86,14 @@ enum class GridValue { Bar, Beat, Eighth, Sixteenth };
 const char* grid_value_name(GridValue g);
 GridValue next_grid_value(GridValue g);
 double grid_frames(GridValue g, const model::SessionSettings& s);
+// Where one grid step from `f` lands, `direction` 1 or -1: the step is
+// read where the move happens on the tempo map (at `f` going forward, just
+// before it going back), so a beat nudge after a tempo change is that
+// tempo's beat and a bar nudge across a meter change is the bar it
+// crosses. The move is relative, as Pro Tools' nudge is: a region off the
+// grid keeps its offset. Never below 0.
+model::Frames nudge_target(model::Frames f, int direction, GridValue g,
+                           const model::SessionSettings& s);
 // The grid line nearest `f` on the tempo map, never below 0.
 model::Frames snap_to_grid(model::Frames f, GridValue g, const model::SessionSettings& s);
 
