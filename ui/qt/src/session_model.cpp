@@ -650,6 +650,19 @@ void SessionModel::cycleMainCounter() {
     emit markersChanged();   // the Memory Locations window shows the main counter's format
 }
 
+bool SessionModel::enterCounter(const QString& text) {
+    if (overlay_.recording) {
+        return run(false, "a take is running: stop it before locating");
+    }
+    Frames at = 0;
+    std::string why;
+    if (!parse_time(main_fmt_, text.toStdString(), ctl_.snapshot().settings, at, why)) {
+        return run(false, why);
+    }
+    ctl_.locate_to(at);
+    return run(true, why);
+}
+
 void SessionModel::setWindow(const QString& w) {
     if (w == window_ || (w != QStringLiteral("edit") && w != QStringLiteral("mix"))) return;
     window_ = w;
@@ -1134,6 +1147,10 @@ void SessionModel::buildRuler(TimeFormat fmt, double height, Scene& out) const {
 
 void SessionModel::buildMarkerRuler(double height, Scene& out) const {
     build_marker_ruler_scene(ctl_.markers(), ctl_.view(), height, out);
+}
+
+void SessionModel::buildConductorRuler(ConductorRuler kind, double height, Scene& out) const {
+    build_conductor_ruler_scene(kind, ctl_.snapshot().settings, ctl_.view(), height, out);
 }
 
 }  // namespace sonora::ui

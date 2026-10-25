@@ -29,6 +29,7 @@
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/command.h"
+#include "theme.h"
 #include "time_format.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -429,6 +430,11 @@ void key(QQuickView& view, int k, Qt::KeyboardModifiers m) {
     QCoreApplication::sendEvent(&view, &release);
 }
 
+// Types `text` into whatever has the keyboard, a key at a time.
+void type(QQuickView& view, const char* text) {
+    for (const char* c = text; *c != '\0'; ++c) QTest::keyClick(&view, *c);
+}
+
 void click(QQuickView& view, QQuickItem* item) {
     const QPointF c = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
     QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier, c.toPoint());
@@ -460,6 +466,7 @@ void test_window() {
     ShellModel model(engine, router);
     model.setClock([&now]() { return now; });
     link_transport(model, session, transport);   // as main.cpp wires them
+    link_marker_locate(model, session);
 
     QQuickView view;
     view.resize(1280, 720);
@@ -575,6 +582,96 @@ void test_window() {
         OK(text("transportCounter") == session.mainCounter());
     }
 
+    // Counter entry: a click on the digits opens the counter, Enter locates.
+    {
+        engine.snapshot.state = TransportMode::Stopped;
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(!transport.rolling());
+        const auto last_locate = [&engine]() -> std::string {
+            for (auto it = engine.sent.rbegin(); it != engine.sent.rend(); ++it) {
+                if (it->command == "transport.locate") return it->argument;
+            }
+            return "none";
+        };
+        QSignalSpy refusals(&session, &SessionModel::refused);
+        QQuickItem* counter = named(root, QStringLiteral("transportCounter"));
+        QQuickItem* input = named(root, QStringLiteral("transportCounterInput"));
+        OK(counter != nullptr && input != nullptr);
+        if (counter != nullptr && input != nullptr) {
+            click(view, counter);
+            OK(counter->property("editing").toBool() && input->hasActiveFocus());
+            OK(text("transportCounterCaption").contains(QStringLiteral("bar|beat|tick")));
+            // Keys go to the field, not the profile: "2" picks no tool and
+            // Return sends no command of its own.
+            type(view, "25|3");
+            OK(input->property("text").toString() == QStringLiteral("25|3"));
+            key(view, Qt::Key_Return, Qt::NoModifier);
+            OK(!counter->property("editing").toBool());
+            OK(session.controller().selection().insertion == kAt34 + 2 * kBeat96);
+            OK(last_locate() == std::to_string(kAt34 + 2 * kBeat96));
+            OK(session.mainCounter() == QStringLiteral("25|3|000"));
+            model.tick();   // the window reads the insertion point on the tick
+            OK(text("transportCounter") == QStringLiteral("25|3|000"));
+            OK(refusals.isEmpty());
+
+            // Not a position: the field stays open, outlined, and says why;
+            // nothing moves and nothing is sent.
+            const std::size_t sent = engine.sent.size();
+            click(view, counter);
+            type(view, "25|4");
+            key(view, Qt::Key_Return, Qt::NoModifier);
+            OK(counter->property("editing").toBool());
+            OK(counter->property("refused").toBool());
+            // The reason is held beside the field, not only on the status line.
+            OK(text("transportCounterCaption").contains(QStringLiteral("beats 1 to 3")));
+            OK(refusals.size() == 1 &&
+               refusals.last().at(0).toString().contains(QStringLiteral("beats 1 to 3")));
+            OK(session.controller().selection().insertion == kAt34 + 2 * kBeat96);
+            OK(engine.sent.size() == sent);
+            // Escape leaves it where it was.
+            key(view, Qt::Key_Escape, Qt::NoModifier);
+            OK(!counter->property("editing").toBool());
+            OK(session.controller().selection().insertion == kAt34 + 2 * kBeat96);
+        }
+        // In Timecode, all four fields.
+        session.cycleMainCounter();   // Min:Secs
+        session.cycleMainCounter();   // Timecode
+        OK(session.enterCounter(QStringLiteral("01:00:02:00")));
+        OK(session.controller().selection().insertion == 2 * kRate);
+        OK(!session.enterCounter(QStringLiteral("01:00:02")));
+        session.cycleMainCounter();   // Samples
+        session.cycleMainCounter();   // back to Bars|Beats
+
+        // During a take the engine refuses a locate, and the insertion point
+        // must not move under a counter that shows the playhead.
+        engine.snapshot.state = TransportMode::Recording;
+        for (int i = 0; i < 4; ++i) model.tick();
+        const Frames before = session.controller().selection().insertion;
+        OK(!session.enterCounter(QStringLiteral("1")));
+        OK(!refusals.isEmpty() &&
+           refusals.last().at(0).toString().contains(QStringLiteral("take")));
+        OK(session.controller().selection().insertion == before);
+        engine.snapshot.state = TransportMode::Stopped;
+        for (int i = 0; i < 4; ++i) model.tick();
+
+        // The bar's counter is the same field; beside it, a click cycles.
+        QQuickItem* bar_counter = named(root, QStringLiteral("mainCounter"));
+        OK(bar_counter != nullptr);
+        if (bar_counter != nullptr) {
+            click(view, bar_counter);
+            OK(bar_counter->property("editing").toBool());
+            key(view, Qt::Key_Escape, Qt::NoModifier);
+            OK(!bar_counter->property("editing").toBool());
+        }
+        QQuickItem* caption = named(root, QStringLiteral("mainCounterCaption"));
+        OK(caption != nullptr);
+        if (caption != nullptr) {
+            click(view, caption);
+            OK(session.mainCounterFormat() == QStringLiteral("Min:Secs"));
+            for (int i = 0; i < 3; ++i) session.cycleMainCounter();
+        }
+    }
+
     // The click is not in this build: a press says so, nothing lights.
     QQuickItem* click_button = named(root, QStringLiteral("transportClick"));
     OK(click_button != nullptr);
@@ -629,6 +726,144 @@ void test_long_map() {
     OK(t.nextChangeText().endsWith(QString::fromStdString(" at " + bb(s.tempo[1].at, s))));
 }
 
+// --- counter entry -------------------------------------------------------------
+
+bool has(const std::string& s, const char* part) { return s.find(part) != std::string::npos; }
+
+void test_counter_parse() {
+    const SessionSettings s = mapped();
+    SessionSettings df = s;
+    df.timecode.fps = model::Fps::F29_97df;
+    df.timecode.origin = 0;
+    Frames f = 0;
+    std::string why;
+    const auto parse = [&](TimeFormat fmt, const std::string& t, const SessionSettings& ss) {
+        why.clear();
+        f = -1;
+        return parse_time(fmt, t, ss, f, why);
+    };
+    constexpr TimeFormat BB = TimeFormat::BarsBeats, TC = TimeFormat::Timecode,
+                         MS = TimeFormat::MinSec, SA = TimeFormat::Samples;
+
+    // Bars|Beats through the whole map, fields left out are the bar's start.
+    OK(parse(BB, "17", s) && f == kAt96);
+    OK(parse(BB, "17|2", s) && f == kAt96 + kBeat96);
+    OK(parse(BB, "17|2|480", s) && f == kAt96 + kBeat96 + kBeat96 / 2);
+    OK(parse(BB, " 1.1.000 ", s) && f == 0);   // the keypad's separator
+    OK(parse(BB, "25 3", s) && f == kAt34 + 2 * kBeat96);
+    // Bar 25 is in 3/4: there is no fourth beat to go to, and the next bar's
+    // first is not what was typed.
+    OK(!parse(BB, "25|4", s) && has(why, "beats 1 to 3"));
+    OK(!parse(BB, "17|5", s) && has(why, "beats 1 to 4"));
+    OK(!parse(BB, "0", s) && has(why, "no bar 0"));
+    OK(!parse(BB, "1|1|960", s) && has(why, "ticks 0 to 959"));
+    OK(!parse(BB, "1|1|1|1", s));
+    OK(!parse(BB, "1||2", s));
+    OK(!parse(BB, "verse", s));
+    OK(!parse(BB, "", s) && why == "type a position first");
+    OK(!parse(BB, "-3", s) && has(why, "negative"));
+    OK(!parse(BB, "999999999999999", s));
+    OK(f == -1);   // a refusal leaves the frame alone
+
+    // Timecode from the session's origin, 01:00:00:00 at 25 fps.
+    OK(parse(TC, "01:00:00:00", s) && f == 0);
+    OK(parse(TC, "01:00:01:05", s) && f == kRate + 5 * kRate / 25);
+    OK(!parse(TC, "00:59:59:24", s) && has(why, "before the session start"));
+    OK(!parse(TC, "01:00:10", s) && has(why, "all four fields"));
+    OK(!parse(TC, "01:00:00:25", s) && has(why, "25 frames a second"));
+    OK(!parse(TC, "01:60:00:00", s));
+    OK(!parse(TC, "24:00:00:00", s));
+    // Drop-frame: a skipped label is refused, never moved to ;02.
+    OK(!parse(TC, "00:01:00;00", df) && has(why, "skips"));
+    OK(!parse(TC, "00:01:00;01", df));
+    OK(parse(TC, "00:01:00;02", df) && format_timecode(f, df) == "00:01:00;02");
+    OK(parse(TC, "00:10:00;00", df) && format_timecode(f, df) == "00:10:00;00");
+
+    // Min:Secs, seconds last; one field is any number of seconds.
+    OK(parse(MS, "83.5", s) && f == 83 * kRate + kRate / 2);
+    OK(parse(MS, "1:23.5", s) && f == 83 * kRate + kRate / 2);
+    OK(parse(MS, "1:02:03", s) && f == 3723 * kRate);
+    OK(parse(MS, "0.001", s) && f == 48);
+    OK(!parse(MS, "1:75", s) && has(why, "0 to 59"));
+    OK(!parse(MS, "1:2:3:4", s));
+    OK(!parse(MS, "1.2.3", s));
+    OK(!parse(MS, "1:", s));
+
+    // Samples, and the last frame transport.locate takes.
+    OK(parse(SA, "48000", s) && f == 48000);
+    OK(!parse(SA, "48,000", s));
+    OK(parse(SA, std::to_string(kMaxLocateFrame), s) &&
+       f == static_cast<Frames>(kMaxLocateFrame));
+    OK(!parse(SA, std::to_string(kMaxLocateFrame + 1), s) && has(why, "past the last frame"));
+
+    // What a counter shows, typed back, lands where it reads the same, in
+    // every format, across the tempo and meter changes and in drop-frame:
+    // typing the reading you see never moves you somewhere that reads
+    // differently.
+    int checked = 0;
+    const SessionSettings* sets[] = {&s, &df};
+    for (const SessionSettings* ss : sets) {
+        for (TimeFormat fmt : {BB, TC, MS, SA}) {
+            for (Frames p = 0; p < kAt34 + 20 * kBar96; p += 7919) {
+                const std::string shown = format_time(fmt, p, *ss);
+                Frames back = -1;
+                std::string w;
+                const bool parsed = parse_time(fmt, shown, *ss, back, w);
+                OK(parsed);
+                OK(format_time(fmt, back, *ss) == shown);
+                if (!parsed || format_time(fmt, back, *ss) != shown) {
+                    std::fprintf(stderr, "  %s at %lld: \"%s\" -> %lld (%s)\n",
+                                 time_format_name(fmt), static_cast<long long>(p), shown.c_str(),
+                                 static_cast<long long>(back), w.c_str());
+                    return;
+                }
+                ++checked;
+            }
+        }
+    }
+    std::printf("test_ui_transport: %d counter readings typed back\n", checked);
+}
+
+// The Tempo and Meter rulers: a mark and a value at each change of that
+// value, the value in force pinned at the left edge between changes.
+void test_conductor_ruler() {
+    const SessionSettings s = mapped();
+    ViewState v;
+    v.width = 1400;
+    v.fpp = kBar120 / 50.0;   // 50 px a bar at 120
+    Scene tempo, meter;
+    build_conductor_ruler_scene(ConductorRuler::Tempo, s, v, 20, tempo);
+    build_conductor_ruler_scene(ConductorRuler::Meter, s, v, 20, meter);
+    // 96 4/4 then 96 3/4: the second is a change of meter, not of tempo.
+    OK(tempo.labels.size() == 2);
+    OK(meter.labels.size() == 2);
+    if (tempo.labels.size() == 2 && meter.labels.size() == 2) {
+        OK(tempo.labels[0].text == "120.00" && tempo.labels[1].text == "96.00");
+        OK(meter.labels[0].text == "4/4" && meter.labels[1].text == "3/4");
+        const double x96 = v.x_of(kAt96), x34 = v.x_of(kAt34);
+        OK(std::abs(tempo.labels[1].x - (x96 + 5)) < 1.5);
+        OK(std::abs(meter.labels[1].x - (x34 + 5)) < 1.5);
+        // The first value runs up to the change, never under its label.
+        OK(tempo.labels[0].x + tempo.labels[0].max_w <= x96);
+        const SceneRect* mark = rect_at(tempo.rects, static_cast<float>(x96), 10);
+        OK(mark != nullptr && mark->argb == theme::kConductor);
+    }
+    // Scrolled past the change: 96 is pinned at the left edge, dimmer.
+    v.scroll = static_cast<double>(kAt96 + kBar96);
+    build_conductor_ruler_scene(ConductorRuler::Tempo, s, v, 20, tempo);
+    OK(tempo.labels.size() == 1);
+    if (tempo.labels.size() == 1) {
+        OK(tempo.labels[0].text == "96.00" && tempo.labels[0].x < 10);
+        OK(tempo.labels[0].argb == theme::kTextSecondary);
+    }
+    // An entry out of order is not a change, as every reader of the map has it.
+    SessionSettings odd = s;
+    odd.tempo.push_back(TempoEntry{kAt96 / 2, 200.0f, {{4, 4}}});
+    v.scroll = 0;
+    build_conductor_ruler_scene(ConductorRuler::Tempo, odd, v, 20, tempo);
+    OK(tempo.labels.size() == 2);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -638,6 +873,8 @@ int main(int argc, char** argv) {
     test_grid();
     test_model();
     test_long_map();
+    test_counter_parse();
+    test_conductor_ruler();
     test_window();
     if (failures != 0) {
         std::fprintf(stderr, "test_ui_transport: %d failure(s)\n", failures);

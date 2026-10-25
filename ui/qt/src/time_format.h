@@ -75,6 +75,27 @@ std::string format_samples(model::Frames f);
 std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSettings& s);
 const char* time_format_name(TimeFormat fmt);
 
+// The other way: text typed into a counter, in that counter's format, as
+// the frame it names (Pro Tools' main counter entry). False, with the
+// reason in `why`, for anything that is not a position the timeline holds;
+// nothing is rounded into range or guessed, because a locate somewhere
+// other than what was typed is found out only by listening.
+//
+//   Bars|Beats  "17", "17|3", "17|3|480": bar, beat, ticks (960 a beat).
+//               Fields left out are the bar's start. "." ":" or a space
+//               separate as "|" does, so the keypad can type one.
+//   Timecode    all four fields, "01:00:12:05" (";" for drop-frame too);
+//               a frame label drop-frame skips is refused, not moved.
+//   Min:Secs    "83.5", "1:23.456", "1:02:03": seconds last.
+//   Samples     digits.
+//
+// Never before the timeline's 0 (timecode before the origin is refused)
+// and never past kMaxLocateFrame (sonora/command.h).
+bool parse_time(TimeFormat fmt, const std::string& text, const model::SessionSettings& s,
+                model::Frames& out, std::string& why);
+// What parse_time() accepts in `fmt`, as a hint beside the field.
+const char* time_entry_hint(TimeFormat fmt);
+
 // Frames per beat and per bar at the tempo map's FIRST entry. A fixed step
 // for what needs one (a ruler's spacing); anything drawn, snapped or nudged
 // against the timeline follows the whole map.

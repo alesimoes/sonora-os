@@ -214,4 +214,16 @@ void RulerItem::buildContent(Scene& out) {
 
 void MarkerRulerItem::buildContent(Scene& out) { session_->buildMarkerRuler(height(), out); }
 
+void ConductorRulerItem::setKind(int k) {
+    if (k == kind_) return;
+    kind_ = k;
+    emit kindChanged();
+    markContentDirty();
+}
+
+void ConductorRulerItem::buildContent(Scene& out) {
+    session_->buildConductorRuler(kind_ == 1 ? ConductorRuler::Meter : ConductorRuler::Tempo,
+                                  height(), out);
+}
+
 }  // namespace sonora::ui

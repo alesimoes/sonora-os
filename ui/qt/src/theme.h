@@ -51,6 +51,7 @@ constexpr uint32_t kPlayhead = 0xfff5f7fa;
 constexpr uint32_t kBypass = 0xff9d7cf0;     // a bypassed insert
 constexpr uint32_t kMarker = 0xffe0a83c;     // markers and memory locations
 constexpr uint32_t kMarkerRange = 0x59e0a83c;  // a selection marker's bar: marker at 35 %
+constexpr uint32_t kConductor = 0xff8ccf7e;  // tempo and meter changes on their rulers
 
 // --- timeline ---
 constexpr uint32_t kGridBar = 0xff2b3038;

@@ -272,6 +272,10 @@ public:
     // to the grid: the marker is where it was put. The playhead follows,
     // to the marker's start, through the locator.
     bool recall_marker(model::Id marker, std::string& why);
+    // Counter entry: the insertion point moves to `frame` exactly (typed,
+    // so never snapped to the grid), the view pages to it, and the playhead
+    // follows through the locator, as a marker recall does.
+    void locate_to(model::Frames frame);
     // Where recall sends the playhead: transport.locate, wired by
     // link_marker_locate(). None, recall moves the selection only.
     using Locator = std::function<void(model::Frames frame)>;
@@ -301,6 +305,9 @@ private:
     bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
+    // Pages the view so `frame` is a tenth in from the left edge, when it
+    // is off screen (as follow() pages).
+    void reveal(model::Frames frame);
     const model::TrackEdit* track(int index) const;
     // The region a command acts on: the selected one, else the one under
     // the insertion point on the selected track.

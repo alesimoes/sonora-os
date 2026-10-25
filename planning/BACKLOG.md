@@ -473,10 +473,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              (`window.transport`) with every format from one reading, tempo,
              meter, next change and the map, pre/post-roll, loop and punch;
              click and rolls dimmed with the reason.
-       - [ ] Tempo and meter rulers in the Edit window; tempo and meter
-             editing (a SetSettings each; the conductor).
-       - [ ] Counter entry (type a position, Enter locates): needs
-             `transport.locate` from Track 1 item 4.
+       - [x] Tempo and meter rulers in the Edit window (`t3-transport-window`):
+             a mark and the value at each change, the value in force pinned
+             at the left edge (ui_transport test_conductor_ruler).
+       - [ ] Tempo and meter editing on those rulers (a SetSettings each;
+             the conductor).
+       - [x] Counter entry (`t3-transport-window`): a click on the bar's or
+             the Transport window's counter digits, a position in the main
+             counter's format, Enter moves the insertion point and locates
+             through `transport.locate`; refused with the reason held beside
+             the field for text that is not a position and during a take
+             (ui_transport test_counter_parse, test_window).
+       - [ ] A key that opens the main counter for entry (Pro Tools'
+             keypad `*` is Record Toggle in Transport mode, already
+             `transport.punch`; the Classic-mode binding is unchecked).
        - [x] The nudge steps by the first entry's grid value
              (`edit_controller.cpp` `nudge`): step by the value at the
              region instead, after `feature/ui-fades` lands there.

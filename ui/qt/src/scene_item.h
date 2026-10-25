@@ -101,6 +101,26 @@ private:
     int format_ = 0;
 };
 
+// The Tempo or the Meter ruler, from the session's tempo map.
+class ConductorRulerItem : public SceneItem {
+    Q_OBJECT
+    // 0 tempo, 1 meter (ConductorRuler's order).
+    Q_PROPERTY(int kind READ kind WRITE setKind NOTIFY kindChanged)
+public:
+    using SceneItem::SceneItem;
+    int kind() const { return kind_; }
+    void setKind(int k);
+
+signals:
+    void kindChanged();
+
+protected:
+    void buildContent(Scene& out) override;
+
+private:
+    int kind_ = 0;
+};
+
 // The Markers ruler: the session's markers and selection markers.
 class MarkerRulerItem : public SceneItem {
     Q_OBJECT
