@@ -29,7 +29,11 @@
 //                          exactly kHangGain makes work() never return, as
 //                          a plugin stuck on a network share does; at
 //                          kSlowGain it returns after kSlowWorkMs and then
-//                          maps a URID, as a load finishing late does
+//                          maps a URID, as a load finishing late does. At
+//                          kFloodGain every run() also schedules
+//                          kFloodMessages requests, more than the host's
+//                          request ring holds, which work() takes 1 ms
+//                          each over and leaves unanswered
 
 #include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
@@ -177,6 +181,9 @@ constexpr uint32_t kCommit = 'C';
 constexpr float kHangGain = 0.25f;
 constexpr float kSlowGain = 0.125f;
 constexpr long kSlowWorkMs = 2600;
+constexpr float kFloodGain = 0.0625f;
+constexpr uint32_t kFlood = 'F';
+constexpr uint32_t kFloodMessages = 1536;  // 18 KiB of requests a block, past a 16 KiB ring
 
 // The slow part a real plugin does here: reading a sample or an IR.
 LV2_Worker_Status work(LV2_Handle h, LV2_Worker_Respond_Function respond, LV2_Worker_Respond_Handle rh,
@@ -185,6 +192,13 @@ LV2_Worker_Status work(LV2_Handle h, LV2_Worker_Respond_Function respond, LV2_Wo
     if (size != sizeof(WorkMsg) || on_run_thread(p)) p->broken.store(true, std::memory_order_relaxed);
     WorkMsg m{};
     if (size == sizeof m) std::memcpy(&m, data, sizeof m);
+    if (m.kind == kFlood) {
+        // Slow enough that the ring stays full: a worker that drained it as
+        // fast as run() fills it would refuse nothing.
+        timespec f{0, 1'000'000};
+        nanosleep(&f, nullptr);
+        return LV2_WORKER_SUCCESS;
+    }
     timespec ts{0, 2'000'000};
     if (m.value == kSlowGain) ts = {kSlowWorkMs / 1000, (kSlowWorkMs % 1000) * 1'000'000};
     do nanosleep(&ts, nullptr);
@@ -345,6 +359,11 @@ void run(LV2_Handle h, uint32_t n) {
         if (m.value != p->requested &&
             p->schedule->schedule_work(p->schedule->handle, sizeof m, &m) == LV2_WORKER_SUCCESS)
             p->requested = m.value;
+        if (m.value == kFloodGain)
+            for (uint32_t k = 0; k < kFloodMessages; ++k) {
+                const WorkMsg f{kFlood, 0.f};
+                p->schedule->schedule_work(p->schedule->handle, sizeof f, &f);
+            }
         const float g = p->broken.load(std::memory_order_relaxed)
                             ? 0.f
                             : p->applied.load(std::memory_order_relaxed) * p->restored.load(std::memory_order_relaxed);

@@ -2,7 +2,7 @@
 #pragma once
 
 // ============================================================================
-//  HostControl, wire version 1 (ADR-0012 §4, §5.5; checklist item 1).
+//  HostControl, wire version 2 (ADR-0012 §4, §5.5; checklist item 1).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6), like
 //  protocol.h. A change to a message, a field, a cap or an ordering rule
@@ -89,7 +89,7 @@
 //  so either side can name a mismatch whatever changed after them.
 //
 // The start-up check (ADR-0012 §5.5): `sonora-plugin-host --version` prints
-// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 1",
+// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 2",
 // and the engine parses it with parse_host_version_line, which requires all
 // three; a mismatch disables plugin hosting for the run, loudly.
 //
@@ -264,7 +264,9 @@
 
 namespace sonora::plugin::control {
 
-inline constexpr uint32_t kHostWireVersion = 1;
+// 2: Fault{WorkRefused}, so a plugin whose worker messages were refused is
+// named to the operator (Track 4 item 5).
+inline constexpr uint32_t kHostWireVersion = 2;
 
 // --- caps (untrusted input is checked against these before anything is held)
 inline constexpr std::size_t kMaxIdBytes = 1024;            // LV2 URI; VST3 is 32 hex digits
@@ -547,7 +549,14 @@ enum class FaultKind : uint8_t {
     Plugin = 0,         // a plugin misbehaved; the host exits kHostExitFaulted
     Protocol = 1,       // the engine broke this contract; the host exits kHostExitUsage
     EventsDropped = 2,  // touches the host could not queue or map; `count` of them
+    // LV2 worker:schedule requests and work() responses refused because
+    // their ring was full (LV2_WORKER_ERR_NO_SPACE), `count` more of them
+    // since the last; `instance` is the plugin's. The plugin keeps running,
+    // but work it asked for was not done, so the engine names the insert.
+    // At most one per instance per kWorkRefusedIntervalMs.
+    WorkRefused = 3,
 };
+inline constexpr uint32_t kWorkRefusedIntervalMs = 1000;
 
 struct Fault {
     FaultKind kind = FaultKind::Plugin;

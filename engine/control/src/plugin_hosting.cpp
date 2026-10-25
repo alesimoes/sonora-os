@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -209,6 +210,13 @@ struct PluginHosting::Chain {
     };
     std::map<model::Id, LostState> state_lost;
     std::map<model::Id, LostState> pending_state_lost;
+
+    // Worker messages the running chain's host refused, by insert
+    // (Fault{WorkRefused}): the plugin skipped work it asked for, and the
+    // operator is told until the chain is built again (the insert made
+    // inactive and active, or any edit of the chain). Kept across a restart
+    // of the same chain: the restart does not undo what was skipped.
+    std::map<model::Id, uint64_t> work_refused;
 };
 
 PluginHosting::PluginHosting(Session& session, PluginHostingConfig config, PluginScanner& scanner)
@@ -323,6 +331,7 @@ void PluginHosting::drop_chain(Chain& c) {
     c.restart_swapped = false;
     c.restart_retire_epoch = 0;
     c.state_lost.clear();
+    c.work_refused.clear();
 }
 
 // ---- probes: the scan worker's (amendment of 2026-10-19, item 3)
@@ -745,6 +754,7 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.pending_seeded.clear();
                     c.state_lost = std::move(c.pending_state_lost);
                     c.pending_state_lost.clear();
+                    c.work_refused.clear();
                     note_refused_states(c, doc);
                     c.retry.clear();
                     c.store_epoch = 0;
@@ -998,6 +1008,14 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                 o = o->first.first == m.instance ? c.open_touches.erase(o) : std::next(o);
             break;
         }
+        case pc::Type::Fault: {
+            pc::Fault m;
+            if (!pc::decode(bytes, m, e) || m.kind != pc::FaultKind::WorkRefused) break;
+            if (m.instance < 0 || uint32_t(m.instance) >= c.running_spec.size()) break;
+            uint64_t& n = c.work_refused[c.running_spec[uint32_t(m.instance)].insert];
+            n = m.count > std::numeric_limits<uint64_t>::max() - n ? std::numeric_limits<uint64_t>::max() : n + m.count;
+            break;
+        }
         default: break;
     }
 }
@@ -1076,12 +1094,21 @@ void PluginHosting::recompute_faults(const model::Snapshot& doc) {
             // Running without its saved state: said while the document still
             // names the state that was not restored. A later save (a new
             // state) or none named clears it without a restart.
+            if (!c.running || member(c.running_spec) == c.running_spec.end()) continue;
             const auto lost = c.state_lost.find(in.id);
-            if (lost == c.state_lost.end() || !c.running || member(c.running_spec) == c.running_spec.end()) continue;
             const model::InsertMix* m = doc.mix.find_insert(in.id);
-            if (m && m->state && *m->state == lost->second.ref)
+            if (lost != c.state_lost.end() && m && m->state && *m->state == lost->second.ref) {
                 faults[in.id] = where(t, in) + ": its saved state was not restored (" + lost->second.why +
                                 "); it runs with its defaults and its saved parameter values";
+                continue;
+            }
+            // It still plays, but what it computes in its worker (a sample,
+            // an impulse response, a preset) may be missing or stale.
+            if (const auto w = c.work_refused.find(in.id); w != c.work_refused.end())
+                faults[in.id] = where(t, in) + ": its worker refused " + std::to_string(w->second) +
+                                " message" + (w->second == 1 ? "" : "s") +
+                                " (its queue was full), so work the plugin asked for was not done; "
+                                "make the insert inactive and active again to reload it";
         }
     }
     faults_.swap(faults);

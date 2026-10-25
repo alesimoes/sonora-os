@@ -42,6 +42,11 @@
 //                        hash, or refused by the host: the insert runs at
 //                        defaults plus its params, with a PluginFault that
 //                        stands while the document names that state
+//   work_refused         a plugin whose worker refused messages (its ring
+//                        full) is shown faulted while it runs, with the
+//                        count; another worker plugin is not; the fault
+//                        stands after the flood and goes once the insert is
+//                        made inactive and active again
 //   rescan_drops_stale   a catalog in which a plugin's record changed (a
 //                        rescan found it upgraded) drops the answer cached
 //                        for it; an unchanged record keeps it; the running
@@ -92,6 +97,7 @@ const char* const kLookahead = "urn:sonora:test#lookahead";
 const char* const kSleep = "urn:sonora:test#sleep";
 const char* const kCrash = "urn:sonora:test#crash";
 const char* const kLiar = "urn:sonora:test#liar";
+const char* const kWorker = "urn:sonora:test#worker";
 
 uint64_t now_ns() {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -704,6 +710,51 @@ int scenario_state_not_restored(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// BACKLOG Track 4 item 5: the worker's refused messages were counted in the
+// host and told to nobody, so a sampler that never got its sample played on
+// as if it had.
+int scenario_work_refused(const Args& a) {
+    std::printf("work_refused: the worker test plugin floods its worker on A, not on B\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, kWorker, {{"gain", 0.0625f}}));  // the test plugin's flood
+    rig.apply(insert_op(102, 501, 0, kWorker, {{"gain", 0.5f}}));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock); }, 20000), "both run");
+    const auto said = [&](Id insert) {
+        const auto& f = rig.hosting->faults();
+        return f.count(insert) && f.at(insert).find("worker refused") != std::string::npos;
+    };
+    check(rig.until([&] { return said(500); }, 3000), "A's insert is faulted for its refused worker messages");
+    if (rig.hosting->faults().count(500)) std::printf("  fault: %s\n", rig.hosting->faults().at(500).c_str());
+    const uint32_t flags = rig.hosting->insert_flags(500);
+    check((flags & api::kInsertRunning) && (flags & api::kInsertFaulted), "  running, and shown faulted");
+    check(rig.hosting->faults().count(501) == 0, "B's, whose worker keeps up, is not");
+    rig.apply(SetInsertParams{500, {{"gain", 1.f}}});
+    rig.show(false);
+    bool stands = true;
+    for (int i = 0; i < 400; ++i) {
+        rig.turn();
+        stands = stands && said(500);
+    }
+    check(stands, "the flood over, the fault stands: the work was still not done");
+    rig.apply(SetInsertActive{500, false});
+    rig.show(false);
+    check(rig.until([&] { return rig.hosting->faults().count(500) == 0 && rig.unbound(0); }, 5000),
+          "made inactive: the fault is gone");
+    rig.apply(SetInsertActive{500, true});
+    rig.show(false);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 20000), "and active again, it runs");
+    bool clean = true;
+    for (int i = 0; i < 400; ++i) {
+        rig.turn();
+        clean = clean && rig.hosting->faults().count(500) == 0;
+    }
+    check(clean, "  with no fault, at a gain its worker keeps up with");
+    return failures ? 1 : 0;
+}
+
 // The whole path through EngineControlServer on drivers/fake (its own
 // real-time thread, quantum 128): a session opened with eg-amp on track A
 // starts its host from the server's thread once the period is known; the
@@ -1112,6 +1163,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
     else if (a.scenario == "move_off_missing") rc = scenario_move_off_missing(a);
     else if (a.scenario == "state_not_restored") rc = scenario_state_not_restored(a);
+    else if (a.scenario == "work_refused") rc = scenario_work_refused(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);

@@ -1160,6 +1160,8 @@ int serve(const Options& o) {
     bool engine_gone = !link->send_message(loaded_message(h, chain, spec));
     uint32_t latency_sent = h.latency_generation.load(std::memory_order_acquire);
     uint64_t dropped_sent = 0, lost_seen = 0;
+    // Per instance: refused worker messages already said, and when last.
+    std::vector<uint64_t> refused_sent(chain.size(), 0), refused_at(chain.size(), 0);
     // The plugin's value now, on this (its main) thread, for a gesture
     // ended without its own end.
     auto current = [&](uint32_t instance, uint32_t param, float& v) {
@@ -1175,6 +1177,13 @@ int serve(const Options& o) {
         std::string b;
         pc::encode(pc::Fault{kind, instance, count, text.substr(0, pc::kMaxTextBytes)}, b);
         send(b);
+    };
+    auto say_refused = [&](std::size_t i, uint64_t now) {
+        const uint64_t r = chain.work_refused(i);
+        send_fault(pc::FaultKind::WorkRefused, static_cast<int32_t>(i), r - refused_sent[i],
+                   "worker messages refused because the plugin's worker queue was full");
+        refused_sent[i] = r;
+        refused_at[i] = now;
     };
     auto stop_processing = [&] {
         s.stop.store(true, std::memory_order_release);
@@ -1339,6 +1348,15 @@ int serve(const Options& o) {
                        "parameter touches that could not be queued, or with no dense index");
             dropped_sent = d;
         }
+        // A plugin that refills a full ring every block would otherwise
+        // send a Fault every pass; the first is said at once, the rest at
+        // most once per interval, summed.
+        for (std::size_t i = 0; i < chain.size(); ++i) {
+            if (chain.work_refused(i) == refused_sent[i] || (refused_at[i] != 0 && now - refused_at[i] <
+                                                                   uint64_t(pc::kWorkRefusedIntervalMs) * 1'000'000ull))
+                continue;
+            say_refused(i, now);
+        }
         // Region first: the generation was bumped before this reads it.
         if (const uint32_t gen = h.latency_generation.load(std::memory_order_acquire); gen != latency_sent) {
             std::string b;
@@ -1357,6 +1375,8 @@ int serve(const Options& o) {
     touches.drain(events);
     for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
     gestures.end_all(current, send);
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        if (chain.work_refused(i) != refused_sent[i]) say_refused(i, 0);
     stop_processing();
     join_thread(processing);
     if (exit_code == plugin::kHostExitFaulted) send_fault(pc::FaultKind::Plugin, s.fault.instance, 0, s.fault.message);
