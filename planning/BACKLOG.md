@@ -359,7 +359,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              editing (a SetSettings each; the conductor).
        - [ ] Counter entry (type a position, Enter locates): needs
              `transport.locate` from Track 1 item 4.
-       - [ ] The nudge steps by the first entry's grid value
+       - [x] The nudge steps by the first entry's grid value
              (`edit_controller.cpp` `nudge`): step by the value at the
              region instead, after `feature/ui-fades` lands there.
        - [x] A stale engine read no longer makes the bar counter and the
