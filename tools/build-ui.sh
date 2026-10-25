@@ -7,27 +7,12 @@
 # with the UI ones included -- headless, on Qt's offscreen platform.
 #
 #   tools/build-ui.sh                       build, then ctest
-#   tools/build-ui.sh --screenshot PATH     ... then the Edit window, the Mix
-#                                           window (PATH-mix.png), its plugin
-#                                           chooser and parameter panel
-#                                           (-mix-browser, -mix-panel), solo
-#                                           safe (-mix-solo-safe), the Edit
-#                                           window zoomed on fades (-fades), a
-#                                           paste with the Edit menu open
-#                                           (-clipboard), the Repeat dialog
-#                                           (-repeat), a paste on three
-#                                           tracks (-multitrack), one track's
-#                                           clipboard on four (-fill), a nudge on a
-#                                           tempo map (-nudge), the Undo
-#                                           History window (-undo-history),
-#                                           markers and the Memory Locations
-#                                           window (-markers),
-#                                           a repaired session
-#                                           opened (-repairs) and the
-#                                           engine-gone state under the cage
+#   tools/build-ui.sh --screenshot PATH     ... then one picture per scene in
+#                                           ui/qt/src/scenes/ (the Edit window
+#                                           is PATH; sonora-ui --list-scenes
+#                                           names the rest) under the cage
 #                                           kiosk compositor, captured by the
-#                                           compositor itself (grim); also the
-#                                           Transport window (-transport) and,
+#                                           compositor itself (grim); and,
 #                                           on a sonora-engine announcing a
 #                                           newer protocol, the version
 #                                           refusal at startup (-refusal) and

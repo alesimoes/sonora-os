@@ -45,3 +45,14 @@ The ISO build needs Linux and root in a container. Run it:
 A configuration change you have not booted is a guess. Say which of the two it
 is. When you do boot it, record the machine, the buffer size and the xrun count
 in `brain/research/` — measured numbers, with the hardware named.
+
+## Before you open the PR
+
+- Rebased on `origin/main`.
+- Every new test fails without the change: run it once against the old code.
+- Per-session state resets when a session opens.
+- A refusal the operator must see is a held notice, not the 2.5 s status line.
+- Every version pin is bumped together, to the next free number.
+- One PR per BACKLOG item, follow-ups included.
+- The full suite runs once, at the end.
+- The report is at most 5 lines.

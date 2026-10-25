@@ -56,6 +56,15 @@ Never read `planning/BACKLOG.md`, `planning/progress.json`, `brain/specs/*.md`
 or an ADR whole: read the ADR's Summary, grep the heading, Read with
 offset/limit. Progress goes through `tools/progress.sh get|list|set`.
 
+The coordinator runs at most 3 agents at once. After 3–4 merges, or near
+150k of context, it writes the handoff and asks the owner to /clear.
+One PR per BACKLOG item, follow-ups included. Review is tiered: Sonnet for
+UI-only and test-only PRs, Opus for the RT path, contracts, storage and
+recovery. Only a blocking finding sends a PR back; non-blocking ones become
+BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
+fresh Sonnet agent that checks only the fix's diff. Approved green PRs merge
+with `tools/merge-when-green.sh PR...`; the `integrator` is for conflicts.
+
 ## Conventions
 
 - C++17, 4-space indent, `snake_case` members with a trailing underscore.

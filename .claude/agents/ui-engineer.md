@@ -58,3 +58,16 @@ There is no graphical interface yet — the engine draws a terminal display in
 `engine/app/src/main.cpp`, and Phase 3 in `planning/ROADMAP.md` is where the real
 one starts. Do not design around a toolkit nobody has chosen; the choice is an
 ADR, which belongs to `architect`.
+
+## Before you open the PR
+
+- Rebased on `origin/main`.
+- Every new test fails without the change: run it once against the old code.
+- Per-session state resets when a session opens.
+- A refusal the operator must see is a held notice, not the 2.5 s status line.
+- Every version pin is bumped together, to the next free number.
+- One PR per BACKLOG item, follow-ups included.
+- The full suite runs once, at the end.
+- The report is at most 5 lines.
+- A new screenshot scene is a new file under `ui/qt/src/scenes/` and nothing
+  else: never an edit to `main.cpp` or `tools/build-ui-entrypoint.sh`.
