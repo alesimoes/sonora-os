@@ -261,6 +261,31 @@ lines up with what was heard. In model terms N's `source_offset` is
 exists it is the backend's reported latency, and the source records which
 figure was used (`latency_compensation`).
 
+### Pre-roll and post-roll
+
+The session's `transport.pre_roll` and `post_roll` (session-format.md)
+frame a range the transport plays or records, as Pro Tools does with a
+selection. There is no separate on/off switch in the format; 0 is off.
+
+- **Record with a punch range [A, B), started stopped**: the transport
+  locates to `A − pre_roll` (cut at 0) behind the residency gate, then
+  rolls and records. Capture starts at `A − H` or at the pre-roll's start,
+  whichever is later (the handle "as far as the pre-roll allows", above).
+  Started while rolling, the punch is on the fly and nothing locates.
+- **Play a range [A, B)**: `transport.play` and `transport.toggle_play`
+  take an optional argument `"A-B"` in frames, the interface's selection.
+  The transport locates to `A − pre_roll` and rolls. Without the argument,
+  play rolls from the playhead with no pre-roll and no end.
+- **Post-roll stops the transport at `B + post_roll`**, at the sample: the
+  audio thread plays up to that frame, silences the rest of the block's
+  playback, leaves the playhead on it and stops the roll (a
+  compare-exchange of Rolling to Stopped, so a take started meanwhile is
+  never stopped). During a take nothing stops: a punched take records to
+  `B + H`, drops to Rolling, and stops at the next block if `B + post_roll`
+  is already behind it. A loop that wraps has no post-roll (ADR-0016).
+- Not yet: pre-roll for a plain take (no range), and the interface sending
+  its selection as the play argument.
+
 ### Closing a take while rolling: in-band boundaries
 
 `Session::stop()` today stops the transport, joins the disk thread to close

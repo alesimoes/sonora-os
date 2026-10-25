@@ -604,6 +604,9 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     take_origin_.store(kNoOrigin, std::memory_order_relaxed);
     punch_passed_.store(0, std::memory_order_relaxed);
     loop_wraps_.store(0, std::memory_order_relaxed);
+    // A roll's end, left from a range played before this take, would stop
+    // the transport when the take punches out.
+    roll_end_.store(range != nullptr ? range->roll_end : kNoRollEnd, std::memory_order_relaxed);
     transport_->set_recording(static_cast<uint32_t>(take_number),
                               range != nullptr || loop != nullptr);
     return true;
@@ -987,6 +990,16 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             block_wraps_ = 1 + static_cast<uint32_t>((nframes - to_end) / (loop_to_ - loop_from_));
         }
     }
+    // Post-roll (set_roll_end()): decided before the mix, so this block
+    // renders as the roll it loaded, cut at the end.
+    play_until_ = nframes;
+    if (word.state == TransportState::Rolling && loop_to_ == 0) {
+        uint64_t end = roll_end_.load(std::memory_order_acquire);
+        if (end != kNoRollEnd && end <= playhead + nframes && transport_->stop_roll()) {
+            play_until_ = end > playhead ? static_cast<uint32_t>(end - playhead) : 0;
+            roll_end_.compare_exchange_strong(end, kNoRollEnd, std::memory_order_acq_rel);
+        }
+    }
     capture(block, recording, word.take, playhead, first);
     if (block_wraps_ != 0) {
         loop_wrap_count_ += block_wraps_;
@@ -1035,11 +1048,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     params_count_ = 0;
 
-    const uint64_t next = rolling ? loop_frame(playhead, nframes) : playhead;
+    const uint64_t next = rolling ? loop_frame(playhead, play_until_) : playhead;
     if (rolling && loop_to_ != 0) {
         transport_->set_playhead(next);
     } else if (rolling) {
-        transport_->advance(nframes);
+        transport_->advance(play_until_);
     }
     expected_playhead_ = next;
     // Release is enough here, not at entry: a stop() whose load reads this
@@ -1392,6 +1405,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     if (steady && pos == first && pos == 0.0f) {
         if (play) {
             render_track(plan, node.track, from, n, out);
+            cut_at_roll_end(out, offset, n);
             return pt.channels >= 2;
         }
         std::memset(out[0], 0, n * sizeof(float));
@@ -1409,6 +1423,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     bool stereo = false;
     if (play) {
         render_track(plan, node.track, from, n, out);
+        cut_at_roll_end(out, offset, n);
         stereo = pt.channels >= 2;
     } else {
         std::memset(out[0], 0, n * sizeof(float));
@@ -1428,6 +1443,16 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
         if (stereo) out[1][i] = g_in * x + g_play * out[1][i];
     }
     return stereo;
+}
+
+void Session::cut_at_roll_end(float* const out[2], uint32_t offset,
+                              uint32_t n) const noexcept SONORA_RT {
+    if (play_until_ >= offset + n) return;
+    const uint32_t keep = play_until_ > offset ? play_until_ - offset : 0;
+    // Side 1 too, whether or not the track is stereo: a mono track's side 1
+    // is never read, so clearing it costs a memset and saves a branch.
+    std::memset(out[0] + keep, 0, (n - keep) * sizeof(float));
+    std::memset(out[1] + keep, 0, (n - keep) * sizeof(float));
 }
 
 void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], float* const out[2],

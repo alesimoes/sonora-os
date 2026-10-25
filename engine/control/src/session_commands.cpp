@@ -43,7 +43,7 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // just before must have landed, or the take starts somewhere else
     // (ADR-0009 §4.4). The request is answered from pump(); a refusal then
     // comes back through take_record_error().
-    const auto start = [open_take, playback, loop_take](std::string& why) {
+    const auto start = [&session, open_take, playback, loop_take, punch_for](std::string& why) {
         LoopRange loop;
         std::string refusal;
         const bool looped = loop_take(loop, refusal);
@@ -55,9 +55,18 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         if (!playback) return open_take(why);
         // Asked once already: a second press is the same request.
         if (!playback->record_requested()) {
-            // A loop take records from its pre-roll (ADR-0016 §1): the gate
-            // then waits for that window too, and start_loop() lands there.
-            if (looped && !playback->locate(loop.start, why)) return false;
+            // A loop take records from its pre-roll (ADR-0016 §1), and so
+            // does a punch started stopped, as Pro Tools' record with a
+            // selection does: the gate then waits for that window too, and
+            // the take starts there. Rolling, a punch waits for A where it
+            // is (on the fly).
+            PunchRange range;
+            if (looped) {
+                if (!playback->locate(loop.start, why)) return false;
+            } else if (session.transport().state() == TransportState::Stopped && punch_for &&
+                       punch_for(range)) {
+                if (!playback->locate(range.start, why)) return false;
+            }
             playback->record(open_take);
         }
         return true;
@@ -103,8 +112,10 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // Otherwise it starts a take as transport.record does: on the fly at
     // the playhead with no punch range, and with one, only inside [A, B),
     // which is what the lit PUNCH indicator promises (Logic's Autopunch).
-    // Before A it waits for A, inside the range it punches in at the
-    // playhead and out at B, and at or past B start_punch() refuses it.
+    // Stopped, it starts from A less the pre-roll (start). Rolling, before A
+    // it waits for A, inside the range it punches in at the playhead, and
+    // at or past B start_punch() refuses it. Out at B either way, and the
+    // transport stops at B plus the post-roll.
     reg.install("transport.punch", [&session, &take, start, finish,
                                     playback](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Recording) {
@@ -137,24 +148,37 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     });
 
     if (playback) {
+        // With a range (the interface's selection), Pro Tools' play of a
+        // selection: from its start less the pre-roll to its end plus the
+        // post-roll. Without one, from the playhead with no end.
+        const auto roll = [playback](const CommandContext& ctx, std::string& why) {
+            if (ctx.argument.empty()) {
+                playback->play();
+                return true;
+            }
+            uint64_t from = 0;
+            uint64_t to = 0;
+            return parse_play_range(ctx.argument, from, to, why) &&
+                   playback->play_range(from, to, why);
+        };
         // Rolls once the window at the playhead is resident (ADR-0009 §4.4).
-        reg.install("transport.play", [&session, playback](const CommandContext&) {
-            if (session.transport().state() == TransportState::Stopped) playback->play();
-            return true;
+        reg.install("transport.play",
+                    [&session, roll](const CommandContext& ctx, std::string& why) {
+            if (session.transport().state() != TransportState::Stopped) return true;
+            return roll(ctx, why);
         });
         // Space in Pro Tools: plays, or stops whatever is running, a take
         // included.
-        reg.install("transport.toggle_play",
-                    [&session, finish, playback](const CommandContext&, std::string& why) {
+        reg.install("transport.toggle_play", [&session, finish, playback, roll](
+                                                 const CommandContext& ctx, std::string& why) {
             const TransportState state = session.transport().state();
             if (state == TransportState::Recording) return finish(why);
             if (state == TransportState::Rolling || playback->play_requested() ||
                 playback->record_requested()) {
                 playback->stop();
-            } else {
-                playback->play();
+                return true;
             }
-            return true;
+            return roll(ctx, why);
         });
         reg.install("transport.return_to_zero",
                     [playback](const CommandContext&, std::string& why) {

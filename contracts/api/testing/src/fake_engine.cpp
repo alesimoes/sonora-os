@@ -1043,8 +1043,6 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     }
     if (id == "transport.stop") return stop();
-    if (id == "transport.play") return play();
-    if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? play() : stop();
     const auto locate = [&](uint64_t frame) {
         if (recording) {
             why = "locate during a take is not supported yet; stop first";
@@ -1054,6 +1052,18 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         moved_ns_ = now();
         return true;
     };
+    // A range is checked as the engine checks it and rolls from its start;
+    // the fake keeps no pre-roll or post-roll, so it neither starts earlier
+    // nor stops by itself.
+    const auto roll = [&]() {
+        if (r.argument.empty()) return play();
+        uint64_t from = 0;
+        uint64_t to = 0;
+        if (!parse_play_range(r.argument, from, to, why)) return false;
+        return locate(from) && play();
+    };
+    if (id == "transport.play") return mode_ == TransportState::Stopped ? roll() : true;
+    if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? roll() : stop();
     if (id == "transport.return_to_zero") return locate(0);
     if (id == "transport.locate") {
         uint64_t frame = 0;

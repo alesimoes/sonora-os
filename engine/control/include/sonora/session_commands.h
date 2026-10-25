@@ -57,7 +57,12 @@ using MayArm = std::function<bool(std::size_t engine_track, std::string& why)>;
 // gated on the plan's residency through it, and a take started from a key
 // waits behind the same gate.
 // Without `loop_for` no take is a loop take; with it, one is located to its
-// pre-roll first, and stops on transport.punch as on transport.stop.
+// pre-roll first, and stops on transport.punch as on transport.stop. A
+// punch started with the transport stopped is located to its range's
+// `start` first the same way, and its `roll_end` stops the transport after
+// it. transport.play and transport.toggle_play take an optional range,
+// "A-B", played with the pre-roll and post-roll of the snapshot `playback`
+// last showed (PlaybackController::play_range()).
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record = nullptr,
                               PlaybackController* playback = nullptr,

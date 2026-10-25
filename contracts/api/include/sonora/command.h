@@ -68,9 +68,11 @@ struct CommandSpec {
 inline const std::vector<CommandSpec>& command_catalog() {
     static const std::vector<CommandSpec> catalog = {
         // --- transport ---
-        {"transport.play", CommandTarget::None, "Start playback"},
+        // Optional argument: a range to play with pre- and post-roll
+        // (parse_play_range()).
+        {"transport.play", CommandTarget::None, "Start playback", true},
         {"transport.stop", CommandTarget::None, "Stop the transport"},
-        {"transport.toggle_play", CommandTarget::None, "Play, or stop if rolling"},
+        {"transport.toggle_play", CommandTarget::None, "Play, or stop if rolling", true},
         {"transport.record", CommandTarget::None, "Start recording"},
         {"transport.toggle_record", CommandTarget::None,
          "Start recording, or stop and close the take if recording"},
@@ -271,6 +273,23 @@ inline bool parse_locate_frame(const std::string& argument, uint64_t& frame,
         }
     }
     frame = f;
+    return true;
+}
+
+// The optional argument of transport.play and transport.toggle_play: the
+// range to play, "A-B" in frames, A before B, each as transport.locate
+// takes a frame. The interface sends its timeline selection this way, and
+// the engine adds the session's pre-roll and post-roll around it.
+inline bool parse_play_range(const std::string& argument, uint64_t& from, uint64_t& to,
+                             std::string& why) {
+    const std::size_t dash = argument.find('-');
+    std::string ignored;
+    if (dash == std::string::npos ||
+        !parse_locate_frame(argument.substr(0, dash), from, ignored) ||
+        !parse_locate_frame(argument.substr(dash + 1), to, ignored) || to <= from) {
+        why = "\"" + argument + "\" is not a range to play; give it as A-B in frames, A before B";
+        return false;
+    }
     return true;
 }
 

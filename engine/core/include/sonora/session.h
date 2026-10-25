@@ -107,6 +107,13 @@ struct PunchRange {
     uint64_t monitor_out = kOpenEnd;
     uint32_t crossfade = 0;
     FadeCurve shape = FadeCurve::Linear;
+    // Pre-roll: where a take started with the transport stopped is located
+    // first, A less the pre-roll. engine/control's to act on; the session
+    // does not locate.
+    uint64_t start = 0;
+    // Post-roll: the roll end start_punch() sets (set_roll_end()), B plus
+    // the post-roll. kOpenEnd rolls on after the punch-out.
+    uint64_t roll_end = kOpenEnd;
 };
 
 // A loop take (ADR-0016 §1, §2): it records from `start`, A less the
@@ -304,6 +311,19 @@ public:
     // one). Control thread.
     void play();
     void stop_playback();
+
+    // Post-roll: a roll stops at `frame`. The audio thread plays the frames
+    // before it, silences the rest of that block's playback, leaves the
+    // playhead on it (or where it is, if already past) and stops the
+    // transport, then clears the end. Only a roll: a take is never stopped
+    // by it, and once its punch-out leaves the transport rolling past the
+    // end, the next block stops it. Ignored while a loop wraps (ADR-0016:
+    // post-roll does not apply while looping). start_punch() sets the
+    // range's roll_end; start_recording() and start_loop() clear it.
+    // Control thread.
+    static constexpr uint64_t kNoRollEnd = ~uint64_t{0};
+    void set_roll_end(uint64_t frame) { roll_end_.store(frame, std::memory_order_release); }
+    uint64_t roll_end() const { return roll_end_.load(std::memory_order_acquire); }
 
     // Queues a locate for the audio thread, which applies it at the start of
     // a block. False if the queue is full. engine/control sends it only once
@@ -523,6 +543,8 @@ private:
                        const backend::AudioBlock& block, uint32_t offset, uint32_t n,
                        bool rolling, bool recording, uint64_t from,
                        float* const out[2]) noexcept SONORA_RT;
+    // Zeroes what render_track() put in `out` at or past play_until_.
+    void cut_at_roll_end(float* const out[2], uint32_t offset, uint32_t n) const noexcept SONORA_RT;
     // Step 3: the track's ramped gain and pan, from `in` into stereo `out`.
     void apply_fader(uint32_t engine_track, bool stereo, const float* const in[2],
                      float* const out[2], uint32_t n) noexcept SONORA_RT;
@@ -698,6 +720,9 @@ private:
     bool reseek_ = true;
     uint32_t block_frames_ = 0;              // the whole block, for ramps
     uint32_t block_done_ = 0;                // frames of it already mixed
+    // Frames of this block a roll plays before its roll end; the whole
+    // block when it has none in it.
+    uint32_t play_until_ = 0;
 
     std::atomic<float> bus_gain_{1.0f};
     std::atomic<float> bus_peak_[2] = {{0.0f}, {0.0f}};
@@ -720,6 +745,10 @@ private:
     // Its only writer is the audio thread; begin_take() clears it before
     // the take it starts can be seen.
     std::atomic<uint32_t> punch_passed_{0};
+    // set_roll_end(). The audio thread clears it with a compare-exchange
+    // once it has stopped the roll, so an end the control thread sets for
+    // the next roll meanwhile is kept.
+    std::atomic<uint64_t> roll_end_{kNoRollEnd};
     // Odd while process() runs; each callback adds one on entry and one on
     // exit. stop() waits, after storing Stopped, for the callback in flight
     // to return, so none that read the take before the store is still

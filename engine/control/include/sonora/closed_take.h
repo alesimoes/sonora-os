@@ -97,8 +97,10 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
 // on): capture over [A - H, B + H), H = max(punch_crossfade, one second),
 // cut at the timeline's start; Auto monitoring switching at A and B with
 // the equal-power crossfade the take will be placed with
-// (timeline-model.md, "Punch in"). False, leaving `out` alone, when no
-// range is set.
+// (timeline-model.md, "Punch in"); located first to A less the pre-roll,
+// cut at the timeline's start, and stopped at B plus the post-roll
+// ("Pre-roll and post-roll"). False, leaving `out` alone, when no range is
+// set.
 bool document_punch(const model::Snapshot& document, PunchRange& out);
 
 // The loop take the record commands start (ADR-0016 §1) when the document

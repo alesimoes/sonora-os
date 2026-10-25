@@ -1665,6 +1665,160 @@ int test_report_shows_the_planned_latency() {
 
 }  // namespace
 
+// Pre-roll and post-roll (timeline-model.md, "Pre-roll and post-roll"):
+// with a punch range [A, B) set, record from Stopped locates to A less the
+// pre-roll and records from there, as far as the handle reaches; the take
+// punches out past B + H, and the transport stops at B plus the post-roll,
+// at the sample.
+int test_punch_pre_and_post_roll() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    SessionSettings settings;
+    settings.transport.punch = {{2000, 3000}};
+    settings.transport.pre_roll = 500;
+    settings.transport.post_roll = 50000;
+    History h(new_session(settings));
+    CHECK(two_tracks(h));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, &ctl,
+                                     [&h](sonora::PunchRange& range) {
+                                         return sonora::document_punch(h.current(), range);
+                                     });
+    s.tracks()[1]->set_rec_armed(true);
+    // Drained on this thread after every block: the take is a second long,
+    // ten times the capture ring, and the blocks run faster than real time.
+    const std::vector<float> in(kBlock, 0.5f);
+    Out o;
+    s.transport().set_playhead(5000);
+
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    uint64_t first_take_block = 0;
+    bool punched_out = false;
+    for (int i = 0; i < 2000; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        if (s.follow_punch_out()) {
+            ++take;
+            punched_out = true;
+        }
+        const TransportState before = s.transport().state();
+        if (before == TransportState::Stopped && punched_out) break;
+        if (before == TransportState::Recording && first_take_block == 0) {
+            first_take_block = s.transport().playhead();
+        }
+        run_block_in(s, o, in);
+        s.disk().drain_once();
+    }
+    CHECK(punched_out);
+    CHECK(first_take_block == 1500);
+    CHECK(s.transport().state() == TransportState::Stopped);
+    CHECK(s.transport().playhead() == 3000 + 50000);
+    CHECK(s.stop(&error));
+    uint64_t origin = 0;
+    int64_t frames = 0;
+    CHECK(take_on_disk(s, 1, origin, frames));
+    CHECK(origin == 1500);
+    // Through B + H, H one second at 48 kHz.
+    CHECK(frames == static_cast<int64_t>(3000 + 48000 - 1500));
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
+// transport.play and transport.toggle_play with a range (the interface's
+// selection, "A-B" in frames): play from A less the pre-roll and stop at B
+// plus the post-roll, at the sample. A plain play afterwards plays on, and
+// a range that is not one is refused by name with nothing asked.
+int test_play_range_with_pre_and_post_roll() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    SessionSettings settings;
+    settings.transport.pre_roll = 300;
+    settings.transport.post_roll = 200;
+    History h(new_session(settings));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, &ctl);
+    Out o;
+    std::string why;
+    const auto dispatch = [&reg, &why](const char* id, const std::string& arg) {
+        sonora::CommandContext ctx;
+        ctx.argument = arg;
+        why.clear();
+        return reg.dispatch(id, ctx, why);
+    };
+    // Rolls a range to its end: the first frame rolled, and how many.
+    const auto roll = [&](uint64_t& first, uint64_t& rolled) {
+        first = UINT64_MAX;
+        rolled = 0;
+        for (int i = 0; i < 400; ++i) {
+            s.reader().run_pass();
+            ctl.pump();
+            const bool rolling = s.transport().state() == TransportState::Rolling;
+            const uint64_t at = s.transport().playhead();
+            if (rolling && first == UINT64_MAX) first = at;
+            run_block(s, o);
+            if (rolling) rolled += s.transport().playhead() - at;
+            if (rolling && s.transport().state() == TransportState::Stopped) return true;
+        }
+        return false;
+    };
+
+    uint64_t first = 0;
+    uint64_t rolled = 0;
+    CHECK(dispatch("transport.play", "2000-3001") == DispatchResult::Ok);
+    CHECK(roll(first, rolled));
+    CHECK(first == 1700);
+    CHECK(s.transport().playhead() == 3201);
+    CHECK(rolled == 3201 - 1700);
+    // The block it stopped in: played up to the end, silence after.
+    const uint64_t last_block = 1700 + (rolled / kBlock) * kBlock;
+    const uint32_t cut = static_cast<uint32_t>(3201 - last_block);
+    for (uint32_t i = 0; i < cut; ++i) {
+        CHECK(o.l[i] == value(1, static_cast<int64_t>(last_block + i)));
+    }
+    for (uint32_t i = cut; i < kBlock; ++i) CHECK(o.l[i] == 0.0f);
+
+    // A pre-roll reaching before the session start starts at 0.
+    CHECK(dispatch("transport.toggle_play", "100-500") == DispatchResult::Ok);
+    CHECK(roll(first, rolled));
+    CHECK(first == 0);
+    CHECK(s.transport().playhead() == 700);
+
+    // A plain play is not held to the last range's end.
+    CHECK(dispatch("transport.play", "") == DispatchResult::Ok);
+    CHECK(ctl.settle(2.0));
+    for (int i = 0; i < 40; ++i) run_block(s, o);
+    CHECK(s.transport().state() == TransportState::Rolling);
+    CHECK(s.transport().playhead() == 700 + 40 * kBlock);
+    CHECK(dispatch("transport.toggle_play", "") == DispatchResult::Ok);
+    CHECK(s.transport().state() == TransportState::Stopped);
+
+    for (const char* bad : {"3000-2000", "5-5", "x", "10-", "-10", "1-2-3", "10 - 20"}) {
+        CHECK(dispatch("transport.play", bad) == DispatchResult::Failed);
+        CHECK(why.find("range") != std::string::npos);
+        CHECK(!ctl.play_requested());
+        CHECK(!ctl.locating());
+    }
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
 int main() {
     std::filesystem::remove_all(kDir);
     ::mkdir(kDir.c_str(), 0775);
@@ -1701,6 +1855,8 @@ int main() {
     if (test_latency_change_is_a_new_plan()) return 1;
     if (test_report_shows_the_planned_latency()) return 1;
     if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
+    if (test_punch_pre_and_post_roll()) return 1;
+    if (test_play_range_with_pre_and_post_roll()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;

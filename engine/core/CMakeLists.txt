@@ -95,6 +95,12 @@ add_executable(test_loop_passes tests/test_loop_passes.cpp)
 target_link_libraries(test_loop_passes PRIVATE sonora_core)
 add_test(NAME loop_passes COMMAND test_loop_passes)
 
+# Post-roll: a roll stops at its end frame, at the sample, never during a
+# take, with no allocation in process().
+add_executable(test_roll_end tests/test_roll_end.cpp)
+target_link_libraries(test_roll_end PRIVATE sonora_core)
+add_test(NAME roll_end COMMAND test_roll_end)
+
 # ADR-0012 checklist 5: plugin parameter changes from the control thread to
 # the InsertChain node that names their store, the backend's callback_ns as
 # the runner's clock, and the runner's block size gating the callback.
