@@ -90,7 +90,7 @@
 | Per-strip metering, pre/post fader | Complete DAW / Mixer, routing and processing graph | `feature/ui-mixer-monitor` | 1 |
 | Out-of-process host: contracts/plugin, engine/plugin_client, plugins/host (M9) | Complete DAW / Plugin hosting and PDC | `t4-events-dropped-shown` | 8 |
 | Checklist 5: the plugin scan worker and catalog cache; AddInsert/ReplaceInsert resolved against the catalog (ADR-0012 amendment of 2026-10-19, items 1-7, Q1-Q3) | Complete DAW / Plugin hosting and PDC | `track4-scan-worker` | 8 |
-| Plugin presets and state saved in the session | Complete DAW / Plugin hosting and PDC | `t4-worker-refused-shown` | 3 |
+| Plugin presets and state saved in the session | Complete DAW / Plugin hosting and PDC | `t4-lv2-state` | 3 |
 | Windows VST through yabridge | Complete DAW / Plugin hosting and PDC | `t4-yabridge` | 3 |
 | dsp-engineer charter and ADR-0011 | Complete DAW / Native plugins (ADR-0011) | `docs/adr-native-plugins` | 1 |
 | FET peak limiter (Sonora FET): the published gain-reduction stage and side chain, solved per sample against ngspice | Complete DAW / Native plugins (ADR-0011) | `feature/dsp-n2-fet` | 3 |
