@@ -715,6 +715,8 @@ private:
     std::unique_ptr<uint64_t[]> captured_;
     // The take take_origin_ was set for, or kNoWindow.
     uint32_t origin_take_ = kNoWindow;
+    // Transport::Word::start of the take the callback last saw recording.
+    uint32_t recording_start_ = 0;
     // The ranges drained so far, newest stored last (punch_stored_). One
     // more entry than the ring holds, and the running take's never
     // overwritten: a drain takes at most the ring's capacity, so every

@@ -964,6 +964,18 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // still be queued. Once the take has its first frame such a locate is
     // acknowledged, so nothing waits on it, and dropped.
     if (!recording) origin_take_ = kNoWindow;
+    // A take numbered as the last one this callback saw, with no Stopped
+    // block between them (stop(), a folder switch, the next take: ADR-0018
+    // §1), would pass for that take still running and open nothing. stop()
+    // closed that take's files, so its windows are dropped here without a
+    // Close: one in this number would close the new take's files.
+    if (recording && word.start != recording_start_) {
+        recording_start_ = word.start;
+        if (origin_take_ == word.take) origin_take_ = kNoWindow;
+        for (std::size_t i = 0; i < tracks_.size(); ++i) {
+            if (window_take_[i] == word.take) window_take_[i] = kNoWindow;
+        }
+    }
     const bool take_started = recording && origin_take_ == word.take;
 
     RtCommand cmd{};

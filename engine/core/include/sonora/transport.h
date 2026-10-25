@@ -33,7 +33,9 @@ public:
     // for one, so a range left from an earlier take of that number cannot
     // apply to it.
     void set_recording(uint32_t take, bool punched = false) {
-        word_.store(word(TransportState::Recording, take) | (punched ? kPunched : 0),
+        starts_ = (starts_ + 1) & kStartMask;
+        word_.store(word(TransportState::Recording, take) | (punched ? kPunched : 0) |
+                        (uint64_t{starts_} << kStartShift),
                     std::memory_order_seq_cst);
     }
     // The take being recorded, 0 when none is.
@@ -46,10 +48,15 @@ public:
         TransportState state;
         uint32_t take;
         bool punched;
+        // Which set_recording() this is, counted modulo 2^24: a take in
+        // another session folder can have the number of the one before it
+        // (ADR-0018 §1), and only this tells the two apart.
+        uint32_t start;
     };
     Word load_word() const noexcept SONORA_RT {
         const uint64_t w = word_.load(std::memory_order_seq_cst);
-        return {state_of(w), take_of(w), (w & kPunched) != 0};
+        return {state_of(w), take_of(w), (w & kPunched) != 0,
+                static_cast<uint32_t>(w >> kStartShift)};
     }
 
     // Rolling to Stopped, by the audio thread at a roll's end (post-roll).
@@ -90,6 +97,9 @@ public:
 private:
     // In the state's byte, above every TransportState.
     static constexpr uint64_t kPunched = 0x80;
+    // Above the take's 32 bits.
+    static constexpr int kStartShift = 40;
+    static constexpr uint32_t kStartMask = (1u << 24) - 1;
 
     static uint64_t word(TransportState s, uint32_t take) {
         return (uint64_t{take} << 8) | static_cast<uint64_t>(s);
@@ -98,10 +108,12 @@ private:
         return static_cast<TransportState>(w & 0x7F);
     }
     static uint32_t take_of(uint64_t w) noexcept SONORA_RT {
-        return static_cast<uint32_t>(w >> 8);
+        return static_cast<uint32_t>((w >> 8) & 0xFFFFFFFFu);
     }
 
     const uint32_t sample_rate_;
+    // The control thread's only: set_recording() is never called elsewhere.
+    uint32_t starts_ = 0;
     std::atomic<uint64_t> word_{0};
     std::atomic<uint64_t> playhead_{0};
     std::atomic<uint64_t> locates_{0};
