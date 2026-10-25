@@ -56,6 +56,9 @@ struct PluginInfo {
     // groups it by (broadest first), and the bundle it was found in,
     // absolute, which the engine fingerprints.
     std::string vendor, version, bundle;
+    // "yabridge" for a Windows plugin bridged into a Linux VST3 bundle (its
+    // code runs under Wine, ADR-0017); empty for a native one.
+    std::string bridge;
     std::vector<std::string> categories;
     std::vector<PortInfo> ports;
     // Main audio only. A key input is counted apart: it does not decide

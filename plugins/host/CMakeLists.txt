@@ -305,6 +305,104 @@ if(VST3SDK_INCLUDE_DIR)
     plugin_host_vst3_list_crash_entry plugin_host_vst3_list_after_crash
     plugin_host_vst3_probe_mismatch plugin_host_vst3_probe_replicated PROPERTIES LABELS plugins)
 
+  # --- yabridge (ADR-0017), without Wine. Two bundles laid out as
+  # yabridgectl lays them out: Contents/x86_64-linux/<name>.so, a Windows
+  # module under Contents/x86_64-win, and the Windows original's
+  # moduleinfo.json under Contents/Resources with its class IDs in COM byte
+  # order (yabridgectl rewrites only Contents/moduleinfo.json).
+  #   sonora-test-bridged.vst3        the test plugin built with the name
+  #                                   yabridge's chainloader carries: bridged
+  #   sonora-test-multiplatform.vst3  the plain test plugin beside a Windows
+  #                                   build, the SDK's multi-platform bundle:
+  #                                   native, not bridged
+  # Both run the test plugin natively; the real bridge is
+  # tools/test-yabridge.sh.
+  set(_bridged ${CMAKE_BINARY_DIR}/vst3/sonora-test-bridged.vst3)
+  set(_multi ${CMAKE_BINARY_DIR}/vst3/sonora-test-multiplatform.vst3)
+  set(_com_classes "")
+  foreach(k RANGE 1 10)
+    if(k LESS 10)
+      set(_kk "0${k}")
+    else()
+      set(_kk "0A")
+    endif()
+    if(_com_classes)
+      string(APPEND _com_classes ",")
+    endif()
+    string(APPEND _com_classes "{\"CID\":\"4F4E4F534152535654335445535400${_kk}\",\"Category\":\"Audio Module Class\"}")
+  endforeach()
+  foreach(_b ${_bridged} ${_multi})
+    get_filename_component(_stem ${_b} NAME_WE)
+    file(MAKE_DIRECTORY ${_b}/Contents/x86_64-win ${_b}/Contents/Resources)
+    file(WRITE ${_b}/Contents/x86_64-win/${_stem}.vst3 "a Windows module stands here\n")
+    file(WRITE ${_b}/Contents/Resources/moduleinfo.json
+      "{\"Name\":\"${_stem}\",\"Version\":\"1\",\"Classes\":[${_com_classes}]}\n")
+  endforeach()
+  add_library(sonora_test_vst3_bridged MODULE tests/vst3/sonora_test_vst3.cpp)
+  target_compile_definitions(sonora_test_vst3_bridged PRIVATE SONORA_TEST_VST3_FAKE_CHAINLOADER)
+  target_include_directories(sonora_test_vst3_bridged SYSTEM PRIVATE ${VST3SDK_INCLUDE_DIR})
+  target_link_libraries(sonora_test_vst3_bridged PRIVATE Threads::Threads)
+  set_target_properties(sonora_test_vst3_bridged PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME sonora-test-bridged
+    LIBRARY_OUTPUT_DIRECTORY ${_bridged}/Contents/${_vst3_arch}
+    CXX_VISIBILITY_PRESET hidden)
+  add_custom_command(TARGET sonora_test_vst3 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_multi}/Contents/${_vst3_arch}
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:sonora_test_vst3>
+            ${_multi}/Contents/${_vst3_arch}/sonora-test-multiplatform.so)
+  add_dependencies(plugin_driver sonora_test_vst3_bridged)
+
+  add_test(NAME plugin_host_yabridge_list_bundles
+           COMMAND ${_host} --list --json --bundles-only --format vst3 --bundle ${_bridged} --bundle ${_multi})
+  set_tests_properties(plugin_host_yabridge_list_bundles PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"bundle\":\"[^\"]*/sonora-test-bridged.vst3\",\"format\":\"vst3\",\"bridge\":\"yabridge\"}"
+    FAIL_REGULAR_EXPRESSION "sonora-test-multiplatform.vst3\",\"format\":\"vst3\",\"bridge\"")
+  add_test(NAME plugin_host_yabridge_list
+           COMMAND ${_host} --list --json --format vst3 --bundle ${_bridged} --bundle ${_multi})
+  set_tests_properties(plugin_host_yabridge_list PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"uri\":\"vst3:534F4E4F524156535433544553540007\",[^\n]*\"bundle\":\"[^\"]*/sonora-test-bridged.vst3\",\"bridge\":\"yabridge\",\"ports\""
+    FAIL_REGULAR_EXPRESSION "sonora-test-multiplatform.vst3\",\"bridge\"")
+  # Found through a moduleinfo.json that names it only in COM byte order.
+  add_test(NAME plugin_host_yabridge_probe_com_order
+           COMMAND ${_host} --probe "vst3:534F4E4F524156535433544553540007" --channels 1 --bundle ${_bridged})
+  set_tests_properties(plugin_host_yabridge_probe_com_order PROPERTIES PASS_REGULAR_EXPRESSION
+    "\"bundle\":\"[^\"]*/sonora-test-bridged.vst3\"[^\n]*\"ok\":true")
+  set_tests_properties(plugin_host_yabridge_list_bundles plugin_host_yabridge_list
+    plugin_host_yabridge_probe_com_order PROPERTIES LABELS plugins)
+
+  # The real bridge: a Windows build of the test plugin through Wine and
+  # yabridge (tools/Dockerfile.yabridge). Skipped (77) where Wine, yabridge
+  # or mingw-w64 is missing, which is CI's plugins image today.
+  find_program(SONORA_MINGW_CXX NAMES x86_64-w64-mingw32-g++-posix)
+  # One class per Windows bundle (the test plugin's SONORA_TEST_VST3_ONLY_KIND):
+  # the State pass-through (kind 9) and the Liar (kind 4).
+  set(_win_dir "")
+  if(SONORA_MINGW_CXX)
+    set(_win_dir ${CMAKE_BINARY_DIR}/vst3-win)
+    set(_win_dlls "")
+    foreach(_pair "state;9" "liar;4")
+      list(GET _pair 0 _name)
+      list(GET _pair 1 _kind)
+      set(_dll ${_win_dir}/sonora-test-${_name}.vst3/Contents/x86_64-win/sonora-test-${_name}.vst3)
+      get_filename_component(_dll_dir ${_dll} DIRECTORY)
+      add_custom_command(OUTPUT ${_dll}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_dll_dir}
+        COMMAND ${SONORA_MINGW_CXX} -std=c++17 -O2 -shared -static -DSONORA_TEST_VST3_ONLY_KIND=${_kind}
+                -isystem ${VST3SDK_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vst3/sonora_test_vst3.cpp
+                -o ${_dll}
+        DEPENDS tests/vst3/sonora_test_vst3.cpp
+        COMMENT "Building the Windows test VST3 sonora-test-${_name} (mingw-w64)")
+      list(APPEND _win_dlls ${_dll})
+    endforeach()
+    add_custom_target(sonora_test_vst3_win ALL DEPENDS ${_win_dlls})
+  endif()
+  add_test(NAME plugin_host_yabridge_wine
+           COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/yabridge_wine.sh $<TARGET_FILE:sonora-plugin-host>
+                   $<TARGET_FILE:plugin_driver> ${SONORA_TEST_VST3})
+  set_tests_properties(plugin_host_yabridge_wine PROPERTIES SKIP_RETURN_CODE 77 LABELS plugins TIMEOUT 900
+    ENVIRONMENT "SONORA_YABRIDGE_TEST_VST3_DIR=${_win_dir}")
+
   add_test(NAME plugin_host_vst3_refusals COMMAND ${_vst3_drive} --scenario refusals --format vst3)
   add_test(NAME plugin_host_vst3_gain_mono COMMAND ${_vst3_drive} --scenario gain
            --chain ${_again} --gain-param 0 --gain-linear 1)

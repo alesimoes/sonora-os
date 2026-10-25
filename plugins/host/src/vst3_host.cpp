@@ -84,6 +84,38 @@ std::string upper(std::string s) {
     return s;
 }
 
+// The same class ID in the other byte order: a COM-style GUID stores its
+// first three fields little-endian, Linux and macOS store them as written.
+// A Windows bundle's moduleinfo.json can carry either, and yabridgectl
+// rewrites only Contents/moduleinfo.json, not the original it links in
+// under Contents/Resources (ADR-0017 Y3). `hex` is 32 upper-case digits.
+std::string other_byte_order(const std::string& hex) {
+    static constexpr int kOrder[16] = {3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+    std::string out(32, '0');
+    for (int i = 0; i < 16; ++i) {
+        out[2 * i] = hex[2 * kOrder[i]];
+        out[2 * i + 1] = hex[2 * kOrder[i] + 1];
+    }
+    return out;
+}
+
+// What a bundle's moduleinfo.json files say, upper-cased and joined: the
+// SDK's place (Contents/Resources) and the one yabridgectl writes
+// (Contents). Empty when the bundle has neither.
+std::string module_info_of(const std::string& bundle) {
+    std::string all;
+    for (const fs::path& p : {fs::path(bundle) / "Contents" / "Resources" / "moduleinfo.json",
+                              fs::path(bundle) / "Contents" / "moduleinfo.json"}) {
+        std::ifstream f(p);
+        if (!f) continue;
+        std::stringstream ss;
+        ss << f.rdbuf();
+        all += upper(ss.str());
+        all += '\n';
+    }
+    return all;
+}
+
 std::string utf8(const Steinberg::char16* s, std::size_t max) {
     std::string out;
     for (std::size_t i = 0; i < max && s[i]; ++i) {
@@ -633,6 +665,25 @@ std::vector<std::string> Vst3World::bundles() const {
     return out;
 }
 
+std::string Vst3World::bridge_of(const std::string& bundle) {
+    std::error_code ec;
+    const fs::path b(bundle);
+    // A bundle may legitimately carry a native Windows build beside the
+    // Linux one (the SDK's multi-platform layout), so the Windows module
+    // alone is not enough: the Linux binary must be yabridge's chainloader,
+    // which names the library it loads (ADR-0017 Y2).
+    if (!fs::exists(b / "Contents" / "x86_64-win", ec) && !fs::exists(b / "Contents" / "x86-win", ec)) return {};
+    std::ifstream f(b / "Contents" / vst3_architecture() / (b.stem().string() + ".so"), std::ios::binary);
+    if (!f) return {};
+    // The chainloader is under 100 KiB; a plugin binary much larger than
+    // the cap is not one, and reading it all would cost the scan.
+    constexpr std::size_t kMaxChainloader = std::size_t{4} << 20;
+    std::string bytes(kMaxChainloader, '\0');
+    f.read(&bytes[0], static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(f.gcount()));
+    return bytes.find("libyabridge-vst3.so") != std::string::npos ? "yabridge" : std::string();
+}
+
 Vst3Module* Vst3World::load(const std::string& bundle, std::string& error) {
     for (auto& m : modules_)
         if (m->bundle == bundle) return m.get();
@@ -714,19 +765,19 @@ Vst3Module* Vst3World::module_for(const std::string& id, int& class_index, Chain
 
     // Bundles whose moduleinfo.json (VST 3.7.5 and later) names the class
     // first, then those without one. A bundle whose moduleinfo.json does not
-    // name it is not loaded: no code of an unrelated plugin runs here.
+    // name it, in either byte order, is not loaded: no code of an unrelated
+    // plugin runs here.
     const std::string hex = want.substr(std::strlen(kPrefix));
+    const std::string swapped = other_byte_order(hex);
     std::vector<std::string> unknown;
     std::string last_error;
     for (const std::string& b : bundles()) {
-        std::ifstream f(fs::path(b) / "Contents" / "Resources" / "moduleinfo.json");
-        if (!f) {
+        const std::string info = module_info_of(b);
+        if (info.empty()) {
             unknown.push_back(b);
             continue;
         }
-        std::stringstream ss;
-        ss << f.rdbuf();
-        if (upper(ss.str()).find(hex) == std::string::npos) continue;
+        if (info.find(hex) == std::string::npos && info.find(swapped) == std::string::npos) continue;
         if (Vst3Module* m = load(b, last_error); m && has(m)) return m;
     }
     for (const std::string& b : unknown)
@@ -793,6 +844,7 @@ public:
             info_.bundle = ec ? module_.bundle : b.lexically_normal().string();
             while (info_.bundle.size() > 1 && info_.bundle.back() == '/') info_.bundle.pop_back();
         }
+        info_.bridge = Vst3World::bridge_of(module_.bundle);
         who_ = info_.name + " <" + info_.uri + ">";
         if (!add_instance(error)) return false;
         open_controller();
