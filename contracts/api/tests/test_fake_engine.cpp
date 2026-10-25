@@ -71,6 +71,20 @@ public:
         static_cast<FakeEngine&>(e).script_plugin_state(insert, sha256, bytes);
         return true;
     }
+    bool leave_orphan_take(EngineControl& e, const std::string& name, const std::string& session,
+                           const std::string& session_id, int take, uint64_t track_id,
+                           uint64_t position, uint64_t frames) override {
+        FakeEngine::RecoveredTake r;
+        r.path = "Audio Files/" + name;
+        r.session = session;
+        r.session_id = session_id;
+        r.take = take;
+        r.track_id = track_id;
+        r.position = position;
+        r.frames = frames;
+        static_cast<FakeEngine&>(e).script_recovered_take(r);
+        return true;
+    }
 
 private:
     uint64_t now_ = 5'000'000'000;

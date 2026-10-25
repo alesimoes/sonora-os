@@ -72,6 +72,7 @@
 #include "sonora/api/wire.h"
 #include "sonora/command.h"
 #include "sonora/model/operations.h"
+#include "sonora/orphan_offer.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/session_commands.h"
 #include "sonora/state_publisher.h"
@@ -482,6 +483,19 @@ private:
     std::string inputs_missing_;
     std::string take_failed_;
     std::string fatal_;
+    // The takes on disk the open session does not name (orphan_offer.h),
+    // offered as one standing RecoveryOffer until placed or left. Found at
+    // every session open; while a take records, once it has closed, so the
+    // take being written is never one of them.
+    OrphanOffer orphans_;
+    std::string recovery_offer_;
+    bool orphan_scan_pending_ = false;
+    void offer_orphans();
+    // A take recording, asked for, or closing: its files are in Audio Files
+    // and no source names them yet.
+    bool takes_in_flight() const;
+    // The offer taken back, with an empty RecoveryOffer, if one stands.
+    void withdraw_orphans();
 
     // The control thread's: clients reassembling a large message, clients
     // waiting for a slot (in arrival order), and bytes handled since the

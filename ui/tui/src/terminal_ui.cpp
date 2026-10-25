@@ -187,6 +187,19 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
             case api::EventKind::Fatal:
                 fatal_ = e.text.empty() ? "the audio backend failed" : e.text;
                 break;
+            case api::EventKind::RecoveryOffer:
+                // Placed from the editor, which shows where each take goes;
+                // here the operator is only told they are waiting.
+                // Said again at every open while they stay unplaced: once.
+                if (!e.text.empty()) {
+                    std::string line = std::to_string(e.frame) +
+                                       " recovered take file(s) are not on the timeline;"
+                                       " the editor offers to place them";
+                    if (std::find(notices_.begin(), notices_.end(), line) == notices_.end()) {
+                        notices_.push_back(std::move(line));
+                    }
+                }
+                break;
         }
     }
     // Model updates are for an editor's replica; this interface draws none.

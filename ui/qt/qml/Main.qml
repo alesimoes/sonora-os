@@ -351,6 +351,106 @@ Rectangle {
         }
     }
 
+    // --- Recovered takes: on disk, not in this session --------------------------
+    // The engine never places them on its own (session-format.md, "Crash
+    // recovery"): the operator answers, and until then the offer stays. A
+    // click outside does not close it; leaving them keeps the files, and
+    // the next open offers them again.
+    MouseArea {
+        anchors.fill: parent
+        visible: recoveryPanel.visible
+        z: 11
+    }
+    Rectangle {
+        id: recoveryPanel
+        objectName: "recoveryPanel"
+        visible: root.shell.recoveryOffer.length > 0
+        z: 12
+        anchors.centerIn: parent
+        width: Math.min(720, root.width - 2 * Theme.space6)
+        height: recoveryColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.caution
+
+        Column {
+            id: recoveryColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: root.shell.recoveryCount === 1 ? "Recovered take" : "Recovered takes"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: (root.shell.recoveryCount === 1 ? "One take is" : root.shell.recoveryCount + " take files are") +
+                      " in Audio Files but not in this session: recorded after the last save, or" +
+                      " while the engine stopped. Each header says where it was recorded."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+            }
+            Rectangle {
+                width: parent.width
+                height: offerLines.implicitHeight + 2 * Theme.space2
+                radius: Theme.radiusSmall
+                color: Theme.sunken
+                Column {
+                    id: offerLines
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space2 }
+                    spacing: 2
+                    Repeater {
+                        model: root.shell.recoveryOffer
+                        Text {
+                            objectName: "recoveryLine"
+                            required property string modelData
+                            width: offerLines.width
+                            elide: Text.ElideRight
+                            text: modelData
+                            color: modelData.indexOf("audio pool only") >= 0 ? Theme.textTertiary : Theme.text
+                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                        }
+                    }
+                }
+            }
+            Text {
+                objectName: "recoveryRefusal"
+                visible: root.shell.recoveryRefusal.length > 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.shell.recoveryRefusal
+                color: Theme.caution
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }
+            }
+            Row {
+                spacing: Theme.space2
+                SButton {
+                    objectName: "placeRecovered"
+                    text: "Place on Timeline"
+                    implicitHeight: 28
+                    implicitWidth: 160
+                    active: true
+                    onClicked: root.shell.invoke("session.place_recovered", -1)
+                }
+                SButton {
+                    objectName: "leaveRecovered"
+                    text: "Leave in Audio Files"
+                    implicitHeight: 28
+                    implicitWidth: 160
+                    onClicked: root.shell.invoke("session.leave_recovered", -1)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Placing is one undo step per take."
+                    color: Theme.textTertiary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
+            }
+        }
+    }
+
     // --- the Edit menu ---------------------------------------------------------
     // Every item sends the command its key sends, through the same router, so
     // the menu and the keyboard cannot disagree. An item with nothing to act

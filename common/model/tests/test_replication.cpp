@@ -61,6 +61,8 @@ std::vector<Operation> one_of_each() {
     st.transport.pre_roll = 1;
     st.transport.post_roll = 2;
     st.transport.punch_crossfade = 3;
+    st.session_id = "0e2f9b1c-5d6a-4b7c-8d9e-0f1a2b3c4d5e";
+    st.left_takes = {"Audio Files/Audio 1_02.wav", "Audio Files/Audio 3_01.wav"};
 
     Region r = region(11, 7, 1000, 2000, 50, 2);
     r.gain_db = 2.5f;

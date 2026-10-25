@@ -303,13 +303,19 @@ int test_out_point_ends_the_take() {
     CHECK(!s.follow_punch_out());
     CHECK(s.transport().state() == TransportState::Recording);
     rig.block();
+    CHECK(s.takes_closing());
     CHECK(s.follow_punch_out());
     CHECK(s.transport().state() == TransportState::Rolling);
     CHECK(s.recording_take() == 0);
+    // Punched out, its files stay open until the disk thread hears of it:
+    // still closing, so nothing may take its file for an orphan (PR #132
+    // review).
+    CHECK(s.takes_closing());
     CHECK(!s.follow_punch_out());
     rig.block();
     s.disk().drain_once();
     std::vector<Session::ClosedTake> closed = s.closed_takes();
+    CHECK(!s.takes_closing());
     CHECK(closed.size() == 1 && closed[0].take == take && closed[0].punched);
     CHECK(closed[0].files.size() == 1);
     CHECK(closed[0].files[0].frames == r.capture_to - r.capture_from);
@@ -870,6 +876,18 @@ int test_take_describes_itself() {
     CHECK(w.description() == head + punch + " session=Song");
 
     s.closed_takes();
+    // With the document's session id, the id goes before the name.
+    s.set_session_id("9b2e4c6a-1d3f-4a5b-8c7d-0e1f2a3b4c5d");
+    const int with_id = s.next_free_take();
+    s.play();
+    CHECK(s.start_recording(with_id, &error));
+    rig.block();
+    CHECK(s.stop(&error));
+    CHECK(w.open(rig.file(1, with_id), error));
+    CHECK(w.description() == "sonora take=" + std::to_string(with_id) +
+                                 " track=42 id=9b2e4c6a-1d3f-4a5b-8c7d-0e1f2a3b4c5d session=Song");
+    s.closed_takes();
+    s.set_session_id("");
     s.set_session_name("Demo punch=0-48000");
     s.play();
     const int whole = s.next_free_take();
@@ -908,6 +926,56 @@ int test_session_name_is_the_rest_of_the_field() {
     return 0;
 }
 
+// What recovery reads a take's header back as (session-format.md, "Crash
+// recovery"): every field take_description() writes, the name last and
+// whole, and nothing from a field the name only looks like. A field that
+// is not take_description()'s refuses the whole Description.
+int test_description_reads_back() {
+    PunchRange r;
+    r.monitor_in = 96000;
+    r.monitor_out = 144000;
+    sonora::TakeDescription d;
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(3, 42, "Song", &r), d));
+    CHECK(d.take == 3 && d.track_id == 42 && d.punched && !d.looped);
+    CHECK(d.from == 96000 && d.to == 144000 && d.session == "Song");
+
+    sonora::LoopRange l;
+    l.from = 48000;
+    l.to = 96000;
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(4, 0, "Demo punch=0-48000", nullptr, &l), d));
+    CHECK(d.take == 4 && d.track_id == 0 && d.looped && !d.punched);
+    CHECK(d.from == 48000 && d.to == 96000 && d.session == "Demo punch=0-48000");
+
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(5, 7, "Demo punch=0-48000 track=9", nullptr), d));
+    CHECK(d.take == 5 && d.track_id == 7 && !d.punched && !d.looped);
+    CHECK(d.session == "Demo punch=0-48000 track=9");
+
+    // The session id, a word before the name; none, and the name is all.
+    const std::string id = "9b2e4c6a-1d3f-4a5b-8c7d-0e1f2a3b4c5d";
+    CHECK(sonora::take_description(6, 7, "Untitled", &r, nullptr, id) ==
+          "sonora take=6 track=7 punch=96000-144000 id=" + id + " session=Untitled");
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(6, 7, "Demo id=1", &r, nullptr, id), d));
+    CHECK(d.take == 6 && d.punched && d.session_id == id && d.session == "Demo id=1");
+    CHECK(sonora::parse_take_description(sonora::take_description(6, 7, "Demo id=1", nullptr), d));
+    CHECK(d.session_id.empty() && d.session == "Demo id=1");
+
+    for (const char* bad : {"sonora take=1 id= session=Song", "sonora take=1 id=Z session=Song",
+                            "sonora take=1 id=a id=b session=Song",
+                            "", "Recorded by another DAW", "sonora session=Song",
+                            "sonora take=0 session=Song", "sonora take=x session=Song",
+                            "sonora take=1 punch=9-3 session=Song",
+                            "sonora take=1 punch=3 session=Song",
+                            "sonora take=1 punch=1-2 loop=1-2 session=Song",
+                            "sonora take=1 track=", "sonora take=1 track=2"}) {
+        CHECK(!sonora::parse_take_description(bad, d));
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     struct Test {
         const char* name;
@@ -931,6 +999,7 @@ int main(int argc, char** argv) {
         {"concurrent_punches", test_concurrent_punches},
         {"take_describes_itself", test_take_describes_itself},
         {"session_name_is_the_rest", test_session_name_is_the_rest_of_the_field},
+        {"description_reads_back", test_description_reads_back},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

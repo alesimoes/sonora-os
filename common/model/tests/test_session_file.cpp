@@ -134,12 +134,26 @@ std::string as_v6(const std::string& v5) {
     return edit(v5, "\"sonora_session\": 5,", "\"sonora_session\": 6,");
 }
 
+// What v6 -> v7 makes of a file: the version, no session id and no take
+// left, last.
+std::string as_v7(const std::string& v6) {
+    std::string s = edit(v6, "\"sonora_session\": 6,", "\"sonora_session\": 7,");
+    const std::string end = "\n  ]\n}\n";
+    if (s.size() < end.size() || s.compare(s.size() - end.size(), end.size(), end) != 0) {
+        return "<bad edit>";
+    }
+    s.resize(s.size() - end.size());
+    return s + "\n  ],\n  \"session_id\": \"\",\n  \"left_takes\": []\n}\n";
+}
+
 // A version 4 file with no MIDI region, as this build saves it.
-std::string as_current(const std::string& v4) { return as_v6(as_v5(v4)); }
+std::string as_current(const std::string& v4) { return as_v7(as_v6(as_v5(v4))); }
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v6-midi.sonora";
+constexpr const char* kCurrent = "v7-session-id.sonora";
+// The version 6 fixture: the same session with no id and no take left.
+constexpr const char* kNoSessionId = "v6-midi.sonora";
 // The version 5 fixture, the same session with its MIDI inline: what the
 // inline reader still reads, and the source of the v5 -> v6 migration.
 constexpr const char* kInlineMidi = "v5-midi.sonora";
@@ -154,7 +168,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 6);
+    CHECK(l.file_version == 7);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.
@@ -165,8 +179,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v6-midi.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v6-midi.out.sonora\n");
+        std::ofstream("v7-session-id.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v7-session-id.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -366,11 +380,12 @@ int test_v5_migrates() {
     CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
     CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
     Loaded current;
-    CHECK(load(read_fixture(kCurrent), current, e));
+    const std::string v7 = as_v7(read_fixture(kNoSessionId));
+    CHECK(load(v7, current, e));
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == read_fixture(kCurrent));
+    CHECK(out == v7);
     SequenceDigests digests;
     const std::vector<NamedSequence> named = named_sequences(l.snapshot, digests);
     CHECK(named.size() == 3);
@@ -378,7 +393,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 6);
+    CHECK(file_format_version(out, version) && version == 7);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -459,8 +474,10 @@ int test_session_bundle() {
     CHECK(back.missing_sequences.empty() && back.verified_sequences.size() == 3);
     CHECK(same_document(back.snapshot, l.snapshot));
     // A bare session file is a bundle with no sequence files.
+    Loaded no_id;
+    CHECK(load(read_fixture(kNoSessionId), no_id, e));
     CHECK(decode_session_bundle(read_fixture(kInlineMidi), back, e));
-    CHECK(same_document(back.snapshot, l.snapshot));
+    CHECK(same_document(back.snapshot, no_id.snapshot));
     // Cut anywhere, it is refused, or opens with a sequence missing; it is
     // never read past its end.
     for (std::size_t n : {std::size_t{4}, std::size_t{12}, bundle.size() / 2, bundle.size() - 1}) {
@@ -520,7 +537,7 @@ int test_v1_migrates() {
     CHECK(out == expected);
     std::int64_t version = 0;
     CHECK(file_format_version(v1, version) && version == 1);
-    CHECK(file_format_version(out, version) && version == 6);
+    CHECK(file_format_version(out, version) && version == kFormatVersion);
     CHECK(!file_format_version("{\"keymap\": 1}", version));
     CHECK(!file_format_version("not json", version));
 
@@ -661,7 +678,7 @@ int test_v3_tempo_brought_inside_bounds() {
     CHECK(save(l, out));
     Loaded again;
     CHECK(load(out, again, e));
-    CHECK(again.file_version == 6 && again.repairs.empty());
+    CHECK(again.file_version == kFormatVersion && again.repairs.empty());
     CHECK(again.snapshot.settings.tempo == t);
     return 0;
 }
@@ -758,22 +775,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 7,"),
-                  "format version 7, newer than this program, which reads up to version 6",
+    CHECK(refused(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 8,"),
+                  "format version 8, newer than this program, which reads up to version 7",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 8,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 9,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 6,",
+    CHECK(refused(edit(text, "\"sonora_session\": 7,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 6,", "\"sonora_session\": 6.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 7.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -786,8 +803,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 6,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 6,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 7,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 7,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -1046,6 +1063,57 @@ int test_fade_into_crossfade_is_repaired_at_load() {
     return 0;
 }
 
+// Version 7: the session's id and the takes the operator left. A version
+// 6 session opens with neither and its first save writes both keys, empty;
+// a version 6 file cannot carry them. The fixture's id and left takes come
+// back as they are, and a malformed id or list is refused by key path.
+int test_v6_migrates_and_session_id() {
+    const std::string v6 = read_fixture(kNoSessionId);
+    CHECK(!v6.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v6, l, e));
+    CHECK(l.file_version == 6 && l.repairs.empty());
+    CHECK(l.snapshot.settings.session_id.empty() && l.snapshot.settings.left_takes.empty());
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == as_v7(v6));
+    const std::string last = "\n  ]\n}\n";
+    CHECK(refused(v6.substr(0, v6.size() - last.size()) + "\n  ],\n  \"session_id\": \"\"\n}\n",
+                  "migrating from format version 6: the file has \"session_id\"", nullptr));
+
+    const std::string text = read_fixture(kCurrent);
+    Loaded c;
+    CHECK(load(text, c, e));
+    CHECK(c.snapshot.settings.session_id == "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b");
+    CHECK(c.snapshot.settings.left_takes ==
+          (std::vector<std::string>{"Audio Files/Audio 1_07.wav", "Audio Files/Audio 2_03.wav"}));
+    const std::string id = "\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\"";
+    CHECK(refused(edit(text, id, "\"Not An Id\""), "must be empty or up to 64", "session_id",
+                  line_of(text, "\"session_id\"")));
+    CHECK(refused(edit(text, id, "7"), "must be a string", "session_id"));
+    const std::string left = "[\"Audio Files/Audio 1_07.wav\", \"Audio Files/Audio 2_03.wav\"]";
+    CHECK(refused(edit(text, left, "[\"Audio Files/Audio 2_03.wav\", \"Audio Files/Audio 1_07.wav\"]"),
+                  "must be sorted", "left_takes[1]"));
+    CHECK(refused(edit(text, left, "[\"Audio Files/Audio 1_07.wav\", \"Audio Files/Audio 1_07.wav\"]"),
+                  "must be sorted", "left_takes[1]"));
+    CHECK(refused(edit(text, left, "[\"/tmp/Audio 1_07.wav\"]"), "is absolute", "left_takes[0]"));
+    CHECK(refused(edit(text, left, "[7]"), "must be a string", "left_takes[0]"));
+    Loaded none_left;
+    CHECK(load(edit(text, left, "[]"), none_left, e));
+    CHECK(none_left.snapshot.settings.left_takes.empty());
+
+    // Fresh ids: version 4 UUIDs, and two are never the same.
+    const std::string a = new_session_id();
+    const std::string b = new_session_id();
+    CHECK(a.size() == 36 && a[8] == '-' && a[13] == '-' && a[14] == '4' && a[18] == '-' &&
+          a[23] == '-');
+    CHECK(valid_session_id(a) && a != b);
+    CHECK(valid_session_id("") && !valid_session_id("A") && !valid_session_id("a b") &&
+          !valid_session_id(std::string(65, 'a')));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1070,6 +1138,7 @@ int main() {
     t(test_malformed_midi);
     t(test_malformed_sequence_refs);
     t(test_v5_migrates);
+    t(test_v6_migrates_and_session_id);
     t(test_missing_sequence_opens);
     t(test_session_bundle);
     t(test_comma_locale);

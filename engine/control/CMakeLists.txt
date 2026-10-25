@@ -10,6 +10,7 @@ add_library(sonora_control STATIC
   src/plan_builder.cpp
   src/playback_controller.cpp
   src/closed_take.cpp
+  src/orphan_offer.cpp
   src/plugin_hosting.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
@@ -147,3 +148,9 @@ add_test(NAME playback_loopback COMMAND test_playback_loopback)
 # the tests so it cannot rot, never run by ctest.
 add_executable(measure_playback tests/measure_playback.cpp)
 target_link_libraries(measure_playback PRIVATE sonora_control sonora_backend_fake)
+
+# Takes on disk the open session does not name: what is offered, and how
+# placing it goes in (session-format.md, "Crash recovery").
+add_executable(test_orphan_offer tests/test_orphan_offer.cpp)
+target_link_libraries(test_orphan_offer PRIVATE sonora_control)
+add_test(NAME orphan_offer COMMAND test_orphan_offer)

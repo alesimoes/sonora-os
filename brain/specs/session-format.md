@@ -112,7 +112,9 @@ writes, does not matter at this size (see "Size").
   "sources": [ ... ],
   "midi_sources": [ ... ],
   "tracks": [ ... ],
-  "markers": [ ... ]
+  "markers": [ ... ],
+  "session_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+  "left_takes": ["Audio Files/Audio 1_07.wav"]
 }
 ```
 
@@ -127,6 +129,8 @@ space as `sources` ([`midi.md`](midi.md) §4.2).
 | `name` | string | Display name. The file name is the folder's business. |
 | `sample_rate` | integer | Session rate. Every source must match it. A backend at another rate is a start-up failure (ADR-0003), not a resample. |
 | `audio_format` | `"int24"` \| `"float32"` | Format of new recordings. Existing sources keep their own. |
+| `session_id` | string | Version 7. Which session this is: 128 random bits as a lowercase version 4 UUID (`new_session_id()`), made when the document is made (the engine's new document) and kept by every save. Every take's `Description` carries it, so a take is told from another session's of the same name: two unsaved sessions are both "Untitled". A copy saved as a new session (Save As, when it exists) gets a new one. Empty, or up to 64 of `0-9`, `a-f`, `-`. Empty only for a session saved before version 7, until its first save in this version gives it one. |
+| `left_takes` | array of strings | Version 7. Take files in `Audio Files/` the operator left unplaced when they were offered for recovery ("Crash recovery"), as session-relative paths: never offered again. Sorted, no repeats, at most 4,096. A setting, so outside edit undo, as the rest of the settings are; saved with the session. |
 
 ### `timecode`: where sample 0 of the timeline sits in the day
 
@@ -486,7 +490,7 @@ mapping.
 | `TimeReference` | `timecode.origin` + the timeline position of the file's **first frame**, after latency compensation: `origin + P0 − L`, where `P0` is the playhead when capture of this file began and `L` the round-trip latency. The default origin of 01:00:00:00 keeps this positive. |
 | `Version` | 1 once `umid` is written; 0 until then, as today. |
 | `UMID` | The source's `umid`. |
-| `Description` | `sonora take=<n> track=<id> punch=<A>-<B> session=<name>`. ` punch=<A>-<B>` (timeline samples, relative to `origin`) only for a punch take; a loop take says ` loop=<A>-<B>` in its place (ADR-0016 §4), so a take killed mid-loop says it was one, and `loop_of_description()` reads it back from before `session=`. ` track=<id>` is left out when the engine has no document for the track: an engine track's position is not a track id. `session=` is always last and its value is the **rest of the field**: a session name may hold spaces and `=`, so a reader takes the fields before it one word at a time and everything after `session=` as the name; "Demo punch=0-48000" is a name, not a punch. The name is the document's (`settings.name`). Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. At most 255 bytes, so the field keeps its NUL: a name that does not fit is cut on a UTF-8 character boundary. Built: `take_description()` in `engine/core`. |
+| `Description` | `sonora take=<n> track=<id> punch=<A>-<B> id=<session_id> session=<name>`. ` id=<session_id>` (version 7) is the document's `session_id`, left out when that is empty; it, not the name, says which session a take is of. ` punch=<A>-<B>` (timeline samples, relative to `origin`) only for a punch take; a loop take says ` loop=<A>-<B>` in its place (ADR-0016 §4), so a take killed mid-loop says it was one, and `loop_of_description()` reads it back from before `session=`. ` track=<id>` is left out when the engine has no document for the track: an engine track's position is not a track id. `session=` is always last and its value is the **rest of the field**: a session name may hold spaces and `=`, so a reader takes the fields before it one word at a time and everything after `session=` as the name; "Demo punch=0-48000" is a name, not a punch. The name is the document's (`settings.name`). Machine-readable, and harmless in another DAW's browser. Written when the file is opened, since the punch range is set before the pass. At most 255 bytes, so the field keeps its NUL: a name that does not fit is cut on a UTF-8 character boundary. Built: `take_description()` in `engine/core`. |
 | `Originator` | `Sonora Engine`, as today. |
 | `OriginationDate/Time` | Wall clock when the take began. |
 
@@ -618,7 +622,27 @@ provides them:
 - **Takes are self-describing** (BWF mapping above). At open, any file in
   `Audio Files/` that no source references is an orphan. Orphans are listed
   and offered for recovery, using `TimeReference` and `Description` to place
-  them. They are never deleted.
+  them. They are never deleted. Built (`engine/control` `orphan_offer.h`):
+  at every open, and at engine start, the engine lists the takes in its
+  `Audio Files/` that no source names and `left_takes` does not list,
+  written by this engine (`parse_take_description()` reads the field back)
+  for this session, at its rate, with audio in them. One engine folder
+  holds every session's takes, and another session's take is not this
+  one's orphan: a take is this session's when its `Description` carries
+  the document's `session_id` (`take_is_of_session()`). A take written
+  before session ids carries none, and is this session's when it names
+  the document's name, except "Untitled", the name every new session has.
+  A take that is recording, or punched out and not yet closed and placed,
+  when a session opens is never one: the scan waits until no take is in
+  flight (`Session::takes_closing()`). The offer is one standing
+  `RecoveryOffer` event (protocol 13), a line per take saying where it
+  would go; the interface shows it until the operator sends
+  `session.place_recovered` (each take placed through `add_closed_take()`,
+  one undo step labelled "Place Recovered Takes") or
+  `session.leave_recovered`, which adds the offered takes to `left_takes`
+  so no later open of the session offers them again. Placement
+  uses the TimeReference as the timeline position, as a closed take's does,
+  until the origin term above lands.
 - **A take whose header was never finalised** gets its length from the
   file size, in whole frames. That is the one write to a closed file the
   format allows. Built (`common/audiofile` `recover_take()`): the engine
@@ -693,8 +717,8 @@ provides them:
   when there is no list, the only L recorded so far): the first wrap at
   file frame B - TimeReference + L, each later one B - A after the one
   before, and the offer says those passes were placed by loop length. That
-  is exact only if the take had no capture overrun. The offer itself is
-  `engine.record.orphan_offer`'s; it places a loop take as its passes on
+  is exact only if the take had no capture overrun. The offer
+  (`engine.record.orphan_offer`, built) places a loop take as its passes on
   new playlists, never as one region.
 
 What is lost in a power cut: edits since the last autosave, the undo
@@ -794,6 +818,14 @@ lists with a reference (`midi.md` §4.4); the open says so once, and the
 version 5 file is kept as the pre-migration backup. Nothing else changes.
 The frozen v5 fixture loads through it and saves as `v6-midi.sonora` and
 its three files in `fixtures/MIDI Sequences/`, byte for byte.
+
+**v6→v7 (session identity, PR #132 review):** the top level gains
+`"session_id": ""` and `"left_takes": []`. Nothing else changes. A version
+6 file cannot carry either key. The session's first save in version 7
+gives it an id, which the document takes once the file is written, as it
+takes the folder's name; its takes from before carry no id and are matched
+by name. The frozen v6 fixture loads through it; v7's is
+`v7-session-id.sonora`, with an id and two left takes.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

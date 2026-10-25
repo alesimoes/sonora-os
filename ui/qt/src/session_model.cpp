@@ -782,6 +782,12 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
         }
         file = session_file_path(sessions_dir_, name);
     }
+    // A session saved before format 7 has no id: this save gives it one,
+    // and the document takes it once the file is written, as with the name.
+    if (to_write.settings.session_id.empty()) {
+        to_write.settings.session_id = model::new_session_id();
+        rename = true;
+    }
 
     // Canonical bytes (session_file.h): the same content is the same bytes,
     // so a save that would write what the file already holds writes nothing
@@ -867,10 +873,15 @@ bool SessionModel::finishSave(bool ok, const std::string& message, Written w, st
     file_ = w.file;
     // An edit made while the engine wrote is not in the file.
     const bool edited_since = doc_.revision() != w.revision;
-    // The file is on disk under the new name; the document follows it. A
-    // refusal here would be a model bug, and the file already says the name.
+    // The file is on disk under the new name and id; the document follows
+    // it. Only those two: any other setting changed while the engine wrote
+    // stays as it is now. A refusal here would be a model bug, and the file
+    // already says the name.
     std::string rename_why;
-    if (w.rename && !doc_.submit(model::SetSettings{w.settings}, rename_why)) {
+    model::SetSettings named{ctl_.snapshot().settings};
+    named.settings.name = w.settings.name;
+    named.settings.session_id = w.settings.session_id;
+    if (w.rename && !doc_.submit(named, rename_why)) {
         caution = caution.empty() ? "the window keeps the old name: " + rename_why
                                   : caution + "; the window keeps the old name: " + rename_why;
     }

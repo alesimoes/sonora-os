@@ -77,6 +77,7 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
             case api::EventKind::Fatal: o.kind = EngineEventKind::Fatal; break;
             // Shown on its insert slot, by id; an empty text clears it.
             case api::EventKind::PluginFault: o.kind = EngineEventKind::PluginFault; break;
+            case api::EventKind::RecoveryOffer: o.kind = EngineEventKind::RecoveryOffer; break;
         }
         o.take = e.frame;
         o.insert = e.insert;

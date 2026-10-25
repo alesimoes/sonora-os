@@ -246,6 +246,9 @@ Value settings_value(const SessionSettings& s) {
     tr.set("pre_roll", integer(s.transport.pre_roll));
     tr.set("post_roll", integer(s.transport.post_roll));
     tr.set("punch_crossfade", integer(s.transport.punch_crossfade));
+    v.set("session_id", Value::string(s.session_id));
+    Value& left = v.set("left_takes", Value::array());
+    for (const std::string& path : s.left_takes) left.push(Value::string(path));
     return v;
 }
 
@@ -895,7 +898,7 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
     const Value& v = *obj.find("settings");
     const std::string p = "settings";
     if (!rd.keys(v, p, {"name", "sample_rate", "audio_format", "timecode", "tempo",
-                        "transport"})) {
+                        "transport", "session_id", "left_takes"})) {
         return false;
     }
     std::int64_t rate = 0;
@@ -937,6 +940,19 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
     }
     s.transport.loop = loop;
     s.transport.punch = punch;
+    const Value* left = nullptr;
+    if (!rd.text(v, p, "session_id", s.session_id) || !rd.array(v, p, "left_takes", left)) {
+        return false;
+    }
+    if (left->items().size() > kMaxLeftTakes) {
+        return rd.fail(p + ".left_takes", "holds more than " + std::to_string(kMaxLeftTakes) +
+                                              " files");
+    }
+    s.left_takes.clear();
+    for (const Value& e : left->items()) {
+        if (!e.is_string()) return rd.fail(p + ".left_takes", "must hold strings");
+        s.left_takes.push_back(e.text());
+    }
     return true;
 }
 

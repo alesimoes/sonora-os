@@ -133,19 +133,39 @@ struct LoopRange {
 };
 
 // A take file's bext Description (session-format.md, "BWF metadata, both
-// ways"): "sonora take=<n> track=<id> punch=<A>-<B> session=<name>", with
-// " track=<id>" left out when `track_id` is 0 and " punch=<A>-<B>", the
-// monitored range, only for a punch. A loop take says " loop=<A>-<B>" in
+// ways"): "sonora take=<n> track=<id> punch=<A>-<B> id=<session id>
+// session=<name>", with " track=<id>" left out when `track_id` is 0,
+// " punch=<A>-<B>", the monitored range, only for a punch, and " id=..."
+// only when `session_id` is not empty. A loop take says " loop=<A>-<B>" in
 // its place (ADR-0016 §4). The name is last and is the rest of
 // the field, because a name may hold spaces and "=": "Demo punch=0-48000"
 // must not read as a punch. At most 255 bytes, so the field keeps its NUL;
 // a name that does not fit is cut on a UTF-8 character boundary.
 std::string take_description(int take, uint64_t track_id, const std::string& session,
-                             const PunchRange* punch, const LoopRange* loop = nullptr);
+                             const PunchRange* punch, const LoopRange* loop = nullptr,
+                             const std::string& session_id = {});
 // The loop range a Description written by take_description() gives, read
 // from before its " session=", so a session name cannot fake one. False
 // when it is not a loop take's.
 bool loop_of_description(const std::string& description, uint64_t& from, uint64_t& to);
+
+// Everything a Description written by take_description() says: what places
+// a take recovery finds unplaced (session-format.md, "Crash recovery").
+struct TakeDescription {
+    int take = 0;
+    uint64_t track_id = 0;   // 0 when the field is left out
+    bool punched = false;
+    bool looped = false;
+    uint64_t from = 0;       // the punch or loop range [from, to)
+    uint64_t to = 0;
+    std::string session_id;  // empty for a take written before session ids
+    std::string session;
+};
+// Fields are read from before " session=", one word at a time, and the
+// name is the rest. False, `out` unspecified, for anything
+// take_description() could not have written: another program's text, a
+// field it does not write, an empty range, both a punch and a loop.
+bool parse_take_description(const std::string& description, TakeDescription& out);
 
 struct SessionConfig {
     std::string name = "Untitled";
@@ -296,6 +316,10 @@ public:
     std::vector<ClosedTake> closed_takes();
     // The take being recorded, as the control thread last set it; 0 if none.
     int recording_take() const { return recording_take_; }
+    // Whether any take's files are still open or not yet collected by
+    // closed_takes(): the running take, and one punched out or started
+    // over whose close the disk thread has not reported. Control thread.
+    bool takes_closing() const { return !closing_.empty(); }
     // Whether that take was started by start_loop(). Control thread.
     bool loop_take_running() const { return recording_take_ != 0 && loop_running_; }
     // Empty, or which file of the newest take failed and why, in the words
@@ -419,6 +443,10 @@ public:
     // set, then the document's (PlaybackController::show()). Control thread.
     const std::string& session_name() const { return session_name_; }
     void set_session_name(std::string name) { session_name_ = std::move(name); }
+    // The document's session id, which each take's Description carries
+    // from the next take on. Control thread.
+    const std::string& session_id() const { return session_id_; }
+    void set_session_id(std::string id) { session_id_ = std::move(id); }
     DiskThread& disk() { return *disk_; }
     // The plan exchange and the disk reader, for engine/control's publisher.
     PlanExchange& plans() { return *plans_; }
@@ -566,6 +594,7 @@ private:
 
     SessionConfig cfg_;
     std::string session_name_;
+    std::string session_id_;
     std::unique_ptr<Transport> transport_;
     std::vector<std::unique_ptr<Track>> tracks_;
     std::unique_ptr<RingBuffer<CaptureBoundary>> boundaries_;

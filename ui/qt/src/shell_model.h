@@ -71,6 +71,13 @@ class ShellModel : public QObject {
     // the take stopped writing, why no input is connected. Empty when
     // nothing is wrong.
     Q_PROPERTY(QString alertText READ alertText NOTIFY alertChanged)
+    // Takes on disk the open session does not name, as the engine offers
+    // them (api::EventKind::RecoveryOffer): one line per take, saying where
+    // it would go. Empty when none is offered. Held until the operator
+    // places or leaves them; a refusal of either stays under it.
+    Q_PROPERTY(QStringList recoveryOffer READ recoveryOffer NOTIFY recoveryChanged)
+    Q_PROPERTY(int recoveryCount READ recoveryCount NOTIFY recoveryChanged)
+    Q_PROPERTY(QString recoveryRefusal READ recoveryRefusal NOTIFY recoveryChanged)
     Q_PROPERTY(QStringList helpEntries READ helpEntries NOTIFY keymapChanged)
     Q_PROPERTY(QString renderPath READ renderPath NOTIFY renderPathChanged)
     Q_PROPERTY(bool softwareRendering READ softwareRendering NOTIFY renderPathChanged)
@@ -157,6 +164,12 @@ public:
     QString statusText() const { return status_; }
     QStringList notices() const { return notices_; }
     QString alertText() const { return alert_text_; }
+    QStringList recoveryOffer() const { return recovery_offer_; }
+    int recoveryCount() const { return recovery_count_; }
+    QString recoveryRefusal() const { return recovery_refusal_; }
+    // What a RecoveryOffer event does: the screenshot scene's way in, as
+    // the demo's engine has no takes on disk.
+    void showRecoveryOffer(const QString& text, int count);
     QStringList helpEntries() const;
     QVariantList profiles() const;
     bool commandsFocus() const { return router_.commandsFocus(); }
@@ -213,6 +226,7 @@ signals:
     void statusChanged();
     void noticesChanged();
     void alertChanged();
+    void recoveryChanged();
     void renderPathChanged();
     void keymapChanged();
 
@@ -283,6 +297,9 @@ private:
     QString take_failed_;
     QString inputs_missing_;
     QString alert_text_;
+    QStringList recovery_offer_;
+    int recovery_count_ = 0;
+    QString recovery_refusal_;
     QString render_path_ = QStringLiteral("not yet known");
     bool software_ = false;
     bool meters_available_ = true;

@@ -272,6 +272,8 @@ std::string stem(const std::string& path) {
 model::Snapshot engine_document(const Session& session) {
     model::SessionSettings settings;
     settings.name = session.config().name;
+    // A new document is a new session (session-format.md, "Top level").
+    settings.session_id = model::new_session_id();
     settings.sample_rate = session.config().sample_rate;
     settings.audio_format = session.config().format == WavWriter::Format::Float32
                                 ? model::AudioFormat::Float32
@@ -438,7 +440,8 @@ LoopFile loop_file(const model::Snapshot& document, const Session::ClosedTake& t
 }  // namespace
 
 TakeAdded add_closed_take(model::Document& document, const Session& session,
-                          const Session::ClosedTake& take, std::size_t files_per_compound) {
+                          const Session::ClosedTake& take, std::size_t files_per_compound,
+                          const char* step_label) {
     TakeAdded out;
     const std::string dir = session.config().dir;
     const std::string prefix = dir + "/";
@@ -613,7 +616,9 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     // above rise across the parts, so each part's are still fresh.
     const std::size_t per_part =
         std::clamp<std::size_t>(files_per_compound, 1, model::kMaxCompoundMembers / 2);
-    const char* const label = take.looped ? "Loop Record" : "Record";
+    const char* const label = step_label != nullptr ? step_label
+                              : take.looped          ? "Loop Record"
+                                                     : "Record";
     const char* const without_crossfades = take.looped
                                                ? " went in without its crossfades: "
                                                : " was punched in without its crossfades: ";

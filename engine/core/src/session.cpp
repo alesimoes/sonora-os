@@ -88,7 +88,8 @@ int take_of(const std::string& name) {
 }  // namespace
 
 std::string take_description(int take, uint64_t track_id, const std::string& session,
-                             const PunchRange* punch, const LoopRange* loop) {
+                             const PunchRange* punch, const LoopRange* loop,
+                             const std::string& session_id) {
     constexpr std::size_t kMax = 255;
     std::string head = "sonora take=" + std::to_string(take);
     if (track_id != 0) head += " track=" + std::to_string(track_id);
@@ -98,6 +99,7 @@ std::string take_description(int take, uint64_t track_id, const std::string& ses
         head += " punch=" + std::to_string(punch->monitor_in) + "-" +
                 std::to_string(punch->monitor_out);
     }
+    if (!session_id.empty()) head += " id=" + session_id;
     head += " session=";
     const std::size_t room = kMax - std::min(kMax, head.size());
     std::size_t n = std::min(room, session.size());
@@ -135,6 +137,68 @@ bool loop_of_description(const std::string& description, uint64_t& from, uint64_
     if (!number(begin, dash, a) || !number(dash + 1, end, b) || b <= a) return false;
     from = a;
     to = b;
+    return true;
+}
+
+bool parse_take_description(const std::string& description, TakeDescription& out) {
+    const std::string key = " session=";
+    const std::size_t name = description.find(key);
+    if (name == std::string::npos) return false;
+    const std::string head = description.substr(0, name);
+    const auto number = [](const std::string& s, uint64_t& v) {
+        if (s.empty() || s.size() > 19) return false;
+        v = 0;
+        for (const char c : s) {
+            if (c < '0' || c > '9') return false;
+            v = v * 10 + static_cast<uint64_t>(c - '0');
+        }
+        return true;
+    };
+    const auto range = [&number](const std::string& s, uint64_t& a, uint64_t& b) {
+        const std::size_t dash = s.find('-');
+        return dash != std::string::npos && number(s.substr(0, dash), a) &&
+               number(s.substr(dash + 1), b) && b > a;
+    };
+    TakeDescription d;
+    std::size_t at = 0;
+    bool first = true;
+    while (at <= head.size()) {
+        std::size_t end = head.find(' ', at);
+        if (end == std::string::npos) end = head.size();
+        const std::string word = head.substr(at, end - at);
+        at = end + 1;
+        if (first) {
+            if (word != "sonora") return false;
+            first = false;
+            continue;
+        }
+        const std::size_t eq = word.find('=');
+        if (eq == std::string::npos) return false;
+        const std::string k = word.substr(0, eq);
+        const std::string v = word.substr(eq + 1);
+        uint64_t n = 0;
+        if (k == "take") {
+            if (d.take != 0 || !number(v, n) || n == 0 || n > INT32_MAX) return false;
+            d.take = static_cast<int>(n);
+        } else if (k == "track") {
+            if (d.track_id != 0 || !number(v, n) || n == 0) return false;
+            d.track_id = n;
+        } else if (k == "punch" || k == "loop") {
+            if (d.punched || d.looped || !range(v, d.from, d.to)) return false;
+            (k == "punch" ? d.punched : d.looped) = true;
+        } else if (k == "id") {
+            if (!d.session_id.empty() || v.empty() || v.size() > 64) return false;
+            for (const char c : v) {
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == '-')) return false;
+            }
+            d.session_id = v;
+        } else {
+            return false;
+        }
+    }
+    if (d.take == 0) return false;
+    d.session = description.substr(name + key.size());
+    out = std::move(d);
     return true;
 }
 
@@ -492,7 +556,8 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
         } else {
             WavWriter& w = t->writer(slot);
             w.set_description(
-                take_description(take_number, t->document_id(), session_name_, range, loop));
+                take_description(take_number, t->document_id(), session_name_, range, loop,
+                                 session_id_));
             if (!w.open(file, cfg_.sample_rate, t->channels(), cfg_.format, origin)) {
                 err = errno;
             } else if (loop != nullptr &&

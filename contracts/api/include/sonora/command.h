@@ -185,6 +185,14 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // once, so the take is not interrupted by a dialog.
         {"marker.add", CommandTarget::None, "Add a marker, or a selection marker over a range"},
 
+        // --- recovered takes (session-format.md, "Crash recovery") ---
+        // The answers to a RecoveryOffer: what the engine found on disk and
+        // the open session does not name is placed, or left where it is.
+        {"session.place_recovered", CommandTarget::None,
+         "Place the recovered takes where they were recorded"},
+        {"session.leave_recovered", CommandTarget::None,
+         "Leave the recovered takes in Audio Files, off the timeline"},
+
         // --- plugins (ADR-0012 §8) ---
         {"plugin.rescan", CommandTarget::None, "Scan the installed plugins again"},
         // Argument: "<slot> <parent token>", the slot 0..9 (A..J) and the
