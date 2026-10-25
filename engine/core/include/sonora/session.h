@@ -147,6 +147,23 @@ std::string take_description(int take, uint64_t track_id, const std::string& ses
 // when it is not a loop take's.
 bool loop_of_description(const std::string& description, uint64_t& from, uint64_t& to);
 
+// Everything a Description written by take_description() says: what places
+// a take recovery finds unplaced (session-format.md, "Crash recovery").
+struct TakeDescription {
+    int take = 0;
+    uint64_t track_id = 0;   // 0 when the field is left out
+    bool punched = false;
+    bool looped = false;
+    uint64_t from = 0;       // the punch or loop range [from, to)
+    uint64_t to = 0;
+    std::string session;
+};
+// Fields are read from before " session=", one word at a time, and the
+// name is the rest. False, `out` unspecified, for anything
+// take_description() could not have written: another program's text, a
+// field it does not write, an empty range, both a punch and a loop.
+bool parse_take_description(const std::string& description, TakeDescription& out);
+
 struct SessionConfig {
     std::string name = "Untitled";
     std::string dir;                 // session folder; audio goes in <dir>/Audio Files

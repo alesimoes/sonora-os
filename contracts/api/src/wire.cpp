@@ -165,7 +165,7 @@ private:
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Save);
-constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::PluginFault);
+constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::RecoveryOffer);
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
 

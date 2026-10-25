@@ -211,13 +211,15 @@ std::vector<PluginInfo> fake_catalog() {
 
 const std::vector<std::string>& FakeEngine::engine_commands() {
     // engine/control's install_session_commands(), less app.quit, which is
-    // the interface's own (ADR-0007 §5). engine/control's test_control
-    // fails if the two lists differ.
+    // the interface's own (ADR-0007 §5), and the recovery offer's two,
+    // which its server installs. engine/control's test_control fails if
+    // the two lists differ.
     static const std::vector<std::string> ids = {
         "track.arm_all",        "track.disarm_all",         "track.toggle_arm",
         "transport.locate",     "transport.play",           "transport.punch",
         "transport.record",     "transport.return_to_zero", "transport.stop",
-        "transport.toggle_play", "transport.toggle_record",
+        "transport.toggle_play", "transport.toggle_record", "session.place_recovered",
+        "session.leave_recovered",
     };
     return ids;
 }
@@ -318,6 +320,7 @@ bool FakeEngine::connect(std::string& error) {
     if (document_->snapshot(snap, why, wire::kMaxModelBytes)) broadcast(snap);
     apply_mix();
     send_catalog();
+    offer_recovered();
     return true;
 }
 
@@ -760,6 +763,136 @@ uint64_t FakeEngine::submit(const ModelRequest& request) {
     return m.seq;
 }
 
+namespace {
+
+// The track index of `id` in display order; -1 if gone or not audio.
+int audio_track_of(const model::Snapshot& doc, uint64_t id) {
+    const auto& tracks = doc.edit->tracks;
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (tracks[i]->id == id && tracks[i]->kind == model::TrackKind::Audio) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+std::string fake_seconds(uint64_t frames, uint32_t rate) {
+    char text[32];
+    std::snprintf(text, sizeof text, "%.3f s", rate ? static_cast<double>(frames) / rate : 0.0);
+    return text;
+}
+
+}  // namespace
+
+void FakeEngine::offer_recovered() {
+    const model::Snapshot& doc = document_->current();
+    std::set<std::string> named;
+    for (const model::Source& s : doc.sources->sources) named.insert(s.path);
+    offered_.clear();
+    std::string text;
+    for (const RecoveredTake& r : recovered_) {
+        if (r.session != doc.settings.name || named.count(r.path) != 0 || r.frames == 0) continue;
+        offered_.push_back(r);
+        const std::string name = r.path.substr(r.path.rfind('/') + 1);
+        if (!text.empty()) text += "\n";
+        text += name + ": take " + std::to_string(r.take);
+        const int t = audio_track_of(doc, r.track_id);
+        if (t < 0) {
+            text += ", " + fake_seconds(r.frames, cfg_.sample_rate) +
+                    ", into the audio pool only: its track is not in this session";
+        } else {
+            text += " on \"" + doc.edit->tracks[static_cast<std::size_t>(t)]->name + "\" at " +
+                    fake_seconds(r.position, cfg_.sample_rate) + ", " +
+                    fake_seconds(r.frames, cfg_.sample_rate) + " long";
+        }
+    }
+    if (offered_.empty()) return withdraw_recovered();
+    EngineEvent e;
+    e.kind = EventKind::RecoveryOffer;
+    e.frame = offered_.size();
+    e.text = text;
+    offer_standing_ = true;
+    post_event(e);
+}
+
+void FakeEngine::withdraw_recovered() {
+    offered_.clear();
+    if (!offer_standing_) return;
+    offer_standing_ = false;
+    EngineEvent e;
+    e.kind = EventKind::RecoveryOffer;
+    post_event(e);
+}
+
+bool FakeEngine::place_recovered(std::string& why) {
+    if (offered_.empty()) {
+        why = "no recovered takes are waiting to be placed";
+        return false;
+    }
+    if (mode_ == TransportState::Recording) {
+        why = "recovered takes are placed while stopped; stop the take first";
+        return false;
+    }
+    // One step per take, as the engine's add_closed_take() makes them.
+    std::map<int32_t, model::Compound> steps;
+    std::vector<model::Member> pool;
+    model::Id next = document_->current().next_id;
+    for (const RecoveredTake& r : offered_) {
+        const model::Snapshot& doc = document_->current();
+        model::AddSource a;
+        a.source.id = next++;
+        a.source.path = r.path;
+        a.source.channels = r.channels;
+        a.source.length = static_cast<model::Frames>(r.frames);
+        a.source.time_reference = static_cast<int64_t>(r.position);
+        a.source.kind = model::SourceKind::Recorded;
+        a.source.take = r.take;
+        const int t = audio_track_of(doc, r.track_id);
+        if (t < 0 || r.channels < doc.edit->tracks[static_cast<std::size_t>(t)]->channels) {
+            pool.push_back(a);
+            continue;
+        }
+        const model::TrackEdit& track = *doc.edit->tracks[static_cast<std::size_t>(t)];
+        a.source.recorded_on_track = track.id;
+        model::RecordTake rec;
+        rec.track = track.id;
+        rec.playlist = track.active_playlist;
+        rec.region.id = next++;
+        const std::string name = r.path.substr(r.path.rfind('/') + 1);
+        rec.region.name = name.substr(0, name.rfind('.'));
+        rec.region.position = static_cast<model::Frames>(r.position);
+        rec.region.length = static_cast<model::Frames>(r.frames);
+        for (uint16_t c = 0; c < track.channels; ++c) {
+            rec.region.channels.push_back({a.source.id, c});
+        }
+        rec.split_right_id = next++;
+        model::Compound& step = steps[r.take];
+        step.label = "Place Recovered Takes";
+        step.ops.push_back(a);
+        step.ops.push_back(rec);
+    }
+    if (!pool.empty()) {
+        model::Compound c;
+        c.label = "Place Recovered Takes";
+        c.ops = std::move(pool);
+        steps[INT32_MAX] = std::move(c);
+    }
+    for (auto& [take, step] : steps) {
+        model::ReplicationUpdate u;
+        std::string refused;
+        if (document_->apply(model::Operation{std::move(step)}, u, refused)) {
+            broadcast(u);
+        } else {
+            EngineEvent e;
+            e.kind = EventKind::Notice;
+            e.text = "recovered take " + std::to_string(take) + " could not be placed: " + refused;
+            post_event(e);
+        }
+    }
+    withdraw_recovered();
+    return true;
+}
+
 void FakeEngine::post_event(const EngineEvent& event) {
     std::string bytes;
     wire::encode(event, bytes);
@@ -983,6 +1116,9 @@ void FakeEngine::handle(const std::string& bytes) {
             plugin_values_.clear();
             faults_.clear();
             misses_.clear();
+            // The last session's offer is not this one's.
+            withdraw_recovered();
+            offer_recovered();
         }
         if (m.action != ModelAction::Resync) refresh_faults(m.action == ModelAction::Load);
     }
@@ -1035,6 +1171,15 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     };
     const std::string& id = r.command;
+    if (id == "session.place_recovered") return place_recovered(why);
+    if (id == "session.leave_recovered") {
+        if (offered_.empty()) {
+            why = "no recovered takes are waiting to be placed";
+            return false;
+        }
+        withdraw_recovered();
+        return true;
+    }
     if (id == "transport.toggle_record") return recording ? finish() : start();
     if (id == "transport.record") return recording ? true : start();
     if (id == "transport.punch") {

@@ -332,6 +332,60 @@ int main(int argc, char** argv) {
     CHECK(model.alertText() == QStringLiteral("the audio server went away"));
     CHECK(!model.healthText().contains(QStringLiteral("take failed")));
 
+    // --- takes on disk the session does not name: offered, held, answered ---
+    {
+        QQuickItem* panel =
+            view.rootObject()->findChild<QQuickItem*>(QStringLiteral("recoveryPanel"));
+        CHECK(panel != nullptr && !panel->isVisible());
+        EngineEvent offer;
+        offer.kind = EngineEventKind::RecoveryOffer;
+        offer.take = 2;
+        offer.text = "Audio 1_07.wav: take 7 on \"Kick\" at 12.000 s, 1.000 s long\n"
+                     "Audio 9_03.wav: take 3, 6.200 s, into the audio pool only: its track is "
+                     "not in this session";
+        engine.events.push_back(offer);
+        for (int i = 0; i < 4; ++i) model.tick();
+        CHECK(model.recoveryOffer().size() == 2 && model.recoveryCount() == 2);
+        CHECK(panel->isVisible());
+        // Repeater delegates are visual children, not QObject ones.
+        QList<QQuickItem*> lines;
+        for (QList<QQuickItem*> todo{panel}; !todo.isEmpty();) {
+            QQuickItem* item = todo.takeFirst();
+            if (item->objectName() == QStringLiteral("recoveryLine")) lines.push_back(item);
+            todo += item->childItems();
+        }
+        CHECK(lines.size() == 2 &&
+              lines[0]->property("text").toString().startsWith(QStringLiteral("Audio 1_07.wav")));
+
+        // A refusal stays under the offer, not on the status line alone.
+        engine.next_result = DispatchResult::Failed;
+        engine.next_message = "recovered takes are placed while stopped; stop the take first";
+        QQuickItem* place =
+            view.rootObject()->findChild<QQuickItem*>(QStringLiteral("placeRecovered"));
+        CHECK(place != nullptr);
+        engine.sent.clear();
+        QMetaObject::invokeMethod(place, "clicked", Q_ARG(QVariant, QVariant()));
+        CHECK(engine.sent.size() == 1 && engine.sent[0].command == "session.place_recovered");
+        for (int i = 0; i < 4; ++i) model.tick();
+        CHECK(model.recoveryRefusal().contains(QStringLiteral("stop the take first")));
+        CHECK(panel->isVisible());
+
+        engine.next_result = DispatchResult::Ok;
+        engine.next_message.clear();
+        QQuickItem* leave =
+            view.rootObject()->findChild<QQuickItem*>(QStringLiteral("leaveRecovered"));
+        CHECK(leave != nullptr);
+        QMetaObject::invokeMethod(leave, "clicked", Q_ARG(QVariant, QVariant()));
+        CHECK(engine.sent.size() == 2 && engine.sent[1].command == "session.leave_recovered");
+        // Withdrawn by the engine, with an empty offer: the panel goes.
+        EngineEvent withdrawn;
+        withdrawn.kind = EngineEventKind::RecoveryOffer;
+        engine.events.push_back(withdrawn);
+        for (int i = 0; i < 4; ++i) model.tick();
+        CHECK(model.recoveryOffer().isEmpty() && model.recoveryRefusal().isEmpty());
+        CHECK(!panel->isVisible());
+    }
+
     // --- a dead engine: no data, not frozen values ---
     engine.alive = false;
     const int reads = engine.peak_reads;

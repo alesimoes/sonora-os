@@ -908,6 +908,44 @@ int test_session_name_is_the_rest_of_the_field() {
     return 0;
 }
 
+// What recovery reads a take's header back as (session-format.md, "Crash
+// recovery"): every field take_description() writes, the name last and
+// whole, and nothing from a field the name only looks like. A field that
+// is not take_description()'s refuses the whole Description.
+int test_description_reads_back() {
+    PunchRange r;
+    r.monitor_in = 96000;
+    r.monitor_out = 144000;
+    sonora::TakeDescription d;
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(3, 42, "Song", &r), d));
+    CHECK(d.take == 3 && d.track_id == 42 && d.punched && !d.looped);
+    CHECK(d.from == 96000 && d.to == 144000 && d.session == "Song");
+
+    sonora::LoopRange l;
+    l.from = 48000;
+    l.to = 96000;
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(4, 0, "Demo punch=0-48000", nullptr, &l), d));
+    CHECK(d.take == 4 && d.track_id == 0 && d.looped && !d.punched);
+    CHECK(d.from == 48000 && d.to == 96000 && d.session == "Demo punch=0-48000");
+
+    CHECK(sonora::parse_take_description(
+        sonora::take_description(5, 7, "Demo punch=0-48000 track=9", nullptr), d));
+    CHECK(d.take == 5 && d.track_id == 7 && !d.punched && !d.looped);
+    CHECK(d.session == "Demo punch=0-48000 track=9");
+
+    for (const char* bad : {"", "Recorded by another DAW", "sonora session=Song",
+                            "sonora take=0 session=Song", "sonora take=x session=Song",
+                            "sonora take=1 punch=9-3 session=Song",
+                            "sonora take=1 punch=3 session=Song",
+                            "sonora take=1 punch=1-2 loop=1-2 session=Song",
+                            "sonora take=1 track=", "sonora take=1 track=2"}) {
+        CHECK(!sonora::parse_take_description(bad, d));
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     struct Test {
         const char* name;
@@ -931,6 +969,7 @@ int main(int argc, char** argv) {
         {"concurrent_punches", test_concurrent_punches},
         {"take_describes_itself", test_take_describes_itself},
         {"session_name_is_the_rest", test_session_name_is_the_rest_of_the_field},
+        {"description_reads_back", test_description_reads_back},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

@@ -257,6 +257,42 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               return true;
                           }));
     }
+    // Recovered and orphan takes (session-format.md, "Crash recovery"):
+    // placed only when the operator says so, as one undo step per take.
+    registry_.install("session.place_recovered",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (orphans_.takes.empty()) {
+                              why = "no recovered takes are waiting to be placed";
+                              return false;
+                          }
+                          if (session_.recording_take() != 0 || playback_->record_requested()) {
+                              why = "recovered takes are placed while stopped; stop the take first";
+                              return false;
+                          }
+                          const OrphansPlaced placed =
+                              place_orphan_takes(*document_, session_, orphans_);
+                          for (const auto& u : placed.updates) send_update(u);
+                          for (const std::string& notice : placed.notices) {
+                              api::EngineEvent e;
+                              e.kind = api::EventKind::Notice;
+                              e.text = notice;
+                              post_event(e);
+                          }
+                          withdraw_orphans();
+                          if (!placed.updates.empty()) show_document(false);
+                          return true;
+                      }));
+    registry_.install("session.leave_recovered",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (orphans_.takes.empty()) {
+                              why = "no recovered takes are waiting to be placed";
+                              return false;
+                          }
+                          // Left in Audio Files, and offered again at the
+                          // next open: an orphan is never deleted.
+                          withdraw_orphans();
+                          return true;
+                      }));
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
             implemented_.push_back(spec.id);
@@ -269,6 +305,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     show_inserts(true);
     // With no backend (tests), at once; otherwise once the period is known.
     start_hosting();
+    // Standing, so the first interface to attach is offered them.
+    offer_orphans();
 }
 
 EngineControlServer::~EngineControlServer() {
@@ -683,7 +721,37 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
             take_failed_ = event.text.empty() ? std::string() : bytes;
             break;
         case api::EventKind::Fatal: fatal_ = bytes; break;
+        case api::EventKind::RecoveryOffer:
+            recovery_offer_ = event.text.empty() ? std::string() : bytes;
+            break;
     }
+}
+
+void EngineControlServer::offer_orphans() {
+    // The take being written is in the folder and in no source yet.
+    if (session_.recording_take() != 0 || playback_->record_requested()) {
+        orphan_scan_pending_ = true;
+        return;
+    }
+    orphan_scan_pending_ = false;
+    orphans_ = find_orphan_takes(document_->current(), session_.config().dir);
+    if (orphans_.takes.empty()) {
+        withdraw_orphans();
+        return;
+    }
+    api::EngineEvent e;
+    e.kind = api::EventKind::RecoveryOffer;
+    e.frame = orphans_.takes.size();
+    e.text = orphans_.text;
+    post_event(e);
+}
+
+void EngineControlServer::withdraw_orphans() {
+    orphans_ = OrphanOffer{};
+    if (recovery_offer_.empty()) return;
+    api::EngineEvent e;
+    e.kind = api::EventKind::RecoveryOffer;
+    post_event(e);
 }
 
 void EngineControlServer::post_event(const api::EngineEvent& event) {
@@ -788,7 +856,7 @@ void EngineControlServer::greet(ClientId id) {
     send_catalog(client);
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
-    for (const std::string* e : {&inputs_missing_, &take_failed_, &fatal_}) {
+    for (const std::string* e : {&inputs_missing_, &take_failed_, &fatal_, &recovery_offer_}) {
         if (!e->empty()) send_to(client, *e);
     }
 }
@@ -1724,6 +1792,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
             if (m.action == api::ModelAction::Load) {
                 open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
+                // The last session's offer is not this one's.
+                withdraw_orphans();
+                offer_orphans();
             }
             show_document(mix_changed);
             show_inserts(m.action == api::ModelAction::Load);
@@ -1781,6 +1852,8 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
+    // After pump_playback(), which places a take that just closed.
+    if (orphan_scan_pending_) offer_orphans();
 
     // The scan worker's catalog and notices (one try_lock), before the
     // chains read its answers.

@@ -24,6 +24,7 @@
 #include "sonora/api/conformance.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/api/wire.h"
+#include "sonora/closed_take.h"
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
 #include "sonora/model/op_codec.h"
@@ -119,6 +120,19 @@ public:
             for (uint32_t i = 0; i < kTracks; ++i) audio_.unpatch(i);
         }
     }
+    // A take as a crash leaves it: written and closed by this engine's
+    // writer, with its header, and in no source.
+    bool leave_orphan_take(const std::string& name, const std::string& session, int take,
+                           uint64_t track_id, uint64_t position, uint64_t frames) {
+        WavWriter w;
+        w.set_description(take_description(take, track_id, session, nullptr));
+        if (!w.open((dir_ / "Audio Files" / name).string(), 48000, 1, WavWriter::Format::Int24,
+                    position)) {
+            return false;
+        }
+        const std::vector<float> audio(frames, 0.25f);
+        return w.write(audio.data(), audio.size()) && w.close();
+    }
 
 private:
     // The header and a few frames.
@@ -197,6 +211,12 @@ public:
     bool set_inputs_present(api::EngineControl& e, bool present) override {
         static_cast<RealEngine&>(e).set_inputs_present(present);
         return true;
+    }
+    bool leave_orphan_take(api::EngineControl& e, const std::string& name,
+                           const std::string& session, int take, uint64_t track_id,
+                           uint64_t position, uint64_t frames) override {
+        return static_cast<RealEngine&>(e).leave_orphan_take(name, session, take, track_id,
+                                                             position, frames);
     }
 };
 
@@ -404,6 +424,75 @@ void take_failure_reaches_the_interface() {
     const auto all = failures_said();
     CHECK(all.size() == 2 && all[1].text.empty() && all[1].frame == 2);
     CHECK(replied(real.send(stop), DispatchResult::Ok));
+}
+
+// A take left on disk is offered to the first interface to attach, from
+// the start (session-format.md, "Crash recovery"). A session opened while
+// a take records is looked at once the take has closed and gone in: the
+// take being written, its header already checkpointed with audio, is in
+// no source yet and must never be offered.
+void recovery_offer_at_start_and_after_a_take() {
+    const fs::path dir = fresh_dir("orphans");
+    fs::create_directories(dir / "Audio Files");
+    {
+        WavWriter w;
+        w.set_description(take_description(5, 0, "Untitled", nullptr));
+        CHECK(w.open((dir / "Audio Files" / "Audio 3_05.wav").string(), 48000, 1,
+                     WavWriter::Format::Int24, 0));
+        const std::vector<float> audio(4800, 0.25f);
+        CHECK(w.write(audio.data(), audio.size()) && w.close());
+    }
+    RealEngine real(dir, {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto replied = [&](uint64_t seq, DispatchResult want) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == want;
+            }
+            return false;
+        });
+    };
+    const auto offers = [&]() {
+        std::vector<std::string> out;
+        for (const auto& e : in.events) {
+            if (e.kind == api::EventKind::RecoveryOffer) out.push_back(e.text);
+        }
+        return out;
+    };
+    CHECK(until(real, in, [&]() { return !offers().empty(); }));
+    CHECK(offers().size() == 1 &&
+          offers()[0].find("Audio 3_05.wav: take 5, 0.100 s, into the audio pool only") !=
+              std::string::npos);
+
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    CHECK(replied(real.send(arm), DispatchResult::Ok));
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    CHECK(replied(real.send(rec), DispatchResult::Ok));
+    // Past the first checkpoint (SessionConfig::sync_seconds), so the open
+    // take's header counts audio.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    CHECK(model::serialize(engine_document(real.session()), model::WriteInfo{"test", 1}, load.op,
+                           error));
+    CHECK(replied(real.submit(load), DispatchResult::Ok));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    real.poll(in);
+    // Withdrawn at the open, and nothing offered while the take is open.
+    CHECK(offers().size() == 2 && offers()[1].empty());
+
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(replied(real.send(stop), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return offers().size() == 3; }));
+    const auto all = offers();
+    CHECK(all.size() == 3 && all[2].find("Audio 3_05.wav") != std::string::npos &&
+          all[2].find("Audio 1_06") == std::string::npos);
 }
 
 // ADR-0015 §6 on the real engine: a Save while a take is open is said to
@@ -1349,6 +1438,7 @@ int main() {
     resyncs_share_one_snapshot();
     a_sequence_over_a_part_opens_in_parts();
     a_save_during_a_take_follows_a_checkpoint();
+    recovery_offer_at_start_and_after_a_take();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

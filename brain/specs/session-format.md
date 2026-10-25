@@ -618,7 +618,21 @@ provides them:
 - **Takes are self-describing** (BWF mapping above). At open, any file in
   `Audio Files/` that no source references is an orphan. Orphans are listed
   and offered for recovery, using `TimeReference` and `Description` to place
-  them. They are never deleted.
+  them. They are never deleted. Built (`engine/control` `orphan_offer.h`):
+  at every open, and at engine start, the engine lists the takes in its
+  `Audio Files/` that no source names, written by this engine
+  (`parse_take_description()` reads the field back) for a session of the
+  open document's name, at its rate, with audio in them. The name is the
+  filter while one engine folder holds every session's takes: another
+  session's take is not this one's orphan. A take that is recording when a
+  session opens is never one: the scan waits until it has closed and gone
+  in. The offer is one standing `RecoveryOffer` event (protocol 12), a line
+  per take saying where it would go; the interface shows it until the
+  operator sends `session.place_recovered` (each take placed through
+  `add_closed_take()`, one undo step labelled "Place Recovered Takes") or
+  `session.leave_recovered` (offered again at the next open). Placement
+  uses the TimeReference as the timeline position, as a closed take's does,
+  until the origin term above lands.
 - **A take whose header was never finalised** gets its length from the
   file size, in whole frames. That is the one write to a closed file the
   format allows. Built (`common/audiofile` `recover_take()`): the engine
@@ -693,8 +707,8 @@ provides them:
   when there is no list, the only L recorded so far): the first wrap at
   file frame B - TimeReference + L, each later one B - A after the one
   before, and the offer says those passes were placed by loop length. That
-  is exact only if the take had no capture overrun. The offer itself is
-  `engine.record.orphan_offer`'s; it places a loop take as its passes on
+  is exact only if the take had no capture overrun. The offer
+  (`engine.record.orphan_offer`, built) places a loop take as its passes on
   new playlists, never as one region.
 
 What is lost in a power cut: edits since the last autosave, the undo

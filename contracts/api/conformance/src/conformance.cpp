@@ -1663,6 +1663,119 @@ int check_alive(Rig& rig) {
     return C(rig, "heartbeat and engine death").go();
 }
 
+// A take on disk the open session does not name is offered at the open,
+// never placed silently (session-format.md, "Crash recovery"): one
+// RecoveryOffer standing, naming the file; another session's take is not
+// in it. Left, the offer is withdrawn and nothing changes; it comes back
+// at the next open, since the file is never deleted. Placed, the take is on
+// the track its header names, at its TimeReference, as one undo step.
+int check_recovery_offer(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        // The offer a client shows: the latest RecoveryOffer's text.
+        static std::string offer(const Inbox& in) {
+            for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+                if (it->kind == EventKind::RecoveryOffer) return it->text;
+            }
+            return {};
+        }
+
+        bool open_again(Session& s, const model::Snapshot& doc, CommandReply& r) {
+            ModelRequest load;
+            load.action = ModelAction::Load;
+            std::string error;
+            if (!model::serialize(doc, model::WriteInfo{"conformance", 1}, load.op, error)) {
+                return false;
+            }
+            return s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok;
+        }
+
+        static const model::Region* take_region(const model::Snapshot& doc, model::Id track) {
+            for (const auto& t : doc.edit->tracks) {
+                if (t->id != track) continue;
+                for (const auto& p : t->playlists) {
+                    if (p->id != t->active_playlist) continue;
+                    for (const model::Region& r : p->regions) {
+                        if (r.name == "Audio 1_07") return &r;
+                    }
+                }
+            }
+            return nullptr;
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            const model::Snapshot doc = s.replica.current();
+            const model::Id track = doc.edit->tracks.at(0)->id;
+            const std::string name = doc.settings.name;
+            if (!rig_.leave_orphan_take(*s.engine, "Audio 1_07.wav", name, 7, track, 48000, 4800)) {
+                return skip("this rig cannot leave a take on disk");
+            }
+            EXPECT(rig_.leave_orphan_take(*s.engine, "Audio 2_08.wav", name + " Other", 8, track,
+                                          0, 4800),
+                   "the rig left one take and not the other");
+            EXPECT(offer(s.inbox).empty(), "an offer stands before the session was opened again");
+
+            CommandReply r;
+            EXPECT(open_again(s, doc, r), "the session was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return !offer(s.inbox).empty(); }),
+                   "no RecoveryOffer at the open");
+            const EngineEvent* e = s.last_event(EventKind::RecoveryOffer);
+            EXPECT(mentions(e->text, "Audio 1_07.wav"), "the offer does not name the take");
+            EXPECT(e->text.find("Audio 2_08") == std::string::npos,
+                   "another session's take is offered");
+            EXPECT(e->frame == 1, "the offer does not count its takes");
+            EXPECT(take_region(s.replica.current(), track) == nullptr,
+                   "the take was placed before the operator said so");
+
+            // Left: withdrawn, and nothing placed.
+            const std::size_t updates = s.inbox.model.size();
+            EXPECT(s.await(rig_, s.command("session.leave_recovered"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "session.leave_recovered failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return offer(s.inbox).empty(); }),
+                   "the offer still stands after it was left");
+            EXPECT(s.inbox.model.size() == updates, "leaving the takes changed the document");
+            EXPECT(s.await(rig_, s.command("session.place_recovered"), r) &&
+                       r.result == DispatchResult::Failed,
+                   "placing with no offer standing was not refused");
+
+            // Offered again at the next open, then placed.
+            EXPECT(open_again(s, doc, r), "the session was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return !offer(s.inbox).empty(); }),
+                   "a take left at one open is not offered at the next");
+            EXPECT(s.await(rig_, s.command("session.place_recovered"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "session.place_recovered failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return take_region(s.replica.current(), track) != nullptr; }),
+                   "the placed take is not on its track");
+            const model::Region* placed = take_region(s.replica.current(), track);
+            EXPECT(placed->position == 48000 && placed->length == 4800,
+                   "the take is not at its TimeReference, its length on disk");
+            const model::Source* src =
+                s.replica.current().sources->find(placed->channels.at(0).source);
+            EXPECT(src != nullptr && src->path == "Audio Files/Audio 1_07.wav",
+                   "the region does not play the take's file");
+            EXPECT(s.until(rig_, [&]() { return offer(s.inbox).empty(); }),
+                   "the offer still stands after the takes were placed");
+
+            ModelRequest undo;
+            undo.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                   "the placement could not be undone: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return take_region(s.replica.current(), track) == nullptr; }),
+                   "undo left the take on the timeline");
+            EXPECT(!s.inbox.model.empty() && s.inbox.model.back().label == "Place Recovered Takes",
+                   "the undo step is not named for the placement");
+            return ok();
+        }
+    };
+    return C(rig, "recovery offer").go();
+}
+
 }  // namespace
 
 int run(Rig& rig) {
@@ -1685,6 +1798,7 @@ int run(Rig& rig) {
     failures += check_plugin_faults(rig);
     failures += check_flush_plugin_state(rig);
     failures += check_save(rig);
+    failures += check_recovery_offer(rig);
     failures += check_take_failed(rig);
     failures += check_inputs_missing(rig);
     failures += check_peaks(rig);

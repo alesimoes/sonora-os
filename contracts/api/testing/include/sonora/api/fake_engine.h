@@ -172,6 +172,26 @@ public:
     // or its own editor last set it; NaN when neither has.
     float plugin_value(uint64_t insert, const std::string& key) const;
 
+    // A take file in the session's Audio Files that no source names, as
+    // its header describes it (session-format.md, "Crash recovery"). The
+    // fake has no disk: it offers what is scripted, at connect and at each
+    // Load of a session of `session`'s name with no source at `path`, as a
+    // RecoveryOffer, one line per take; session.place_recovered puts each
+    // on the track `track_id` names at `position`, `frames` long, as the
+    // engine places a whole take, one undo step per take (a punch or loop
+    // take's placement is the engine's, held to its own tests), or into the
+    // pool when that track is gone; session.leave_recovered withdraws it.
+    struct RecoveredTake {
+        std::string path;   // "Audio Files/<name>"
+        std::string session = "Untitled";
+        int32_t take = 1;
+        uint64_t track_id = 0;
+        uint64_t position = 0;
+        uint64_t frames = 0;
+        uint16_t channels = 1;
+    };
+    void script_recovered_take(RecoveredTake take) { recovered_.push_back(std::move(take)); }
+
     // The linear level channel `ch` shows at `t_s` seconds: a level of its
     // own per channel, so a meter showing a neighbour's signal is visible.
     // Channel 10 (index 9) goes just over full scale for 50 ms every 7 s.
@@ -285,6 +305,13 @@ private:
         uint64_t bytes = 0;
     };
     std::map<uint64_t, ScriptedState> plugin_state_;
+    // Scripted orphans, and the ones the standing offer holds.
+    std::vector<RecoveredTake> recovered_;
+    std::vector<RecoveredTake> offered_;
+    bool offer_standing_ = false;
+    void offer_recovered();
+    void withdraw_recovered();
+    bool place_recovered(std::string& why);
 };
 
 }  // namespace sonora::api::testing

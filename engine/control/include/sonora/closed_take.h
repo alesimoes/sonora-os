@@ -71,7 +71,9 @@ struct TakeAdded {
 // step, up to kMaxCompoundMembers / 2 files; a larger take goes in as
 // several compounds of that many, one update and one step each.
 // `files_per_compound` exists so tests reach the split with a few tracks;
-// it is clamped to [1, kMaxCompoundMembers / 2].
+// it is clamped to [1, kMaxCompoundMembers / 2]. `label`, when given,
+// names the undo step instead ("Place Recovered Takes" for a take
+// recovered at open, orphan_offer.h).
 //
 // A punched take (ClosedTake::punched) goes in over its punch range [A, B)
 // only, cut to what was recorded, with the rest of the file as handle
@@ -90,7 +92,8 @@ struct TakeAdded {
 // past the cap left in the files, each with a notice (§5, O2).
 TakeAdded add_closed_take(model::Document& document, const Session& session,
                           const Session::ClosedTake& take,
-                          std::size_t files_per_compound = model::kMaxCompoundMembers / 2);
+                          std::size_t files_per_compound = model::kMaxCompoundMembers / 2,
+                          const char* label = nullptr);
 
 // The punch the record commands start when the document has a punch range
 // [A, B) set (transport.punch, B > A; what the interface shows as punch

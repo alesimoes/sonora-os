@@ -61,7 +61,9 @@ namespace sonora::api {
 //   engine writes the session folder.
 // 12 (ADR-0016 pre-roll and post-roll): Hello::capabilities, appended, so a
 //   version-11 peer's decoder refuses this Hello and this one refuses its.
-constexpr uint32_t kProtocolVersion = 12;
+// 13 (engine.record.orphan_offer): EventKind::RecoveryOffer, which a
+//   version-12 peer's decoder refuses.
+constexpr uint32_t kProtocolVersion = 13;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -244,12 +246,22 @@ enum class EventKind : uint32_t {
     // opened). A client that attaches later is sent every fault that still
     // stands, and no other. Protocol 3.
     PluginFault = 4,
+    // Takes on disk the open session does not name: one an engine died
+    // recording, or one closed after the last save (session-format.md,
+    // "Crash recovery"). `text` says where each would go, one line per
+    // take; `frame` is how many there are. The interface offers them, and
+    // nothing is placed until it sends session.place_recovered (or
+    // session.leave_recovered leaves them in Audio Files, to be offered
+    // again at the next open). One offer stands at a time, replaced at
+    // every session open; empty text withdraws it. A client that attaches
+    // later is sent the one that stands. Protocol 12.
+    RecoveryOffer = 5,
 };
 
 struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
-    // TakeFailed: the take number. 0 otherwise.
+    // TakeFailed: the take number. RecoveryOffer: how many takes. 0 otherwise.
     uint64_t frame = 0;
     // PluginFault: the insert's model id. 0 otherwise. Protocol 3.
     uint64_t insert = 0;

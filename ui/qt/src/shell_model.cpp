@@ -88,6 +88,13 @@ QStringList ShellModel::helpEntries() const {
     return out;
 }
 
+void ShellModel::showRecoveryOffer(const QString& text, int count) {
+    recovery_offer_ = text.isEmpty() ? QStringList() : text.split(QLatin1Char('\n'));
+    recovery_count_ = text.isEmpty() ? 0 : count;
+    recovery_refusal_.clear();
+    emit recoveryChanged();
+}
+
 void ShellModel::addNotice(const QString& n) {
     notices_ << n;
     emit noticesChanged();
@@ -322,11 +329,18 @@ void ShellModel::tick() {
                              info.track_count != sized_tracks_;
     if (reformatted) followEngineFormat();
     for (const auto& r : replies_) {
+        const bool recovery =
+            r.command == "session.place_recovered" || r.command == "session.leave_recovered";
         if (r.result == DispatchResult::Ok) {
             if (!r.live && !status_.isEmpty()) say(QString());
             continue;
         }
         const std::string why = r.message.empty() ? dispatch_result_text(r.result) : r.message;
+        // Held under the offer, not on the status line that clears.
+        if (recovery && !recovery_offer_.isEmpty()) {
+            recovery_refusal_ = QString::fromStdString(why);
+            emit recoveryChanged();
+        }
         say(QString::fromStdString(r.command + ": " + why));
     }
     takeEvents();
@@ -339,6 +353,9 @@ void ShellModel::tick() {
     // A sentence of its own on the banner.
     if (!link_error.isEmpty()) link_error[0] = link_error[0].toUpper();
     if (alive != alive_ || link_error != link_error_) {
+        // The engine that comes back sends the offer that stands then, if
+        // any; this one is the dead engine's.
+        if (!alive && !recovery_offer_.isEmpty()) showRecoveryOffer(QString(), 0);
         alive_ = alive;
         link_error_ = link_error;
         emit engineAliveChanged();
@@ -395,6 +412,9 @@ void ShellModel::takeEvents() {
                 break;
             case EngineEventKind::Fatal:
                 fatal_ = text.isEmpty() ? QStringLiteral("the audio backend failed") : text;
+                break;
+            case EngineEventKind::RecoveryOffer:
+                showRecoveryOffer(text, static_cast<int>(e.take));
                 break;
             case EngineEventKind::PluginFault:
                 if (plugin_sinks_.fault) {
