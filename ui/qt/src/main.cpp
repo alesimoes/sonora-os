@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 
 #include "control_adapter.h"
@@ -29,6 +30,7 @@
 #include "register_types.h"
 #include "render_path.h"
 #include "replica_document.h"
+#include "scenes/screenshot_scene.h"
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
@@ -46,8 +48,7 @@ namespace {
 struct Options {
     QString keymap;
     QString keymap_dir;
-    QString keys_view;
-    bool transport_view = false;
+    const ShotScene* scene = nullptr;
     int tracks = 18;
     int meter_hz = 0;  // 0: 60, or 30 on a software rasteriser
     bool kiosk = false;
@@ -63,9 +64,6 @@ struct Options {
     QString sessions_dir;
     QString engine_socket;
     bool fake_engine = false;
-    QString insert_view;
-    QString edit_view;
-    QString mix_view;
     QString open_file;
 };
 
@@ -163,16 +161,14 @@ bool parse(QGuiApplication& app, Options& o) {
                        "$SONORA_KEYMAP_DIR, else --keymap's folder, else "
                        "share/sonora/keymaps)."),
         QStringLiteral("path"));
-    const QCommandLineOption keys_view({QStringLiteral("keys-view")},
-                                       QStringLiteral("Open the Keys menu (profiles), for "
-                                                      "screenshots."),
-                                       QStringLiteral("profiles"));
-    p.addOptions({keymap_dir_opt, keys_view});
-    const QCommandLineOption transport_view(
-        {QStringLiteral("transport-view")},
-        QStringLiteral("With --demo, a tempo map in the demo session and the Transport "
-                       "window open, for screenshots."));
-    p.addOption(transport_view);
+    const QCommandLineOption scene({QStringLiteral("scene")},
+                                   QStringLiteral("With --demo, set up this screenshot scene "
+                                                  "(ui/qt/src/scenes/)."),
+                                   QStringLiteral("name"));
+    const QCommandLineOption list_scenes(
+        {QStringLiteral("list-scenes")},
+        QStringLiteral("Print each scene's name and its other arguments, and exit."));
+    p.addOptions({keymap_dir_opt, scene, list_scenes});
     const QCommandLineOption tracks({QStringLiteral("tracks")},
                                     QStringLiteral("Tracks the fake engine offers (default 18)."),
                                     QStringLiteral("n"));
@@ -216,55 +212,18 @@ bool parse(QGuiApplication& app, Options& o) {
     const QCommandLineOption fake({QStringLiteral("fake-engine")},
                                   QStringLiteral("Run on the built-in fake engine even when a real "
                                                  "one is listening."));
-    const QCommandLineOption insert_view({QStringLiteral("insert-view")},
-                                         QStringLiteral("With --demo on the fake engine, open the "
-                                                        "plugin chooser (browser) or a parameter "
-                                                        "panel (panel), for screenshots."),
-                                         QStringLiteral("browser|panel"));
-    const QCommandLineOption edit_view({QStringLiteral("edit-view")},
-                                       QStringLiteral("With --demo, zoom the Edit window in on "
-                                                      "the snare's crossfade and the fades "
-                                                      "around it (fades), or copy the snare's "
-                                                      "crossfaded edit, paste it on the next "
-                                                      "track and open the Edit menu "
-                                                      "(clipboard), or repeat the snare's "
-                                                      "region three times and open the Repeat "
-                                                      "dialog (repeat), or copy a range on the "
-                                                      "first three tracks and paste it later "
-                                                      "on them (multitrack), or copy the snare's "
-                                                      "region and paste it on four tracks (fill), "
-                                                      "or add a tempo map "
-                                                      "and nudge a region past its change "
-                                                      "(nudge), or make a few edits, undo the last "
-                                                      "and open the Undo History window "
-                                                      "(undo-history), or add markers and a "
-                                                      "selection marker and open the Memory "
-                                                      "Locations window (markers), for "
-                                                      "screenshots."),
-                                       QStringLiteral("fades|clipboard|repeat|multitrack|fill|nudge|undo-history|markers"));
-    const QCommandLineOption mix_view({QStringLiteral("mix-view")},
-                                      QStringLiteral("With --demo, solo Lead Vox and make Room "
-                                                     "and Talkback solo safe (solo-safe), for "
-                                                     "screenshots."),
-                                      QStringLiteral("solo-safe"));
     const QCommandLineOption open({QStringLiteral("open")},
                                   QStringLiteral("Open this session file once the window is up, "
                                                  "as File > Open does (with --demo, instead of "
                                                  "starting a take)."),
                                   QStringLiteral("file"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions, socket, fake, insert_view, edit_view, mix_view, open});
+                  window, sessions, socket, fake, open});
     p.process(app);
 
     o.keymap = p.value(keymap);
     o.keymap_dir = p.value(keymap_dir_opt);
-    o.keys_view = p.value(keys_view);
-    if (!o.keys_view.isEmpty() && o.keys_view != QStringLiteral("profiles")) {
-        std::fprintf(stderr, "sonora-ui: --keys-view must be profiles\n");
-        return false;
-    }
     if (p.isSet(tracks)) o.tracks = p.value(tracks).toInt();
-    o.transport_view = p.isSet(transport_view);
     if (p.isSet(hz)) o.meter_hz = p.value(hz).toInt();
     o.kiosk = p.isSet(kiosk);
     if (p.isSet(measure)) o.measure_s = p.value(measure).toDouble();
@@ -278,27 +237,19 @@ bool parse(QGuiApplication& app, Options& o) {
     o.sessions_dir = p.value(sessions);
     o.engine_socket = p.value(socket);
     o.fake_engine = p.isSet(fake);
-    o.insert_view = p.value(insert_view);
-    if (!o.insert_view.isEmpty() && o.insert_view != QStringLiteral("browser") &&
-        o.insert_view != QStringLiteral("panel")) {
-        std::fprintf(stderr, "sonora-ui: --insert-view must be browser or panel\n");
-        return false;
-    }
-    o.mix_view = p.value(mix_view);
     o.open_file = p.value(open);
-    if (!o.mix_view.isEmpty() && o.mix_view != QStringLiteral("solo-safe")) {
-        std::fprintf(stderr, "sonora-ui: --mix-view must be solo-safe\n");
-        return false;
-    }
-    o.edit_view = p.value(edit_view);
-    if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades") &&
-        o.edit_view != QStringLiteral("clipboard") && o.edit_view != QStringLiteral("repeat") &&
-        o.edit_view != QStringLiteral("multitrack") && o.edit_view != QStringLiteral("fill") &&
-        o.edit_view != QStringLiteral("nudge") && o.edit_view != QStringLiteral("undo-history") &&
-        o.edit_view != QStringLiteral("markers")) {
-        std::fprintf(stderr, "sonora-ui: --edit-view must be fades, clipboard, repeat, "
-                             "multitrack, fill, nudge, undo-history or markers\n");
-        return false;
+    if (p.isSet(scene)) {
+        o.scene = find_scene(p.value(scene));
+        if (o.scene == nullptr) {
+            std::fprintf(stderr, "sonora-ui: no scene %s; --list-scenes lists them\n",
+                         qPrintable(p.value(scene)));
+            return false;
+        }
+        if (!o.demo) {
+            std::fprintf(stderr, "sonora-ui: --scene needs --demo\n");
+            return false;
+        }
+        if (!p.isSet(window)) o.window = o.scene->window;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
         std::fprintf(stderr, "sonora-ui: --window must be edit or mix\n");
@@ -349,6 +300,17 @@ int show_refusal(QGuiApplication& app, const Options& opt, const QString& reason
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Before the application, which would want a display the screenshot
+    // script's caller does not have.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--list-scenes") == 0) {
+            for (const ShotScene& s : registered_scenes()) {
+                std::printf("%s%s%s\n", qPrintable(s.name), s.args.isEmpty() ? "" : " ",
+                            qPrintable(s.args));
+            }
+            return 0;
+        }
+    }
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("sonora-ui"));
 
@@ -444,8 +406,7 @@ int main(int argc, char** argv) {
     if (a.opt.demo) {
         std::string why;
         sonora::model::Snapshot demo = make_demo_session(engine.info().track_count, rate);
-        if (a.opt.transport_view || a.opt.edit_view == QStringLiteral("nudge"))
-            add_demo_tempo_map(demo);
+        if (a.opt.scene != nullptr && a.opt.scene->tempo_map) add_demo_tempo_map(demo);
         if (fake != nullptr) {
             demo_crash = add_demo_inserts(demo);
             fake->script_plugin_latency(api::testing::fake_catalog()[2].id, 64);
@@ -532,7 +493,6 @@ int main(int argc, char** argv) {
     plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
     model.setPluginSinks(std::move(plugin_sinks));
     session.setWindow(a.opt.window);
-    if (a.opt.transport_view) transport.setOpen(true);
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
     if (!keymap_dir_notice.empty()) model.addNotice(QString::fromStdString(keymap_dir_notice));
     // A switch in the Keys menu replaces these; the engine's stay.
@@ -579,11 +539,6 @@ int main(int argc, char** argv) {
     view.rootObject()->setProperty("transport", QVariant::fromValue(&transport));
     if (a.opt.no_meters) model.hideMeters();
     model.routeKeysFrom(&view);
-    if (a.opt.keys_view == QStringLiteral("profiles")) {
-        if (QObject* panel = view.rootObject()->findChild<QObject*>(QStringLiteral("profilePanel"))) {
-            panel->setProperty("visible", true);
-        }
-    }
     model.start(a.opt.meter_hz > 0 ? a.opt.meter_hz : 60);
 
     if (a.opt.kiosk) {
@@ -595,216 +550,33 @@ int main(int argc, char** argv) {
 
     if (a.opt.demo) {
         for (int t = 0; t < 8 && t < a.opt.tracks; ++t) model.invoke(QStringLiteral("track.toggle_arm"), t);
-        // Not under --edit-view: a rolling transport pages the view to the
-        // playhead, away from what the view is meant to show.
-        // Nor under --open: a session does not open over a take.
-        if (a.opt.edit_view.isEmpty() && a.opt.open_file.isEmpty()) {
+        // Not in a scene that says so (ShotScene::take), nor under --open: a
+        // session does not open over a take.
+        if ((a.opt.scene == nullptr || a.opt.scene->take) && a.opt.open_file.isEmpty()) {
             model.invoke(QStringLiteral("transport.record"), -1);
         }
         // Once the window has its size: the whole session in view, and the
         // snare's second region selected, so a screenshot shows what a
         // selected region looks like.
-        QTimer::singleShot(200, &app, [&session, &model, &inserts, &a, &view, fake, demo_crash]() {
+        QTimer::singleShot(200, &app, [&session, &model, &inserts, &transport, &a, &view, fake,
+                                       demo_crash]() {
             // The fake engine has the demo session by now; a crash on Tom 1's
             // compressor shows what a fault looks like.
             if (fake != nullptr && demo_crash != 0) {
                 fake->script_insert_fault(
                     demo_crash, "its host crashed (SIGSEGV); the chain plays dry until Retry");
             }
-            if (a.opt.insert_view == QStringLiteral("browser")) inserts.openBrowser(14, 3);
-            if (a.opt.insert_view == QStringLiteral("panel")) inserts.openPanel(0, 0);
-            // A vocal soloed over a session whose room mic and talkback are
-            // solo safe: those two stay audible and say so, the rest are
-            // outlined as the solo silences them.
-            if (a.opt.mix_view == QStringLiteral("solo-safe")) {
-                EditController& c = session.controller();
-                std::string why;
-                for (const int t : {7, 17}) {
-                    if (t < session.trackCount() && !c.toggle_solo_safe(t, why))
-                        std::fprintf(stderr, "sonora-ui: solo safe: %s\n", why.c_str());
-                }
-                if (14 < session.trackCount()) model.invoke(QStringLiteral("track.toggle_solo"), 14);
-            }
+            ShotContext scene{session, model, inserts, transport, view};
+            if (a.opt.scene != nullptr && a.opt.scene->setup) a.opt.scene->setup(scene);
             model.invoke(QStringLiteral("zoom.fit_session"), -1);
             const int track = std::min(1, session.trackCount() - 1);
             const auto* p =
                 active_playlist(session.controller().snapshot().edit->tracks[track].get());
             if (p && p->regions.size() > 1) session.controller().select_region(p->regions[1].id);
             model.invoke(QStringLiteral("track.select"), track);
-            // Zoomed in about the snare's crossfade, through the zoom keys'
-            // commands, so the fades are wide enough to read.
-            if (a.opt.edit_view == QStringLiteral("fades") && p && p->crossfades.size() == 1) {
-                EditController& c = session.controller();
-                const auto& x = p->crossfades[0];
-                const sonora::model::Region* right = nullptr;
-                for (const auto& r : p->regions) {
-                    if (r.id == x.right) right = &r;
-                }
-                if (right != nullptr) {
-                    c.set_insertion(right->position);
-                    for (int i = 0; i < 2; ++i) model.invoke(QStringLiteral("zoom.in"), -1);
-                }
-            }
-            // The snare's region repeated three times through the dialog's
-            // command, then Alt+R's dialog open again, offering 3.
-            if (a.opt.edit_view == QStringLiteral("repeat") && p && p->regions.size() > 1) {
-                // An id, not `p`: the repeat replaces the snapshot `p` is in.
-                const auto snare = p->regions[1].id;
-                session.controller().select_region(snare);
-                if (!model.invokeWith(QStringLiteral("edit.repeat"), -1, QStringLiteral("3")))
-                    std::fprintf(stderr, "sonora-ui: repeat: %s\n", qPrintable(model.statusText()));
-                model.invoke(QStringLiteral("zoom.fit_session"), -1);
-                session.controller().select_region(snare);
-                model.invoke(QStringLiteral("edit.repeat"), -1);
-            }
-            // A range on the first three tracks copied and pasted after
-            // their last region, through the keys' commands: the pasted
-            // range stays selected across the three lanes.
-            if (a.opt.edit_view == QStringLiteral("multitrack") && p && p->regions.size() > 2 &&
-                session.trackCount() >= 3) {
-                EditController& c = session.controller();
-                const auto from = p->regions[1].position, to = p->regions[2].end();
-                c.select_range(0, from, to, 3);
-                model.invoke(QStringLiteral("edit.copy"), -1);
-                sonora::model::Frames after = to;
-                for (int i = 0; i < 3; ++i) {
-                    const auto* lane = active_playlist(c.snapshot().edit->tracks[i].get());
-                    if (lane && !lane->regions.empty())
-                        after = std::max(after, lane->regions.back().end());
-                }
-                const auto at = after + (to - from) / 4;
-                c.select_range(0, at, at, 3);
-                model.invoke(QStringLiteral("edit.paste"), -1);
-                model.invoke(QStringLiteral("zoom.fit_session"), -1);
-                if (c.selection().tracks != 3)
-                    std::fprintf(stderr, "sonora-ui: multitrack: %s\n", qPrintable(model.statusText()));
-            }
-            // The snare's region copied and pasted into a range on four
-            // tracks after the session's end: one track's clipboard fills
-            // every selected track, as in Pro Tools.
-            if (a.opt.edit_view == QStringLiteral("fill") && p && p->regions.size() > 1 &&
-                session.trackCount() >= 5) {
-                EditController& c = session.controller();
-                const auto snare = p->regions[1];
-                c.select_region(snare.id);
-                model.invoke(QStringLiteral("edit.copy"), -1);
-                sonora::model::Frames after = 0;
-                for (int i = 1; i < 5; ++i) {
-                    const auto* lane = active_playlist(c.snapshot().edit->tracks[i].get());
-                    if (lane && !lane->regions.empty())
-                        after = std::max(after, lane->regions.back().end());
-                }
-                const auto at = after + snare.length / 4;
-                c.select_range(track, at, at + snare.length, 4);
-                model.invoke(QStringLiteral("edit.paste"), -1);
-                model.invoke(QStringLiteral("zoom.fit_session"), -1);
-                if (c.selection().tracks != 4)
-                    std::fprintf(stderr, "sonora-ui: fill: %s\n", qPrintable(model.statusText()));
-            }
-            // On the demo's tempo map, the snare separated where 96 bpm
-            // starts and the part after it nudged forward two beats on the
-            // 1/4 grid: the gap is two 96 bpm beats and the region lands on
-            // 17|3, not on 120 bpm steps.
-            if (a.opt.edit_view == QStringLiteral("nudge")) {
-                EditController& c = session.controller();
-                const auto& tempo = c.snapshot().settings.tempo;
-                const auto change = tempo.size() > 1 ? tempo[1].at : 0;
-                std::string why;
-                c.select_track(track);
-                c.set_insertion(change);
-                if (!c.separate(why)) std::fprintf(stderr, "sonora-ui: nudge: %s\n", why.c_str());
-                sonora::model::Id pick = kNoId;
-                if (const auto* pl = active_playlist(c.snapshot().edit->tracks[track].get())) {
-                    for (const auto& r : pl->regions) {
-                        if (r.position == change) pick = r.id;
-                    }
-                }
-                if (pick != kNoId && c.select_region(pick)) {
-                    c.set_grid(GridValue::Beat);
-                    for (int i = 0; i < 2; ++i) model.invoke(QStringLiteral("nudge.forward"), -1);
-                    c.set_insertion(change);
-                    for (int i = 0; i < 3; ++i) model.invoke(QStringLiteral("zoom.in"), -1);
-                } else {
-                    std::fprintf(stderr, "sonora-ui: nudge: no region at the tempo change\n");
-                }
-            }
-            // A few edits through the keys' commands, the last one undone, and
-            // the Undo History window open on them: done steps, the line, and
-            // the undone step in italics below it.
-            if (a.opt.edit_view == QStringLiteral("undo-history") && p && p->regions.size() > 1) {
-                EditController& c = session.controller();
-                const auto snare = p->regions[1].id;
-                c.select_region(snare);
-                model.invoke(QStringLiteral("edit.duplicate"), -1);
-                c.select_region(snare);
-                if (!model.invokeWith(QStringLiteral("edit.repeat"), -1, QStringLiteral("2")))
-                    std::fprintf(stderr, "sonora-ui: repeat: %s\n", qPrintable(model.statusText()));
-                const auto* first = active_playlist(c.snapshot().edit->tracks[0].get());
-                if (first && !first->regions.empty()) {
-                    const auto kick = first->regions[0].id;
-                    c.select_region(kick);
-                    model.invoke(QStringLiteral("edit.duplicate"), -1);
-                    c.select_region(kick);
-                    model.invoke(QStringLiteral("edit.clear"), -1);
-                }
-                model.invoke(QStringLiteral("edit.undo"), -1);
-                model.invoke(QStringLiteral("zoom.fit_session"), -1);
-                model.invoke(QStringLiteral("window.undo_history"), -1);
-            }
-            // Markers through marker.add, as the New Marker dialog sends them,
-            // one of them a selection marker over a range, then the Memory
-            // Locations window open on them, the selection marker recalled.
-            if (a.opt.edit_view == QStringLiteral("markers")) {
-                EditController& c = session.controller();
-                const double end = static_cast<double>(c.session_end());
-                const struct {
-                    const char* name;
-                    double at, length;
-                } marks[] = {{"Intro", 0.0, 0.0},
-                             {"Verse 1", 0.12, 0.0},
-                             {"Chorus", 0.36, 0.18},
-                             {"Verse 2", 0.62, 0.0},
-                             {"Outro", 0.86, 0.0}};
-                for (const auto& m : marks) {
-                    const auto at = static_cast<sonora::model::Frames>(end * m.at);
-                    if (m.length > 0) {
-                        c.select_range(std::max(0, c.selection().track), at,
-                                       at + static_cast<sonora::model::Frames>(end * m.length));
-                    } else {
-                        c.set_insertion(at);
-                    }
-                    if (!model.invokeWith(QStringLiteral("marker.add"), -1, QString::fromUtf8(m.name)))
-                        std::fprintf(stderr, "sonora-ui: marker: %s\n", qPrintable(model.statusText()));
-                }
-                session.recallMarker(2);
-                model.invoke(QStringLiteral("window.memory_locations"), -1);
-            }
-            // The snare's two crossfaded regions copied and pasted after the
-            // next track's last region, through the keys' commands, with the
-            // Edit menu open on "Undo Paste".
-            if (a.opt.edit_view == QStringLiteral("clipboard") && p && p->regions.size() > 2 &&
-                session.trackCount() > track + 1) {
-                EditController& c = session.controller();
-                const auto from = p->regions[1].position, to = p->regions[2].end();
-                c.select_range(track, from, to);
-                model.invoke(QStringLiteral("edit.copy"), -1);
-                const auto* next =
-                    active_playlist(c.snapshot().edit->tracks[track + 1].get());
-                const auto after = next && !next->regions.empty() ? next->regions.back().end() : to;
-                model.invoke(QStringLiteral("track.select"), track + 1);
-                c.set_insertion(after + (to - from) / 10);
-                model.invoke(QStringLiteral("edit.paste"), -1);
-                model.invoke(QStringLiteral("zoom.fit_session"), -1);
-                QQuickItem* root = view.rootObject();
-                auto* button = root->findChild<QQuickItem*>(QStringLiteral("editMenuButton"));
-                auto* menu = root->findChild<QQuickItem*>(QStringLiteral("editMenu"));
-                if (button != nullptr && menu != nullptr) {
-                    const QPointF at = button->mapToScene(QPointF(0, button->height()));
-                    menu->setProperty("x", at.x());
-                    menu->setProperty("y", at.y() + 4);
-                    menu->setProperty("visible", true);
-                }
-            }
+            scene.track = track;
+            scene.playlist = p;
+            if (a.opt.scene != nullptr && a.opt.scene->apply) a.opt.scene->apply(scene);
         });
     }
     // After the demo has set its view, so what is shown is the file's.

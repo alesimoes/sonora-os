@@ -51,3 +51,14 @@ working — report exactly what you ran and what it printed.
 4-space indent, members `snake_case_`, `const` by default. Comments explain why
 a line is the way it is; delete any comment that restates the code. Match the
 surrounding file.
+
+## Before you open the PR
+
+- Rebased on `origin/main`.
+- Every new test fails without the change: run it once against the old code.
+- Per-session state resets when a session opens.
+- A refusal the operator must see is a held notice, not the 2.5 s status line.
+- Every version pin is bumped together, to the next free number.
+- One PR per BACKLOG item, follow-ups included.
+- The full suite runs once, at the end.
+- The report is at most 5 lines.

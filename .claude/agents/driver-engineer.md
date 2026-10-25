@@ -53,3 +53,14 @@ the second one is worth writing down. Every figure goes in
 
 There is currently no latency measurement anywhere in this project. The first
 real one is yours. Do not let it be an estimate.
+
+## Before you open the PR
+
+- Rebased on `origin/main`.
+- Every new test fails without the change: run it once against the old code.
+- Per-session state resets when a session opens.
+- A refusal the operator must see is a held notice, not the 2.5 s status line.
+- Every version pin is bumped together, to the next free number.
+- One PR per BACKLOG item, follow-ups included.
+- The full suite runs once, at the end.
+- The report is at most 5 lines.

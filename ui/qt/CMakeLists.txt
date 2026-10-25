@@ -79,7 +79,11 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/MemoryLocationsWindow.qml
 )
 
-add_executable(sonora-ui src/main.cpp)
+# The screenshot scenes register themselves (scenes/screenshot_scene.h): in
+# the executable, not the static library, where the linker would drop a file
+# nothing names; and globbed, so a new scene is a new file and nothing else.
+file(GLOB SONORA_UI_SCENES CONFIGURE_DEPENDS src/scenes/*.cpp)
+add_executable(sonora-ui src/main.cpp ${SONORA_UI_SCENES})
 # ui/client: the socket to the real engine (M7). FakeEngine stays for when
 # none is running, and for the tests.
 target_link_libraries(sonora-ui PRIVATE sonora_ui_qt sonora_client sonora_platform)

@@ -41,10 +41,10 @@ in_cage() {
 if [[ "$MODE" == screenshot ]]; then
   # Captured by the compositor (grim, over wlr-screencopy), not by the
   # application, so the picture is what the kiosk actually put on the output.
-  # Three shots of the demo session: the Edit window, the Mix window, and
-  # the Edit window after the engine stops answering. NAME.png is the Edit
-  # window; the Mix window is NAME-mix.png, with a trailing "-edit" in NAME
-  # dropped, so sonora-ui-edit.png gives sonora-ui-mix.png.
+  # One shot per scene sonora-ui lists (ui/qt/src/scenes/, one file each).
+  # "edit" is NAME.png itself, "edit-X" is NAME-X.png, and any other scene
+  # follows NAME with a trailing "-edit" dropped, so sonora-ui-edit.png
+  # gives sonora-ui-mix.png and sonora-ui-mix-browser.png.
   shoot() {  # file, then sonora-ui arguments
     local file="$1"
     shift
@@ -58,47 +58,19 @@ if [[ "$MODE" == screenshot ]]; then
     ' sh "$file" "$UI" --kiosk --demo --fake-engine --keymap keymaps/protools.json "$@"
   }
   base="${SHOT%.png}"
-  mix="${base%-edit}-mix.png"
-  # The Transport window open over the Edit window, on the demo session
-  # with a tempo map: sonora-ui-transport.png beside sonora-ui-edit.png.
-  shoot "${base%-edit}-transport.png" --window edit --transport-view
-  echo "saved /out/${base%-edit}-transport.png"
-  shoot "$SHOT" --window edit
-  shoot "$mix" --window mix
-  shoot "$base-no-engine.png" --window edit --engine-dies-after 2
-  # The Edit window zoomed in on the snare's crossfade and the fades near it.
-  shoot "$base-fades.png" --window edit --edit-view fades
-  # Copy and Paste: the snare's crossfaded edit pasted on the next track,
-  # with the Edit menu open on "Undo Paste".
-  shoot "$base-clipboard.png" --window edit --edit-view clipboard
-  # Repeat: the snare's region repeated three times, and the Repeat dialog
-  # open again on it, offering the count just used.
-  shoot "$base-repeat.png" --window edit --edit-view repeat
-  # A range on three tracks copied and pasted later on the same three, the
-  # pasted range selected across them.
-  shoot "$base-multitrack.png" --window edit --edit-view multitrack
-  # One track's clipboard pasted into a range on four tracks: the snare's
-  # region lands on each of them.
-  shoot "$base-fill.png" --window edit --edit-view fill
-  # Nudge on a tempo map: the snare separated where 96 bpm starts and the
-  # part after it nudged two beats on the 1/4 grid, landing on 17|3.
-  shoot "$base-nudge.png" --window edit --edit-view nudge
-  # A few edits, the last one undone, and the Undo History window open.
-  shoot "$base-undo-history.png" --window edit --edit-view undo-history
-  # Five markers, one a selection marker recalled, and the Memory Locations window.
-  shoot "$base-markers.png" --window edit --edit-view markers
-  # The Mix window with the plugin chooser open, and with a parameter panel.
-  shoot "${mix%.png}-browser.png" --window mix --insert-view browser
-  shoot "${mix%.png}-panel.png" --window mix --insert-view panel
-  # Lead Vox soloed, Room and Talkback solo safe: recessed solo buttons with
-  # a padlock, and no implicit-mute outline on either.
-  shoot "${mix%.png}-solo-safe.png" --window mix --mix-view solo-safe
-  # The Keys menu open over the Edit window: the profiles, and the a-z button.
-  shoot "$base-keys.png" --window edit --keys-view profiles --keymap-dir keymaps
-  # A version 3 file whose tempo map is outside the bounds: it opens
-  # modified, with one held notice per value the loader repaired.
-  shoot "$base-repairs.png" --window edit \
-    --open common/model/tests/fixtures/v3-tempo-out-of-bounds.sonora
+  stem="${base%-edit}"
+  scenes=$("$UI" --list-scenes)
+  [[ -n "$scenes" ]] || { echo "error: sonora-ui lists no scenes" >&2; exit 1; }
+  while read -r -a words <&3; do
+    name="${words[0]}"
+    case "$name" in
+      edit) file="$SHOT" ;;
+      edit-*) file="$base-${name#edit-}.png" ;;
+      *) file="$stem-$name.png" ;;
+    esac
+    shoot "$file" --scene "$name" "${words[@]:1}"
+    echo "saved /out/$file"
+  done 3<<<"$scenes"
 
   # The version refusal on a real sonora-engine that announces the next
   # protocol version (--announce-versions, as the conformance suite runs it):
@@ -145,7 +117,6 @@ if [[ "$MODE" == screenshot ]]; then
   kill "$pid" 2>/dev/null || true; wait "$pid" || true
   rm -rf "$engine_dir"
   echo "saved /out/$base-refusal.png and /out/$base-refusal-reconnect.png"
-  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-repeat.png, $base-multitrack.png, $base-fill.png, $base-nudge.png, $base-undo-history.png, $base-markers.png, $base-keys.png and $base-repairs.png"
   exit 0
 fi
 

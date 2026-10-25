@@ -156,3 +156,14 @@ code (MIT, BSD, ISC, zlib) enters `common/dsp` and `plugins/native`.
 
 C++17, 4-space indent, members `snake_case_`, `const` by default. Comments
 say why: which paper, which design choice, which measured figure.
+
+## Before you open the PR
+
+- Rebased on `origin/main`.
+- Every new test fails without the change: run it once against the old code.
+- Per-session state resets when a session opens.
+- A refusal the operator must see is a held notice, not the 2.5 s status line.
+- Every version pin is bumped together, to the next free number.
+- One PR per BACKLOG item, follow-ups included.
+- The full suite runs once, at the end.
+- The report is at most 5 lines.

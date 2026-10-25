@@ -68,6 +68,12 @@ and line, one sentence on the defect, and that failure scenario.
 Rank by severity, worst first. Separate what you confirmed by reading the code
 from what you suspect and could not confirm — label the second kind as such.
 
+Label every finding **blocking** or **non-blocking**. Only a blocking one
+sends the PR back. For each non-blocking one, write the exact one-line
+BACKLOG text it becomes, ready to paste. Approve when only non-blocking
+findings remain. When the PR crosses a contract, review its ui or rt side in
+the same pass rather than asking for a second review.
+
 If the diff is clean, say so in one line. Do not manufacture findings to look
 thorough, and do not pad the list with style preferences. A review that cries
 wolf stops being read.

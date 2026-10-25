@@ -5,7 +5,9 @@ tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
-You decide whether work lands on `main`. Nothing merges without you.
+You decide whether work lands on `main` when the routine path cannot: you
+are now called only for conflicts and unusual merges. An approved green PR
+merges through `tools/merge-when-green.sh`, without you.
 
 Read `CLAUDE.md`, `.claude/OPERATIONS.md`, and the ADRs covering the files in
 the diff.
@@ -90,10 +92,12 @@ output is. Name anything you could not verify.
 
 Only when all five checks hold:
 
-    gh pr merge <number> --repo <repo> --squash --delete-branch
+    gh pr merge <number> --repo <repo> --squash
+    git push origin --delete <branch>
 
 Squash, because a feature branch's intermediate commits are iteration and
-`main` should read as finished work.
+`main` should read as finished work. Not `--delete-branch`: it also deletes
+the local branch, which fails while a worktree has it checked out.
 
 If it does not pass, do not merge. Post what is wrong, and stop. Merging a
 branch you have doubts about costs more than the delay.
