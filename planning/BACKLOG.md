@@ -20,6 +20,7 @@ playback can follow edits; it is in flight.
 
 ### Track 1: engine (rt-engineer; driver-engineer for M3; auditor gates)
 
+- [ ] `transport.locate` command to a frame, so marker recall moves the playhead.
 1. [ ] M2 backend contract, `contract/backend` (in review).
 2. [x] M3 `drivers/fake` and the conformance suite, with the two port-order
        injections ("ADR-0007 follow-ups"). `feature/fake-backend`.
@@ -274,6 +275,9 @@ playback can follow edits; it is in flight.
 ### Track 3: UI (ui-engineer)
 
 Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
+
+- [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
+- [ ] Memory Locations length column uses the main counter format, not always min:sec.
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
