@@ -201,7 +201,7 @@ int test_build_from_model() {
     muted.mute = true;
     CHECK_APPLY(h, (PlaceRegion{103, muted, 0}));
 
-    PlaybackController ctl(*session, kDir);
+    PlaybackController ctl(*session);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.pending());
@@ -278,7 +278,7 @@ int test_crossfade_past_the_handle_is_refused() {
     edit->tracks[0] = track;
     bad.edit = edit;
 
-    PlaybackController ctl(*session, kDir);
+    PlaybackController ctl(*session);
     std::string error;
     CHECK(!ctl.show(bad, error));
     CHECK(error.find("before its source") != std::string::npos);
@@ -294,7 +294,7 @@ int test_limits_are_named() {
     CHECK_APPLY(h, source_op(1, 8000));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, track_op(102, 103, "B"));
-    PlaybackController ctl(*session, kDir);
+    PlaybackController ctl(*session);
     std::string error;
     CHECK(!ctl.show(h.current(), error));
     CHECK(error.find("limit: tracks") != std::string::npos);
@@ -307,7 +307,7 @@ int test_limits_are_named() {
     for (Id i = 0; i < 65; ++i) {
         CHECK_APPLY(g, (PlaceRegion{101, region(200 + i, 1, i * 100, 50, 0), 0}));
     }
-    PlaybackController c2(*two, kDir);
+    PlaybackController c2(*two);
     CHECK(!c2.show(g.current(), error));
     CHECK(error.find("limit: max_segments") != std::string::npos);
     return 0;
@@ -327,7 +327,7 @@ int test_undo_while_rolling() {
     CHECK_APPLY(h, source_op(2, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 30 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -397,7 +397,7 @@ int test_the_document_loop_loops_the_roll() {
         return h.apply(op, why);
     };
     CHECK(set_loop(1000, 1700));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -463,7 +463,7 @@ int test_locate_and_cancel() {
     CHECK_APPLY(h, source_op(1, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     // Two snapshots before the first is resident: only the newest waits.
     CHECK(show(ctl, h.current(), error));
@@ -525,7 +525,7 @@ int test_transport_commands() {
     CHECK_APPLY(h, source_op(1, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     sonora::CommandRegistry reg;
@@ -571,7 +571,7 @@ int test_locate_command() {
     CHECK_APPLY(h, source_op(1, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -895,7 +895,7 @@ int test_return_to_zero_then_record() {
     CHECK(write_source(1, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -946,7 +946,7 @@ int test_pending_locate_dropped_by_a_take() {
     CHECK(write_source(1, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -993,7 +993,7 @@ int test_record_waits_for_residency() {
     CHECK(write_source(300, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -1053,7 +1053,7 @@ int test_no_input_monitoring_persists() {
     CHECK(write_source(1, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     ctl.set_input_monitoring(false);
     s.tracks()[1]->set_rec_armed(true);
     std::string error;
@@ -1080,7 +1080,7 @@ int test_show_leaves_the_faders_alone() {
     CHECK(write_source(1, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     s.tracks()[0]->set_gain(0.25f);
@@ -1101,7 +1101,7 @@ int test_tracks_know_their_document_ids() {
     CHECK(write_source(1, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     s.tracks()[2]->set_document_id(999);
     CHECK(show(ctl, h.current(), error));
@@ -1126,7 +1126,7 @@ int test_takes_name_the_document_session() {
     SessionSettings settings;
     settings.name = "Song";
     History h(new_session(settings));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(s.session_name() != "Song");
     CHECK(ctl.show(h.current(), error));
@@ -1150,7 +1150,7 @@ int test_undone_track_leaves_no_solo() {
     c.mix.mute = true;
     c.mix.gain_db = -12.0;
     CHECK_APPLY(h, c);
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(s.tracks()[2]->soloed() && s.tracks()[2]->muted());
@@ -1174,7 +1174,7 @@ int test_solo_safe_reaches_the_track() {
     CHECK(write_source(1, 40 * kChunk));
     History h(new_session(SessionSettings{}));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(!s.tracks()[0]->solo_safe());
@@ -1209,7 +1209,7 @@ int test_removed_track_stays_muted_until_the_swap() {
     c.mix.mute = true;
     CHECK_APPLY(with, c);
     CHECK_APPLY(with, (PlaceRegion{301, region(310, 1, 0, 40 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, with.current(), error));
     CHECK(ctl.settle(2.0));
@@ -1284,7 +1284,7 @@ int test_locate_serial_is_monotonic() {
     CHECK_APPLY(h, source_op(1, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -1317,7 +1317,7 @@ int test_huge_gain_is_no_nan() {
     Session& s = *session;
     History h(new_session(SessionSettings{}));
     CHECK_APPLY(h, track_op(100, 101, "A"));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     Snapshot snap = h.current();
     snap.mix.tracks[0].gain_db = 1e30f;
     snap.mix.tracks[0].monitor = MonitorMode::Input;
@@ -1418,7 +1418,7 @@ int test_midi_tracks_are_never_monitored_or_armed() {
     inst.mix.monitor = MonitorMode::Auto;
     CHECK_APPLY(h, inst);
     for (const auto& t : s.tracks()) t->set_rec_armed(true);
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     ctl.apply_mix(h.current());
     CHECK(s.tracks()[0]->rec_armed());
     CHECK(!s.tracks()[1]->rec_armed() && !s.tracks()[2]->rec_armed());
@@ -1564,7 +1564,7 @@ int test_cancelled_plan_leaves_the_pool_alone() {
     CHECK_APPLY(h, track_op(102, 103, "B"));
     CHECK_APPLY(h, track_op(104, 105, "C"));
     CHECK_APPLY(h, insert_op(100, 500, 0));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     // Bound (a slot and a node state), or the builder lays the chain out
     // unbound with latency 0 (PR #59).
     ctl.set_chain_resolver([](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
@@ -1609,7 +1609,7 @@ int test_latency_change_is_a_new_plan() {
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, track_op(102, 103, "B"));
     CHECK_APPLY(h, insert_op(100, 500, 0));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     uint32_t latency = 256;
     ctl.set_chain_resolver([&latency](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
         b.channel_slot = engine_track;
@@ -1648,7 +1648,7 @@ int test_report_shows_the_planned_latency() {
     CHECK_APPLY(h, track_op(102, 103, "B"));
     CHECK_APPLY(h, insert_op(100, 500, 0));
     CHECK_APPLY(h, insert_op(102, 501, 0));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     ctl.set_chain_resolver([](const TrackEdit&, uint32_t engine_track, sonora::ChainBinding& b) {
         b.channel_slot = engine_track;
         b.latency_frames = 256;
@@ -1680,7 +1680,7 @@ int test_punch_pre_and_post_roll() {
     settings.transport.post_roll = 50000;
     History h(new_session(settings));
     CHECK(two_tracks(h));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -1746,7 +1746,7 @@ int test_play_range_with_pre_and_post_roll() {
     CHECK_APPLY(h, source_op(1, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
-    PlaybackController ctl(s, kDir);
+    PlaybackController ctl(s);
     std::string error;
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));

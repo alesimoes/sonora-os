@@ -23,6 +23,7 @@
 
 #include <unistd.h>
 
+#include "sonora/active_folder.h"
 #include "sonora/api/state_block.h"
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
@@ -687,36 +688,23 @@ int main(int argc, char** argv) {
     }
 
     sonora::Session session(cfg);
-    if (!session.create_dirs()) {
-        std::fprintf(stderr, "sonora: cannot create session at %s\n",
-                     cfg.dir.c_str());
-        return 1;
-    }
-    // Before recovery: a second engine on the folder would treat the first
-    // one's open takes as unfinished and cut the frame being written. Held
-    // until the process exits. The control socket does not cover this:
-    // --record opens none, and --socket can name another.
-    sonora::platform::FolderLock session_lock;
+    // Locked before recovery: a second engine on the folder would treat the
+    // first one's open takes as unfinished and cut the frame being written.
+    // The lock is held until the process exits or another folder is
+    // entered. The control socket does not cover this: --record opens
+    // none, and --socket can name another. Recovery runs before anything
+    // records: a take an earlier engine died recording (kill -9, a crash,
+    // power) gets the length that reached the disk.
+    sonora::ActiveFolder active_folder;
+    std::vector<std::string> recovered;
     {
-        std::string err;
-        switch (session_lock.acquire(cfg.dir, err)) {
-            case sonora::platform::FolderLock::Result::Held:
-                break;
-            case sonora::platform::FolderLock::Result::Busy:
-                std::fprintf(stderr,
-                             "sonora: %s; one session takes one engine. Stop the other"
-                             " engine first.\n",
-                             err.c_str());
-                return 1;
-            case sonora::platform::FolderLock::Result::Failed:
-                std::fprintf(stderr, "sonora: %s\n", err.c_str());
-                return 1;
+        std::string why;
+        if (!active_folder.enter(session, cfg.dir, sonora::ActiveFolder::Kind::Named, why,
+                                 recovered)) {
+            std::fprintf(stderr, "sonora: %s\n", why.c_str());
+            return 1;
         }
     }
-    // Before anything records: a take an earlier engine died recording
-    // (kill -9, a crash, power) gets the length that reached the disk.
-    const std::vector<std::string> recovered =
-        sonora::recover_unclosed_takes(cfg.dir, cfg.sample_rate);
     for (const std::string& line : recovered) {
         std::fprintf(stderr, "sonora: %s\n", line.c_str());
     }
@@ -819,7 +807,7 @@ int main(int argc, char** argv) {
         std::vector<sonora::model::ReplicationUpdate> placed;
         std::string why;
         for (std::size_t i = 0; i < place_files.size(); ++i) {
-            if (!sonora::place_file(document, cfg.dir, place_files[i], i, placed, why)) {
+            if (!sonora::place_file(document, *session.folder(), place_files[i], i, placed, why)) {
                 std::fprintf(stderr, "sonora: --place: %s\n", why.c_str());
                 return 2;
             }

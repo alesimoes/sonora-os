@@ -408,6 +408,12 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    refused and the old folder stays; recovery runs on entry; a take after
    a switch lands in the new folder; a flush writes `Plugin State/` into
    the active folder. No protocol change.
+   **Done.** The steps are `ActiveFolder::enter()` in `engine/control`,
+   not a `Session` member: the lock is `common/platform`'s and recovery is
+   `engine/control`'s, and `engine/core` links neither (ADR-0007 §1).
+   `Session` holds the folder and the invariant (`folder()`,
+   `folder_change_refusal()`, `set_folder()`), and the steps end in
+   `set_folder()`.
 2. **Protocol: `Load` carries the path; `SessionFolder`** (`contracts/
    api`, `engine/control`, `ui/qt`, `FakeEngine`). The bump. The
    interface sends the opened file's path and builds Save paths from the

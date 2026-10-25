@@ -54,4 +54,10 @@ if(UNIX)
   add_executable(test_platform_folder_lock tests/test_folder_lock.cpp)
   target_link_libraries(test_platform_folder_lock PRIVATE sonora_platform)
   add_test(NAME platform_folder_lock COMMAND test_platform_folder_lock)
+
+  # The medium checks (ADR-0018 §8): free bytes and a read-only folder,
+  # checked against statvfs and a folder without write permission.
+  add_executable(test_platform_medium tests/test_medium.cpp)
+  target_link_libraries(test_platform_medium PRIVATE sonora_platform)
+  add_test(NAME platform_medium COMMAND test_platform_medium)
 endif()

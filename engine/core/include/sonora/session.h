@@ -173,7 +173,8 @@ bool parse_take_description(const std::string& description, TakeDescription& out
 
 struct SessionConfig {
     std::string name = "Untitled";
-    std::string dir;                 // session folder; audio goes in <dir>/Audio Files
+    // The folder the session starts in; Session::folder() is the one in use.
+    std::string dir;
     uint32_t sample_rate = 48000;
     int track_count = 8;
     uint16_t channels_per_track = 1;
@@ -465,6 +466,21 @@ public:
     Transport& transport() { return *transport_; }
     const std::vector<std::unique_ptr<Track>>& tracks() const { return tracks_; }
     const SessionConfig& config() const { return cfg_; }
+    // The active session folder (ADR-0018 §1): takes, their wrap lists and
+    // next_free_take() resolve against it, and engine/control reads it for
+    // sources, plugin states and flushes. SessionConfig::dir until
+    // set_folder(). Shared, never a reference to a member: a reader keeps
+    // the folder it was given. Control thread.
+    std::shared_ptr<const std::string> folder() const { return folder_; }
+    // Empty, or why the active folder may not change now: a take is open,
+    // or one is closing (a file the disk thread holds, or a take
+    // closed_takes() has not yet collected). A take closes into the folder
+    // it was opened in. Control thread.
+    std::string folder_change_refusal() const;
+    // Makes `path` the active folder, unless folder_change_refusal() says
+    // why not. Locks, creates and recovers nothing: engine/control's
+    // ActiveFolder::enter() does, and then calls this. Control thread.
+    bool set_folder(std::string path, std::string& why);
     // The name a take's files give in their Description: config().name until
     // set, then the document's (PlaybackController::show()). Control thread.
     const std::string& session_name() const { return session_name_; }
@@ -619,6 +635,7 @@ private:
     }
 
     SessionConfig cfg_;
+    std::shared_ptr<const std::string> folder_;
     std::string session_name_;
     std::string session_id_;
     std::unique_ptr<Transport> transport_;

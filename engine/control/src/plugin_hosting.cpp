@@ -488,7 +488,7 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
             // params, as at open. Sized first: a file past one state's cap
             // is not one, and reading it would stall the control loop.
             // Each way it fails is said (BACKLOG Track 4 item 8).
-            const std::string path = config_.session_dir + "/" + m->state->file;
+            const std::string path = *session_.folder() + "/" + m->state->file;
             std::error_code ec;
             const auto size = std::filesystem::file_size(path, ec);
             std::string why;

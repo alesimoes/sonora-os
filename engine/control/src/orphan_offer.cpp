@@ -170,7 +170,7 @@ OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string
 OrphansPlaced place_orphan_takes(model::Document& document, const Session& session,
                                  const OrphanOffer& offer) {
     OrphansPlaced out;
-    const std::string dir = session.config().dir;
+    const std::string dir = *session.folder();
     std::set<std::string> named;
     for (const model::Source& s : document.current().sources->sources) named.insert(s.path);
 

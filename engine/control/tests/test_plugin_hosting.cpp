@@ -66,6 +66,9 @@
 //   server_state_flush   the same through the server: the reply after the
 //                        file and the update; an unknown insert refused;
 //                        a save into another folder carries the state
+//   flush_active_folder  a flush after the session entered another folder
+//                        writes its state into that folder's Plugin State/,
+//                        not into the folder the engine started in
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -85,6 +88,7 @@
 #include <thread>
 #include <vector>
 
+#include "sonora/active_folder.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/wire.h"
 #include "sonora/engine_control_in_process.h"
@@ -190,11 +194,10 @@ struct Rig {
             out[o].assign(kBlock, 0.f);
             outs[o] = out[o].data();
         }
-        ctl = std::make_unique<PlaybackController>(*session, kDir);
+        ctl = std::make_unique<PlaybackController>(*session);
         PluginHostingConfig hc;
         hc.host_path = a.host;
         hc.bundles = a.bundles;
-        hc.session_dir = kDir;
         hc.block_frames = kBlock;
         hc.max_block_frames = 256;
         hc.max_stores = 16;
@@ -1020,6 +1023,91 @@ int scenario_server_state_flush(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// ADR-0018 §1: the server's flushes wrote into SessionConfig::dir, so a
+// session in another folder named states that were not in it.
+int scenario_flush_active_folder(const Args& a) {
+    std::printf("flush_active_folder: a flush writes into the active folder\n");
+    const std::string active = kDir + "_active";
+    std::filesystem::remove_all(kDir);
+    std::filesystem::remove_all(active);
+    SessionConfig cfg;
+    cfg.dir = kDir;
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    ActiveFolder folder;
+    std::string error;
+    std::vector<std::string> notices;
+    check(folder.enter(session, active, ActiveFolder::Kind::Named, error, notices),
+          "the session entered another folder");
+    FakeBackend::Config bc;
+    bc.devices = {FakeBackend::onboard()};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    h.apply(track_op(100, 101, "A"), e);
+    h.apply(insert_op(100, 500, 0, "urn:sonora:test#state"), e);
+    EngineControlServer::Options opts;
+    opts.plugin_host = a.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        check(until([&] { return (engine.state().track(0).inserts[0].flags & api::kInsertRunning) != 0; }, 20000),
+              "the insert runs");
+        api::ModelRequest flush;
+        flush.action = api::ModelAction::FlushPluginState;
+        const uint64_t seq = engine.submit(flush);
+        api::CommandReply reply;
+        check(until(
+                  [&] {
+                      for (const auto& r : in.replies)
+                          if (r.seq == seq) reply = r;
+                      return reply.seq == seq;
+                  },
+                  10000),
+              "the flush answered");
+        if (!reply.message.empty()) std::printf("  message: %s\n", reply.message.c_str());
+        check(reply.result == DispatchResult::Ok, "the flush: Ok");
+        const auto states_in = [](const std::string& dir) {
+            int files = 0;
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator(dir + "/Plugin State", ec)) {
+                const std::string name = entry.path().filename().string();
+                if (name.size() > 6 && name.substr(name.size() - 6) == ".state") ++files;
+            }
+            return files;
+        };
+        check(states_in(active) == 1, "  its state is in the active folder's Plugin State/");
+        check(states_in(kDir) == 0, "  and none in the folder the engine started in");
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
+    }
+    std::filesystem::remove_all(kDir);
+    std::filesystem::remove_all(active);
+    return failures ? 1 : 0;
+}
+
 // BACKLOG Track 4 item 5: the worker's refused messages were counted in the
 // host and told to nobody, so a sampler that never got its sample played on
 // as if it had. ADR-0012 change G, as for non-finite output: one Notice the
@@ -1704,6 +1792,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "rescan_blocks_running") rc = scenario_rescan_blocks_running(a);
     else if (a.scenario == "state_flush") rc = scenario_state_flush(a);
     else if (a.scenario == "server_state_flush") rc = scenario_server_state_flush(a);
+    else if (a.scenario == "flush_active_folder") rc = scenario_flush_active_folder(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

@@ -23,6 +23,26 @@ bool sync_directory(const std::string&) {
     return false;
 }
 
+bool free_bytes(const std::string& path, uint64_t& out) {
+    std::error_code ec;
+    const std::filesystem::space_info s = std::filesystem::space(path, ec);
+    if (ec) {
+        errno = ec.value();
+        return false;
+    }
+    out = static_cast<uint64_t>(s.available);
+    return true;
+}
+
+// Standard C++ cannot see a read-only mount or this process's own access
+// without writing a probe, which a read-only check must never do.
+bool read_only(const std::string& path) {
+    std::error_code ec;
+    const auto perms = std::filesystem::status(path, ec).permissions();
+    if (ec) return true;
+    return (perms & std::filesystem::perms::owner_write) == std::filesystem::perms::none;
+}
+
 FolderLock::~FolderLock() = default;
 
 // Standard C++ has no file lock, so nothing is held and nothing excluded.

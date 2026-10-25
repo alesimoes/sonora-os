@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -206,7 +207,10 @@ bool parse_take_description(const std::string& description, TakeDescription& out
     return true;
 }
 
-Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.name) {
+Session::Session(SessionConfig cfg)
+    : cfg_(std::move(cfg)),
+      folder_(std::make_shared<const std::string>(cfg_.dir)),
+      session_name_(cfg_.name) {
     transport_ = std::make_unique<Transport>(cfg_.sample_rate);
     probe_ = std::make_unique<LatencyProbe>(cfg_.sample_rate);
 
@@ -429,15 +433,36 @@ bool Session::post_plugin_param(uint64_t epoch, uint32_t store, uint32_t instanc
 }
 
 bool Session::create_dirs() {
-    if (!make_dir(cfg_.dir)) return false;
-    return make_dir(audio_dir(cfg_.dir));
+    if (!make_dir(*folder_)) return false;
+    return make_dir(audio_dir(*folder_));
+}
+
+std::string Session::folder_change_refusal() const {
+    if (recording_take_ != 0) return "take " + std::to_string(recording_take_) + " is open";
+    if (!closing_.empty()) return "take " + std::to_string(closing_.begin()->first) + " is closing";
+    // A slot is released only once the disk thread has closed its file.
+    for (const auto& t : tracks_) {
+        for (int s = 0; s < Track::kWriterSlots; ++s) {
+            if (const int take = t->slot_take(s)) {
+                return "take " + std::to_string(take) + " is closing";
+            }
+        }
+    }
+    return {};
+}
+
+bool Session::set_folder(std::string path, std::string& why) {
+    why = folder_change_refusal();
+    if (!why.empty()) return false;
+    folder_ = std::make_shared<const std::string>(std::move(path));
+    return true;
 }
 
 int Session::next_free_take() const {
     // Every track shares the take number, so any file of ours counts, on any
     // track, armed now, open now, or neither.
     int highest = 0;
-    DIR* d = ::opendir(audio_dir(cfg_.dir).c_str());
+    DIR* d = ::opendir(audio_dir(*folder_).c_str());
     if (!d) return 1;
     while (const dirent* e = ::readdir(d)) {
         const int n = take_of(e->d_name);
@@ -569,7 +594,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             slot = free_slot(*t);
         }
         const std::string file =
-            audio_dir(cfg_.dir) + "/" + take_file_name(t->name(), take_number);
+            audio_dir(*folder_) + "/" + take_file_name(t->name(), take_number);
         std::string failed = file;
         int err = 0;
         if (slot < 0) {

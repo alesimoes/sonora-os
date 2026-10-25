@@ -78,7 +78,6 @@ class ChildProcess;
 struct PluginHostingConfig {
     std::string host_path;             // sonora-plugin-host
     std::vector<std::string> bundles;  // --bundle, for probes and hosts
-    std::string session_dir;           // where "Plugin State/" files are
     uint32_t sample_rate = 48000;
     uint32_t block_frames = 128;       // the backend's period (item 4)
     uint32_t max_block_frames = 1024;  // the session's PlaybackConfig::max_block_frames

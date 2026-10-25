@@ -53,6 +53,16 @@ struct PathStatus {
 // read.
 bool path_status(const std::string& path, PathStatus& out);
 
+// The medium a session folder is on (ADR-0018 §8). Read on the control or
+// disk thread, never the audio thread: either may wait on a slow device.
+// The bytes an unprivileged writer may still use on the filesystem holding
+// `path` (POSIX: statvfs, f_bavail blocks). False with errno set when it
+// cannot be read; `out` is left alone then.
+bool free_bytes(const std::string& path, uint64_t& out);
+// Whether nothing can be written in `path`: its filesystem is mounted
+// read-only, or this process may not write there. Writes no probe file.
+bool read_only(const std::string& path);
+
 // An advisory lock on a folder: one engine per session folder, because a
 // second one would run crash recovery over the first one's open takes.
 // Held until the object is destroyed or the process ends, however it ends,
