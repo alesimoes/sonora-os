@@ -1,8 +1,7 @@
 # ADR-0017 — Windows plugins through yabridge: bridged VST3 only, no new path
 
-- Status: **Proposed**, 2026-10-25. Each decision below is the recommended
-  default; the coordinator accepts on those under the owner's standing
-  authorization, or the owner decides.
+- Status: **Accepted**, 2026-10-25 (coordinator, on the recommended default
+  of each decision below, under the owner's standing authorization).
 - Date: 2026-10-25
 - Proposed by: plugin-engineer (Track 4 item 6, BACKLOG "Windows VST through
   yabridge").
@@ -69,7 +68,7 @@ around.
   tarball is pinned by SHA-256
   `d11f0307412b5566b09a75ed4aa191266db56d22f4de4d20e4fbde6296cd1a47`.
   Licence GPL-3.0-or-later. Debian does not package it.
-- **Wine 10.0** from Debian trixie main (`wine`, `wine64`,
+- **Debian trixie's Wine 10.0 series** from main (`wine`, `wine64`,
   `10.0~repack-6`). Licence LGPL-2.1-or-later.
 - Upstream tests on Wine Staging 9.x. Its issue #409 records that Wine 9.22
   and later breaks *editor embedding*: the editor window, cursor offsets,

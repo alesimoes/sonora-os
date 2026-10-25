@@ -137,8 +137,10 @@ timeout 30 "$HOST" --probe "$LIAR_URI" --channels 2 >"$WORK/liar.json" 2>"$WORK/
 if grep -q '"ok":true' "$WORK/liar.json"; then
   fail "the Liar passed validation through yabridge: $(cat "$WORK/liar.json")"
 fi
-if grep -q '"ok":false' "$WORK/liar.json"; then
+if grep -q '"ok":false' "$WORK/liar.json" && ! grep -q 'not installed' "$WORK/liar.json"; then
   echo "ok 5 - the Liar is refused: $(grep -o '"reason":"[^"]*"' "$WORK/liar.json") ($(ms "$t") ms)"
+elif grep -q 'not installed' "$WORK/liar.json"; then
+  fail "the Liar was 'not installed', which says nothing about validation: $(cat "$WORK/liar.json")"
 else
   echo "ok 5 - the Liar never answers its probe (exit $rc after $(ms "$t") ms): Blocked"
 fi
