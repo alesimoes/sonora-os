@@ -829,7 +829,8 @@ int scenario_touch_faults(const Args& a) {
             if (n.find(a1) != std::string::npos && n.find(a2) != std::string::npos) return true;
         return false;
     };
-    check(has("A: ", "were lost on the way"), "  the lost touches name the track");
+    check(has("A: ", "were lost on the way") && has("A: ", "read back and recorded"),
+          "  the lost touches name the track, and say the values were read back");
     check(has("(A, slot B)", "did not record that change"), "  the unmapped ones name the plugin, track and slot");
     bool standing = false;
     for (int i = 0; i < 100; ++i) {
@@ -852,6 +853,26 @@ int scenario_touch_faults(const Args& a) {
     check(notices.size() == 2, "a new run: both said again");
     check(rig.hosting->touches_lost(100) == 6 && rig.hosting->param_unmapped(501) == 6,
           "  the counts kept and rising");
+    // Ids are per session (#121 review): a session opened with the same
+    // track and insert ids starts from 0, with none of the last one's notices.
+    send(pc::Fault{pc::FaultKind::EventsDropped, -1, 1, ""});  // its notices left untaken
+    rig.history = History(new_session(SessionSettings{}));
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 501, 0, kEgAmp));
+    rig.show(true);
+    // The last session's host plays until a plan without it: wait for this
+    // session's own.
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && (rig.hosting->insert_flags(501) & api::kInsertRunning); },
+                    20000),
+          "a new session: its insert 501 runs");
+    check(rig.hosting->touches_lost(100) == 0 && rig.hosting->param_unmapped(501) == 0,
+          "  with counts of 0, not the last session's");
+    check(rig.hosting->take_notices().empty(), "  and none of its notices");
+    send(pc::Fault{pc::FaultKind::ParamUnmapped, 0, 2, ""});
+    send(pc::Fault{pc::FaultKind::EventsDropped, -1, 3, ""});
+    check(rig.hosting->take_notices().size() == 2 && rig.hosting->param_unmapped(501) == 2 &&
+              rig.hosting->touches_lost(100) == 3,
+          "  its own faults: said afresh, counted from 0");
     return failures ? 1 : 0;
 }
 

@@ -589,6 +589,9 @@ void publish_latency(plugin::ChannelHeader& h, const Chain& chain, uint32_t ipc_
 
 // Idle wake period in futex mode: bounds how stale the heartbeat can be.
 constexpr uint64_t kIdleWaitNs = 100'000'000;
+// After a lost touch, how long the gestures it ended get to come back through
+// the engine's value table before the plugin's values are compared with it.
+constexpr uint64_t kRecoverDelayNs = 100'000'000;
 // Timer mode (ADR-0012 §1.3). How long after a callback's start the host
 // looks for its submit (placeholder), the step while that callback is late,
 // and the sleep while the engine is not calling back at all.
@@ -1173,6 +1176,10 @@ int serve(const Options& o) {
         return chain.current_touch_value(instance, param, v);
     };
     GestureTracker gestures;
+    // After a drop, the plugin's values against the engine's last ones, once
+    // the gestures end_all ended have had time to come back through the
+    // table (a few blocks), so they are not recorded twice.
+    uint64_t recover_due = 0;
     std::vector<TouchQueue::Event> events;
     int protocol_exit = -1;
     auto send = [&](const std::string& bytes) {
@@ -1202,6 +1209,21 @@ int serve(const Options& o) {
             say_counted(pc::FaultKind::ParamUnmapped, static_cast<int32_t>(i), touches.unmapped(uint32_t(i)),
                         unmapped_said[i], now, "touches of a parameter with no dense index (read-only or unknown)");
         }
+    };
+    auto recover = [&] {
+        const auto count = [&](uint32_t i) { return i < map.instance_count ? map.count[i] : 0u; };
+        const auto engine = [&](uint32_t i, uint32_t p, float& v) {
+            if (p == plugin::kBypassParam) {
+                v = h.bypass[i].load(std::memory_order_relaxed) > 0.5f ? 1.f : 0.f;
+                return true;
+            }
+            const int64_t slot = plugin::param_slot(map, i, p);
+            if (slot < 0) return false;
+            v = s.table[slot].load(std::memory_order_relaxed);
+            return true;
+        };
+        gestures.recover(uint32_t(chain.size()), count, engine, current, send);
+        recover_due = 0;
     };
     auto stop_processing = [&] {
         s.stop.store(true, std::memory_order_release);
@@ -1359,8 +1381,11 @@ int serve(const Options& o) {
         if (lost != lost_seen) {
             gestures.end_all(current, send);
             lost_seen = lost;
+            recover_due = now + kRecoverDelayNs;
         }
-        const uint64_t touch_due = gestures.flush(now, send);
+        if (recover_due && now >= recover_due) recover();
+        uint64_t touch_due = gestures.flush(now, send);
+        if (recover_due && (touch_due == 0 || recover_due < touch_due)) touch_due = recover_due;
         // A plugin that refills a full ring, or touches a meter, every block
         // would otherwise send a Fault every pass.
         say_counts(now);
@@ -1382,6 +1407,7 @@ int serve(const Options& o) {
     touches.drain(events);
     for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
     gestures.end_all(current, send);
+    if (recover_due || touches.lost() != lost_seen) recover();
     stop_processing();
     join_thread(processing);
     // After the last run(): no schedule or touch can come later and go unsaid.

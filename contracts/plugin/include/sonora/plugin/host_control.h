@@ -2,7 +2,7 @@
 #pragma once
 
 // ============================================================================
-//  HostControl, wire version 2 (ADR-0012 §4, §5.5; checklist item 1).
+//  HostControl, wire version 3 (ADR-0012 §4, §5.5; checklist item 1).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6), like
 //  protocol.h. A change to a message, a field, a cap or an ordering rule
@@ -145,9 +145,18 @@
 //    that instant; counted in Fault{EventsDropped}). When the host sees any
 //    drop, it ends every gesture still open at once, each with the plugin's
 //    current value read on its main thread, before it sends that Fault. A
-//    later touch of such a gesture starts a new one; a later end of it is
-//    ignored. So every GestureBegin gets its GestureEnd, and the engine
-//    records SetInsertParams for every parameter that moved.
+//    later touch of such a gesture starts a new one; a later end of it at
+//    the value already sent is ignored, and at another value is sent as a
+//    gesture of its own (Begin, Touched, End), as is an end whose begin was
+//    lost. A lone edit lost leaves nothing to end, so after a drop the host
+//    also compares, once the ended gestures have had time to come back
+//    (about 100 ms, and before it stops), every parameter's and bypass's
+//    value in the plugin with the engine's last value, and sends each that
+//    differs, with no gesture open on it, as a gesture of its own. So every
+//    GestureBegin gets its GestureEnd, and the engine records
+//    SetInsertParams for every parameter that moved; a move whose touches
+//    were lost may be recorded as two gestures (two undo steps) instead of
+//    one.
 //  - The engine does not trust the host to coalesce (M2). It enforces, per
 //    host: at most kMaxTouchesPerSecondPerParam ParamTouched per (instance,
 //    param), and at most kMaxGestureEndsPerSecond GestureEnd in any
@@ -560,8 +569,9 @@ enum class FaultKind : uint8_t {
     Protocol = 1,       // the engine broke this contract; the host exits kHostExitUsage
     // Touches the host could not queue (its ring full, or the main thread
     // holding it), `count` more since the last; `instance` is -1, the queue
-    // being the host's. Every gesture open then was ended at the plugin's
-    // value, so the document is right, but a move may be split in two.
+    // being the host's. The host recovered the values those touches carried
+    // from the plugin ("Parameter touches"), so the document has the final
+    // values, but a move may be split into more than one gesture.
     EventsDropped = 2,
     // LV2 worker:schedule requests and work() responses refused because
     // their ring was full (LV2_WORKER_ERR_NO_SPACE), `count` more of them

@@ -11,6 +11,7 @@
 #include "sonora/platform/ipc.h"
 #include "sonora/plugin/host_control.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -115,6 +116,14 @@ public:
     // PR #51), and no gesture may stay open for want of it.
     template <class Current, class Send>
     void end_all(Current&& current, Send&& send);
+    // After touches were lost, a value the plugin moved may be in no
+    // gesture the host saw (a lone edit lost; host_control.h). For every
+    // instance below `instances`, its `count(i)` dense parameters and its
+    // bypass: where no gesture is open and `current(i, p, float&)` differs
+    // from the engine's last value, `engine(i, p, float&)`, the plugin's
+    // value is recorded as a one-shot gesture.
+    template <class Count, class Engine, class Current, class Send>
+    void recover(uint32_t instances, Count&& count, Engine&& engine, Current&& current, Send&& send);
     bool any_open() const { return !open_.empty(); }
 
 private:
@@ -123,8 +132,26 @@ private:
         bool pending = false;  // a touch not sent yet
         uint64_t sent_ns = 0;  // when the last ParamTouched went
     };
+    template <class Send>
+    static void one_shot(uint32_t instance, uint32_t param, float value, Send&& send);
+
     std::map<std::pair<uint32_t, uint32_t>, Open> open_;
+    // Gestures end_all ended, at the value it sent: their own late end at
+    // that value says nothing new.
+    std::map<std::pair<uint32_t, uint32_t>, float> ended_;
 };
+
+template <class Send>
+void GestureTracker::one_shot(uint32_t instance, uint32_t param, float value, Send&& send) {
+    using namespace plugin::control;
+    std::string bytes;
+    encode(GestureBegin{instance, param}, bytes);
+    send(bytes);
+    encode(ParamTouched{instance, param, value}, bytes);
+    send(bytes);
+    encode(GestureEnd{instance, param, value}, bytes);
+    send(bytes);
+}
 
 template <class Send>
 void GestureTracker::apply(const TouchQueue::Event& e, uint64_t now_ns, Send&& send) {
@@ -135,6 +162,7 @@ void GestureTracker::apply(const TouchQueue::Event& e, uint64_t now_ns, Send&& s
     switch (e.kind) {
     case TouchKind::Begin:
         if (it != open_.end()) return;
+        ended_.erase(key);
         open_[key] = Open{e.value, false, 0};
         encode(GestureBegin{e.instance, e.dense}, bytes);
         send(bytes);
@@ -142,12 +170,8 @@ void GestureTracker::apply(const TouchQueue::Event& e, uint64_t now_ns, Send&& s
     case TouchKind::Perform:
         if (it == open_.end()) {
             // A touch outside a gesture is a gesture of its own.
-            encode(GestureBegin{e.instance, e.dense}, bytes);
-            send(bytes);
-            encode(ParamTouched{e.instance, e.dense, e.value}, bytes);
-            send(bytes);
-            encode(GestureEnd{e.instance, e.dense, e.value}, bytes);
-            send(bytes);
+            ended_.erase(key);
+            one_shot(e.instance, e.dense, e.value, send);
             return;
         }
         it->second.last = e.value;
@@ -161,8 +185,16 @@ void GestureTracker::apply(const TouchQueue::Event& e, uint64_t now_ns, Send&& s
         }
         return;
     case TouchKind::End:
-        // Not open: already ended (after a drop), or never begun. Ignored.
-        if (it == open_.end()) return;
+        if (it == open_.end()) {
+            // Not open: ended by end_all after a drop, or its begin and
+            // touches lost. Unless end_all already sent this value, the end
+            // is the only word of the move, so it is recorded (#121).
+            const auto was = ended_.find(key);
+            const bool said = was != ended_.end() && was->second == e.value;
+            if (was != ended_.end()) ended_.erase(was);
+            if (!said && std::isfinite(e.value)) one_shot(e.instance, e.dense, e.value, send);
+            return;
+        }
         // The plugin's value at the end (VST3: the controller's, read at
         // endEdit), not the last touch queued: a touch lost on the way
         // must not make it stale (M3).
@@ -205,8 +237,29 @@ void GestureTracker::end_all(Current&& current, Send&& send) {
         if (current(key.first, key.second, now) && std::isfinite(now)) v = now;
         encode(GestureEnd{key.first, key.second, v}, bytes);
         send(bytes);
+        ended_[key] = v;
     }
     open_.clear();
+}
+
+template <class Count, class Engine, class Current, class Send>
+void GestureTracker::recover(uint32_t instances, Count&& count, Engine&& engine, Current&& current, Send&& send) {
+    const auto check = [&](uint32_t i, uint32_t p) {
+        if (open_.count({i, p})) return;
+        float was = 0.f, now = 0.f;
+        if (!engine(i, p, was) || !current(i, p, now) || !std::isfinite(now) || now == was) return;
+        // A format's own rounding (a stepped parameter) is no move.
+        if (std::fabs(now - was) <= 1e-6f * std::max(1.f, std::fabs(was))) return;
+        // end_all sent this value, and the engine has not posted it back yet.
+        if (const auto e = ended_.find({i, p}); e != ended_.end() && e->second == now) return;
+        ended_.erase({i, p});
+        one_shot(i, p, now, send);
+    };
+    for (uint32_t i = 0; i < instances; ++i) {
+        const uint32_t n = count(i);
+        for (uint32_t p = 0; p < n; ++p) check(i, p);
+        check(i, plugin::kBypassParam);
+    }
 }
 
 }  // namespace sonora::plugin_host

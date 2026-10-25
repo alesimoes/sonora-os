@@ -1037,8 +1037,8 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                 c.lost_noticed = true;
                 notices_.push_back(t->name +
                                    ": parameter moves from a plug-in editor on this track were lost on the way to "
-                                   "the engine; each move was ended at the plug-in's value, so the session has "
-                                   "it, but one move may have become two undo steps");
+                                   "the engine; the plug-in's values were read back and recorded, but one move "
+                                   "may have become more than one undo step");
                 break;
             }
             if (m.kind != pc::FaultKind::WorkRefused && m.kind != pc::FaultKind::ParamUnmapped) break;

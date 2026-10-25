@@ -935,7 +935,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          them (`PluginHosting::touches_lost(track)`,
          `param_unmapped(insert)`) and posts one non-standing Notice per run
          of the chain: the track for lost touches, plugin, track and slot
-         for unmapped ones. No fault stands. ctest
+         for unmapped ones. No fault stands. A move whose touches were lost
+         is still recorded (#121 review): an end with its begin lost, or at
+         a value newer than the one end_all sent, is a gesture of its own,
+         and 100 ms after a drop (and before the host stops) every
+         parameter and bypass whose plugin value differs from the engine's
+         last value, with no gesture open, is sent as one (a lone edit
+         lost). ctest `plugin_host_gestures`
+         (`an_end_with_its_begin_lost_is_recorded`,
+         `a_lost_lone_edit_is_recovered_from_the_plugin`); the counts clear
+         on session open (`plugin_hosting_touch_faults`). ctest
          `plugin_hosting_touch_faults`, `plugin_host_vst3_gesture` (the
          read-only touch is ParamUnmapped for instance 0, no
          EventsDropped), `contract_host_control`.
