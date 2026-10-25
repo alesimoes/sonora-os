@@ -613,4 +613,5 @@ And in `engine/core`, with the reader and the punch work:
 - Phase 3's loop recording creates a take per pass. Whether each pass is a
   `RecordTake` on an alternate playlist, or one source with pass markers, is
   Phase 3's decision. Both fit this model; the boundary records already
-  split a pass at a frame.
+  split a pass at a frame. ADR-0016 (Proposed) recommends one source with
+  a region per pass on its own playlist.
