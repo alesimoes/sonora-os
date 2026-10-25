@@ -329,6 +329,34 @@ int test_left_takes_are_not_offered() {
     return 0;
 }
 
+// The file was labelled P0 - L when it was captured (ADR-0019 §2), and the
+// Description carries the L it was captured with: the recovered source says
+// so too, for a whole take, a punch take and one pooled unplaced.
+int test_recovered_take_keeps_its_latency() {
+    Rig rig("sonora_test_orphan_latency");
+    const uint64_t t1 = rig.track_id(0);
+    PunchRange p;
+    p.monitor_in = 10000;
+    p.monitor_out = 12000;
+    CHECK(rig.write("Audio 1_03.wav", take_description(3, t1, "Untitled", nullptr, nullptr, rig.id(), 480), 96000, 4800));
+    CHECK(rig.write("Audio 1_04.wav", take_description(4, t1, "Untitled", &p, nullptr, rig.id(), 480), 8000, 6000));
+    CHECK(rig.write("Audio 9_05.wav", take_description(5, 999, "Untitled", nullptr, nullptr, rig.id(), 480), 0, 4800));
+    CHECK(rig.write("Audio 1_06.wav", rig.whole(6, t1), 0, 4800));   // written before L was recorded
+    const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
+    CHECK(offer.takes.size() == 4);
+    CHECK(offer.takes[0].said.latency == 480);
+    place_orphan_takes(*rig.doc, *rig.session, offer);
+    const model::Source* whole = rig.source("Audio Files/Audio 1_03.wav");
+    CHECK(whole != nullptr && whole->latency_compensation == 480);
+    const model::Source* punch = rig.source("Audio Files/Audio 1_04.wav");
+    CHECK(punch != nullptr && punch->latency_compensation == 480);
+    const model::Source* pooled = rig.source("Audio Files/Audio 9_05.wav");
+    CHECK(pooled != nullptr && pooled->latency_compensation == 480);
+    const model::Source* old = rig.source("Audio Files/Audio 1_06.wav");
+    CHECK(old != nullptr && old->latency_compensation == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -343,6 +371,7 @@ int main(int argc, char** argv) {
         {"loop_take_passes", test_loop_take_passes},
         {"takes_of_this_session_only", test_takes_of_this_session_only},
         {"left_takes_are_not_offered", test_left_takes_are_not_offered},
+        {"recovered_take_keeps_its_latency", test_recovered_take_keeps_its_latency},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

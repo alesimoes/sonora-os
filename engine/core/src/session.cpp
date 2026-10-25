@@ -89,7 +89,7 @@ int take_of(const std::string& name) {
 
 std::string take_description(int take, uint64_t track_id, const std::string& session,
                              const PunchRange* punch, const LoopRange* loop,
-                             const std::string& session_id) {
+                             const std::string& session_id, uint32_t latency) {
     constexpr std::size_t kMax = 255;
     std::string head = "sonora take=" + std::to_string(take);
     if (track_id != 0) head += " track=" + std::to_string(track_id);
@@ -99,6 +99,7 @@ std::string take_description(int take, uint64_t track_id, const std::string& ses
         head += " punch=" + std::to_string(punch->monitor_in) + "-" +
                 std::to_string(punch->monitor_out);
     }
+    if (latency != 0) head += " lat=" + std::to_string(latency);
     if (!session_id.empty()) head += " id=" + session_id;
     head += " session=";
     const std::size_t room = kMax - std::min(kMax, head.size());
@@ -186,6 +187,9 @@ bool parse_take_description(const std::string& description, TakeDescription& out
         } else if (k == "punch" || k == "loop") {
             if (d.punched || d.looped || !range(v, d.from, d.to)) return false;
             (k == "punch" ? d.punched : d.looped) = true;
+        } else if (k == "lat") {
+            if (d.latency != 0 || !number(v, n) || n == 0 || n > UINT32_MAX) return false;
+            d.latency = static_cast<uint32_t>(n);
         } else if (k == "id") {
             if (!d.session_id.empty() || v.empty() || v.size() > 64) return false;
             for (const char c : v) {
@@ -574,7 +578,8 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             WavWriter& w = t->writer(slot);
             w.set_description(
                 take_description(take_number, t->document_id(), session_name_, range, loop,
-                                 session_id_));
+                                 session_id_,
+                                 loop != nullptr ? loop->latency : input_latency()));
             if (!w.open(file, cfg_.sample_rate, t->channels(), cfg_.format, origin)) {
                 err = errno;
             } else if (loop != nullptr &&

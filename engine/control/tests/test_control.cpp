@@ -680,6 +680,9 @@ void loop_record_on_the_real_engine() {
     };
     // One second of loop from the first second; no pre-roll.
     CHECK(settings({48000, 96000}, 48000).result == DispatchResult::Ok);
+    // The session's round trip reaches the loop take (ADR-0019 §4).
+    constexpr uint32_t kLatency = 240;
+    CHECK(real.session().set_input_latency(kLatency, &error));
     api::CommandReply r;
     api::CommandRequest arm;
     arm.command = "track.toggle_arm";
@@ -728,6 +731,13 @@ void loop_record_on_the_real_engine() {
     for (const auto& p : t.playlists) {
         if (p->id == t.active_playlist) CHECK(p->regions.size() == 1);
     }
+    std::size_t recorded = 0;
+    for (const model::Source& src : replica.current().sources->sources) {
+        if (src.kind != model::SourceKind::Recorded) continue;
+        ++recorded;
+        CHECK(src.latency_compensation == kLatency);
+    }
+    CHECK(recorded >= 1);
 }
 
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {

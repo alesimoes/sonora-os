@@ -116,6 +116,10 @@ the exit criterion", the latency term), and it is deferred the same way:
 until the loopback measurement lands, L is the backend's reported latency
 here as it is for a punch, and the source records which figure was used.
 
+> Note 2026-10-25: superseded by ADR-0019. L is the loopback measurement
+> (`--measure-latency`) or `--input-latency`, 0 when neither is given, not
+> the backend's reported latency.
+
 The disk thread does not split files at a Wrap. It appends the wrap's file
 frame to a sidecar `<take file>.wraps`: a fixed header (magic, version,
 A, B) and one 8-byte little-endian record per wrap, append-only. The
