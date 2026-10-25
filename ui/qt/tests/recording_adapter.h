@@ -19,6 +19,7 @@ public:
     struct Sent {
         std::string command;
         int target;
+        std::string argument;
     };
 
     explicit RecordingAdapter(uint32_t tracks = 18,
@@ -33,7 +34,7 @@ public:
     bool connect(std::string&) override { return true; }
     const EngineInfo& info() const override { return info_; }
     uint64_t send(const std::string& command, const CommandContext& ctx) override {
-        sent.push_back({command, ctx.target});
+        sent.push_back({command, ctx.target, ctx.argument});
         CommandOutcome o;
         o.seq = ++seq_;
         o.command = command;

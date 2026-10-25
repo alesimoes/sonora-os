@@ -120,10 +120,11 @@ struct Session {
         return n;
     }
 
-    uint64_t command(const std::string& id, int32_t target = -1) {
+    uint64_t command(const std::string& id, int32_t target = -1, const std::string& argument = {}) {
         CommandRequest r;
         r.command = id;
         r.target = target;
+        r.argument = argument;
         return engine->send(r);
     }
 
@@ -445,6 +446,99 @@ int check_play(Rig& rig) {
         }
     };
     return C(rig, "a roll").go();
+}
+
+// transport.locate (marker recall): stopped, the playhead moves to the
+// frame and stays; rolling, it jumps there and the roll goes on; a frame
+// that is not one, and any locate during a take, is refused by name.
+int check_locate(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const auto& impl = s.engine->hello().implemented_commands;
+            EXPECT(std::find(impl.begin(), impl.end(), "transport.locate") != impl.end(),
+                   "transport.locate is not announced");
+            EXPECT(s.until(rig_, [&]() { return !v.transport().stale; }), "state is stale");
+            const uint64_t rate = s.engine->hello().sample_rate;
+            const int32_t take = v.transport().take;
+            CommandReply r;
+
+            const uint64_t stopped_at = 3ull * rate + 17;
+            EXPECT(s.await(rig_, s.command("transport.locate", -1, std::to_string(stopped_at)), r) &&
+                       r.result == DispatchResult::Ok,
+                   "locate while stopped failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().playhead == stopped_at; }),
+                   "locate did not move the playhead to the frame");
+            EXPECT(s.next_publish(rig_), "nothing published after the locate");
+            EXPECT(v.transport().state == TransportState::Stopped &&
+                       v.transport().playhead == stopped_at,
+                   "a locate while stopped started the transport or did not hold");
+
+            EXPECT(s.await(rig_, s.command("transport.play"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Rolling && t.playhead > stopped_at;
+                   }),
+                   "the roll did not start from the located frame");
+            const uint64_t rolling_at = 60ull * rate;
+            EXPECT(s.await(rig_, s.command("transport.locate", -1, std::to_string(rolling_at)), r) &&
+                       r.result == DispatchResult::Ok,
+                   "locate while rolling failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().playhead >= rolling_at; }),
+                   "locate while rolling did not jump to the frame");
+            EXPECT(v.transport().state == TransportState::Rolling, "locate while rolling stopped the roll");
+            const uint64_t jumped = v.transport().playhead;
+            EXPECT(s.until(rig_, [&]() { return v.transport().playhead > jumped; }),
+                   "the roll did not go on after the locate");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Stopped; }),
+                   "the roll did not stop");
+
+            for (const char* bad : {"-1", "", "abc", "281474976710657"}) {
+                EXPECT(s.await(rig_, s.command("transport.locate", -1, bad), r) &&
+                           r.result == DispatchResult::Failed && !r.message.empty(),
+                       std::string("locate to \"") + bad + "\" was not refused by name");
+            }
+
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_,
+                           [&]() { return v.transport().state == TransportState::Recording; }),
+                   "the state block never showed the take running");
+            EXPECT(s.await(rig_, s.command("transport.locate", -1, "0"), r) &&
+                       r.result == DispatchResult::Failed &&
+                       r.message.find("take") != std::string::npos,
+                   "locate during a take was not refused by name: " + r.message);
+            EXPECT(v.transport().state == TransportState::Recording, "a refused locate ended the take");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const TransportSnapshot t = v.transport();
+                       return t.state == TransportState::Stopped && t.take == take + 1;
+                   }),
+                   "the take did not close");
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "disarming failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.return_to_zero"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "return to zero failed: " + r.message);
+            return ok();
+        }
+    };
+    return C(rig, "locate").go();
 }
 
 // transport.punch, on the fly: while rolling it punches in, and during the
@@ -1412,6 +1506,7 @@ int run(Rig& rig) {
     failures += check_arming(rig);
     failures += check_take(rig);
     failures += check_play(rig);
+    failures += check_locate(rig);
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);

@@ -484,6 +484,95 @@ int test_transport_commands() {
     return 0;
 }
 
+// transport.locate, the frame in the argument: stopped it moves the playhead
+// through the gate; rolling it jumps and keeps rolling; in a take, or with a
+// frame that is not one, it is refused by name and nothing is asked.
+int test_locate_command() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}));
+    PlaybackController ctl(s, kDir);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, &ctl);
+    CHECK(reg.implemented("transport.locate"));
+    Out o;
+
+    std::string why;
+    const auto locate = [&reg, &why](const std::string& arg) {
+        sonora::CommandContext ctx;
+        ctx.argument = arg;
+        why.clear();
+        return reg.dispatch("transport.locate", ctx, why);
+    };
+
+    const uint64_t stopped_at = 7 * kChunk + 3;
+    CHECK(locate(std::to_string(stopped_at)) == DispatchResult::Ok);
+    for (int i = 0; i < 10 && s.transport().playhead() != stopped_at; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        run_block(s, o);
+    }
+    CHECK(s.transport().state() == TransportState::Stopped);
+    CHECK(s.transport().playhead() == stopped_at);
+    // Play from there: the first block rolled is the target's.
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    run_block(s, o);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(o.l[i] == value(1, static_cast<int64_t>(stopped_at + i)));
+    }
+
+    const uint64_t rolling_at = 30 * kChunk + 11;
+    CHECK(locate(std::to_string(rolling_at)) == DispatchResult::Ok);
+    for (int i = 0; i < 10 && ctl.locating(); ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+    }
+    CHECK(!ctl.locating());
+    run_block(s, o);
+    CHECK(s.transport().state() == TransportState::Rolling);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(o.l[i] == value(1, static_cast<int64_t>(rolling_at + i)));
+    }
+    CHECK(s.playback_misses() == 0);
+    ctl.stop();
+
+    for (const char* bad : {"", "x", "12x", " 5", "+5", "1.5", "0x10",
+                            "99999999999999999999999"}) {
+        CHECK(locate(bad) == DispatchResult::Failed);
+        CHECK(why.find("frame") != std::string::npos);
+    }
+    CHECK(locate("-1") == DispatchResult::Failed);
+    CHECK(why.find("negative") != std::string::npos);
+    // Past the session end is silence, as in Pro Tools, not an error; past
+    // what the timeline can address is.
+    CHECK(locate("281474976710657") == DispatchResult::Failed);
+    CHECK(why.find("past") != std::string::npos);
+    CHECK(!ctl.locating());
+    CHECK(locate("281474976710656") == DispatchResult::Ok);
+    CHECK(locate("0") == DispatchResult::Ok);
+    CHECK(ctl.settle(2.0));
+
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    run_block(s, o);
+    CHECK(s.transport().state() == TransportState::Recording);
+    CHECK(locate("0") == DispatchResult::Failed);
+    CHECK(why.find("take") != std::string::npos);
+    CHECK(!ctl.locating());
+    CHECK(s.stop(&error));
+    return 0;
+}
 
 // The take's origin is the timeline frame its first sample was recorded at,
 // as the audio thread saw it, not the playhead when record was pressed:
@@ -1510,6 +1599,7 @@ int main() {
     if (test_undo_while_rolling()) return 1;
     if (test_locate_and_cancel()) return 1;
     if (test_transport_commands()) return 1;
+    if (test_locate_command()) return 1;
     if (test_take_origin_is_first_recorded_frame()) return 1;
     if (test_takes_closed_while_rolling_join_the_document()) return 1;
     if (test_failure_in_a_take_punched_out_is_reported()) return 1;

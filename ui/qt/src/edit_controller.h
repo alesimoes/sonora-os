@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -268,9 +269,13 @@ public:
     // A marker: the insertion point moves to it; a selection marker: its
     // range is selected, on the selected tracks (the first track when none
     // is). The view scrolls to it when it is off screen. Nothing is snapped
-    // to the grid: the marker is where it was put. The playhead does not
-    // follow until the engine has a locate command (Track 1 item 4).
+    // to the grid: the marker is where it was put. The playhead follows,
+    // to the marker's start, through the locator.
     bool recall_marker(model::Id marker, std::string& why);
+    // Where recall sends the playhead: transport.locate, wired by
+    // link_marker_locate(). None, recall moves the selection only.
+    using Locator = std::function<void(model::Frames frame)>;
+    void set_locator(Locator l) { locate_ = std::move(l); }
     // The marker drawn under `x` on the marker ruler, in its pixels: a
     // marker's flag, else a selection marker's bar; kNoId over neither.
     model::Id marker_at(double x) const;
@@ -344,6 +349,7 @@ private:
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
     int repeat_count_ = 1;
+    Locator locate_;
     uint64_t clipboard_serial_ = 0;
 };
 

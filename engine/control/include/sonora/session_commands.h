@@ -52,7 +52,8 @@ using MayArm = std::function<bool(std::size_t engine_track, std::string& why)>;
 // every take may start; without `punch_for` every take is whole; without
 // `may_arm` every engine track may be armed.
 // With `playback` (which must outlive `reg` too), transport.play,
-// transport.toggle_play and transport.return_to_zero are installed as well,
+// transport.toggle_play, transport.return_to_zero and transport.locate are
+// installed as well,
 // gated on the plan's residency through it, and a take started from a key
 // waits behind the same gate.
 // Without `loop_for` no take is a loop take; with it, one is located to its

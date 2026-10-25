@@ -485,6 +485,7 @@ int main(int argc, char** argv) {
     a.model = &model;
     QObject::connect(&session, &SessionModel::openNotice, &model, &ShellModel::setOpenNotice);
     link_transport(model, session, transport);
+    link_marker_locate(model, session);
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
     plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {

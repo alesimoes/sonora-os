@@ -41,6 +41,11 @@ class TransportModel;
 // apart. Replaces any transport sink the shell had.
 void link_transport(ShellModel& shell, SessionModel& session, TransportModel& transport);
 
+// Marker recall locates the engine's playhead with transport.locate, through
+// the shell as a key would send it, so a refusal (a take running) reaches
+// the status line.
+void link_marker_locate(ShellModel& shell, SessionModel& session);
+
 class TransportModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool open READ open WRITE setOpen NOTIFY openChanged)
