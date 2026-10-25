@@ -50,12 +50,13 @@ struct Rig {
     uint64_t from = 0;
     uint64_t to = 0;
 
-    Rig(const std::string& name, uint32_t pool_chunks) {
+    // Tracks past the first record only, panned away from out[0].
+    Rig(const std::string& name, uint32_t pool_chunks, uint32_t tracks = 1) {
         dir = fs::temp_directory_path() / ("sonora_test_loop_playback_" + name);
         fs::remove_all(dir);
         sonora::SessionConfig cfg;
         cfg.dir = dir.string();
-        cfg.track_count = 1;
+        cfg.track_count = tracks;
         cfg.format = sonora::WavWriter::Format::Float32;
         cfg.ring_seconds = 1.0;
         cfg.playback.chunk_frames = kChunk;
@@ -74,6 +75,10 @@ struct Rig {
         Session& s = *session;
         s.tracks()[0]->set_rec_armed(false);
         s.tracks()[0]->set_pan(-1.0f);
+        for (uint32_t t = 1; t < tracks; ++t) {
+            s.tracks()[t]->set_rec_armed(false);
+            s.tracks()[t]->set_pan(1.0f);
+        }
     }
     ~Rig() {
         session.reset();
@@ -373,6 +378,34 @@ int test_a_plain_take_does_not_wrap() {
     return 0;
 }
 
+// A plain take records through B, so a loop change during it must not
+// stop the reader at the new B: playback would drop out there. B on a
+// chunk edge, so no chunk read for the frames before it covers those after.
+int test_a_loop_change_during_a_plain_take_reads_past_b() {
+    Rig rig("plain_change", 20, 2);
+    Session& s = *rig.session;
+    CHECK(rig.load());
+    CHECK(rig.loop(1000, 2000));
+    CHECK(rig.locate(1000));
+    s.tracks()[1]->set_rec_armed(true);
+    std::string error;
+    CHECK(s.start_recording(s.next_free_take(), &error));
+    s.reader().run_pass();
+    std::string why;
+    CHECK(s.set_loop(1000, 12 * kChunk, &why));
+    rig.from = 0;
+    rig.to = 0;
+    for (int b = 0; b < 60; ++b) {
+        s.pump_loop();
+        CHECK(rig.rolled("through B", b));
+    }
+    CHECK(rig.timeline > 6000);
+    CHECK(s.transport().playhead() == rig.timeline);
+    CHECK(s.playback_misses() == 0);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
 // A loop take holds its own range in the reader and lets it go at stop;
 // the playback loop must be held again after, or a loop longer than the
 // pool plays silence at the top of every pass.
@@ -421,6 +454,8 @@ int main(int argc, char** argv) {
         {"shrink_and_clear_while_rolling", test_shrink_and_clear_while_rolling},
         {"short_loops_are_refused", test_short_loops_are_refused},
         {"a_plain_take_does_not_wrap", test_a_plain_take_does_not_wrap},
+        {"a_loop_change_during_a_plain_take_reads_past_b",
+         test_a_loop_change_during_a_plain_take_reads_past_b},
         {"a_loop_take_gives_the_hold_back", test_a_loop_take_gives_the_hold_back},
     };
     for (const Test& t : tests) {

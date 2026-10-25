@@ -318,8 +318,8 @@ public:
     // plays on, still held. Refused, leaving the loop as it was, for a range
     // shorter than one block (PlaybackConfig::max_block_frames), so no
     // callback within that bound wraps twice. A take is one contiguous span
-    // and does not wrap at it; a loop take wraps at its own range, and the
-    // reader holds this one again when the take ends. Control thread.
+    // and does not wrap at it; a loop take wraps at its own range. A range
+    // set during any take is held and sent when it ends. Control thread.
     bool set_loop(uint64_t from, uint64_t to, std::string* error = nullptr);
     // Sends the range set_loop() set last once its start is resident; a
     // full queue leaves it for the next call. Control thread, every turn.
@@ -505,8 +505,8 @@ private:
     // Pulls the disk thread's closed files into closing_.
     void collect_closed();
     // The playback loop into the reader: the range set last, with the one
-    // the audio thread plays until that is sent. Not during a loop take,
-    // whose own range the reader holds.
+    // the audio thread plays until that is sent. Not during any take: a
+    // loop take's own range is held, and a plain one records through B.
     void hold_playback_loop();
     // Until the callback running now, if one is, has returned, or 1 s has
     // passed. False on the timeout.

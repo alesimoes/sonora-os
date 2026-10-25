@@ -308,15 +308,17 @@ bool Session::set_loop(uint64_t from, uint64_t to, std::string* error) {
     return true;
 }
 
+// A plain or punched take records through B, and a held B would stop
+// the reader there; stop() and punch_out() hold the range again.
 void Session::hold_playback_loop() {
-    if (loop_take_running()) return;
+    if (recording_take_ != 0) return;
     const bool change = loop_pending();
     loop_gen_ = reader_->hold_loop(loop_wanted_, change ? loop_sent_ : LoopHold{},
                                    change ? loops_sent_ + 1 : 0);
 }
 
 void Session::pump_loop() {
-    if (!loop_pending() || loop_take_running() || reader_->resident() < loop_gen_) return;
+    if (!loop_pending() || recording_take_ != 0 || reader_->resident() < loop_gen_) return;
     RtCommand c{};
     c.kind = RtCommand::Kind::Loop;
     c.frame = static_cast<uint64_t>(loop_wanted_.from);
