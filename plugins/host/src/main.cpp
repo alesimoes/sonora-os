@@ -270,6 +270,7 @@ void print_info(std::FILE* f, const PluginInfo& info, bool json) {
                     info.name.c_str(), info.uri.c_str(), info.format.c_str(), info.class_label.c_str(),
                     info.audio_in, info.audio_out);
         std::fprintf(f, "  bundle:   %s\n", info.bundle.c_str());
+        if (!info.bridge.empty()) std::fprintf(f, "  bridge:   %s (runs under Wine)\n", info.bridge.c_str());
         if (info.latency_port >= 0)
             std::fprintf(f, "  latency:  reported on port %d\n", info.latency_port);
         else if (info.latency_frames >= 0)
@@ -301,6 +302,8 @@ void print_info(std::FILE* f, const PluginInfo& info, bool json) {
     if (!info.missing_features.empty())
         std::fprintf(f, ",\"reason\":\"%s\"", json_escape(info.missing_features.front()).c_str());
     std::fprintf(f, ",\"bundle\":\"%s\"", json_escape(info.bundle).c_str());
+    // Only when bridged, so a native record's line is what it always was.
+    if (!info.bridge.empty()) std::fprintf(f, ",\"bridge\":\"%s\"", json_escape(info.bridge).c_str());
     std::fprintf(f, ",\"ports\":[");
     uint32_t dense = 0;
     for (std::size_t i = 0; i < info.ports.size(); ++i) {
@@ -351,25 +354,29 @@ std::string absolute_bundle(const std::string& path) {
 // from the paths alone.
 int list_bundles(const Catalog& catalog, const Options& o) {
     std::size_t n = 0;
-    const auto line = [&](const std::string& bundle, const char* format) {
-        if (o.json)
+    const auto line = [&](const std::string& bundle, const char* format, const std::string& bridge) {
+        if (o.json && bridge.empty())
             std::printf("{\"bundle\":\"%s\",\"format\":\"%s\"}\n", json_escape(bundle).c_str(), format);
+        else if (o.json)
+            std::printf("{\"bundle\":\"%s\",\"format\":\"%s\",\"bridge\":\"%s\"}\n", json_escape(bundle).c_str(),
+                        format, json_escape(bridge).c_str());
         else
-            std::printf("%s  %s\n", format, bundle.c_str());
+            std::printf("%s  %s%s%s\n", format, bundle.c_str(), bridge.empty() ? "" : "  ", bridge.c_str());
         ++n;
     };
     if (o.format.empty() || o.format == "lv2") {
         std::set<std::string> seen;
         for (const LilvPlugin* p : catalog.lv2.all()) {
             const std::string b = catalog.lv2.describe(p).bundle;
-            if (!b.empty() && seen.insert(b).second) line(b, "lv2");
+            if (!b.empty() && seen.insert(b).second) line(b, "lv2", std::string());
         }
     }
 #ifdef SONORA_HAVE_VST3
     if (o.format.empty() || o.format == "vst3") {
         std::set<std::string> seen;
         for (const std::string& b : catalog.vst3.bundles())
-            if (seen.insert(absolute_bundle(b)).second) line(absolute_bundle(b), "vst3");
+            if (seen.insert(absolute_bundle(b)).second)
+                line(absolute_bundle(b), "vst3", Vst3World::bridge_of(b));
     }
 #endif
     std::fflush(stdout);

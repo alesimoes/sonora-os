@@ -1,0 +1,46 @@
+# The plugins image plus Wine and yabridge, for the real yabridge test
+# (ADR-0017 Y5): a Windows build of the host's test plugin bridged by
+# yabridge and run by sonora-plugin-host. tools/test-yabridge.sh builds and
+# runs it; CI's plugins job does not, and there the test skips (77).
+#
+#   wine, wine64              Debian trixie main, Wine 10.0 (LGPL-2.1-or-later)
+#   g++-mingw-w64-x86-64-posix  Debian trixie main (GPL-3+ with the GCC runtime
+#                             exception): builds the test plugin as a Windows
+#                             .vst3. posix threads, for its std::thread.
+#   yabridge 5.1.1            upstream release tarball, GPL-3.0-or-later,
+#                             pinned by SHA-256 below (Debian does not package
+#                             it). Upstream tests it on Wine Staging 9.x and
+#                             reports editor embedding broken on Wine 9.22+;
+#                             editors are out of scope here (ADR-0010), and
+#                             whether audio runs on Wine 10.0 is what the test
+#                             measures (ADR-0017 Y1).
+#   xvfb, xauth               yabridge's Wine host opens an X11 connection;
+#                             the test gives it a virtual display.
+#
+# A test image: nothing here ships in the ISO. Which Wine and yabridge the
+# appliance carries is ADR-0017 Y6, after this test runs on the target.
+ARG BASE=sonora-plugins:trixie
+FROM ${BASE}
+
+LABEL org.sonora=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wine \
+      wine64 \
+      g++-mingw-w64-x86-64-posix \
+      xvfb \
+      xauth \
+      curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG YABRIDGE_VERSION=5.1.1
+ARG YABRIDGE_SHA256=d11f0307412b5566b09a75ed4aa191266db56d22f4de4d20e4fbde6296cd1a47
+RUN curl -fsSL -o /tmp/yabridge.tar.gz \
+      "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VERSION}/yabridge-${YABRIDGE_VERSION}.tar.gz" \
+    && echo "${YABRIDGE_SHA256}  /tmp/yabridge.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt \
+    && tar xzf /tmp/yabridge.tar.gz -C /opt \
+    && rm /tmp/yabridge.tar.gz
+ENV PATH="/opt/yabridge:${PATH}"
+
+CMD ["bash"]

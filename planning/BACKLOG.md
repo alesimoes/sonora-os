@@ -1001,7 +1001,32 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] The lost and unmapped touch counts are not in the state block
          (InsertState has `work_refused` only; lost touches are per track):
          a state layout change with the UI's co-review.
-6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
+6. [ ] **Windows VST through yabridge** (in progress, plugin-engineer;
+       ADR-0017, Proposed).
+       - [x] Discovery, validation and the real bridge measured (PR 1).
+         yabridge 5.1.1 pinned, on Debian's Wine 10.0, with both licences
+         recorded (ADR-0017 Y1). The host marks `"bridge":"yabridge"` on
+         `--list` and `--bundles-only` lines. The rule is the chainloader
+         in the Linux binary, not the Windows directory alone (Y2). A
+         `moduleinfo.json` class ID now matches in either byte order:
+         before, a bridged bundle with a COM-order Resources file was "not
+         installed" (Y3). ctest `plugin_host_yabridge_list_bundles`,
+         `plugin_host_yabridge_list`, `plugin_host_yabridge_probe_com_order`
+         (fixtures, no Wine; the last fails without Y3) and
+         `plugin_host_yabridge_wine`. The Wine test is skipped (77) in CI
+         and runs under `tools/test-yabridge.sh`: Sonora's test plugin is
+         cross-built for Windows, and the test covers scan, probe, a
+         3000-block run, a factory crash costing one entry, and the Liar
+         refused by the timeout (Y4). Container round trip: p50 161 µs and
+         p99 598 µs through yabridge, against 58 µs and 250 µs native.
+       - [ ] Follow-ups (ADR-0017 Y2, Y4, Y6):
+         - `bridge` in the probe record (version 2) and in `contracts/api`
+           PluginInfo, so the operator sees "Windows (Wine)".
+         - A crash during a running chain under Wine.
+         - The Wine prefix created before the first scan, so a cold probe
+           is not cached Blocked.
+         - The deadline sign-off on the appliance with the UMC1820 and a
+           real Windows plugin, before it is offered.
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the
          appliance. Debian trixie main has Wine 10.0 (`wine`, checked

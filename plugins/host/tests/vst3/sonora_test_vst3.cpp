@@ -420,12 +420,23 @@ public:
         info->flags = PFactoryInfo::kUnicode;
         return kResultOk;
     }
+#ifdef SONORA_TEST_VST3_ONLY_KIND
+    // One class per bundle, for the Windows builds the yabridge test runs:
+    // a class that hangs a scan under Wine costs every class after it in
+    // the same bundle (ADR-0017 Y4), so each one the test needs ships alone.
+    int32 PLUGIN_API countClasses() override { return 1; }
+#else
     int32 PLUGIN_API countClasses() override { return kKinds; }
+#endif
     tresult PLUGIN_API getClassInfo(int32 index, PClassInfo* info) override {
         static const char* const names[kKinds] = {
             "Sonora Test Crash",    "Sonora Test Stereo Only", "Sonora Test Yes-Man", "Sonora Test Liar",
             "Sonora Test Turncoat", "Sonora Test Params",      "Sonora Test Latency",
             "Sonora Test Once",     "Sonora Test State",       "Sonora Test Touch"};
+#ifdef SONORA_TEST_VST3_ONLY_KIND
+        if (index != 0) return kInvalidArgument;
+        index = SONORA_TEST_VST3_ONLY_KIND - 1;
+#endif
         if (index < 0 || index >= kKinds) return kInvalidArgument;
         *info = PClassInfo();
         make_cid(static_cast<Kind>(index + 1), info->cid);
@@ -456,12 +467,32 @@ Factory g_factory;
 
 }  // namespace
 
+#ifdef SONORA_TEST_VST3_FAKE_CHAINLOADER
+// The name yabridge's VST3 chainloader carries, so this build stands in for
+// a bundle yabridgectl made (ADR-0017 Y2) without Wine on the test machine.
+// It is not yabridge: it runs the plugin natively.
+__attribute__((used)) const char kFakeChainloaderMark[] = "libyabridge-vst3.so";
+#endif
+
+// The same source also builds as a Windows .vst3 (mingw-w64), the plugin
+// the real yabridge test runs through Wine (ADR-0017 Y5).
+#ifdef _WIN32
+#define SONORA_TEST_EXPORT __declspec(dllexport)
+#else
+#define SONORA_TEST_EXPORT __attribute__((visibility("default")))
+#endif
+
 extern "C" {
 
-__attribute__((visibility("default"))) bool ModuleEntry(void*) { return true; }
-__attribute__((visibility("default"))) bool ModuleExit() { return true; }
+#ifdef _WIN32
+SONORA_TEST_EXPORT bool InitDll() { return true; }
+SONORA_TEST_EXPORT bool ExitDll() { return true; }
+#else
+SONORA_TEST_EXPORT bool ModuleEntry(void*) { return true; }
+SONORA_TEST_EXPORT bool ModuleExit() { return true; }
+#endif
 
-__attribute__((visibility("default"))) IPluginFactory* PLUGIN_API GetPluginFactory() {
+SONORA_TEST_EXPORT IPluginFactory* PLUGIN_API GetPluginFactory() {
     if (const char* e = std::getenv("SONORA_TEST_VST3_CRASH_ON_SCAN"); e && *e == '1') {
         volatile int* nowhere = nullptr;
         *nowhere = 1;

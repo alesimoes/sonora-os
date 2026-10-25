@@ -43,6 +43,12 @@ public:
     // Every bundle: the explicit ones, then each *.vst3 under the roots.
     std::vector<std::string> bundles() const;
 
+    // "yabridge" when the bundle is one yabridgectl made: its Linux binary
+    // is yabridge's VST3 chainloader and a Windows module sits beside it,
+    // so the plugin's code runs under Wine (ADR-0017 Y2). Empty otherwise.
+    // Reads the binary as bytes; runs no plugin code.
+    static std::string bridge_of(const std::string& bundle);
+
     // Load one bundle in this process and describe each of its effect
     // classes as instantiated at 48 kHz / 128, latency included, handing
     // each to `each` as soon as it is known, so a class that hangs or crashes

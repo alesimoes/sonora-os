@@ -257,7 +257,7 @@
             {"id": "plugins.graph.freeze", "title": "Track freeze and bounce in place / commit", "size": "M", "phase": 5, "status": "todo", "ref": "PT-RG: Track Freeze, Track Commit; LP-UG: Bounce tracks and regions in place"},
             {"id": "plugins.offline", "title": "Offline processing of a selection (AudioSuite and selection-based processing class)", "size": "M", "phase": 5, "status": "todo", "ref": "PT-RG: AudioSuite; LP-UG: Use selection-based processing"},
             {"id": "plugins.stock", "title": "Stock effects (EQ, dynamics, reverb, delay, modulation, saturation): a curated free LV2 set, shipped and preset", "size": "M", "phase": 5, "status": "todo", "note": "via plugins/content: hosted third-party or our own free-licensed content, never Apple's or Avid's content (ADR-0004)"},
-            {"id": "plugins.formats.yabridge", "title": "Windows VST through yabridge", "size": "M", "phase": 5, "status": "todo"},
+            {"id": "plugins.formats.yabridge", "title": "Windows VST through yabridge", "size": "M", "phase": 5, "status": "doing", "branch": "t4-yabridge"},
             {"id": "plugins.graph.benchmark", "title": "Exit: 18 tracks x 4 plugins at q128 on the laptop, 2048-sample track aligned", "size": "M", "phase": 5, "status": "todo", "note": "Rerun on the UMC1820 and RT kernel in OS packaging"}
           ]
         },
