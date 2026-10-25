@@ -218,6 +218,10 @@ def set_item(text, ident, status, evidence=None, branch=None):
     >>> set_item(doc, "f.m", "todo")
     Traceback (most recent call last):
     progress.Invalid: unknown item id 'f.m'
+    >>> split = doc.replace('"status": "todo", "note"', '"status": "todo",\n   "note"')
+    >>> set_item(split, "a", "done", evidence="x")
+    Traceback (most recent call last):
+    progress.Invalid: item 'a' is not on a line of its own; edit it by hand
     >>> set_item(doc, "a", "finished")
     Traceback (most recent call last):
     progress.Invalid: unknown status 'finished'; one of todo, doing, done
@@ -234,6 +238,11 @@ def set_item(text, ident, status, evidence=None, branch=None):
         raise Invalid("item %r is not on a line of its own; edit it by hand"
                       % ident)
     m = matches[0]
+    # An item spread over lines would get a second key from set_field, which
+    # json.loads accepts silently (the last one wins).
+    if not re.search(r"\},?[ \t\r]*$", m.group(0)):
+        raise Invalid("item %r is not on a line of its own; edit it by hand"
+                      % ident)
     line = set_field(m.group(0), "status", status, ())
     if branch is not None:
         line = set_field(line, "branch", branch, ("status",))
