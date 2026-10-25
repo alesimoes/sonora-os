@@ -21,6 +21,7 @@ namespace sonora {
 
 class PlaybackController;
 class Session;
+struct LoopRange;
 struct PunchRange;
 
 // Asked before every take; false refuses it, with `why` shown to the
@@ -32,6 +33,12 @@ using MayRecord = std::function<bool(std::string& why)>;
 // it a punch (Session::start_punch()) instead of a whole take. The session
 // does not hold the document the punch range is saved in.
 using PunchFor = std::function<bool(PunchRange& range)>;
+
+// Asked as each take starts, before PunchFor: true, with `loop` set, makes
+// it a loop take (Session::start_loop()); false with `refusal` set refuses
+// the take, with nothing opened (ADR-0016 C3: loop and punch together);
+// false with `refusal` empty lets PunchFor decide.
+using LoopFor = std::function<bool(LoopRange& loop, std::string& refusal)>;
 
 // Asked before an engine track is armed: false keeps it disarmed, with
 // `why` for the operator. The session does not know which document track
@@ -48,9 +55,12 @@ using MayArm = std::function<bool(std::size_t engine_track, std::string& why)>;
 // transport.toggle_play and transport.return_to_zero are installed as well,
 // gated on the plan's residency through it, and a take started from a key
 // waits behind the same gate.
+// Without `loop_for` no take is a loop take; with it, one is located to its
+// pre-roll first, and stops on transport.punch as on transport.stop.
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record = nullptr,
                               PlaybackController* playback = nullptr,
-                              PunchFor punch_for = nullptr, MayArm may_arm = nullptr);
+                              PunchFor punch_for = nullptr, MayArm may_arm = nullptr,
+                              LoopFor loop_for = nullptr);
 
 }  // namespace sonora

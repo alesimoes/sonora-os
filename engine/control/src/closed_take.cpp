@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "sonora/frame_text.h"
+#include "sonora/loop_take.h"
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
@@ -114,37 +115,36 @@ model::Frames shortest_source(const model::Snapshot& s, const model::Region& r) 
     return shortest;
 }
 
-// Cuts `rec`, a whole file at its TimeReference, to the punch range, and
-// asks for the crossfades it can have against `document` before the take.
-// A crossfade without handle on both sides is not asked for: the model
-// refuses rather than shortens it, and losing the take to it is worse than
-// a butt splice. False when nothing was recorded inside the range.
-bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
-                  model::RecordTake& rec) {
-    model::Region& n = rec.region;
-    const model::Frames origin = n.position;
-    const model::Frames file_end = n.end();
-    const model::Frames a = frames_of(punch.monitor_in);
-    const model::Frames b = frames_of(punch.monitor_out);
-    const model::Frames from = std::max(a, origin);
-    const model::Frames to = std::min(b, file_end);
-    if (to <= from) return false;
-    n.position = from;
-    n.length = to - from;
-    n.source_offset = from - origin;
+// Where a take's own audio was too short for a crossfade that its
+// neighbour on the playlist would have taken.
+struct HandleShort {
+    bool at_start = false;
+    bool at_end = false;
+};
 
+// Asks for the crossfades `rec` can have, against `document` before the
+// take, where its region meets what is beneath at its start (`at_start`)
+// and at its end (`at_end`): centred, `length` frames of `shape`. The take
+// file holds `file_frames`. A crossfade without handle on both sides is not
+// asked for: the model refuses rather than shortens it, and losing the take
+// to it is worse than a butt splice.
+HandleShort add_take_crossfades(const model::Snapshot& document, uint32_t length, FadeCurve shape,
+                                bool at_start, bool at_end, model::Frames file_frames,
+                                model::RecordTake& rec) {
+    HandleShort short_of;
     const model::Playlist* p = playlist_by_id(*document.edit, rec.playlist);
-    if (punch.crossfade == 0 || p == nullptr) return true;
+    if (length == 0 || p == nullptr) return short_of;
+    const model::Region& n = rec.region;
+    const model::Frames a = n.position;
+    const model::Frames b = n.end();
     model::Crossfade x;
-    x.length = punch.crossfade;
+    x.length = length;
     x.align = model::Align::Centre;
-    x.shape = shape_of(punch.shape);
+    x.shape = shape_of(shape);
     model::Frames before = 0, after = 0;
     model::crossfade_extent(x, before, after);
 
-    // A take that started late, or stopped early, meets what is beneath at
-    // a point the operator did not set as a punch point: no crossfade there.
-    if (from == a) {
+    if (at_start) {
         for (const model::Region& r : p->regions) {
             if (r.position >= a || r.end() < a) continue;
             const model::Frames kept = a - r.position;
@@ -154,26 +154,54 @@ bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
                 x.left = r.id;
                 x.right = n.id;
                 rec.crossfades.push_back(x);
+            } else {
+                short_of.at_start = n.source_offset < before;
             }
             break;
         }
     }
-    if (to == b) {
+    if (at_end) {
+        const model::Frames take_after = file_frames - (n.source_offset + n.length);
         for (const model::Region& r : p->regions) {
             if (r.position > b || r.end() <= b) continue;
             // Spanning the whole take it is split, and its right part is
             // the new id; otherwise it keeps its id and starts at B.
-            const model::Id right = r.position < from ? rec.split_right_id : r.id;
+            const model::Id right = r.position < a ? rec.split_right_id : r.id;
             const model::Frames right_offset = r.source_offset + (b - r.position);
-            if (before <= n.length && after <= r.end() - b && file_end - to >= after &&
+            if (before <= n.length && after <= r.end() - b && take_after >= after &&
                 right_offset >= before) {
                 x.left = n.id;
                 x.right = right;
                 rec.crossfades.push_back(x);
+            } else {
+                short_of.at_end = take_after < after;
             }
             break;
         }
     }
+    return short_of;
+}
+
+// Cuts `rec`, a whole file at its TimeReference, to the punch range, and
+// asks for the crossfades it can have. False when nothing was recorded
+// inside the range.
+bool cut_to_punch(const model::Snapshot& document, const PunchRange& punch,
+                  model::RecordTake& rec) {
+    model::Region& n = rec.region;
+    const model::Frames origin = n.position;
+    const model::Frames file_frames = n.length;
+    const model::Frames a = frames_of(punch.monitor_in);
+    const model::Frames b = frames_of(punch.monitor_out);
+    const model::Frames from = std::max(a, origin);
+    const model::Frames to = std::min(b, origin + file_frames);
+    if (to <= from) return false;
+    n.position = from;
+    n.length = to - from;
+    n.source_offset = from - origin;
+    // A take that started late, or stopped early, meets what is beneath at
+    // a point the operator did not set as a punch point: no crossfade there.
+    add_take_crossfades(document, punch.crossfade, punch.shape, from == a, to == b, file_frames,
+                        rec);
     return true;
 }
 
@@ -323,6 +351,88 @@ std::string why_nothing(const Session::ClosedTake& take) {
            " on: the capture or boundary ring overran";
 }
 
+// One file of a loop take, as it goes in (ADR-0016 §3, §5).
+struct LoopFile {
+    model::RecordLoopTake op;
+    // The chosen pass as RecordTake would place it on the active playlist,
+    // for say_shortened_fades(); no crossfades when no pass is chosen.
+    model::RecordTake active;
+    bool by_length = false;     // some wraps were derived (§5)
+    std::size_t all_passes = 0; // in the file, the ones past the cap included
+    std::size_t chosen = 0;     // the pass on the active playlist, from 1; 0 for none
+    HandleShort short_of;
+};
+
+// Every pass of `f` up to `cap`, each on a new playlist, and the last
+// complete one on the track's active playlist (O1), its crossfades at A
+// and B where the take has the handle for them (C6). Ids from `next`, in
+// RecordLoopTake's order. A wrap the boundary ring lost, or that the list
+// never got, is placed by loop length.
+LoopFile loop_file(const model::Snapshot& document, const Session::ClosedTake& take,
+                   const DiskThread::ClosedFile& f, const model::TrackEdit& t,
+                   const model::Source& source, const std::string& name, std::size_t cap,
+                   model::Id& next) {
+    LoopFile out;
+    const LoopRange& loop = take.loop;
+    const auto frames = static_cast<uint64_t>(source.length);
+    const auto origin = static_cast<uint64_t>(source.time_reference);
+    // The list stops at the cap; the audio thread's count says how many
+    // wraps there were, the lost ones at the end included.
+    const std::size_t total =
+        std::max<std::size_t>(take.loop_wraps, f.wraps.size() + f.wraps_past_cap);
+    bool derived = false;
+    const std::vector<uint64_t> wraps = complete_wraps(
+        f.wraps, std::min(total, cap), frames, loop.from, loop.to, origin, loop.latency, derived);
+    std::vector<LoopPass> passes =
+        loop_passes(wraps, frames, loop.from, loop.to, origin, loop.latency);
+    out.all_passes = passes.size();
+    if (total > cap) {
+        bool beyond = false;
+        out.all_passes = loop_passes(complete_wraps(f.wraps, total, frames, loop.from, loop.to,
+                                                    origin, loop.latency, beyond),
+                                     frames, loop.from, loop.to, origin, loop.latency)
+                             .size();
+    }
+    if (passes.size() > cap) passes.resize(cap);
+    out.by_length = derived;
+
+    model::RecordLoopTake& op = out.op;
+    op.track = t.id;
+    op.active_playlist = t.active_playlist;
+    std::size_t chosen = passes.size();
+    for (std::size_t k = 0; k < passes.size(); ++k) {
+        const std::string pass = ".P" + std::to_string(k + 1);
+        model::LoopTakePass p;
+        p.playlist = next++;
+        p.name = t.name + ".T" + std::to_string(take.take) + pass;
+        p.region.id = next++;
+        p.region.name = name + pass;
+        p.region.position = frames_of(loop.from + passes[k].at);
+        p.region.length = frames_of(passes[k].length);
+        p.region.source_offset = frames_of(passes[k].offset);
+        for (uint16_t c = 0; c < t.channels; ++c) p.region.channels.push_back({source.id, c});
+        op.passes.push_back(std::move(p));
+        if (passes[k].complete) chosen = k;
+    }
+    if (chosen == passes.size()) return out;
+    out.chosen = chosen + 1;
+    op.chosen = chosen;
+    op.chosen_region = next++;
+    op.split_right_id = next++;
+    out.active.track = t.id;
+    out.active.playlist = t.active_playlist;
+    out.active.region = op.passes[chosen].region;
+    out.active.region.id = op.chosen_region;
+    out.active.split_right_id = op.split_right_id;
+    // The punch crossfade, as document_punch() gives it.
+    const model::Frames x =
+        std::clamp<model::Frames>(document.settings.transport.punch_crossfade, 0, UINT32_MAX);
+    out.short_of = add_take_crossfades(document, static_cast<uint32_t>(x), FadeCurve::EqualPower,
+                                       true, true, source.length, out.active);
+    op.crossfades = out.active.crossfades;
+    return out;
+}
+
 }  // namespace
 
 TakeAdded add_closed_take(model::Document& document, const Session& session,
@@ -343,6 +453,15 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     // source goes in alone.
     std::vector<bool> placed;
     std::vector<int> numbers;   // the track each file is on, from 1
+    // A loop take's file goes in as its RecordLoopTake, and records[k] is
+    // its chosen pass on the active playlist, for the fade notices.
+    std::vector<model::RecordLoopTake> loops;
+    // The passes each placed loop file could hold, past the cap included.
+    std::size_t loop_passes_all = 0;
+    std::size_t loop_passes_placed = 0;
+    std::vector<int> by_length;   // tracks whose passes were placed by loop length
+    const std::size_t cap = std::clamp<std::size_t>(session.config().loop_pass_cap, 1,
+                                                    model::kMaxLoopTakePasses);
     model::Id next = document.current().next_id;
     for (const DiskThread::ClosedFile& f : take.files) {
         // A failed file is still valid up to its last whole frame
@@ -386,6 +505,38 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         src.source.kind = model::SourceKind::Recorded;
         src.source.take = take.take;
         src.source.recorded_on_track = t->id;
+        const int number = f.track + 1;
+        if (!f.wrap_failure.empty()) {
+            out.track_notices.push_back(
+                which + "'s wrap list on track " + std::to_string(number) +
+                " could not be written (" + f.wrap_failure +
+                "): its passes are placed, but recovery after a crash would place them by"
+                " loop length");
+        }
+        if (take.looped) {
+            // The latency the wraps were counted with: the take's figure.
+            src.source.latency_compensation = take.loop.latency;
+            ++next;  // the source's
+            LoopFile lf = loop_file(document.current(), take, f, *t, src.source, stem(relative),
+                                    cap, next);
+            loop_passes_all = std::max(loop_passes_all, lf.all_passes);
+            loop_passes_placed = std::max(loop_passes_placed, lf.op.passes.size());
+            if (lf.by_length) by_length.push_back(number);
+            const auto no_crossfade = [&](const char* where, uint64_t frame, const char* side) {
+                out.track_notices.push_back(
+                    which + " (track " + std::to_string(number) + ") has no crossfade at the loop " +
+                    where + ", " + frame_text(frame) + ": pass " + std::to_string(lf.chosen) +
+                    " has no audio " + side + " it to crossfade on");
+            };
+            if (lf.short_of.at_start) no_crossfade("start", take.loop.from, "before");
+            if (lf.short_of.at_end) no_crossfade("end", take.loop.to, "after");
+            placed.push_back(!lf.op.passes.empty());
+            sources.push_back(std::move(src));
+            records.push_back(std::move(lf.active));
+            loops.push_back(std::move(lf.op));
+            numbers.push_back(number);
+            continue;
+        }
         model::RecordTake rec;
         rec.track = t->id;
         rec.playlist = t->active_playlist;
@@ -418,6 +569,34 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     if (take.punched && !captured && first_failure.empty()) {
         out.track_notices.push_back(which + " captured nothing: " + why_nothing(take));
     }
+    if (take.looped) {
+        const auto tracks = [](const std::vector<int>& n) {
+            std::string s = n.size() == 1 ? "track " : "tracks ";
+            for (std::size_t i = 0; i < n.size(); ++i) {
+                s += (i == 0 ? "" : ", ") + std::to_string(n[i]);
+            }
+            return s;
+        };
+        if (!by_length.empty()) {
+            out.track_notices.push_back(
+                which + "'s passes on " + tracks(by_length) +
+                " were placed by loop length: the disk thread fell behind and some wrap records"
+                " were lost, so a capture overrun, if there was one, would put them late");
+        }
+        if (loop_passes_all > loop_passes_placed) {
+            out.track_notices.push_back(
+                which + " recorded " + std::to_string(loop_passes_all) + " passes; the first " +
+                std::to_string(loop_passes_placed) + " are on playlists, and the other " +
+                std::to_string(loop_passes_all - loop_passes_placed) +
+                " are in its files and wrap lists, not on the timeline");
+        }
+        const bool any_pass = std::find(placed.begin(), placed.end(), true) != placed.end();
+        if (!sources.empty() && !any_pass) {
+            out.track_notices.push_back(
+                which + " stopped in its pre-roll, before the loop start at " +
+                frame_text(take.loop.from) + ": it is in the session's audio, not on the timeline");
+        }
+    }
     if (!first_failure.empty()) {
         out.cut_short = which + " was cut short: " + first_failure;
         if (more_failures > 0) {
@@ -432,17 +611,29 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
     // above rise across the parts, so each part's are still fresh.
     const std::size_t per_part =
         std::clamp<std::size_t>(files_per_compound, 1, model::kMaxCompoundMembers / 2);
+    const char* const label = take.looped ? "Loop Record" : "Record";
+    const char* const without_crossfades = take.looped
+                                               ? " went in without its crossfades: "
+                                               : " was punched in without its crossfades: ";
+    // File k's placement, with or without the crossfades it asks for.
+    const auto placement = [&](std::size_t k, bool crossfades) -> model::Member {
+        if (take.looped) {
+            model::RecordLoopTake op = loops[k];
+            if (!crossfades) op.crossfades.clear();
+            return op;
+        }
+        model::RecordTake rec = records[k];
+        if (!crossfades) rec.crossfades.clear();
+        return rec;
+    };
     for (std::size_t first = 0; first < sources.size(); first += per_part) {
         const std::size_t last = std::min(sources.size(), first + per_part);
         const auto part_of = [&](bool crossfades) {
             model::Compound c;
-            c.label = "Record";
+            c.label = label;
             for (std::size_t k = first; k < last; ++k) {
                 c.ops.push_back(sources[k]);
-                if (!placed[k]) continue;
-                model::RecordTake rec = records[k];
-                if (!crossfades) rec.crossfades.clear();
-                c.ops.push_back(std::move(rec));
+                if (placed[k]) c.ops.push_back(placement(k, crossfades));
             }
             return model::Operation{std::move(c)};
         };
@@ -458,7 +649,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         model::ReplicationUpdate u;
         if (document.apply(part_of(true), u, why)) {
             out.updates.push_back(std::move(u));
-            if (take.punched) say_fades(*before);
+            if (take.punched || take.looped) say_fades(*before);
             continue;
         }
         // A punch's crossfades are checked against the model's rules here,
@@ -471,8 +662,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         std::string plain_why;
         if (had_crossfades && document.apply(part_of(false), u, plain_why)) {
             out.updates.push_back(std::move(u));
-            out.track_notices.push_back(which + " was punched in without its crossfades: " +
-                                        why);
+            out.track_notices.push_back(which + without_crossfades + why);
             continue;
         }
 
@@ -492,20 +682,16 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
         for (std::size_t k = first; k < last; ++k) {
             const auto one = [&](bool crossfades) {
                 model::Compound c;
-                c.label = "Record";
+                c.label = label;
                 c.ops.push_back(sources[k]);
-                if (placed[k]) {
-                    model::RecordTake rec = records[k];
-                    if (!crossfades) rec.crossfades.clear();
-                    c.ops.push_back(std::move(rec));
-                }
+                if (placed[k]) c.ops.push_back(placement(k, crossfades));
                 return model::Operation{std::move(c)};
             };
             std::string alone;
             const std::shared_ptr<const model::EditState> was = document.current().edit;
             if (document.apply(one(true), u, alone)) {
                 out.updates.push_back(std::move(u));
-                if (take.punched && placed[k]) {
+                if ((take.punched || take.looped) && placed[k]) {
                     say_shortened_fades(*was, document.current(), records[k], numbers[k], which,
                                         out.fade_notices);
                 }
@@ -514,7 +700,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
             if (!records[k].crossfades.empty() && document.apply(one(false), u, plain_why)) {
                 out.updates.push_back(std::move(u));
                 out.track_notices.push_back(which + " (track " + std::to_string(numbers[k]) +
-                                            ") was punched in without its crossfades: " + alone);
+                                            ")" + without_crossfades + alone);
                 continue;
             }
             failed.push_back(k);
@@ -552,6 +738,36 @@ bool may_arm_track(const model::Snapshot& document, std::size_t engine_track, st
     why = "\"" + t.name + "\" is a " + (t.kind == model::TrackKind::Midi ? "MIDI" : "instrument") +
           " track; this version records audio only";
     return false;
+}
+
+bool document_loop(const model::Snapshot& document, uint32_t latency, LoopRange& out,
+                   std::string& refusal) {
+    refusal.clear();
+    const auto& t = document.settings.transport;
+    const model::Frames a = t.loop[0];
+    const model::Frames b = t.loop[1];
+    if (a < 0 || b <= a) return false;
+    // ADR-0016 C3: Pro Tools keeps loop record and QuickPunch apart.
+    if (t.punch[0] >= 0 && t.punch[1] > t.punch[0]) {
+        refusal = "loop record and punch cannot run together: the loop is from " +
+                  frame_text(static_cast<uint64_t>(a)) + " to " +
+                  frame_text(static_cast<uint64_t>(b)) + " and the punch from " +
+                  frame_text(static_cast<uint64_t>(t.punch[0])) + " to " +
+                  frame_text(static_cast<uint64_t>(t.punch[1])) +
+                  "; turn loop off or clear the punch range";
+        return false;
+    }
+    const model::Frames x = std::clamp<model::Frames>(t.punch_crossfade, 0, UINT32_MAX);
+    const model::Frames h =
+        std::max<model::Frames>(x, static_cast<model::Frames>(document.settings.sample_rate));
+    const model::Frames pre = std::max<model::Frames>(t.pre_roll, 0);
+    out = LoopRange{};
+    out.from = static_cast<uint64_t>(a);
+    out.to = static_cast<uint64_t>(b);
+    out.start = static_cast<uint64_t>(a > pre ? a - pre : 0);
+    out.latency = latency;
+    out.handle = static_cast<uint32_t>(std::min<model::Frames>(h, UINT32_MAX));
+    return true;
 }
 
 bool document_punch(const model::Snapshot& document, PunchRange& out) {

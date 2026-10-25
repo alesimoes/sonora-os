@@ -610,8 +610,8 @@ And in `engine/core`, with the reader and the punch work:
 - Whether the plan builder runs on the document thread or a worker that
   `engine/control` owns. It is the document thread unless building a plan
   for 18 tracks of 2,000 regions is measured above about 20 ms.
-- Phase 3's loop recording creates a take per pass. Whether each pass is a
-  `RecordTake` on an alternate playlist, or one source with pass markers, is
-  Phase 3's decision. Both fit this model; the boundary records already
-  split a pass at a frame. ADR-0016 (Proposed) recommends one source with
-  a region per pass on its own playlist.
+- Settled by ADR-0016 (Accepted): a loop record is one source per track,
+  written through every wrap, each pass a region of it on a playlist of its
+  own and the last complete one on the active playlist, placed by one
+  `RecordLoopTake` per track. A `Wrap` boundary record marks each pass's
+  end in band; nothing splits the file there.

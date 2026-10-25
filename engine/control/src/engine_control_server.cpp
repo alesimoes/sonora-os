@@ -11,6 +11,7 @@
 #include "sonora/api/wire.h"
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
+#include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/playback_controller.h"
@@ -198,6 +199,21 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                              },
                              [this](std::size_t engine_track, std::string& why) {
                                  return may_arm_track(document_->current(), engine_track, why);
+                             },
+                             [this](LoopRange& loop, std::string& refusal) {
+                                 // The backend reports no input latency yet
+                                 // (contracts/backend): L is 0 until
+                                 // engine.playback.input_monitor measures it.
+                                 if (document_loop(document_->current(), 0, loop, refusal)) {
+                                     return true;
+                                 }
+                                 if (!refusal.empty()) {
+                                     api::EngineEvent e;
+                                     e.kind = api::EventKind::Notice;
+                                     e.text = refusal;
+                                     post_event(e);
+                                 }
+                                 return false;
                              });
     if (!opts_.plugin_host.empty()) {
         // For the engine process's life (amendment of 2026-10-19, item 3):
@@ -672,6 +688,19 @@ void EngineControlServer::follow_scanner() {
         if (c->api_frames)
             for (auto& [id, client] : clients_) send_frames(client, *c->api_frames);
     }
+}
+
+std::string EngineControlServer::loop_refusal(const model::Snapshot& doc,
+                                              model::MemberRef member) const {
+    const auto* set = member.get_if<model::SetSettings>();
+    if (set == nullptr || !session_.loop_take_running()) return {};
+    const auto& was = doc.settings.transport.loop;
+    if (set->settings.transport.loop == was) return {};
+    // The wraps keep to the A and B the take's files give, which recovery
+    // reads back (ADR-0016 §1, §5).
+    return "the loop range cannot change while loop record runs (from " +
+           frame_text(static_cast<uint64_t>(was[0])) + " to " +
+           frame_text(static_cast<uint64_t>(was[1])) + "); stop ends the take";
 }
 
 std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {
@@ -1191,6 +1220,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                         no_host = !scanner_;
                         return refusal;
                     }
+                    if (std::string refusal = loop_refusal(at, member); !refusal.empty()) {
+                        return refusal;
+                    }
                     // Even one that leaves the document as it was: it ends a
                     // ride whose last ParameterChange need not be its value.
                     if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
@@ -1208,6 +1240,12 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 ok = document_->snapshot(u, why, api::wire::kMaxModelBytes);
                 break;
             case api::ModelAction::Load:
+                // Another document's loop range would move the frozen one
+                // (ADR-0016 §1) as a SetSettings would.
+                if (session_.loop_take_running()) {
+                    why = "a session cannot be opened while loop record runs; stop first";
+                    break;
+                }
                 ok = document_->load(m.op, session_.config().sample_rate, u, why,
                                      api::wire::kMaxModelBytes);
                 mix_changed = true;

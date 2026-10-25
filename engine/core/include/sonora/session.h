@@ -276,6 +276,8 @@ public:
     std::vector<ClosedTake> closed_takes();
     // The take being recorded, as the control thread last set it; 0 if none.
     int recording_take() const { return recording_take_; }
+    // Whether that take was started by start_loop(). Control thread.
+    bool loop_take_running() const { return recording_take_ != 0 && loop_running_; }
     // Empty, or which file of the newest take failed and why, in the words
     // stop() will use: the running take's, or, after a punch-out, the take
     // just ended, until the next take starts (ADR-0007: the next clean take
@@ -521,6 +523,7 @@ private:
     };
     std::map<int, Closing> closing_;
     int recording_take_ = 0;
+    bool loop_running_ = false;
     // The take take_failure() and stop() speak for: the last one started,
     // kept after a punch-out (PR #60, code review 3) and replaced by the
     // next, so take K's failure is never said as take K + 1's (review 4).

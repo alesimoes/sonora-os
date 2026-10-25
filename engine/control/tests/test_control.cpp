@@ -8,6 +8,7 @@
 // writing reaching it the same way, from the control thread's check; events
 // posted before the interface connects arriving after its Hello.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -397,6 +398,108 @@ void take_failure_reaches_the_interface() {
     const auto all = failures_said();
     CHECK(all.size() == 2 && all[1].text.empty() && all[1].frame == 2);
     CHECK(replied(real.send(stop), DispatchResult::Ok));
+}
+
+model::ReplicationUpdate from_wire(const api::ModelUpdate& m);
+
+// ADR-0016 end to end: with the document's loop range set, transport.record
+// starts a loop take; while it records, a SetSettings that moves the loop
+// range or clears it is refused by name, as is opening a session, and any
+// other setting still applies; stopped after a wrap, its passes reach the
+// interface's replica on playlists of their own.
+void loop_record_on_the_real_engine() {
+    RealEngine real(fresh_dir("loop_record"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    const auto settings = [&](std::array<model::Frames, 2> loop, model::Frames post_roll) {
+        model::SessionSettings st = replica.current().settings;
+        st.transport.loop = loop;
+        st.transport.pre_roll = 0;
+        st.transport.post_roll = post_roll;
+        api::ModelRequest m;
+        m.action = api::ModelAction::Apply;
+        std::string e;
+        model::encode_operation(model::SetSettings{st}, m.op, e);
+        api::CommandReply r;
+        reply_to(real.submit(m), r);
+        return r;
+    };
+    // One second of loop from the first second; no pre-roll.
+    CHECK(settings({48000, 96000}, 48000).result == DispatchResult::Ok);
+    api::CommandReply r;
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    CHECK(reply_to(real.send(arm), r) && r.result == DispatchResult::Ok);
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    CHECK(reply_to(real.send(rec), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.state().transport().state == api::TransportState::Recording;
+    }));
+    CHECK(real.session().loop_take_running());
+
+    r = settings({48000, 100000}, 48000);
+    CHECK(r.result == DispatchResult::Failed);
+    CHECK(r.message.find("the loop range cannot change while loop record runs (from frame "
+                         "48000 to frame 96000)") != std::string::npos);
+    CHECK(settings({0, 0}, 48000).result == DispatchResult::Failed);
+    CHECK(settings({48000, 96000}, 24000).result == DispatchResult::Ok);
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    CHECK(model::serialize(replica.current(), model::WriteInfo{"test", 1}, load.op, error));
+    CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Failed);
+    CHECK(r.message.find("while loop record runs") != std::string::npos);
+
+    // Past B, so the take has a whole pass.
+    CHECK(until(real, in, [&]() {
+        const uint64_t p = real.state().transport().playhead;
+        return p >= 48000 && p < 60000 && real.session().take_origin() == 48000;
+    }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        feed();
+        return replica.synced() && replica.current().edit->tracks[0]->playlists.size() >= 3;
+    }));
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    if (t.playlists.size() < 3) return;
+    CHECK(t.playlists[1]->name == t.name + ".T1.P1");
+    CHECK(t.playlists[1]->regions.size() == 1);
+    CHECK(t.playlists[1]->regions[0].position == 48000);
+    CHECK(t.playlists[1]->regions[0].length == 48000);
+    // The pass is on the active playlist too.
+    for (const auto& p : t.playlists) {
+        if (p->id == t.active_playlist) CHECK(p->regions.size() == 1);
+    }
 }
 
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
@@ -861,6 +964,7 @@ int main() {
     publisher_reads_the_session();
     fatal_backend_reaches_the_interface();
     take_failure_reaches_the_interface();
+    loop_record_on_the_real_engine();
     large_snapshot_crosses_in_frames();
     housekeeping_and_early_events();
     no_plugin_hosting_yet();

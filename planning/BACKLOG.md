@@ -68,7 +68,14 @@ playback can follow edits; it is in flight.
          name are the document's, set by `PlaybackController::show()`; the
          id is left out when the engine has none. Reading it back at
          recovery is `engine.record.orphan_offer`.
-       Remain: loop, pre-roll and input monitoring.
+       Loop record (ADR-0016): with the document's loop range set, a take
+         records from A less the pre-roll through every wrap into one file
+         per track, each wrap marked in band and kept in `<file>.wraps`;
+         its passes go in as one `RecordLoopTake` per track, on playlists
+         of their own, the last complete one on the active playlist.
+       Remain: loop playback when not recording (the reader's loop-start
+         window, `transport.toggle_loop`), pre-roll for a plain take, and
+         input monitoring.
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,

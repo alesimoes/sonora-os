@@ -536,6 +536,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     c.take.origin = kNoOrigin;
     c.take.end = kNoOrigin;
     recording_take_ = take_number;
+    loop_running_ = loop != nullptr;
     newest_take_ = take_number;
     // Ordered before the audio thread can see the take by the store below,
     // so the take's first block finds no origin and sets it.
