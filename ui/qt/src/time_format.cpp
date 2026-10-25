@@ -359,6 +359,25 @@ void grid_lines(double a, double b, GridValue g, bool bars_only,
     lines_on(m, a, b, g, bars_only, out, max);
 }
 
+model::Frames nudge_target(model::Frames f, int direction, GridValue g,
+                           const model::SessionSettings& s) {
+    const auto fixed = [&]() {
+        const auto step = static_cast<model::Frames>(std::llround(grid_frames(g, s)));
+        return std::max<model::Frames>(0, f + direction * step);
+    };
+    model::MusicalMap m;
+    model::Ticks t = 0;
+    if (!reading_map(s, m) || !m.tick_at(std::max<model::Frames>(0, f), t)) return fixed();
+    // Going back, the step is the one that ends at `t`: the bar before a
+    // meter change is the old meter's bar.
+    const model::Ticks read_at = direction < 0 ? std::max<model::Ticks>(0, t - 1) : t;
+    const std::size_t k = std::min(m.entry_at_tick(read_at), m.reachable() - 1);
+    const model::Ticks to = std::max<model::Ticks>(0, t + direction * grid_step_ticks(g, m.entries()[k]));
+    model::Frames from_frame = 0, to_frame = 0;
+    if (!m.frame_at(t, from_frame) || !m.frame_at(to, to_frame)) return fixed();
+    return std::max<model::Frames>(0, f + (to_frame - from_frame));
+}
+
 model::Frames snap_to_grid(model::Frames f, GridValue g, const model::SessionSettings& s) {
     model::MusicalMap m;
     if (!reading_map(s, m)) return std::max<model::Frames>(0, f);

@@ -49,8 +49,9 @@ public:
     void control();
     // The main thread, while process() is not running: re-activates every
     // plugin (Processor::reactivate). False, with `error` set, when one
-    // refused; the chain must then not run.
-    bool reactivate(ChainError& error);
+    // refused, or was not re-activated by `deadline_ns` (monotonic_ns); the
+    // chain must then not run.
+    bool reactivate(uint64_t deadline_ns, ChainError& error);
 
     // Parameters by dense index (contracts/plugin). The processing thread,
     // between blocks; false when the plugin will not take it.
@@ -88,8 +89,9 @@ public:
     SaveResult save_state(std::size_t i, std::vector<std::string>& sections, std::string& error) {
         return slots_[i]->save_state(sections, error);
     }
-    bool restore_state(std::size_t i, const std::vector<std::string>& sections, std::string& error) {
-        return slots_[i]->restore_state(sections, error);
+    bool restore_state(std::size_t i, const std::vector<std::string>& sections, uint64_t deadline_ns,
+                       std::string& error) {
+        return slots_[i]->restore_state(sections, deadline_ns, error);
     }
     bool describe_value(std::size_t i, uint32_t dense, float value, std::string& out) const {
         return slots_[i]->describe_value(dense, value, out);

@@ -804,10 +804,10 @@ bool EditController::nudge(int direction, std::string& why) {
         why = "select a region to nudge";
         return false;
     }
-    const auto step = static_cast<Frames>(std::llround(grid_frames(grid_, snapshot().settings)));
     MoveRegion op;
     const Id id = r->id;
-    if (!resolve_move(snapshot(), id, r->position + direction * step, doc_.reserve_id(), op)) {
+    const Frames to = nudge_target(r->position, direction, grid_, snapshot().settings);
+    if (to == r->position || !resolve_move(snapshot(), id, to, doc_.reserve_id(), op)) {
         why = "the region is already at the session start";
         return false;
     }

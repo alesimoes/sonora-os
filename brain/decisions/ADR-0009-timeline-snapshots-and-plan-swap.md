@@ -12,6 +12,38 @@
 - Specs: [`session-format.md`](../specs/session-format.md),
   [`timeline-model.md`](../specs/timeline-model.md).
 
+## Summary
+
+*Navigation only; the sections below are the decision. `grep -n '^#' <this
+file>` gives each heading's line; Read from there with offset/limit.*
+
+- §1: the edit state (`EditState`) is an immutable value sharing unchanged
+  tracks and playlists; one state per step, undo and redo move a pointer,
+  and the stack is bounded by bytes, not steps.
+- §2: every change is a resolved `Operation`; `apply(Snapshot, Operation)`
+  is pure. The engine's document thread applies and replicates each one;
+  replicas never apply their own and resync on a revision gap.
+- §3: sources are an append-only pool; mix state is saved but not undoable;
+  a playlist's regions never overlap.
+- §4: `engine/control` builds the plan, `engine/core` runs it. 4.1 one
+  `seq_cst` counter retires plans; 4.2 at most one plan pending; 4.3 a source
+  chunk cache sized in chunks; 4.4 publication and locate wait for
+  residency; 4.5 the graph in the plan; 4.6 output through
+  `AudioBlock::outputs`.
+- §5: the session file is canonical strict JSON (`session-format.md`); I/O
+  stays out of the model; saves are durable and serialised.
+- Updates: a resync carries the whole undo window (`encode_window()`); the
+  server's `model::Document` is the one document and its control thread the
+  document thread; `Compound{ops, label}` makes several edits one revision
+  and one undo step (accepted 2026-10-18), its limit 256 at
+  `kProtocolVersion` 5.
+
+Sections: Context; Decision §1 to §5; Rationale; Consequences; Unverified;
+Updates 2026-10-13 (hardware measurements move after the Complete DAW; a
+resync carries the undo window; playback on the M4/M7 control server);
+Update 2026-10-14 (compound operations); Note 2026-10-18 (the compound
+limit is 256); Alternatives rejected.
+
 ## Context
 
 Phase 2's exit criterion is: record, play back, punch in over an existing

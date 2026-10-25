@@ -632,6 +632,82 @@ int test_time() {
     return 0;
 }
 
+// --- the nudge on a tempo map ---------------------------------------------------
+//
+// 120 4/4 to bar 3, then 60 3/4 (a 48000-frame beat, a 144000-frame bar) for
+// two bars, then 120 4/4 again from 480000. Pro Tools' nudge in Bars|Beats
+// moves by the musical value where the region is, not the first tempo's.
+int test_nudge_tempo_map() {
+    constexpr Frames kSlowBeat = 48000, kSlowBar = 3 * kSlowBeat;
+    constexpr Frames kBack = 2 * kBar + 2 * kSlowBar;   // 480000
+    Snapshot snap = two_tracks();
+    TempoEntry slow;
+    slow.at = 2 * kBar;
+    slow.bpm = 60.0f;
+    slow.meter = {{3, 4}};
+    TempoEntry back;
+    back.at = kBack;
+    snap.settings.tempo = {TempoEntry{}, slow, back};
+    const SessionSettings& s = snap.settings;
+
+    OK(nudge_target(kBar, 1, GridValue::Beat, s) == kBar + kBeat);
+    OK(nudge_target(4 * kBar, 1, GridValue::Beat, s) == 4 * kBar + kSlowBeat);
+    // A 3/4 bar from its second beat ends on the 4/4 bar's second beat:
+    // three beats, two of them slow.
+    OK(nudge_target(4 * kBar, 1, GridValue::Bar, s) == kBack + kBeat);
+    OK(nudge_target(2 * kBar, 1, GridValue::Bar, s) == 2 * kBar + kSlowBar);
+    // Going back, the step is the one that ends where the region is: the
+    // bar before the return to 4/4 is a 3/4 bar.
+    OK(nudge_target(kBack, -1, GridValue::Bar, s) == kBack - kSlowBar);
+    OK(nudge_target(2 * kBar, -1, GridValue::Bar, s) == kBar);
+    // A step across a change is measured in beats, not frames: two 4/4
+    // beats after the return and two 3/4 beats before it.
+    OK(nudge_target(kBack + 2 * kBeat, -1, GridValue::Bar, s) == kBack - 2 * kSlowBeat);
+    OK(nudge_target(kBeat, -1, GridValue::Bar, s) == 0);   // never below 0
+    OK(nudge_target(0, -1, GridValue::Beat, s) == 0);
+
+    // One step across several changes, every one of them inside the step:
+    // 60 bpm from bar 2, 240 a 60 bpm beat later, 120 a 240 bpm beat after
+    // that. A bar from bar 2 is a 60 beat, a 240 beat and two 120 beats.
+    {
+        SessionSettings many = s;
+        TempoEntry t60, t240, t120;
+        t60.at = kBar;
+        t60.bpm = 60.0f;
+        t240.at = kBar + kSlowBeat;
+        t240.bpm = 240.0f;
+        t120.at = kBar + kSlowBeat + kBeat / 2;
+        many.tempo = {TempoEntry{}, t60, t240, t120};
+        const Frames bar = kSlowBeat + kBeat / 2 + 2 * kBeat;
+        OK(nudge_target(kBar, 1, GridValue::Bar, many) == kBar + bar);
+        OK(nudge_target(kBar + bar, -1, GridValue::Bar, many) == kBar);
+        // From half a 60 bpm beat: half of it, then half a 240 bpm beat.
+        OK(nudge_target(kBar + kSlowBeat / 2, 1, GridValue::Beat, many) ==
+           kBar + kSlowBeat + kBeat / 4);
+        // From before the first change, across all three: one 120 beat
+        // to bar 2, then the 60 beat, the 240 beat and one 120 beat.
+        OK(nudge_target(3 * kBeat, 1, GridValue::Bar, many) == kBar + kSlowBeat + kBeat / 2 + kBeat);
+        OK(nudge_target(kBar + kSlowBeat + kBeat / 2 + kBeat, -1, GridValue::Bar, many) == 3 * kBeat);
+    }
+
+    ModelDocument doc(snap);
+    EditController c(doc);
+    std::string why;
+    c.set_grid(GridValue::Beat);
+    OK(c.select_region(11));   // B at 4 bars, inside the 60 bpm stretch
+    OK(c.nudge(1, why));
+    OK(region(doc.snapshot(), 11)->position == 4 * kBar + kSlowBeat);
+    OK(c.selection().start == 4 * kBar + kSlowBeat);
+    c.set_grid(GridValue::Bar);
+    OK(c.nudge(-1, why));
+    OK(region(doc.snapshot(), 11)->position == 4 * kBar + kSlowBeat - kSlowBar);
+    OK(c.select_region(10));   // A at 1 bar
+    OK(c.nudge(-1, why));
+    OK(region(doc.snapshot(), 10)->position == 0);
+    OK(!c.nudge(-1, why) && !why.empty());
+    return 0;
+}
+
 // --- what is drawn where --------------------------------------------------------
 
 // --- fades -------------------------------------------------------------------
@@ -1969,7 +2045,7 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
         test_taper() ||
-        test_time() ||
+        test_time() || test_nudge_tempo_map() ||
         test_scene() || test_routing() || test_files() || test_save_failures() ||
         test_pre_migration_backup() || test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups()) {

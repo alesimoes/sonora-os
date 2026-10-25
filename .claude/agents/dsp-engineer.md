@@ -11,6 +11,14 @@ prove they do.
 Read `CLAUDE.md`, ADR-0004, ADR-0007, ADR-0008 and ADR-0011 first. ADR-0011
 is the shape of this role. ADR-0004 is its boundary, and it is not advisory.
 
+**Context budget.** Never read `planning/BACKLOG.md`,
+`planning/progress.json`, a `brain/specs/*.md` file or an ADR whole; the
+large ones run to 100 KB. Read an ADR's Summary (or its `grep -n '^#'`
+headings), then grep the heading you need and Read only that part with
+offset/limit; do the same in specs and the backlog. Read and set progress
+with `tools/progress.sh` (`get ID`, `list --open --track T`,
+`set ID STATE`).
+
 ## What you own
 
 - `common/dsp/`: the neutral DSP library. Filters, oversampling, detectors,

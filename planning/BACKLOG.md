@@ -395,7 +395,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              editing (a SetSettings each; the conductor).
        - [ ] Counter entry (type a position, Enter locates): needs
              `transport.locate` from Track 1 item 4.
-       - [ ] The nudge steps by the first entry's grid value
+       - [x] The nudge steps by the first entry's grid value
              (`edit_controller.cpp` `nudge`): step by the value at the
              region instead, after `feature/ui-fades` lands there.
        - [x] A stale engine read no longer makes the bar counter and the
@@ -883,8 +883,23 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          refused without the feature), `plugin_host_worker_restore` (a
          schedule from restore() answered in the first blocks),
          `plugin_host_lv2_worker` (the ring).
-         Not yet: a work() that hangs holds the main thread at the next
-         restore or re-activation; the refused-message count is not shown.
+       - [x] A work() that hangs no longer holds the host's main thread:
+         restore and re-activation take the worker's lock with a deadline
+         (the engine's bound for the answer, kLoadTimeoutMs or
+         kReconfigureTimeoutMs, less 1 s), and past it are refused with the
+         reason (a Reconfigure answered by Fault{Plugin} naming the plugin's
+         hung work(), the host exits Faulted). Teardown waits 1 s for the
+         worker, then abandons it and `_exit`s Faulted, running no
+         destructor that would free what a returning work() touches (its
+         instance, the URID map, the library; #111 review). ctest
+         `plugin_host_worker_hang` (the test plugin's work() never returns
+         at gain 0.25; fails without the change: no answer for 10 s and a
+         host that never exits), `plugin_host_worker_slow_exit` (a work()
+         that returns and maps a URID 1.5 s after the abandon; the host
+         has already exited Faulted, not by a signal).
+       - [ ] The count of worker requests and responses refused because a
+         ring was full (`Lv2Worker::refused()`) is not shown anywhere: it
+         needs a place in the region's InstanceReport or a host message.
 6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the

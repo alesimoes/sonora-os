@@ -284,6 +284,19 @@ jobs:
       - name: progress.py doctests
         run: python3 -m doctest -v tools/progress.py
 
+      # Agents set progress with `set`, so on the real catalogue it must
+      # change one line and leave a file --check accepts.
+      - name: progress.py set edits one line
+        run: |
+          id=$(python3 tools/progress.py list --open | awk '$2 == "todo" { print $1; exit }')
+          python3 tools/progress.py set "$id" doing --branch ci/set-check
+          python3 tools/progress.py set "$id" done --pr 1 --evidence "set check"
+          python3 tools/progress.py get "$id"
+          python3 tools/progress.py --check
+          test "$(git diff --numstat planning/progress.json)" = "$(printf '1\t1\tplanning/progress.json')"
+          if python3 tools/progress.py set no.such.item todo; then exit 1; fi
+          git checkout -- planning/progress.json
+
       # Every PR that regenerated PROGRESS.md conflicted with every other
       # queued PR, so only the publish-progress job below writes it.
       - name: PR leaves PROGRESS.md alone
