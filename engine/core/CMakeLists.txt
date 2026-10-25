@@ -81,6 +81,13 @@ add_executable(test_loop_record tests/test_loop_record.cpp)
 target_link_libraries(test_loop_record PRIVATE sonora_core)
 add_test(NAME loop_record COMMAND test_loop_record)
 
+# Loop playback while not recording: the wrap at the sample, a loop shorter
+# than the reader's window or longer than its pool, a new range gated on
+# its start's residency, and takes that do not wrap or give the hold back.
+add_executable(test_loop_playback tests/test_loop_playback.cpp)
+target_link_libraries(test_loop_playback PRIVATE sonora_core)
+add_test(NAME loop_playback COMMAND test_loop_playback)
+
 # A loop take's passes from its wraps (ADR-0016 §5): lost wraps and a wrap
 # list that stops early or is missing derived from the loop length, and
 # recovery reading a take's file and list.

@@ -223,6 +223,37 @@ not in it: it is unknown at open, and the sidecar (§2) records it.
    the resync window (`encode_window()`), and the time a replica takes to
    apply it. Researcher; not blocking.
 
+## Update, 2026-10-25: loop playback when not recording
+
+§2 left loop playback to `engine.transport.loop`. As built (rt-engineer,
+Track 1; it changes no take, file or protocol):
+
+- **The range is the document's.** As for loop record, a set loop range
+  is loop on: `PlaybackController::show()` passes it to
+  `Session::set_loop()`, and a roll, not recording, wraps from B to A at
+  the sample inside a block, with the loop take's split in
+  `render_track()`. A block that starts at or past B plays on. A range
+  shorter than one block is not looped (as §1 refuses it for a take).
+  A plain or punched take never wraps: a take is one contiguous span.
+- **The range reaches the audio thread behind the residency gate**
+  (ADR-0009 §4.4). `set_loop()` asks the reader to hold [A, A + W), cut
+  at B; a new `RtCommand::Kind::Loop`, in order with the locates, goes
+  only once that generation is resident (`pump_loop()`). A roll or take
+  requested meanwhile waits for it.
+- **The old range stays whole until the new one is taken.** The reader
+  holds both starts, and runs the playhead's window to the later B,
+  until `Transport::loops_applied()` reaches the new range's count; so a
+  range moved while rolling neither drops the old start nor misses what
+  lies past the old B.
+- **A loop shorter than W** is [A, B) entire for both windows: read once,
+  nothing past B read for it.
+- **A loop take** holds its own range in the reader; at stop or punch-out
+  the playback range is held again.
+- Still open: `transport.toggle_loop`. With the range as the on switch,
+  a toggle that keeps the range needs a loop-enabled flag in the session
+  settings (Pro Tools' Loop Playback and Logic's Cycle are modes apart
+  from the range); that is a format change and waits for its own decision.
+
 ## Alternatives rejected
 
 - **One file per pass** (a Close and an Open at each wrap): no handle at B

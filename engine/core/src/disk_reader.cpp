@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <tuple>
 
@@ -55,17 +56,21 @@ void DiskReader::wake() {
     cv_.notify_all();
 }
 
-void DiskReader::hold_loop(int64_t loop_from, int64_t loop_to) {
-    if (loop_from < 0 || loop_to <= loop_from || loop_to > int64_t{0xFFFFFFFF}) {
-        release_loop();
-        return;
+uint64_t DiskReader::hold_loop(LoopHold loop, LoopHold previous, uint64_t previous_until) {
+    if (loop.from < 0 || !loop.held()) loop = {};
+    if (previous.from < 0 || !previous.held() || previous == loop) previous = {};
+    uint64_t gen;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        request_.loop = loop;
+        request_.previous = previous;
+        request_.previous_until = previous.held() ? previous_until : 0;
+        gen = ++request_.generation;
+        wake_flag_ = true;
     }
-    loop_.store((static_cast<uint64_t>(loop_to) << 32) | static_cast<uint64_t>(loop_from),
-                std::memory_order_release);
-    wake();
+    cv_.notify_all();
+    return gen;
 }
-
-void DiskReader::release_loop() { loop_.store(0, std::memory_order_release); }
 
 bool DiskReader::add_source(const std::string& path, uint32_t& slot, std::string& error) {
     const uint32_t n = source_count_.load(std::memory_order_relaxed);
@@ -460,46 +465,57 @@ bool DiskReader::window_resident(const PlaybackPlan* plan, int64_t from, int64_t
 
 void DiskReader::pass(const Request& req) {
     if (req.generation != adopted_.load(std::memory_order_relaxed)) adopt(req);
-    // The locate count first: a playhead read after it is at or past the
-    // locate it reports.
+    // The locate and loop counts first: a playhead read after them is at or
+    // past what they report.
     const uint64_t applied = transport_.locates_applied();
+    const uint64_t loops_applied = transport_.loops_applied();
     const auto playhead = static_cast<int64_t>(transport_.playhead());
     const bool locating = req.locate_serial != 0 && applied < req.locate_serial;
-    const uint64_t loop = loop_.load(std::memory_order_acquire);
-    const auto loop_from = static_cast<int64_t>(loop & 0xFFFFFFFFu);
-    const auto loop_to = static_cast<int64_t>(loop >> 32);
-    looping_ = loop != 0;
+    LoopHold loops[2];
+    int loop_count = 0;
+    if (req.loop.held()) loops[loop_count++] = req.loop;
+    if (req.previous.held() && loops_applied < req.previous_until) loops[loop_count++] = req.previous;
+    looping_ = loop_count != 0;
 
-    // Inside a held loop the playhead never reaches B: past it, the window
-    // goes on at A, which the loop start's own window covers.
+    // Short of a held loop's B the playhead never passes it: past it, the
+    // window goes on at A, which the loop start's own window covers. With
+    // two loops, to the later B, since either may be the one played next;
+    // at or past a B the playhead plays on, and the window is whole.
     int64_t ahead = playhead + window_frames_;
-    if (looping_ && playhead < loop_to && ahead > loop_to) ahead = loop_to;
+    if (looping_) {
+        int64_t limit = 0;
+        for (int i = 0; i < loop_count; ++i) {
+            limit = std::max(limit, playhead < loops[i].to ? loops[i].to : INT64_MAX);
+        }
+        ahead = std::min(ahead, limit);
+    }
     const int64_t target = req.locate_target;
-    const int64_t loop_ahead = loop_from + window_frames_;
+    Range loop_window[2] = {};
+    for (int i = 0; i < loop_count; ++i) {
+        loop_window[i] = {loops[i].from, std::min(loops[i].from + window_frames_, loops[i].to)};
+    }
 
     protect_count_ = 0;
     protect_[protect_count_++] = {playhead, ahead};
     if (locating) protect_[protect_count_++] = {target, target + window_frames_};
-    if (looping_) protect_[protect_count_++] = {loop_from, loop_ahead};
+    for (int i = 0; i < loop_count; ++i) protect_[protect_count_++] = loop_window[i];
 
     // What is heard now first, then where the next wrap lands, then what
     // gates the next swap or locate.
-    fill(playing_, playhead, ahead);
-    if (looping_) fill(playing_, loop_from, loop_ahead);
-    if (locating) fill(playing_, target, target + window_frames_);
-    fill(pending_, playhead, ahead);
-    if (looping_) fill(pending_, loop_from, loop_ahead);
-    if (locating) fill(pending_, target, target + window_frames_);
-
-    bool ok = window_resident(playing_, playhead, ahead) &&
-              window_resident(pending_, playhead, ahead);
-    if (looping_) {
-        ok = ok && window_resident(playing_, loop_from, loop_ahead) &&
-             window_resident(pending_, loop_from, loop_ahead);
+    PlaybackPlan* const plans[2] = {playing_, pending_};
+    for (PlaybackPlan* p : plans) {
+        fill(p, playhead, ahead);
+        for (int i = 0; i < loop_count; ++i) fill(p, loop_window[i].from, loop_window[i].to);
+        if (locating) fill(p, target, target + window_frames_);
     }
-    if (locating) {
-        ok = ok && window_resident(playing_, target, target + window_frames_) &&
-             window_resident(pending_, target, target + window_frames_);
+
+    bool ok = true;
+    for (const PlaybackPlan* p : plans) {
+        ok = ok && window_resident(p, playhead, ahead);
+        for (int i = 0; i < loop_count; ++i) {
+            ok = ok && window_resident(p, loop_window[i].from, loop_window[i].to);
+        }
+        if (locating) ok = ok && window_resident(p, target, target + window_frames_);
     }
     if (ok) resident_.store(req.generation, std::memory_order_release);
     // Release: what this pass linked is visible to whoever sees the count.

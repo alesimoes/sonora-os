@@ -29,8 +29,10 @@ struct PlaybackConfig {
     uint32_t chunk_frames = 16384;
     double window_seconds = 4.0;
     // 0: two plans' windows for every track channel, each at the playhead
-    // and at a loop take's start (DiskReader::hold_loop()), plus a
-    // margin.
+    // and at a loop's start (DiskReader::hold_loop()), plus a margin. While
+    // a new loop range waits for its start the playing plan holds a third,
+    // the old start, which the pending plan's share covers when no edit is
+    // pending; with one, the change waits for the swap.
     uint32_t pool_chunks = 0;
     uint32_t max_sources = 1024;
     uint32_t max_segments = 65536;          // per plan
@@ -72,9 +74,10 @@ struct PlaybackConfig {
 // (ADR-0007 §2). Trivial, so the ring can hold it as bytes.
 struct RtCommand {
     // Append-only.
-    enum class Kind : uint32_t { None = 0, Locate = 1, PluginParam = 2 };
+    enum class Kind : uint32_t { None = 0, Locate = 1, PluginParam = 2, Loop = 3 };
     Kind kind;
-    uint64_t frame;  // Locate
+    uint64_t frame;  // Locate; Loop: A
+    uint64_t to;     // Loop: B
     // PluginParam: the chain's parameter store (the index its plan node
     // carries), the instance in the chain, the dense parameter index or
     // plugin::kBypassParam, and the format-native value (ADR-0012 §5.2).
@@ -307,6 +310,23 @@ public:
     // the target's window is resident (ADR-0009 §4.4).
     bool post_locate(uint64_t frame);
 
+    // The playback loop (engine.transport.loop): rolling and not recording,
+    // a block that starts before B wraps the playhead from B to A at the
+    // sample; one that starts at or past B plays on. [0, 0) clears it. The
+    // range reaches the audio thread only once the reader has its start
+    // resident (pump_loop(), ADR-0009 §4.4); until then the range sent last
+    // plays on, still held. Refused, leaving the loop as it was, for a range
+    // shorter than one block (PlaybackConfig::max_block_frames), so no
+    // callback within that bound wraps twice. A take is one contiguous span
+    // and does not wrap at it; a loop take wraps at its own range. A range
+    // set during any take is held and sent when it ends. Control thread.
+    bool set_loop(uint64_t from, uint64_t to, std::string* error = nullptr);
+    // Sends the range set_loop() set last once its start is resident; a
+    // full queue leaves it for the next call. Control thread, every turn.
+    void pump_loop();
+    // Whether that range is not sent yet.
+    bool loop_pending() const { return !(loop_wanted_ == loop_sent_); }
+
     // Queues a plugin parameter change for the audio thread (ADR-0012
     // §5.1), for the plan published with `epoch`, whose node names `store`.
     // At the start of the next callback that runs chains under that plan it
@@ -484,6 +504,10 @@ private:
     void keep_origin(uint64_t end);
     // Pulls the disk thread's closed files into closing_.
     void collect_closed();
+    // The playback loop into the reader: the range set last, with the one
+    // the audio thread plays until that is sent. Not during any take: a
+    // loop take's own range is held, and a plain one records through B.
+    void hold_playback_loop();
     // Until the callback running now, if one is, has returned, or 1 s has
     // passed. False on the timeout.
     bool wait_for_callback() const;
@@ -534,6 +558,13 @@ private:
     std::map<int, Closing> closing_;
     int recording_take_ = 0;
     bool loop_running_ = false;
+    // The playback loop: set by set_loop(), and last sent to the audio
+    // thread, which has taken it once it has applied loops_sent_ ranges.
+    // loop_gen_ is the reader generation that holds loop_wanted_.
+    LoopHold loop_wanted_;
+    LoopHold loop_sent_;
+    uint64_t loop_gen_ = 0;
+    uint64_t loops_sent_ = 0;
     // The take take_failure() and stop() speak for: the last one started,
     // kept after a punch-out (PR #60, code review 3) and replaced by the
     // next, so take K's failure is never said as take K + 1's (review 4).
@@ -611,6 +642,9 @@ private:
     uint32_t loop_wrap_count_ = 0;
     uint32_t block_wraps_ = 0;
     uint32_t block_wrap_offset_ = 0;
+    // The playback loop as the last Loop command set it; [0, 0) for none.
+    uint64_t play_loop_from_ = 0;
+    uint64_t play_loop_to_ = 0;
     // Per engine track, where its monitor source stands, 0 playback and 1
     // input, and the callback that last moved it. A track not rendered in
     // the callback before starts where its source is, with no ramp: it has

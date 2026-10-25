@@ -74,9 +74,12 @@ playback can follow edits; it is in flight.
          per track, each wrap marked in band and kept in `<file>.wraps`;
          its passes go in as one `RecordLoopTake` per track, on playlists
          of their own, the last complete one on the active playlist.
-       Remain: loop playback when not recording (the reader's loop-start
-         window, `transport.toggle_loop`), pre-roll for a plain take, and
-         input monitoring.
+       Loop playback (`t1-loop-playback`): with the loop range set, a roll
+         wraps from B to A at the sample; a new range goes to the audio
+         thread once its start is resident, the old one held until then
+         (ADR-0016, update "loop playback when not recording").
+       Remain: `transport.toggle_loop` (needs a loop-enabled setting apart
+         from the range), pre-roll for a plain take, and input monitoring.
        - [ ] Loop record: a track that opens late and loses every later
          wrap still numbers its passes from P1; the Open record needs the
          take's wrap count.

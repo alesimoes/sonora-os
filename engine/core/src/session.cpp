@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -286,6 +287,47 @@ bool Session::post_locate(uint64_t frame) {
     return commands_->write(&c, 1) == 1;
 }
 
+bool Session::set_loop(uint64_t from, uint64_t to, std::string* error) {
+    LoopHold want;
+    if (to > from) {
+        const std::string range = "the loop from " + frame_text(from) + " to " + frame_text(to);
+        const auto refuse = [&](const std::string& why) {
+            if (error) *error = why;
+            return false;
+        };
+        if (to - from < max_block_) {
+            return refuse(range + " is shorter than one block (" + std::to_string(max_block_) +
+                          " frames)");
+        }
+        if (to > static_cast<uint64_t>(INT64_MAX)) return refuse(range + " is past the timeline");
+        want = {static_cast<int64_t>(from), static_cast<int64_t>(to)};
+    }
+    if (want == loop_wanted_) return true;
+    loop_wanted_ = want;
+    hold_playback_loop();
+    return true;
+}
+
+// A plain or punched take records through B, and a held B would stop
+// the reader there; stop() and punch_out() hold the range again.
+void Session::hold_playback_loop() {
+    if (recording_take_ != 0) return;
+    const bool change = loop_pending();
+    loop_gen_ = reader_->hold_loop(loop_wanted_, change ? loop_sent_ : LoopHold{},
+                                   change ? loops_sent_ + 1 : 0);
+}
+
+void Session::pump_loop() {
+    if (!loop_pending() || recording_take_ != 0 || reader_->resident() < loop_gen_) return;
+    RtCommand c{};
+    c.kind = RtCommand::Kind::Loop;
+    c.frame = static_cast<uint64_t>(loop_wanted_.from);
+    c.to = static_cast<uint64_t>(loop_wanted_.to);
+    if (commands_->write(&c, 1) != 1) return;
+    loop_sent_ = loop_wanted_;
+    ++loops_sent_;
+}
+
 bool Session::post_plugin_param(uint64_t epoch, uint32_t store, uint32_t instance, uint32_t param,
                                 float value) {
     // A NaN would reach the store, every later submit and the host's
@@ -552,7 +594,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     recording_take_ = take_number;
     loop_running_ = loop != nullptr;
     if (loop != nullptr) {
-        reader_->hold_loop(static_cast<int64_t>(loop->from), static_cast<int64_t>(loop->to));
+        reader_->hold_loop({static_cast<int64_t>(loop->from), static_cast<int64_t>(loop->to)});
     } else {
         reader_->release_loop();
     }
@@ -573,7 +615,8 @@ bool Session::punch_out() {
     transport_->set_state(TransportState::Rolling);
     keep_origin(end);
     recording_take_ = 0;
-    reader_->release_loop();
+    // Rolling on, the playback loop wraps again.
+    hold_playback_loop();
     return true;
 }
 
@@ -698,7 +741,7 @@ bool Session::stop(std::string* error) {
     collect_closed();
     keep_origin(end);
     recording_take_ = 0;
-    reader_->release_loop();
+    hold_playback_loop();
 
     // Every file is closed and collected, so only failed_files_ speaks.
     const std::string why = take_failure();
@@ -809,6 +852,13 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     RtCommand cmd{};
     while (commands_->read(&cmd, 1) == 1) {
+        // In order with the locates: one posted after a range lands under it.
+        if (cmd.kind == RtCommand::Kind::Loop) {
+            play_loop_from_ = cmd.frame;
+            play_loop_to_ = cmd.to;
+            transport_->note_loop();
+            continue;
+        }
         if (cmd.kind != RtCommand::Kind::Locate) continue;
         if (take_started) {
             locates_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -917,12 +967,17 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         loop_wrap_count_ = 0;
     }
     // A loop take's playhead wraps from B to A inside the block (ADR-0016
-    // §2). start_loop() holds B - A to at least max_block_ frames, so a
-    // callback within that bound wraps at most once; a longer one is
-    // followed all the same.
+    // §2), and so does a roll's under the playback loop, marking no wrap.
+    // start_loop() and set_loop() hold B - A to at least max_block_ frames,
+    // so a callback within that bound wraps at most once; a longer one is
+    // followed all the same. Any other take is one contiguous span.
     loop_from_ = 0;
     loop_to_ = 0;
     block_wraps_ = 0;
+    if (!recording && rolling && play_loop_to_ > play_loop_from_ && playhead < play_loop_to_) {
+        loop_from_ = play_loop_from_;
+        loop_to_ = play_loop_to_;
+    }
     if (recording && punch_->loop_to > punch_->loop_from && playhead < punch_->loop_to) {
         loop_from_ = punch_->loop_from;
         loop_to_ = punch_->loop_to;
@@ -1509,7 +1564,7 @@ uint64_t Session::loop_frame(uint64_t playhead, uint64_t off) const noexcept SON
 
 void Session::render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
                            uint32_t n, float* const out[2]) noexcept SONORA_RT {
-    // Split where a loop take's playhead wraps: the cursor reseeks at A by
+    // Split where the playhead wraps: the cursor reseeks at A by
     // itself, since the span after the wrap does not start where it ended.
     uint64_t at = from;
     for (uint32_t done = 0; done < n;) {

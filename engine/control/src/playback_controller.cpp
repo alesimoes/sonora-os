@@ -146,6 +146,14 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
         session_.tracks()[i]->set_document_id(i < tracks.size() ? tracks[i]->id : 0);
     }
     session_.set_session_name(snapshot.settings.name);
+    // The roll loops over the document's loop range, what the interface
+    // shows as loop on (ADR-0016 §1, engine.transport.loop). One too short
+    // for the session to loop plays straight through, as no range does.
+    const auto& loop = snapshot.settings.transport.loop;
+    if (loop[0] < 0 || loop[1] <= loop[0] ||
+        !session_.set_loop(static_cast<uint64_t>(loop[0]), static_cast<uint64_t>(loop[1]))) {
+        session_.set_loop(0, 0);
+    }
     PlaybackPlan* plan = nullptr;
     PlanReport report;
     const SourceSlot slot = [this](const model::Source& s, uint32_t& out, std::string& e) {
@@ -220,7 +228,8 @@ void PlaybackController::stop() {
 // A roll starts once the window is resident and any locate before it has
 // been applied, so the first block rolled plays the target.
 bool PlaybackController::may_roll(uint64_t generation) const {
-    return !pending_ && locate_sent_ && session_.reader().resident() >= generation &&
+    return !pending_ && locate_sent_ && !session_.loop_pending() &&
+           session_.reader().resident() >= generation &&
            session_.transport().locates_applied() >= locate_serial_;
 }
 
@@ -269,6 +278,8 @@ void PlaybackController::pump() {
             if (last_locate_ms_ > max_locate_ms_) max_locate_ms_ = last_locate_ms_;
         }
     }
+
+    session_.pump_loop();
 
     if (play_requested_ && may_roll(play_gen_)) {
         play_requested_ = false;
@@ -326,7 +337,10 @@ bool PlaybackController::settle(double seconds) {
     for (;;) {
         if (!session_.reader().running()) session_.reader().run_pass();
         pump();
-        if (!pending_ && locate_sent_ && !play_requested_ && !record_requested_) return true;
+        if (!pending_ && locate_sent_ && !play_requested_ && !record_requested_ &&
+            !session_.loop_pending()) {
+            return true;
+        }
         if (std::chrono::steady_clock::now() > deadline) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
