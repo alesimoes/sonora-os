@@ -92,6 +92,14 @@ void ShellModel::addNotice(const QString& n) {
     emit noticesChanged();
 }
 
+void ShellModel::setOpenNotice(const QString& n) {
+    if (n == open_notice_) return;
+    if (!open_notice_.isEmpty()) notices_.removeOne(open_notice_);
+    open_notice_ = n;
+    if (!n.isEmpty()) notices_ << n;
+    emit noticesChanged();
+}
+
 void ShellModel::setKeymapNotices(const QStringList& profile, const QStringList& essentials) {
     for (const QString& old : keymap_notices_) notices_.removeOne(old);
     profile_notices_ = profile;

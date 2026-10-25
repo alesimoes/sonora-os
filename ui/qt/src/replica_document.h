@@ -104,9 +104,15 @@ public:
     std::size_t in_flight() const { return pending_.size(); }
     // Why the engine refused a request; for the status line.
     std::function<void(const std::string&)> on_refused;
-    // A File > Open was among the dropped requests: the window must stop
-    // naming that file, or Save would write the engine's document over it.
-    std::function<void()> on_load_abandoned;
+    // A File > Open did not happen, and what is shown is no longer its
+    // session: the window must stop naming that file, or Save would write
+    // another document over it. `refused` is empty when the request was
+    // dropped with the link (what the engine holds is unknown until its
+    // Snapshot), and is the engine's reason when the engine refused it (the
+    // engine kept the session it had). `later_load`: another Open is still
+    // in flight, so what is shown is that one's session. Called once the
+    // replica is rebuilt; while unset, a refusal goes to `on_refused`.
+    std::function<void(const std::string& refused, bool later_load)> on_load_abandoned;
 
 private:
     struct Pending {

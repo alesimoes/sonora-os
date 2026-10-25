@@ -725,8 +725,20 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
         return false;
     }
     const std::shared_ptr<const model::SourcePool> pool = loaded.snapshot.sources;
-    if (!doc_.reset(std::move(loaded.snapshot), why)) return false;
+    if (!doc_.reset(std::move(loaded.snapshot), why)) {
+        emit openNotice(file + QStringLiteral(" was not opened: ") + q(why));
+        return false;
+    }
     ctl_.document_replaced();
+    before_open_.valid = true;
+    before_open_.opened = file;
+    before_open_.file = file_;
+    before_open_.saved_revision = saved_revision_;
+    before_open_.save_generation = save_generation_;
+    before_open_.saved_bytes = saved_bytes_;
+    before_open_.repairs = repairs_;
+    before_open_.sequences = sequences_;
+    emit openNotice(QString());
     file_ = file;
     sequences_.open(file, loaded.verified_sequences);
     // A repaired session is not the file on disk: it reads as modified, so
@@ -795,7 +807,45 @@ void SessionModel::dismissRepair(int index) {
     emit repairsChanged();
 }
 
+void SessionModel::openWasRefused(const QString& why, bool later_load) {
+    if (later_load) {
+        // What is shown is the later Open's session, and the window names
+        // it. What that Open remembered is the refused session, so its own
+        // refusal must clear rather than give this one back.
+        before_open_ = BeforeOpen{};
+        emit openNotice(QStringLiteral("A session was not opened: ") + why);
+        return;
+    }
+    if (!before_open_.valid) {
+        const QString refused = file_;
+        openWasLost();
+        emit openNotice((refused.isEmpty() ? QStringLiteral("A session") : refused) +
+                        QStringLiteral(" was not opened: ") + why);
+        return;
+    }
+    BeforeOpen b = std::move(before_open_);
+    before_open_ = BeforeOpen{};
+    ctl_.document_replaced();
+    file_ = b.file;
+    saved_revision_ = b.saved_revision;
+    save_generation_ = b.save_generation;
+    saved_bytes_ = std::move(b.saved_bytes);
+    sequences_ = std::move(b.sequences);
+    seen_dirty_ = false;
+    seen_revision_ = UINT64_MAX;
+    seen_sel_valid_ = seen_view_valid_ = false;
+    updateCounters(true);
+    setRepairs(std::move(b.repairs));
+    sync();
+    emit sessionChanged();
+    emit openNotice(b.opened + QStringLiteral(" was not opened: ") + why + QStringLiteral("; ") +
+                    (file_.isEmpty() ? QStringLiteral("the session before it")
+                                     : file_) +
+                    QStringLiteral(" is shown"));
+}
+
 void SessionModel::openWasLost() {
+    before_open_ = BeforeOpen{};
     const QString lost = file_;
     file_.clear();
     saved_bytes_.clear();
@@ -808,8 +858,8 @@ void SessionModel::openWasLost() {
     sync();
     emit sessionChanged();
     if (!lost.isEmpty()) {
-        emit notice(lost + QStringLiteral(" was not opened: the engine was unreachable. "
-                                          "Open it again."));
+        emit openNotice(lost + QStringLiteral(" was not opened: the engine was unreachable. "
+                                              "Open it again."));
     }
 }
 

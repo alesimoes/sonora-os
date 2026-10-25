@@ -453,7 +453,13 @@ int main(int argc, char** argv) {
                                               const std::vector<api::CommandReply>& replies) {
         if (document.receive(updates, replies)) session.documentUpdated();
     });
-    document.on_load_abandoned = [&session]() { session.openWasLost(); };
+    document.on_load_abandoned = [&session](const std::string& refused, bool later_load) {
+        if (refused.empty()) {
+            session.openWasLost();
+        } else {
+            session.openWasRefused(QString::fromStdString(refused), later_load);
+        }
+    };
     // Fader rides are heard through ParameterChange and saved at release.
     // The fake engine plays nothing, and the Mix window says so.
     MixModel mixer(
@@ -503,6 +509,7 @@ int main(int argc, char** argv) {
     register_types();
     ShellModel model(engine, router);
     a.model = &model;
+    QObject::connect(&session, &SessionModel::openNotice, &model, &ShellModel::setOpenNotice);
     link_transport(model, session, transport);
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };

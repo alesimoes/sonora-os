@@ -217,6 +217,8 @@ playback can follow edits; it is in flight.
        - [ ] M-1c PR 2 also carries Load in parts (client to engine), so
              File > Open reaches the 2^24 budget; until then a bundle over
              64 MiB is refused by name (ADR-0015 update of 2026-10-20).
+       - [ ] Sequence-file fsyncs run on the UI thread until the saver thread exists: announce a slow save ("Saving: writing N MIDI sequence files") before a batch over a few MiB (ui-engineer, #109).
+       - [ ] A MIDI region whose sequence file is missing is not drawn differently: the first MIDI region drawing marks it ("MIDI missing") and refuses edits on it by name (ui-engineer, #109).
        - [ ] M-1c PR 3 **merges before the first M-4 PR that records
              MIDI** (architect, #109), and makes the engine the sole owner
              of `MIDI Sequences/`: the interface's sidecar writer and
