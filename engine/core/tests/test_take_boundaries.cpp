@@ -576,6 +576,45 @@ int test_stop_without_a_callback() {
     return 0;
 }
 
+// ADR-0018 §1: in another session folder the next take can have the number
+// of the take stop() just ended. With no callback between the two, the
+// audio thread took the new take for the old one still running: it opened
+// no window and took no origin, and the new take's files stayed empty.
+int test_same_number_after_a_switch_without_a_callback() {
+    Rig rig("same_number", 2);
+    Session& s = *rig.session;
+    std::string error;
+    CHECK(s.start_recording(1, &error));
+    rig.blocks(2);
+    CHECK(s.stop(&error));
+    Closed first;
+    add(first, s.closed_takes());
+    CHECK(first.count(1) == 1 && first[1][0].frames == 2 * kBlock);
+
+    const fs::path other = rig.dir / "other";
+    CHECK(s.set_folder(other.string(), error));
+    CHECK(s.create_dirs());
+    CHECK(s.next_free_take() == 1);
+    CHECK(s.start_recording(1, &error));
+    rig.blocks(3);
+    CHECK(s.stop(&error));
+    CHECK(g_allocations.load() == 0);
+    Closed second;
+    add(second, s.closed_takes());
+    CHECK(second.count(1) == 1);
+    for (int track = 0; track < 2; ++track) {
+        CHECK(second[1][track].frames == 3 * kBlock);
+        char name[64];
+        std::snprintf(name, sizeof name, "Audio %d_01.wav", track + 1);
+        const FileCheck c = check_file((other / "Audio Files" / name).string());
+        CHECK(c.ok && c.frames == 3 * kBlock && c.time_reference == 2 * kBlock);
+    }
+    // The first take's files are A's and stayed as they were.
+    const FileCheck a = check_file(rig.file(0, 1));
+    CHECK(a.ok && a.frames == 2 * kBlock && a.time_reference == 0);
+    return 0;
+}
+
 // A full boundary ring is an overrun, never a wait: a track whose open
 // record did not fit starts its take a block later, counted, and its file
 // is still exactly its own frames from its own TimeReference.
@@ -737,6 +776,7 @@ int main() {
     if (test_lost_close_record() != 0) return 1;
     if (test_takes_while_rolling() != 0) return 1;
     if (test_stop_without_a_callback() != 0) return 1;
+    if (test_same_number_after_a_switch_without_a_callback() != 0) return 1;
     if (test_full_boundary_ring() != 0) return 1;
     if (test_samples_after_the_records_are_kept() != 0) return 1;
     if (test_no_free_slot_is_refused() != 0) return 1;

@@ -226,9 +226,6 @@ int test_a_take_after_a_switch_lands_in_the_new_folder() {
     CHECK(closed.size() == 1);
     sonora::model::Document document(sonora::engine_document(s));
     const sonora::TakeAdded added = sonora::add_closed_take(document, s, closed[0]);
-    for (const auto& f : closed[0].files) std::fprintf(stderr, "DBG %s %llu %s\n", f.path.c_str(), (unsigned long long)f.frames, f.failure.c_str());
-    for (const auto& n : added.track_notices) std::fprintf(stderr, "DBG notice %s\n", n.c_str());
-    std::fprintf(stderr, "DBG refused %s cut %s\n", added.refused.c_str(), added.cut_short.c_str());
     CHECK(added.track_notices.empty() && added.refused.empty());
     CHECK(!added.updates.empty());
     const auto& sources = document.current().sources->sources;
