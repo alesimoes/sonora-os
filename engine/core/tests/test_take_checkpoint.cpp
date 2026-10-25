@@ -110,7 +110,11 @@ int main() {
             static_cast<sonora::backend::ProcessCallback&>(s).process(b);
             std::this_thread::sleep_for(std::chrono::microseconds(1300));
             seen_mid_take = frames_on_disk(take);
-            if (seen_mid_take >= 4800) break;
+            // checkpoint_all() patches the header mid-pass and counts the
+            // pass only once it has drained after the last file, so the
+            // header can be read before the count moves. Under TSan that
+            // window was wide enough to fail CI on PR #115.
+            if (seen_mid_take >= 4800 && s.disk().checkpoints() > 0) break;
         }
         // Still recording: only a checkpoint can have written that header.
         CHECK(s.recording_take() == 1);
