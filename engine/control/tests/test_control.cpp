@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -504,10 +505,10 @@ void loop_record_on_the_real_engine() {
 
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
     model::ReplicationUpdate u;
-    u.kind = m.kind == api::ModelUpdateKind::Op     ? model::ReplicationUpdate::Kind::Op
-             : m.kind == api::ModelUpdateKind::Undo ? model::ReplicationUpdate::Kind::Undo
-             : m.kind == api::ModelUpdateKind::Redo ? model::ReplicationUpdate::Kind::Redo
-                                                    : model::ReplicationUpdate::Kind::Snapshot;
+    // The two enums list the same kinds in the same order.
+    u.kind = static_cast<model::ReplicationUpdate::Kind>(m.kind);
+    u.part_count = m.part_count;
+    u.part_bytes = m.part_bytes;
     u.revision = m.revision;
     u.undo_floor = m.undo_floor;
     u.next_id = m.next_id;
@@ -670,9 +671,10 @@ void no_plugin_hosting_yet() {
         for (; fed < in.model.size(); ++fed) {
             const api::ModelUpdate& m = in.model[fed];
             model::ReplicationUpdate u;
-            u.kind = m.kind == api::ModelUpdateKind::Snapshot
-                         ? model::ReplicationUpdate::Kind::Snapshot
-                         : model::ReplicationUpdate::Kind::Op;
+            // The two enums list the same kinds in the same order.
+            u.kind = static_cast<model::ReplicationUpdate::Kind>(m.kind);
+            u.part_count = m.part_count;
+            u.part_bytes = m.part_bytes;
             u.revision = m.revision;
             u.undo_floor = m.undo_floor;
             u.next_id = m.next_id;
@@ -910,13 +912,13 @@ void midi_budget_at_open_and_its_notice() {
         t.playlist_name = "Bass.01";
         t.kind = model::TrackKind::Midi;
         t.channels = 0;
-        auto seq = std::make_shared<model::MidiSequence>();
-        for (int i = 0; i < n; ++i) seq->events.push_back(model::MidiEvent{i, 0xB0, 1, 2});
+        model::MidiLists seq;
+        for (int i = 0; i < n; ++i) seq.events.push_back(model::MidiEvent{i, 0xB0, 1, 2});
         model::MidiRegion r;
         r.id = 3;
         r.name = "Bass_01";
         r.length = model::kTicksPerQuarter;
-        r.data = seq;
+        r.data = std::make_shared<const model::MidiSequence>(seq);
         std::string out, why;
         CHECK(h.apply(t, why) && h.apply(model::PlaceMidiRegion{2, r, 0, {}}, why));
         CHECK(model::encode_session_bundle(h.current(), model::WriteInfo{"test", 1}, out, why));
@@ -952,6 +954,105 @@ void midi_budget_at_open_and_its_notice() {
     }));
 }
 
+// ADR-0015 §4: a Snapshot is encoded on the server's worker, and its parts
+// go out as the client's transport drains them. A client whose transport is
+// full gets its header and waits; an edit meanwhile reaches every other
+// client at once and this one only after its window, never inside it.
+void snapshot_parts_are_paced_and_held() {
+    RealEngine real(fresh_dir("parts"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    // A session with MIDI, so its Snapshot has a chunk table.
+    model::SessionSettings settings;
+    settings.name = "Parts";
+    model::History h(model::new_session(settings));
+    model::AddTrack t;
+    t.track = 1;
+    t.playlist = 2;
+    t.name = "Keys";
+    t.playlist_name = "Keys.01";
+    t.kind = model::TrackKind::Midi;
+    t.channels = 0;
+    model::MidiLists seq;
+    for (int i = 0; i < 2000; ++i) seq.events.push_back(model::MidiEvent{i * 9600, 0xB0, 1, 2});
+    model::MidiRegion r;
+    r.id = 3;
+    r.name = "Keys_01";
+    r.length = 16 * model::kTicksPerQuarter;
+    r.data = std::make_shared<const model::MidiSequence>(seq);
+    CHECK(h.apply(t, error) && h.apply(model::PlaceMidiRegion{2, r, 0, {}}, error));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    CHECK(model::encode_session_bundle(h.current(), model::WriteInfo{"test", 1}, load.op, error));
+    const uint64_t loaded = real.submit(load);
+    const auto answered = [&](uint64_t seq) {
+        return until(real, in, [&]() {
+            return std::any_of(in.replies.begin(), in.replies.end(),
+                               [&](const api::CommandReply& x) { return x.seq == seq; });
+        });
+    };
+    CHECK(answered(loaded));
+    EngineControlServer& server = real.engine().server();
+    const uint64_t encoded = server.snapshots_encoded();
+
+    struct Got {
+        std::mutex mutex;
+        std::vector<std::string> frames;
+    };
+    auto got = std::make_shared<Got>();
+    auto full = std::make_shared<std::atomic<std::size_t>>(std::size_t{1} << 30);
+    const auto id = server.attach(
+        [got](EngineControlServer::Frame frame) {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            got->frames.push_back(*frame);
+        },
+        {}, [full]() { return full->load(); });
+    const auto kinds = [&]() {
+        std::vector<api::ModelUpdateKind> out;
+        std::lock_guard<std::mutex> lock(got->mutex);
+        api::wire::Reassembler reassembler;
+        api::Inbox inbox;
+        std::string message, why;
+        for (const std::string& f : got->frames) {
+            if (reassembler.add(f, message, why) == api::wire::Reassembler::Result::Complete) {
+                api::wire::decode_into(message, inbox, why);
+            }
+        }
+        for (const api::ModelUpdate& m : inbox.model) out.push_back(m.kind);
+        return out;
+    };
+    const auto wait_for = [&](const std::function<bool()>& pred) {
+        for (int i = 0; i < 1000 && !pred(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return pred();
+    };
+    CHECK(wait_for([&]() { return kinds().size() == 1; }));
+    CHECK(kinds().front() == api::ModelUpdateKind::SnapshotHeader);
+    CHECK(server.snapshots_encoded() == encoded + 1);
+    // An edit while the attaching client waits: the first client has it.
+    model::AddMarker add;
+    add.marker.id = 100;
+    add.marker.name = "During";
+    api::ModelRequest m;
+    CHECK(model::encode_operation(add, m.op, error));
+    const std::size_t before = in.model.size();
+    CHECK(answered(real.submit(m)));
+    CHECK(until(real, in, [&]() { return in.model.size() > before; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(kinds().size() == 1);
+    // The transport drains: the part, the window, then the edit.
+    full->store(0);
+    CHECK(wait_for([&]() { return kinds().size() == 4; }));
+    const std::vector<api::ModelUpdateKind> k = kinds();
+    CHECK(k.size() == 4 && k[1] == api::ModelUpdateKind::SnapshotPart &&
+          k[2] == api::ModelUpdateKind::Snapshot && k[3] == api::ModelUpdateKind::Op);
+    server.detach(id);
+    std::printf("  the document thread held %llu us at most to take a Snapshot's copy\n",
+                static_cast<unsigned long long>(server.longest_snapshot_copy_us()));
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -970,6 +1071,7 @@ int main() {
     no_plugin_hosting_yet();
     resync_applies_the_mix();
     midi_budget_at_open_and_its_notice();
+    snapshot_parts_are_paced_and_held();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

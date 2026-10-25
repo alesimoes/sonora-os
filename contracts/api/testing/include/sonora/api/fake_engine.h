@@ -56,6 +56,8 @@
 
 namespace sonora::model {
 class Document;
+class LoadParts;
+struct ReplicationUpdate;
 struct Snapshot;
 }
 
@@ -179,6 +181,8 @@ private:
     bool command(const CommandRequest& r, std::string& why);
     void reply(uint64_t seq, DispatchResult result, std::string message);
     void broadcast(const ModelUpdate& u);
+    // A model update, a Snapshot as its header, parts and window.
+    void broadcast(const model::ReplicationUpdate& u);
     // Frames, both ways, as the socket will carry them (api/wire.h).
     static void queue(std::deque<std::string>& q, const std::string& message);
     static std::string take_file(int32_t take);
@@ -208,6 +212,10 @@ private:
     StateWriter writer_;
     StateView view_;
     std::unique_ptr<model::Document> document_;
+    // A Load in parts (protocol 10): the parts so far, and why one was
+    // refused, which the Load that follows is refused with.
+    std::unique_ptr<model::LoadParts> load_parts_;
+    std::string load_refused_;
 
     std::deque<std::string> inbound_;    // frames
     std::deque<std::string> outbound_;   // frames

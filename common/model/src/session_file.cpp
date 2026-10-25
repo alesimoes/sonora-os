@@ -757,12 +757,13 @@ public:
         if (it == seen_.end()) {
             Seen s{ref, nullptr, kNone};
             std::string why;
-            auto seq = std::make_shared<MidiSequence>();
-            if (read(ref, *seq, why)) {
+            std::shared_ptr<const MidiSequence> seq = read(ref, why);
+            if (seq) {
                 verified_.insert(ref.sha256);
             } else {
-                *seq = MidiSequence{};
-                seq->missing = ref;
+                auto gone = std::make_shared<MidiSequence>();
+                gone->missing = ref;
+                seq = std::move(gone);
                 s.missing = missing_.size();
                 missing_.push_back(MissingSequence{ref, why, {}, {}});
             }
@@ -792,37 +793,47 @@ private:
         std::size_t missing;
     };
 
-    bool read(const SequenceFileRef& ref, MidiSequence& out, std::string& why) {
+    // Null, with `why`, when the file is not there or does not verify.
+    std::shared_ptr<const MidiSequence> read(const SequenceFileRef& ref, std::string& why) {
         if (source_ == nullptr) {
             why = "the session was opened without its folder";
-            return false;
+            return nullptr;
         }
-        std::string bytes;
-        if (!source_->read(ref.file, bytes, why)) return false;
-        if (bytes.size() != ref.bytes) {
-            why = "it is " + std::to_string(bytes.size()) + " bytes and the session says " +
+        std::uint64_t size = 0;
+        std::shared_ptr<const MidiSequence> seq = source_->decoded(ref.sha256, size);
+        if (!seq) {
+            std::string bytes;
+            if (!source_->read(ref.file, bytes, why)) return nullptr;
+            size = bytes.size();
+            if (size == ref.bytes) {
+                if (sha256_hex(bytes) != ref.sha256) {
+                    why = "its checksum does not match its name";
+                    return nullptr;
+                }
+                auto decoded = std::make_shared<MidiSequence>();
+                std::string error;
+                if (!decode_sequence(bytes, *decoded, error)) {
+                    why = "it does not decode: " + error;
+                    return nullptr;
+                }
+                seq = std::move(decoded);
+            }
+        }
+        if (size != ref.bytes) {
+            why = "it is " + std::to_string(size) + " bytes and the session says " +
                   std::to_string(ref.bytes);
-            return false;
+            return nullptr;
         }
-        if (sha256_hex(bytes) != ref.sha256) {
-            why = "its checksum does not match its name";
-            return false;
-        }
-        std::string error;
-        if (!decode_sequence(bytes, out, error)) {
-            why = "it does not decode: " + error;
-            return false;
-        }
-        if (out.notes.size() != ref.notes || out.events.size() != ref.events ||
-            out.sysex.size() != ref.sysex) {
-            why = "it holds " + std::to_string(out.notes.size()) + " notes, " +
-                  std::to_string(out.events.size()) + " events and " +
-                  std::to_string(out.sysex.size()) + " SysEx messages, and the session says " +
+        if (seq->note_count() != ref.notes || seq->event_count() != ref.events ||
+            seq->sysex_count() != ref.sysex) {
+            why = "it holds " + std::to_string(seq->note_count()) + " notes, " +
+                  std::to_string(seq->event_count()) + " events and " +
+                  std::to_string(seq->sysex_count()) + " SysEx messages, and the session says " +
                   std::to_string(ref.notes) + ", " + std::to_string(ref.events) + " and " +
                   std::to_string(ref.sysex);
-            return false;
+            return nullptr;
         }
-        return true;
+        return seq;
     }
 
     SequenceSource* source_;
@@ -839,13 +850,13 @@ bool read_inline_sequence(Reader& rd, const Value& data, const std::string& p, M
     if (!rd.keys(data, p + ".data", {"inline"})) return false;
     const Value& lists = *data.find("inline");
     if (!rd.keys(lists, p, {"notes", "events", "sysex"})) return false;
-    auto seq = std::make_shared<MidiSequence>();
-    if (!read_rows(rd, lists, p, "notes", detail::read_note_rows, seq->notes)) return false;
-    if (!read_rows(rd, lists, p, "events", detail::read_event_rows, seq->events)) return false;
-    if (!read_rows(rd, lists, p, "sysex", detail::read_sysex_rows, seq->sysex)) return false;
+    MidiLists seq;
+    if (!read_rows(rd, lists, p, "notes", detail::read_note_rows, seq.notes)) return false;
+    if (!read_rows(rd, lists, p, "events", detail::read_event_rows, seq.events)) return false;
+    if (!read_rows(rd, lists, p, "sysex", detail::read_sysex_rows, seq.sysex)) return false;
     std::string where;
-    if (!rd.checked(detail::sequence_problem(*seq, where), lists, p, where)) return false;
-    r.data = std::move(seq);
+    if (!rd.checked(detail::sequence_problem(seq, where), lists, p, where)) return false;
+    r.data = std::make_shared<const MidiSequence>(std::move(seq));
     return true;
 }
 
@@ -1565,6 +1576,121 @@ bool decode_session_bundle(std::string_view bytes, Loaded& out, LoadError& error
         return false;
     }
     return deserialize(session, out, error, &source);
+}
+
+// --- a Load in parts (ADR-0015 §4) -------------------------------------------
+
+namespace {
+
+// "SNRLPRT" and its version, 1, then as in a bundle: the number of sequence
+// files (u32), and each one's length (u64) and bytes.
+constexpr char kLoadPartMagic[8] = {'S', 'N', 'R', 'L', 'P', 'R', 'T', '\x01'};
+
+}  // namespace
+
+bool encode_load_parts(const Snapshot& s, const WriteInfo& info, std::string& session_file,
+                       std::vector<std::string>& parts, std::string& error,
+                       SequenceDigests* digests, std::size_t max_part_bytes) {
+    SequenceDigests local;
+    if (digests == nullptr) digests = &local;
+    std::string session;
+    if (!serialize(s, info, session, error, digests)) return false;
+    std::vector<NamedSequence> named = named_sequences(s, *digests);
+    std::vector<std::string> out;
+    std::string files;
+    std::uint32_t count = 0;
+    const auto close = [&]() {
+        std::string part(kLoadPartMagic, sizeof kLoadPartMagic);
+        put_u32(part, count);
+        part += files;
+        out.push_back(std::move(part));
+        files.clear();
+        count = 0;
+    };
+    constexpr std::size_t kHeader = sizeof kLoadPartMagic + 4;
+    for (NamedSequence& n : named) {
+        if (n.data->missing) continue;
+        if (n.encoded.empty()) n.encoded = encode_sequence(*n.data);
+        const std::size_t one = 8 + n.encoded.size();
+        if (kHeader + one > max_part_bytes) {
+            error = "sequence file " + n.ref.file + " is " + std::to_string(n.encoded.size()) +
+                    " bytes, over the " + std::to_string(max_part_bytes) +
+                    " one part of a Load may carry";
+            return false;
+        }
+        if (count > 0 && kHeader + files.size() + one > max_part_bytes) close();
+        put_u64(files, n.encoded.size());
+        files += n.encoded;
+        ++count;
+    }
+    if (count > 0) close();
+    session_file = std::move(session);
+    parts = std::move(out);
+    return true;
+}
+
+LoadParts::LoadParts(std::uint64_t max_entries) : max_entries_(max_entries) {}
+
+bool LoadParts::add(std::string_view part, std::string& why) {
+    if (part.size() < sizeof kLoadPartMagic ||
+        std::memcmp(part.data(), kLoadPartMagic, sizeof kLoadPartMagic) != 0) {
+        why = "a part of the session is not a Load part (magic)";
+        return false;
+    }
+    std::size_t at = sizeof kLoadPartMagic;
+    std::uint64_t count = 0, length = 0;
+    if (!get_le(part, at, 4, count) || count == 0 || count > (part.size() - at) / 8) {
+        why = "a part of the session: the file count is cut short or does not fit";
+        return false;
+    }
+    // Checked whole before any of it is kept, so a bad part leaves what the
+    // earlier ones brought.
+    std::vector<std::pair<std::string, File>> got;
+    std::uint64_t entries = entries_;
+    for (std::uint64_t i = 0; i < count; ++i) {
+        if (!get_le(part, at, 8, length) || length > part.size() - at) {
+            why = "a part of the session: sequence file " + std::to_string(i) + " is cut short";
+            return false;
+        }
+        const std::string_view bytes = part.substr(at, static_cast<std::size_t>(length));
+        at += static_cast<std::size_t>(length);
+        std::string sha = sha256_hex(bytes);
+        if (files_.count(sha) != 0) continue;
+        auto seq = std::make_shared<MidiSequence>();
+        std::string error;
+        if (!decode_sequence(bytes, *seq, error)) {
+            why = "sequence file " + midi_sequence_file(sha) + " does not decode: " + error;
+            return false;
+        }
+        entries += seq->entries();
+        if (entries > max_entries_) {
+            why = "the session's sequence files hold more than this engine's midi_max_entries"
+                  " of " + std::to_string(max_entries_) +
+                  " MIDI notes and events; raise the setting to open it";
+            return false;
+        }
+        got.emplace_back(std::move(sha), File{bytes.size(), std::move(seq)});
+    }
+    if (at != part.size()) {
+        why = "a part of the session: bytes after the last sequence file";
+        return false;
+    }
+    for (auto& [sha, f] : got) files_.emplace(std::move(sha), std::move(f));
+    entries_ = entries;
+    return true;
+}
+
+bool LoadParts::read(const std::string&, std::string&, std::string& why) {
+    why = "the interface did not send it: its file was missing there too";
+    return false;
+}
+
+std::shared_ptr<const MidiSequence> LoadParts::decoded(const std::string& sha256,
+                                                       std::uint64_t& bytes) {
+    const auto it = files_.find(sha256);
+    if (it == files_.end()) return nullptr;
+    bytes = it->second.bytes;
+    return it->second.seq;
 }
 
 }  // namespace sonora::model

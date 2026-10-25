@@ -178,7 +178,15 @@ api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
         case model::ReplicationUpdate::Kind::Undo: m.kind = api::ModelUpdateKind::Undo; break;
         case model::ReplicationUpdate::Kind::Redo: m.kind = api::ModelUpdateKind::Redo; break;
         case model::ReplicationUpdate::Kind::Snapshot: m.kind = api::ModelUpdateKind::Snapshot; break;
+        case model::ReplicationUpdate::Kind::SnapshotHeader:
+            m.kind = api::ModelUpdateKind::SnapshotHeader;
+            break;
+        case model::ReplicationUpdate::Kind::SnapshotPart:
+            m.kind = api::ModelUpdateKind::SnapshotPart;
+            break;
     }
+    m.part_count = u.part_count;
+    m.part_bytes = u.part_bytes;
     m.revision = u.revision;
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
@@ -206,6 +214,58 @@ struct HandRig {
         std::string error;
         engine.snapshot(u, error);
         return to_wire(u);
+    }
+    // As the engine sends one with MIDI: header, parts, window (ADR-0015 §4),
+    // the parts cut small so that there are several.
+    std::vector<api::ModelUpdate> snapshot_in_parts() {
+        model::WindowParts w;
+        std::string error;
+        model::encode_window(engine.history(), w, error, 2048);
+        api::ModelUpdate header;
+        header.kind = api::ModelUpdateKind::SnapshotHeader;
+        header.revision = engine.current().revision;
+        header.undo_floor = engine.history().floor();
+        header.next_id = engine.current().next_id;
+        header.part_count = w.parts.size();
+        header.part_bytes = w.part_bytes();
+        std::vector<api::ModelUpdate> out{header};
+        for (std::string& p : w.parts) {
+            api::ModelUpdate part;
+            part.kind = api::ModelUpdateKind::SnapshotPart;
+            part.revision = header.revision;
+            part.bytes = std::move(p);
+            out.push_back(std::move(part));
+        }
+        api::ModelUpdate window = header;
+        window.kind = api::ModelUpdateKind::Snapshot;
+        window.part_count = window.part_bytes = 0;
+        window.bytes = std::move(w.window);
+        out.push_back(std::move(window));
+        return out;
+    }
+    // A MIDI track with a region of `events` controller events, applied by
+    // the engine.
+    void add_midi(int events) {
+        model::ReplicationUpdate u;
+        std::string error;
+        model::AddTrack t;
+        t.track = engine.current().next_id;
+        t.playlist = t.track + 1;
+        t.name = "Synth";
+        t.playlist_name = "Synth.01";
+        t.kind = model::TrackKind::Midi;
+        t.channels = 0;
+        engine.apply(t, u, error);
+        model::MidiLists l;
+        for (int i = 0; i < events; ++i) {
+            l.events.push_back(model::MidiEvent{i * 9600, 0xB0, 1, 2});
+        }
+        model::MidiRegion r;
+        r.id = engine.current().next_id;
+        r.name = "Synth_01";
+        r.length = model::kTicksPerQuarter;
+        r.data = std::make_shared<const model::MidiSequence>(l);
+        engine.apply(model::PlaceMidiRegion{t.playlist, r, 0, {}}, u, error);
     }
     // Another interface's edit, applied by the engine.
     api::ModelUpdate theirs(const char* name) {
@@ -420,21 +480,21 @@ model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t e
     t.playlist_name = "Synth.01";
     t.kind = model::TrackKind::Midi;
     t.channels = 0;
-    auto seq = std::make_shared<model::MidiSequence>();
+    model::MidiLists seq;
     std::vector<std::uint8_t> message(model::kMaxSysexBytes, 0x11);
     message.front() = 0xF0;
     message.back() = 0xF7;
     for (std::size_t i = 0; i < sysex; ++i) {
-        seq->sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i), message});
+        seq.sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i), message});
     }
     for (std::size_t i = 0; i < events; ++i) {
-        seq->events.push_back(model::MidiEvent{static_cast<model::Ticks>(i), 0xB0, 1, 2});
+        seq.events.push_back(model::MidiEvent{static_cast<model::Ticks>(i), 0xB0, 1, 2});
     }
     model::MidiRegion r;
     r.id = t.track + 2;
     r.name = "Synth_01";
     r.length = model::kTicksPerQuarter;
-    r.data = seq;
+    r.data = std::make_shared<const model::MidiSequence>(seq);
     std::string why;
     if (!h.apply(t, why) || !h.apply(model::PlaceMidiRegion{t.playlist, r, 0, {}}, why)) {
         std::fprintf(stderr, "  %s\n", why.c_str());
@@ -442,29 +502,86 @@ model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t e
     return h.current();
 }
 
-// Architect, #109: a session whose bundle is over what a Load may carry is
-// refused here, by name, before anything is shown or sent, instead of being
-// shown while the engine never gets it.
+// A Load travels in parts (ADR-0015 §4), so #109's 64 MiB refusal is gone:
+// a session over it opens. What is still refused here, by name, before
+// anything is shown or sent: sequence files over this interface's own cap,
+// and one file too large for a part on its own.
 int a_load_over_the_cap_is_refused_before_it_is_shown() {
     Rig r;
     std::string error;
     CHECK(r.engine.connect(error));
     r.tick();
     const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
-    // 16,400 messages of 4,096 bytes: just over 64 MiB once encoded.
-    const model::Snapshot big = with_midi(make_empty_session(4, 48000), 16400);
     std::string why;
-    CHECK(!r.doc.reset(big, why));
-    CHECK(why.find("over the 67108864 bytes a Load can carry") != std::string::npos);
-    CHECK(why.find("once a Load travels in parts") != std::string::npos);
+    r.doc.set_max_snapshot_bytes(std::uint64_t{1} << 20);
+    CHECK(!r.doc.reset(with_midi(make_empty_session(4, 48000), 300), why));
+    CHECK(why.find("over this interface's limit of 1048576") != std::string::npos);
     CHECK(r.doc.snapshot().edit->tracks.size() == tracks && r.doc.in_flight() == 0);
+    r.doc.set_max_snapshot_bytes(model::kDefaultMaxSnapshotBytes);
+    // 4,200 messages of 4,096 bytes in one region: one file over 16 MiB.
+    CHECK(!r.doc.reset(with_midi(make_empty_session(4, 48000), 4200), why));
+    CHECK(why.find("one part of a Load may carry") != std::string::npos);
     r.tick();
     CHECK(r.doc.snapshot().edit->tracks.size() == tracks && r.refused.empty());
-    // Under the cap it is sent, and shown.
-    CHECK(r.doc.reset(with_midi(make_empty_session(4, 48000), 10), why));
+    // Five regions of 13.5 MiB: over the 64 MiB one message can carry, in
+    // five parts each way, and opened.
+    model::Snapshot big = make_empty_session(4, 48000);
+    for (std::size_t i = 0; i < 5; ++i) big = with_midi(big, 3300, i + 1);
+    CHECK(r.doc.reset(big, why));
+    CHECK(r.doc.in_flight() == 6);
     r.tick();
-    CHECK(r.doc.in_flight() == 0 && r.refused.empty());
-    CHECK(r.doc.snapshot().edit->tracks.size() == 5);
+    CHECK(r.doc.in_flight() == 0 && r.refused.empty() && r.doc.synced());
+    CHECK(r.doc.snapshot().edit->tracks.size() == 9);
+    CHECK(r.doc.snapshot().edit->tracks[8]->midi_playlists[0]->regions[0].data->sysex().size() ==
+          3300);
+    return 0;
+}
+
+// The window arrives last: until it has decoded the document before it is
+// shown and edits are refused; then the new one is.
+int a_snapshot_in_parts_is_shown_once_whole() {
+    HandRig r;
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
+    r.add_midi(3000);
+    const std::vector<api::ModelUpdate> parts = r.snapshot_in_parts();
+    CHECK(parts.size() > 4);
+    const std::vector<api::ModelUpdate> head(parts.begin(), parts.end() - 1);
+    r.doc.receive(head, {});
+    CHECK(r.doc.attaching() && r.doc.snapshot().edit->tracks.size() == tracks);
+    std::string why;
+    CHECK(!r.doc.submit(marker(r.doc.reserve_id(), "Mine"), why));
+    CHECK(why.find("catching up") != std::string::npos);
+    CHECK(r.doc.receive({parts.back()}, {}));
+    CHECK(r.doc.synced() && r.doc.snapshot().edit->tracks.size() == tracks + 1);
+    CHECK(r.resyncs() == 0);
+    return 0;
+}
+
+// A part that does not decode abandons the attach: one Resync, the document
+// before it still shown, and the rest of that Snapshot dropped without
+// asking again; the next Snapshot attaches.
+int a_bad_part_asks_once_and_keeps_the_document() {
+    HandRig r;
+    CHECK(r.doc.receive({r.snapshot()}, {}));
+    const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
+    r.add_midi(3000);
+    std::vector<api::ModelUpdate> parts = r.snapshot_in_parts();
+    parts[2].bytes.pop_back();
+    r.doc.receive(parts, {});
+    CHECK(r.resyncs() == 1);
+    CHECK(!r.doc.synced() && r.doc.snapshot().edit->tracks.size() == tracks);
+    CHECK(r.doc.receive(r.snapshot_in_parts(), {}));
+    CHECK(r.doc.synced() && r.doc.snapshot().edit->tracks.size() == tracks + 1);
+    CHECK(r.resyncs() == 1);
+    // Over this interface's cap: said once, and asked again only by an edit.
+    r.doc.set_max_snapshot_bytes(1000);
+    r.doc.receive(r.snapshot_in_parts(), {});
+    CHECK(r.resyncs() == 1 && !r.refused.empty());
+    CHECK(r.refused.back().find("over this interface's limit of 1000") != std::string::npos);
+    std::string why;
+    CHECK(!r.doc.submit(marker(r.doc.reserve_id(), "Mine"), why));
+    CHECK(r.resyncs() == 2);
     return 0;
 }
 
@@ -502,6 +619,8 @@ int main() {
     if (a_refused_resync_is_said_and_asked_again() != 0) return 1;
     if (undo_and_redo_labels_follow_the_engine() != 0) return 1;
     if (a_history_jump_is_one_request_a_step() != 0) return 1;
+    if (a_snapshot_in_parts_is_shown_once_whole() != 0) return 1;
+    if (a_bad_part_asks_once_and_keeps_the_document() != 0) return 1;
     std::printf("replica document: ok\n");
     return 0;
 }

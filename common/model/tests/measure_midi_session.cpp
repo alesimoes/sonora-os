@@ -7,15 +7,18 @@
 //
 //   measure_midi_session [controller events per second per track]
 //   measure_midi_session target [tracks] [folder]
+//   measure_midi_session window [tracks] folder
+//   measure_midi_session attach folder
 //
 // 1. 18 instrument tracks, 5 minutes at 120 bpm, 8 notes a second and one
 //    continuous controller per track: the session file's bytes and DOM
 //    values against the reader's caps, its sequence files' bytes, and the
 //    open.
-// 2. 200 note drags in a region of 50,000 controller events: what the
-//    copy-on-write sequences charge the undo budget, how many steps it
-//    keeps, and the undo window's bytes against the 64 MiB a Snapshot may
-//    carry. Unchanged by format 6; the chunks of ADR-0015 §1 change it.
+// 2. ADR-0015 Unverified 1: 200 note drags in a region of 50,000
+//    controller events: what a drag charges the undo budget with chunks,
+//    how many steps it keeps, the window and its chunk table, the slowest
+//    drag; then one drag in a 60-minute region, whose spine is the largest
+//    a drag copies.
 // 3. `target`, in a process of its own: ADR-0015 Unverified 2, the
 //    2^24-entry design target. `tracks` (default 64) of 8 notes and 100
 //    controller events a second, long enough to reach 2^24 together. First
@@ -24,6 +27,15 @@
 //    under the temporary directory) and one folder fsync. Open: read, hash
 //    and decode apart, then deserialize as a whole, and the peak resident
 //    memory.
+// 4. `window`: ADR-0015 Unverified 7 and the engine's half of 3. The target
+//    session with 200 retained drags: how long the document thread is held
+//    copying the history for the worker, encode_window's time on it, the
+//    parts, and the peak resident memory with the encoded window held, as
+//    the engine holds it for an attaching client. The parts and the window
+//    are written to `folder` for:
+// 5. `attach`, in a process of its own: the replica's half of Unverified 3.
+//    Each part read and decoded alone, then the window, with the 512 MiB
+//    interface cap: the time and the peak resident memory.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -31,6 +43,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -68,8 +81,10 @@ std::size_t values(const sonora::json::Value& v) {
 
 // `voice` makes each track's sequence its own: identical ones would be one
 // file, which the measurement must not count on.
-std::shared_ptr<MidiSequence> dense(Ticks span, int notes_per_s, int events_per_s, int voice = 0) {
-    auto s = std::make_shared<MidiSequence>();
+std::shared_ptr<const MidiSequence> dense(Ticks span, int notes_per_s, int events_per_s,
+                                          int voice = 0) {
+    MidiLists l;
+    MidiLists* s = &l;
     const Ticks second = 2 * kBeat;
     const Ticks note_step = second / notes_per_s;
     for (Ticks t = 0; t < span; t += note_step) {
@@ -85,7 +100,7 @@ std::shared_ptr<MidiSequence> dense(Ticks span, int notes_per_s, int events_per_
     for (Ticks t = 0; t < span; t += event_step) {
         s->events.push_back(MidiEvent{t, 0xB0, 1, static_cast<std::uint8_t>(v++ & 0x7F)});
     }
-    return s;
+    return std::make_shared<const MidiSequence>(std::move(l));
 }
 
 bool ok(bool good, const std::string& what, const std::string& why) {
@@ -248,14 +263,15 @@ int undo_case() {
     const auto data_of = [&u]() -> const MidiSequence& {
         return *u.current().edit->tracks[0]->midi_playlists[0]->regions[0].data;
     };
-    const std::size_t region_events = data_of().events.size();
+    const std::size_t region_events = data_of().events().size();
+    const std::size_t before_drags = u.charged_bytes();
     double drag_ms = 0;
     for (int i = 0; i < 200; ++i) {
         const MidiSequence& now = data_of();
         EditMidi e;
         e.playlist = playlist;
         e.region = region;
-        midi::Note moved = now.notes[static_cast<std::size_t>(i)];
+        midi::Note moved = now.notes()[static_cast<std::size_t>(i)];
         e.remove_notes = {NoteRemoval{static_cast<std::uint32_t>(i), moved}};
         moved.start += kBeat / 8;
         e.add_notes = {moved};
@@ -263,19 +279,162 @@ int undo_case() {
         if (!ok(u.apply(e, error), "EditMidi", error)) return 1;
         drag_ms = std::max(drag_ms, ms_since(t0));
     }
-    std::string window;
+    WindowParts window;
     const auto w0 = Clock::now();
     if (!ok(encode_window(u, window, error), "encode_window", error)) return 1;
     const double window_ms = ms_since(w0);
     std::printf("undo: 200 note drags in a region of %zu controller events\n", region_events);
-    std::printf("  charged %.1f MiB of a %.0f MiB budget, %zu of 202 steps kept, %llu MIDI "
-                "entries counted of the %llu budget, slowest drag %.1f ms\n",
+    std::printf("  charged %.1f MiB of a %.0f MiB budget, %zu of 203 steps kept, %llu MIDI "
+                "entries counted of the %llu budget, slowest drag %.2f ms\n",
                 static_cast<double>(u.charged_bytes()) / (1 << 20),
                 static_cast<double>(u.budget()) / (1 << 20), u.step_count(),
                 static_cast<unsigned long long>(u.midi_entries()),
                 static_cast<unsigned long long>(u.midi_max_entries()), drag_ms);
-    std::printf("  window %.1f MiB (a Snapshot carries at most 64), encode %.0f ms\n",
-                static_cast<double>(window.size()) / (1 << 20), window_ms);
+    std::printf("  window %.1f MiB and a chunk table of %.1f MiB in %zu parts, encode %.0f ms\n",
+                static_cast<double>(window.window.size()) / (1 << 20),
+                static_cast<double>(window.part_bytes()) / (1 << 20), window.parts.size(),
+                window_ms);
+    std::printf("  a drag charges %.1f KiB on average\n",
+                static_cast<double>(u.charged_bytes() - before_drags) / 200 / 1024);
+
+    // 60 minutes at 120 bpm: 1,800 chunks, 29 spine leaves.
+    History hour(new_session(st), std::size_t{1} << 40);
+    if (!build(hour, 1, 7200 * kBeat, 8, 167)) return 1;
+    const std::size_t before = hour.charged_bytes();
+    const MidiSequence& long_seq =
+        *hour.current().edit->tracks[0]->midi_playlists[0]->regions[0].data;
+    const std::size_t mid = long_seq.note_count() / 2;
+    EditMidi e;
+    e.playlist = hour.current().edit->tracks[0]->active_playlist;
+    e.region = hour.current().edit->tracks[0]->midi_playlists[0]->regions[0].id;
+    midi::Note moved = long_seq.notes()[mid];
+    e.remove_notes = {NoteRemoval{static_cast<std::uint32_t>(mid), moved}};
+    moved.start += kBeat / 8;
+    e.add_notes = {moved};
+    const auto d0 = Clock::now();
+    if (!ok(hour.apply(e, error), "EditMidi", error)) return 1;
+    const double hour_ms = ms_since(d0);
+    std::size_t chunks = 0;
+    for (const MidiSpineNode& n : long_seq.spine()) chunks += n.leaf->chunks.size();
+    std::printf("  60-minute region: %zu chunks in %zu leaves; a drag charges %.1f KiB "
+                "(one level would copy a %.1f KiB spine), %.2f ms\n",
+                chunks, long_seq.spine().size(),
+                static_cast<double>(hour.charged_bytes() - before) / 1024,
+                static_cast<double>(chunks) * 40 / 1024, hour_ms);
+    return 0;
+}
+
+// The 2^24-entry target with 200 retained drags spread over its tracks.
+bool target_with_history(History& h, int tracks) {
+    SessionSettings st;
+    st.name = "Target";
+    const double seconds = static_cast<double>(std::uint64_t{1} << 24) / (108.0 * tracks);
+    const Ticks span = static_cast<Ticks>(seconds) * 2 * kBeat + 2 * kBeat;
+    h = History(new_session(st), std::size_t{1} << 40, std::uint64_t{1} << 40);
+    if (!build(h, tracks, span, 8, 100)) return false;
+    std::string error;
+    for (int i = 0; i < 200; ++i) {
+        const auto& track = h.current().edit->tracks[static_cast<std::size_t>(i % tracks)];
+        const MidiRegion& r = track->midi_playlists[0]->regions[0];
+        const std::size_t n = static_cast<std::size_t>(i) * 997 % r.data->note_count();
+        EditMidi e;
+        e.playlist = track->active_playlist;
+        e.region = r.id;
+        midi::Note moved = r.data->notes()[n];
+        e.remove_notes = {NoteRemoval{static_cast<std::uint32_t>(n), moved}};
+        moved.start += kBeat / 8;
+        e.add_notes = {moved};
+        if (!ok(h.apply(e, error), "EditMidi", error)) return false;
+    }
+    return true;
+}
+
+bool write_file(const fs::path& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(out);
+}
+
+int window_case(int tracks, const std::string& where) {
+    History h(new_session(SessionSettings{}));
+    const auto b0 = Clock::now();
+    if (!target_with_history(h, tracks)) return 1;
+    std::printf("window: %d tracks, %llu entries counted with 200 drags retained (%zu steps), "
+                "built in %.0f ms, peak RSS %.0f MiB\n",
+                tracks, static_cast<unsigned long long>(h.midi_entries()), h.step_count(),
+                ms_since(b0), peak_rss_mib());
+    // What the document thread does: copy the history for the worker.
+    double copy_ms = 1e300;
+    for (int i = 0; i < 5; ++i) {
+        const auto c0 = Clock::now();
+        History copy = h;
+        copy_ms = std::min(copy_ms, ms_since(c0));
+        if (copy.step_count() != h.step_count()) return 1;
+    }
+    WindowParts w;
+    std::string error;
+    // One encoding held, as the engine holds it, before the timing runs.
+    const auto e0 = Clock::now();
+    if (!ok(encode_window(h, w, error), "encode_window", error)) return 1;
+    double encode_ms = ms_since(e0);
+    const double held_rss = peak_rss_mib();
+    for (int i = 0; i < 2; ++i) {
+        WindowParts again;
+        const auto e1 = Clock::now();
+        if (!ok(encode_window(h, again, error), "encode_window", error)) return 1;
+        encode_ms = std::min(encode_ms, ms_since(e1));
+    }
+    std::printf("  document thread held %.3f ms to copy the history (best of 5); encode_window "
+                "on the worker %.0f ms (best of 3)\n",
+                copy_ms, encode_ms);
+    std::printf("  chunk table %.1f MiB in %zu parts of at most 16 MiB, window %.2f MiB; "
+                "peak RSS with one encoded window held %.0f MiB\n",
+                static_cast<double>(w.part_bytes()) / (1 << 20), w.parts.size(),
+                static_cast<double>(w.window.size()) / (1 << 20), held_rss);
+    const fs::path dir = where.empty() ? fs::temp_directory_path() / "sonora-measure-window"
+                                       : fs::path(where);
+    fs::create_directories(dir);
+    for (std::size_t i = 0; i < w.parts.size(); ++i) {
+        if (!write_file(dir / ("part-" + std::to_string(i)), w.parts[i])) return 1;
+    }
+    if (!write_file(dir / "window", w.window)) return 1;
+    std::printf("  written to %s\n", dir.string().c_str());
+    return 0;
+}
+
+int attach_case(const std::string& where) {
+    const fs::path dir(where);
+    std::size_t parts = 0;
+    std::uint64_t bytes = 0;
+    while (fs::exists(dir / ("part-" + std::to_string(parts)))) {
+        bytes += fs::file_size(dir / ("part-" + std::to_string(parts)));
+        ++parts;
+    }
+    const auto read = [](const fs::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        std::ostringstream s;
+        s << in.rdbuf();
+        return s.str();
+    };
+    WindowDecoder d;
+    std::string error;
+    const auto t0 = Clock::now();
+    if (!ok(d.begin(parts, bytes, std::uint64_t{512} << 20, error), "header", error)) return 1;
+    double worst_part_ms = 0;
+    for (std::size_t i = 0; i < parts; ++i) {
+        const std::string part = read(dir / ("part-" + std::to_string(i)));
+        const auto p0 = Clock::now();
+        if (!ok(d.part(part, error), "part", error)) return 1;
+        worst_part_ms = std::max(worst_part_ms, ms_since(p0));
+    }
+    std::optional<History> h;
+    const std::string window = read(dir / "window");
+    if (!ok(d.finish(window, h, error), "window", error)) return 1;
+    std::printf("attach: %zu parts, %.1f MiB, decoded with the window in %.0f ms (slowest part "
+                "%.0f ms); %zu steps, %llu entries; peak RSS %.0f MiB\n",
+                parts, static_cast<double>(bytes) / (1 << 20), ms_since(t0), worst_part_ms,
+                h->step_count(), static_cast<unsigned long long>(h->midi_entries()),
+                peak_rss_mib());
     return 0;
 }
 
@@ -403,6 +562,11 @@ int target_case(int tracks, const std::string& where) {
 
 // `target` alone, in its own process, so its peak memory is its own.
 int main(int argc, char** argv) {
+    if (argc > 2 && std::string(argv[1]) == "attach") return attach_case(argv[2]);
+    if (argc > 1 && std::string(argv[1]) == "window") {
+        const int tracks = argc > 2 ? std::atoi(argv[2]) : 64;
+        return window_case(tracks, argc > 3 ? argv[3] : "");
+    }
     if (argc > 1 && std::string(argv[1]) == "target") {
         const int tracks = argc > 2 ? std::atoi(argv[2]) : 64;
         return target_case(tracks, argc > 3 ? argv[3] : "");

@@ -178,6 +178,251 @@ std::string midi_sequence_file(const std::string& sha256) {
     return "MIDI Sequences/" + sha256 + ".msq";
 }
 
+// --- MidiSequence (ADR-0015 §1) ------------------------------------------------
+
+namespace {
+
+Ticks tick_of(const midi::Note& n) { return n.start; }
+Ticks tick_of(const MidiEvent& e) { return e.tick; }
+Ticks tick_of(const MidiSysEx& x) { return x.tick; }
+
+std::int64_t leaf_of(std::int64_t chunk) { return chunk / kMidiLeafChunks; }
+
+// Stable by chunk. A list already in order, as every valid one is, is left
+// as it is without sorting.
+template <typename T>
+void by_chunk(std::vector<T>& v) {
+    const auto chunk_less = [](const T& a, const T& b) {
+        return midi_chunk_of(tick_of(a)) < midi_chunk_of(tick_of(b));
+    };
+    if (!std::is_sorted(v.begin(), v.end(), chunk_less)) {
+        std::stable_sort(v.begin(), v.end(), chunk_less);
+    }
+}
+
+// Moves the run of `from`, starting at `at`, that falls in chunk `k`.
+template <typename T>
+void take_run(std::vector<T>& from, std::size_t& at, std::int64_t k, std::vector<T>& to) {
+    const std::size_t first = at;
+    while (at < from.size() && midi_chunk_of(tick_of(from[at])) == k) ++at;
+    to.assign(std::make_move_iterator(from.begin() + static_cast<std::ptrdiff_t>(first)),
+              std::make_move_iterator(from.begin() + static_cast<std::ptrdiff_t>(at)));
+}
+
+template <typename T>
+std::int64_t next_chunk(const std::vector<T>& v, std::size_t at) {
+    return at < v.size() ? midi_chunk_of(tick_of(v[at])) : INT64_MAX;
+}
+
+template <typename T>
+bool in_chunk(const std::vector<T>& v, std::int64_t k) {
+    return v.empty() ||
+           (midi_chunk_of(tick_of(v.front())) == k && midi_chunk_of(tick_of(v.back())) == k);
+}
+
+// Counts filled in; the chunks are known to be canonical.
+std::shared_ptr<const MidiSpineLeaf> leaf_of_chunks(
+    std::vector<std::shared_ptr<const MidiChunk>> chunks) {
+    auto leaf = std::make_shared<MidiSpineLeaf>();
+    leaf->index = leaf_of(chunks.front()->index);
+    leaf->chunks.reserve(chunks.size());
+    for (std::shared_ptr<const MidiChunk>& c : chunks) {
+        MidiSpineEntry e;
+        e.notes = leaf->notes;
+        e.events = leaf->events;
+        e.sysex = leaf->sysex;
+        leaf->notes += c->data.notes.size();
+        leaf->events += c->data.events.size();
+        leaf->sysex += c->data.sysex.size();
+        e.chunk = std::move(c);
+        leaf->chunks.push_back(std::move(e));
+    }
+    return leaf;
+}
+
+}  // namespace
+
+MidiSequence::MidiSequence(MidiLists lists) {
+    by_chunk(lists.notes);
+    by_chunk(lists.events);
+    by_chunk(lists.sysex);
+    std::vector<std::shared_ptr<const MidiChunk>> pending;
+    std::size_t n = 0, e = 0, x = 0;
+    for (;;) {
+        const std::int64_t k = std::min({next_chunk(lists.notes, n), next_chunk(lists.events, e),
+                                         next_chunk(lists.sysex, x)});
+        if (k == INT64_MAX) break;
+        if (!pending.empty() && leaf_of(pending.front()->index) != leaf_of(k)) {
+            spine_.push_back(MidiSpineNode{leaf_of_chunks(std::move(pending)), 0, 0, 0});
+            pending.clear();
+        }
+        auto c = std::make_shared<MidiChunk>();
+        c->index = k;
+        take_run(lists.notes, n, k, c->data.notes);
+        take_run(lists.events, e, k, c->data.events);
+        take_run(lists.sysex, x, k, c->data.sysex);
+        pending.push_back(std::move(c));
+    }
+    if (!pending.empty()) {
+        spine_.push_back(MidiSpineNode{leaf_of_chunks(std::move(pending)), 0, 0, 0});
+    }
+    count();
+}
+
+void MidiSequence::count() {
+    notes_ = events_ = sysex_ = 0;
+    for (MidiSpineNode& node : spine_) {
+        node.notes = notes_;
+        node.events = events_;
+        node.sysex = sysex_;
+        notes_ += node.leaf->notes;
+        events_ += node.leaf->events;
+        sysex_ += node.leaf->sysex;
+    }
+}
+
+bool MidiSequence::make_leaf(std::vector<std::shared_ptr<const MidiChunk>> chunks,
+                             std::shared_ptr<const MidiSpineLeaf>& out, std::string& why) {
+    if (chunks.empty()) {
+        why = "a spine leaf holds no chunk";
+        return false;
+    }
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        const MidiChunk* c = chunks[i].get();
+        if (c == nullptr || c->data.empty()) {
+            why = "a spine leaf holds an empty chunk";
+            return false;
+        }
+        if (c->index < 0 || leaf_of(c->index) != leaf_of(chunks.front()->index)) {
+            why = "chunk " + std::to_string(c->index) + " is not in its leaf's span";
+            return false;
+        }
+        if (i > 0 && c->index <= chunks[i - 1]->index) {
+            why = "a spine leaf's chunks are not in order";
+            return false;
+        }
+        if (!in_chunk(c->data.notes, c->index) || !in_chunk(c->data.events, c->index) ||
+            !in_chunk(c->data.sysex, c->index)) {
+            why = "chunk " + std::to_string(c->index) + " holds data outside its span";
+            return false;
+        }
+    }
+    out = leaf_of_chunks(std::move(chunks));
+    return true;
+}
+
+bool MidiSequence::from_leaves(std::vector<std::shared_ptr<const MidiSpineLeaf>> leaves,
+                               MidiSequence& out, std::string& why) {
+    MidiSequence s;
+    s.spine_.reserve(leaves.size());
+    for (std::size_t i = 0; i < leaves.size(); ++i) {
+        if (!leaves[i] || leaves[i]->chunks.empty()) {
+            why = "a sequence holds an empty spine leaf";
+            return false;
+        }
+        if (!s.spine_.empty() && leaves[i]->index <= s.spine_.back().leaf->index) {
+            why = "a sequence's spine leaves are not in order";
+            return false;
+        }
+        s.spine_.push_back(MidiSpineNode{std::move(leaves[i]), 0, 0, 0});
+    }
+    s.count();
+    out = std::move(s);
+    return true;
+}
+
+MidiSequence MidiSequence::replaced(const MidiSequence& base,
+                                    const std::vector<std::shared_ptr<const MidiChunk>>& replace) {
+    MidiSequence s;
+    s.spine_.reserve(base.spine_.size() + 1);
+    std::size_t r = 0;
+    std::size_t b = 0;
+    while (b < base.spine_.size() || r < replace.size()) {
+        const std::int64_t base_leaf =
+            b < base.spine_.size() ? base.spine_[b].leaf->index : INT64_MAX;
+        const std::int64_t new_leaf = r < replace.size() ? leaf_of(replace[r]->index) : INT64_MAX;
+        if (base_leaf < new_leaf) {
+            s.spine_.push_back(MidiSpineNode{base.spine_[b++].leaf, 0, 0, 0});
+            continue;
+        }
+        // Merged by index, the replacements winning, empty ones dropped.
+        const std::int64_t leaf = new_leaf;
+        std::vector<std::shared_ptr<const MidiChunk>> chunks;
+        const std::vector<MidiSpineEntry>* old =
+            base_leaf == leaf ? &base.spine_[b].leaf->chunks : nullptr;
+        std::size_t o = 0;
+        while ((old != nullptr && o < old->size()) ||
+               (r < replace.size() && leaf_of(replace[r]->index) == leaf)) {
+            const bool have_new = r < replace.size() && leaf_of(replace[r]->index) == leaf;
+            const bool have_old = old != nullptr && o < old->size();
+            const std::int64_t ki = have_new ? replace[r]->index : INT64_MAX;
+            const std::int64_t ko = have_old ? (*old)[o].chunk->index : INT64_MAX;
+            if (ko < ki) {
+                chunks.push_back((*old)[o++].chunk);
+                continue;
+            }
+            if (ko == ki) ++o;
+            if (!replace[r]->data.empty()) chunks.push_back(replace[r]);
+            ++r;
+        }
+        if (old != nullptr) ++b;
+        if (!chunks.empty()) {
+            s.spine_.push_back(MidiSpineNode{leaf_of_chunks(std::move(chunks)), 0, 0, 0});
+        }
+    }
+    s.count();
+    return s;
+}
+
+const MidiChunk* MidiSequence::chunk_at(std::int64_t index) const {
+    const std::int64_t leaf = leaf_of(index);
+    const auto node = std::lower_bound(
+        spine_.begin(), spine_.end(), leaf,
+        [](const MidiSpineNode& n, std::int64_t l) { return n.leaf->index < l; });
+    if (node == spine_.end() || node->leaf->index != leaf) return nullptr;
+    const std::vector<MidiSpineEntry>& cs = node->leaf->chunks;
+    const auto it = std::lower_bound(
+        cs.begin(), cs.end(), index,
+        [](const MidiSpineEntry& e, std::int64_t k) { return e.chunk->index < k; });
+    return it != cs.end() && it->chunk->index == index ? it->chunk.get() : nullptr;
+}
+
+MidiLists MidiSequence::lists() const {
+    MidiLists out;
+    out.notes.reserve(note_count());
+    out.events.reserve(event_count());
+    out.sysex.reserve(sysex_count());
+    for (const MidiSpineNode& node : spine_) {
+        for (const MidiSpineEntry& e : node.leaf->chunks) {
+            const MidiLists& d = e.chunk->data;
+            out.notes.insert(out.notes.end(), d.notes.begin(), d.notes.end());
+            out.events.insert(out.events.end(), d.events.begin(), d.events.end());
+            out.sysex.insert(out.sysex.end(), d.sysex.begin(), d.sysex.end());
+        }
+    }
+    return out;
+}
+
+bool MidiSequence::operator==(const MidiSequence& o) const {
+    if (!(missing == o.missing) || notes_ != o.notes_ || events_ != o.events_ ||
+        sysex_ != o.sysex_ || spine_.size() != o.spine_.size()) {
+        return false;
+    }
+    // Canonical, so equal contents are equal spines.
+    for (std::size_t i = 0; i < spine_.size(); ++i) {
+        const MidiSpineLeaf& a = *spine_[i].leaf;
+        const MidiSpineLeaf& b = *o.spine_[i].leaf;
+        if (&a == &b) continue;
+        if (a.index != b.index || a.chunks.size() != b.chunks.size()) return false;
+        for (std::size_t k = 0; k < a.chunks.size(); ++k) {
+            const MidiChunk& x = *a.chunks[k].chunk;
+            const MidiChunk& y = *b.chunks[k].chunk;
+            if (&x != &y && (x.index != y.index || !(x.data == y.data))) return false;
+        }
+    }
+    return true;
+}
+
 Snapshot new_session(const SessionSettings& settings) {
     auto edit = std::make_shared<EditState>();
     edit->markers = std::make_shared<const MarkerList>();
@@ -309,22 +554,18 @@ std::string sequence_ref_problem(const SequenceFileRef& r) {
     return {};
 }
 
-std::string sequence_problem(const MidiSequence& s, std::string& where) {
+namespace {
+
+template <typename Notes, typename Events, typename Sysex>
+std::string lists_problem(const Notes& notes, const Events& events, const Sysex& sysex,
+                          std::string& where) {
     const auto at = [&](const char* list, std::size_t i) {
         where = std::string(list) + "[" + std::to_string(i) + "]";
     };
-    if (s.missing) {
-        where = "data";
-        if (!s.notes.empty() || !s.events.empty() || !s.sysex.empty()) {
-            return "a sequence whose file is missing holds no notes or events";
-        }
-        std::string why = sequence_ref_problem(*s.missing);
-        if (why.empty()) where.clear();
-        return why;
-    }
-    for (std::size_t i = 0; i < s.notes.size(); ++i) {
-        const midi::Note& n = s.notes[i];
-        at("notes", i);
+    std::size_t i = 0;
+    const midi::Note* prev_note = nullptr;
+    for (const midi::Note& n : notes) {
+        at("notes", i++);
         if (!in_range(n.start) || !in_range(n.length) || n.start + n.length > kMaxInteger) {
             return "start and length must not be negative, and start + length at most " +
                    str(kMaxInteger);
@@ -334,13 +575,15 @@ std::string sequence_problem(const MidiSequence& s, std::string& where) {
         // 0 is a note-off on the wire: a note stored with it never sounds.
         if (n.velocity < 1 || n.velocity > 127) return "velocity must be from 1 to 127";
         if (n.release_velocity > 127) return "release velocity must be from 0 to 127";
-        if (i > 0 && note_before(n, s.notes[i - 1])) {
+        if (prev_note != nullptr && note_before(n, *prev_note)) {
             return "notes are not in order (start, channel, pitch, end)";
         }
+        prev_note = &n;
     }
-    for (std::size_t i = 0; i < s.events.size(); ++i) {
-        const MidiEvent& e = s.events[i];
-        at("events", i);
+    i = 0;
+    const MidiEvent* prev_event = nullptr;
+    for (const MidiEvent& e : events) {
+        at("events", i++);
         if (!in_range(e.tick)) return "tick must be from 0 to " + str(kMaxInteger);
         if (e.status < 0xA0 || e.status > 0xEF) {
             return "status must be a channel message other than a note, 0xA0 to 0xEF";
@@ -350,11 +593,15 @@ std::string sequence_problem(const MidiSequence& s, std::string& where) {
         if ((type == 0xC0 || type == 0xD0) && e.data2 != 0) {
             return "a program change or channel pressure has one data byte; data2 must be 0";
         }
-        if (i > 0 && e.tick < s.events[i - 1].tick) return "events are not sorted by tick";
+        if (prev_event != nullptr && e.tick < prev_event->tick) {
+            return "events are not sorted by tick";
+        }
+        prev_event = &e;
     }
-    for (std::size_t i = 0; i < s.sysex.size(); ++i) {
-        const MidiSysEx& x = s.sysex[i];
-        at("sysex", i);
+    i = 0;
+    const MidiSysEx* prev_sysex = nullptr;
+    for (const MidiSysEx& x : sysex) {
+        at("sysex", i++);
         if (!in_range(x.tick)) return "tick must be from 0 to " + str(kMaxInteger);
         if (x.bytes.size() < 2 || x.bytes.size() > kMaxSysexBytes) {
             return "a SysEx message is from 2 to " +
@@ -366,10 +613,30 @@ std::string sequence_problem(const MidiSequence& s, std::string& where) {
         for (std::size_t k = 1; k + 1 < x.bytes.size(); ++k) {
             if (x.bytes[k] > 0x7F) return "a SysEx message's data bytes are below 0x80";
         }
-        if (i > 0 && x.tick < s.sysex[i - 1].tick) return "sysex is not sorted by tick";
+        if (prev_sysex != nullptr && x.tick < prev_sysex->tick) {
+            return "sysex is not sorted by tick";
+        }
+        prev_sysex = &x;
     }
     where.clear();
     return {};
+}
+
+}  // namespace
+
+std::string sequence_problem(const MidiLists& s, std::string& where) {
+    return lists_problem(s.notes, s.events, s.sysex, where);
+}
+
+std::string sequence_problem(const MidiSequence& s, std::string& where) {
+    if (s.missing) {
+        where = "data";
+        if (!s.empty()) return "a sequence whose file is missing holds no notes or events";
+        std::string why = sequence_ref_problem(*s.missing);
+        if (why.empty()) where.clear();
+        return why;
+    }
+    return lists_problem(s.notes(), s.events(), s.sysex(), where);
 }
 
 std::string midi_region_problem(const MidiRegion& r, const SourcePool& pool) {

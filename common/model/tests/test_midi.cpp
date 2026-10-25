@@ -31,10 +31,10 @@ AddTrack midi_track(Ids& ids, const std::string& name, TrackKind kind = TrackKin
 
 std::shared_ptr<const MidiSequence> sequence(std::vector<midi::Note> notes,
                                              std::vector<MidiEvent> events = {}) {
-    auto s = std::make_shared<MidiSequence>();
-    s->notes = std::move(notes);
-    s->events = std::move(events);
-    return s;
+    MidiLists l;
+    l.notes = std::move(notes);
+    l.events = std::move(events);
+    return std::make_shared<const MidiSequence>(std::move(l));
 }
 
 MidiRegion midi_region(Id id, Ticks position, Ticks length, Ticks offset,
@@ -257,7 +257,7 @@ int test_edit_midi_copies_on_write() {
     EditMidi e;
     e.playlist = f.midi_pl;
     e.region = f.region;
-    e.remove_notes = {NoteRemoval{1, f.data->notes[1]}};
+    e.remove_notes = {NoteRemoval{1, f.data->notes()[1]}};
     e.add_notes = {note(kBeat / 4, kBeat / 4, 50), note(0, kBeat / 2, 30)};
     e.add_events = {MidiEvent{0, 0xB0, 64, 127}, MidiEvent{0, 0xB0, 1, 10}};
     CHECK_APPLY(f.h, e);
@@ -266,11 +266,11 @@ int test_edit_midi_copies_on_write() {
     CHECK(p.regions[1].data == f.data);
     CHECK(p.regions[0].data != f.data);
     // Sorted in: at start 0 the channel and pitch decide.
-    CHECK(left.notes.size() == 5);
-    CHECK(left.notes[0].pitch == 30 && left.notes[1].pitch == 36 && left.notes[2].pitch == 50);
-    CHECK(left.notes[3].pitch == 40 && left.notes[4].pitch == 41);
+    CHECK(left.notes().size() == 5);
+    CHECK(left.notes()[0].pitch == 30 && left.notes()[1].pitch == 36 && left.notes()[2].pitch == 50);
+    CHECK(left.notes()[3].pitch == 40 && left.notes()[4].pitch == 41);
     // Two events at one tick keep the order they were sent in.
-    CHECK(left.events.size() == 2 && left.events[0].data1 == 64 && left.events[1].data1 == 1);
+    CHECK(left.events().size() == 2 && left.events()[0].data1 == 64 && left.events()[1].data1 == 1);
     CHECK(invariants_hold(f.h.current()));
 
     // Added after what is already at the tick.
@@ -279,13 +279,13 @@ int test_edit_midi_copies_on_write() {
     more.region = f.region;
     more.add_events = {MidiEvent{0, 0xC0, 3, 0}};
     CHECK_APPLY(f.h, more);
-    CHECK(midi_playlist_of(f.h.current(), 1).regions[0].data->events[2].status == 0xC0);
+    CHECK(midi_playlist_of(f.h.current(), 1).regions[0].data->events()[2].status == 0xC0);
 
     // Undo is a pointer: the sequence before the edit comes back as it was.
     CHECK(f.h.undo() && f.h.undo());
     CHECK(midi_playlist_of(f.h.current(), 1).regions[0].data == f.data);
     CHECK(f.h.redo());
-    CHECK(midi_playlist_of(f.h.current(), 1).regions[0].data->notes.size() == 5);
+    CHECK(midi_playlist_of(f.h.current(), 1).regions[0].data->notes().size() == 5);
 
     // Refusals name the value by where it is in the operation.
     EditMidi bad;
@@ -305,11 +305,11 @@ int test_edit_midi_copies_on_write() {
     CHECK(refused(f.h, bad, "add_sysex[0]: a SysEx message's data bytes are below 0x80"));
     bad.add_sysex.clear();
     const MidiSequence& now = *midi_playlist_of(f.h.current(), 1).regions[0].data;
-    bad.remove_notes = {NoteRemoval{2, now.notes[2]}, NoteRemoval{2, now.notes[2]}};
+    bad.remove_notes = {NoteRemoval{2, now.notes()[2]}, NoteRemoval{2, now.notes()[2]}};
     CHECK(refused(f.h, bad, "remove_notes[1]: indices must be increasing"));
-    bad.remove_notes = {NoteRemoval{5, now.notes[0]}};
+    bad.remove_notes = {NoteRemoval{5, now.notes()[0]}};
     CHECK(refused(f.h, bad, "remove_notes[0]: indices must be increasing and below 5"));
-    bad.remove_notes = {NoteRemoval{0, now.notes[0]}};
+    bad.remove_notes = {NoteRemoval{0, now.notes()[0]}};
     bad.region = 9999;
     CHECK(refused(f.h, bad, "region 9999 is not on playlist"));
     return 0;
@@ -327,11 +327,11 @@ int test_stale_edit_midi_is_refused() {
     EditMidi first;
     first.playlist = f.midi_pl;
     first.region = f.region;
-    first.remove_notes = {NoteRemoval{1, seen.notes[1]}};
+    first.remove_notes = {NoteRemoval{1, seen.notes()[1]}};
     EditMidi second = first;
-    midi::Note louder = seen.notes[2];
+    midi::Note louder = seen.notes()[2];
     louder.velocity = 127;
-    second.remove_notes = {NoteRemoval{2, seen.notes[2]}};
+    second.remove_notes = {NoteRemoval{2, seen.notes()[2]}};
     second.add_notes = {louder};
     CHECK_APPLY(f.h, first);
     // Index 2 now holds the beat-4 note; the stale request must not touch it.
@@ -339,9 +339,9 @@ int test_stale_edit_midi_is_refused() {
                   "remove_notes[0]: note 2 is not the note this edit removes; the region "
                   "changed under it"));
     const MidiSequence& after = *midi_playlist_of(f.h.current(), 1).regions[0].data;
-    CHECK(after.notes.size() == 3 && after.notes[2].pitch == 41 && after.notes[2].velocity == 100);
+    CHECK(after.notes().size() == 3 && after.notes()[2].pitch == 41 && after.notes()[2].velocity == 100);
     // Resolved again against what is there, it applies.
-    second.remove_notes = {NoteRemoval{1, after.notes[1]}};
+    second.remove_notes = {NoteRemoval{1, after.notes()[1]}};
     CHECK_APPLY(f.h, second);
     EditMidi events;
     events.playlist = f.midi_pl;
@@ -422,7 +422,7 @@ int test_place_midi_region_sharing_survives_undo_redo() {
         return find_midi(midi_playlist_of(f.h.current(), 1), f.region)->data.get();
     };
     CHECK(copy_data() == f.data.get());
-    CHECK(original_data() != f.data.get() && original_data()->notes.size() == 5);
+    CHECK(original_data() != f.data.get() && original_data()->notes().size() == 5);
 
     CHECK(f.h.undo());
     CHECK(original_data() == f.data.get() && copy_data() == f.data.get());
@@ -434,7 +434,7 @@ int test_place_midi_region_sharing_survives_undo_redo() {
     CHECK(copy_data() == f.data.get());
     CHECK(f.h.redo());
     CHECK(copy_data() == f.data.get());
-    CHECK(original_data() != f.data.get() && original_data()->notes.size() == 5);
+    CHECK(original_data() != f.data.get() && original_data()->notes().size() == 5);
     CHECK(f.h.undo_depth() == depth);
     CHECK(invariants_hold(f.h.current()));
     return 0;
@@ -555,7 +555,9 @@ int test_window_carries_midi() {
     CHECK(doc.apply(SetMidiRouting{m.track, MidiRouting{"Keys", 1, "Out", 2}}, u, error));
     CHECK(doc.snapshot(u, error));
     std::optional<History> h;
-    if (!decode_window(u.bytes, h, error)) std::fprintf(stderr, "  %s\n", error.c_str());
+    if (!decode_window(WindowParts{u.parts, u.bytes}, h, error)) {
+        std::fprintf(stderr, "  %s\n", error.c_str());
+    }
     CHECK(h.has_value());
     CHECK(h->current() == doc.current());
     const MidiPlaylist& p = *h->current().edit->tracks[0]->midi_playlists[0];

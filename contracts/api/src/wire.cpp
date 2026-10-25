@@ -164,9 +164,9 @@ private:
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
-constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::FlushPluginState);
+constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::LoadPart);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::PluginFault);
-constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::Snapshot);
+constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
 
 }  // namespace
@@ -235,6 +235,8 @@ void encode(const ModelUpdate& m, std::string& out) {
     w.u64(m.next_id);
     w.str(m.bytes);
     w.str(m.label);
+    w.u64(m.part_count);
+    w.u64(m.part_bytes);
 }
 
 void encode(const PluginParameterChange& m, std::string& out) {
@@ -394,7 +396,8 @@ bool decode(std::string_view bytes, ModelUpdate& out, std::string& error) {
     ModelUpdate m;
     if (!r.type(Type::ModelUpdate) || !r.enumeration(m.kind, kLastUpdate) ||
         !r.u64(m.revision) || !r.u64(m.undo_floor) || !r.u64(m.next_id) ||
-        !r.str(m.bytes, kMaxModelBytes) || !r.str(m.label, kMaxModelBytes) || !r.done()) {
+        !r.str(m.bytes, kMaxModelBytes) || !r.str(m.label, kMaxModelBytes) ||
+        !r.u64(m.part_count) || !r.u64(m.part_bytes) || !r.done()) {
         return false;
     }
     out = std::move(m);

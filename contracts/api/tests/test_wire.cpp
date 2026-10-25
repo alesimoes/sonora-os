@@ -148,6 +148,31 @@ void round_trips() {
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.kind == ModelUpdateKind::Undo && back.label == u.label);
     }
+    {
+        // A Snapshot in parts (protocol 10): the header names its parts.
+        ModelUpdate u;
+        u.kind = ModelUpdateKind::SnapshotHeader;
+        u.revision = 42;
+        u.part_count = 7;
+        u.part_bytes = 0x0102030405060708ull;
+        wire::encode(u, bytes);
+        ModelUpdate back;
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.kind == ModelUpdateKind::SnapshotHeader && back.part_count == 7 &&
+              back.part_bytes == u.part_bytes && back.revision == 42);
+        u.kind = ModelUpdateKind::SnapshotPart;
+        u.part_count = u.part_bytes = 0;
+        u.bytes = std::string(wire::kMaxPartBytes, 'p');
+        wire::encode(u, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.kind == ModelUpdateKind::SnapshotPart && back.bytes == u.bytes);
+        ModelRequest r;
+        r.action = ModelAction::LoadPart;
+        r.op = "SNRLPRT";
+        wire::encode(r, bytes);
+        ModelRequest rb;
+        CHECK(wire::decode(bytes, rb, error) && rb.action == ModelAction::LoadPart);
+    }
 }
 
 void refusals() {
@@ -223,25 +248,25 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // Loop record (ADR-0016 §3) is version 9: RecordLoopTake, a new
-    // operation kind. A version-8 interface, whose decoder refuses it, reads
-    // this engine's Hello and refuses it at connect, naming both numbers,
-    // before an operation it cannot decode can reach it. Its check is this
-    // function with its own constants, passed here.
-    CHECK(kProtocolVersion == 9);
+    // A Snapshot and a Load in parts (ADR-0015 M-1c PR 2) are version 10;
+    // 9 is loop record's. An older interface cannot reassemble a Snapshot in
+    // parts, nor send a Load in parts, so it reads this engine's Hello and
+    // refuses it at connect, naming both numbers. Its check is this function
+    // with its own constants, passed here.
+    CHECK(kProtocolVersion == 10);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
-    CHECK(mentions(v8, "the engine speaks control protocol version 9 and this interface "
+    CHECK(mentions(v8, "the engine speaks control protocol version 10 and this interface "
                        "speaks version 8"));
     CHECK(mentions(v8, "same build"));
     // And this interface refuses a version-8 engine the same way.
     CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
                    "the engine speaks control protocol version 8 and this interface "
-                   "speaks version 9"));
+                   "speaks version 10"));
 }
 
 void domains() {

@@ -51,7 +51,12 @@ namespace sonora::api {
 //   reference.
 // 9 (ADR-0016 §3): loop record. A new operation kind, RecordLoopTake, which
 //   a version-8 peer's decoder refuses.
-constexpr uint32_t kProtocolVersion = 9;
+// 10 (ADR-0015 M-1c PR 2; 9 is loop record's): a Snapshot travels as
+//   ModelUpdateKind::SnapshotHeader, SnapshotPart and Snapshot, the window's
+//   chunk table in parts of at most wire::kMaxPartBytes (undo window format
+//   7, sequences as spines of chunks); a Load as ModelAction::LoadPart
+//   requests ahead of a Load that carries the bare session file.
+constexpr uint32_t kProtocolVersion = 10;
 
 // --- client -> engine -------------------------------------------------------
 
@@ -125,7 +130,8 @@ enum class ModelAction : uint32_t {
     // becomes it, with a new undo history, and every replica gets a
     // Snapshot. Bytes rather than a path, so the engine needs no view of the
     // interface's filesystem and File > Open's checks stay where the dialog
-    // is. Protocol version 2; a bundle since 8.
+    // is. Protocol version 2; a bundle since 8; after LoadPart requests, the
+    // bare session file since 10.
     Load = 4,
     // Bring the document's plugin values up to date with the running
     // plugins (ADR-0012 §8): before File > Save, and before an insert is
@@ -139,6 +145,14 @@ enum class ModelAction : uint32_t {
     // timed out); the others' updates still went out. An insert that is not
     // running already has its last state in the document. Protocol 3.
     FlushPluginState = 5,
+    // One part of a Load in parts (ADR-0015 §4, protocol 10): whole MIDI
+    // sequence files, at most wire::kMaxPartBytes (common/model's
+    // encode_load_parts). The engine decodes and checks each part as it
+    // arrives, and replies to each; the Load that follows carries the bare
+    // session file and opens with them. A refused part abandons the Load:
+    // the parts before it are dropped and the Load is refused with its
+    // reason. The parts are this client's alone until its next Load.
+    LoadPart = 6,
 };
 
 struct ModelRequest {
@@ -219,8 +233,17 @@ enum class ModelUpdateKind : uint32_t {
     Redo = 2,      // and forward
     // Replace the replica with `bytes`: the document and its whole undo
     // window (common/model's encode_window), so undo and redo after it
-    // apply on the replica as on the engine. Sent after Hello and on Resync.
+    // apply on the replica as on the engine. Sent after Hello, on Resync and
+    // after a Load, after its header and parts; one whose chunk table is
+    // empty (no MIDI) comes alone.
     Snapshot = 3,
+    // A Snapshot begins (protocol 10): `part_count` SnapshotParts follow,
+    // `part_bytes` together, then the Snapshot. Nothing else reaches this
+    // client in between. A replica refuses a header over its own cap.
+    SnapshotHeader = 4,
+    // One part of the window's chunk table, whole chunks, at most
+    // wire::kMaxPartBytes; decoded and checked on its own as it arrives.
+    SnapshotPart = 5,
 };
 
 struct ModelUpdate {
@@ -238,6 +261,9 @@ struct ModelUpdate {
     // Undo and Redo only: the label of the step undone or redone ("Paste",
     // "Record"), for the Edit menu's text. Display only. Protocol 4.
     std::string label;
+    // SnapshotHeader only (protocol 10).
+    uint64_t part_count = 0;
+    uint64_t part_bytes = 0;
 };
 
 // --- the plugin catalog (ADR-0012 §8), protocol 3 ---------------------------

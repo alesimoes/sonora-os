@@ -65,6 +65,9 @@ struct Options {
     QString engine_socket;
     bool fake_engine = false;
     QString open_file;
+    // ADR-0015 §4: the most a Snapshot's MIDI chunk table, and a Load's
+    // sequence files, may hold; this interface's own cap, not the engine's.
+    uint64_t max_snapshot_mib = 512;
 };
 
 // The demo session's inserts, on the fake engine's catalog (fake_catalog()):
@@ -217,8 +220,13 @@ bool parse(QGuiApplication& app, Options& o) {
                                                  "as File > Open does (with --demo, instead of "
                                                  "starting a take)."),
                                   QStringLiteral("file"));
+    const QCommandLineOption max_snapshot(
+        {QStringLiteral("max-snapshot-mib")},
+        QStringLiteral("The most MIDI a session the engine sends, or one File > Open sends it, "
+                       "may hold, in MiB (default 512)."),
+        QStringLiteral("mib"));
     p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
-                  window, sessions, socket, fake, open});
+                  window, sessions, socket, fake, open, max_snapshot});
     p.process(app);
 
     o.keymap = p.value(keymap);
@@ -250,6 +258,14 @@ bool parse(QGuiApplication& app, Options& o) {
             return false;
         }
         if (!p.isSet(window)) o.window = o.scene->window;
+    }
+    if (p.isSet(max_snapshot)) {
+        bool ok = false;
+        o.max_snapshot_mib = p.value(max_snapshot).toULongLong(&ok);
+        if (!ok || o.max_snapshot_mib == 0) {
+            std::fprintf(stderr, "sonora-ui: --max-snapshot-mib must be a positive number\n");
+            return false;
+        }
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
         std::fprintf(stderr, "sonora-ui: --window must be edit or mix\n");
@@ -400,6 +416,7 @@ int main(int argc, char** argv) {
     ReplicaDocument document(
         [&engine](const api::ModelRequest& r) { return engine.submitModel(r); },
         make_empty_session(engine.info().track_count, rate));
+    document.set_max_snapshot_bytes(a.opt.max_snapshot_mib << 20);
     // On the fake engine the demo has inserts too, from its scripted catalog;
     // a real engine's catalog is its own, so there the demo has none.
     sonora::model::Id demo_crash = 0;

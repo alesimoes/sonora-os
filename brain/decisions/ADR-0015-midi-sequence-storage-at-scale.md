@@ -16,6 +16,12 @@
   over 64 MiB); §6's sync pacing moves to PR 3 with the engine saver,
   which also makes the engine sole owner of `MIDI Sequences/`, and must
   merge before M-4 records MIDI.
+- Note 2026-10-25 (M-1c PR 2), for the owner's acceptance: the spine has
+  two levels, a leaf per 64 chunks, because a 60-minute region's single
+  level is 72 KiB, past Unverified 1's 64 KiB; the protocol is 10, not 9,
+  which loop record (#117) takes; a Snapshot with no chunk comes without a
+  header; a single chunk, or a single sequence file in a Load, over 16 MiB
+  is refused by name rather than split. Measurements in `midi.md` §4.6.
 - Date: 2026-10-20. Revised the same day with the rt-engineer's review of
   PR #102 ("accept with changes"); the PR thread maps each point to where
   it landed.

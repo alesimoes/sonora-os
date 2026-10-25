@@ -77,10 +77,17 @@ public:
     // What is shown: the engine's steps with the requests in flight on top.
     const model::History& history() const override { return shown_; }
     model::Id reserve_id() override;
-    // Sends the session to the engine (ModelAction::Load) and shows it at
-    // once. A session whose bundle is over api::wire::kMaxModelBytes is
-    // refused by name instead, and nothing is shown or sent.
+    // Sends the session to the engine and shows it at once: its MIDI
+    // sequence files as ModelAction::LoadPart requests of at most
+    // api::wire::kMaxPartBytes, then ModelAction::Load with the session file
+    // (ADR-0015 §4). Refused by name instead, with nothing shown or sent,
+    // when the sequence files together are over max_snapshot_bytes(), or
+    // one alone is over a part.
     bool reset(model::Snapshot s, std::string& why) override;
+    // This interface's cap on a Snapshot's chunk table and a Load's
+    // sequence files (ADR-0015 §4: the replica's own, an interface setting).
+    void set_max_snapshot_bytes(uint64_t bytes) { replica_.set_max_snapshot_bytes(bytes); }
+    uint64_t max_snapshot_bytes() const { return replica_.max_snapshot_bytes(); }
     // ModelAction::FlushPluginState. `done` runs from the receive() that
     // brings the engine's reply, after that call has applied the updates the
     // engine sent before it (the engine replies after the last of them); a
@@ -98,6 +105,9 @@ public:
 
     // The engine's document has arrived (its first Snapshot).
     bool synced() const { return replica_.synced(); }
+    // A Snapshot in parts is arriving: what is shown is the document before
+    // it, and edits are refused until its window has decoded.
+    bool attaching() const { return replica_.attaching(); }
     // Lost track after having had the engine's document: a Resync is out,
     // the last good document is shown and edits are refused.
     bool resyncing() const { return replica_.history() != nullptr && !replica_.synced(); }
@@ -118,7 +128,7 @@ public:
 
 private:
     struct Pending {
-        enum class Kind { Apply, Undo, Redo, Load };
+        enum class Kind { Apply, Undo, Redo, Load, LoadPart };
         Kind kind = Kind::Apply;
         uint64_t seq = 0;
         model::Operation op;                 // Apply
@@ -148,6 +158,9 @@ private:
     model::Id next_unreserved_ = 0;
     bool offline_ = false;
     bool resync_pending_ = false;   // one Resync per loss, not one per failed update
+    // A Snapshot in parts was abandoned at a bad part; its window is still
+    // on its way and is not the one the Resync brings.
+    bool abandoned_ = false;
     uint64_t resync_seq_ = 0;       // the Resync out, so its refusal is seen
     // Why the engine refused the last Resync; while it is set and the
     // replica is still lost, the next edit asks again (refuse_while_lost).

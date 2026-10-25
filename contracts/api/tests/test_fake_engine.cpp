@@ -145,9 +145,10 @@ void scripted_plugins() {
         for (; fed < in.model.size(); ++fed) {
             sonora::model::ReplicationUpdate u;
             const ModelUpdate& m = in.model[fed];
-            u.kind = m.kind == ModelUpdateKind::Snapshot
-                         ? sonora::model::ReplicationUpdate::Kind::Snapshot
-                         : sonora::model::ReplicationUpdate::Kind::Op;
+            // The two enums list the same kinds in the same order.
+            u.kind = static_cast<sonora::model::ReplicationUpdate::Kind>(m.kind);
+            u.part_count = m.part_count;
+            u.part_bytes = m.part_bytes;
             u.revision = m.revision;
             u.undo_floor = m.undo_floor;
             u.next_id = m.next_id;
@@ -341,8 +342,10 @@ void midi_tracks() {
         for (; fed < in.model.size(); ++fed) {
             model::ReplicationUpdate u;
             const ModelUpdate& m = in.model[fed];
-            u.kind = m.kind == ModelUpdateKind::Snapshot ? model::ReplicationUpdate::Kind::Snapshot
-                                                         : model::ReplicationUpdate::Kind::Op;
+            // The two enums list the same kinds in the same order.
+            u.kind = static_cast<model::ReplicationUpdate::Kind>(m.kind);
+            u.part_count = m.part_count;
+            u.part_bytes = m.part_bytes;
             u.revision = m.revision;
             u.undo_floor = m.undo_floor;
             u.next_id = m.next_id;
@@ -417,15 +420,15 @@ void midi_tracks() {
     }
     CHECK(told);
 
-    auto data = std::make_shared<model::MidiSequence>();
+    model::MidiLists data;
     sonora::midi::Note n;
     n.length = model::kTicksPerQuarter;
-    data->notes.push_back(n);
+    data.notes.push_back(n);
     model::MidiRegion r;
     r.id = next++;
     r.name = "Bass_01";
     r.length = 4 * model::kTicksPerQuarter;
-    r.data = data;
+    r.data = std::make_shared<const model::MidiSequence>(data);
     CHECK(apply(model::PlaceMidiRegion{add.playlist, r, 0}).result == DispatchResult::Ok);
     const CommandReply frames = apply(model::MoveRegion{add.playlist, r.id, 96000, 0});
     CHECK(frames.result == DispatchResult::Failed &&
@@ -441,7 +444,7 @@ void midi_tracks() {
     const model::TrackEdit& t = *replica.current().edit->tracks[0];
     CHECK(t.kind == model::TrackKind::Midi && t.midi_playlists.size() == 1);
     const model::MidiRegion& placed = t.midi_playlists[0]->regions.at(0);
-    CHECK(placed.position == bar && placed.data->events.size() == 1);
+    CHECK(placed.position == bar && placed.data->events().size() == 1);
     CHECK(replica.current() == e.document());
 }
 

@@ -21,7 +21,15 @@ model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
         case api::ModelUpdateKind::Snapshot:
             u.kind = model::ReplicationUpdate::Kind::Snapshot;
             break;
+        case api::ModelUpdateKind::SnapshotHeader:
+            u.kind = model::ReplicationUpdate::Kind::SnapshotHeader;
+            break;
+        case api::ModelUpdateKind::SnapshotPart:
+            u.kind = model::ReplicationUpdate::Kind::SnapshotPart;
+            break;
     }
+    u.part_count = m.part_count;
+    u.part_bytes = m.part_bytes;
     u.revision = m.revision;
     u.undo_floor = m.undo_floor;
     u.next_id = m.next_id;
@@ -62,7 +70,7 @@ bool ReplicaDocument::refuse_while_lost(std::string& why) {
     // Load, it would be applied to the session the engine kept if it refuses
     // that Load, where the same ids usually name other things.
     const bool opening = std::any_of(pending_.begin(), pending_.end(), [](const Pending& p) {
-        return p.kind == Pending::Kind::Load && !p.answered;
+        return (p.kind == Pending::Kind::Load && !p.answered) || p.kind == Pending::Kind::LoadPart;
     });
     if (opening) {
         why = "the session is still opening; nothing was changed";
@@ -134,26 +142,40 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     }
     model::WriteInfo info;
     info.written_by = "sonora-ui";
-    std::string bytes, error;
-    // With its sequence files: the engine reads nothing from this folder.
-    if (!model::encode_session_bundle(s, info, bytes, error)) {
+    std::string session, error;
+    std::vector<std::string> parts;
+    // With its sequence files, in parts: the engine reads nothing from this
+    // folder.
+    if (!model::encode_load_parts(s, info, session, parts, error, nullptr,
+                                  api::wire::kMaxPartBytes)) {
         why = "the session could not be sent to the engine: " + error;
         return false;
     }
-    // Checked before it is shown: over the cap the engine never receives
+    // Checked before it is shown: over the caps the engine never receives
     // it, and the screen would hold a session the engine did not load.
-    if (bytes.size() > api::wire::kMaxModelBytes) {
-        why = "the session is " + std::to_string(bytes.size()) +
-              " bytes with its MIDI sequence files, over the " +
-              std::to_string(api::wire::kMaxModelBytes) +
-              " bytes a Load can carry; it opens once a Load travels in parts, as a Snapshot"
-              " will (ADR-0015 M-1c PR 2)";
+    uint64_t total = 0;
+    for (const std::string& part : parts) total += part.size();
+    if (total > max_snapshot_bytes() || session.size() > api::wire::kMaxModelBytes) {
+        why = "the session's MIDI sequence files are " + std::to_string(total) +
+              " bytes, over this interface's limit of " + std::to_string(max_snapshot_bytes()) +
+              " (--max-snapshot-mib)";
+        if (session.size() > api::wire::kMaxModelBytes) {
+            why = "the session file is " + std::to_string(session.size()) +
+                  " bytes, over the " + std::to_string(api::wire::kMaxModelBytes) +
+                  " a Load can carry";
+        }
         return false;
+    }
+    for (std::string& part : parts) {
+        Pending p;
+        p.kind = Pending::Kind::LoadPart;
+        p.seq = send(api::ModelAction::LoadPart, std::move(part));
+        pending_.push_back(std::move(p));
     }
     Pending p;
     p.kind = Pending::Kind::Load;
     p.load = s;
-    p.seq = send(api::ModelAction::Load, std::move(bytes));
+    p.seq = send(api::ModelAction::Load, std::move(session));
     pending_.push_back(std::move(p));
     shown_ = model::History(std::move(s), shown_.budget());
     next_unreserved_ = 0;
@@ -191,6 +213,7 @@ bool ReplicaDocument::set_link(bool up) {
     for (const Pending& p : pending_) {
         if (p.answered) continue;
         ++dropped;
+        if (p.kind == Pending::Kind::LoadPart) continue;
         load_dropped = load_dropped || p.kind == Pending::Kind::Load;
     }
     if (dropped == 0) return false;
@@ -212,19 +235,44 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
     bool changed = false;
     bool applied = false;   // an update after this tick's replies reached the replica
     for (const api::ModelUpdate& m : updates) {
+        // A part of a Snapshot changes nothing shown: the document before it
+        // stays until its window has decoded (ADR-0015 §4).
+        const bool part = m.kind == api::ModelUpdateKind::SnapshotHeader ||
+                          m.kind == api::ModelUpdateKind::SnapshotPart;
+        // The window of a Snapshot this replica abandoned at a bad part is
+        // taken and dropped; it is not the document the Resync brings.
+        const bool dropped_window = m.kind == api::ModelUpdateKind::Snapshot && abandoned_;
         // A whole document: possibly another session (another interface's
         // Open), possibly this one again after a Resync. Either way, an id
         // held across it is not to be trusted.
-        if (m.kind == api::ModelUpdateKind::Snapshot) {
+        if (m.kind == api::ModelUpdateKind::Snapshot && !dropped_window) {
             ++session_generation_;
             // The answer to a Resync, or a whole document anyway: the loss
             // it was asked for is over, whether this one loads or not.
             resync_pending_ = false;
             resync_refused_.clear();
         }
+        if (m.kind == api::ModelUpdateKind::SnapshotHeader) abandoned_ = false;
         std::string why;
         if (replica_.receive(from_wire(m), why)) {
-            applied = true;
+            if (dropped_window) abandoned_ = false;
+            applied = applied || (!part && !dropped_window);
+            if (part) continue;
+        } else if (m.kind == api::ModelUpdateKind::SnapshotHeader) {
+            // Over this interface's own cap: asking again would bring the
+            // same. Said once; the next edit asks again, after the setting
+            // has been raised and the interface restarted, or the session
+            // made smaller elsewhere.
+            abandoned_ = true;
+            resync_pending_ = false;
+            resync_refused_ = why;
+            if (on_refused) {
+                on_refused("the engine could not send its document: " + why +
+                           "; the interface is behind it and edits are refused");
+            }
+        } else if (part) {
+            abandoned_ = true;
+            if (!resync_pending_) request_resync();
         } else if (!resync_pending_) {
             // Lost track: the whole document again, undo window and all.
             // Once: the updates still on their way before the Snapshot fail
@@ -268,6 +316,12 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         const auto it = std::find_if(pending_.begin(), pending_.end(),
                                      [&r](const Pending& p) { return p.seq == r.seq; });
         if (it == pending_.end()) continue;
+        // A part's own refusal is the Load's too, which the engine refuses
+        // with the same reason, and that is the one said.
+        if (it->kind == Pending::Kind::LoadPart) {
+            pending_.erase(it);
+            continue;
+        }
         if (r.result == DispatchResult::Ok) {
             it->answered = true;
         } else {
@@ -328,6 +382,7 @@ void ReplicaDocument::rebuild() {
             case Pending::Kind::Undo: h.undo(); break;
             case Pending::Kind::Redo: h.redo(); break;
             case Pending::Kind::Load: h = model::History(*p.load, h.budget()); break;
+            case Pending::Kind::LoadPart: break;
         }
     }
     shown_ = std::move(h);

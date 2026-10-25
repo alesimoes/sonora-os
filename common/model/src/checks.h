@@ -70,6 +70,10 @@ std::vector<FadeFit> fit_fades_to_crossfades(Playlist& p);
 std::string midi_source_problem(const MidiSource& s);
 // Every value in range and every list in order. Linear in the sequence. A
 // missing one (ADR-0015 O2) holds nothing and a well-formed reference.
+// Lists from outside are checked as lists, before they are chunked: a
+// MidiSequence places each element by its tick, so an order across chunks
+// that was wrong no longer shows.
+std::string sequence_problem(const MidiLists& s, std::string& where);
 std::string sequence_problem(const MidiSequence& s, std::string& where);
 std::string sequence_ref_problem(const SequenceFileRef& r);
 // The region's own fields and its source, not its sequence: a sequence is

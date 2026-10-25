@@ -57,10 +57,10 @@ uint64_t now_ms() {
 
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m) {
     model::ReplicationUpdate u;
-    u.kind = m.kind == api::ModelUpdateKind::Op     ? model::ReplicationUpdate::Kind::Op
-             : m.kind == api::ModelUpdateKind::Undo ? model::ReplicationUpdate::Kind::Undo
-             : m.kind == api::ModelUpdateKind::Redo ? model::ReplicationUpdate::Kind::Redo
-                                                    : model::ReplicationUpdate::Kind::Snapshot;
+    // The two enums list the same kinds in the same order.
+    u.kind = static_cast<model::ReplicationUpdate::Kind>(m.kind);
+    u.part_count = m.part_count;
+    u.part_bytes = m.part_bytes;
     u.revision = m.revision;
     u.undo_floor = m.undo_floor;
     u.next_id = m.next_id;

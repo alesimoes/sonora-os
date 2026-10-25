@@ -14,6 +14,7 @@
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 #include "sonora/playback_controller.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
@@ -38,7 +39,15 @@ api::ModelUpdate to_wire(const model::ReplicationUpdate& u) {
         case model::ReplicationUpdate::Kind::Snapshot:
             m.kind = api::ModelUpdateKind::Snapshot;
             break;
+        case model::ReplicationUpdate::Kind::SnapshotHeader:
+            m.kind = api::ModelUpdateKind::SnapshotHeader;
+            break;
+        case model::ReplicationUpdate::Kind::SnapshotPart:
+            m.kind = api::ModelUpdateKind::SnapshotPart;
+            break;
     }
+    m.part_count = u.part_count;
+    m.part_bytes = u.part_bytes;
     m.revision = u.revision;
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
@@ -602,6 +611,16 @@ void EngineControlServer::set_inputs_connected(uint32_t count, bool none_is_a_pr
 }
 
 void EngineControlServer::send_to(Client& client, const std::string& bytes) {
+    if (!client.held.empty()) {
+        Held h;
+        h.bytes = bytes;
+        client.held.push_back(std::move(h));
+        return;
+    }
+    write_to(client, bytes);
+}
+
+void EngineControlServer::write_to(Client& client, const std::string& bytes) {
     if (!client.out) return;
     // Cannot fail for what the server sends: a Snapshot is trimmed to
     // kMaxModelBytes, under kMaxMessageBytes.
@@ -612,6 +631,16 @@ void EngineControlServer::send_to(Client& client, const std::string& bytes) {
 }
 
 void EngineControlServer::send_frames(Client& client, const std::vector<Frame>& frames) {
+    if (!client.held.empty()) {
+        Held h;
+        h.frames = frames;
+        client.held.push_back(std::move(h));
+        return;
+    }
+    write_frames(client, frames);
+}
+
+void EngineControlServer::write_frames(Client& client, const std::vector<Frame>& frames) {
     if (!client.out) return;
     for (const Frame& f : frames) client.out(f);
 }
@@ -625,7 +654,8 @@ void EngineControlServer::send(const std::string& bytes) {
     for (auto& [id, client] : clients_) send_to(client, bytes);
 }
 
-void EngineControlServer::greet(Client& client) {
+void EngineControlServer::greet(ClientId id) {
+    Client& client = clients_[id];
     api::Hello hello;
     hello.protocol_version = opts_.protocol_version;
     hello.state_layout_version = opts_.state_layout_version;
@@ -640,12 +670,7 @@ void EngineControlServer::greet(Client& client) {
 
     // A replica starts from the whole document and its undo window, so a
     // reconnecting interface undoes and redoes in step with the engine.
-    model::ReplicationUpdate snap;
-    std::string why;
-    if (document_->snapshot(snap, why, api::wire::kMaxModelBytes)) {
-        api::wire::encode(to_wire(snap), bytes);
-        send_to(client, bytes);
-    }
+    send_snapshot({id});
     send_catalog(client);
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
@@ -745,6 +770,194 @@ std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, mod
     return "no plugin " + ref->id + " is installed";
 }
 
+// --- Snapshots off the document thread (ADR-0015 §4) ---------------------------
+
+struct EngineControlServer::SnapshotJob {
+    // The document's history as it was asked for; it shares every state with
+    // the document, so the copy is a few hundred pointers. Freed once encoded.
+    std::unique_ptr<model::History> history;
+    uint64_t generation = 0;
+    // The worker's results, read by the control thread once `done` is seen.
+    std::atomic<bool> done{false};
+    bool ok = false;
+    std::string error;
+    uint64_t floor = 0;
+    bool floor_followed = false;
+    // Header, parts, window: each message's frames, shared by every client.
+    std::vector<std::vector<EngineControlServer::Frame>> messages;
+};
+
+namespace {
+
+// Two parts in a client's transport at once (ADR-0015 §4, as the large
+// message path allows two in flight), so its socket buffer never holds the
+// whole table and a slow reader is not dropped for not reading.
+constexpr std::size_t kPacedBytes = 2 * api::wire::kMaxPartBytes;
+
+std::vector<EngineControlServer::Frame> frames_of(const api::ModelUpdate& m) {
+    std::string bytes, error;
+    api::wire::encode(m, bytes);
+    std::vector<std::string> frames;
+    // Cannot fail: a part is at most kMaxPartBytes, the window is trimmed to
+    // kMaxModelBytes, both under kMaxMessageBytes.
+    api::wire::split_frames(bytes, frames, error);
+    std::vector<EngineControlServer::Frame> out;
+    out.reserve(frames.size());
+    for (std::string& f : frames) out.push_back(std::make_shared<const std::string>(std::move(f)));
+    return out;
+}
+
+}  // namespace
+
+void EngineControlServer::encode(SnapshotJob& job) {
+    model::ReplicationUpdate u;
+    job.ok = model::encode_snapshot(std::move(*job.history), u, job.error,
+                                    api::wire::kMaxModelBytes);
+    job.history.reset();
+    if (job.ok) {
+        job.floor = u.undo_floor;
+        api::ModelUpdate header = to_wire(u);
+        header.kind = api::ModelUpdateKind::SnapshotHeader;
+        header.bytes.clear();
+        header.part_count = u.parts.size();
+        for (const std::string& p : u.parts) header.part_bytes += p.size();
+        job.messages.reserve(u.parts.size() + 2);
+        if (!u.parts.empty()) job.messages.push_back(frames_of(header));
+        for (std::string& p : u.parts) {
+            api::ModelUpdate part;
+            part.kind = api::ModelUpdateKind::SnapshotPart;
+            part.revision = u.revision;
+            part.undo_floor = u.undo_floor;
+            part.bytes = std::move(p);
+            job.messages.push_back(frames_of(part));
+            // Its frames hold it now.
+            std::string().swap(part.bytes);
+        }
+        u.parts.clear();
+        job.messages.push_back(frames_of(to_wire(u)));
+    }
+    snapshots_encoded_.fetch_add(1, std::memory_order_acq_rel);
+    job.done.store(true, std::memory_order_release);
+}
+
+void EngineControlServer::encode_loop() {
+    for (;;) {
+        std::shared_ptr<SnapshotJob> job;
+        {
+            std::unique_lock<std::mutex> lock(jobs_mutex_);
+            jobs_wake_.wait(lock, [this]() { return jobs_stop_ || !jobs_.empty(); });
+            if (jobs_stop_) return;
+            job = std::move(jobs_.front());
+            jobs_.pop_front();
+        }
+        encode(*job);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_ready_ = true;
+        }
+        wake_.notify_all();
+    }
+}
+
+void EngineControlServer::send_snapshot(const std::vector<ClientId>& to, uint64_t reply_seq) {
+    auto job = std::make_shared<SnapshotJob>();
+    const auto t0 = std::chrono::steady_clock::now();
+    job->history = std::make_unique<model::History>(document_->history());
+    const auto us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                              std::chrono::steady_clock::now() - t0)
+                                              .count());
+    if (us > longest_copy_us_.load(std::memory_order_relaxed)) {
+        longest_copy_us_.store(us, std::memory_order_release);
+    }
+    job->generation = session_generation_;
+    for (const ClientId id : to) {
+        const auto it = clients_.find(id);
+        if (it == clients_.end()) continue;
+        Held h;
+        h.job = job;
+        it->second.held.push_back(std::move(h));
+        if (reply_seq != 0 && id == to.front()) {
+            Held r;
+            r.job = job;
+            r.reply_to = reply_seq;
+            it->second.held.push_back(std::move(r));
+        }
+    }
+    if (encoder_.joinable()) {
+        {
+            std::lock_guard<std::mutex> lock(jobs_mutex_);
+            jobs_.push_back(std::move(job));
+        }
+        jobs_wake_.notify_one();
+    } else {
+        // Before the threads start (start(out)) nothing edits the document,
+        // and the first client's Snapshot must be out when start() returns.
+        encode(*job);
+    }
+    pump_snapshots();
+}
+
+bool EngineControlServer::pump_snapshots() {
+    bool sending = false;
+    for (auto& [id, c] : clients_) {
+        while (!c.held.empty()) {
+            Held& h = c.held.front();
+            if (h.job && !h.job->done.load(std::memory_order_acquire)) break;
+            if (h.job && h.reply_to != 0) {
+                const SnapshotJob& j = *h.job;
+                api::CommandReply r;
+                r.seq = h.reply_to;
+                r.result = j.ok ? DispatchResult::Ok : DispatchResult::Failed;
+                r.message = j.ok ? "" : j.error;
+                std::string bytes;
+                api::wire::encode(r, bytes);
+                write_to(c, bytes);
+            } else if (h.job) {
+                SnapshotJob& j = *h.job;
+                if (j.ok && !j.floor_followed && j.generation == session_generation_) {
+                    // What the copy evicted to fit; the other replicas follow
+                    // the floor with the next update.
+                    document_->follow_floor(j.floor);
+                    j.floor_followed = true;
+                }
+                if (!j.ok && c.job_sent == 0) {
+                    api::EngineEvent e;
+                    e.kind = api::EventKind::Notice;
+                    e.text = "the engine could not send its document: " + j.error;
+                    std::string bytes;
+                    api::wire::encode(e, bytes);
+                    write_to(c, bytes);
+                }
+                bool room = true;
+                while (j.ok && c.job_sent < j.messages.size()) {
+                    if (c.queued && c.job_sent > 0) {
+                        std::size_t size = 0;
+                        for (const Frame& f : j.messages[c.job_sent]) size += f->size();
+                        const std::size_t q = c.queued();
+                        if (q > 0 && q + size > kPacedBytes) {
+                            room = false;
+                            break;
+                        }
+                    }
+                    write_frames(c, j.messages[c.job_sent++]);
+                }
+                if (!room) {
+                    sending = true;
+                    break;
+                }
+                c.job_sent = 0;
+            } else if (!h.frames.empty()) {
+                write_frames(c, h.frames);
+            } else {
+                write_to(c, h.bytes);
+            }
+            c.held.pop_front();
+        }
+    }
+    sending_snapshot_ = sending;
+    return sending;
+}
+
 void EngineControlServer::start_threads() {
     // Something on the block before anyone reads it, so the first look at
     // the heartbeat is not "never published".
@@ -756,6 +969,11 @@ void EngineControlServer::start_threads() {
     }
     next_housekeeping_ns_ = 0;
     running_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        jobs_stop_ = false;
+    }
+    encoder_ = std::thread([this]() { encode_loop(); });
     thread_ = std::thread([this]() { run(); });
 }
 
@@ -773,7 +991,7 @@ void EngineControlServer::start(Outbound out) {
         backlog_[kFirstClient] = 0;
     }
     client_count_.store(clients_.size(), std::memory_order_release);
-    greet(c);
+    greet(kFirstClient);
     start_threads();
 }
 
@@ -787,6 +1005,13 @@ void EngineControlServer::stop() {
     wake_.notify_all();
     room_.notify_all();
     if (thread_.joinable()) thread_.join();
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        jobs_stop_ = true;
+        jobs_.clear();
+    }
+    jobs_wake_.notify_all();
+    if (encoder_.joinable()) encoder_.join();
     publisher_->stop();
     running_.store(false, std::memory_order_release);
     // No pump will open the gate now. Withdrawn, so a server started again
@@ -800,11 +1025,13 @@ void EngineControlServer::stop() {
     client_count_.store(0, std::memory_order_release);
 }
 
-EngineControlServer::ClientId EngineControlServer::attach(Outbound out, Refuse refuse) {
+EngineControlServer::ClientId EngineControlServer::attach(Outbound out, Refuse refuse,
+                                                          Queued queued) {
     Inbound in;
     in.kind = Inbound::Kind::Attach;
     in.out = std::move(out);
     in.refuse = std::move(refuse);
+    in.queued = std::move(queued);
     ClientId id = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -884,6 +1111,7 @@ void EngineControlServer::forget(ClientId id) {
     }
     large_.erase(id);
     handled_.erase(id);
+    loads_.erase(id);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         backlog_.erase(id);
@@ -1001,8 +1229,9 @@ void EngineControlServer::take(Inbound& in) {
             Client& c = clients_[in.client];
             c.out = std::move(in.out);
             c.refuse = std::move(in.refuse);
+            c.queued = std::move(in.queued);
             client_count_.store(clients_.size(), std::memory_order_release);
-            greet(c);
+            greet(in.client);
             return;
         }
         case Inbound::Kind::Detach:
@@ -1021,9 +1250,10 @@ void EngineControlServer::run() {
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            wake_.wait_for(lock, playback_busy() ? kBusy : kIdle,
-                           [this]() { return stopping_ || !inbound_.empty(); });
+            wake_.wait_for(lock, playback_busy() || sending_snapshot_ ? kBusy : kIdle,
+                           [this]() { return stopping_ || snapshot_ready_ || !inbound_.empty(); });
             if (stopping_) return;
+            snapshot_ready_ = false;
             batch.swap(inbound_);
         }
         // One item per client in turn: a client with much queued cannot
@@ -1048,6 +1278,7 @@ void EngineControlServer::run() {
         }
         unpark();
         release_handled();
+        pump_snapshots();
         tick();
     }
 }
@@ -1240,19 +1471,44 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             case api::ModelAction::Undo: ok = document_->undo(u, why); break;
             case api::ModelAction::Redo: ok = document_->redo(u, why); break;
             case api::ModelAction::Resync:
-                ok = document_->snapshot(u, why, api::wire::kMaxModelBytes);
-                break;
-            case api::ModelAction::Load:
-                // Another document's loop range would move the frozen one
-                // (ADR-0016 §1) as a SetSettings would.
-                if (session_.loop_take_running()) {
-                    why = "a session cannot be opened while loop record runs; stop first";
-                    break;
+                // Answered after its Snapshot, with the encoder's reason if
+                // there is none. A resync is the asker's alone; every other
+                // replica is in step.
+                send_snapshot({from}, m.seq);
+                // The asker may be resyncing after a lost link, with a ride's
+                // last step still in the gain atomics; the plan is unchanged.
+                apply_mix();
+                return;
+            case api::ModelAction::LoadPart: {
+                LoadInParts& l = loads_[from];
+                if (!l.parts) {
+                    l.parts = std::make_unique<model::LoadParts>(opts_.midi_max_entries);
                 }
-                ok = document_->load(m.op, session_.config().sample_rate, u, why,
-                                     api::wire::kMaxModelBytes);
+                std::string part_why;
+                if (l.refused.empty() && !l.parts->add(m.op, part_why)) {
+                    l.refused = "a part of the session was refused: " + part_why;
+                    l.parts = std::make_unique<model::LoadParts>(0);
+                }
+                reply(from, m.seq, l.refused.empty() ? DispatchResult::Ok : DispatchResult::Failed,
+                      l.refused);
+                return;
+            }
+            case api::ModelAction::Load: {
+                const auto l = loads_.find(from);
+                if (session_.loop_take_running()) {
+                    // Another document's loop range would move the frozen
+                    // one (ADR-0016 §1) as a SetSettings would.
+                    why = "a session cannot be opened while loop record runs; stop first";
+                } else if (l != loads_.end() && !l->second.refused.empty()) {
+                    why = l->second.refused;
+                } else {
+                    ok = document_->load(m.op, session_.config().sample_rate, why,
+                                         l != loads_.end() ? l->second.parts.get() : nullptr);
+                }
+                if (l != loads_.end()) loads_.erase(l);
                 mix_changed = true;
                 break;
+            }
             case api::ModelAction::FlushPluginState:
                 // No update to send: see flush_plugin_state().
                 ok = flush_plugin_state(m.op, why);
@@ -1262,32 +1518,31 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         }
         reply(from, m.seq, ok ? DispatchResult::Ok : refusal, ok ? "" : why);
         if (ok) {
-            std::string out;
-            api::wire::encode(to_wire(u), out);
-            // A resync is the asker's alone; every other replica is in step.
-            if (m.action == api::ModelAction::Resync) {
-                send_to(from, out);
-                // The asker may be resyncing after a lost link, with a ride's
-                // last step still in the gain atomics; the plan is unchanged.
-                apply_mix();
+            if (m.action == api::ModelAction::Load) {
+                ++session_generation_;
+                std::vector<ClientId> everyone;
+                for (const auto& [id, c] : clients_) everyone.push_back(id);
+                send_snapshot(everyone);
             } else {
+                std::string out;
+                api::wire::encode(to_wire(u), out);
                 send(out);
-                // The faders' part of the mix only: an insert's bypass or
-                // parameters are not what the Track atomics hold.
-                const model::MixState& mix_after = document_->current().mix;
-                mix_changed = mix_changed || !(mix_after.bus == mix_before.bus) ||
-                              !(mix_after.tracks == mix_before.tracks) ||
-                              track_order(document_->current()) != order_before;
-                // Chains from the document diff (undo, redo, active, values
-                // included), before the plan is built from it.
-                if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
-                if (m.action == api::ModelAction::Load) {
-                    open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
-                }
-                show_document(mix_changed);
-                show_inserts(m.action == api::ModelAction::Load);
-                warn_midi_budget();
             }
+            // The faders' part of the mix only: an insert's bypass or
+            // parameters are not what the Track atomics hold.
+            const model::MixState& mix_after = document_->current().mix;
+            mix_changed = mix_changed || !(mix_after.bus == mix_before.bus) ||
+                          !(mix_after.tracks == mix_before.tracks) ||
+                          track_order(document_->current()) != order_before;
+            // Chains from the document diff (undo, redo, active, values
+            // included), before the plan is built from it.
+            if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
+            if (m.action == api::ModelAction::Load) {
+                open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
+            }
+            show_document(mix_changed);
+            show_inserts(m.action == api::ModelAction::Load);
+            warn_midi_budget();
         }
         return;
     }

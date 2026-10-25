@@ -13,9 +13,11 @@
 // saver or a plan builder read a snapshot while the next edit is applied.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstddef>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -168,30 +170,289 @@ struct SequenceFileRef {
 // "MIDI Sequences/<sha256>.msq"
 std::string midi_sequence_file(const std::string& sha256);
 
-// What one region plays, in data ticks. Immutable once a region holds it,
-// and shared: by the regions a split, duplicate or paste makes, and by
-// every snapshot that did not edit it.
-struct MidiSequence {
+// A sequence's contents as three flat lists: what an operation, a sequence
+// file and a format-5 session file carry, and what a MidiSequence is built
+// from.
+struct MidiLists {
     std::vector<midi::Note> notes;   // midi::sort_notes() order
     // By tick; at one tick in stored order, which is meaning (a bank
     // select before its program change).
     std::vector<MidiEvent> events;
     std::vector<MidiSysEx> sysex;    // by tick, at one tick in stored order
-    // Set when the file this sequence was saved in was missing or damaged at
-    // open (ADR-0015 owner decision O2): the lists are empty, its regions are
-    // silent and not editable but keep their windows, and a save writes this
-    // reference back unchanged so the file can still be restored beside it.
-    std::optional<SequenceFileRef> missing;
-    bool operator==(const MidiSequence& o) const {
-        return notes == o.notes && events == o.events && sysex == o.sysex && missing == o.missing;
+    std::uint64_t entries() const { return notes.size() + events.size() + sysex.size(); }
+    bool empty() const { return entries() == 0; }
+    bool operator==(const MidiLists& o) const {
+        return notes == o.notes && events == o.events && sysex == o.sysex;
     }
 };
 
-// Notes, events and SysEx messages: what ADR-0015 §5's budget counts. A
-// missing sequence holds none in memory.
-inline std::uint64_t midi_entries(const MidiSequence& s) {
-    return s.notes.size() + s.events.size() + s.sysex.size();
+// ADR-0015 §1: a chunk spans four quarter notes of data ticks, not bars, so
+// a meter change never re-chunks.
+inline constexpr Ticks kMidiChunkTicks = 4 * kTicksPerQuarter;
+// The spine has two levels, a leaf per this many chunk indices. One level
+// would charge a drag the whole spine, 40 bytes a chunk: 72 KiB for a
+// 60-minute region at 120 bpm, past the 64 KiB at which ADR-0015
+// Unverified 1 calls for a second level.
+inline constexpr std::int64_t kMidiLeafChunks = 64;
+
+// The chunk a data tick (a note's start) belongs to.
+inline std::int64_t midi_chunk_of(Ticks tick) { return tick / kMidiChunkTicks; }
+
+// What a sequence holds at data ticks [index * kMidiChunkTicks,
+// (index + 1) * kMidiChunkTicks), in MidiLists' orders. Never empty inside a
+// sequence: an empty chunk is absent. Immutable once shared, by undo steps
+// and by the sequences an edit made from one another.
+struct MidiChunk {
+    std::int64_t index = 0;
+    MidiLists data;
+};
+
+struct MidiSpineEntry {
+    std::shared_ptr<const MidiChunk> chunk;
+    // What the chunks before this one in its leaf hold.
+    std::uint64_t notes = 0;
+    std::uint64_t events = 0;
+    std::uint64_t sysex = 0;
+};
+
+// The chunks whose index is in [index * kMidiLeafChunks, (index + 1) *
+// kMidiLeafChunks), by index. Never empty inside a sequence.
+struct MidiSpineLeaf {
+    std::int64_t index = 0;
+    std::vector<MidiSpineEntry> chunks;
+    // What the whole leaf holds.
+    std::uint64_t notes = 0;
+    std::uint64_t events = 0;
+    std::uint64_t sysex = 0;
+};
+
+struct MidiSpineNode {
+    std::shared_ptr<const MidiSpineLeaf> leaf;
+    // What the leaves before this one hold: an index maps to its chunk by
+    // two binary searches.
+    std::uint64_t notes = 0;
+    std::uint64_t events = 0;
+    std::uint64_t sysex = 0;
+};
+
+// What one region plays, in data ticks (ADR-0015 §1): a spine of canonical
+// chunks. Immutable once a region holds it, and shared: by the regions a
+// split, duplicate or paste makes, and by every snapshot that did not edit
+// it. An edit shares every chunk and leaf it did not touch.
+//
+// The chunking is a function of the contents alone, never of the edits that
+// led there, so the engine's apply and a replica's build the same chunks,
+// and equal sequences have equal spines.
+class MidiSequence {
+public:
+    // The notes, events or SysEx messages in order, read through the spine.
+    // Random access is two binary searches; iteration walks the chunks.
+    template <typename T>
+    class List;
+
+    MidiSequence() = default;
+    // Each list in MidiLists' order; sequence_problem() of the lists says
+    // whether they are. Elements are placed by the chunk of their tick,
+    // keeping their order within a chunk.
+    explicit MidiSequence(MidiLists lists);
+    // From leaves that are canonical: by index, each leaf's chunks by index,
+    // inside the leaf's span and none empty. False, with `why`, otherwise.
+    static bool from_leaves(std::vector<std::shared_ptr<const MidiSpineLeaf>> leaves,
+                            MidiSequence& out, std::string& why);
+    // A leaf of `chunks`, which must be by index, in one leaf's span and none
+    // empty. False, with `why`, otherwise.
+    static bool make_leaf(std::vector<std::shared_ptr<const MidiChunk>> chunks,
+                          std::shared_ptr<const MidiSpineLeaf>& out, std::string& why);
+    // `base` with the chunks at the indices in `replace` (by index, no index
+    // twice) replaced by those: an empty one removes the chunk there. Every
+    // other chunk, and every leaf none of them falls in, is shared.
+    static MidiSequence replaced(const MidiSequence& base,
+                                 const std::vector<std::shared_ptr<const MidiChunk>>& replace);
+
+    std::size_t note_count() const { return static_cast<std::size_t>(notes_); }
+    std::size_t event_count() const { return static_cast<std::size_t>(events_); }
+    std::size_t sysex_count() const { return static_cast<std::size_t>(sysex_); }
+    // Notes, events and SysEx messages: what ADR-0015 §5's budget counts.
+    std::uint64_t entries() const { return notes_ + events_ + sysex_; }
+    bool empty() const { return entries() == 0; }
+
+    List<midi::Note> notes() const;
+    List<MidiEvent> events() const;
+    List<MidiSysEx> sysex() const;
+    // A flat copy.
+    MidiLists lists() const;
+
+    const std::vector<MidiSpineNode>& spine() const { return spine_; }
+    // The chunk at `index`, or null.
+    const MidiChunk* chunk_at(std::int64_t index) const;
+
+    // Set when the file this sequence was saved in was missing or damaged at
+    // open (ADR-0015 owner decision O2): the sequence is empty, its regions
+    // are silent and not editable but keep their windows, and a save writes
+    // this reference back unchanged so the file can still be restored
+    // beside it.
+    std::optional<SequenceFileRef> missing;
+
+    bool operator==(const MidiSequence& o) const;
+
+private:
+    void count();
+
+    std::vector<MidiSpineNode> spine_;
+    std::uint64_t notes_ = 0;
+    std::uint64_t events_ = 0;
+    std::uint64_t sysex_ = 0;
+};
+
+namespace detail {
+
+template <typename T>
+struct ChunkList;
+template <>
+struct ChunkList<midi::Note> {
+    static const std::vector<midi::Note>& of(const MidiChunk& c) { return c.data.notes; }
+    template <typename N>
+    static std::uint64_t before(const N& n) { return n.notes; }
+};
+template <>
+struct ChunkList<MidiEvent> {
+    static const std::vector<MidiEvent>& of(const MidiChunk& c) { return c.data.events; }
+    template <typename N>
+    static std::uint64_t before(const N& n) { return n.events; }
+};
+template <>
+struct ChunkList<MidiSysEx> {
+    static const std::vector<MidiSysEx>& of(const MidiChunk& c) { return c.data.sysex; }
+    template <typename N>
+    static std::uint64_t before(const N& n) { return n.sysex; }
+};
+
+}  // namespace detail
+
+template <typename T>
+class MidiSequence::List {
+    using Of = detail::ChunkList<T>;
+
+public:
+    class iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = T;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const T*;
+        using reference = const T&;
+
+        iterator() = default;
+        const T& operator*() const { return Of::of(*chunk())[e_]; }
+        const T* operator->() const { return &**this; }
+        iterator& operator++() {
+            ++e_;
+            settle();
+            return *this;
+        }
+        iterator operator++(int) {
+            iterator before = *this;
+            ++*this;
+            return before;
+        }
+        bool operator==(const iterator& o) const {
+            return leaf_ == o.leaf_ && entry_ == o.entry_ && e_ == o.e_;
+        }
+        bool operator!=(const iterator& o) const { return !(*this == o); }
+
+    private:
+        friend class List;
+        iterator(const std::vector<MidiSpineNode>* spine, std::size_t leaf)
+            : spine_(spine), leaf_(leaf) {
+            settle();
+        }
+        const MidiChunk* chunk() const {
+            return (*spine_)[leaf_].leaf->chunks[entry_].chunk.get();
+        }
+        // Past the chunks that hold none of T, onto the next element or the end.
+        void settle() {
+            while (leaf_ < spine_->size()) {
+                const MidiSpineLeaf& l = *(*spine_)[leaf_].leaf;
+                if (entry_ < l.chunks.size()) {
+                    if (e_ < Of::of(*l.chunks[entry_].chunk).size()) return;
+                    ++entry_;
+                    e_ = 0;
+                    continue;
+                }
+                ++leaf_;
+                entry_ = 0;
+                e_ = 0;
+            }
+        }
+
+        const std::vector<MidiSpineNode>* spine_ = nullptr;
+        std::size_t leaf_ = 0;
+        std::size_t entry_ = 0;
+        std::size_t e_ = 0;
+    };
+
+    std::size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+    iterator begin() const { return iterator(spine_, 0); }
+    iterator end() const { return iterator(spine_, spine_->size()); }
+    const T& front() const { return (*this)[0]; }
+    const T& back() const { return (*this)[size_ - 1]; }
+
+    // `i` below size().
+    const T& operator[](std::size_t i) const {
+        const std::uint64_t at = i;
+        // The first leaf, then chunk, whose elements reach past `at`.
+        std::size_t lo = 0, hi = spine_->size();
+        while (lo < hi) {
+            const std::size_t mid = (lo + hi) / 2;
+            const MidiSpineNode& n = (*spine_)[mid];
+            if (Of::before(n) + Of::before(*n.leaf) > at) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        const MidiSpineNode& node = (*spine_)[lo];
+        const std::uint64_t in_leaf = at - Of::before(node);
+        const std::vector<MidiSpineEntry>& cs = node.leaf->chunks;
+        std::size_t a = 0, b = cs.size();
+        while (a < b) {
+            const std::size_t mid = (a + b) / 2;
+            if (Of::before(cs[mid]) + Of::of(*cs[mid].chunk).size() > in_leaf) {
+                b = mid;
+            } else {
+                a = mid + 1;
+            }
+        }
+        return Of::of(*cs[a].chunk)[static_cast<std::size_t>(in_leaf - Of::before(cs[a]))];
+    }
+
+    std::vector<T> to_vector() const { return std::vector<T>(begin(), end()); }
+    bool operator==(const std::vector<T>& v) const {
+        return v.size() == size_ && std::equal(v.begin(), v.end(), begin());
+    }
+    bool operator!=(const std::vector<T>& v) const { return !(*this == v); }
+
+private:
+    friend class MidiSequence;
+    List(const std::vector<MidiSpineNode>* spine, std::size_t size)
+        : spine_(spine), size_(size) {}
+
+    const std::vector<MidiSpineNode>* spine_;
+    std::size_t size_;
+};
+
+inline MidiSequence::List<midi::Note> MidiSequence::notes() const {
+    return List<midi::Note>(&spine_, note_count());
 }
+inline MidiSequence::List<MidiEvent> MidiSequence::events() const {
+    return List<MidiEvent>(&spine_, event_count());
+}
+inline MidiSequence::List<MidiSysEx> MidiSequence::sysex() const {
+    return List<MidiSysEx>(&spine_, sysex_count());
+}
+
+inline std::uint64_t midi_entries(const MidiSequence& s) { return s.entries(); }
 
 // A window onto a sequence, as an audio region is onto its source. A note
 // is heard if its start is in [offset, offset + length); notes outside stay

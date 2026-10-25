@@ -187,6 +187,12 @@ void ControlSocketServer::open(std::unique_ptr<platform::ControlChannel> channel
                              static_cast<unsigned long long>(conn->id), why.c_str());
                 conn->close();
             }
+        },
+        [weak]() -> std::size_t {
+            auto conn = weak.lock();
+            if (!conn) return 0;
+            std::lock_guard<std::mutex> lock(conn->mutex);
+            return conn->queued;
         });
     accepted_.fetch_add(1, std::memory_order_acq_rel);
     c->writer = std::thread([c]() { c->write_loop(); });

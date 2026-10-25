@@ -84,7 +84,7 @@ public:
 
     std::size_t charged_bytes() const { return charged_; }
     std::size_t budget() const { return budget_; }
-    // Entries counted, as ADR-0015 §5 counts them: the floor's sequences and
+    // Entries counted, as ADR-0015 §5 counts them: the floor's chunks and
     // each later step's own. Counted in entries, never allocator bytes, so
     // every machine and compiler evicts at the same step.
     std::uint64_t midi_entries() const { return entries_; }
@@ -117,12 +117,23 @@ private:
         std::size_t charge = 0;   // bytes this step alone allocated
         // Display only. Empty for the state at open.
         std::string label;
-        // MIDI entries in the sequences this step holds and the one before
-        // it does not; the floor's, every entry it holds.
+        // MIDI entries in the chunks this step holds and the one before it
+        // does not; the floor's, every entry it holds.
         std::uint64_t entries = 0;
+        // Every entry in the chunks this step holds: what an edit is refused
+        // over, kept so it is never counted from scratch.
+        std::uint64_t total = 0;
     };
+    struct Cost {
+        std::size_t charge = 0;
+        std::uint64_t entries = 0;
+        std::uint64_t total = 0;
+    };
+    // `next`'s charge, own entries and total, against the step before it.
+    static Cost cost(const EditState& next, const Step& previous);
 
-    void push(std::shared_ptr<const EditState> edit, std::uint64_t revision, std::string label);
+    void push(std::shared_ptr<const EditState> edit, std::uint64_t revision, std::string label,
+              const Cost& c);
     void pop_front();
     // An insert's values (MixState::inserts) are kept while a step in the
     // window holds the insert, so undo and redo bring it back as it was.
@@ -146,8 +157,9 @@ private:
 // own node. What a step is charged.
 std::size_t exclusive_bytes(const EditState& state, const EditState& previous);
 
-// MIDI entries (midi_entries()) in the distinct sequences `state` holds,
-// and in those it holds that `previous` does not.
+// MIDI entries in the distinct chunks `state` holds, and in those it holds
+// that `previous` does not (ADR-0015 §5: counted per chunk, so a chunk two
+// sequences or two steps share is counted once).
 std::uint64_t state_midi_entries(const EditState& state);
 std::uint64_t exclusive_midi_entries(const EditState& state, const EditState& previous);
 

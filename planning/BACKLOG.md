@@ -223,15 +223,21 @@ playback can follow edits; it is in flight.
              setting, 2^24): undo evicted first, edits over it refused,
              sessions over it refused at open, a Notice from 90 %.
              Measured: ADR-0015 Unverified 2 and 6 (`midi.md` §4.6).
-       - [ ] M-1c PR 2, chunks and protocol: `MidiSequence` as a spine of
+       - [x] M-1c PR 2, chunks and protocol: `MidiSequence` as a spine of
              canonical 4-quarter chunks with cumulative counts, shared by
              undo steps (§1, §2); the window's chunk table and a Snapshot
              in parts of at most 16 MiB, encoded off the document thread
              (§4); the budget counted per chunk; ADR-0015 Unverified 1, 3
              and 7 (rt-engineer, ui-engineer).
-       - [ ] M-1c PR 2 also carries Load in parts (client to engine), so
+       - [x] M-1c PR 2 also carries Load in parts (client to engine), so
              File > Open reaches the 2^24 budget; until then a bundle over
              64 MiB is refused by name (ADR-0015 update of 2026-10-20).
+       - [ ] M-1c PR 2 follow-ups: at the 2^24 target the replica's window
+             decode spends about 1 s in `History::restore` recounting each
+             step's charge, on the UI thread (decode on a worker, or carry
+             the charges); ADR-0015 Unverified 3's attach time over the M7
+             socket is unmeasured; a single chunk, or a single sequence
+             file in a Load, over 16 MiB is refused by name, not split.
        - [ ] Sequence-file fsyncs run on the UI thread until the saver thread exists: announce a slow save ("Saving: writing N MIDI sequence files") before a batch over a few MiB (ui-engineer, #109).
        - [ ] A MIDI region whose sequence file is missing is not drawn differently: the first MIDI region drawing marks it ("MIDI missing") and refuses edits on it by name (ui-engineer, #109).
        - [ ] M-1c PR 3 **merges before the first M-4 PR that records

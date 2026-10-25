@@ -187,12 +187,15 @@ enum class TrackKind : std::uint8_t { Audio, Midi, Instrument };
 enum class Timebase : std::uint8_t { Frames, Ticks };   // a playlist's, checked by apply
 
 // Notes and other events of one region, in data ticks. Immutable, shared
-// between regions (split, duplicate, paste) and between snapshots.
-struct MidiSequence {
+// between regions (split, duplicate, paste) and between snapshots. Since
+// M-1c PR 2 a spine of canonical chunks (ADR-0015 §1; §4.4.2 below), read
+// through notes(), events(), sysex(), which index and iterate in order.
+struct MidiLists {                          // what a sequence is built from
     std::vector<midi::Note> notes;          // sort_notes() order
     std::vector<MidiEvent> events;          // channel messages other than notes, by tick, stable
     std::vector<MidiSysEx> sysex;           // by tick, stable
 };
+class MidiSequence;                         // model.h
 
 struct MidiRegion {
     Id id;
@@ -242,10 +245,9 @@ struct MidiSource {                         // SourcePool, append-only
   that share one `data`. Editing notes through one of them gives that
   region a new `data`; the others keep theirs: independent copies, as Pro
   Tools' clips are. Aliases (Logic) would be an explicit later feature.
-- Undo memory is charged as ADR-0009 §1 says. A note edit copies the whole
-  sequence it touches, so a note dragged in a region with 50,000 controller
-  events copies all of them each time: undo-window bytes are part of
-  ADR-0014 Unverified 6.
+- Undo memory is charged as ADR-0009 §1 says. Since M-1c PR 2 a note edit
+  copies only the chunks it touches and the spine above them (§4.4.2); the
+  rest is shared with the step before.
 
 ### 3.1 Operations
 
@@ -479,6 +481,57 @@ window are not), a copy is placed only by reference (`data_from`), and the
 next save writes the same reference back. The undo window (format 6)
 carries the reference, so a replica holds the same silent regions.
 
+### 4.4.2 Chunks, the spine and the window's chunk table (ADR-0015 §1, §2, §4)
+
+`common/model/model.h`, M-1c PR 2.
+
+- **A chunk** holds the notes, events and SysEx whose data tick (a note's
+  start) is in `[k · S, (k + 1) · S)`, `S = kMidiChunkTicks` = 3,840,000
+  (four quarters), in §4.4's orders. Empty chunks are absent. The chunking
+  is a function of the contents alone: `MidiSequence(MidiLists)` and any
+  chain of `EditMidi` reaching the same lists build equal spines.
+- **The spine has two levels.** A leaf holds the chunks whose index is in
+  `[g · 64, (g + 1) · 64)` (`kMidiLeafChunks`), with each chunk's note,
+  event and SysEx counts before it in the leaf; the top holds the leaves
+  with the counts before each. An index maps to its element by two binary
+  searches. One level would copy 40 bytes a chunk on every drag: 72 KiB
+  for a 60-minute region, past ADR-0015 Unverified 1's 64 KiB.
+- **An `EditMidi`** keeps its global indices. It rebuilds the chunks its
+  removals and additions fall in, the leaves those are in and the top;
+  every other chunk and leaf is shared with the sequence before.
+- **Undo and the budget count per chunk.** A step is charged, from fixed
+  per-entry sizes (note 24 bytes, event 16, SysEx 32 and its bytes, chunk
+  80, spine entry 40, leaf 48, sequence 64, each node 32 more), the chunks,
+  leaves and spine it holds and the step before does not. `midi_max_entries`
+  counts the entries of every distinct chunk the retained steps hold, so a
+  pasted region edited in one chunk costs that chunk, not a second sequence.
+- **Lists from outside** (an operation, a format-5 file, a `.msq`) are
+  checked as lists before they are chunked: chunking places each element
+  by its tick, which would hide an order broken across chunks.
+- **Undo window format 7** carries `"chunks"` (the chunk table's size),
+  `"leaves"` (each a list of chunk-table indices) and `"sequences"` (each a
+  list of leaf indices, and `"missing"` as in format 6). The chunk table
+  itself travels apart, in parts.
+- **A part of the chunk table**: `SWCP`, version 1, then as LEB128 the
+  table index of its first chunk and its chunk count, then per chunk its
+  index, the size of its `.msq` encoding (§4.4.1) and that encoding. Whole
+  chunks only, at most 16 MiB (`kMaxChunkPartBytes`); a chunk too large for
+  a part alone is refused by name. Each part is decoded strictly on
+  arrival: every chunk non-empty and inside its index's span.
+- **Protocol 10** (9 is loop record's): a Snapshot is `SnapshotHeader`
+  (`part_count`, `part_bytes`), the parts as `SnapshotPart`, the window as
+  `Snapshot`; one with no chunk comes alone. The replica refuses a header
+  over its own cap (`--max-snapshot-mib`, default 512), keeps its state
+  until the window decodes, and abandons the attach at a bad part, asking
+  for one Resync. A Load is `LoadPart` requests (whole `.msq` files, at
+  most 16 MiB each, `SNRLPRT` v1) ahead of a `Load` carrying the bare
+  session file; the engine decodes each part as it arrives, bounded by
+  `midi_max_entries`, and a refused part refuses the Load with its reason.
+- **On the engine** the window is encoded on a worker from a copy of the
+  history taken on the document thread; what else that client is sent
+  waits behind the Snapshot, and parts go out as its socket drains, two
+  parts ahead at most.
+
 ### 4.5 Migration v3 → v4
 
 Every track gains `"kind": "audio"`; the top level gains
@@ -542,6 +595,19 @@ memory 657 MiB with the saved document and the opened one both held.
 `sha256_hex` alone: 292 MiB/s on 100 MiB. The undo window is unchanged by
 format 6 (132 MiB for the 200 drags): the chunks of ADR-0015 §1, in M-1c
 PR 2, change it.
+
+**Measured in M-1c PR 2** (the same tool, Release, the build container on
+the owner's laptop, i7-11800H, 2026-10-25; §4.4.2's chunks):
+
+| ADR-0015 | Case | Result |
+|---|---|---|
+| Unverified 1 | 200 drags, region of 50,101 controller events | 9.0 KiB a drag (was about 800 KiB); 2.6 MiB of the 64 MiB budget, all 203 steps kept; window 0.2 MiB and a chunk table of 0.6 MiB; slowest drag 0.05 ms (was 1.5 ms) |
+| Unverified 1 | one drag in a 60-minute region | 1,800 chunks in 29 leaves; 10.0 KiB (one level: a 70.3 KiB spine alone) |
+| Unverified 7 | 2^24 entries (64 tracks) and 200 retained drags, 329 steps | document thread held 0.002 ms to copy the history; `encode_window` 206 ms on the worker; chunk table 102.3 MiB in 7 parts, window 0.92 MiB |
+| Unverified 3, engine | the same, one encoded window held | peak RSS 420 MiB (the document alone 288 MiB) |
+| Unverified 3, replica | the 7 parts read and decoded one at a time, then the window, in a process of its own | 1,957 ms (slowest part 176 ms; the rest the window, where `History::restore` recounts each step's charge); peak RSS 303 MiB |
+
+Not measured here: the attach over the M7 socket (Unverified 3's time).
 
 ## 5. The real-time path
 

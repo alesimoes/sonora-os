@@ -221,14 +221,14 @@ int test_fixture_is_canonical() {
     const MidiRegion& b1 = bp.regions[0];
     CHECK(b1.id == 47 && b1.position == 15360000 && b1.length == 30720000 && b1.offset == 0);
     CHECK(b1.source == 44 && !b1.mute);
-    CHECK(b1.data->notes.size() == 3);
-    CHECK(b1.data->notes[1].start == 960000 && b1.data->notes[1].pitch == 43);
-    CHECK(b1.data->notes[2].channel == 1 && b1.data->notes[2].release_velocity == 0);
-    CHECK(b1.data->events.size() == 4);
+    CHECK(b1.data->notes().size() == 3);
+    CHECK(b1.data->notes()[1].start == 960000 && b1.data->notes()[1].pitch == 43);
+    CHECK(b1.data->notes()[2].channel == 1 && b1.data->notes()[2].release_velocity == 0);
+    CHECK(b1.data->events().size() == 4);
     // At one tick, in stored order: the bank select before the program change.
-    CHECK(b1.data->events[0].status == 0xB0 && b1.data->events[1].status == 0xC0);
-    CHECK(b1.data->events[2].status == 0xE0 && b1.data->events[2].data2 == 72);
-    CHECK(bp.regions[1].source == 0 && bp.regions[1].mute && bp.regions[1].data->notes.empty());
+    CHECK(b1.data->events()[0].status == 0xB0 && b1.data->events()[1].status == 0xC0);
+    CHECK(b1.data->events()[2].status == 0xE0 && b1.data->events()[2].data2 == 72);
+    CHECK(bp.regions[1].source == 0 && bp.regions[1].mute && bp.regions[1].data->notes().empty());
     const TrackMix* bm = s.mix.find(45);
     CHECK(bm != nullptr && bm->input.empty() && bm->gain_db == 0.0f);
     CHECK(bm->midi.in_port == "all" && bm->midi.in_channel == 0);
@@ -238,8 +238,8 @@ int test_fixture_is_canonical() {
     CHECK(piano.kind == TrackKind::Instrument && piano.channels == 2);
     CHECK(piano.midi_playlists.size() == 2 && piano.midi_playlists[1]->regions.empty());
     const MidiRegion& pr = piano.midi_playlists[0]->regions[0];
-    CHECK(pr.offset == 480000 && pr.data->sysex.size() == 1);
-    CHECK(pr.data->sysex[0].bytes ==
+    CHECK(pr.offset == 480000 && pr.data->sysex().size() == 1);
+    CHECK(pr.data->sysex()[0].bytes ==
           (std::vector<std::uint8_t>{0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7}));
     const TrackMix* pm = s.mix.find(49);
     CHECK(pm != nullptr && pm->gain_db == -6.0f && pm->pan == 0.25f && !pm->solo_safe);
@@ -419,7 +419,7 @@ int test_missing_sequence_opens() {
         CHECK(m.sources == std::vector<Id>{44});
         const MidiRegion& r = l.snapshot.edit->tracks[2]->midi_playlists[0]->regions[0];
         CHECK(r.data->missing && r.data->missing->file == kBassFile);
-        CHECK(r.data->notes.empty() && r.data->events.empty());
+        CHECK(r.data->notes().empty() && r.data->events().empty());
         CHECK(r.position == 15360000 && r.length == 30720000);
         CHECK(invariants_hold(l.snapshot));
         std::string out;
