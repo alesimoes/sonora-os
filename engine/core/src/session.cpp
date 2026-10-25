@@ -991,12 +991,18 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         }
     }
     // Post-roll (set_roll_end()): decided before the mix, so this block
-    // renders as the roll it loaded, cut at the end.
+    // renders as the roll it loaded, cut at the end. Under a playback loop
+    // it applies only while the end comes no later than the wrap point: a
+    // loop set further on must not stop a roll from ever ending, and an end
+    // past B is never reached once the roll wraps (ADR-0016).
     play_until_ = nframes;
-    if (word.state == TransportState::Rolling && loop_to_ == 0) {
+    bool roll_stops = false;
+    if (word.state == TransportState::Rolling) {
         uint64_t end = roll_end_.load(std::memory_order_acquire);
-        if (end != kNoRollEnd && end <= playhead + nframes && transport_->stop_roll()) {
+        if (end != kNoRollEnd && end <= playhead + nframes && (loop_to_ == 0 || end <= loop_to_) &&
+            transport_->stop_roll()) {
             play_until_ = end > playhead ? static_cast<uint32_t>(end - playhead) : 0;
+            roll_stops = true;
             roll_end_.compare_exchange_strong(end, kNoRollEnd, std::memory_order_acq_rel);
         }
     }
@@ -1048,8 +1054,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 
     params_count_ = 0;
 
-    const uint64_t next = rolling ? loop_frame(playhead, play_until_) : playhead;
-    if (rolling && loop_to_ != 0) {
+    // A roll that stops on B stays on B rather than wrapping to A.
+    const uint64_t next =
+        roll_stops ? playhead + play_until_ : rolling ? loop_frame(playhead, play_until_) : playhead;
+    if (rolling && loop_to_ != 0 && !roll_stops) {
         transport_->set_playhead(next);
     } else if (rolling) {
         transport_->advance(play_until_);

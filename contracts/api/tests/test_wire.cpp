@@ -44,6 +44,7 @@ void round_trips() {
         h.track_count = 2;
         h.track_names = {"Kick", "Snare \xC3\xA9"};
         h.implemented_commands = {"transport.record", "track.toggle_arm"};
+        h.capabilities = {kCapabilityPlayRange};
         wire::encode(h, bytes);
         Hello back;
         CHECK(wire::decode(bytes, back, error));
@@ -52,6 +53,7 @@ void round_trips() {
         CHECK(back.sample_rate == 96000 && back.buffer_frames == 64 && back.track_count == 2);
         CHECK(back.track_names == h.track_names);
         CHECK(back.implemented_commands == h.implemented_commands);
+        CHECK(back.capabilities == h.capabilities);
         uint32_t p = 0, l = 0;
         CHECK(wire::decode_hello_versions(bytes, p, l, error));
         CHECK(p == kProtocolVersion && l == kStateLayoutVersion);
@@ -265,25 +267,25 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // Save (ADR-0015 M-1c PR 3) is version 11; a Snapshot and a Load in
-    // parts are 10, loop record 9. An older interface cannot ask the engine
-    // to save, so it reads this engine's Hello and refuses it at connect,
-    // naming both numbers. Its check is this function with its own
-    // constants, passed here.
-    CHECK(kProtocolVersion == 11);
+    // Hello's capabilities are version 12, Save (ADR-0015 M-1c PR 3) 11; a
+    // Snapshot and a Load in parts are 10, loop record 9. An older interface
+    // cannot decode this Hello, so it reads only its versions and refuses it
+    // at connect, naming both numbers. Its check is this function with its
+    // own constants, passed here.
+    CHECK(kProtocolVersion == 12);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
-    CHECK(mentions(v8, "the engine speaks control protocol version 11 and this interface "
+    CHECK(mentions(v8, "the engine speaks control protocol version 12 and this interface "
                        "speaks version 8"));
     CHECK(mentions(v8, "same build"));
     // And this interface refuses a version-8 engine the same way.
     CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
                    "the engine speaks control protocol version 8 and this interface "
-                   "speaks version 11"));
+                   "speaks version 12"));
 }
 
 void domains() {

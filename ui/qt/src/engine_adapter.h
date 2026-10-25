@@ -62,6 +62,9 @@ struct EngineInfo {
     // sized from the format and track count (engineFormatChanged); MixModel
     // asks for the track count when it uses it.
     std::vector<std::string> implemented_commands;
+    // api::Hello::capabilities: what the engine does beyond the command ids,
+    // read again with the rest.
+    std::vector<std::string> capabilities;
 };
 
 // The engine's TransportState, spelled again because ui/ may not include

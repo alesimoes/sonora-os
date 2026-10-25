@@ -97,9 +97,10 @@ playback can follow edits; it is in flight.
          (`t1-preroll`, timeline-model.md "Pre-roll and post-roll"): a
          punch started stopped locates to A − pre-roll; `transport.play` and
          `transport.toggle_play` take an optional `A-B` range; the audio
-         thread stops the roll at B + post-roll, at the sample. Remains:
-         the Qt UI sending its selection as that argument (ui-engineer),
-         and pre-roll for a plain take;
+         thread stops the roll at B + post-roll, at the sample, unless a
+         playback loop wraps first (`t1-postroll-loop`); the Qt UI sends its
+         selection as that argument to an engine announcing
+         `transport.play.range` in Hello. Remains: pre-roll for a plain take;
        - the click and count-off from the tempo map (`engine.core.click`),
          and a state-block flag saying the click is on.
 5. [x] M4: control API, wire codec, state block and `StateView` per

@@ -186,6 +186,7 @@ void encode(const Hello& m, std::string& out) {
     w.u32(m.track_count);
     w.list(m.track_names);
     w.list(m.implemented_commands);
+    w.list(m.capabilities);
 }
 
 void encode(const CommandRequest& m, std::string& out) {
@@ -323,7 +324,7 @@ bool decode(std::string_view bytes, Hello& out, std::string& error) {
     if (!r.type(Type::Hello) || !r.u32(m.protocol_version) ||
         !r.u32(m.state_layout_version) || !r.u32(m.sample_rate) ||
         !r.u32(m.buffer_frames) || !r.u32(m.track_count) || !r.list(m.track_names) ||
-        !r.list(m.implemented_commands) || !r.done()) {
+        !r.list(m.implemented_commands) || !r.list(m.capabilities) || !r.done()) {
         return false;
     }
     if (m.track_names.size() != m.track_count) {

@@ -31,6 +31,9 @@ public:
         peaks.assign(tracks, 0.0f);
     }
 
+    // As a new Hello would change them.
+    void set_capabilities(std::vector<std::string> caps) { info_.capabilities = std::move(caps); }
+
     bool connect(std::string&) override { return true; }
     const EngineInfo& info() const override { return info_; }
     uint64_t send(const std::string& command, const CommandContext& ctx) override {
