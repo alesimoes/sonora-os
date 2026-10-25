@@ -77,15 +77,18 @@ public:
     // A take file the session does not name, as a crash leaves one:
     // `name` in the session's "Audio Files/", mono, `frames` long, with
     // the header the engine writes for take `take` on the track whose id is
-    // `track_id`, of a session called `session`, at TimeReference
+    // `track_id`, of a session called `session` whose id is `session_id`
+    // (empty: a take from before session ids), at TimeReference
     // `position`. The engine finds it at the next session open. False if
     // this rig cannot do it.
     virtual bool leave_orphan_take(EngineControl& engine, const std::string& name,
-                                   const std::string& session, int take, uint64_t track_id,
-                                   uint64_t position, uint64_t frames) {
+                                   const std::string& session, const std::string& session_id,
+                                   int take, uint64_t track_id, uint64_t position,
+                                   uint64_t frames) {
         (void)engine;
         (void)name;
         (void)session;
+        (void)session_id;
         (void)take;
         (void)track_id;
         (void)position;

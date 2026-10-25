@@ -1528,8 +1528,15 @@ int test_files() {
     slow.set_saver(engine_saver());
     SessionModel slow_session(slow, peaks, true);
     slow_session.setSessionsDir(dir.path());
+    OK(slow.snapshot().settings.session_id.empty());
     OK(slow_session.saveSession(why));  // no name: "Untitled"
     OK(slow.snapshot().settings.name == "Untitled");
+    // A session with no id, as one saved before format 7 opens, is given
+    // one by its first save, and the next save keeps it.
+    const std::string slow_id = slow.snapshot().settings.session_id;
+    OK(slow_id.size() == 36 && valid_session_id(slow_id));
+    OK(slow_session.saveSession(why));
+    OK(slow.snapshot().settings.session_id == slow_id);
     OK(slow_session.sessionName() == QStringLiteral("Untitled"));  // no regions: nothing synthetic
     const QString untitled = dir.filePath(QStringLiteral("Untitled/Untitled.sonora"));
     OK(!opener.openSessionFile(untitled, true, why) && contains(why, "44100"));
@@ -1592,6 +1599,8 @@ int test_files() {
         Loaded saved;
         OK(read_session_file(f.fileName(), bytes, saved, why) && saved.repairs.empty());
         OK(saved.file_version == kFormatVersion);
+        OK(!saved.snapshot.settings.session_id.empty() &&
+           saved.snapshot.settings.session_id == other.snapshot().settings.session_id);
         // Saving does not dismiss it; the operator does.
         OK(opener.repairs().size() == 1 && held == 0);
         opener.dismissRepair(5);

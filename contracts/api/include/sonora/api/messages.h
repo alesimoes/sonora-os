@@ -251,8 +251,10 @@ enum class EventKind : uint32_t {
     // "Crash recovery"). `text` says where each would go, one line per
     // take; `frame` is how many there are. The interface offers them, and
     // nothing is placed until it sends session.place_recovered (or
-    // session.leave_recovered leaves them in Audio Files, to be offered
-    // again at the next open). One offer stands at a time, replaced at
+    // session.leave_recovered leaves them in Audio Files and records them
+    // in the document's settings.left_takes, so they are not offered
+    // again). Only takes of the open session are offered: by the session
+    // id in their Description. One offer stands at a time, replaced at
     // every session open; empty text withdraws it. A client that attaches
     // later is sent the one that stands. Protocol 12.
     RecoveryOffer = 5,

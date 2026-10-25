@@ -42,12 +42,24 @@ struct OrphanOffer {
 };
 
 // Every take in `session_dir`'s "Audio Files/" that `document` has no
-// source for, recorded by this engine for a session of the document's name
-// at its rate. The name is the filter because one engine folder holds the
-// takes of every session opened on it: another session's take is not this
-// one's orphan. A file with no audio, one another program wrote, or one
-// that does not read is not offered.
+// source for and has not left (settings.left_takes), recorded by this
+// engine for this session at its rate. One engine folder holds the takes
+// of every session opened on it, and another session's take is not this
+// one's orphan: a take is this session's when its Description carries the
+// document's session id. One written before session ids carries none, and
+// is this session's when it names the document's name, unless that name
+// is "Untitled", which every new session has. A file with no audio, one
+// another program wrote, or one that does not read is not offered.
 OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string& session_dir);
+
+// Whether a take described as `said` is of the session `settings` holds,
+// by the rule above.
+bool take_is_of_session(const TakeDescription& said, const model::SessionSettings& settings);
+
+// Adds every take `offer` holds to `settings.left_takes`, sorted, with no
+// file twice: "Leave in Audio Files", remembered with the session. False
+// when the list already held them all.
+bool leave_orphan_takes(model::SessionSettings& settings, const OrphanOffer& offer);
 
 // What place_orphan_takes() did.
 struct OrphansPlaced {

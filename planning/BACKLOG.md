@@ -113,7 +113,11 @@ playback can follow edits; it is in flight.
        and a take that survives `kill -9`, repaired at the next startup
        (`feature/take-safety`). Still open: offering recovered and orphan
        takes for placement at session open (`engine.record.orphan_offer`);
-       the `fdatasync` cost on a stick (ADR-0009 Unverified 8, OS 1).
+       the `fdatasync` cost on a stick (ADR-0009 Unverified 8, OS 1);
+       measure `find_orphan_takes()`, which opens every `.wav` in the shared
+       engine folder on the control thread at start and at each Load, on a
+       large folder, and move it off that thread if it delays heartbeats
+       (PR #132 review, non-blocking 4).
 7. [x] M7 process split: socket and memfd behind `common/platform`,
        headless `sonora-engine`, `SocketEngine`, `sonora-tui`, `sonora-ctl`,
        the Qt UI on the engine's document (`feature/process-split`; ADR-0007

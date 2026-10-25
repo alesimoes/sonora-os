@@ -175,15 +175,20 @@ public:
     // A take file in the session's Audio Files that no source names, as
     // its header describes it (session-format.md, "Crash recovery"). The
     // fake has no disk: it offers what is scripted, at connect and at each
-    // Load of a session of `session`'s name with no source at `path`, as a
-    // RecoveryOffer, one line per take; session.place_recovered puts each
-    // on the track `track_id` names at `position`, `frames` long, as the
-    // engine places a whole take, one undo step per take (a punch or loop
-    // take's placement is the engine's, held to its own tests), or into the
-    // pool when that track is gone; session.leave_recovered withdraws it.
+    // Load of the session it is of (by `session_id`, or with none by
+    // `session`'s name, never "Untitled", as the engine's
+    // take_is_of_session()) with no source at `path` and not in the
+    // document's left_takes, as a RecoveryOffer, one line per take;
+    // session.place_recovered puts each on the track `track_id` names at
+    // `position`, `frames` long, as the engine places a whole take, one
+    // undo step per take (a punch or loop take's placement is the
+    // engine's, held to its own tests), or into the pool when that track
+    // is gone; session.leave_recovered withdraws it and adds its paths to
+    // the document's left_takes.
     struct RecoveredTake {
         std::string path;   // "Audio Files/<name>"
         std::string session = "Untitled";
+        std::string session_id;
         int32_t take = 1;
         uint64_t track_id = 0;
         uint64_t position = 0;

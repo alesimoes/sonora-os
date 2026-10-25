@@ -44,6 +44,13 @@ fields that v0 leaves zeroed, so writing zeroes there is valid.
 - What we write: Originator, TimeReference (the session playhead at record
   start, so session-relative rather than "since midnight"), Version 0, and
   OriginationDate/OriginationTime as below.
+- A take's `Description` is ours to define: `sonora take=<n> track=<id>
+  punch=<A>-<B> id=<session_id> session=<name>`, with the session's name
+  last as the rest of the field and the whole at most 255 bytes, so the
+  field keeps its null. The session id (36 bytes as written) says which
+  session a take is of, which the name cannot: two unsaved sessions are
+  both "Untitled". The mapping and its rules are in
+  [session-format.md](session-format.md), "BWF metadata, both ways".
 - `OriginationDate` and `OriginationTime` are filled when the file is opened,
   from the **local** wall clock. Tech 3285 names no time zone; the fields
   describe when the recording was made where it was made, which is local

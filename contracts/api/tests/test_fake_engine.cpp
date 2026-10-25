@@ -72,11 +72,12 @@ public:
         return true;
     }
     bool leave_orphan_take(EngineControl& e, const std::string& name, const std::string& session,
-                           int take, uint64_t track_id, uint64_t position,
-                           uint64_t frames) override {
+                           const std::string& session_id, int take, uint64_t track_id,
+                           uint64_t position, uint64_t frames) override {
         FakeEngine::RecoveredTake r;
         r.path = "Audio Files/" + name;
         r.session = session;
+        r.session_id = session_id;
         r.take = take;
         r.track_id = track_id;
         r.position = position;

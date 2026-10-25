@@ -1665,10 +1665,13 @@ int check_alive(Rig& rig) {
 
 // A take on disk the open session does not name is offered at the open,
 // never placed silently (session-format.md, "Crash recovery"): one
-// RecoveryOffer standing, naming the file; another session's take is not
-// in it. Left, the offer is withdrawn and nothing changes; it comes back
-// at the next open, since the file is never deleted. Placed, the take is on
-// the track its header names, at its TimeReference, as one undo step.
+// RecoveryOffer standing, naming the file; another session's take, even
+// one of the same name, is not in it, since its session id differs. Left,
+// the offer is withdrawn and the document remembers the take as left, so
+// an open of the session as it now is offers nothing; the file is never
+// deleted, and an open of the session from before still offers it. Placed,
+// the take is on the track its header names, at its TimeReference, as one
+// undo step.
 int check_recovery_offer(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -1711,11 +1714,19 @@ int check_recovery_offer(Rig& rig) {
             const model::Snapshot doc = s.replica.current();
             const model::Id track = doc.edit->tracks.at(0)->id;
             const std::string name = doc.settings.name;
-            if (!rig_.leave_orphan_take(*s.engine, "Audio 1_07.wav", name, 7, track, 48000, 4800)) {
+            const std::string id = doc.settings.session_id;
+            EXPECT(!id.empty(), "the engine's document has no session id");
+            if (!rig_.leave_orphan_take(*s.engine, "Audio 1_07.wav", name, id, 7, track, 48000,
+                                        4800)) {
                 return skip("this rig cannot leave a take on disk");
             }
-            EXPECT(rig_.leave_orphan_take(*s.engine, "Audio 2_08.wav", name + " Other", 8, track,
-                                          0, 4800),
+            // Another session of the same name: two unsaved ones are both
+            // "Untitled".
+            const std::string other = id == "00000000-0000-4000-8000-000000000001"
+                                          ? "00000000-0000-4000-8000-000000000002"
+                                          : "00000000-0000-4000-8000-000000000001";
+            EXPECT(rig_.leave_orphan_take(*s.engine, "Audio 2_08.wav", name, other, 8, track, 0,
+                                          4800),
                    "the rig left one take and not the other");
             EXPECT(offer(s.inbox).empty(), "an offer stands before the session was opened again");
 
@@ -1731,22 +1742,38 @@ int check_recovery_offer(Rig& rig) {
             EXPECT(take_region(s.replica.current(), track) == nullptr,
                    "the take was placed before the operator said so");
 
-            // Left: withdrawn, and nothing placed.
-            const std::size_t updates = s.inbox.model.size();
+            // Left: withdrawn, nothing placed, and remembered.
             EXPECT(s.await(rig_, s.command("session.leave_recovered"), r) &&
                        r.result == DispatchResult::Ok,
                    "session.leave_recovered failed: " + r.message);
             EXPECT(s.until(rig_, [&]() { return offer(s.inbox).empty(); }),
                    "the offer still stands after it was left");
-            EXPECT(s.inbox.model.size() == updates, "leaving the takes changed the document");
+            const auto left = [&]() {
+                const auto& l = s.replica.current().settings.left_takes;
+                return l == std::vector<std::string>{"Audio Files/Audio 1_07.wav"};
+            };
+            EXPECT(s.until(rig_, left), "the document does not remember the take as left");
+            EXPECT(take_region(s.replica.current(), track) == nullptr,
+                   "leaving the take placed it");
             EXPECT(s.await(rig_, s.command("session.place_recovered"), r) &&
                        r.result == DispatchResult::Failed,
                    "placing with no offer standing was not refused");
 
-            // Offered again at the next open, then placed.
+            // The session as it now is, opened again: nothing to offer. The
+            // offer would be sent before the open's reply.
+            const model::Snapshot after = s.replica.current();
+            const std::size_t offers_before = s.inbox.events.size();
+            EXPECT(open_again(s, after, r), "the session was refused: " + r.message);
+            for (std::size_t i = offers_before; i < s.inbox.events.size(); ++i) {
+                const EngineEvent& ev = s.inbox.events[i];
+                EXPECT(ev.kind != EventKind::RecoveryOffer || ev.text.empty(),
+                       "a take left at one open is offered again at the next");
+            }
+
+            // The session from before it was left: offered again, then placed.
             EXPECT(open_again(s, doc, r), "the session was refused: " + r.message);
             EXPECT(s.until(rig_, [&]() { return !offer(s.inbox).empty(); }),
-                   "a take left at one open is not offered at the next");
+                   "a session that did not leave the take is not offered it");
             EXPECT(s.await(rig_, s.command("session.place_recovered"), r) &&
                        r.result == DispatchResult::Ok,
                    "session.place_recovered failed: " + r.message);

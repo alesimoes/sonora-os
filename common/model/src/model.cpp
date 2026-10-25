@@ -2,7 +2,9 @@
 #include "sonora/model/model.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <random>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -419,6 +421,33 @@ bool MidiSequence::operator==(const MidiSequence& o) const {
             const MidiChunk& y = *b.chunks[k].chunk;
             if (&x != &y && (x.index != y.index || !(x.data == y.data))) return false;
         }
+    }
+    return true;
+}
+
+std::string new_session_id() {
+    std::random_device rd;
+    std::array<std::uint8_t, 16> b{};
+    for (std::size_t i = 0; i < b.size(); i += 4) {
+        const std::uint32_t r = rd();
+        for (std::size_t k = 0; k < 4; ++k) b[i + k] = static_cast<std::uint8_t>(r >> (8 * k));
+    }
+    b[6] = static_cast<std::uint8_t>((b[6] & 0x0F) | 0x40);
+    b[8] = static_cast<std::uint8_t>((b[8] & 0x3F) | 0x80);
+    static const char kHex[] = "0123456789abcdef";
+    std::string id;
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) id += '-';
+        id += kHex[b[i] >> 4];
+        id += kHex[b[i] & 0x0F];
+    }
+    return id;
+}
+
+bool valid_session_id(const std::string& id) {
+    if (id.size() > 64) return false;
+    for (const char c : id) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == '-')) return false;
     }
     return true;
 }
@@ -1057,6 +1086,25 @@ std::string settings_problem(const SessionSettings& s, std::string& where) {
     if (!in_range(tr.punch_crossfade)) {
         where = "transport.punch_crossfade";
         return "is out of range";
+    }
+    if (!valid_session_id(s.session_id)) {
+        where = "session_id";
+        return "must be empty or up to 64 of 0-9, a-f and \"-\"";
+    }
+    if (s.left_takes.size() > kMaxLeftTakes) {
+        where = "left_takes";
+        return "holds more than " + std::to_string(kMaxLeftTakes) + " files";
+    }
+    for (std::size_t i = 0; i < s.left_takes.size(); ++i) {
+        const std::string why = path_problem(s.left_takes[i]);
+        if (!why.empty()) {
+            where = "left_takes[" + std::to_string(i) + "]";
+            return why;
+        }
+        if (i > 0 && !(s.left_takes[i - 1] < s.left_takes[i])) {
+            where = "left_takes[" + std::to_string(i) + "]";
+            return "must be sorted, with no file twice";
+        }
     }
     where.clear();
     return {};

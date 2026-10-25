@@ -360,7 +360,7 @@ private:
         uint64_t generation = 0;
         uint64_t revision = 0;   // the document's when the bytes were made
         bool rename = false;
-        model::SessionSettings settings;   // the name the file holds, when renamed
+        model::SessionSettings settings;   // the name and id the file holds, when renamed
         std::string caution;
     };
     bool finishSave(bool ok, const std::string& message, Written w, std::string& why);

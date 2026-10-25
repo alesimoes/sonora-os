@@ -491,6 +491,9 @@ private:
     std::string recovery_offer_;
     bool orphan_scan_pending_ = false;
     void offer_orphans();
+    // A take recording, asked for, or closing: its files are in Audio Files
+    // and no source names them yet.
+    bool takes_in_flight() const;
     // The offer taken back, with an empty RecoveryOffer, if one stands.
     void withdraw_orphans();
 

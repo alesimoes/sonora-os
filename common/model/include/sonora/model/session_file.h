@@ -31,7 +31,10 @@ namespace sonora::model {
 //    and a region's "data" a reference to it (ADR-0015 §3). A version 5
 //    file's inline sequences open as they were and move to files at the
 //    first save, which keeps the version 5 file as its backup.
-constexpr std::int64_t kFormatVersion = 6;
+// 7: "session_id", which every take's Description carries, and
+//    "left_takes", the take files the operator left unplaced. A version 6
+//    session has no id until its first save in this version.
+constexpr std::int64_t kFormatVersion = 7;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

@@ -730,6 +730,9 @@ struct Transport {
     }
 };
 
+// The most take files a session remembers as left (left_takes).
+inline constexpr std::size_t kMaxLeftTakes = 4096;
+
 struct SessionSettings {
     std::string name;
     std::uint32_t sample_rate = 48000;
@@ -737,12 +740,28 @@ struct SessionSettings {
     Timecode timecode;
     std::vector<TempoEntry> tempo{TempoEntry{}};
     Transport transport;
+    // Which session this is, written into every take's Description, so a
+    // take is told from another session's of the same name (two unsaved
+    // "Untitled" ones). Made with the document (new_session_id()) and kept
+    // by every save; empty for a session saved before version 7 until its
+    // next save gives it one.
+    std::string session_id;
+    // Take files in "Audio Files/" the operator chose to leave when they
+    // were offered for recovery: never offered again. Sorted, no repeats.
+    std::vector<std::string> left_takes;
     bool operator==(const SessionSettings& o) const {
         return name == o.name && sample_rate == o.sample_rate &&
                audio_format == o.audio_format && timecode == o.timecode &&
-               tempo == o.tempo && transport == o.transport;
+               tempo == o.tempo && transport == o.transport &&
+               session_id == o.session_id && left_takes == o.left_takes;
     }
 };
+
+// A fresh session id: 128 random bits as a lowercase RFC 4122 version 4
+// UUID. Not on the audio thread: it reads the system's entropy source.
+std::string new_session_id();
+// Empty, or 1 to 64 of [0-9a-f-]: one word of a take's Description.
+bool valid_session_id(const std::string& id);
 
 // What a save, a plan build or a replica reads.
 struct Snapshot {

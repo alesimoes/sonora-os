@@ -73,6 +73,24 @@ struct Rig {
     }
 
     model::Id track_id(std::size_t i) const { return doc->current().edit->tracks[i]->id; }
+    const std::string& id() const { return doc->current().settings.session_id; }
+
+    // A whole take's Description as this document's engine writes it.
+    std::string whole(int take, uint64_t track) const {
+        return take_description(take, track, "Untitled", nullptr, nullptr, id());
+    }
+
+    // Applies `edit` to the document's settings.
+    template <typename F>
+    bool set_settings(F edit) {
+        model::SetSettings op{doc->current().settings};
+        edit(op.settings);
+        model::ReplicationUpdate u;
+        std::string why;
+        if (doc->apply(model::Operation{op}, u, why)) return true;
+        std::fprintf(stderr, "  settings refused: %s\n", why.c_str());
+        return false;
+    }
 
     // A closed take file with `description` in its bext, as the engine
     // writes one; an empty description writes none of ours.
@@ -113,20 +131,18 @@ struct Rig {
     }
 };
 
-std::string whole(int take, uint64_t track, const std::string& session = "Untitled") {
-    return take_description(take, track, session, nullptr);
-}
-
 // Only this engine's takes of this session, with audio, that no source
 // names; in name order, each line saying where it would go.
 int test_what_is_offered() {
     Rig rig("sonora_test_orphan_offered");
     const uint64_t t1 = rig.track_id(0);
-    CHECK(rig.write("Audio 1_02.wav", whole(2, t1), 48000, 4800));
-    CHECK(rig.write("Audio 1_01.wav", whole(1, t1), 0, 4800));
-    CHECK(rig.write("Audio 1_03.wav", whole(3, t1, "Another Song"), 0, 4800));
-    CHECK(rig.write("Audio 1_04.wav", whole(4, t1), 0, 0));
-    CHECK(rig.write("Audio 1_05.wav", whole(5, t1), 0, 4800, 44100));
+    CHECK(rig.write("Audio 1_02.wav", rig.whole(2, t1), 48000, 4800));
+    CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
+    CHECK(rig.write("Audio 1_03.wav",
+                    take_description(3, t1, "Another Song", nullptr, nullptr, model::new_session_id()),
+                    0, 4800));
+    CHECK(rig.write("Audio 1_04.wav", rig.whole(4, t1), 0, 0));
+    CHECK(rig.write("Audio 1_05.wav", rig.whole(5, t1), 0, 4800, 44100));
     CHECK(rig.write("Imported.wav", "", 0, 4800));
     CHECK(rig.write("Elsewhere.wav", "Recorded by another program", 0, 4800));
 
@@ -154,7 +170,7 @@ int test_what_is_offered() {
 // named for the placement; undo takes it off again.
 int test_whole_take_is_one_undo_step() {
     Rig rig("sonora_test_orphan_whole");
-    CHECK(rig.write("Audio 2_07.wav", whole(7, rig.track_id(1)), 96000, 4800));
+    CHECK(rig.write("Audio 2_07.wav", rig.whole(7, rig.track_id(1)), 96000, 4800));
     const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
     CHECK(offer.takes.size() == 1);
     // Nothing is placed by finding it.
@@ -193,9 +209,9 @@ int test_punch_and_unplaceable_takes() {
     p.monitor_in = 10000;
     p.monitor_out = 12000;
     const uint64_t t1 = rig.track_id(0);
-    CHECK(rig.write("Audio 1_05.wav", take_description(5, t1, "Untitled", &p), 8000, 6000));
-    CHECK(rig.write("Audio 1_06.wav", take_description(6, t1, "Untitled", &p), 11000, 3600));
-    CHECK(rig.write("Audio 9_06.wav", whole(6, 999), 0, 4800));
+    CHECK(rig.write("Audio 1_05.wav", take_description(5, t1, "Untitled", &p, nullptr, rig.id()), 8000, 6000));
+    CHECK(rig.write("Audio 1_06.wav", take_description(6, t1, "Untitled", &p, nullptr, rig.id()), 11000, 3600));
+    CHECK(rig.write("Audio 9_06.wav", rig.whole(6, 999), 0, 4800));
     const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
     CHECK(offer.takes.size() == 3);
     CHECK(mentions(offer.text, "Audio 1_05.wav: take 5, punched on \"Audio 1\" from 0.208 s to 0.250 s"));
@@ -227,7 +243,7 @@ int test_loop_take_passes() {
     l.to = 4000;
     const uint64_t t1 = rig.track_id(0);
     // From 500 frames of pre-roll, through two whole passes and half a third.
-    CHECK(rig.write("Audio 1_08.wav", take_description(8, t1, "Untitled", nullptr, &l), 1500,
+    CHECK(rig.write("Audio 1_08.wav", take_description(8, t1, "Untitled", nullptr, &l, rig.id()), 1500,
                     500 + 2 * 2000 + 1000));
     const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
     CHECK(offer.takes.size() == 1);
@@ -245,6 +261,74 @@ int test_loop_take_passes() {
     return 0;
 }
 
+// Which session a take is of (PR #132 review): its Description's session
+// id, which every document has from its creation. Two unsaved sessions are
+// both "Untitled", so another one's take, even under the same name, is not
+// this one's. A take from before session ids has none, and is this
+// session's by name, but never by "Untitled", which every new session is.
+int test_takes_of_this_session_only() {
+    Rig rig("sonora_test_orphan_identity");
+    const uint64_t t1 = rig.track_id(0);
+    CHECK(rig.id().size() == 36);
+    // Recorded before the first save, which renamed the session "Song".
+    CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
+    CHECK(rig.set_settings([](model::SessionSettings& s) { s.name = "Song"; }));
+    const std::string other = model::new_session_id();
+    CHECK(rig.write("Audio 1_02.wav", take_description(2, t1, "Untitled", nullptr, nullptr, other),
+                    0, 4800));
+    CHECK(rig.write("Audio 1_03.wav", take_description(3, t1, "Song", nullptr, nullptr, other), 0,
+                    4800));
+    CHECK(rig.write("Audio 1_04.wav", take_description(4, t1, "Song", nullptr), 0, 4800));
+    CHECK(rig.write("Audio 1_05.wav", take_description(5, t1, "Untitled", nullptr), 0, 4800));
+
+    OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
+    CHECK(offer.takes.size() == 2);
+    CHECK(offer.takes[0].path == "Audio Files/Audio 1_01.wav");
+    CHECK(offer.takes[1].path == "Audio Files/Audio 1_04.wav");
+
+    // A new session: its own id, the default name. None of these is its.
+    Rig fresh("sonora_test_orphan_identity_new");
+    CHECK(fresh.id() != rig.id());
+    for (const char* name : {"Audio 1_01.wav", "Audio 1_05.wav"}) {
+        fs::copy_file(rig.dir / "Audio Files" / name, fresh.dir / "Audio Files" / name);
+    }
+    CHECK(find_orphan_takes(fresh.doc->current(), fresh.dir.string()).takes.empty());
+
+    // A session saved before ids opens with none: only takes of its name
+    // with no id are its.
+    CHECK(rig.set_settings([](model::SessionSettings& s) { s.session_id.clear(); }));
+    offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
+    CHECK(offer.takes.size() == 1 && offer.takes[0].path == "Audio Files/Audio 1_04.wav");
+    return 0;
+}
+
+// "Leave in Audio Files" is remembered (PR #132 review): a take the
+// document lists as left is not offered again, at this open or any later
+// one of the session; the file stays.
+int test_left_takes_are_not_offered() {
+    Rig rig("sonora_test_orphan_left");
+    const uint64_t t1 = rig.track_id(0);
+    CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
+    CHECK(rig.write("Audio 1_02.wav", rig.whole(2, t1), 0, 4800));
+    CHECK(find_orphan_takes(rig.doc->current(), rig.dir.string()).takes.size() == 2);
+    CHECK(rig.set_settings([](model::SessionSettings& s) {
+        s.left_takes = {"Audio Files/Audio 1_01.wav"};
+    }));
+    const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
+    CHECK(offer.takes.size() == 1 && offer.takes[0].path == "Audio Files/Audio 1_02.wav");
+    CHECK(offer.text.find("Audio 1_01") == std::string::npos);
+    CHECK(fs::exists(rig.dir / "Audio Files" / "Audio 1_01.wav"));
+
+    // What leaving the standing offer adds: every take in it, merged into
+    // the list, which stays sorted with no file twice.
+    model::SessionSettings s = rig.doc->current().settings;
+    CHECK(leave_orphan_takes(s, offer));
+    CHECK(s.left_takes == (std::vector<std::string>{"Audio Files/Audio 1_01.wav",
+                                                     "Audio Files/Audio 1_02.wav"}));
+    CHECK(!leave_orphan_takes(s, offer));   // nothing new to remember
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -257,6 +341,8 @@ int main(int argc, char** argv) {
         {"whole_take_is_one_undo_step", test_whole_take_is_one_undo_step},
         {"punch_and_unplaceable_takes", test_punch_and_unplaceable_takes},
         {"loop_take_passes", test_loop_take_passes},
+        {"takes_of_this_session_only", test_takes_of_this_session_only},
+        {"left_takes_are_not_offered", test_left_takes_are_not_offered},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

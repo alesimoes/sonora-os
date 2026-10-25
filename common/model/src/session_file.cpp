@@ -225,8 +225,23 @@ bool v5_to_v6(Value& root, std::vector<Repair>& repairs, std::string& error) {
     return true;
 }
 
+// v6 -> v7: the top level gains "session_id": "" and "left_takes": [].
+// A session from before has no id until its next save gives it one; its
+// older takes have none either, and are told apart by name.
+bool v6_to_v7(Value& root, std::vector<Repair>&, std::string& error) {
+    for (const char* key : {"session_id", "left_takes"}) {
+        if (root.find(key) != nullptr) {
+            error = std::string("the file has \"") + key + "\", which version 6 does not define";
+            return false;
+        }
+    }
+    root.set("session_id", Value::string(""));
+    root.set("left_takes", Value::array());
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
-    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6}};
+    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -625,6 +640,15 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     if (!rd.frames(tr, "transport", "post_roll", s.transport.post_roll)) return false;
     if (!rd.frames(tr, "transport", "punch_crossfade", s.transport.punch_crossfade)) {
         return false;
+    }
+    if (!rd.text(root, "", "session_id", s.session_id)) return false;
+    const Value* left = nullptr;
+    if (!rd.array(root, "", "left_takes", left)) return false;
+    s.left_takes.clear();
+    for (std::size_t i = 0; i < left->items().size(); ++i) {
+        const Value& e = left->items()[i];
+        if (!e.is_string()) return rd.fail(e, index_path("left_takes", i), "must be a string");
+        s.left_takes.push_back(e.text());
     }
     std::string where;
     return rd.checked(detail::settings_problem(s, where), root, "", where);
@@ -1375,6 +1399,9 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         mv.set("name", Value::string(m.name));
         mv.set("length", integer(m.length));
     }
+    root.set("session_id", Value::string(s.settings.session_id));
+    Value& left = root.set("left_takes", Value::array());
+    for (const std::string& path : s.settings.left_takes) left.push(Value::string(path));
     return json::write(root, out, error);
 }
 
@@ -1433,7 +1460,8 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
     if (!rd.keys(root, "",
                  {"sonora_session", "written_by", "save_generation", "name",
                   "sample_rate", "audio_format", "timecode", "tempo", "transport",
-                  "monitor_bus", "sources", "midi_sources", "tracks", "markers"})) {
+                  "monitor_bus", "sources", "midi_sources", "tracks", "markers",
+                  "session_id", "left_takes"})) {
         return false;
     }
     Loaded loaded;

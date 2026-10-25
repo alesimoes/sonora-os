@@ -269,6 +269,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
 
     model::SessionSettings settings;
     settings.name = "Untitled";
+    settings.session_id = model::new_session_id();
     settings.sample_rate = cfg_.sample_rate;
     document_ = std::make_unique<model::Document>(
         model::new_session_with_tracks(settings, hello_.track_names),
@@ -788,10 +789,15 @@ void FakeEngine::offer_recovered() {
     const model::Snapshot& doc = document_->current();
     std::set<std::string> named;
     for (const model::Source& s : doc.sources->sources) named.insert(s.path);
+    named.insert(doc.settings.left_takes.begin(), doc.settings.left_takes.end());
+    const auto ours = [&doc](const RecoveredTake& r) {
+        if (!r.session_id.empty()) return r.session_id == doc.settings.session_id;
+        return r.session == doc.settings.name && doc.settings.name != "Untitled";
+    };
     offered_.clear();
     std::string text;
     for (const RecoveredTake& r : recovered_) {
-        if (r.session != doc.settings.name || named.count(r.path) != 0 || r.frames == 0) continue;
+        if (!ours(r) || named.count(r.path) != 0 || r.frames == 0) continue;
         offered_.push_back(r);
         const std::string name = r.path.substr(r.path.rfind('/') + 1);
         if (!text.empty()) text += "\n";
@@ -1176,6 +1182,18 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         if (offered_.empty()) {
             why = "no recovered takes are waiting to be placed";
             return false;
+        }
+        model::SetSettings op{document_->current().settings};
+        std::set<std::string> left(op.settings.left_takes.begin(), op.settings.left_takes.end());
+        for (const RecoveredTake& t : offered_) left.insert(t.path);
+        if (left.size() != op.settings.left_takes.size()) {
+            op.settings.left_takes.assign(left.begin(), left.end());
+            model::ReplicationUpdate u;
+            if (!document_->apply(model::Operation{std::move(op)}, u, why)) {
+                why = "the takes could not be remembered as left: " + why;
+                return false;
+            }
+            broadcast(u);
         }
         withdraw_recovered();
         return true;

@@ -146,6 +146,7 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
         session_.tracks()[i]->set_document_id(i < tracks.size() ? tracks[i]->id : 0);
     }
     session_.set_session_name(snapshot.settings.name);
+    session_.set_session_id(snapshot.settings.session_id);
     // The roll loops over the document's loop range, what the interface
     // shows as loop on (ADR-0016 §1, engine.transport.loop). One too short
     // for the session to loop plays straight through, as no range does.

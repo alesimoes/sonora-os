@@ -120,12 +120,19 @@ public:
             for (uint32_t i = 0; i < kTracks; ++i) audio_.unpatch(i);
         }
     }
+    // The document the engine would start with in `dir`: the rig's
+    // tracks, and a session id a test can write into a take beforehand.
+    static model::Snapshot start_document(const fs::path& dir) {
+        Session probe(config(dir));
+        return engine_document(probe);
+    }
     // A take as a crash leaves it: written and closed by this engine's
     // writer, with its header, and in no source.
-    bool leave_orphan_take(const std::string& name, const std::string& session, int take,
-                           uint64_t track_id, uint64_t position, uint64_t frames) {
+    bool leave_orphan_take(const std::string& name, const std::string& session,
+                           const std::string& session_id, int take, uint64_t track_id,
+                           uint64_t position, uint64_t frames) {
         WavWriter w;
-        w.set_description(take_description(take, track_id, session, nullptr));
+        w.set_description(take_description(take, track_id, session, nullptr, nullptr, session_id));
         if (!w.open((dir_ / "Audio Files" / name).string(), 48000, 1, WavWriter::Format::Int24,
                     position)) {
             return false;
@@ -213,10 +220,10 @@ public:
         return true;
     }
     bool leave_orphan_take(api::EngineControl& e, const std::string& name,
-                           const std::string& session, int take, uint64_t track_id,
-                           uint64_t position, uint64_t frames) override {
-        return static_cast<RealEngine&>(e).leave_orphan_take(name, session, take, track_id,
-                                                             position, frames);
+                           const std::string& session, const std::string& session_id, int take,
+                           uint64_t track_id, uint64_t position, uint64_t frames) override {
+        return static_cast<RealEngine&>(e).leave_orphan_take(name, session, session_id, take,
+                                                             track_id, position, frames);
     }
 };
 
@@ -434,15 +441,19 @@ void take_failure_reaches_the_interface() {
 void recovery_offer_at_start_and_after_a_take() {
     const fs::path dir = fresh_dir("orphans");
     fs::create_directories(dir / "Audio Files");
+    EngineControlServer::Options opts;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
     {
         WavWriter w;
-        w.set_description(take_description(5, 0, "Untitled", nullptr));
+        w.set_description(
+            take_description(5, 0, "Untitled", nullptr, nullptr, start.settings.session_id));
         CHECK(w.open((dir / "Audio Files" / "Audio 3_05.wav").string(), 48000, 1,
                      WavWriter::Format::Int24, 0));
         const std::vector<float> audio(4800, 0.25f);
         CHECK(w.write(audio.data(), audio.size()) && w.close());
     }
-    RealEngine real(dir, {});
+    RealEngine real(dir, opts);
     std::string error;
     CHECK(real.connect(error));
     api::Inbox in;
@@ -478,8 +489,7 @@ void recovery_offer_at_start_and_after_a_take() {
     std::this_thread::sleep_for(std::chrono::milliseconds(2500));
     api::ModelRequest load;
     load.action = api::ModelAction::Load;
-    CHECK(model::serialize(engine_document(real.session()), model::WriteInfo{"test", 1}, load.op,
-                           error));
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, load.op, error));
     CHECK(replied(real.submit(load), DispatchResult::Ok));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     real.poll(in);
@@ -493,6 +503,66 @@ void recovery_offer_at_start_and_after_a_take() {
     const auto all = offers();
     CHECK(all.size() == 3 && all[2].find("Audio 3_05.wav") != std::string::npos &&
           all[2].find("Audio 1_06") == std::string::npos);
+}
+
+// PR #132 review 2: a take punched out on the fly is not placed at the
+// punch-out. Its files stay open until the disk thread hears of it, while
+// recording_take() is already 0, and its header, checkpointed with audio,
+// names no source yet. A session opened during the take is looked at only
+// once the take is placed, so the take is never offered.
+void a_take_just_punched_out_is_never_offered() {
+    const fs::path dir = fresh_dir("orphans_punch");
+    EngineControlServer::Options opts;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto replied = [&](uint64_t seq, DispatchResult want) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == want;
+            }
+            return false;
+        });
+    };
+    const auto offered = [&]() {
+        for (const auto& e : in.events) {
+            if (e.kind == api::EventKind::RecoveryOffer && !e.text.empty()) return true;
+        }
+        return false;
+    };
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    CHECK(replied(real.send(arm), DispatchResult::Ok));
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    CHECK(replied(real.send(rec), DispatchResult::Ok));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, load.op, error));
+    CHECK(replied(real.submit(load), DispatchResult::Ok));
+    // Past the first checkpoint (SessionConfig::sync_seconds), so the
+    // take's header counts audio.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    real.poll(in);
+    const std::size_t updates = in.model.size();
+    api::CommandRequest punch;
+    punch.command = "transport.punch";
+    CHECK(replied(real.send(punch), DispatchResult::Ok));
+    // Placed: its RecordTake arrives.
+    CHECK(until(real, in, [&]() { return in.model.size() > updates; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    real.poll(in);
+    CHECK(!offered());
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(replied(real.send(stop), DispatchResult::Ok));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    real.poll(in);
+    CHECK(!offered());
 }
 
 // ADR-0015 §6 on the real engine: a Save while a take is open is said to
@@ -1439,6 +1509,7 @@ int main() {
     a_sequence_over_a_part_opens_in_parts();
     a_save_during_a_take_follows_a_checkpoint();
     recovery_offer_at_start_and_after_a_take();
+    a_take_just_punched_out_is_never_offered();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

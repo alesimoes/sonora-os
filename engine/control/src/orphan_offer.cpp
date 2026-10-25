@@ -17,6 +17,8 @@ namespace sonora {
 namespace {
 
 constexpr const char* kAudioDir = "Audio Files";
+// What every new session is called until its first save names it.
+constexpr const char* kDefaultName = "Untitled";
 // An offer is read on screen: past this many lines the rest are counted.
 constexpr std::size_t kMaxOfferLines = 24;
 
@@ -101,6 +103,20 @@ model::Frames frames_of(uint64_t f) {
 
 }  // namespace
 
+bool take_is_of_session(const TakeDescription& said, const model::SessionSettings& settings) {
+    if (!said.session_id.empty()) return said.session_id == settings.session_id;
+    return said.session == settings.name && settings.name != kDefaultName;
+}
+
+bool leave_orphan_takes(model::SessionSettings& settings, const OrphanOffer& offer) {
+    std::set<std::string> left(settings.left_takes.begin(), settings.left_takes.end());
+    const std::size_t before = left.size();
+    for (const OrphanTake& o : offer.takes) left.insert(o.path);
+    if (left.size() == before) return false;
+    settings.left_takes.assign(left.begin(), left.end());
+    return true;
+}
+
 OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string& session_dir) {
     OrphanOffer offer;
     namespace fs = std::filesystem;
@@ -109,6 +125,7 @@ OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string
     if (!fs::is_directory(dir, ec)) return offer;
     std::set<std::string> named;
     for (const model::Source& s : document.sources->sources) named.insert(s.path);
+    named.insert(document.settings.left_takes.begin(), document.settings.left_takes.end());
     std::vector<std::string> names;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec)) continue;
@@ -128,7 +145,7 @@ OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string
         if (!file.open(full, error) || file.frames() <= 0) continue;
         if (file.sample_rate() != document.settings.sample_rate) continue;
         if (!parse_take_description(file.description(), o.said)) continue;
-        if (o.said.session != document.settings.name) continue;
+        if (!take_is_of_session(o.said, document.settings)) continue;
         o.time_reference = file.time_reference();
         o.frames = static_cast<uint64_t>(file.frames());
         o.channels = file.channels();

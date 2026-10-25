@@ -265,7 +265,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               why = "no recovered takes are waiting to be placed";
                               return false;
                           }
-                          if (session_.recording_take() != 0 || playback_->record_requested()) {
+                          if (takes_in_flight()) {
                               why = "recovered takes are placed while stopped; stop the take first";
                               return false;
                           }
@@ -288,8 +288,18 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               why = "no recovered takes are waiting to be placed";
                               return false;
                           }
-                          // Left in Audio Files, and offered again at the
-                          // next open: an orphan is never deleted.
+                          // Left in Audio Files, never deleted, and
+                          // remembered with the session, so the same
+                          // takes are not offered at every open.
+                          model::SetSettings op{document_->current().settings};
+                          if (leave_orphan_takes(op.settings, orphans_)) {
+                              model::ReplicationUpdate u;
+                              if (!document_->apply(model::Operation{std::move(op)}, u, why)) {
+                                  why = "the takes could not be remembered as left: " + why;
+                                  return false;
+                              }
+                              send_update(u);
+                          }
                           withdraw_orphans();
                           return true;
                       }));
@@ -727,9 +737,17 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
     }
 }
 
+bool EngineControlServer::takes_in_flight() const {
+    // takes_closing() covers a punched-out take whose files the disk thread
+    // has not closed yet: recording_take() is already 0 for it.
+    return session_.recording_take() != 0 || session_.takes_closing() ||
+           playback_->record_requested();
+}
+
 void EngineControlServer::offer_orphans() {
-    // The take being written is in the folder and in no source yet.
-    if (session_.recording_take() != 0 || playback_->record_requested()) {
+    // A take being written, or closed and not yet placed, is in the folder
+    // and in no source yet.
+    if (takes_in_flight()) {
         orphan_scan_pending_ = true;
         return;
     }

@@ -272,6 +272,8 @@ std::string stem(const std::string& path) {
 model::Snapshot engine_document(const Session& session) {
     model::SessionSettings settings;
     settings.name = session.config().name;
+    // A new document is a new session (session-format.md, "Top level").
+    settings.session_id = model::new_session_id();
     settings.sample_rate = session.config().sample_rate;
     settings.audio_format = session.config().format == WavWriter::Format::Float32
                                 ? model::AudioFormat::Float32
