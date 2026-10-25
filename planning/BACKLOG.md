@@ -79,7 +79,8 @@ playback can follow edits; it is in flight.
          thread once its start is resident, the old one held until then
          (ADR-0016, update "loop playback when not recording").
        Remain: `transport.toggle_loop` (needs a loop-enabled setting apart
-         from the range), pre-roll for a plain take, and input monitoring.
+         from the range) and pre-roll for a plain take. Input monitoring
+         with latency compensation: ADR-0019, `t1-input-monitor`.
        - [ ] Loop record: a track that opens late and loses every later
          wrap still numbers its passes from P1; the Open record needs the
          take's wrap count.
@@ -1498,7 +1499,12 @@ Order and owners are in ADR-0008 §5.
       peaks and the playback miss count. Contract PRs of their own (ADR-0009
       update, item 4, "Not in this port"); the bus meters return in
       sonora-tui and sonora-ui with them. rt-engineer with ui-engineer.
-- [ ] Input monitoring with latency compensation measured by a loopback test.
+- [x] Input monitoring with latency compensation measured by a loopback test
+      (ADR-0019, `t1-input-monitor`): `LatencyProbe` in the callback, takes
+      captured L later on the playhead and labelled P0 − L, drivers/fake's
+      loopback cable in `test_latency_probe`. Follow-ups: a probe command on
+      the wire and a latency page in the interface; L kept per machine; the
+      backend's reported figure as a fallback.
 - [ ] Transport locate without dropping a block.
 - [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
       period PipeWire's dummy driver skipped without an xrun, which the

@@ -11,6 +11,7 @@ target_link_libraries(sonora_core_chain_runner PUBLIC sonora_base sonora_plugin_
 
 add_library(sonora_core STATIC
   src/session.cpp
+  src/latency_probe.cpp
   src/track.cpp
   src/disk_thread.cpp
   src/loop_take.cpp
@@ -66,6 +67,13 @@ add_test(NAME plan_pdc COMMAND test_plan_pdc)
 add_executable(test_take_boundaries tests/test_take_boundaries.cpp)
 target_link_libraries(test_take_boundaries PRIVATE sonora_core Threads::Threads)
 add_test(NAME take_boundaries COMMAND test_take_boundaries)
+
+# The round trip measured through drivers/fake's loopback cable (ADR-0019):
+# the probe's figure to the frame, through the monitored-input path with and
+# without PDC, no allocation in process(), and takes compensated by it.
+add_executable(test_latency_probe tests/test_latency_probe.cpp)
+target_link_libraries(test_latency_probe PRIVATE sonora_core sonora_backend_fake)
+add_test(NAME latency_probe COMMAND test_latency_probe)
 
 # Punch points inside a block (timeline-model.md, "Punch in"): capture opened
 # and closed at the frame, Auto monitoring crossfaded at the punch points,

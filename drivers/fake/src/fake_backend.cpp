@@ -81,6 +81,15 @@ struct FakeBackend::Impl {
     std::unique_ptr<std::atomic<int32_t>[]> input_source;
     uint32_t inputs = 0;
     backend::AudioBlock block{};
+    // Per port: the Config::loopbacks entry that feeds it, or kNoSource.
+    std::vector<int32_t> port_loop;
+    // Per loopback, what its output played, by server frame modulo the
+    // size: the cable's length plus the longest period. Audio thread only
+    // once open() has sized it, as is the span of frames it holds.
+    std::vector<std::vector<float>> loop_history;
+    uint64_t loop_from = 0;
+    uint64_t loop_to = 0;
+    bool loop_started = false;
 
     // --- the server ---
     std::atomic<bool> server_gone{false};
@@ -122,6 +131,51 @@ struct FakeBackend::Impl {
             }
         }
         assign_ids();
+        port_loop.assign(ports.size(), kNoSource);
+        for (std::size_t l = 0; l < cfg.loopbacks.size(); ++l) {
+            const Loopback& lb = cfg.loopbacks[l];
+            for (std::size_t p = 0; p < ports.size(); ++p) {
+                if (ports[p].capture && ports[p].device == lb.device &&
+                    ports[p].channel == lb.capture) {
+                    port_loop[p] = static_cast<int32_t>(l);
+                }
+            }
+        }
+    }
+
+    // The cable's frames [frame_time, frame_time + nframes) into `buf`.
+    void read_loop(int32_t l, uint64_t frame_time, uint32_t nframes,
+                   float* buf) const noexcept SONORA_RT {
+        const std::vector<float>& h = loop_history[static_cast<std::size_t>(l)];
+        const uint64_t size = h.size();
+        const uint64_t delay = cfg.loopbacks[static_cast<std::size_t>(l)].frames;
+        const uint64_t oldest = loop_to > size && loop_to - size > loop_from ? loop_to - size
+                                                                              : loop_from;
+        for (uint32_t f = 0; f < nframes; ++f) {
+            const uint64_t at = frame_time + f;
+            const bool held = loop_started && at >= delay && at - delay >= oldest &&
+                              at - delay < loop_to;
+            buf[f] = held ? h[(at - delay) % size] : 0.0f;
+        }
+    }
+
+    // What this period's callback wrote, onto every cable. A period that
+    // does not follow on from the last (an xrun, a clock step) starts the
+    // cables afresh: the frames between were never played.
+    void write_loops(uint64_t frame_time, uint32_t nframes) noexcept SONORA_RT {
+        if (loop_history.empty()) return;
+        if (!loop_started || frame_time != loop_to) {
+            loop_from = frame_time;
+            loop_started = true;
+        }
+        for (std::size_t l = 0; l < loop_history.size(); ++l) {
+            std::vector<float>& h = loop_history[l];
+            const float* out = out_bufs[cfg.loopbacks[l].output];
+            for (uint32_t f = 0; f < nframes; ++f) {
+                h[(frame_time + f) % h.size()] = std::isnan(out[f]) ? 0.0f : out[f];
+            }
+        }
+        loop_to = frame_time + nframes;
     }
 
     // Natural ids ascend with the channels. Out of order, they are a fixed
@@ -242,7 +296,11 @@ struct FakeBackend::Impl {
             }
             float* buf = in_store[i].data();
             const uint32_t channel = ports[src].channel;
-            for (uint32_t f = 0; f < nframes; ++f) buf[f] = signal(channel, frame_time + f);
+            if (port_loop[static_cast<std::size_t>(src)] != kNoSource) {
+                read_loop(port_loop[static_cast<std::size_t>(src)], frame_time, nframes, buf);
+            } else {
+                for (uint32_t f = 0; f < nframes; ++f) buf[f] = signal(channel, frame_time + f);
+            }
             in_bufs[i] = buf;
         }
         // What a callback that skips an output would leave there.
@@ -274,6 +332,7 @@ struct FakeBackend::Impl {
             }
         }
         if (!all_written) unwritten.fetch_add(1, std::memory_order_relaxed);
+        write_loops(frame_time, nframes);
 
         counter += nframes;
         return true;
@@ -360,6 +419,14 @@ bool FakeBackend::open(const backend::BackendConfig& config,
                 std::to_string(config.required_rate) + " Hz";
         return false;
     }
+    for (const Loopback& lb : d.cfg.loopbacks) {
+        if (lb.output >= config.outputs) {
+            error = "the loopback from out_" + std::to_string(lb.output + 1) +
+                    " needs that output, and the backend has " +
+                    std::to_string(config.outputs);
+            return false;
+        }
+    }
     std::vector<PortInfo> chosen;
     if (!backend::select_device(d.physical(true), config.capture_device, chosen, error)) {
         return false;
@@ -379,6 +446,11 @@ bool FakeBackend::open(const backend::BackendConfig& config,
     d.out_bufs.clear();
     for (std::vector<float>& o : d.out_store) d.out_bufs.push_back(o.data());
     d.silence.assign(d.capacity, 0.0f);
+    d.loop_history.clear();
+    for (const Loopback& lb : d.cfg.loopbacks) {
+        d.loop_history.emplace_back(std::size_t{lb.frames} + d.capacity, 0.0f);
+    }
+    d.loop_started = false;
     d.input_source = std::make_unique<std::atomic<int32_t>[]>(config.inputs);
     for (uint32_t i = 0; i < config.inputs; ++i) d.input_source[i].store(kNoSource);
     d.out_capture.clear();

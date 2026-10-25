@@ -220,10 +220,10 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                  return may_arm_track(document_->current(), engine_track, why);
                              },
                              [this](LoopRange& loop, std::string& refusal) {
-                                 // The backend reports no input latency yet
-                                 // (contracts/backend): L is 0 until
-                                 // engine.playback.input_monitor measures it.
-                                 if (document_loop(document_->current(), 0, loop, refusal)) {
+                                 // The session's measured or given round
+                                 // trip (ADR-0019 §4).
+                                 if (document_loop(document_->current(),
+                                                   session_.input_latency(), loop, refusal)) {
                                      return true;
                                  }
                                  if (!refusal.empty()) {

@@ -1068,6 +1068,58 @@ int test_a_punch_that_captured_nothing_is_said() {
     return 0;
 }
 
+// With the round trip L set (ADR-0019 §2), the punch's file covers the
+// timeline range it asks for, [A - H, B + H), captured L later on the
+// playhead, and goes in over [A, B) as it does with none; its source says
+// the L it was compensated by. Stopped on the playhead before A - H + L,
+// it captured nothing because it ended before its capture began.
+int test_a_punch_with_latency_goes_in_where_it_was_played() {
+    constexpr uint32_t kL = 100;
+    const SessionConfig cfg = punch_config("test_closed_take_punch_latency");
+    std::filesystem::remove_all(cfg.dir);
+    {
+        Session s(cfg);
+        CHECK(s.create_dirs());
+        CHECK(s.set_input_latency(kL));
+        model::Document doc(engine_document(s));
+        CHECK(place_old_take(doc, cfg));
+        Punched p;
+        CHECK(punch(s, punch_range(), static_cast<uint64_t>(kB + kH + kL + 64), p));
+        CHECK(p.take.latency == kL);
+        CHECK(p.take.origin == static_cast<uint64_t>(kA - kH));
+        CHECK(p.length == (kB + kH) - (kA - kH));
+        const TakeAdded r = add_closed_take(doc, s, p.take);
+        CHECK(r.track_notices.empty() && r.refused.empty());
+        const model::Playlist& pl = active_playlist(doc.current(), 0);
+        CHECK(pl.regions.size() == 3);
+        const model::Region& n = pl.regions[1];
+        CHECK(n.position == kA && n.end() == kB && n.source_offset == kH);
+        CHECK(pl.crossfades.size() == 2);
+        const model::Source* src = source_by_id(doc.current(), n.channels.at(0).source);
+        CHECK(src != nullptr && src->latency_compensation == kL);
+        CHECK(src->time_reference == kA - kH);
+
+        // Ended at playhead A - H + L/2: before its capture began on the
+        // playhead, though past A - H, so no overrun is blamed.
+        Session::ClosedTake early;
+        early.take = 2;
+        early.punched = true;
+        early.punch = punch_range();
+        early.latency = kL;
+        early.origin = static_cast<uint64_t>(kA - kH);
+        early.end = static_cast<uint64_t>(kA - kH + kL / 2);
+        DiskThread::ClosedFile empty;
+        empty.take = 2;
+        empty.path = file_of(cfg, 1);
+        early.files.push_back(empty);
+        const TakeAdded e = add_closed_take(doc, s, early);
+        CHECK(e.track_notices.size() == 1);
+        CHECK(mentions(e.track_notices[0], "ended before frame 2000"));
+    }
+    std::filesystem::remove_all(cfg.dir);
+    return 0;
+}
+
 // The punch the record commands start, from the document's transport
 // settings: [A - H, B + H) captured, H = max(punch_crossfade, 1 s), cut at
 // the timeline's start; Auto monitoring switching at A and B with the
@@ -1129,6 +1181,7 @@ int main() {
     failed += test_a_punch_captured_after_its_out_point_is_said();
     failed += test_a_punch_that_captured_nothing_is_said();
     failed += test_the_document_punch();
+    failed += test_a_punch_with_latency_goes_in_where_it_was_played();
     if (failed != 0) {
         std::fprintf(stderr, "closed_take: %d failed\n", failed);
         return 1;
