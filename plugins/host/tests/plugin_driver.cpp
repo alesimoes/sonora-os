@@ -2866,6 +2866,59 @@ int scenario_worker_slow_exit(const Args& a) {
     return 0;
 }
 
+// A plugin that schedules more than its worker's request ring holds, every
+// block for about 2.3 s: what was refused reaches the engine as
+// Fault{WorkRefused} naming the plugin, the first at once and the rest at
+// most once per kWorkRefusedIntervalMs, summed, rather than one per pass of
+// the host's loop or not at all. The processing thread plays on meanwhile.
+int scenario_worker_flood(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    const std::vector<std::string> chain = {"urn:sonora:test#worker"};
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("worker_flood: %s, 1536 schedules a block at gain 0.0625, blocks 20 to 900\n", chain[0].c_str());
+    Host host;
+    if (int r = start_ready(host, ca, clock, chain, 1)) return r;
+    uint64_t flood_from = 0, flood_to = 0;
+    const Halving h = play_halving(host, clock, 1100, [&](uint64_t i) {
+        if (i == 20) {
+            host.send(0, 0, 0, 0.0625f);
+            flood_from = monotonic_ns();
+        }
+        if (i == 900) {
+            host.send(0, 0, 0, 1.f);
+            flood_to = monotonic_ns();
+        }
+    });
+    h.report();
+    // A block not answered by its deadline is not counted (run() < 0).
+    check(h.unity + h.halved + h.other >= 1050, "the processing thread played on through the flood");
+    host.queue(pc::Shutdown{});
+    const bool exited = host.wait_exit_pumping(5'000'000'000ull);
+    check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == plugin::kHostExitClean,
+          "the host stops cleanly");
+    uint64_t faults = 0, refused = 0;
+    bool named = true;
+    for (const std::string& m : host.take_inbox()) {
+        pc::Type t;
+        pc::Fault f;
+        std::string e;
+        if (!pc::peek_type(m, t) || t != pc::Type::Fault || !pc::decode(m, f, e)) continue;
+        if (f.kind != pc::FaultKind::WorkRefused) continue;
+        ++faults;
+        refused += f.count;
+        named = named && f.instance == 0 && f.count > 0;
+    }
+    const double seconds = double(flood_to - flood_from) / 1e9;
+    std::printf("  %llu WorkRefused faults over %.2f s of flood, %llu messages refused\n",
+                (unsigned long long)faults, seconds, (unsigned long long)refused);
+    check(faults >= 2 && refused > 0 && named, "what was refused is said, naming the plugin");
+    check(double(faults) <= seconds * 1000.0 / pc::kWorkRefusedIntervalMs + 2.0,
+          "at most once per interval, summed, not once per pass");
+    return 0;
+}
+
 // Touches from a plugin's own controller (the VST3 touch class's "editor"
 // thread): every touch inside a gesture, a lone edit wrapped in one, the
 // read-only parameter dropped and counted, the gesture left open ended
@@ -3098,6 +3151,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "worker_restore") r = scenario_worker_restore(a);
     else if (a.scenario == "worker_hang") r = scenario_worker_hang(a);
     else if (a.scenario == "worker_slow_exit") r = scenario_worker_slow_exit(a);
+    else if (a.scenario == "worker_flood") r = scenario_worker_flood(a);
     else if (a.scenario == "refusals") r = scenario_refusals(a);
     else if (a.scenario == "incompatible") r = scenario_incompatible(a);
     else if (a.scenario == "bypass") r = scenario_bypass(a);

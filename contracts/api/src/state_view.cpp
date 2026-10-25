@@ -104,6 +104,7 @@ void read_insert_counters(const TrackState& t, TrackSnapshot& s) {
         to.misses = from.misses.load(acq);
         to.worst_run_us = from.worst_run_us.load(acq);
         to.nonfinite = from.nonfinite.load(acq);
+        to.work_refused = from.work_refused.load(acq);
     }
 }
 

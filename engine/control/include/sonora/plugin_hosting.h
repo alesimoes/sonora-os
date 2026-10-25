@@ -148,6 +148,13 @@ public:
     // Restarting, Faulted, Missing; the caller adds Present, Active and
     // Bypassed from the document).
     uint32_t insert_flags(model::Id insert) const;
+    // LV2 worker messages refused for an insert because a ring was full
+    // (host_control.h Fault{WorkRefused}), over every run; only rises.
+    uint64_t work_refused(model::Id insert) const;
+    // Non-standing notices since the last call (ADR-0012 change G): the
+    // first worker refusal of an insert in a run. The server posts each
+    // once, to the clients attached then.
+    std::vector<std::string> take_notices();
 
     // Chains still starting with the session (for "Loading plug-ins (n of
     // m)"); 0 of 0 when none.
@@ -254,6 +261,8 @@ private:
     uint64_t last_built_epoch_ = 0;
 
     std::map<model::Id, std::string> faults_;
+    std::map<model::Id, uint64_t> work_refused_;
+    std::vector<std::string> notices_;
     uint32_t loading_total_ = 0;
     uint64_t dropped_seen_ = 0;
     uint64_t last_repost_ms_ = 0;

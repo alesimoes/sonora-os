@@ -182,6 +182,11 @@ public:
     // (its controller) holds it now, for ending a gesture whose end was
     // lost. False when the format cannot say.
     virtual bool current_value(uint32_t, float&) const { return false; }
+    // Any thread: messages to or from the plugin's worker (LV2
+    // worker:schedule) refused because their ring was full, since it loaded.
+    // Work the plugin asked for and did not get, so the operator is told
+    // (host_control.h Fault{WorkRefused}).
+    virtual uint64_t work_refused() const noexcept { return 0; }
     // The main thread, while run() goes on (the formats allow it: VST3
     // getState is a main-thread call, LV2 save() may run beside run()).
     virtual SaveResult save_state(std::vector<std::string>&, std::string&) { return SaveResult::Empty; }

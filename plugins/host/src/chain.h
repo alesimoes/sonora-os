@@ -97,6 +97,7 @@ public:
         return slots_[i]->describe_value(dense, value, out);
     }
     float bypass_value(std::size_t i, bool bypassed) const { return slots_[i]->bypass_value(bypassed); }
+    uint64_t work_refused(std::size_t i) const { return slots_[i]->work_refused(); }
     // A touch's current value, `param` as touches carry it (a dense index,
     // or kBypassParam with 1 = bypassed).
     bool current_touch_value(std::size_t i, uint32_t param, float& v) const {

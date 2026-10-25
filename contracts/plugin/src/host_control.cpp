@@ -610,11 +610,14 @@ void encode(const Fault& m, std::string& out) {
 bool decode(std::string_view b, Fault& m, std::string& error) {
     Reader r(b, error);
     r.expect_type(Type::Fault);
-    r.enumerated(m.kind, static_cast<uint8_t>(FaultKind::EventsDropped), "kind");
+    r.enumerated(m.kind, static_cast<uint8_t>(FaultKind::WorkRefused), "kind");
     r.i32(m.instance, "instance");
     if (r.ok() && (m.instance < -1 || m.instance >= int32_t(kMaxInstances)))
         r.fail("fault instance " + std::to_string(m.instance) + " is out of range");
     r.u64(m.count, "count");
+    // It names a plugin, and says something was refused.
+    if (r.ok() && m.kind == FaultKind::WorkRefused && (m.instance < 0 || m.count == 0))
+        r.fail("a WorkRefused fault names no instance or counts nothing");
     r.bytes(m.text, kMaxTextBytes, "text");
     return r.done();
 }

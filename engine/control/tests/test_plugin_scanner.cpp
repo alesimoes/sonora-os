@@ -311,7 +311,7 @@ void test_cache_header() {
         ss << f.rdbuf();
         world = ss.str();
     }
-    std::ofstream(fx.world, std::ios::trunc) << "version sonora-plugin-host layout 1 clock 1 wire 1 probe 1 build 2\n"
+    std::ofstream(fx.world, std::ios::trunc) << "version sonora-plugin-host layout 1 clock 1 wire 2 probe 1 build 2\n"
                                              << world;
     check(discarded(fx.config(), "another plug-in host"), "another host line: discarded, a full scan");
     std::ofstream(fx.cache, std::ios::trunc) << "{not json";
@@ -514,7 +514,7 @@ void test_version() {
     std::printf("version\n");
     Fixture fx("version");
     const std::string a = fx.bundle("a.lv2");
-    fx.set_world({"version sonora-plugin-host layout 1 clock 1 wire 1 probe 2", "plugin urn:x " + a + " lv2 1 1 ok"});
+    fx.set_world({"version sonora-plugin-host layout 1 clock 1 wire 2 probe 2", "plugin urn:x " + a + " lv2 1 1 ok"});
     PluginScanner s(fx.config(false));
     check(scanned(s), "the scan ends at once");
     check(s.catalog()->disabled.find("probe record 2") != std::string::npos, "disabled, saying why");
