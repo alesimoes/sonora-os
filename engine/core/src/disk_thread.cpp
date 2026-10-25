@@ -9,15 +9,21 @@
 
 namespace sonora {
 
+static_assert(Track::kWriterSlots == 2, "TrackState keeps a wrap list per writer slot");
+
 DiskThread::DiskThread(std::vector<Track*> tracks, std::size_t chunk_frames,
-                       RingBuffer<CaptureBoundary>& boundaries)
+                       RingBuffer<CaptureBoundary>& boundaries, std::size_t wrap_cap)
     : tracks_(std::move(tracks)),
       chunk_frames_(chunk_frames),
+      wrap_cap_(wrap_cap),
       boundaries_(boundaries),
       state_(tracks_.size()) {
     std::size_t channels = 1;
     for (const Track* t : tracks_) channels = std::max<std::size_t>(channels, t->channels());
     scratch_.resize(chunk_frames_ * channels);
+    for (TrackState& s : state_) {
+        for (auto& list : s.wraps) list.reserve(wrap_cap_);
+    }
 }
 
 DiskThread::~DiskThread() { stop(); }
@@ -89,6 +95,14 @@ void DiskThread::drain_once() {
 void DiskThread::drain_track(std::size_t i) {
     TrackState& s = state_[i];
     for (;;) {
+        // Its `at` may be ahead of every sample yet pushed, and it splits
+        // nothing, so it never waits for its audio: a Close behind it must
+        // not wait either.
+        if (!s.pending.empty() && s.pending.front().kind == CaptureBoundary::Kind::Wrap) {
+            wrap(i, s.pending.front());
+            s.pending.pop_front();
+            continue;
+        }
         // A record read this pass may lie past the fill read before it; the
         // samples up to it are drained next pass.
         uint64_t n = s.visible - s.consumed;
@@ -152,10 +166,35 @@ void DiskThread::apply(std::size_t i, const CaptureBoundary& b) {
     for (int slot = 0; b.take != 0 && slot < Track::kWriterSlots; ++slot) {
         if (t.slot_take(slot) == static_cast<int>(b.take)) {
             s.active = slot;
+            s.open_at = b.at;
             t.writer(slot).set_time_reference(b.timeline);
             return;
         }
     }
+}
+
+void DiskThread::wrap(std::size_t i, const CaptureBoundary& b) {
+    TrackState& s = state_[i];
+    Track& t = *tracks_[i];
+    if (s.active < 0 || t.slot_take(s.active) != static_cast<int>(b.take)) return;
+    const int slot = s.active;
+    std::vector<uint64_t>& list = s.wraps[slot];
+    uint64_t& written = s.wraps_written[slot];
+    if (b.ordinal <= written) return;
+    WrapSidecar& side = t.sidecar(slot);
+    // The ring counts samples; the list counts the file's frames.
+    const uint64_t frame = (b.at > s.open_at ? b.at - s.open_at : 0) / t.channels();
+    // Wraps whose records a full ring lost keep their places, so every
+    // later wrap is still the pass it ends.
+    while (written + 1 < b.ordinal) {
+        if (list.size() < wrap_cap_) list.push_back(WrapSidecar::kLostWrap);
+        side.append(WrapSidecar::kLostWrap);
+        ++written;
+    }
+    // Past the cap, on disk only: those passes stay recoverable.
+    if (list.size() < wrap_cap_) list.push_back(frame);
+    side.append(frame);
+    ++written;
 }
 
 void DiskThread::finish(std::size_t i, int slot) {
@@ -168,6 +207,17 @@ void DiskThread::finish(std::size_t i, int slot) {
     f.path = w.path();
     f.frames = w.frames_written();
     if (w.failed()) f.failure = w.failure();
+    WrapSidecar& side = t.sidecar(slot);
+    if (side.is_open()) {
+        side.close();
+        f.wrap_failure = side.failure();
+    }
+    std::vector<uint64_t>& list = state_[i].wraps[slot];
+    f.wraps = list;
+    f.wraps_past_cap = state_[i].wraps_written[slot] - list.size();
+    // Keeps its capacity, so the next take's list does not grow it.
+    list.clear();
+    state_[i].wraps_written[slot] = 0;
     {
         std::lock_guard<std::mutex> lock(closed_mutex_);
         closed_.push_back(std::move(f));
@@ -186,6 +236,9 @@ void DiskThread::checkpoint_all() {
             if (t->slot_take(slot) == 0 || !t->writer(slot).is_open()) continue;
             const auto begin = std::chrono::steady_clock::now();
             t->writer(slot).checkpoint();
+            // After the take's own sync, so no wrap is on the medium ahead of
+            // the audio it ends (ADR-0016 C1).
+            if (t->sidecar(slot).is_open()) t->sidecar(slot).checkpoint();
             const auto ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - begin)

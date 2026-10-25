@@ -24,15 +24,22 @@ class Track;
 // own count of samples read is the same clock. The audio thread pushes a
 // record after the samples before `at`, so the disk thread never sees a
 // boundary ahead of its audio. Trivial, so the ring holds it as bytes.
+//
+// A Wrap (ADR-0016 §2) marks where a loop take's playhead went from B back
+// to A, and splits nothing: `at` is the count of the first sample after
+// the wrap once the input latency is added, so it may lie ahead of the
+// audio pushed before it, and the disk thread takes it as it comes.
 struct CaptureBoundary {
-    enum class Kind : uint32_t { Open = 1, Close = 2 };
+    enum class Kind : uint32_t { Open = 1, Close = 2, Wrap = 3 };
     uint32_t track;
     Kind kind;
     uint32_t take;
-    uint32_t reserved;
+    // Wrap: which of the take's wraps, from 1, so one lost to a full ring
+    // leaves a gap the next one shows.
+    uint32_t ordinal;
     uint64_t at;
     // Open: the timeline frame of the window's first sample, the file's
-    // TimeReference.
+    // TimeReference. Wrap: A.
     uint64_t timeline;
 };
 
@@ -49,10 +56,20 @@ public:
         std::string path;
         uint64_t frames = 0;
         std::string failure;  // empty unless the file failed
+        // A loop take's: the file frame of each wrap, in order, the first
+        // `wrap_cap` of them (ADR-0016 O2); WrapSidecar::kLostWrap for one
+        // whose record a full boundary ring lost. How many more wraps the
+        // file's wrap list on disk holds past the cap.
+        std::vector<uint64_t> wraps;
+        uint64_t wraps_past_cap = 0;
+        // Empty unless the wrap list on disk could not be written.
+        std::string wrap_failure;
     };
 
+    // `wrap_cap`: the wraps a closed file's list holds; each track's lists
+    // are sized to it here.
     DiskThread(std::vector<Track*> tracks, std::size_t chunk_frames,
-               RingBuffer<CaptureBoundary>& boundaries);
+               RingBuffer<CaptureBoundary>& boundaries, std::size_t wrap_cap = 0);
     ~DiskThread();
 
     void start();
@@ -120,7 +137,12 @@ private:
         // boundary records were.
         uint64_t visible = 0;
         int active = -1;        // the writer slot the ring drains into
+        uint64_t open_at = 0;   // the active window's first sample
         std::deque<CaptureBoundary> pending;
+        // Per writer slot: its take's wraps so far, up to the cap, and how
+        // many wraps its list on disk holds.
+        std::vector<uint64_t> wraps[2];
+        uint64_t wraps_written[2] = {0, 0};
     };
 
     void run();
@@ -129,10 +151,12 @@ private:
     // nowhere when no window is open.
     void move(std::size_t i, uint64_t n);
     void apply(std::size_t i, const CaptureBoundary& b);
+    void wrap(std::size_t i, const CaptureBoundary& b);
     void finish(std::size_t i, int slot);
 
     std::vector<Track*> tracks_;
     std::size_t chunk_frames_;
+    std::size_t wrap_cap_;
     RingBuffer<CaptureBoundary>& boundaries_;
     std::vector<TrackState> state_;
     // Owned by whichever thread drains; sized here, never grown.

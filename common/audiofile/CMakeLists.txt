@@ -1,7 +1,8 @@
-add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp)
+add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
+  src/wrap_sidecar.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
-# periodic sync (ADR-0008 §3; ADR-0009 Consequences).
+# periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
 target_link_libraries(sonora_audiofile PUBLIC sonora_base PRIVATE sonora_platform)
 
 add_executable(test_wav_writer tests/test_wav_writer.cpp)
@@ -26,3 +27,8 @@ endif()
 add_executable(test_wav_recovery tests/test_wav_recovery.cpp)
 target_link_libraries(test_wav_recovery PRIVATE sonora_audiofile)
 add_test(NAME wav_recovery COMMAND test_wav_recovery)
+
+# A loop take's wrap list next to its file (ADR-0016 §2).
+add_executable(test_wrap_sidecar tests/test_wrap_sidecar.cpp)
+target_link_libraries(test_wrap_sidecar PRIVATE sonora_audiofile)
+add_test(NAME wrap_sidecar COMMAND test_wrap_sidecar)
