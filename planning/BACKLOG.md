@@ -76,6 +76,13 @@ playback can follow edits; it is in flight.
        Remain: loop playback when not recording (the reader's loop-start
          window, `transport.toggle_loop`), pre-roll for a plain take, and
          input monitoring.
+       - [ ] Loop record: a track that opens late and loses every later
+         wrap still numbers its passes from P1; the Open record needs the
+         take's wrap count.
+       - [ ] Loop stall test: hold the drain for the full
+         `disk_stall_seconds` (0.5 s), not 300 ms.
+       - [ ] Optional: reserve the extra reader window only during loop
+         takes (the pool is doubled now).
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
        - handlers for `transport.rewind`, `transport.fast_forward`,
