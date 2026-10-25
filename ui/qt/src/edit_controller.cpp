@@ -804,10 +804,10 @@ bool EditController::nudge(int direction, std::string& why) {
         why = "select a region to nudge";
         return false;
     }
-    const auto step = static_cast<Frames>(std::llround(grid_frames(grid_, snapshot().settings)));
     MoveRegion op;
     const Id id = r->id;
-    if (!resolve_move(snapshot(), id, r->position + direction * step, doc_.reserve_id(), op)) {
+    const Frames to = nudge_target(r->position, direction, grid_, snapshot().settings);
+    if (to == r->position || !resolve_move(snapshot(), id, to, doc_.reserve_id(), op)) {
         why = "the region is already at the session start";
         return false;
     }
@@ -1318,6 +1318,21 @@ bool EditController::redo(std::string& why) {
     drag_ = Drag{};
     if (!doc_.redo(why)) return false;
     if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) clear_selection();
+    return true;
+}
+
+bool EditController::undo_to(std::size_t depth, std::string& why) {
+    const model::History& h = doc_.history();
+    if (depth >= h.step_count()) {
+        why = "that step is no longer in the undo history";
+        return false;
+    }
+    const std::size_t from = h.undo_depth();
+    const bool back = depth < from;
+    const std::size_t total = back ? from - depth : depth - from;
+    for (std::size_t done = 0; done < total; ++done) {
+        if (!(back ? undo(why) : redo(why))) return false;
+    }
     return true;
 }
 

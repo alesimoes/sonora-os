@@ -255,7 +255,8 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     settings.name = "Untitled";
     settings.sample_rate = cfg_.sample_rate;
     document_ = std::make_unique<model::Document>(
-        model::new_session_with_tracks(settings, hello_.track_names));
+        model::new_session_with_tracks(settings, hello_.track_names),
+        model::History::kDefaultBudget, cfg_.midi_max_entries);
 }
 
 FakeEngine::~FakeEngine() = default;

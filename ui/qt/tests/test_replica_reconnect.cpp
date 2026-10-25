@@ -89,7 +89,7 @@ private:
 struct Ui {
     explicit Ui(const std::string& endpoint) : se(options(endpoint)) {
         doc.on_refused = [this](const std::string& why) { notices.push_back(why); };
-        doc.on_load_abandoned = [this]() { ++loads_abandoned; };
+        doc.on_load_abandoned = [this](const std::string&, bool) { ++loads_abandoned; };
         engine.setModelSink([this](const std::vector<api::ModelUpdate>& u,
                                    const std::vector<api::CommandReply>& r) { doc.receive(u, r); });
         engine.watchConnection([this]() { return se.connected() ? se.greetings() : 0; },

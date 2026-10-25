@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "control_adapter.h"
+#include "edit_controller.h"
 #include "replica_document.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/model/op_codec.h"
@@ -46,7 +47,7 @@ struct Rig {
         c.tracks = 4;
         return c;
     }
-    Rig() : fake(config()) {
+    explicit Rig(api::testing::FakeEngine::Config c = config()) : fake(std::move(c)) {
         doc.on_refused = [this](const std::string& why) { refused.push_back(why); };
         engine.setModelSink([this](const std::vector<api::ModelUpdate>& u,
                                    const std::vector<api::CommandReply>& r) {
@@ -375,9 +376,122 @@ int undo_and_redo_labels_follow_the_engine() {
     return 0;
 }
 
+// The Undo History window's jump on the engine's document: each step its own
+// Undo or Redo, all shown at once and in flight together, and the engine
+// ends where the window does. Refused outright with the link down.
+int a_history_jump_is_one_request_a_step() {
+    Rig r;
+    std::string error;
+    CHECK(r.engine.connect(error));
+    r.tick();
+    std::string why;
+    for (const char* name : {"One", "Two", "Three", "Four"}) {
+        CHECK(r.doc.submit(marker(r.doc.reserve_id(), name), why));
+    }
+    r.tick();
+    CHECK(r.doc.in_flight() == 0 && r.doc.history().undo_depth() == 4);
+    EditController c(r.doc);
+    CHECK(c.undo_to(1, why));
+    CHECK(markers(r.doc) == 1 && r.doc.in_flight() == 3);
+    r.tick();
+    CHECK(r.doc.in_flight() == 0 && markers(r.doc) == 1 && r.refused.empty());
+    CHECK(r.doc.history().undo_depth() == 1 && r.doc.redo_label() == "AddMarker");
+    CHECK(c.undo_to(3, why));
+    r.tick();
+    CHECK(markers(r.doc) == 3 && r.doc.history().undo_depth() == 3 && r.refused.empty());
+    CHECK(!c.undo_to(r.doc.history().step_count(), why) && !why.empty());
+    CHECK(!r.doc.set_link(false));
+    why.clear();
+    CHECK(!c.undo_to(0, why) && !why.empty());
+    CHECK(markers(r.doc) == 3);
+    return 0;
+}
+
 }  // namespace
 
+// One MIDI track on `base` whose region holds `sysex` messages of 4 KiB:
+// the cheapest way to a large bundle.
+model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t events = 0) {
+    model::History h(std::move(base));
+    model::AddTrack t;
+    t.track = h.current().next_id;
+    t.playlist = t.track + 1;
+    t.name = "Synth";
+    t.playlist_name = "Synth.01";
+    t.kind = model::TrackKind::Midi;
+    t.channels = 0;
+    auto seq = std::make_shared<model::MidiSequence>();
+    std::vector<std::uint8_t> message(model::kMaxSysexBytes, 0x11);
+    message.front() = 0xF0;
+    message.back() = 0xF7;
+    for (std::size_t i = 0; i < sysex; ++i) {
+        seq->sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i), message});
+    }
+    for (std::size_t i = 0; i < events; ++i) {
+        seq->events.push_back(model::MidiEvent{static_cast<model::Ticks>(i), 0xB0, 1, 2});
+    }
+    model::MidiRegion r;
+    r.id = t.track + 2;
+    r.name = "Synth_01";
+    r.length = model::kTicksPerQuarter;
+    r.data = seq;
+    std::string why;
+    if (!h.apply(t, why) || !h.apply(model::PlaceMidiRegion{t.playlist, r, 0, {}}, why)) {
+        std::fprintf(stderr, "  %s\n", why.c_str());
+    }
+    return h.current();
+}
+
+// Architect, #109: a session whose bundle is over what a Load may carry is
+// refused here, by name, before anything is shown or sent, instead of being
+// shown while the engine never gets it.
+int a_load_over_the_cap_is_refused_before_it_is_shown() {
+    Rig r;
+    std::string error;
+    CHECK(r.engine.connect(error));
+    r.tick();
+    const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
+    // 16,400 messages of 4,096 bytes: just over 64 MiB once encoded.
+    const model::Snapshot big = with_midi(make_empty_session(4, 48000), 16400);
+    std::string why;
+    CHECK(!r.doc.reset(big, why));
+    CHECK(why.find("over the 67108864 bytes a Load can carry") != std::string::npos);
+    CHECK(why.find("once a Load travels in parts") != std::string::npos);
+    CHECK(r.doc.snapshot().edit->tracks.size() == tracks && r.doc.in_flight() == 0);
+    r.tick();
+    CHECK(r.doc.snapshot().edit->tracks.size() == tracks && r.refused.empty());
+    // Under the cap it is sent, and shown.
+    CHECK(r.doc.reset(with_midi(make_empty_session(4, 48000), 10), why));
+    r.tick();
+    CHECK(r.doc.in_flight() == 0 && r.refused.empty());
+    CHECK(r.doc.snapshot().edit->tracks.size() == 5);
+    return 0;
+}
+
+// A bundle the engine refuses (here, over its midi_max_entries) is taken
+// back with the engine's reason: the screen never keeps a session the
+// engine did not load.
+int a_load_the_engine_refuses_is_taken_back() {
+    api::testing::FakeEngine::Config c = Rig::config();
+    c.midi_max_entries = 100;
+    Rig r(c);
+    std::string error;
+    CHECK(r.engine.connect(error));
+    r.tick();
+    const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
+    std::string why;
+    CHECK(r.doc.reset(with_midi(make_empty_session(4, 48000), 0, 101), why));
+    CHECK(r.doc.snapshot().edit->tracks.size() == 5);   // shown at once
+    r.tick();
+    CHECK(r.refused.size() == 1);
+    CHECK(r.refused[0].find("midi_max_entries of 100") != std::string::npos);
+    CHECK(r.doc.in_flight() == 0 && r.doc.snapshot().edit->tracks.size() == tracks);
+    return 0;
+}
+
 int main() {
+    if (a_load_over_the_cap_is_refused_before_it_is_shown() != 0) return 1;
+    if (a_load_the_engine_refuses_is_taken_back() != 0) return 1;
     if (a_lost_link_drops_what_was_not_answered() != 0) return 1;
     if (edits_show_at_once_and_stay() != 0) return 1;
     if (another_interfaces_edit_arrives_and_a_clash_is_refused() != 0) return 1;
@@ -387,6 +501,7 @@ int main() {
     if (an_applied_undo_is_not_shown_twice_while_lost() != 0) return 1;
     if (a_refused_resync_is_said_and_asked_again() != 0) return 1;
     if (undo_and_redo_labels_follow_the_engine() != 0) return 1;
+    if (a_history_jump_is_one_request_a_step() != 0) return 1;
     std::printf("replica document: ok\n");
     return 0;
 }

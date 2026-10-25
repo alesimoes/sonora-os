@@ -189,10 +189,46 @@ playback can follow edits; it is in flight.
              `SetInstrument`/`RemoveInstrument` and the `instrument` key
              move to M-5. Unverified 6 measured: over the caps (`midi.md`
              §4.6).
-       - [ ] Unverified 6's decision, before M-4: sequences beside the
-             file, or another remedy, for sessions that save but do not
-             open past ~3 M DOM values and undo windows over 64 MiB
-             (owner and architect).
+       - [x] Unverified 6's decision, before M-4: ADR-0015 (PR #102),
+             accepted by the owner 2026-10-20 with O1–O5 as recommended:
+             canonical chunks, binary sidecar files, a chunk table in the
+             window, a 2^24-entry budget.
+       - [x] M-1c PR 1, storage and format (`m1c-midi-storage`):
+             `sha256_hex` in `common/base`; the `.msq` codec, canonical,
+             bounded, fuzzed (`midi.md` §4.4.1); session format 6, each
+             sequence in `MIDI Sequences/<sha256>.msq`, v5 → v6 moving
+             #100's inline lists at the first save (O5); a missing or
+             damaged file opens its regions silent, not editable, kept
+             (O2), its reference in undo window format 6; the interface's
+             saver writes sidecars tmp + `fdatasync` + rename before the
+             session file with one folder `fsync`, a hash-keyed written
+             set and in-memory reference sets, and cleans up per O4,
+             never while recording; `ModelAction::Load` carries a session
+             bundle, `kProtocolVersion` 8; `midi_max_entries` (engine
+             setting, 2^24): undo evicted first, edits over it refused,
+             sessions over it refused at open, a Notice from 90 %.
+             Measured: ADR-0015 Unverified 2 and 6 (`midi.md` §4.6).
+       - [ ] M-1c PR 2, chunks and protocol: `MidiSequence` as a spine of
+             canonical 4-quarter chunks with cumulative counts, shared by
+             undo steps (§1, §2); the window's chunk table and a Snapshot
+             in parts of at most 16 MiB, encoded off the document thread
+             (§4); the budget counted per chunk; ADR-0015 Unverified 1, 3
+             and 7 (rt-engineer, ui-engineer).
+       - [ ] M-1c PR 2 also carries Load in parts (client to engine), so
+             File > Open reaches the 2^24 budget; until then a bundle over
+             64 MiB is refused by name (ADR-0015 update of 2026-10-20).
+       - [ ] Sequence-file fsyncs run on the UI thread until the saver thread exists: announce a slow save ("Saving: writing N MIDI sequence files") before a batch over a few MiB (ui-engineer, #109).
+       - [ ] A MIDI region whose sequence file is missing is not drawn differently: the first MIDI region drawing marks it ("MIDI missing") and refuses edits on it by name (ui-engineer, #109).
+       - [ ] M-1c PR 3 **merges before the first M-4 PR that records
+             MIDI** (architect, #109), and makes the engine the sole owner
+             of `MIDI Sequences/`: the interface's sidecar writer and
+             cleanup go in the same PR. With the engine's saver thread
+             (item 3): sidecar
+             syncs only after a disk-thread checkpoint while a take is
+             open, "Saving after the next checkpoint", cleanup after the
+             transport stops; takes over the budget kept unplaced with a
+             Notice (M-4); rebuilding a missing sequence from its take
+             file (O2, with M-4's SMF reading); Unverified 5.
        - [ ] ADR-0014 §9's phases in order: M-2 backend MIDI ports, M-3 playback to ports,
              M-4 recording and SMF take files, M-5 instruments
              (plugin layout 2, exit part 1), M-6 SMF interchange (exit
@@ -324,6 +360,21 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              update, and keeps the last good document on screen while it
              waits, refusing edits meanwhile (PR #75 ui-engineer review;
              PR #86, ui_replica_document).
+       - [x] The Undo History window (`window.undo_history`, Edit > Undo
+             History; no profile key, since neither Pro Tools nor Logic
+             documents one): every step undo can reach, oldest first, the
+             undone ones in italics below a line. A click on a done step
+             undoes it and every later one, on an undone step redoes up to
+             it, as Pro Tools does; Undo All and Redo All. Each step is its
+             own Undo or Redo request, as the key pressed that many times.
+             A refusal in the window (offline, behind the engine) comes
+             before anything is sent; one from the engine is reported for
+             its step, the steps after it already sent. A
+             history that has dropped its oldest steps says undo stops at
+             step 1 (`t3i-undo-history`; ui_undo_history,
+             ui_replica_document a_history_jump_is_one_request_a_step).
+             Still open: Pro Tools' creation times, and Clear Undo Queue,
+             which needs an engine request.
 2. [ ] Mixer view on the monitor bus: fader, pan, mute, solo, metering.
        - [x] `feature/ui-mixer-monitor`: fader rides heard through
              ParameterChange and saved by one SetMix at release; typed gain
@@ -359,7 +410,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              editing (a SetSettings each; the conductor).
        - [ ] Counter entry (type a position, Enter locates): needs
              `transport.locate` from Track 1 item 4.
-       - [ ] The nudge steps by the first entry's grid value
+       - [x] The nudge steps by the first entry's grid value
              (`edit_controller.cpp` `nudge`): step by the value at the
              region instead, after `feature/ui-fades` lands there.
        - [x] A stale engine read no longer makes the bar counter and the
@@ -1668,3 +1719,5 @@ ADR-0011 "For the owner".
 - [ ] N7, only after the owner's rulings (item 8): `sonora-assistant`, the
       optional Claude layer over analysis features and session state, never
       audio; graceful fallback to native suggestions. ui-engineer.
+- [ ] M-1c follow-up: a fader ride during an unanswered Open may change the
+      gain of the track at that index in A. Non-blocking; ui-engineer.

@@ -254,6 +254,7 @@
 // ---------------------------------------------------------------------------
 
 #include "sonora/plugin/protocol.h"
+#include "sonora/sha256.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -767,8 +768,6 @@ inline constexpr uint32_t kStateBlobVersion = 1;
 bool encode_state_blob(const StateBlob& blob, std::string& out, std::string& error);
 bool decode_state_blob(std::string_view bytes, StateBlob& out, std::string& error);
 
-// SHA-256 of `bytes`, as 64 lowercase hex digits.
-std::string sha256_hex(std::string_view bytes);
 // "Plugin State/<sha256>.state", relative to the session folder (ADR-0012
 // §6.1). Empty when `sha256` is not 64 lowercase hex digits.
 std::string state_file_name(std::string_view sha256);

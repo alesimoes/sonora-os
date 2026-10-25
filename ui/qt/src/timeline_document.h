@@ -63,6 +63,9 @@ public:
     // there is nothing to undo or redo.
     virtual std::string undo_label() const = 0;
     virtual std::string redo_label() const = 0;
+    // The steps undo and redo can reach, as the Undo History window lists
+    // them: undo_depth() is where the document is, step 0 the floor.
+    virtual const model::History& history() const = 0;
     // An id no operation has introduced and none will be given twice, for an
     // operation being resolved: at least the snapshot's next_id, which is
     // what apply() checks.
@@ -114,7 +117,7 @@ public:
     model::Id reserve_id() override;
     bool reset(model::Snapshot s, std::string& why) override;
 
-    const model::History& history() const { return history_; }
+    const model::History& history() const override { return history_; }
 
 private:
     std::size_t budget_;

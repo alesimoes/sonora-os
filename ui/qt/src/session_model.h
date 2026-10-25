@@ -25,6 +25,7 @@
 #include "edit_controller.h"
 #include "engine_adapter.h"
 #include "peak_source.h"
+#include "session_files.h"
 #include "time_format.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -52,6 +53,16 @@ class SessionModel : public QObject {
     // Paste", "Redo Trim"; "Can't Undo" when there is nothing to undo.
     Q_PROPERTY(QString undoText READ undoText NOTIFY contentChanged)
     Q_PROPERTY(QString redoText READ redoText NOTIFY contentChanged)
+    // Pro Tools' Undo History window: [{label, done}] for every step after
+    // the floor, oldest first; `done` false for the steps redo would bring
+    // back, which the window shows in italics.
+    Q_PROPERTY(QVariantList undoHistory READ undoHistory NOTIFY contentChanged)
+    // Older steps were dropped as the history filled (the floor is an edit,
+    // not the session as it was opened): undo cannot reach back to the start.
+    // Where the document is in undoHistory: the number of done rows.
+    Q_PROPERTY(int undoHistoryDepth READ undoHistoryDepth NOTIFY contentChanged)
+    Q_PROPERTY(bool undoHistoryTrimmed READ undoHistoryTrimmed NOTIFY contentChanged)
+    Q_PROPERTY(bool undoHistoryOpen READ undoHistoryOpen NOTIFY undoHistoryOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
@@ -132,6 +143,13 @@ public:
     // lost first). What is shown is the engine's document, not that file's,
     // so the window stops naming the file and Save never writes over it.
     void openWasLost();
+    // The engine refused the File > Open just made, and kept its session,
+    // which is shown again. The window names that session's file again,
+    // with its saved bytes, repairs and sequence folder, so Save writes it
+    // and never the refused file, and cleanup never runs in the refused
+    // file's folder. `later_load`: another Open is in flight and shown, so
+    // the window keeps naming it, and that one's refusal can only clear.
+    void openWasRefused(const QString& why, bool later_load);
 
     // The interface's editing commands, installed before KeyRouter::prepare().
     void installCommands(CommandRegistry& local);
@@ -166,6 +184,17 @@ public:
     bool canRedo() const { return doc_.can_redo(); }
     QString undoText() const;
     QString redoText() const;
+    QVariantList undoHistory() const;
+    int undoHistoryDepth() const { return static_cast<int>(doc_.history().undo_depth()); }
+    bool undoHistoryTrimmed() const;
+    bool undoHistoryOpen() const { return undo_history_open_; }
+    void setUndoHistoryOpen(bool on);
+    // A click on row `row` of undoHistory, as in Pro Tools: on a done step it
+    // undoes that step and every later one; on an undone step it redoes up
+    // to and including it.
+    Q_INVOKABLE bool undoHistoryClick(int row);
+    // Undo All and Redo All, from the window's buttons.
+    Q_INVOKABLE bool undoHistoryAll(bool undo);
     bool canPaste() const { return !ctl_.clipboard().empty(); }
     QString editMode() const { return QString::fromLatin1(edit_mode_name(ctl_.mode())); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
@@ -265,11 +294,14 @@ signals:
     void counterChanged();
     void sessionChanged();
     void repairsChanged();
+    void undoHistoryOpenChanged();
     // A refusal from a mouse gesture, for the status line. Keys report
     // through the router.
     void refused(const QString& why);
     // Something done that the operator should see confirmed: "Saved ...".
     void notice(const QString& text);
+    // Why an Open did not happen, held until the next Open (empty).
+    void openNotice(const QString& text);
     // edit.repeat without a count, with something to repeat: the window
     // asks for the number, offering `count` (the last one used), and sends
     // edit.repeat again with it. `what` says what one copy is ("2.000 s of
@@ -290,6 +322,7 @@ private:
     bool synthetic_peaks_;
     QString sessions_dir_;
     SessionWriter writer_;
+    MidiSequenceFolder sequences_;   // the session folder's "MIDI Sequences/"
     QString file_;                 // empty until the session is saved or opened
     uint64_t saved_revision_ = 0;  // the revision the file holds
     uint64_t save_generation_ = 0;
@@ -301,9 +334,24 @@ private:
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
+    bool undo_history_open_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);
+
+    // What the window named before the Open the engine has not answered,
+    // given back if the engine refuses it.
+    struct BeforeOpen {
+        bool valid = false;
+        QString opened;   // the file that Open named
+        QString file;
+        uint64_t saved_revision = 0;
+        uint64_t save_generation = 0;
+        std::string saved_bytes;
+        QVariantList repairs;
+        MidiSequenceFolder sequences;
+    };
+    BeforeOpen before_open_;
 
     TransportOverlay overlay_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;

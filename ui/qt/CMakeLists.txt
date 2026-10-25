@@ -74,7 +74,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
-        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml
+        qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
 )
 
 add_executable(sonora-ui src/main.cpp)
@@ -120,6 +120,15 @@ target_compile_definitions(test_ui_clipboard PRIVATE
 add_test(NAME ui_clipboard COMMAND test_ui_clipboard)
 set_tests_properties(ui_clipboard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The Undo History window: its rows and jumps over the document's history,
+# then the window in the real QML, opened from the Edit menu.
+add_executable(test_ui_undo_history tests/test_undo_history.cpp)
+target_link_libraries(test_ui_undo_history PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_undo_history PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_undo_history COMMAND test_ui_undo_history)
+set_tests_properties(ui_undo_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,
 # opened by Pro Tools' key and by its button.
@@ -154,6 +163,13 @@ add_executable(test_ui_inserts tests/test_inserts.cpp)
 target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# File > Open on FakeEngine (#109 review): a refused Open gives the window
+# back to the session it had, and both Open refusals are held notices.
+add_executable(test_ui_session_open tests/test_session_open.cpp)
+target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt)
+add_test(NAME ui_session_open COMMAND test_ui_session_open)
+set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The Mix window on the monitor bus, on FakeEngine: typed gain and pan,
 # strips by display order, fader rides (ParameterChange per step, one SetMix

@@ -93,6 +93,10 @@ public:
     void setScanCodesAreXkb(bool xkb) { xkb_scan_codes_ = xkb; }
     bool scanCodesAreXkb() const { return xkb_scan_codes_; }
     void addNotice(const QString& n);
+    // Why the last File > Open did not happen. Held, since the operator
+    // asked for a session and may look away before a status line clears;
+    // replaced by the next refusal and taken away by the next Open (empty).
+    void setOpenNotice(const QString& n);
     // The key map's own notices -- a refused profile, the essentials
     // repaired -- which a profile switch replaces rather than piles up. The
     // essentials' are kept apart: a new engine's Hello replaces those alone.
@@ -274,6 +278,7 @@ private:
     QString status_;
     int64_t status_until_ns_ = 0;
     QStringList notices_;
+    QString open_notice_;
     QString fatal_;
     QString take_failed_;
     QString inputs_missing_;

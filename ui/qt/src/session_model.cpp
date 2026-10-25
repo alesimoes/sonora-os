@@ -122,6 +122,12 @@ void SessionModel::installCommands(CommandRegistry& local) {
 
     simple("edit.undo", [this](const CommandContext&, Why& why) { return ctl_.undo(why); });
     simple("edit.redo", [this](const CommandContext&, Why& why) { return ctl_.redo(why); });
+    // How the operator looks at the history, not the session: the
+    // interface's own, so it opens with the engine gone too.
+    local.install("window.undo_history", [this](const CommandContext&) {
+        setUndoHistoryOpen(!undo_history_open_);
+        return true;
+    });
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
     simple("edit.cut", [this](const CommandContext&, Why& why) { return ctl_.cut(why); });
     simple("edit.copy", [this](const CommandContext&, Why& why) { return ctl_.copy(why); });
@@ -276,6 +282,49 @@ QString SessionModel::redoText() const {
     if (!doc_.can_redo()) return QStringLiteral("Can't Redo");
     const std::string what = step_text(doc_.redo_label());
     return what.empty() ? QStringLiteral("Redo") : QStringLiteral("Redo ") + q(what);
+}
+
+QVariantList SessionModel::undoHistory() const {
+    const model::History& h = doc_.history();
+    QVariantList rows;
+    for (std::size_t i = 1; i < h.step_count(); ++i) {
+        const std::string what = step_text(h.step_label(i));
+        QVariantMap row;
+        row[QStringLiteral("label")] = what.empty() ? QStringLiteral("Edit") : q(what);
+        row[QStringLiteral("done")] = i <= h.undo_depth();
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+bool SessionModel::undoHistoryTrimmed() const {
+    const model::History& h = doc_.history();
+    return h.step_count() > 0 && !h.step_label(0).empty();
+}
+
+void SessionModel::setUndoHistoryOpen(bool on) {
+    if (on == undo_history_open_) return;
+    undo_history_open_ = on;
+    emit undoHistoryOpenChanged();
+}
+
+bool SessionModel::undoHistoryClick(int row) {
+    const model::History& h = doc_.history();
+    std::string why;
+    if (row < 0 || static_cast<std::size_t>(row) + 1 >= h.step_count()) {
+        return run(false, "that step is no longer in the undo history");
+    }
+    const std::size_t step = static_cast<std::size_t>(row) + 1;
+    const std::size_t depth = step <= h.undo_depth() ? step - 1 : step;
+    return run(ctl_.undo_to(depth, why), why);
+}
+
+bool SessionModel::undoHistoryAll(bool undo) {
+    const model::History& h = doc_.history();
+    std::string why;
+    if (undo && !h.can_undo()) return run(false, "nothing to undo");
+    if (!undo && !h.can_redo()) return run(false, "nothing to redo");
+    return run(ctl_.undo_to(undo ? 0 : h.step_count() - 1, why), why);
 }
 
 bool SessionModel::run(bool ok, const std::string& why) {
@@ -638,7 +687,7 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     info.written_by = "sonora-ui";
     info.save_generation = save_generation_;
     std::string bytes, error;
-    if (!model::serialize(to_write, info, bytes, error)) {
+    if (!model::serialize(to_write, info, bytes, error, &sequences_.digests())) {
         why = "the session could not be saved: " + error;
         sync();
         return false;
@@ -646,8 +695,16 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     const bool nothing_new = file == file_ && bytes == saved_bytes_;
     if (!nothing_new) {
         info.save_generation = save_generation_ + 1;
-        if (!model::serialize(to_write, info, bytes, error)) {
+        if (!model::serialize(to_write, info, bytes, error, &sequences_.digests())) {
             why = "the session could not be saved: " + error;
+            sync();
+            return false;
+        }
+        // The sequence files first (ADR-0015 §3): the session file must never
+        // name one that is not durable. A failure here leaves the old session
+        // file as it was.
+        if (!sequences_.write(file, to_write, why)) {
+            why = "the session could not be saved: " + why;
             sync();
             return false;
         }
@@ -658,6 +715,17 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
         }
         if (!disk_caution.empty()) {
             caution = caution.empty() ? disk_caution : caution + "; " + disk_caution;
+        }
+        sequences_.saved(file, to_write);
+        // O4, after a durable save only: with the folder unsynced the old
+        // session file can come back after a power cut, and its sequence
+        // files must still be there. Held back too while a take is open
+        // (§6): a deletion's journal commit is one more thing in front of
+        // the take's own syncs.
+        std::string clean_caution;
+        if (disk_caution.empty() && !overlay_.recording) sequences_.clean(clean_caution);
+        if (!clean_caution.empty()) {
+            caution = caution.empty() ? clean_caution : caution + "; " + clean_caution;
         }
         save_generation_ = info.save_generation;
         saved_bytes_ = std::move(bytes);
@@ -705,9 +773,23 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
               " Hz; it cannot play here until sample-rate conversion exists";
         return false;
     }
-    if (!doc_.reset(std::move(loaded.snapshot), why)) return false;
+    const std::shared_ptr<const model::SourcePool> pool = loaded.snapshot.sources;
+    if (!doc_.reset(std::move(loaded.snapshot), why)) {
+        emit openNotice(file + QStringLiteral(" was not opened: ") + q(why));
+        return false;
+    }
     ctl_.document_replaced();
+    before_open_.valid = true;
+    before_open_.opened = file;
+    before_open_.file = file_;
+    before_open_.saved_revision = saved_revision_;
+    before_open_.save_generation = save_generation_;
+    before_open_.saved_bytes = saved_bytes_;
+    before_open_.repairs = repairs_;
+    before_open_.sequences = sequences_;
+    emit openNotice(QString());
     file_ = file;
+    sequences_.open(file, loaded.verified_sequences);
     // A repaired session is not the file on disk: it reads as modified, so
     // Save writes it and another Open asks first.
     saved_revision_ = loaded.repairs.empty() ? doc_.revision() : UINT64_MAX;
@@ -729,12 +811,34 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
         m.insert(QStringLiteral("why"), q(r.why));
         repairs << m;
     }
+    // O2: each missing sequence file shown as a repair is, held until
+    // dismissed. Its regions opened silent with their windows; nothing is
+    // dropped, and a save names the file again.
+    for (const model::MissingSequence& ms : loaded.missing_sequences) {
+        std::string where = ms.regions.front();
+        if (ms.regions.size() > 1) where += " and " + std::to_string(ms.regions.size() - 1) + " more";
+        std::string why_missing = ms.why;
+        const model::MidiSource* take =
+            ms.sources.empty() ? nullptr : pool->find_midi(ms.sources.front());
+        if (take != nullptr) why_missing += "; its take " + take->path + " is kept";
+        QVariantMap m;
+        m.insert(QStringLiteral("path"), q(where));
+        m.insert(QStringLiteral("was"), q(ms.ref.file));
+        m.insert(QStringLiteral("now"), QStringLiteral("MIDI data missing: silent, not editable"));
+        m.insert(QStringLiteral("why"), q(why_missing));
+        repairs << m;
+    }
     setRepairs(std::move(repairs));
     QString said = QStringLiteral("Opened ") + file_;
     if (!loaded.repairs.empty()) {
         said += QStringLiteral(", with %1 value%2 repaired to open (listed below); save to keep them")
                     .arg(loaded.repairs.size())
                     .arg(loaded.repairs.size() == 1 ? QString() : QStringLiteral("s"));
+    }
+    if (!loaded.missing_sequences.empty()) {
+        said += QStringLiteral(", with %1 MIDI sequence file%2 missing (listed below)")
+                    .arg(loaded.missing_sequences.size())
+                    .arg(loaded.missing_sequences.size() == 1 ? QString() : QStringLiteral("s"));
     }
     emit notice(said);
     return true;
@@ -752,7 +856,45 @@ void SessionModel::dismissRepair(int index) {
     emit repairsChanged();
 }
 
+void SessionModel::openWasRefused(const QString& why, bool later_load) {
+    if (later_load) {
+        // What is shown is the later Open's session, and the window names
+        // it. What that Open remembered is the refused session, so its own
+        // refusal must clear rather than give this one back.
+        before_open_ = BeforeOpen{};
+        emit openNotice(QStringLiteral("A session was not opened: ") + why);
+        return;
+    }
+    if (!before_open_.valid) {
+        const QString refused = file_;
+        openWasLost();
+        emit openNotice((refused.isEmpty() ? QStringLiteral("A session") : refused) +
+                        QStringLiteral(" was not opened: ") + why);
+        return;
+    }
+    BeforeOpen b = std::move(before_open_);
+    before_open_ = BeforeOpen{};
+    ctl_.document_replaced();
+    file_ = b.file;
+    saved_revision_ = b.saved_revision;
+    save_generation_ = b.save_generation;
+    saved_bytes_ = std::move(b.saved_bytes);
+    sequences_ = std::move(b.sequences);
+    seen_dirty_ = false;
+    seen_revision_ = UINT64_MAX;
+    seen_sel_valid_ = seen_view_valid_ = false;
+    updateCounters(true);
+    setRepairs(std::move(b.repairs));
+    sync();
+    emit sessionChanged();
+    emit openNotice(b.opened + QStringLiteral(" was not opened: ") + why + QStringLiteral("; ") +
+                    (file_.isEmpty() ? QStringLiteral("the session before it")
+                                     : file_) +
+                    QStringLiteral(" is shown"));
+}
+
 void SessionModel::openWasLost() {
+    before_open_ = BeforeOpen{};
     const QString lost = file_;
     file_.clear();
     saved_bytes_.clear();
@@ -765,8 +907,8 @@ void SessionModel::openWasLost() {
     sync();
     emit sessionChanged();
     if (!lost.isEmpty()) {
-        emit notice(lost + QStringLiteral(" was not opened: the engine was unreachable. "
-                                          "Open it again."));
+        emit openNotice(lost + QStringLiteral(" was not opened: the engine was unreachable. "
+                                              "Open it again."));
     }
 }
 

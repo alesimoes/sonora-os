@@ -230,8 +230,12 @@ bool parse(QGuiApplication& app, Options& o) {
                                                       "region three times and open the Repeat "
                                                       "dialog (repeat), or copy a range on the "
                                                       "first three tracks and paste it later "
-                                                      "on them (multitrack), for screenshots."),
-                                       QStringLiteral("fades|clipboard|repeat|multitrack"));
+                                                      "on them (multitrack), or add a tempo map "
+                                                      "and nudge a region past its change "
+                                                      "(nudge), or make a few edits, undo the last "
+                                                      "and open the Undo History window "
+                                                      "(undo-history), for screenshots."),
+                                       QStringLiteral("fades|clipboard|repeat|multitrack|nudge|undo-history"));
     const QCommandLineOption mix_view({QStringLiteral("mix-view")},
                                       QStringLiteral("With --demo, solo Lead Vox and make Room "
                                                      "and Talkback solo safe (solo-safe), for "
@@ -283,9 +287,10 @@ bool parse(QGuiApplication& app, Options& o) {
     o.edit_view = p.value(edit_view);
     if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades") &&
         o.edit_view != QStringLiteral("clipboard") && o.edit_view != QStringLiteral("repeat") &&
-        o.edit_view != QStringLiteral("multitrack")) {
-        std::fprintf(stderr,
-                     "sonora-ui: --edit-view must be fades, clipboard, repeat or multitrack\n");
+        o.edit_view != QStringLiteral("multitrack") && o.edit_view != QStringLiteral("nudge") &&
+        o.edit_view != QStringLiteral("undo-history")) {
+        std::fprintf(stderr, "sonora-ui: --edit-view must be fades, clipboard, repeat, "
+                             "multitrack, nudge or undo-history\n");
         return false;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
@@ -432,7 +437,8 @@ int main(int argc, char** argv) {
     if (a.opt.demo) {
         std::string why;
         sonora::model::Snapshot demo = make_demo_session(engine.info().track_count, rate);
-        if (a.opt.transport_view) add_demo_tempo_map(demo);
+        if (a.opt.transport_view || a.opt.edit_view == QStringLiteral("nudge"))
+            add_demo_tempo_map(demo);
         if (fake != nullptr) {
             demo_crash = add_demo_inserts(demo);
             fake->script_plugin_latency(api::testing::fake_catalog()[2].id, 64);
@@ -453,7 +459,13 @@ int main(int argc, char** argv) {
                                               const std::vector<api::CommandReply>& replies) {
         if (document.receive(updates, replies)) session.documentUpdated();
     });
-    document.on_load_abandoned = [&session]() { session.openWasLost(); };
+    document.on_load_abandoned = [&session](const std::string& refused, bool later_load) {
+        if (refused.empty()) {
+            session.openWasLost();
+        } else {
+            session.openWasRefused(QString::fromStdString(refused), later_load);
+        }
+    };
     // Fader rides are heard through ParameterChange and saved at release.
     // The fake engine plays nothing, and the Mix window says so.
     MixModel mixer(
@@ -503,6 +515,7 @@ int main(int argc, char** argv) {
     register_types();
     ShellModel model(engine, router);
     a.model = &model;
+    QObject::connect(&session, &SessionModel::openNotice, &model, &ShellModel::setOpenNotice);
     link_transport(model, session, transport);
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
@@ -658,6 +671,56 @@ int main(int argc, char** argv) {
                 model.invoke(QStringLiteral("zoom.fit_session"), -1);
                 if (c.selection().tracks != 3)
                     std::fprintf(stderr, "sonora-ui: multitrack: %s\n", qPrintable(model.statusText()));
+            }
+            // On the demo's tempo map, the snare separated where 96 bpm
+            // starts and the part after it nudged forward two beats on the
+            // 1/4 grid: the gap is two 96 bpm beats and the region lands on
+            // 17|3, not on 120 bpm steps.
+            if (a.opt.edit_view == QStringLiteral("nudge")) {
+                EditController& c = session.controller();
+                const auto& tempo = c.snapshot().settings.tempo;
+                const auto change = tempo.size() > 1 ? tempo[1].at : 0;
+                std::string why;
+                c.select_track(track);
+                c.set_insertion(change);
+                if (!c.separate(why)) std::fprintf(stderr, "sonora-ui: nudge: %s\n", why.c_str());
+                sonora::model::Id pick = kNoId;
+                if (const auto* pl = active_playlist(c.snapshot().edit->tracks[track].get())) {
+                    for (const auto& r : pl->regions) {
+                        if (r.position == change) pick = r.id;
+                    }
+                }
+                if (pick != kNoId && c.select_region(pick)) {
+                    c.set_grid(GridValue::Beat);
+                    for (int i = 0; i < 2; ++i) model.invoke(QStringLiteral("nudge.forward"), -1);
+                    c.set_insertion(change);
+                    for (int i = 0; i < 3; ++i) model.invoke(QStringLiteral("zoom.in"), -1);
+                } else {
+                    std::fprintf(stderr, "sonora-ui: nudge: no region at the tempo change\n");
+                }
+            }
+            // A few edits through the keys' commands, the last one undone, and
+            // the Undo History window open on them: done steps, the line, and
+            // the undone step in italics below it.
+            if (a.opt.edit_view == QStringLiteral("undo-history") && p && p->regions.size() > 1) {
+                EditController& c = session.controller();
+                const auto snare = p->regions[1].id;
+                c.select_region(snare);
+                model.invoke(QStringLiteral("edit.duplicate"), -1);
+                c.select_region(snare);
+                if (!model.invokeWith(QStringLiteral("edit.repeat"), -1, QStringLiteral("2")))
+                    std::fprintf(stderr, "sonora-ui: repeat: %s\n", qPrintable(model.statusText()));
+                const auto* first = active_playlist(c.snapshot().edit->tracks[0].get());
+                if (first && !first->regions.empty()) {
+                    const auto kick = first->regions[0].id;
+                    c.select_region(kick);
+                    model.invoke(QStringLiteral("edit.duplicate"), -1);
+                    c.select_region(kick);
+                    model.invoke(QStringLiteral("edit.clear"), -1);
+                }
+                model.invoke(QStringLiteral("edit.undo"), -1);
+                model.invoke(QStringLiteral("zoom.fit_session"), -1);
+                model.invoke(QStringLiteral("window.undo_history"), -1);
             }
             // The snare's two crossfaded regions copied and pasted after the
             // next track's last region, through the keys' commands, with the

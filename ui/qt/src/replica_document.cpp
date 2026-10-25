@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "sonora/api/wire.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/session_file.h"
 
@@ -55,6 +56,16 @@ void ReplicaDocument::request_resync() {
 bool ReplicaDocument::refuse_while_lost(std::string& why) {
     if (offline_) {
         why = kOffline;
+        return true;
+    }
+    // A request carries no session tag: sent before the engine answers a
+    // Load, it would be applied to the session the engine kept if it refuses
+    // that Load, where the same ids usually name other things.
+    const bool opening = std::any_of(pending_.begin(), pending_.end(), [](const Pending& p) {
+        return p.kind == Pending::Kind::Load && !p.answered;
+    });
+    if (opening) {
+        why = "the session is still opening; nothing was changed";
         return true;
     }
     if (!resyncing()) return false;
@@ -124,8 +135,19 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     model::WriteInfo info;
     info.written_by = "sonora-ui";
     std::string bytes, error;
-    if (!model::serialize(s, info, bytes, error)) {
+    // With its sequence files: the engine reads nothing from this folder.
+    if (!model::encode_session_bundle(s, info, bytes, error)) {
         why = "the session could not be sent to the engine: " + error;
+        return false;
+    }
+    // Checked before it is shown: over the cap the engine never receives
+    // it, and the screen would hold a session the engine did not load.
+    if (bytes.size() > api::wire::kMaxModelBytes) {
+        why = "the session is " + std::to_string(bytes.size()) +
+              " bytes with its MIDI sequence files, over the " +
+              std::to_string(api::wire::kMaxModelBytes) +
+              " bytes a Load can carry; it opens once a Load travels in parts, as a Snapshot"
+              " will (ADR-0015 M-1c PR 2)";
         return false;
     }
     Pending p;
@@ -181,7 +203,7 @@ bool ReplicaDocument::set_link(bool up) {
                    (dropped == 1 ? " edit" : " edits") +
                    " it had not confirmed were dropped; the engine's document is shown");
     }
-    if (load_dropped && on_load_abandoned) on_load_abandoned();
+    if (load_dropped && on_load_abandoned) on_load_abandoned(std::string(), false);
     return true;
 }
 
@@ -217,6 +239,7 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         std::string why;
     };
     std::vector<Flushed> flushed;
+    std::vector<std::string> loads_refused;
     for (const api::CommandReply& r : replies) {
         if (resync_seq_ != 0 && r.seq == resync_seq_) {
             resync_seq_ = 0;
@@ -248,9 +271,18 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         if (r.result == DispatchResult::Ok) {
             it->answered = true;
         } else {
+            const bool load = it->kind == Pending::Kind::Load;
             pending_.erase(it);
             changed = true;
-            if (on_refused) on_refused(r.message.empty() ? "the engine refused the edit" : r.message);
+            std::string why = !r.message.empty() ? r.message
+                              : load             ? "the engine refused the session"
+                                                 : "the engine refused the edit";
+            // The session says it: it knows the file, and holds the notice.
+            if (load && on_load_abandoned) {
+                loads_refused.push_back(std::move(why));
+            } else if (on_refused) {
+                on_refused(why);
+            }
         }
     }
     // The engine sends a request's reply just before its update, so an
@@ -267,6 +299,16 @@ bool ReplicaDocument::receive(const std::vector<api::ModelUpdate>& updates,
         changed = changed || pending_.size() != before;
     }
     if (changed) rebuild();
+    // After the rebuild, so the session reads what is shown now. The engine
+    // answers in order, so each refused Load is older than any still out.
+    if (!loads_refused.empty()) {
+        const bool load_out = std::any_of(pending_.begin(), pending_.end(), [](const Pending& p) {
+            return p.kind == Pending::Kind::Load;
+        });
+        for (std::size_t i = 0; i < loads_refused.size(); ++i) {
+            on_load_abandoned(loads_refused[i], load_out || i + 1 < loads_refused.size());
+        }
+    }
     // Last, so each sees the updates the flush caused: the engine sent them
     // before its reply, and they were applied above.
     for (Flushed& f : flushed) f.done(f.ok, f.why);

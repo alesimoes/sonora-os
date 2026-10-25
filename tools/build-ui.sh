@@ -16,7 +16,10 @@
 #                                           paste with the Edit menu open
 #                                           (-clipboard), the Repeat dialog
 #                                           (-repeat), a paste on three
-#                                           tracks (-multitrack), a repaired session
+#                                           tracks (-multitrack), a nudge on a
+#                                           tempo map (-nudge), the Undo
+#                                           History window (-undo-history),
+#                                           a repaired session
 #                                           opened (-repairs) and the
 #                                           engine-gone state under the cage
 #                                           kiosk compositor, captured by the

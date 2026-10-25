@@ -35,8 +35,13 @@ class History {
 public:
     // timeline-model.md's placeholder; a session setting later.
     static constexpr std::size_t kDefaultBudget = std::size_t{64} << 20;
+    // ADR-0015 §5: 2^24 notes, events and SysEx messages in the document,
+    // the current state and every retained step's own sequences together.
+    // The engine's setting `midi_max_entries` overrides it.
+    static constexpr std::uint64_t kDefaultMidiMaxEntries = std::uint64_t{1} << 24;
 
-    explicit History(Snapshot initial, std::size_t budget_bytes = kDefaultBudget);
+    explicit History(Snapshot initial, std::size_t budget_bytes = kDefaultBudget,
+                     std::uint64_t midi_max_entries = kDefaultMidiMaxEntries);
     static History replica(Snapshot initial);
 
     struct WindowStep {
@@ -56,6 +61,11 @@ public:
     // Applies through model::apply(), `check` included. An undoable
     // operation discards any redo steps, pushes a step and may evict the
     // oldest; a compound pushes at most one.
+    //
+    // MIDI's budget (ADR-0015 §5): history goes before work. Past
+    // midi_max_entries the oldest steps are evicted, down to the current
+    // state alone if need be, and only an operation whose result alone
+    // would still be over is refused, by name.
     bool apply(const Operation& op, std::string& error, const MemberCheck& check = {});
 
     bool can_undo() const { return pos_ > 0; }
@@ -74,6 +84,13 @@ public:
 
     std::size_t charged_bytes() const { return charged_; }
     std::size_t budget() const { return budget_; }
+    // Entries counted, as ADR-0015 §5 counts them: the floor's sequences and
+    // each later step's own. Counted in entries, never allocator bytes, so
+    // every machine and compiler evicts at the same step.
+    std::uint64_t midi_entries() const { return entries_; }
+    // The current state's alone: what an open or an edit is refused over.
+    std::uint64_t current_midi_entries() const;
+    std::uint64_t midi_max_entries() const { return max_entries_; }
     std::size_t step_count() const { return steps_.size(); }
     std::size_t undo_depth() const { return pos_; }
     // Step `i`, oldest first, for whoever sends the window to a replica.
@@ -100,6 +117,9 @@ private:
         std::size_t charge = 0;   // bytes this step alone allocated
         // Display only. Empty for the state at open.
         std::string label;
+        // MIDI entries in the sequences this step holds and the one before
+        // it does not; the floor's, every entry it holds.
+        std::uint64_t entries = 0;
     };
 
     void push(std::shared_ptr<const EditState> edit, std::uint64_t revision, std::string label);
@@ -117,11 +137,18 @@ private:
     // Sum of every step's charge except the floor's. The floor is the base
     // state the others are counted against; it is not history overhead.
     std::size_t charged_ = 0;
+    std::uint64_t max_entries_;
+    std::uint64_t entries_ = 0;   // sum of every step's `entries`
 };
 
 // The bytes `state` allocated that `previous` does not share with it: the
 // tracks, playlists and marker list it does not have in common, plus its
 // own node. What a step is charged.
 std::size_t exclusive_bytes(const EditState& state, const EditState& previous);
+
+// MIDI entries (midi_entries()) in the distinct sequences `state` holds,
+// and in those it holds that `previous` does not.
+std::uint64_t state_midi_entries(const EditState& state);
+std::uint64_t exclusive_midi_entries(const EditState& state, const EditState& previous);
 
 }  // namespace sonora::model

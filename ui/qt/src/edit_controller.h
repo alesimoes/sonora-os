@@ -233,6 +233,16 @@ public:
     void set_crossfade_shape(model::FadeShape s) { crossfade_shape_ = s; }
     bool undo(std::string& why);
     bool redo(std::string& why);
+    // The Undo History window's jump: undo or redo, one step at a time, until
+    // History::undo_depth() is `depth`, as Pro Tools does from its list.
+    // Each step is its own Undo or Redo, as pressing the key that many times
+    // would be. A refusal here (offline, behind the engine) comes at the
+    // first step, before anything is sent, so the jump does nothing. On the
+    // engine's document every step is sent at once: a step the engine
+    // refuses later is reported on its own (ReplicaDocument::on_refused),
+    // and the steps after it have already gone. A depth past the newest step
+    // is refused.
+    bool undo_to(std::size_t depth, std::string& why);
 
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);

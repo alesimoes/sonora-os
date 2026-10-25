@@ -21,9 +21,12 @@
 #pragma once
 
 #include <QString>
+#include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "sonora/model/sequence_file.h"
 #include "sonora/model/session_file.h"
 
 namespace sonora::ui {
@@ -62,8 +65,65 @@ std::vector<SessionEntry> list_sessions(const QString& dir);
 bool write_session_file(const QString& file, const std::string& bytes, std::string& why,
                         std::string& caution);
 
-// Reads and parses `file`. On failure `why` says where in the file.
+// Reads and parses `file`, and each sequence file it names from its
+// folder's "MIDI Sequences/". On failure `why` says where in the file. A
+// sequence file that is not there or does not verify is not a failure: it
+// is in `out.missing_sequences` (ADR-0015 O2).
 bool read_session_file(const QString& file, std::string& bytes, model::Loaded& out,
                        std::string& why);
+
+// A session's "MIDI Sequences/" (ADR-0015 §3, §6), for File > Save and
+// Open. Each sequence a save names is written before the session file:
+// "<sha>.msq.tmp", synced, renamed to "<sha>.msq", and one sync of the
+// folder for the whole save, so a session file never names a sequence
+// that is not durable. A sequence file no kept session file names (this
+// one, and each copy in "Session File Backups/") is derived state, and
+// clean() deletes it without asking.
+//
+// What is on disk and what each kept file names are held in memory between
+// saves: each kept file is parsed once, when first seen, and one that has
+// gone is dropped. The session folder is the one a backup or the autosave
+// belongs to, never "Session File Backups/" itself. Still the interface's
+// until the engine has a saver thread (session-format.md, "Saving"); that
+// saver also paces its syncs behind the disk thread's checkpoints while a
+// take is open (ADR-0015 §6), which this one cannot see, so the interface
+// only holds back cleanup while it records.
+class MidiSequenceFolder {
+public:
+    // `session_file`'s folder, as an open found it: an interrupted write
+    // (".msq.tmp") is deleted, and every kept file's references read.
+    // `verified` are the sequence files the open read and checked.
+    void open(const QString& session_file, const std::set<std::string>& verified);
+    // Every sequence `s` names that is not on disk, written and synced, then
+    // the folder synced once. False, with `why` naming the file, when one
+    // could not be: then the session file must not be written.
+    bool write(const QString& session_file, const model::Snapshot& s, std::string& why);
+    // The session file now holds `s`: what it names is kept, from `s`
+    // itself, without reading the file back.
+    void saved(const QString& session_file, const model::Snapshot& s);
+    // Deletes each sequence file no kept file names; nothing while a kept
+    // file cannot be read (`caution` then says which). How many went.
+    // Call only once the save is durable.
+    int clean(std::string& caution);
+    // What the saves of this window have hashed, so serialize() hashes only
+    // what changed since.
+    model::SequenceDigests& digests() { return digests_; }
+    // Kept files parsed since the folder was entered, for the tests.
+    std::size_t kept_reads() const { return kept_reads_; }
+
+private:
+    void enter(const QString& session_file);
+    void refresh_kept();
+
+    QString folder_;   // the session folder, empty before the first
+    model::SequenceDigests digests_;
+    model::SequenceFileSet files_;
+    std::set<QString> known_;   // the kept files files_ holds a set for
+    std::size_t kept_reads_ = 0;
+};
+
+// The session folder of a session file: its own folder, or, for a file in
+// "Session File Backups/", the folder above it.
+QString session_folder_of(const QString& file);
 
 }  // namespace sonora::ui
