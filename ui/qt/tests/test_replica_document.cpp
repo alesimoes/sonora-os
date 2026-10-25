@@ -471,7 +471,11 @@ int a_history_jump_is_one_request_a_step() {
 
 // One MIDI track on `base` whose region holds `sysex` messages of 4 KiB:
 // the cheapest way to a large bundle.
-model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t events = 0) {
+// `sysex` messages `step` ticks apart, then `events`. Unchecked, the region
+// is placed past History's refusal of a chunk too large for a part, as a
+// damaged or foreign file could hold one.
+model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t events = 0,
+                          model::Ticks step = 1, bool checked = true) {
     model::History h(std::move(base));
     model::AddTrack t;
     t.track = h.current().next_id;
@@ -485,7 +489,7 @@ model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t e
     message.front() = 0xF0;
     message.back() = 0xF7;
     for (std::size_t i = 0; i < sysex; ++i) {
-        seq.sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i), message});
+        seq.sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i) * step, message});
     }
     for (std::size_t i = 0; i < events; ++i) {
         seq.events.push_back(model::MidiEvent{static_cast<model::Ticks>(i), 0xB0, 1, 2});
@@ -496,9 +500,14 @@ model::Snapshot with_midi(model::Snapshot base, std::size_t sysex, std::size_t e
     r.length = model::kTicksPerQuarter;
     r.data = std::make_shared<const model::MidiSequence>(seq);
     std::string why;
-    if (!h.apply(t, why) || !h.apply(model::PlaceMidiRegion{t.playlist, r, 0, {}}, why)) {
-        std::fprintf(stderr, "  %s\n", why.c_str());
+    if (!h.apply(t, why)) std::fprintf(stderr, "  %s\n", why.c_str());
+    const model::PlaceMidiRegion place{t.playlist, r, 0, {}};
+    if (!checked) {
+        model::Snapshot next;
+        if (!model::apply(h.current(), place, next, why)) std::fprintf(stderr, "  %s\n", why.c_str());
+        return next;
     }
+    if (!h.apply(place, why)) std::fprintf(stderr, "  %s\n", why.c_str());
     return h.current();
 }
 
@@ -518,11 +527,22 @@ int a_load_over_the_cap_is_refused_before_it_is_shown() {
     CHECK(why.find("over this interface's limit of 1048576") != std::string::npos);
     CHECK(r.doc.snapshot().edit->tracks.size() == tracks && r.doc.in_flight() == 0);
     r.doc.set_max_snapshot_bytes(model::kDefaultMaxSnapshotBytes);
-    // 4,200 messages of 4,096 bytes in one region: one file over 16 MiB.
-    CHECK(!r.doc.reset(with_midi(make_empty_session(4, 48000), 4200), why));
-    CHECK(why.find("one part of a Load may carry") != std::string::npos);
+    // 4,200 messages of 4,096 bytes at one tick: one chunk over a part,
+    // which apply and open refuse. Made without them, it is still refused
+    // by name before it is shown.
+    CHECK(!r.doc.reset(with_midi(make_empty_session(4, 48000), 4200, 0, 1, false), why));
+    CHECK(why.find("a part of the chunk table may hold") != std::string::npos);
     r.tick();
     CHECK(r.doc.snapshot().edit->tracks.size() == tracks && r.refused.empty());
+    // The same bytes four a chunk: one sequence file of about 18 MiB, over
+    // a part, split across parts and opened (the architect's review of #120).
+    CHECK(r.doc.reset(with_midi(make_empty_session(4, 48000), 4400, 0, model::kTicksPerQuarter),
+                      why));
+    r.tick();
+    CHECK(r.doc.in_flight() == 0 && r.refused.empty() && r.doc.synced());
+    CHECK(r.doc.snapshot().edit->tracks.size() == 5);
+    CHECK(r.doc.snapshot().edit->tracks[4]->midi_playlists[0]->regions[0].data->sysex().size() ==
+          4400);
     // Five regions of 13.5 MiB: over the 64 MiB one message can carry, in
     // five parts each way, and opened.
     model::Snapshot big = make_empty_session(4, 48000);

@@ -612,8 +612,14 @@ void EngineControlServer::set_inputs_connected(uint32_t count, bool none_is_a_pr
 
 void EngineControlServer::send_to(Client& client, const std::string& bytes) {
     if (!client.held.empty()) {
+        if (client.overflowed) return;
+        if (client.held_bytes + bytes.size() > opts_.max_held_bytes) {
+            client.overflowed = overflowed_ = true;
+            return;
+        }
         Held h;
         h.bytes = bytes;
+        client.held_bytes += bytes.size();
         client.held.push_back(std::move(h));
         return;
     }
@@ -632,8 +638,16 @@ void EngineControlServer::write_to(Client& client, const std::string& bytes) {
 
 void EngineControlServer::send_frames(Client& client, const std::vector<Frame>& frames) {
     if (!client.held.empty()) {
+        if (client.overflowed) return;
+        std::size_t size = 0;
+        for (const Frame& f : frames) size += f->size();
+        if (client.held_bytes + size > opts_.max_held_bytes) {
+            client.overflowed = overflowed_ = true;
+            return;
+        }
         Held h;
         h.frames = frames;
+        client.held_bytes += size;
         client.held.push_back(std::move(h));
         return;
     }
@@ -777,6 +791,9 @@ struct EngineControlServer::SnapshotJob {
     // the document, so the copy is a few hundred pointers. Freed once encoded.
     std::unique_ptr<model::History> history;
     uint64_t generation = 0;
+    uint64_t revision = 0;
+    // Clients whose `held` still has it to send; the control thread's alone.
+    std::size_t holders = 0;
     // The worker's results, read by the control thread once `done` is seen.
     std::atomic<bool> done{false};
     bool ok = false;
@@ -859,7 +876,12 @@ void EngineControlServer::encode_loop() {
     }
 }
 
-void EngineControlServer::send_snapshot(const std::vector<ClientId>& to, uint64_t reply_seq) {
+std::shared_ptr<EngineControlServer::SnapshotJob> EngineControlServer::snapshot_job() {
+    std::shared_ptr<SnapshotJob> last = last_job_.lock();
+    if (last && last->holders > 0 && last->generation == session_generation_ &&
+        last->revision == document_->current().revision) {
+        return last;
+    }
     auto job = std::make_shared<SnapshotJob>();
     const auto t0 = std::chrono::steady_clock::now();
     job->history = std::make_unique<model::History>(document_->history());
@@ -870,23 +892,12 @@ void EngineControlServer::send_snapshot(const std::vector<ClientId>& to, uint64_
         longest_copy_us_.store(us, std::memory_order_release);
     }
     job->generation = session_generation_;
-    for (const ClientId id : to) {
-        const auto it = clients_.find(id);
-        if (it == clients_.end()) continue;
-        Held h;
-        h.job = job;
-        it->second.held.push_back(std::move(h));
-        if (reply_seq != 0 && id == to.front()) {
-            Held r;
-            r.job = job;
-            r.reply_to = reply_seq;
-            it->second.held.push_back(std::move(r));
-        }
-    }
+    job->revision = document_->current().revision;
+    last_job_ = job;
     if (encoder_.joinable()) {
         {
             std::lock_guard<std::mutex> lock(jobs_mutex_);
-            jobs_.push_back(std::move(job));
+            jobs_.push_back(job);
         }
         jobs_wake_.notify_one();
     } else {
@@ -894,7 +905,62 @@ void EngineControlServer::send_snapshot(const std::vector<ClientId>& to, uint64_
         // and the first client's Snapshot must be out when start() returns.
         encode(*job);
     }
+    return job;
+}
+
+void EngineControlServer::send_snapshot(const std::vector<ClientId>& to, uint64_t reply_seq) {
+    std::shared_ptr<SnapshotJob> job;
+    for (const ClientId id : to) {
+        const auto it = clients_.find(id);
+        if (it == clients_.end()) continue;
+        Client& c = it->second;
+        // One this client has not begun, of this session: the updates held
+        // behind it bring the replica from it to now.
+        std::shared_ptr<SnapshotJob> answer;
+        for (std::size_t i = 0; i < c.held.size(); ++i) {
+            const Held& h = c.held[i];
+            if (h.job && h.reply_to == 0 && !(i == 0 && c.job_sent > 0) &&
+                h.job->generation == session_generation_) {
+                answer = h.job;
+            }
+        }
+        if (!answer) {
+            if (!job) job = snapshot_job();
+            answer = job;
+            Held h;
+            h.job = job;
+            ++job->holders;
+            c.held.push_back(std::move(h));
+        }
+        if (reply_seq != 0 && id == to.front()) {
+            Held r;
+            r.job = answer;
+            r.reply_to = reply_seq;
+            c.held.push_back(std::move(r));
+        }
+        snapshots_asked_.fetch_add(1, std::memory_order_acq_rel);
+    }
     pump_snapshots();
+}
+
+void EngineControlServer::drop_overflowed() {
+    if (!overflowed_) return;
+    overflowed_ = false;
+    std::vector<ClientId> ids;
+    for (auto& [id, c] : clients_) {
+        if (!c.overflowed) continue;
+        // In process there is no transport to close; what it was not sent
+        // is lost, as refuse() says, and it carries on.
+        if (!c.refuse) {
+            c.overflowed = false;
+            continue;
+        }
+        ids.push_back(id);
+    }
+    for (const ClientId id : ids) {
+        refuse(id, "the interface stopped reading while its Snapshot was sent: more than " +
+                       std::to_string(opts_.max_held_bytes) + " bytes waited behind it");
+    }
 }
 
 bool EngineControlServer::pump_snapshots() {
@@ -946,9 +1012,12 @@ bool EngineControlServer::pump_snapshots() {
                     break;
                 }
                 c.job_sent = 0;
+                --j.holders;
             } else if (!h.frames.empty()) {
+                for (const Frame& f : h.frames) c.held_bytes -= f->size();
                 write_frames(c, h.frames);
             } else {
+                c.held_bytes -= h.bytes.size();
                 write_to(c, h.bytes);
             }
             c.held.pop_front();
@@ -1280,6 +1349,7 @@ void EngineControlServer::run() {
         release_handled();
         pump_snapshots();
         tick();
+        drop_overflowed();
     }
 }
 
@@ -1502,8 +1572,12 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 } else if (l != loads_.end() && !l->second.refused.empty()) {
                     why = l->second.refused;
                 } else {
+                    // Refused, the old session kept, when the new one's
+                    // Snapshot could not be sent (Document::load); only the
+                    // chunk table is left for the worker.
                     ok = document_->load(m.op, session_.config().sample_rate, why,
-                                         l != loads_.end() ? l->second.parts.get() : nullptr);
+                                         l != loads_.end() ? l->second.parts.get() : nullptr,
+                                         api::wire::kMaxModelBytes);
                 }
                 if (l != loads_.end()) loads_.erase(l);
                 mix_changed = true;

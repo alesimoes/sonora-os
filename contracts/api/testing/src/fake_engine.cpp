@@ -813,7 +813,7 @@ void FakeEngine::handle(const std::string& bytes) {
         ModelRequest m;
         if (!wire::decode(bytes, m, error)) return;
         model::ReplicationUpdate u;
-        std::string why;
+        std::string why, snapshot_failed;
         bool ok = false;
         // The real engine's rule: faders are written from the document only
         // when an update changed what they hold, so an unrelated edit leaves
@@ -844,16 +844,21 @@ void FakeEngine::handle(const std::string& bytes) {
                 ok = document_->snapshot(u, why, wire::kMaxModelBytes);
                 break;
             case ModelAction::Load:
+                // As engine/control: refused, the old session kept, when
+                // the new one's Snapshot could not be sent; accepted, its
+                // Snapshot always encodes, and a failure there is only the
+                // backstop's Notice.
                 if (!load_refused_.empty()) {
                     why = load_refused_;
-                } else if (load_parts_) {
-                    ok = document_->load(m.op, cfg_.sample_rate, why, load_parts_.get()) &&
-                         document_->snapshot(u, why, wire::kMaxModelBytes);
                 } else {
-                    ok = document_->load(m.op, cfg_.sample_rate, u, why, wire::kMaxModelBytes);
+                    ok = document_->load(m.op, cfg_.sample_rate, why, load_parts_.get(),
+                                         wire::kMaxModelBytes);
                 }
                 load_parts_.reset();
                 load_refused_.clear();
+                if (ok && !document_->snapshot(u, snapshot_failed, wire::kMaxModelBytes)) {
+                    snapshot_failed = "the engine could not send its document: " + snapshot_failed;
+                }
                 break;
             case ModelAction::LoadPart: {
                 if (!load_parts_) {
@@ -875,7 +880,14 @@ void FakeEngine::handle(const std::string& bytes) {
         }
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (!ok) return;
-        broadcast(u);
+        if (snapshot_failed.empty()) {
+            broadcast(u);
+        } else {
+            EngineEvent e;
+            e.kind = EventKind::Notice;
+            e.text = snapshot_failed;
+            post_event(e);
+        }
         std::vector<model::Id> order_after;
         for (const auto& t : document_->current().edit->tracks) order_after.push_back(t->id);
         const model::MixState& mix_after = document_->current().mix;

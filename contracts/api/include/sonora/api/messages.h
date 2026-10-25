@@ -55,7 +55,8 @@ namespace sonora::api {
 //   ModelUpdateKind::SnapshotHeader, SnapshotPart and Snapshot, the window's
 //   chunk table in parts of at most wire::kMaxPartBytes (undo window format
 //   7, sequences as spines of chunks); a Load as ModelAction::LoadPart
-//   requests ahead of a Load that carries the bare session file.
+//   requests, slices of the same chunk table, ahead of a Load that carries
+//   their index by sequence and the bare session file.
 constexpr uint32_t kProtocolVersion = 10;
 
 // --- client -> engine -------------------------------------------------------
@@ -130,8 +131,10 @@ enum class ModelAction : uint32_t {
     // becomes it, with a new undo history, and every replica gets a
     // Snapshot. Bytes rather than a path, so the engine needs no view of the
     // interface's filesystem and File > Open's checks stay where the dialog
-    // is. Protocol version 2; a bundle since 8; after LoadPart requests, the
-    // bare session file since 10.
+    // is. Protocol version 2; a bundle since 8; since 10, or after LoadPart
+    // requests, an index of the parts' chunks by sequence and the bare
+    // session file (common/model's encode_load_parts). Refused, the session
+    // kept, when the new document's Snapshot could not be sent.
     Load = 4,
     // Bring the document's plugin values up to date with the running
     // plugins (ADR-0012 §8): before File > Save, and before an insert is
@@ -145,11 +148,12 @@ enum class ModelAction : uint32_t {
     // timed out); the others' updates still went out. An insert that is not
     // running already has its last state in the document. Protocol 3.
     FlushPluginState = 5,
-    // One part of a Load in parts (ADR-0015 §4, protocol 10): whole MIDI
-    // sequence files, at most wire::kMaxPartBytes (common/model's
-    // encode_load_parts). The engine decodes and checks each part as it
-    // arrives, and replies to each; the Load that follows carries the bare
-    // session file and opens with them. A refused part abandons the Load:
+    // One part of a Load in parts (ADR-0015 §4, protocol 10): a slice of the
+    // session's MIDI chunk table in the Snapshot's own part form, whole
+    // chunks, at most wire::kMaxPartBytes (common/model's encode_load_parts),
+    // so a sequence of any size crosses. The engine decodes and checks each
+    // part as it arrives, and replies to each; the Load that follows says
+    // which chunks make each sequence. A refused part abandons the Load:
     // the parts before it are dropped and the Load is refused with its
     // reason. The parts are this client's alone until its next Load.
     LoadPart = 6,

@@ -2,6 +2,7 @@
 #include "sonora/model/history.h"
 
 #include "sonora/model/op_codec.h"
+#include "sonora/model/sequence_file.h"
 
 #include <algorithm>
 #include <limits>
@@ -137,7 +138,7 @@ struct Own {
 };
 
 // What `state` allocated that `previous` does not share with it.
-Own own(const EditState& state, const EditState& previous) {
+Own own(const EditState& state, const EditState& previous, std::string* oversized = nullptr) {
     const Held shared(previous);
     // What `state` holds twice is counted once.
     std::unordered_set<const void*> seen;
@@ -166,6 +167,9 @@ Own own(const EditState& state, const EditState& previous) {
                         if (shared.has_chunk(c) || !seen.insert(c).second) continue;
                         o.bytes += chunk_bytes(*c);
                         o.midi_entries += c->data.entries();
+                        if (oversized != nullptr && oversized->empty()) {
+                            *oversized = oversized_chunk(*c, t->name);
+                        }
                     }
                 }
             });
@@ -207,8 +211,8 @@ std::uint64_t exclusive_midi_entries(const EditState& state, const EditState& pr
     return own(state, previous).midi_entries;
 }
 
-History::Cost History::cost(const EditState& next, const Step& previous) {
-    const Own fresh = own(next, *previous.edit);
+History::Cost History::cost(const EditState& next, const Step& previous, std::string* oversized) {
+    const Own fresh = own(next, *previous.edit, oversized);
     const Own gone = own(*previous.edit, next);
     Cost c;
     c.charge = fresh.bytes;
@@ -304,7 +308,12 @@ bool History::apply(const Operation& op, std::string& error, const MemberCheck& 
         current_ = std::move(next);
         return true;
     }
-    const Cost c = cost(*next.edit, steps_[pos_]);
+    std::string oversized;
+    const Cost c = cost(*next.edit, steps_[pos_], &oversized);
+    if (!oversized.empty()) {
+        error = oversized;
+        return false;
+    }
     if (next.edit != current_.edit && max_entries_ != std::numeric_limits<std::uint64_t>::max()) {
         const std::uint64_t n = c.total;
         if (n > max_entries_) {

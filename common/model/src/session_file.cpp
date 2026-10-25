@@ -1473,6 +1473,12 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
         error.message = why;
         return false;
     }
+    // Refused here, by name, rather than opened and then never attachable.
+    why = oversized_chunk(*s.edit);
+    if (!why.empty()) {
+        error.message = why;
+        return false;
+    }
     out = std::move(loaded);
     return true;
 }
@@ -1582,101 +1588,136 @@ bool decode_session_bundle(std::string_view bytes, Loaded& out, LoadError& error
 
 namespace {
 
-// "SNRLPRT" and its version, 1, then as in a bundle: the number of sequence
-// files (u32), and each one's length (u64) and bytes.
-constexpr char kLoadPartMagic[8] = {'S', 'N', 'R', 'L', 'P', 'R', 'T', '\x01'};
+// "SNRLIDX" and its version, 1, then the number of sequences (u32) and how
+// many chunks of the table each holds (u64 each), in table order; the bare
+// session file is the rest.
+constexpr char kLoadIndexMagic[8] = {'S', 'N', 'R', 'L', 'I', 'D', 'X', '\x01'};
 
 }  // namespace
 
-bool encode_load_parts(const Snapshot& s, const WriteInfo& info, std::string& session_file,
+bool encode_load_parts(const Snapshot& s, const WriteInfo& info, std::string& load,
                        std::vector<std::string>& parts, std::string& error,
                        SequenceDigests* digests, std::size_t max_part_bytes) {
     SequenceDigests local;
     if (digests == nullptr) digests = &local;
     std::string session;
     if (!serialize(s, info, session, error, digests)) return false;
-    std::vector<NamedSequence> named = named_sequences(s, *digests);
-    std::vector<std::string> out;
-    std::string files;
-    std::uint32_t count = 0;
-    const auto close = [&]() {
-        std::string part(kLoadPartMagic, sizeof kLoadPartMagic);
-        put_u32(part, count);
-        part += files;
-        out.push_back(std::move(part));
-        files.clear();
-        count = 0;
-    };
-    constexpr std::size_t kHeader = sizeof kLoadPartMagic + 4;
-    for (NamedSequence& n : named) {
+    const std::vector<NamedSequence> named = named_sequences(s, *digests);
+    std::vector<const MidiChunk*> table;
+    std::string index;
+    std::uint32_t sequences = 0;
+    for (const NamedSequence& n : named) {
         if (n.data->missing) continue;
-        if (n.encoded.empty()) n.encoded = encode_sequence(*n.data);
-        const std::size_t one = 8 + n.encoded.size();
-        if (kHeader + one > max_part_bytes) {
-            error = "sequence file " + n.ref.file + " is " + std::to_string(n.encoded.size()) +
-                    " bytes, over the " + std::to_string(max_part_bytes) +
-                    " one part of a Load may carry";
-            return false;
+        std::uint64_t chunks = 0;
+        for (const MidiSpineNode& node : n.data->spine()) {
+            for (const MidiSpineEntry& e : node.leaf->chunks) {
+                table.push_back(e.chunk.get());
+                ++chunks;
+            }
         }
-        if (count > 0 && kHeader + files.size() + one > max_part_bytes) close();
-        put_u64(files, n.encoded.size());
-        files += n.encoded;
-        ++count;
+        put_u64(index, chunks);
+        ++sequences;
     }
-    if (count > 0) close();
-    session_file = std::move(session);
+    std::vector<std::string> out;
+    if (!encode_chunk_parts(table, max_part_bytes, out, error)) return false;
+    std::string bytes(kLoadIndexMagic, sizeof kLoadIndexMagic);
+    put_u32(bytes, sequences);
+    bytes += index;
+    bytes += session;
+    load = std::move(bytes);
     parts = std::move(out);
     return true;
+}
+
+bool is_load_in_parts(std::string_view load) {
+    return load.size() >= sizeof kLoadIndexMagic &&
+           std::memcmp(load.data(), kLoadIndexMagic, sizeof kLoadIndexMagic) == 0;
 }
 
 LoadParts::LoadParts(std::uint64_t max_entries) : max_entries_(max_entries) {}
 
 bool LoadParts::add(std::string_view part, std::string& why) {
-    if (part.size() < sizeof kLoadPartMagic ||
-        std::memcmp(part.data(), kLoadPartMagic, sizeof kLoadPartMagic) != 0) {
-        why = "a part of the session is not a Load part (magic)";
+    const std::size_t before = table_.size();
+    std::string error;
+    // Leaves the table as it was when it fails.
+    if (!decode_chunk_part(part, table_, error)) {
+        why = "a part of the session's MIDI: " + error;
         return false;
     }
-    std::size_t at = sizeof kLoadPartMagic;
-    std::uint64_t count = 0, length = 0;
-    if (!get_le(part, at, 4, count) || count == 0 || count > (part.size() - at) / 8) {
-        why = "a part of the session: the file count is cut short or does not fit";
-        return false;
-    }
-    // Checked whole before any of it is kept, so a bad part leaves what the
-    // earlier ones brought.
-    std::vector<std::pair<std::string, File>> got;
     std::uint64_t entries = entries_;
-    for (std::uint64_t i = 0; i < count; ++i) {
-        if (!get_le(part, at, 8, length) || length > part.size() - at) {
-            why = "a part of the session: sequence file " + std::to_string(i) + " is cut short";
-            return false;
-        }
-        const std::string_view bytes = part.substr(at, static_cast<std::size_t>(length));
-        at += static_cast<std::size_t>(length);
-        std::string sha = sha256_hex(bytes);
-        if (files_.count(sha) != 0) continue;
-        auto seq = std::make_shared<MidiSequence>();
-        std::string error;
-        if (!decode_sequence(bytes, *seq, error)) {
-            why = "sequence file " + midi_sequence_file(sha) + " does not decode: " + error;
-            return false;
-        }
-        entries += seq->entries();
-        if (entries > max_entries_) {
-            why = "the session's sequence files hold more than this engine's midi_max_entries"
-                  " of " + std::to_string(max_entries_) +
-                  " MIDI notes and events; raise the setting to open it";
-            return false;
-        }
-        got.emplace_back(std::move(sha), File{bytes.size(), std::move(seq)});
-    }
-    if (at != part.size()) {
-        why = "a part of the session: bytes after the last sequence file";
+    for (std::size_t i = before; i < table_.size(); ++i) entries += table_[i]->data.entries();
+    if (entries > max_entries_) {
+        table_.resize(before);
+        why = "the session's MIDI holds more than this engine's midi_max_entries of " +
+              std::to_string(max_entries_) + " notes and events; raise the setting to open it";
         return false;
     }
-    for (auto& [sha, f] : got) files_.emplace(std::move(sha), std::move(f));
     entries_ = entries;
+    return true;
+}
+
+bool LoadParts::open(std::string_view load, std::string_view& session_file, std::string& why) {
+    if (!is_load_in_parts(load)) {
+        why = "the Load after its parts carries no index of them";
+        return false;
+    }
+    std::size_t at = sizeof kLoadIndexMagic;
+    std::uint64_t count = 0;
+    if (!get_le(load, at, 4, count) || count > (load.size() - at) / 8) {
+        why = "the Load's index is cut short";
+        return false;
+    }
+    std::vector<std::uint64_t> sizes(static_cast<std::size_t>(count));
+    std::uint64_t named = 0;
+    for (std::uint64_t& n : sizes) {
+        get_le(load, at, 8, n);
+        if (n > table_.size() - named) {
+            why = "the Load's index names more chunks than its parts brought (" +
+                  std::to_string(table_.size()) + ")";
+            return false;
+        }
+        named += n;
+    }
+    if (named != table_.size()) {
+        why = "the Load's index names " + std::to_string(named) + " chunks and its parts brought " +
+              std::to_string(table_.size());
+        return false;
+    }
+    std::size_t next = 0;
+    for (std::size_t s = 0; s < sizes.size(); ++s) {
+        const std::size_t end = next + static_cast<std::size_t>(sizes[s]);
+        std::vector<std::shared_ptr<const MidiSpineLeaf>> leaves;
+        while (next < end) {
+            const std::int64_t leaf = table_[next]->index / kMidiLeafChunks;
+            std::vector<std::shared_ptr<const MidiChunk>> in_leaf;
+            while (next < end && table_[next]->index / kMidiLeafChunks == leaf) {
+                in_leaf.push_back(std::move(table_[next++]));
+            }
+            std::shared_ptr<const MidiSpineLeaf> l;
+            if (!MidiSequence::make_leaf(std::move(in_leaf), l, why)) {
+                why = "sequence " + std::to_string(s) + " of the Load: " + why;
+                return false;
+            }
+            leaves.push_back(std::move(l));
+        }
+        auto seq = std::make_shared<MidiSequence>();
+        std::string where;
+        if (!MidiSequence::from_leaves(std::move(leaves), *seq, why)) {
+            why = "sequence " + std::to_string(s) + " of the Load: " + why;
+            return false;
+        }
+        why = detail::sequence_problem(*seq, where);
+        if (!why.empty()) {
+            why = "sequence " + std::to_string(s) + " of the Load: " + where + ": " + why;
+            return false;
+        }
+        // Its name is the hash of the file it would be, as a bundle's is.
+        const std::string bytes = encode_sequence(*seq);
+        files_.emplace(sha256_hex(bytes), File{bytes.size(), std::move(seq)});
+    }
+    table_.clear();
+    table_.shrink_to_fit();
+    session_file = load.substr(at);
     return true;
 }
 

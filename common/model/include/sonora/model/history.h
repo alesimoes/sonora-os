@@ -130,7 +130,10 @@ private:
         std::uint64_t total = 0;
     };
     // `next`'s charge, own entries and total, against the step before it.
-    static Cost cost(const EditState& next, const Step& previous);
+    // With `oversized`, what is wrong with the first chunk of `next`'s own
+    // too large for a part (sequence_file.h, kMaxChunkBytes).
+    static Cost cost(const EditState& next, const Step& previous,
+                     std::string* oversized = nullptr);
 
     void push(std::shared_ptr<const EditState> edit, std::uint64_t revision, std::string label,
               const Cost& c);

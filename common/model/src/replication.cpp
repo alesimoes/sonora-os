@@ -128,12 +128,27 @@ bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
     return true;
 }
 
-bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
-                    std::string& error, SequenceSource* parts) {
+bool Document::load(std::string_view load, std::uint32_t sample_rate, std::string& error,
+                    LoadParts* parts, std::size_t max_window_bytes) {
     Loaded loaded;
     LoadError why;
-    const bool ok = parts != nullptr ? deserialize(session_file, loaded, why, parts)
-                                     : decode_session_bundle(session_file, loaded, why);
+    bool ok = false;
+    if (is_load_in_parts(load)) {
+        // A session with no MIDI sends no part.
+        LoadParts none(0);
+        LoadParts& from = parts != nullptr ? *parts : none;
+        std::string_view session_file;
+        if (!from.open(load, session_file, error)) {
+            error = "the session does not load: " + error;
+            return false;
+        }
+        ok = deserialize(session_file, loaded, why, &from);
+    } else if (parts != nullptr && parts->chunks() != 0) {
+        error = "the session does not load: the Load after its parts carries no index of them";
+        return false;
+    } else {
+        ok = decode_session_bundle(load, loaded, why);
+    }
     if (!ok) {
         error = "the session does not load: " + why.text();
         return false;
@@ -153,7 +168,18 @@ bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
                 std::to_string(history_.midi_max_entries()) + "; raise the setting to open it";
         return false;
     }
-    history_ = History(std::move(loaded.snapshot), history_.budget(), history_.midi_max_entries());
+    History next(std::move(loaded.snapshot), history_.budget(), history_.midi_max_entries());
+    if (max_window_bytes != SIZE_MAX) {
+        std::string window;
+        if (!encode_window_alone(next, window, error)) return false;
+        if (window.size() > max_window_bytes) {
+            error = "the session's document is " + std::to_string(window.size()) +
+                    " bytes, over the " + std::to_string(max_window_bytes) +
+                    " a snapshot may carry, so no interface could be sent it";
+            return false;
+        }
+    }
+    history_ = std::move(next);
     return true;
 }
 

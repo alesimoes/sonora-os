@@ -278,6 +278,42 @@ std::size_t leb_size(std::uint64_t v) {
 
 }  // namespace
 
+std::string oversized_chunk(const MidiChunk& c, const std::string& track) {
+    // A bound on the encoding first (a note is at most 20 bytes, an event
+    // 11, a SysEx message 10 and its own), so a chunk is encoded only when
+    // it may be too large.
+    std::size_t bound = 64 + 32 * static_cast<std::size_t>(c.data.entries());
+    for (const MidiSysEx& x : c.data.sysex) bound += x.bytes.size();
+    if (bound <= kMaxChunkBytes) return {};
+    const std::size_t bytes = encode_lists(c.data).size();
+    if (bytes <= kMaxChunkBytes) return {};
+    return "track \"" + track + "\": the MIDI in chunk " + std::to_string(c.index) +
+           " (four beats from beat " + std::to_string(c.index * 4) + ") would be " +
+           std::to_string(bytes) + " bytes, over the " + std::to_string(kMaxChunkBytes) +
+           " one chunk may hold; spread it over more time";
+}
+
+std::string oversized_chunk(const EditState& state) {
+    std::unordered_set<const void*> seen;
+    for (const auto& t : state.tracks) {
+        for (const auto& p : t->midi_playlists) {
+            if (!seen.insert(p.get()).second) continue;
+            for (const MidiRegion& r : p->regions) {
+                if (!r.data || !seen.insert(r.data.get()).second) continue;
+                for (const MidiSpineNode& n : r.data->spine()) {
+                    if (!seen.insert(n.leaf.get()).second) continue;
+                    for (const MidiSpineEntry& e : n.leaf->chunks) {
+                        if (!seen.insert(e.chunk.get()).second) continue;
+                        std::string why = oversized_chunk(*e.chunk, t->name);
+                        if (!why.empty()) return why;
+                    }
+                }
+            }
+        }
+    }
+    return {};
+}
+
 bool encode_chunk_parts(const std::vector<const MidiChunk*>& table, std::size_t max_part_bytes,
                         std::vector<std::string>& parts, std::string& error) {
     parts.clear();

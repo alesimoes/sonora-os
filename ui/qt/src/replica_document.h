@@ -77,12 +77,12 @@ public:
     // What is shown: the engine's steps with the requests in flight on top.
     const model::History& history() const override { return shown_; }
     model::Id reserve_id() override;
-    // Sends the session to the engine and shows it at once: its MIDI
-    // sequence files as ModelAction::LoadPart requests of at most
-    // api::wire::kMaxPartBytes, then ModelAction::Load with the session file
-    // (ADR-0015 §4). Refused by name instead, with nothing shown or sent,
-    // when the sequence files together are over max_snapshot_bytes(), or
-    // one alone is over a part.
+    // Sends the session to the engine and shows it at once: its MIDI chunk
+    // table as ModelAction::LoadPart requests of at most
+    // api::wire::kMaxPartBytes, then ModelAction::Load with their index and
+    // the session file (ADR-0015 §4). Refused by name instead, with nothing
+    // shown or sent, when the parts together are over max_snapshot_bytes(),
+    // or one chunk alone is over a part.
     bool reset(model::Snapshot s, std::string& why) override;
     // This interface's cap on a Snapshot's chunk table and a Load's
     // sequence files (ADR-0015 §4: the replica's own, an interface setting).

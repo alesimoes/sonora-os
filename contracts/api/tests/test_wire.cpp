@@ -168,7 +168,7 @@ void round_trips() {
         CHECK(back.kind == ModelUpdateKind::SnapshotPart && back.bytes == u.bytes);
         ModelRequest r;
         r.action = ModelAction::LoadPart;
-        r.op = "SNRLPRT";
+        r.op = "SWCP";
         wire::encode(r, bytes);
         ModelRequest rb;
         CHECK(wire::decode(bytes, rb, error) && rb.action == ModelAction::LoadPart);

@@ -1950,6 +1950,12 @@ bool encode_window(const History& history, WindowParts& out, std::string& error,
     return true;
 }
 
+bool encode_window_alone(const History& history, std::string& window, std::string& error) {
+    WindowWriter w;
+    Value root;
+    return window_value(history, w, root, error) && json::write(root, window, error);
+}
+
 std::uint64_t WindowParts::part_bytes() const {
     std::uint64_t n = 0;
     for (const std::string& p : parts) n += p.size();

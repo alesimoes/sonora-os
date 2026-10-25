@@ -474,8 +474,9 @@ int test_an_order_broken_across_chunks_is_refused() {
     return 0;
 }
 
-// A Load in parts: the sequence files ahead in parts of whole files, the
-// session file last; the engine decodes each part as it arrives.
+// A Load in parts: the sequences' chunks ahead in the Snapshot's parts, the
+// index and the session file last; the engine decodes each part as it
+// arrives.
 int test_load_in_parts() {
     History h(new_session(settings()));
     Ids ids(h.current());
@@ -495,15 +496,15 @@ int test_load_in_parts() {
     std::string session;
     std::vector<std::string> parts;
     CHECK(encode_load_parts(h.current(), info, session, parts, error, nullptr, 8000));
-    CHECK(parts.size() == 4);
+    CHECK(parts.size() > 1);
     LoadParts in(History::kDefaultMidiMaxEntries);
     for (const std::string& p : parts) {
         CHECK(p.size() <= 8000);
         CHECK(in.add(p, error));
     }
-    CHECK(in.files() == 4);
     Document doc(new_session(settings()));
     CHECK(doc.load(session, 0, error, &in));
+    CHECK(in.files() == 4);
     Loaded whole;
     LoadError le;
     std::string bundle;
@@ -519,29 +520,147 @@ int test_load_in_parts() {
         return out;
     };
     CHECK(sequences(doc.current()) == sequences(whole.snapshot));
-    // A file too large for a part alone is refused by name.
-    CHECK(!encode_load_parts(h.current(), info, session, parts, error, nullptr, 500) &&
-          mentions(error, "one part of a Load may carry"));
+    // Only a chunk too large for a part alone is refused, by name.
+    CHECK(!encode_load_parts(h.current(), info, session, parts, error, nullptr, 50) &&
+          mentions(error, "a part of the chunk table may hold"));
     // A bad part keeps what the earlier ones brought; one past the budget
     // is refused by name.
     CHECK(encode_load_parts(h.current(), info, session, parts, error, nullptr, 8000));
     LoadParts some(History::kDefaultMidiMaxEntries);
     CHECK(some.add(parts[0], error));
+    const std::size_t first = some.chunks();
     std::string bad = parts[1];
     bad.pop_back();
-    CHECK(!some.add(bad, error) && some.files() == 1);
+    CHECK(!some.add(bad, error) && some.chunks() == first);
     LoadParts small(100);
-    CHECK(!small.add(parts[0], error) && mentions(error, "midi_max_entries of 100"));
-    // A file the parts did not bring opens missing, as with a bundle.
+    CHECK(!small.add(parts[0], error) && mentions(error, "midi_max_entries of 100") &&
+          small.chunks() == 0);
+    // An index that names chunks the parts did not bring is refused, and
+    // the document kept.
     LoadParts partial(History::kDefaultMidiMaxEntries);
     CHECK(partial.add(parts[0], error));
     Document doc2(new_session(settings()));
-    CHECK(doc2.load(session, 0, error, &partial));
-    std::size_t missing = 0;
-    for (const auto& t : doc2.current().edit->tracks) {
-        for (const MidiRegion& r : t->midi_playlists[0]->regions) missing += r.data->missing ? 1 : 0;
+    CHECK(!doc2.load(session, 0, error, &partial) && mentions(error, "chunks"));
+    CHECK(doc2.current().edit->tracks.empty());
+    // Parts, then a Load with no index of them.
+    LoadParts stray(History::kDefaultMidiMaxEntries);
+    CHECK(stray.add(parts[0], error));
+    std::string bundle_bytes;
+    CHECK(encode_session_bundle(h.current(), info, bundle_bytes, error));
+    CHECK(!doc2.load(bundle_bytes, 0, error, &stray) && mentions(error, "no index"));
+    return 0;
+}
+
+// 4,400 SysEx messages of 4,096 bytes, four a chunk: one sequence file of
+// about 18 MiB, over a part, in a session the budget allows. Its Load is
+// split across parts and opens whole (ADR-0015 §4, the architect's note).
+MidiLists big_sysex(std::size_t messages, Ticks step) {
+    MidiLists l;
+    std::vector<std::uint8_t> m(kMaxSysexBytes, 0x11);
+    m.front() = 0xF0;
+    m.back() = 0xF7;
+    for (std::size_t i = 0; i < messages; ++i) {
+        m[1] = static_cast<std::uint8_t>(i & 0x7F);
+        l.sysex.push_back(MidiSysEx{static_cast<Ticks>(i) * step, m});
     }
-    CHECK(missing == 3);
+    return l;
+}
+
+int test_a_sequence_over_a_part_loads_in_parts() {
+    Session s;
+    CHECK(s.build(big_sysex(4400, kBeat)));
+    const std::string file = encode_sequence(s.data());
+    CHECK(file.size() > std::size_t{17} << 20);
+    WriteInfo info;
+    info.written_by = "test";
+    std::string load, error;
+    std::vector<std::string> parts;
+    CHECK(encode_load_parts(s.h.current(), info, load, parts, error));
+    CHECK(parts.size() >= 2);
+    LoadParts in(History::kDefaultMidiMaxEntries);
+    for (const std::string& p : parts) {
+        CHECK(p.size() <= kMaxChunkPartBytes);
+        CHECK(in.add(p, error));
+    }
+    Document doc(new_session(settings()));
+    CHECK(doc.load(load, 0, error, &in, std::size_t{64} << 20));
+    const MidiRegion& r = doc.current().edit->tracks[0]->midi_playlists[0]->regions[0];
+    CHECK(!r.data->missing && r.data->lists() == s.data().lists());
+    return 0;
+}
+
+// A chunk too large for a part on its own (4,200 messages of 4,096 bytes
+// at one tick) is refused where it would come into being: by apply, naming
+// the track, after the edits before it were accepted; and by the open.
+// Every state accepted on the way still encodes its Snapshot.
+int test_a_chunk_over_a_part_is_refused_where_it_is_made() {
+    Session s;
+    CHECK(s.build(big_sysex(1, kBeat)));
+    std::string error;
+    int accepted = 0;
+    for (int k = 0; k < 6; ++k) {
+        EditMidi e;
+        e.playlist = s.playlist;
+        e.region = s.region;
+        e.add_sysex = big_sysex(1000, 0).sysex;
+        if (!s.h.apply(e, error)) break;
+        ++accepted;
+        WindowParts w;
+        CHECK(encode_window(s.h, w, error));
+    }
+    CHECK(accepted == 4);
+    CHECK(mentions(error, "track \"Keys\": the MIDI in chunk 0") &&
+          mentions(error, "one chunk may hold"));
+
+    // Made without the check (as a damaged or foreign file would be), then
+    // saved and opened: refused by name.
+    Snapshot unchecked = s.h.current();
+    Snapshot next;
+    EditMidi e;
+    e.playlist = s.playlist;
+    e.region = s.region;
+    e.add_sysex = big_sysex(1000, 0).sysex;
+    CHECK(apply(unchecked, e, next, error));
+    std::string bundle;
+    CHECK(encode_session_bundle(next, WriteInfo{"test", 1}, bundle, error));
+    Loaded loaded;
+    LoadError le;
+    CHECK(!decode_session_bundle(bundle, loaded, le) && mentions(le.message, "one chunk may hold"));
+    Document doc(new_session(settings()));
+    CHECK(!doc.load(bundle, 0, error) && mentions(error, "one chunk may hold"));
+    return 0;
+}
+
+// A Load whose new document could not be sent to any interface (its
+// window over what a snapshot may carry) is refused before it replaces
+// anything: the old session stays, undo and all.
+int test_a_load_that_cannot_be_sent_keeps_the_session() {
+    Session s;
+    CHECK(s.build(dense(4)));
+    Document doc(s.h.current());
+    ReplicationUpdate u;
+    std::string error;
+    AddMarker add;
+    add.marker.id = Ids(doc.current())();
+    add.marker.name = "Kept";
+    CHECK(doc.apply(Operation{add}, u, error));
+    WriteInfo info;
+    info.written_by = "test";
+    Snapshot other = s.h.current();
+    other.settings.name = "Other";
+    std::string load;
+    std::vector<std::string> parts;
+    CHECK(encode_load_parts(other, info, load, parts, error));
+    const auto fed = [&]() {
+        auto in = std::make_unique<LoadParts>(History::kDefaultMidiMaxEntries);
+        for (const std::string& p : parts) in->add(p, error);
+        return in;
+    };
+    CHECK(!doc.load(load, 0, error, fed().get(), 200) &&
+          mentions(error, "a snapshot may carry"));
+    CHECK(doc.current().settings.name != "Other" && doc.history().can_undo());
+    CHECK(doc.load(load, 0, error, fed().get(), std::size_t{64} << 20));
+    CHECK(doc.current().settings.name == "Other");
     return 0;
 }
 
@@ -564,6 +683,9 @@ int main() {
     t(test_part_refusals);
     t(test_an_order_broken_across_chunks_is_refused);
     t(test_load_in_parts);
+    t(test_a_sequence_over_a_part_loads_in_parts);
+    t(test_a_chunk_over_a_part_is_refused_where_it_is_made);
+    t(test_a_load_that_cannot_be_sent_keeps_the_session);
     if (failed != 0) {
         std::fprintf(stderr, "model_midi_chunks: %d of %d failed\n", failed, run);
         return 1;

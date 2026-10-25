@@ -50,6 +50,16 @@ bool decode_lists(std::string_view bytes, MidiLists& out, std::string& error);
 // most this, each decoded and checked on its own as it arrives.
 inline constexpr std::size_t kMaxChunkPartBytes = std::size_t{16} << 20;
 
+// The most one chunk's .msq encoding may be: with a part's header and the
+// chunk's index and size at their widest, it fits a part wherever in the
+// table it falls. A larger chunk is refused where it would come into being
+// (apply, open), so no accepted state is one no interface can attach to.
+inline constexpr std::size_t kMaxChunkBytes = kMaxChunkPartBytes - 36;
+// Empty when `c` fits kMaxChunkBytes; otherwise why not, naming `track`.
+std::string oversized_chunk(const MidiChunk& c, const std::string& track);
+// The same for every chunk the state's MIDI regions hold.
+std::string oversized_chunk(const EditState& state);
+
 // A part is self-contained: "SWCP", version 1, then as LEB128 the table index
 // of its first chunk and how many it holds, then per chunk its index and the
 // size of its .msq encoding, and that encoding. Whole chunks only, never a

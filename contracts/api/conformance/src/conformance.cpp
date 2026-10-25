@@ -913,7 +913,8 @@ int check_load(Rig& rig) {
 }
 
 // ADR-0015 §4, protocol 10: a session with MIDI opened as a Load in parts,
-// its sequence files ahead in LoadPart requests, and sent back to every
+// its sequences' chunks ahead in LoadPart requests, a sequence across
+// several parts where it does not fit one, and sent back to every
 // replica as a Snapshot in parts: header, the chunk table's parts, the
 // window, with nothing in between. A part that does not decode abandons the
 // Load, which is then refused with its reason and changes nothing.
@@ -954,9 +955,9 @@ int check_load_in_parts(Rig& rig) {
             info.written_by = "conformance";
             std::string session;
             std::vector<std::string> parts;
-            EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 4096),
+            EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 1500),
                    error);
-            EXPECT(parts.size() == 3, "expected one part per sequence file");
+            EXPECT(parts.size() > 3, "expected the sequences split across parts");
 
             const std::size_t updates = s.inbox.model.size();
             ModelRequest m;
@@ -1003,7 +1004,7 @@ int check_load_in_parts(Rig& rig) {
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
                    "a part cut short was accepted");
             other.settings.name = "Never opened";
-            EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 4096),
+            EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 1500),
                    error);
             m.action = ModelAction::Load;
             m.op = session;

@@ -494,8 +494,9 @@ carries the reference, so a replica holds the same silent regions.
   `[g · 64, (g + 1) · 64)` (`kMidiLeafChunks`), with each chunk's note,
   event and SysEx counts before it in the leaf; the top holds the leaves
   with the counts before each. An index maps to its element by two binary
-  searches. One level would copy 40 bytes a chunk on every drag: 72 KiB
-  for a 60-minute region, past ADR-0015 Unverified 1's 64 KiB.
+  searches. One level would copy 40 bytes a chunk on every drag: 70.3 KiB
+  for a 60-minute region (measured, §4.6), past ADR-0015 Unverified 1's
+  64 KiB.
 - **An `EditMidi`** keeps its global indices. It rebuilds the chunks its
   removals and additions fall in, the leaves those are in and the top;
   every other chunk and leaf is shared with the sequence before.
@@ -515,22 +516,40 @@ carries the reference, so a replica holds the same silent regions.
 - **A part of the chunk table**: `SWCP`, version 1, then as LEB128 the
   table index of its first chunk and its chunk count, then per chunk its
   index, the size of its `.msq` encoding (§4.4.1) and that encoding. Whole
-  chunks only, at most 16 MiB (`kMaxChunkPartBytes`); a chunk too large for
-  a part alone is refused by name. Each part is decoded strictly on
-  arrival: every chunk non-empty and inside its index's span.
+  chunks only, at most 16 MiB (`kMaxChunkPartBytes`). A chunk whose
+  encoding is over `kMaxChunkBytes` (16 MiB less 36, so it fits a part
+  wherever it falls in the table) is refused by name where it would come
+  into being: by `apply`, naming the track, and by the open of a format-5
+  or `.msq` session (SMF import, when it lands, goes through `apply`). So no
+  accepted state is one an interface cannot attach to; the encoder's
+  refusal stays as a backstop. Each part is decoded strictly on arrival:
+  every chunk non-empty and inside its index's span.
 - **Protocol 10** (9 is loop record's): a Snapshot is `SnapshotHeader`
   (`part_count`, `part_bytes`), the parts as `SnapshotPart`, the window as
   `Snapshot`; one with no chunk comes alone. The replica refuses a header
   over its own cap (`--max-snapshot-mib`, default 512), keeps its state
   until the window decodes, and abandons the attach at a bad part, asking
-  for one Resync. A Load is `LoadPart` requests (whole `.msq` files, at
-  most 16 MiB each, `SNRLPRT` v1) ahead of a `Load` carrying the bare
-  session file; the engine decodes each part as it arrives, bounded by
-  `midi_max_entries`, and a refused part refuses the Load with its reason.
+  for one Resync. A Load is `LoadPart` requests, slices of the session's
+  chunk table in the same `SWCP` parts (each sequence's chunks after the
+  one before's), ahead of a `Load` carrying `SNRLIDX` v1 (the sequence
+  count as u32, each sequence's chunk count as u64) and the bare session
+  file. So a sequence file of any size crosses; only a chunk is bounded.
+  The engine decodes each part as it arrives, bounded by
+  `midi_max_entries`, rebuilds and hashes each sequence at the Load, and a
+  refused part refuses the Load with its reason.
+- **A Load is accepted only once its Snapshot can be sent**: the document
+  thread encodes the new session's window, the chunk table apart, and
+  refuses the Load, keeping the old session, when it is over the 64 MiB a
+  snapshot may carry. Its chunks already fit a part, so only the chunk
+  table is left for the worker.
 - **On the engine** the window is encoded on a worker from a copy of the
   history taken on the document thread; what else that client is sent
   waits behind the Snapshot, and parts go out as its socket drains, two
-  parts ahead at most.
+  parts ahead at most. What waits behind it is bounded per client
+  (`max_held_bytes`, the socket's 81 MiB): past it the client is refused
+  by name. Clients asking at one revision share one encoded Snapshot, and
+  a client asking again while one it has not begun still waits is
+  answered by that one.
 
 ### 4.5 Migration v3 → v4
 

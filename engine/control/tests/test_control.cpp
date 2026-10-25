@@ -954,16 +954,27 @@ void midi_budget_at_open_and_its_notice() {
     }));
 }
 
-// ADR-0015 §4: a Snapshot is encoded on the server's worker, and its parts
-// go out as the client's transport drains them. A client whose transport is
-// full gets its header and waits; an edit meanwhile reaches every other
-// client at once and this one only after its window, never inside it.
-void snapshot_parts_are_paced_and_held() {
-    RealEngine real(fresh_dir("parts"), {});
+bool wait_for(const std::function<bool()>& pred) {
+    for (int i = 0; i < 2000 && !pred(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return pred();
+}
+
+// Opens a session with MIDI, so its Snapshot has a chunk table, and waits
+// for the first client to have that Snapshot: the Load's reply goes out
+// before the worker encodes it, so only its arrival says it was encoded.
+// The connect's own Snapshot is waited for first, so it is not taken for
+// the Load's.
+bool load_midi_session(RealEngine& real, api::Inbox& in) {
+    const auto snapshot_from = [&](std::size_t from) {
+        for (std::size_t i = from; i < in.model.size(); ++i) {
+            if (in.model[i].kind == api::ModelUpdateKind::Snapshot) return true;
+        }
+        return false;
+    };
+    if (!until(real, in, [&]() { return snapshot_from(0); })) return false;
     std::string error;
-    CHECK(real.connect(error));
-    api::Inbox in;
-    // A session with MIDI, so its Snapshot has a chunk table.
     model::SessionSettings settings;
     settings.name = "Parts";
     model::History h(model::new_session(settings));
@@ -981,55 +992,95 @@ void snapshot_parts_are_paced_and_held() {
     r.name = "Keys_01";
     r.length = 16 * model::kTicksPerQuarter;
     r.data = std::make_shared<const model::MidiSequence>(seq);
-    CHECK(h.apply(t, error) && h.apply(model::PlaceMidiRegion{2, r, 0, {}}, error));
+    if (!h.apply(t, error) || !h.apply(model::PlaceMidiRegion{2, r, 0, {}}, error)) return false;
     api::ModelRequest load;
     load.action = api::ModelAction::Load;
-    CHECK(model::encode_session_bundle(h.current(), model::WriteInfo{"test", 1}, load.op, error));
-    const uint64_t loaded = real.submit(load);
-    const auto answered = [&](uint64_t seq) {
-        return until(real, in, [&]() {
-            return std::any_of(in.replies.begin(), in.replies.end(),
-                               [&](const api::CommandReply& x) { return x.seq == seq; });
-        });
-    };
-    CHECK(answered(loaded));
-    EngineControlServer& server = real.engine().server();
-    const uint64_t encoded = server.snapshots_encoded();
+    if (!model::encode_session_bundle(h.current(), model::WriteInfo{"test", 1}, load.op, error)) {
+        return false;
+    }
+    const std::size_t before = in.model.size();
+    real.submit(load);
+    return until(real, in, [&]() { return snapshot_from(before); });
+}
 
+// A client on a transport that never drains, attached straight to the
+// server: what it was sent, decoded, and why it was refused.
+struct StuckClient {
     struct Got {
         std::mutex mutex;
         std::vector<std::string> frames;
+        std::string refused;
     };
-    auto got = std::make_shared<Got>();
-    auto full = std::make_shared<std::atomic<std::size_t>>(std::size_t{1} << 30);
-    const auto id = server.attach(
-        [got](EngineControlServer::Frame frame) {
-            std::lock_guard<std::mutex> lock(got->mutex);
-            got->frames.push_back(*frame);
-        },
-        {}, [full]() { return full->load(); });
-    const auto kinds = [&]() {
-        std::vector<api::ModelUpdateKind> out;
+    EngineControlServer& server;
+    std::shared_ptr<Got> got = std::make_shared<Got>();
+    std::shared_ptr<std::atomic<std::size_t>> queued =
+        std::make_shared<std::atomic<std::size_t>>(std::size_t{1} << 30);
+    EngineControlServer::ClientId id = 0;
+
+    explicit StuckClient(EngineControlServer& s) : server(s) {
+        auto g = got;
+        auto q = queued;
+        id = server.attach(
+            [g](EngineControlServer::Frame frame) {
+                std::lock_guard<std::mutex> lock(g->mutex);
+                g->frames.push_back(*frame);
+            },
+            [g](const std::string& why) {
+                std::lock_guard<std::mutex> lock(g->mutex);
+                g->refused = why;
+            },
+            [q]() { return q->load(); });
+    }
+    api::Inbox inbox() const {
         std::lock_guard<std::mutex> lock(got->mutex);
         api::wire::Reassembler reassembler;
-        api::Inbox inbox;
+        api::Inbox in;
         std::string message, why;
         for (const std::string& f : got->frames) {
             if (reassembler.add(f, message, why) == api::wire::Reassembler::Result::Complete) {
-                api::wire::decode_into(message, inbox, why);
+                api::wire::decode_into(message, in, why);
             }
         }
-        for (const api::ModelUpdate& m : inbox.model) out.push_back(m.kind);
+        return in;
+    }
+    std::vector<api::ModelUpdateKind> kinds() const {
+        std::vector<api::ModelUpdateKind> out;
+        for (const api::ModelUpdate& m : inbox().model) out.push_back(m.kind);
         return out;
-    };
-    const auto wait_for = [&](const std::function<bool()>& pred) {
-        for (int i = 0; i < 1000 && !pred(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        return pred();
-    };
-    CHECK(wait_for([&]() { return kinds().size() == 1; }));
-    CHECK(kinds().front() == api::ModelUpdateKind::SnapshotHeader);
+    }
+    std::string refused() const {
+        std::lock_guard<std::mutex> lock(got->mutex);
+        return got->refused;
+    }
+    void send(const api::ModelRequest& m) const {
+        std::string bytes, error;
+        api::wire::encode(m, bytes);
+        std::vector<std::string> frames;
+        api::wire::split_frames(bytes, frames, error);
+        for (std::string& f : frames) server.deliver(id, std::move(f));
+    }
+};
+
+std::size_t count(const std::vector<api::ModelUpdateKind>& kinds, api::ModelUpdateKind k) {
+    return static_cast<std::size_t>(std::count(kinds.begin(), kinds.end(), k));
+}
+
+// ADR-0015 §4: a Snapshot is encoded on the server's worker, and its parts
+// go out as the client's transport drains them. A client whose transport is
+// full gets its header and waits; an edit meanwhile reaches every other
+// client at once and this one only after its window, never inside it.
+void snapshot_parts_are_paced_and_held() {
+    RealEngine real(fresh_dir("parts"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    CHECK(load_midi_session(real, in));
+    EngineControlServer& server = real.engine().server();
+    const uint64_t encoded = server.snapshots_encoded();
+
+    StuckClient stuck(server);
+    CHECK(wait_for([&]() { return stuck.kinds().size() == 1; }));
+    CHECK(stuck.kinds().front() == api::ModelUpdateKind::SnapshotHeader);
     CHECK(server.snapshots_encoded() == encoded + 1);
     // An edit while the attaching client waits: the first client has it.
     model::AddMarker add;
@@ -1038,19 +1089,173 @@ void snapshot_parts_are_paced_and_held() {
     api::ModelRequest m;
     CHECK(model::encode_operation(add, m.op, error));
     const std::size_t before = in.model.size();
-    CHECK(answered(real.submit(m)));
+    real.submit(m);
     CHECK(until(real, in, [&]() { return in.model.size() > before; }));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    CHECK(kinds().size() == 1);
+    CHECK(stuck.kinds().size() == 1);
     // The transport drains: the part, the window, then the edit.
-    full->store(0);
-    CHECK(wait_for([&]() { return kinds().size() == 4; }));
-    const std::vector<api::ModelUpdateKind> k = kinds();
+    stuck.queued->store(0);
+    CHECK(wait_for([&]() { return stuck.kinds().size() == 4; }));
+    const std::vector<api::ModelUpdateKind> k = stuck.kinds();
     CHECK(k.size() == 4 && k[1] == api::ModelUpdateKind::SnapshotPart &&
           k[2] == api::ModelUpdateKind::Snapshot && k[3] == api::ModelUpdateKind::Op);
-    server.detach(id);
+    server.detach(stuck.id);
     std::printf("  the document thread held %llu us at most to take a Snapshot's copy\n",
                 static_cast<unsigned long long>(server.longest_snapshot_copy_us()));
+}
+
+// Review of #120: a client that stops reading after its Snapshot's header
+// used to hold every later broadcast without bound, since its transport
+// never filled. Past max_held_bytes it is refused by name, as the socket
+// refuses one it cannot queue for, and the other clients go on.
+void what_waits_behind_a_snapshot_is_bounded() {
+    EngineControlServer::Options opts;
+    opts.max_held_bytes = 64 << 10;
+    RealEngine real(fresh_dir("held"), opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    CHECK(load_midi_session(real, in));
+    EngineControlServer& server = real.engine().server();
+    StuckClient stuck(server);
+    CHECK(wait_for([&]() { return stuck.kinds().size() == 1; }));
+    const uint64_t refused = server.refused();
+    const std::size_t before = in.model.size();
+    constexpr int kEdits = 100;
+    for (int i = 0; i < kEdits; ++i) {
+        model::AddMarker add;
+        add.marker.id = 100 + static_cast<model::Id>(i);
+        add.marker.position = 48000 * i;
+        add.marker.name = std::string(1000, 'x');
+        api::ModelRequest m;
+        CHECK(model::encode_operation(add, m.op, error));
+        real.submit(m);
+    }
+    CHECK(until(real, in, [&]() { return in.model.size() >= before + kEdits; }));
+    CHECK(wait_for([&]() { return !stuck.refused().empty(); }));
+    CHECK(stuck.refused().find("stopped reading while its Snapshot was sent") !=
+          std::string::npos);
+    CHECK(server.refused() == refused + 1);
+    CHECK(stuck.kinds().size() == 1);
+}
+
+// Review of #120: Resyncs from a client that has not been sent its Snapshot
+// share one encoded window instead of each holding one. The first one comes
+// while that client's Snapshot is part-sent, so it gets that Snapshot
+// again; every one after it is answered by the one already waiting.
+void resyncs_share_one_snapshot() {
+    RealEngine real(fresh_dir("resyncs"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    CHECK(load_midi_session(real, in));
+    EngineControlServer& server = real.engine().server();
+    StuckClient stuck(server);
+    CHECK(wait_for([&]() { return stuck.kinds().size() == 1; }));
+    const uint64_t encoded = server.snapshots_encoded();
+    const uint64_t asked = server.snapshots_asked();
+    constexpr int kResyncs = 5;
+    for (int i = 0; i < kResyncs; ++i) {
+        api::ModelRequest m;
+        m.seq = 1000 + static_cast<uint64_t>(i);
+        m.action = api::ModelAction::Resync;
+        stuck.send(m);
+    }
+    // Every one handled while the transport is still full.
+    CHECK(wait_for([&]() { return server.snapshots_asked() == asked + kResyncs; }));
+    CHECK(server.snapshots_encoded() == encoded);
+    stuck.queued->store(0);
+    CHECK(wait_for([&]() { return stuck.inbox().replies.size() == kResyncs; }));
+    const api::Inbox got = stuck.inbox();
+    for (const api::CommandReply& r : got.replies) CHECK(r.result == DispatchResult::Ok);
+    CHECK(server.snapshots_encoded() == encoded);
+    CHECK(count(stuck.kinds(), api::ModelUpdateKind::Snapshot) == 2);
+    model::Replica replica;
+    std::string why;
+    bool fed = true;
+    for (const api::ModelUpdate& u : got.model) fed = replica.receive(from_wire(u), why) && fed;
+    CHECK(fed && replica.synced());
+    server.detach(stuck.id);
+}
+
+// Review of #120 (architect): a sequence file over one part, which a real
+// session within the budget can hold, opens in parts rather than refused.
+void a_sequence_over_a_part_opens_in_parts() {
+    RealEngine real(fresh_dir("big_load"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    model::SessionSettings settings;
+    settings.name = "Big";
+    model::History h(model::new_session(settings));
+    model::AddTrack t;
+    t.track = 1;
+    t.playlist = 2;
+    t.name = "Synth";
+    t.playlist_name = "Synth.01";
+    t.kind = model::TrackKind::Midi;
+    t.channels = 0;
+    model::MidiLists seq;
+    std::vector<uint8_t> message(model::kMaxSysexBytes, 0x11);
+    message.front() = 0xF0;
+    message.back() = 0xF7;
+    // Four a chunk: about 18 MiB in one sequence file.
+    for (int i = 0; i < 4400; ++i) {
+        seq.sysex.push_back(model::MidiSysEx{i * model::kTicksPerQuarter, message});
+    }
+    model::MidiRegion r;
+    r.id = 3;
+    r.name = "Synth_01";
+    r.length = 16 * model::kTicksPerQuarter;
+    r.data = std::make_shared<const model::MidiSequence>(seq);
+    CHECK(h.apply(t, error) && h.apply(model::PlaceMidiRegion{2, r, 0, {}}, error));
+    std::string load;
+    std::vector<std::string> parts;
+    CHECK(model::encode_load_parts(h.current(), model::WriteInfo{"test", 1}, load, parts, error,
+                                   nullptr, api::wire::kMaxPartBytes));
+    CHECK(model::encode_sequence(*r.data).size() > std::size_t{17} << 20 && parts.size() >= 2);
+    // Longer than until(): 18 MiB is encoded and decoded on the way.
+    const auto polled = [&](const std::function<bool()>& pred) {
+        return wait_for([&]() {
+            real.poll(in);
+            return pred();
+        });
+    };
+    const auto answer = [&](uint64_t seq_no, api::CommandReply& out) {
+        return polled([&]() {
+            for (const auto& x : in.replies) {
+                if (x.seq != seq_no) continue;
+                out = x;
+                return true;
+            }
+            return false;
+        });
+    };
+    api::CommandReply reply;
+    for (std::string& p : parts) {
+        api::ModelRequest m;
+        m.action = api::ModelAction::LoadPart;
+        m.op = std::move(p);
+        CHECK(answer(real.submit(m), reply) && reply.result == DispatchResult::Ok);
+    }
+    const std::size_t before = in.model.size();
+    api::ModelRequest m;
+    m.action = api::ModelAction::Load;
+    m.op = load;
+    CHECK(answer(real.submit(m), reply) && reply.result == DispatchResult::Ok);
+    model::Replica replica;
+    CHECK(polled([&]() {
+        return in.model.size() > before && in.model.back().kind == api::ModelUpdateKind::Snapshot;
+    }));
+    std::string why;
+    bool fed = true;
+    for (std::size_t i = before; i < in.model.size(); ++i) {
+        fed = replica.receive(from_wire(in.model[i]), why) && fed;
+    }
+    CHECK(fed && replica.synced() &&
+          replica.current().edit->tracks[0]->midi_playlists[0]->regions[0].data->lists() ==
+              r.data->lists());
 }
 
 int main() {
@@ -1072,6 +1277,9 @@ int main() {
     resync_applies_the_mix();
     midi_budget_at_open_and_its_notice();
     snapshot_parts_are_paced_and_held();
+    what_waits_behind_a_snapshot_is_bounded();
+    resyncs_share_one_snapshot();
+    a_sequence_over_a_part_opens_in_parts();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

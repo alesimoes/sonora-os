@@ -144,8 +144,7 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     info.written_by = "sonora-ui";
     std::string session, error;
     std::vector<std::string> parts;
-    // With its sequence files, in parts: the engine reads nothing from this
-    // folder.
+    // With its MIDI, in parts: the engine reads nothing from this folder.
     if (!model::encode_load_parts(s, info, session, parts, error, nullptr,
                                   api::wire::kMaxPartBytes)) {
         why = "the session could not be sent to the engine: " + error;
@@ -156,7 +155,7 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     uint64_t total = 0;
     for (const std::string& part : parts) total += part.size();
     if (total > max_snapshot_bytes() || session.size() > api::wire::kMaxModelBytes) {
-        why = "the session's MIDI sequence files are " + std::to_string(total) +
+        why = "the session's MIDI is " + std::to_string(total) +
               " bytes, over this interface's limit of " + std::to_string(max_snapshot_bytes()) +
               " (--max-snapshot-mib)";
         if (session.size() > api::wire::kMaxModelBytes) {

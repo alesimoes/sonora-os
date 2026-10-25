@@ -190,7 +190,7 @@ struct MidiLists {
 // a meter change never re-chunks.
 inline constexpr Ticks kMidiChunkTicks = 4 * kTicksPerQuarter;
 // The spine has two levels, a leaf per this many chunk indices. One level
-// would charge a drag the whole spine, 40 bytes a chunk: 72 KiB for a
+// would charge a drag the whole spine, 40 bytes a chunk: 70.3 KiB for a
 // 60-minute region at 120 bpm, past the 64 KiB at which ADR-0015
 // Unverified 1 calls for a second level.
 inline constexpr std::int64_t kMidiLeafChunks = 64;

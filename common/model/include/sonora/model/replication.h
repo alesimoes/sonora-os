@@ -114,11 +114,16 @@ public:
     // says why.
     bool load(std::string_view session_file, std::uint32_t sample_rate, ReplicationUpdate& out,
               std::string& error, std::size_t max_bytes = SIZE_MAX);
-    // The same without the Snapshot, which the caller encodes. With `parts`,
-    // `session_file` is a bare session file whose sequence files came in a
-    // Load in parts (session_file.h, LoadParts).
-    bool load(std::string_view session_file, std::uint32_t sample_rate, std::string& error,
-              SequenceSource* parts = nullptr);
+    // The same without the Snapshot, which the caller encodes elsewhere
+    // (encode_snapshot): `load` is a bundle, or encode_load_parts()'s bytes,
+    // whose chunks came ahead into `parts` (null when none did). Refused,
+    // the document unchanged, when the new session's window, its chunk
+    // table apart, is over `max_window_bytes`: a fresh history has no undo
+    // step to drop, so its Snapshot could never be sent. Its chunks fit a
+    // part (the open refuses one that does not), so once this is accepted
+    // its Snapshot encodes.
+    bool load(std::string_view load, std::uint32_t sample_rate, std::string& error,
+              LoadParts* parts = nullptr, std::size_t max_window_bytes = SIZE_MAX);
 
     const Snapshot& current() const { return history_.current(); }
     const History& history() const { return history_; }

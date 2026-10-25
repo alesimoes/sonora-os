@@ -59,6 +59,9 @@ struct WindowParts {
 // taken on the document thread, so edits never wait behind it.
 bool encode_window(const History& history, WindowParts& out, std::string& error,
                    std::size_t max_part_bytes = kMaxChunkPartBytes);
+// WindowParts::window alone, the chunk table not encoded: what the document
+// thread measures before it accepts a Load (Document::load).
+bool encode_window_alone(const History& history, std::string& window, std::string& error);
 
 // A replica's half, one part at a time: each part is decoded and checked as
 // it arrives, so what is held beyond the decoded chunks is one part. Any
