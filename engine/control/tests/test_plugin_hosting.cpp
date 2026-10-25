@@ -60,6 +60,11 @@
 //                        rescan found it upgraded) drops the answer cached
 //                        for it; an unchanged record keeps it; the running
 //                        chain keeps its own table until its next start
+//   state_flush          FlushPluginState's reads, files and SetInsertState;
+//                        a crashed host restarts from the flushed state, and
+//                        the session file written and reopened restores it
+//   server_state_flush   the same through the server: the reply after the
+//                        file and the update; an unknown insert refused
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -67,11 +72,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -81,11 +89,13 @@
 #include "sonora/fake_backend.h"
 #include "sonora/model/history.h"
 #include "sonora/model/operations.h"
+#include "sonora/model/session_file.h"
 #include "sonora/playback_controller.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
+#include "sonora/session_files/session_folder.h"
 
 using namespace sonora;
 using namespace sonora::model;
@@ -716,6 +726,236 @@ int scenario_state_not_restored(const Args& a) {
           "the document names no state for A: its fault is gone");
     check(rig.hosting->faults().count(501) == 1 && rig.hosting->faults().count(503) == 1, "the others still stand");
     check(rig.bound_at(0, kBlock), "and A was not restarted for it");
+    return failures ? 1 : 0;
+}
+
+// The state plugin's block counter, from a StateBlob: the integer after
+// "blocks" in its Turtle (plugins/host/tests/plugin_driver.cpp reads it the
+// same way).
+bool state_counter(const std::string& bytes, int64_t& n) {
+    namespace pc = plugin::control;
+    pc::StateBlob b;
+    std::string e;
+    if (!pc::decode_state_blob(bytes, b, e) || b.sections.empty()) return false;
+    const std::string& s = b.sections[0];
+    const std::size_t at = s.find("blocks");
+    if (at == std::string::npos) return false;
+    const std::size_t d = s.find_first_of("0123456789", at + 6);
+    if (d == std::string::npos) return false;
+    n = std::strtoll(s.c_str() + d, nullptr, 10);
+    return true;
+}
+
+// One FlushPluginState as the server runs it: the reads, the files (here on
+// this thread, through the saver's own SessionFolder::write_states), then
+// the document. The flush's counter for `insert`, or -1.
+int64_t flush(Rig& rig, Id insert, PluginHosting::Flush* out = nullptr) {
+    const uint64_t id = rig.hosting->request_states(0, rig.history.current());
+    std::vector<PluginHosting::Flush> done;
+    rig.until(
+        [&] {
+            for (PluginHosting::Flush& f : rig.hosting->take_flushes()) done.push_back(std::move(f));
+            return !done.empty();
+        },
+        8000);
+    if (done.size() != 1 || done[0].id != id) {
+        std::printf("  %zu flushes done, not flush %llu alone\n", done.size(), (unsigned long long)id);
+        return -1;
+    }
+    for (const std::string& f : done[0].failed) std::printf("  failed: %s\n", f.c_str());
+    std::vector<session_files::StateFile> files;
+    for (const auto& s : done[0].states)
+        if (!s.sha256.empty()) files.push_back({s.sha256, s.bytes});
+    session_files::SessionFolder folder;
+    std::string why;
+    if (!folder.write_states(kDir, files, why)) {
+        std::printf("  write_states: %s\n", why.c_str());
+        return -1;
+    }
+    for (const model::Operation& op : rig.hosting->states_saved(done[0], rig.history.current())) {
+        rig.ops_seen.push_back(op);
+        rig.apply(op);
+    }
+    rig.show(false);
+    int64_t n = -1;
+    for (const auto& s : done[0].states)
+        if (s.insert == insert && !state_counter(s.bytes, n)) n = -1;
+    if (n < 0) std::printf("  no counter for insert %llu in %zu states\n", (unsigned long long)insert, done[0].states.size());
+    if (out) *out = std::move(done[0]);
+    return n;
+}
+
+// BACKLOG Track 4 item 5: FlushPluginState with real hosts. A plugin's
+// state (the state plugin's run() count) read from its running host,
+// written to "Plugin State/<sha256>.state", named in the document by
+// SetInsertState; a host killed as a crash would kill it restarts from that
+// state, not from the one it started with; and the session file, written
+// and read back, opens the plugin with it. A plugin with no state of its
+// own (eg-amp) gets no state and no operation.
+int scenario_state_flush(const Args& a) {
+    namespace pc = plugin::control;
+    std::printf("state_flush: the state plugin on A, eg-amp on B\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, "urn:sonora:test#state"));
+    rig.apply(insert_op(102, 501, 0, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock); }, 15000), "both running");
+    for (int i = 0; i < 600; ++i) rig.turn();
+
+    PluginHosting::Flush f;
+    const int64_t first = flush(rig, 500, &f);
+    std::printf("  first flush: %lld blocks counted\n", (long long)first);
+    check(f.failed.empty() && f.states.size() == 2, "both instances answered");
+    check(first >= 300, "the state carries the blocks the plugin ran (300 or more)");
+    const InsertMix* m = rig.history.current().mix.find_insert(500);
+    std::string sha;
+    for (const auto& s : f.states)
+        if (s.insert == 500) sha = s.sha256;
+    check(m && m->state && m->state->sha256 == sha && m->state->file == plugin_state_file(sha),
+          "SetInsertState names the file by its digest");
+    std::ifstream in(kDir + "/" + plugin_state_file(sha), std::ios::binary);
+    std::ostringstream bytes;
+    bytes << in.rdbuf();
+    check(!sha.empty() && pc::state_matches(bytes.str(), sha), "the file holds the bytes its name hashes");
+    const InsertMix* amp = rig.history.current().mix.find_insert(501);
+    bool amp_empty = false;
+    for (const auto& s : f.states) amp_empty = amp_empty || (s.insert == 501 && s.sha256.empty());
+    check(amp_empty && (!amp || !amp->state), "eg-amp keeps no state: none named");
+    int set_states = 0;
+    for (const auto& op : rig.ops_seen) set_states += std::holds_alternative<SetInsertState>(op) ? 1 : 0;
+    check(set_states == 1, "one SetInsertState, none for eg-amp");
+
+    // A crash: the restart restores the flushed state, so it counts on from
+    // there; a fresh instance would count from 0.
+    check(rig.hosting->kill_host_for_test(100), "A's host killed");
+    check(rig.until([&] { return (rig.hosting->insert_flags(500) & api::kInsertRestarting) != 0; }, 5000),
+          "restarting");
+    check(rig.until([&] { return (rig.hosting->insert_flags(500) & api::kInsertRunning) != 0; }, 15000),
+          "running again");
+    const int64_t after_crash = flush(rig, 500);
+    std::printf("  after the crash: %lld\n", (long long)after_crash);
+    check(after_crash >= first, "the restarted plugin counts on from the flushed state");
+
+    // The session file: written, read back, opened. The new host restores
+    // the state the file names.
+    std::string text, e;
+    check(serialize(rig.history.current(), WriteInfo{"test", 1}, text, e), "the session serialises");
+    Loaded loaded;
+    LoadError le;
+    check(deserialize(text, loaded, le), "and reads back");
+    const InsertMix* lm = loaded.snapshot.mix.find_insert(500);
+    check(lm && lm->state && *lm->state == *rig.history.current().mix.find_insert(500)->state,
+          "with the state reference");
+    rig.history = History(loaded.snapshot);
+    rig.show(true);
+    // The playing plan can still name the old host for a turn or two: the
+    // insert's own flag says the new one is Ready.
+    check(rig.until([&] { return (rig.hosting->insert_flags(500) & api::kInsertRunning) != 0; }, 15000),
+          "the reopened session runs A");
+    check(rig.hosting->faults().count(500) == 0, "its state was restored (no fault)");
+    const int64_t reopened = flush(rig, 500);
+    std::printf("  after reopening: %lld\n", (long long)reopened);
+    check(reopened >= after_crash && reopened >= first, "the reopened plugin counts on from the saved state");
+    return failures ? 1 : 0;
+}
+
+// Through the server on drivers/fake: FlushPluginState is answered after the
+// state file is on disk and the SetInsertState update has gone out; an
+// insert that is not on any track is refused.
+int scenario_server_state_flush(const Args& a) {
+    namespace pc = plugin::control;
+    std::printf("server_state_flush: FlushPluginState through EngineControlServer\n");
+    std::filesystem::remove_all(kDir);
+    SessionConfig cfg;
+    cfg.dir = kDir;
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    FakeBackend::Config bc;
+    FakeBackend::Device d = FakeBackend::onboard();
+    bc.devices = {d};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    std::string error;
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    h.apply(track_op(100, 101, "A"), e);
+    h.apply(insert_op(100, 500, 0, "urn:sonora:test#state"), e);
+    EngineControlServer::Options opts;
+    opts.plugin_host = a.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        check(until([&] { return (engine.state().track(0).inserts[0].flags & api::kInsertRunning) != 0; }, 20000),
+              "the insert runs");
+        until([] { return false; }, 300);
+        const std::size_t updates_before = in.model.size();
+        api::ModelRequest flush;
+        flush.action = api::ModelAction::FlushPluginState;
+        const uint64_t seq = engine.submit(flush);
+        api::ModelRequest bad;
+        bad.action = api::ModelAction::FlushPluginState;
+        bad.op = "999";
+        const uint64_t bad_seq = engine.submit(bad);
+        api::CommandReply ok_reply, bad_reply;
+        std::size_t updates_at_reply = 0;
+        check(until(
+                  [&] {
+                      for (const auto& r : in.replies) {
+                          if (r.seq == seq && ok_reply.seq != seq) {
+                              ok_reply = r;
+                              updates_at_reply = in.model.size();
+                          }
+                          if (r.seq == bad_seq) bad_reply = r;
+                      }
+                      return ok_reply.seq == seq && bad_reply.seq == bad_seq;
+                  },
+                  10000),
+              "both flushes answered");
+        check(ok_reply.result == DispatchResult::Ok, "the flush: Ok");
+        if (!ok_reply.message.empty()) std::printf("  message: %s\n", ok_reply.message.c_str());
+        check(updates_at_reply > updates_before, "  its SetInsertState update came before the reply");
+        check(bad_reply.result == DispatchResult::Failed && bad_reply.message.find("not on any track") != std::string::npos,
+              "an insert on no track: Failed, why");
+        int files = 0;
+        bool matches = true;
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(kDir + "/Plugin State", ec)) {
+            const std::string name = entry.path().filename().string();
+            if (name.size() < 6 || name.substr(name.size() - 6) != ".state") continue;
+            ++files;
+            std::ifstream f(entry.path(), std::ios::binary);
+            std::ostringstream s;
+            s << f.rdbuf();
+            matches = matches && pc::state_matches(s.str(), name.substr(0, name.size() - 6));
+        }
+        check(files == 1 && matches, "one state file, holding the bytes its name hashes");
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
+    }
+    std::filesystem::remove_all(kDir);
     return failures ? 1 : 0;
 }
 
@@ -1401,6 +1641,8 @@ int main(int argc, char** argv) {
     else if (a.scenario == "rescan_drops_stale") rc = scenario_rescan_drops_stale(a);
     else if (a.scenario == "rescan_loses_running") rc = scenario_rescan_loses_running(a);
     else if (a.scenario == "rescan_blocks_running") rc = scenario_rescan_blocks_running(a);
+    else if (a.scenario == "state_flush") rc = scenario_state_flush(a);
+    else if (a.scenario == "server_state_flush") rc = scenario_server_state_flush(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

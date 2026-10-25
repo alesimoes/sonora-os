@@ -104,9 +104,23 @@ void SessionSaver::run() {
             Job job = std::move(jobs_.front());
             jobs_.pop_front();
             Done d;
+            d.kind = job.kind;
             d.client = job.client;
             d.seq = job.seq;
             d.paced = pace(lock);
+            if (job.kind == Kind::States) {
+                lock.unlock();
+                std::string why;
+                d.ok = folder_.write_states(job.file, job.states, why);
+                d.message = d.ok ? std::string() : why;
+                job = Job{};
+                lock.lock();
+                done_.push_back(std::move(d));
+                lock.unlock();
+                if (ready_) ready_();
+                lock.lock();
+                continue;
+            }
             // Read with the pacing, under the lock: a take that opened after
             // the save began defers only its cleanup.
             const bool defer_clean = take_open_;

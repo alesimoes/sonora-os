@@ -18,6 +18,7 @@
 #include "sonora/model/session_file.h"
 #include "sonora/platform/file.h"
 #include "sonora/session_saver.h"
+#include "sonora/sha256.h"
 
 using namespace model_test;
 using sonora::SessionSaver;
@@ -192,6 +193,43 @@ int test_take_open_waits_for_a_checkpoint() {
     return 0;
 }
 
+// A FlushPluginState's states (ADR-0012 §6.1): written to "Plugin State/",
+// paced behind a checkpoint as a save is, answered with the flush's id and
+// no cleanup run.
+int test_states_paced_and_answered() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    Rig rig;
+    rig.saver.set_take_open(true);
+    rig.saver.set_transport_stopped(false);
+    SessionSaver::Job j;
+    j.kind = SessionSaver::Kind::States;
+    j.seq = 42;
+    j.file = folder.string();
+    const std::string bytes = "state";
+    j.states.push_back({sonora::sha256_hex(bytes), bytes});
+    rig.saver.submit(std::move(j));
+    CHECK(rig.quiet(40));
+    CHECK(!fs::exists(folder / "Plugin State"));
+    rig.checkpoints = 1;
+    auto done = rig.wait(1);
+    CHECK(done.size() == 1 && done[0].ok && done[0].paced);
+    CHECK(done[0].kind == SessionSaver::Kind::States && done[0].seq == 42);
+    CHECK(fs::exists(folder / "Plugin State" / (sonora::sha256_hex(bytes) + ".state")));
+    CHECK(rig.saver.pending() == 0 && rig.saver.cleanups() == 0);
+
+    rig.saver.set_take_open(false);
+    SessionSaver::Job bad;
+    bad.kind = SessionSaver::Kind::States;
+    bad.seq = 43;
+    bad.file = folder.string();
+    bad.states.push_back({std::string(64, '0'), bytes});
+    rig.saver.submit(std::move(bad));
+    done = rig.wait(1);
+    CHECK(done.size() == 1 && !done[0].ok && mentions(done[0].message, "digest"));
+    return 0;
+}
+
 int test_take_closing_ends_the_wait() {
     TempDir tmp;
     const fs::path file = tmp.path / "Bass" / "Bass.sonora";
@@ -293,6 +331,7 @@ int main() {
     t(test_no_take_writes_at_once_and_cleans);
     t(test_take_open_waits_for_a_checkpoint);
     t(test_take_closing_ends_the_wait);
+    t(test_states_paced_and_answered);
     t(test_stop_finishes_what_was_handed_over);
     t(test_refusal_answered);
     t(test_undurable_save_drops_the_deferred_cleanup);

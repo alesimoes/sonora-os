@@ -7,7 +7,7 @@
 // refused with nothing written; cleanup deletes what no kept file names and
 // nothing while a kept file cannot be read; an interrupted write is deleted
 // when the folder is entered; the pre-migration copy and the newer-version
-// refusal.
+// refusal; plugin state files written once each and never cleaned.
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +18,7 @@
 #include "model_test.h"
 #include "sonora/model/session_file.h"
 #include "sonora/session_files/session_folder.h"
+#include "sonora/sha256.h"
 
 using namespace model_test;
 using sonora::session_files::SessionFolder;
@@ -294,6 +295,53 @@ int test_backup_file_saves_sequences_in_the_session_folder() {
     return 0;
 }
 
+bool no_sync(const std::string&) { return false; }
+
+// ADR-0012 §6.1: plugin states are files named by their digest, written
+// durably before a session file names them, never twice, never cleaned.
+int test_plugin_states() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    const fs::path file = folder / "Mix.sonora";
+    Midi m(4);
+    SessionFolder f;
+    std::string why, caution;
+    const std::string bytes = "a plugin's state blob";
+    const sonora::session_files::StateFile s{sonora::sha256_hex(bytes), bytes};
+    CHECK(f.write_states(folder.string(), {s}, why));
+    const fs::path state = folder / "Plugin State" / (s.sha256 + ".state");
+    CHECK(read(state) == bytes);
+    CHECK(entries(folder / "Plugin State") == 1);   // no ".tmp" left behind
+    CHECK(f.states_written() == 1);
+    CHECK(f.write_states(folder.string(), {s}, why));
+    CHECK(f.states_written() == 1);                 // already there with its bytes
+
+    // A file torn by a crash under the name is written again.
+    write(state, "torn");
+    CHECK(f.write_states(folder.string(), {s}, why));
+    CHECK(read(state) == bytes && f.states_written() == 2);
+
+    // Cleanup after a save that names no state leaves it: states are
+    // removed only by an explicit cleanup (§6.1).
+    CHECK(f.save(file.string(), m.bytes(), m.h.current(), why, caution));
+    f.clean(caution);
+    CHECK(fs::exists(state));
+
+    // Bytes that are not the digest's never get its name.
+    const sonora::session_files::StateFile wrong{std::string(64, 'a'), bytes};
+    CHECK(!f.write_states(folder.string(), {wrong}, why));
+    CHECK(mentions(why, "does not match"));
+    CHECK(!fs::exists(folder / "Plugin State" / (wrong.sha256 + ".state")));
+
+    // A folder that will not sync is a failure: a session saved after it
+    // could name a state a power cut takes away.
+    SessionFolder unsynced(no_sync);
+    const std::string other = "another state";
+    CHECK(!unsynced.write_states(folder.string(), {{sonora::sha256_hex(other), other}}, why));
+    CHECK(mentions(why, "sync"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -310,6 +358,7 @@ int main() {
     t(test_unreadable_kept_file_blocks_cleanup);
     t(test_versions);
     t(test_backup_file_saves_sequences_in_the_session_folder);
+    t(test_plugin_states);
     if (failed != 0) {
         std::fprintf(stderr, "session_folder: %d of %d failed\n", failed, run);
         return 1;

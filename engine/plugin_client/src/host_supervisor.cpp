@@ -879,6 +879,12 @@ SupervisedChain::~SupervisedChain() {
     current_.reset();
 }
 
+void SupervisedChain::set_state(uint32_t instance, std::string blob) {
+    if (instance >= spec_.plugins.size()) return;
+    if (spec_.states.size() < spec_.plugins.size()) spec_.states.resize(spec_.plugins.size());
+    spec_.states[instance] = std::move(blob);
+}
+
 bool SupervisedChain::begin(std::string& error) {
     const plugin::ParamMap map = plugin::make_param_map(spec_.param_counts.data(), uint32_t(spec_.param_counts.size()));
     std::vector<float> values(map.param_slots, 0.f), bypass(plugin::kMaxInstances, 0.f);

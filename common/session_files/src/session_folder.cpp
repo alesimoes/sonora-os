@@ -20,6 +20,9 @@ constexpr std::uintmax_t kMaxSessionBytes = std::uintmax_t{256} << 20;  // 60x t
 // A 16 M-entry session is about 100 MiB of sequence files in all (ADR-0015
 // §3), so one file past this is not one of ours.
 constexpr std::uintmax_t kMaxSequenceBytes = std::uintmax_t{1} << 30;
+// contracts/plugin's kMaxStateBytes, which this layer does not include: a
+// file past it is not a state the engine wrote.
+constexpr std::uintmax_t kMaxStateBytes = std::uintmax_t{16} << 20;
 
 bool read_file(const fs::path& path, std::uintmax_t max_bytes, std::string& out) {
     std::error_code ec;
@@ -305,6 +308,43 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
     known_.insert(file.string());
     // A save may have kept a pre-migration copy, which is a kept file too.
     refresh_kept();
+    return true;
+}
+
+bool SessionFolder::write_states(const std::string& folder, const std::vector<StateFile>& states,
+                                 std::string& why) {
+    if (states.empty()) return true;
+    const fs::path dir = fs::path(folder) / kPluginStateDir;
+    std::error_code ec;
+    const bool made_dir = !fs::exists(dir, ec);
+    fs::create_directories(dir, ec);
+    if (ec) {
+        why = "cannot create " + dir.string();
+        return false;
+    }
+    if (made_dir && !sync_directory_(folder)) {
+        why = "cannot sync the session folder after creating " + dir.string();
+        return false;
+    }
+    bool wrote = false;
+    for (const StateFile& s : states) {
+        // The name is the hash: bytes that are not the digest's must never
+        // carry it, or the check at open refuses a state we wrote.
+        if (s.bytes.size() > kMaxStateBytes || sha256_hex(s.bytes) != s.sha256) {
+            why = "a plugin state does not match its digest " + s.sha256;
+            return false;
+        }
+        const fs::path file = fs::path(folder) / model::plugin_state_file(s.sha256);
+        std::string there;
+        if (fs::exists(file, ec) && read_file(file, kMaxStateBytes, there) && there == s.bytes) continue;
+        if (!write_synced(file, s.bytes, why)) return false;
+        wrote = true;
+        ++states_written_;
+    }
+    if (wrote && !sync_directory_(dir.string())) {
+        why = "cannot sync " + dir.string() + " after writing plugin states";
+        return false;
+    }
     return true;
 }
 

@@ -3,7 +3,8 @@
 // A session folder on disk (session-format.md, "Saving"; ADR-0015 §3, §6):
 // the session file written atomically, the MIDI sequence files it names
 // written before it, and the sequence files no kept session file names
-// deleted after it.
+// deleted after it; and the plugin state files a FlushPluginState hands it,
+// before any session file names them.
 //
 // The engine's saver thread (engine/control session_saver.h) is the one
 // writer in the product; it decides when a save may touch the disk, which
@@ -26,6 +27,14 @@ namespace sonora::session_files {
 
 inline constexpr const char* kSequenceDir = "MIDI Sequences";
 inline constexpr const char* kBackupsDir = "Session File Backups";
+inline constexpr const char* kPluginStateDir = "Plugin State";
+
+// One plugin state to keep beside the session (ADR-0012 §6.1): a StateBlob,
+// opaque here, and the digest that names its file.
+struct StateFile {
+    std::string sha256;   // sha256_hex(bytes)
+    std::string bytes;
+};
 
 // The session folder of a session file: its own folder, or, for a file in
 // "Session File Backups/", the folder above it. Sequence files live there
@@ -68,6 +77,19 @@ public:
     // still be there.
     int clean(std::string& caution);
 
+    // Writes each state to "<folder>/Plugin State/<sha256>.state"
+    // (model::plugin_state_file) through "<name>.tmp", synced and renamed,
+    // then syncs "Plugin State/" once, so a session file saved afterwards
+    // never names a state the medium does not hold (ADR-0012 §6.1). A file
+    // already there with the bytes its name hashes is not written again;
+    // states are append-only and nothing here deletes one. False, with
+    // `why`, at the first state not made durable (one whose digest is not
+    // its bytes' included); the ones before it stay, which is harmless,
+    // since no document names them yet. Independent of save()'s folder.
+    bool write_states(const std::string& folder, const std::vector<StateFile>& states, std::string& why);
+    // State files written since construction, for the tests.
+    std::size_t states_written() const { return states_written_; }
+
     // The folder the last save entered; empty before the first.
     const std::string& folder() const { return folder_; }
     // Kept files parsed since the folder was entered, for the tests: each
@@ -92,6 +114,7 @@ private:
     std::set<std::string> known_;   // the kept files files_ holds a set for
     std::size_t kept_reads_ = 0;
     std::size_t sequences_written_ = 0;
+    std::size_t states_written_ = 0;
 };
 
 }  // namespace sonora::session_files

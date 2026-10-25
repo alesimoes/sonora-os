@@ -1018,6 +1018,40 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] The lost and unmapped touch counts are not in the state block
          (InsertState has `work_refused` only; lost touches are per track):
          a state layout change with the UI's co-review.
+       - [x] Plugin state through the session file (`t4-lv2-state`):
+         `FlushPluginState` with hosting sends GetState to every running
+         instance (`PluginHosting::request_states`; ids unique across
+         hosts; a host that stops, restarts or is replaced before it
+         answers fails its requests, one silent past kReplyTimeoutMs is
+         killed), the saver thread writes `Plugin State/<sha256>.state`
+         (`SessionFolder::write_states`, paced behind a checkpoint like a
+         save), then `SetInsertState` goes to the document and every
+         replica, then the reply; Failed names each insert whose state
+         could not be had. A plugin with no state of its own gets none.
+         A crashed host restarts from the flushed state
+         (`SupervisedChain::set_state`), not the one it started with.
+         ctest `plugin_hosting_state_flush` (fails without set_state: 605
+         blocks flushed, 4 after the crash), `plugin_hosting_server_state_flush`,
+         `session_folder`, `session_saver`. The LV2 host's save/restore
+         and `worker:schedule` were already in (`plugin_host_state_lv2`,
+         `plugin_host_worker_restore`). No protocol change.
+       - [ ] Untested: the GetState timeout (no test plugin hangs in
+         save()); add a `#state` variant whose save() sleeps past 5 s.
+       - [ ] States go to the engine's session folder: a Save As into
+         another folder does not carry `Plugin State/`. Copy or write them
+         with the session file when the save names another folder.
+       - [ ] LV2 states that hold files (`state:mapPath`, `makePath`,
+         `freePath`): the host offers none, so such plugins save absolute
+         paths or fail. Map into the session folder.
+       - [ ] `SetInsertParams` for editor values moved mid-gesture at flush
+         time: no editors are hosted yet, so nothing is moved outside a
+         gesture end; do it with editors under WSLg.
+       - [ ] Presets: LV2 `pset:Preset` listing and load (lilv), VST3
+         `.vstpreset` (published SDK format), user presets saved as
+         StateBlobs beside the catalog cache; a load is a make-before-break
+         restart with the preset as the instance's state.
+       - [ ] Plugin manager (ui/qt): the catalog with refusals, rescan,
+         per-plugin block list, the yabridge bundles; screenshots.
 6. [ ] **Windows VST through yabridge** (in progress, plugin-engineer;
        ADR-0017, Proposed).
        - [x] Discovery, validation and the real bridge measured (PR 1).

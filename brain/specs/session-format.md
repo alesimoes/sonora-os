@@ -579,6 +579,20 @@ checkpoint". Not built yet: step 5's rotated backups and the autosave
 (BACKLOG Track 2 item 3). Files in `MIDI Files/` are never deleted by
 this rule.
 
+**Plugin state files (version 2, ADR-0012 §6.1, §8).** File > Save is
+preceded by `ModelAction::FlushPluginState`. *As built (BACKLOG Track 4
+item 5):* the engine sends `GetState` to each running instance, and once
+every one has answered, failed, or passed 5 s (that host is then killed
+and restarts), its saver thread writes each state to
+`Plugin State/<sha256>.state` by the same tmp, `fdatasync`, rename steps,
+one `fsync` of `Plugin State/` for the batch, paced behind a checkpoint as
+a save is. Only then does the document name them (`SetInsertState`), and
+only then is the flush answered, so the save after it never names a state
+the medium does not hold. A state already on disk with its bytes is not
+written again. State files are never deleted by cleanup. They go to the
+engine's session folder: a Save As into another folder does not carry them
+yet (BACKLOG Track 4 item 5).
+
 **Autosave.** After every committed take (the `RecordTake` operation) and
 every 60 s while there are unsaved edits, the same procedure writes
 `Session File Backups/<name>.autosave.sonora`. Explicit save writes the main

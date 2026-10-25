@@ -287,6 +287,7 @@ void EngineControlServer::after_deactivate() {
     // One backend activation (amendment item 4): no callback runs now, so
     // the runner, the hosts and their regions may go.
     playback_->set_chain_resolver(ChainResolver());
+    drop_reading_flushes();
     hosting_.reset();
     // The next activation builds hosting again, for its own period.
     hosting_tried_ = false;
@@ -475,26 +476,109 @@ void EngineControlServer::show_inserts(bool new_session) {
     for (const uint64_t insert : gone) say(insert, "");
 }
 
-bool EngineControlServer::flush_plugin_state(const std::string& which, std::string& why) {
-    // Nothing runs (kNoHosting): every insert's last state is the one the
-    // document already holds, so there is nothing to record. What remains
-    // is to refuse what names no insert, as a hosting engine will.
-    if (which.empty()) return true;
+bool EngineControlServer::flush_plugin_state(ClientId from, const api::ModelRequest& m, std::string& why) {
+    const std::string& which = m.op;
     uint64_t id = 0;
-    for (const char c : which) {
-        if (c < '0' || c > '9' || id > (UINT64_MAX - 9) / 10) {
-            why = "\"" + which + "\" is not an insert id";
+    if (!which.empty()) {
+        for (const char c : which) {
+            if (c < '0' || c > '9' || id > (UINT64_MAX - 9) / 10) {
+                why = "\"" + which + "\" is not an insert id";
+                return false;
+            }
+            id = id * 10 + static_cast<uint64_t>(c - '0');
+        }
+        bool found = false;
+        for (const auto& t : document_->current().edit->tracks) {
+            for (const model::Insert& in : t->inserts) found = found || in.id == id;
+        }
+        if (!found) {
+            why = "insert " + which + " is not on any track";
             return false;
         }
-        id = id * 10 + static_cast<uint64_t>(c - '0');
     }
-    for (const auto& t : document_->current().edit->tracks) {
-        for (const model::Insert& in : t->inserts) {
-            if (in.id == id) return true;
+    if (!hosting_) {
+        // Nothing runs: every insert's last state is the one the document
+        // already holds, so there is nothing to record.
+        reply(from, m.seq, DispatchResult::Ok, "");
+        return true;
+    }
+    PendingFlush f;
+    f.to = from;
+    f.seq = m.seq;
+    f.generation = session_generation_;
+    f.reading = hosting_->request_states(id, document_->current());
+    flushes_[next_flush_++] = std::move(f);
+    // Nothing to wait for (no running instance) is answered now.
+    follow_flushes();
+    return true;
+}
+
+void EngineControlServer::drop_reading_flushes() {
+    // The server has stopped (after_deactivate), so no reply would leave;
+    // what matters is that the next activation's flush ids, which start
+    // again at 1, never find these.
+    for (auto it = flushes_.begin(); it != flushes_.end();)
+        it = it->second.reading != 0 ? flushes_.erase(it) : std::next(it);
+}
+
+void EngineControlServer::follow_flushes() {
+    if (!hosting_) return;
+    for (PluginHosting::Flush& done : hosting_->take_flushes()) {
+        const auto it = std::find_if(flushes_.begin(), flushes_.end(),
+                                     [&](const auto& p) { return p.second.reading == done.id; });
+        if (it == flushes_.end()) continue;
+        it->second.reading = 0;
+        it->second.flush = std::move(done);
+        SessionSaver::Job job;
+        job.kind = SessionSaver::Kind::States;
+        job.seq = it->first;
+        job.file = session_.config().dir;
+        for (const PluginHosting::StateRead& s : it->second.flush.states) {
+            if (!s.sha256.empty()) job.states.push_back({s.sha256, s.bytes});
         }
+        if (job.states.empty()) {
+            finish_flush(it->first, true, "");
+            continue;
+        }
+        // Paced behind the disk thread's checkpoints, as a save is: a flush
+        // during a take must not push the take's own syncs into an overrun.
+        saver_->set_take_open(session_.recording_take() != 0);
+        saver_->submit(std::move(job));
     }
-    why = "insert " + which + " is not on any track";
-    return false;
+}
+
+void EngineControlServer::finish_flush(uint64_t id, bool written, const std::string& why) {
+    const auto it = flushes_.find(id);
+    if (it == flushes_.end()) return;
+    PendingFlush f = std::move(it->second);
+    flushes_.erase(it);
+    std::vector<std::string> failed = f.flush.failed;
+    if (f.generation != session_generation_) {
+        reply(f.to, f.seq, DispatchResult::Failed,
+              "a session was opened while the plug-ins' states were being saved; nothing was recorded");
+        return;
+    }
+    if (!written) {
+        failed.insert(failed.begin(), "the plug-ins' states could not be written: " + why);
+    } else if (hosting_) {
+        // The files are on the medium: now the document may name them.
+        std::vector<model::Operation> ops = hosting_->states_saved(f.flush, document_->current());
+        for (const model::Operation& op : ops) {
+            model::ReplicationUpdate u;
+            std::string refused;
+            if (document_->apply(op, u, refused)) send_update(u);
+            else failed.push_back("a plug-in state could not be recorded: " + refused);
+        }
+        if (!ops.empty()) {
+            hosting_->show(document_->current(), false);
+            show_inserts(false);
+        }
+    } else {
+        failed.insert(failed.begin(), "plug-in hosting stopped before the plug-ins' states were recorded");
+    }
+    std::string message;
+    for (const std::string& line : failed) message += (message.empty() ? "" : "; ") + line;
+    reply(f.to, f.seq, failed.empty() ? DispatchResult::Ok : DispatchResult::Failed, message);
 }
 
 void EngineControlServer::follow_transport() {
@@ -1602,10 +1686,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 break;
             }
             case api::ModelAction::FlushPluginState:
-                // No update to send: see flush_plugin_state().
-                ok = flush_plugin_state(m.op, why);
-                reply(from, m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed,
-                      ok ? "" : why);
+                // Answered by flush_plugin_state() or, with hosting, once the
+                // states are written and named (finish_flush()).
+                if (!flush_plugin_state(from, m, why)) reply(from, m.seq, DispatchResult::Failed, why);
                 return;
             case api::ModelAction::Save:
                 // Answered by follow_saver() once the saver is done.
@@ -1672,6 +1755,10 @@ void EngineControlServer::follow_saver() {
     saver_->set_take_open(session_.recording_take() != 0);
     saver_->set_transport_stopped(session_.transport().state() == TransportState::Stopped);
     for (SessionSaver::Done& d : saver_->take_done()) {
+        if (d.kind == SessionSaver::Kind::States) {
+            finish_flush(d.seq, d.ok, d.message);
+            continue;
+        }
         if (d.seq != 0) {
             reply(d.client, d.seq, d.ok ? DispatchResult::Ok : DispatchResult::Failed, d.message);
         }
@@ -1713,6 +1800,7 @@ void EngineControlServer::tick() {
         }
         show_inserts(false);
     }
+    follow_flushes();
     // Every plug-in of the session just opened has loaded or failed, or the
     // bound has passed: the play that waited goes now.
     if (!held_plays_.empty() && !plugins_loading()) release_plays(false);

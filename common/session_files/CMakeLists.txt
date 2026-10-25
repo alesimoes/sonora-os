@@ -10,6 +10,6 @@ target_link_libraries(sonora_session_files PUBLIC sonora_model PRIVATE sonora_pl
 if(UNIX)
   add_executable(test_session_folder tests/test_session_folder.cpp)
   target_include_directories(test_session_folder PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
-  target_link_libraries(test_session_folder PRIVATE sonora_session_files)
+  target_link_libraries(test_session_folder PRIVATE sonora_session_files sonora_sha256)
   add_test(NAME session_folder COMMAND test_session_folder)
 endif()
