@@ -1,6 +1,6 @@
 # ADR-0016 — Loop record: one file per take, one region per pass, passes as alternate playlists
 
-- Status: **Proposed**, 2026-10-25. Not implemented. Revised the same day
+- Status: **Accepted**, 2026-10-25, by the coordinator under the owner's standing authorization of 2026-10-21 (recommended defaults O1–O3, architect changes C1–C7). Not implemented. Revised the same day
   with the architect's assessment of PR #114 ("accept with changes",
   #issuecomment-6394446768, C1–C7). The owner decides O1–O3 ("For the
   owner"); each has a recommended default, which the architect holds.
