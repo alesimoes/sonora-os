@@ -105,8 +105,10 @@ struct Rig {
 // A session named `name` with one MIDI region of `events` events and
 // `sysex` SysEx messages, saved into `dir` as the interface saves it. Its
 // session file.
+// Unchecked, the region is placed past History's refusal of a chunk too
+// large for a part, as a damaged or foreign file could hold one.
 QString saved_midi_session(const QString& dir, const std::string& name, std::size_t events,
-                           std::size_t sysex = 0) {
+                           std::size_t sysex = 0, bool checked = true) {
     model::Snapshot base = make_empty_session(4, 48000);
     base.settings.name = name;
     model::History h(std::move(base));
@@ -117,24 +119,27 @@ QString saved_midi_session(const QString& dir, const std::string& name, std::siz
     t.playlist_name = "Synth.01";
     t.kind = model::TrackKind::Midi;
     t.channels = 0;
-    auto seq = std::make_shared<model::MidiSequence>();
+    model::MidiLists seq;
     for (std::size_t i = 0; i < events; ++i) {
-        seq->events.push_back(model::MidiEvent{static_cast<model::Ticks>(i), 0xB0, 1, 2});
+        seq.events.push_back(model::MidiEvent{static_cast<model::Ticks>(i), 0xB0, 1, 2});
     }
     std::vector<std::uint8_t> message(model::kMaxSysexBytes, 0x11);
     message.front() = 0xF0;
     message.back() = 0xF7;
     for (std::size_t i = 0; i < sysex; ++i) {
-        seq->sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i), message});
+        seq.sysex.push_back(model::MidiSysEx{static_cast<model::Ticks>(i), message});
     }
     model::MidiRegion r;
     r.id = t.track + 2;
     r.name = "Synth_01";
     r.length = model::kTicksPerQuarter;
-    r.data = seq;
+    r.data = std::make_shared<const model::MidiSequence>(seq);
     std::string why;
-    if (!h.apply(t, why) || !h.apply(model::PlaceMidiRegion{t.playlist, r, 0, {}}, why)) return {};
-    ModelDocument doc(h.current());
+    const model::PlaceMidiRegion place{t.playlist, r, 0, {}};
+    if (!h.apply(t, why)) return {};
+    model::Snapshot made;
+    if (checked ? !h.apply(place, why) : !model::apply(h.current(), place, made, why)) return {};
+    ModelDocument doc(checked ? h.current() : made);
     SyntheticPeakSource peaks(48000, 120.0);
     SessionModel s(doc, peaks, true);
     s.setSessionsDir(dir);
@@ -219,21 +224,21 @@ int a_refused_open_gives_the_window_back() {
     return 0;
 }
 
-// A session over the size one Load can carry is refused before it is shown,
-// and the refusal is held, not a status line.
-int an_open_over_the_load_size_is_held() {
+// A session holding one chunk over what a part can carry (a damaged or
+// foreign file: apply refuses to make one) is refused as it is read, by
+// name, as any file that does not read is, and nothing is shown or sent.
+int an_open_with_a_chunk_over_a_part_is_refused() {
     Rig r;
     CHECK(r.connect());
     std::string why;
     CHECK(r.save(why));
     const QString a = r.session.sessionFile();
-    const QString big = saved_midi_session(r.dir.path(), "Huge", 0, 16400);
+    const QString big = saved_midi_session(r.dir.path(), "Huge", 0, 4200, false);
     CHECK(!big.isEmpty());
     CHECK(!r.session.openSessionFile(big, false, why));
-    CHECK(why.find("a Load can carry") != std::string::npos);
+    CHECK(why.find("one chunk may hold") != std::string::npos);
     CHECK(r.session.sessionFile() == a);
-    CHECK(holds(r.shell.notices(), "was not opened"));
-    CHECK(holds(r.shell.notices(), "a Load can carry"));
+    CHECK(r.doc.in_flight() == 0);
     return 0;
 }
 
@@ -263,7 +268,7 @@ int an_edit_while_an_open_is_unanswered_is_refused() {
     CHECK(!r.doc.undo(why) && why.find("still opening") != std::string::npos);
     why.clear();
     CHECK(!r.doc.redo(why) && why.find("still opening") != std::string::npos);
-    CHECK(r.doc.in_flight() == 1);   // the Load alone
+    CHECK(r.doc.in_flight() == 2);   // the Load and its one sequence file's part
 
     r.settle();   // the engine refuses B
     CHECK(r.session.sessionFile() == a);
@@ -284,7 +289,7 @@ int an_edit_while_an_open_is_unanswered_is_refused() {
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (a_refused_open_gives_the_window_back() != 0) return 1;
-    if (an_open_over_the_load_size_is_held() != 0) return 1;
+    if (an_open_with_a_chunk_over_a_part_is_refused() != 0) return 1;
     if (an_edit_while_an_open_is_unanswered_is_refused() != 0) return 1;
     std::printf("session open: ok\n");
     return 0;

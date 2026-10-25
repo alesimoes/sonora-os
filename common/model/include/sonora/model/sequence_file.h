@@ -39,6 +39,40 @@ std::string encode_sequence(const MidiSequence& s);
 // to the same bytes.
 bool decode_sequence(std::string_view bytes, MidiSequence& out, std::string& error);
 
+// The same encoding of flat lists, and its decoder, which checks them as
+// lists: what one chunk of the undo window's chunk table travels as.
+std::string encode_lists(const MidiLists& s);
+bool decode_lists(std::string_view bytes, MidiLists& out, std::string& error);
+
+// --- the undo window's chunk table, in parts (ADR-0015 §4) -------------------
+
+// What one part may hold: a Snapshot's chunk table travels in parts of at
+// most this, each decoded and checked on its own as it arrives.
+inline constexpr std::size_t kMaxChunkPartBytes = std::size_t{16} << 20;
+
+// The most one chunk's .msq encoding may be: with a part's header and the
+// chunk's index and size at their widest, it fits a part wherever in the
+// table it falls. A larger chunk is refused where it would come into being
+// (apply, open), so no accepted state is one no interface can attach to.
+inline constexpr std::size_t kMaxChunkBytes = kMaxChunkPartBytes - 36;
+// Empty when `c` fits kMaxChunkBytes; otherwise why not, naming `track`.
+std::string oversized_chunk(const MidiChunk& c, const std::string& track);
+// The same for every chunk the state's MIDI regions hold.
+std::string oversized_chunk(const EditState& state);
+
+// A part is self-contained: "SWCP", version 1, then as LEB128 the table index
+// of its first chunk and how many it holds, then per chunk its index and the
+// size of its .msq encoding, and that encoding. Whole chunks only, never a
+// byte range of one, so a receiver never holds more than one part it has not
+// decoded. A chunk too large for a part on its own is refused by name.
+bool encode_chunk_parts(const std::vector<const MidiChunk*>& table, std::size_t max_part_bytes,
+                        std::vector<std::string>& parts, std::string& error);
+// Appends the part's chunks to `table`, which must hold every earlier part's.
+// Each is decoded strictly, must not be empty and must lie in its index's
+// span. On failure `table` is unchanged.
+bool decode_chunk_part(std::string_view bytes,
+                       std::vector<std::shared_ptr<const MidiChunk>>& table, std::string& error);
+
 // The reference a session file holds for `s`: its hash, size and counts.
 // `encoded`, when not null, receives the bytes the hash was taken of.
 SequenceFileRef sequence_ref(const MidiSequence& s, std::string* encoded = nullptr);

@@ -13,6 +13,7 @@
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 
 namespace sonora::api::testing {
 
@@ -136,7 +137,15 @@ ModelUpdate to_wire(const model::ReplicationUpdate& u) {
         case model::ReplicationUpdate::Kind::Undo: m.kind = ModelUpdateKind::Undo; break;
         case model::ReplicationUpdate::Kind::Redo: m.kind = ModelUpdateKind::Redo; break;
         case model::ReplicationUpdate::Kind::Snapshot: m.kind = ModelUpdateKind::Snapshot; break;
+        case model::ReplicationUpdate::Kind::SnapshotHeader:
+            m.kind = ModelUpdateKind::SnapshotHeader;
+            break;
+        case model::ReplicationUpdate::Kind::SnapshotPart:
+            m.kind = ModelUpdateKind::SnapshotPart;
+            break;
     }
+    m.part_count = u.part_count;
+    m.part_bytes = u.part_bytes;
     m.revision = u.revision;
     m.undo_floor = u.undo_floor;
     m.next_id = u.next_id;
@@ -301,7 +310,7 @@ bool FakeEngine::connect(std::string& error) {
     // A replica starts from the whole document, as after M7.
     model::ReplicationUpdate snap;
     std::string why;
-    if (document_->snapshot(snap, why, wire::kMaxModelBytes)) broadcast(to_wire(snap));
+    if (document_->snapshot(snap, why, wire::kMaxModelBytes)) broadcast(snap);
     apply_mix();
     send_catalog();
     return true;
@@ -701,6 +710,30 @@ void FakeEngine::broadcast(const ModelUpdate& u) {
     queue(outbound_, bytes);
 }
 
+void FakeEngine::broadcast(const model::ReplicationUpdate& u) {
+    if (u.kind != model::ReplicationUpdate::Kind::Snapshot) {
+        broadcast(to_wire(u));
+        return;
+    }
+    // As engine/control sends it: header, parts, the window last.
+    ModelUpdate header = to_wire(u);
+    header.kind = ModelUpdateKind::SnapshotHeader;
+    header.bytes.clear();
+    header.part_count = u.parts.size();
+    header.part_bytes = 0;
+    for (const std::string& p : u.parts) header.part_bytes += p.size();
+    if (!u.parts.empty()) broadcast(header);
+    for (const std::string& p : u.parts) {
+        ModelUpdate part;
+        part.kind = ModelUpdateKind::SnapshotPart;
+        part.revision = u.revision;
+        part.undo_floor = u.undo_floor;
+        part.bytes = p;
+        broadcast(part);
+    }
+    broadcast(to_wire(u));
+}
+
 void FakeEngine::poll(Inbox& inbox) {
     if (!connected_ || !alive()) {
         // A dead engine's requests go nowhere, and nothing comes back.
@@ -780,7 +813,7 @@ void FakeEngine::handle(const std::string& bytes) {
         ModelRequest m;
         if (!wire::decode(bytes, m, error)) return;
         model::ReplicationUpdate u;
-        std::string why;
+        std::string why, snapshot_failed;
         bool ok = false;
         // The real engine's rule: faders are written from the document only
         // when an update changed what they hold, so an unrelated edit leaves
@@ -811,8 +844,34 @@ void FakeEngine::handle(const std::string& bytes) {
                 ok = document_->snapshot(u, why, wire::kMaxModelBytes);
                 break;
             case ModelAction::Load:
-                ok = document_->load(m.op, cfg_.sample_rate, u, why, wire::kMaxModelBytes);
+                // As engine/control: refused, the old session kept, when
+                // the new one's Snapshot could not be sent; accepted, its
+                // Snapshot always encodes, and a failure there is only the
+                // backstop's Notice.
+                if (!load_refused_.empty()) {
+                    why = load_refused_;
+                } else {
+                    ok = document_->load(m.op, cfg_.sample_rate, why, load_parts_.get(),
+                                         wire::kMaxModelBytes);
+                }
+                load_parts_.reset();
+                load_refused_.clear();
+                if (ok && !document_->snapshot(u, snapshot_failed, wire::kMaxModelBytes)) {
+                    snapshot_failed = "the engine could not send its document: " + snapshot_failed;
+                }
                 break;
+            case ModelAction::LoadPart: {
+                if (!load_parts_) {
+                    load_parts_ = std::make_unique<model::LoadParts>(cfg_.midi_max_entries);
+                }
+                ok = load_refused_.empty() && load_parts_->add(m.op, why);
+                if (!ok && load_refused_.empty()) {
+                    load_refused_ = "a part of the session was refused: " + why;
+                }
+                if (!load_refused_.empty()) why = load_refused_;
+                reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+                return;
+            }
             case ModelAction::FlushPluginState:
                 // Its updates are sent as it makes them, before this reply.
                 ok = flush_plugin_state(m.op, why);
@@ -821,7 +880,14 @@ void FakeEngine::handle(const std::string& bytes) {
         }
         reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
         if (!ok) return;
-        broadcast(to_wire(u));
+        if (snapshot_failed.empty()) {
+            broadcast(u);
+        } else {
+            EngineEvent e;
+            e.kind = EventKind::Notice;
+            e.text = snapshot_failed;
+            post_event(e);
+        }
         std::vector<model::Id> order_after;
         for (const auto& t : document_->current().edit->tracks) order_after.push_back(t->id);
         const model::MixState& mix_after = document_->current().mix;

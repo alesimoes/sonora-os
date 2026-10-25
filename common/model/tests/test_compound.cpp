@@ -483,9 +483,9 @@ int test_the_window_carries_labels() {
     }
     CHECK(theirs.undo_label() == "Paste \xC3\xA9");
     CHECK(theirs.redo_label() == "SetTrackName");
-    std::string again;
+    WindowParts again;
     CHECK(encode_window(theirs, again, err));
-    CHECK(again == u.bytes);
+    CHECK(again.window == u.bytes && again.parts == u.parts);
     return 0;
 }
 

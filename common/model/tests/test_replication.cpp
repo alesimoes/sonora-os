@@ -107,10 +107,11 @@ std::vector<Operation> one_of_each() {
     msrc.recorded_on_track = 2;
     msrc.latency_compensation = 32;
 
-    auto seq = std::make_shared<MidiSequence>();
-    seq->notes = {midi::Note{0, 480000, 1, 36, 90, 10}, midi::Note{960000, 1, 0, 127, 127, 0}};
-    seq->events = {MidiEvent{0, 0xB3, 7, 100}, MidiEvent{5, 0xC3, 9, 0}};
-    seq->sysex = {MidiSysEx{7, {0xF0, 0x43, 0x10, 0x7F, 0xF7}}};
+    MidiLists lists;
+    lists.notes = {midi::Note{0, 480000, 1, 36, 90, 10}, midi::Note{960000, 1, 0, 127, 127, 0}};
+    lists.events = {MidiEvent{0, 0xB3, 7, 100}, MidiEvent{5, 0xC3, 9, 0}};
+    lists.sysex = {MidiSysEx{7, {0xF0, 0x43, 0x10, 0x7F, 0xF7}}};
+    auto seq = std::make_shared<const MidiSequence>(lists);
     MidiRegion mr;
     mr.id = 41;
     mr.name = "Bass \xC3\xA9";
@@ -127,11 +128,11 @@ std::vector<Operation> one_of_each() {
     EditMidi em;
     em.playlist = 3;
     em.region = 41;
-    em.remove_notes = {NoteRemoval{0, seq->notes[0]}, NoteRemoval{4, seq->notes[1]}};
+    em.remove_notes = {NoteRemoval{0, seq->notes()[0]}, NoteRemoval{4, seq->notes()[1]}};
     em.add_notes = {midi::Note{10, 20, 2, 60, 1, 127}};
-    em.remove_events = {EventRemoval{1, seq->events[1]}};
+    em.remove_events = {EventRemoval{1, seq->events()[1]}};
     em.add_events = {MidiEvent{30, 0xE0, 0, 64}};
-    em.remove_sysex = {SysExRemoval{0, seq->sysex[0]}};
+    em.remove_sysex = {SysExRemoval{0, seq->sysex()[0]}};
     em.add_sysex = {MidiSysEx{40, {0xF0, 0xF7}}};
 
     RecordLoopTake loop;
@@ -547,7 +548,7 @@ int test_window_refuses_what_does_not_fit() {
     CHECK(doc.apply(add_track(ids, "B"), u, error));
     CHECK(doc.snapshot(u, error));
     std::optional<History> h;
-    CHECK(decode_window(u.bytes, h, error));
+    CHECK(decode_window(WindowParts{u.parts, u.bytes}, h, error));
     CHECK(h.has_value() && h->step_count() == 3 && h->undo_depth() == 2);
     // Steps share what they did not change, on the replica as on the engine.
     CHECK(h->step_edit(1)->tracks[0] == h->step_edit(2)->tracks[0]);
@@ -563,10 +564,11 @@ int test_window_refuses_what_does_not_fit() {
         bytes.replace(at, from.size(), to);
         std::optional<History> out;
         std::string err;
-        return !decode_window(bytes, out, err) && !out.has_value() && mentions(err, why);
+        return !decode_window(WindowParts{u.parts, bytes}, out, err) && !out.has_value() &&
+               mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 6", "\"window_format\": 5", "window_format"));
-    CHECK(refused("\"window_format\": 6", "\"window_format\": 7", "window_format"));
+    CHECK(refused("\"window_format\": 7", "\"window_format\": 6", "window_format"));
+    CHECK(refused("\"window_format\": 7", "\"window_format\": 8", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

@@ -7,9 +7,11 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "sonora/model/model.h"
@@ -74,6 +76,15 @@ public:
     // `file` is relative to the session folder, "MIDI Sequences/<sha>.msq".
     // False, with `why`, when it is not there or cannot be read.
     virtual bool read(const std::string& file, std::string& bytes, std::string& why) = 0;
+    // The sequence whose file has this hash, already verified and decoded
+    // (a Load in parts), with the file's size; null when this source reads
+    // files instead.
+    virtual std::shared_ptr<const MidiSequence> decoded(const std::string& sha256,
+                                                        std::uint64_t& bytes) {
+        (void)sha256;
+        (void)bytes;
+        return nullptr;
+    }
 };
 
 // A sequence file that was not there or did not verify at open (ADR-0015
@@ -134,5 +145,53 @@ bool encode_session_bundle(const Snapshot& s, const WriteInfo& info, std::string
 // Takes a bundle or a bare session file, which is a bundle that carries no
 // sequence file: every file of format 5 or older is one.
 bool decode_session_bundle(std::string_view bytes, Loaded& out, LoadError& error);
+
+// A Load in parts (ADR-0015 §4, protocol 10). The sequences travel ahead as
+// a chunk table in the Snapshot's own parts (encode_chunk_parts: "SWCP",
+// whole chunks, at most `max_part_bytes` each), each sequence's chunks
+// after the one before's, so a sequence file of any size crosses and only a
+// chunk is bounded. `load` is what the Load carries: an index of how many
+// chunks each sequence holds, then the bare session file. A missing
+// sequence travels as its reference alone.
+bool encode_load_parts(const Snapshot& s, const WriteInfo& info, std::string& load,
+                       std::vector<std::string>& parts, std::string& error,
+                       SequenceDigests* digests = nullptr,
+                       std::size_t max_part_bytes = kMaxChunkPartBytes);
+// Whether a Load's bytes are encode_load_parts()'s, not a bundle.
+bool is_load_in_parts(std::string_view load);
+
+// The engine's half: each part's chunks decoded and checked as the part
+// arrives, so only one part's bytes are held, and the decoded chunks are
+// bounded by the MIDI budget. open() rebuilds the sequences from them, then
+// deserialize() reads them from here.
+class LoadParts : public SequenceSource {
+public:
+    explicit LoadParts(std::uint64_t max_entries);
+    // False, with `why`, for a part that does not decode or follow the one
+    // before, or chunks past `max_entries` together; what earlier parts
+    // brought is kept as it was.
+    bool add(std::string_view part, std::string& why);
+    // Takes the index off `load`, which must be encode_load_parts()'s, and
+    // rebuilds, checks and hashes each sequence from its chunks, which must
+    // be every chunk the parts brought. `session_file` is the rest, a view
+    // into `load`.
+    bool open(std::string_view load, std::string_view& session_file, std::string& why);
+    bool read(const std::string& file, std::string& bytes, std::string& why) override;
+    std::shared_ptr<const MidiSequence> decoded(const std::string& sha256,
+                                                std::uint64_t& bytes) override;
+    std::size_t chunks() const { return table_.size(); }
+    std::size_t files() const { return files_.size(); }
+    std::uint64_t entries() const { return entries_; }
+
+private:
+    struct File {
+        std::uint64_t bytes = 0;
+        std::shared_ptr<const MidiSequence> seq;
+    };
+    std::vector<std::shared_ptr<const MidiChunk>> table_;
+    std::unordered_map<std::string, File> files_;   // by hash, once opened
+    std::uint64_t entries_ = 0;
+    std::uint64_t max_entries_;
+};
 
 }  // namespace sonora::model

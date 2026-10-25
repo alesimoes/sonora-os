@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -810,8 +811,7 @@ public:
         if (!fresh(region.id)) return false;
         if (op.data_from) {
             const MidiSequence* own = region.data.get();
-            if (own != nullptr &&
-                !(own->notes.empty() && own->events.empty() && own->sysex.empty())) {
+            if (own != nullptr && !own->empty()) {
                 return fail("region " + str(region.id) +
                             ": carries a sequence of its own and data_from; send one or the"
                             " other");
@@ -873,17 +873,17 @@ public:
         // Each value on its own first, so a bad one is named by where it is
         // in the operation rather than where it would have landed.
         for (std::size_t i = 0; i < op.add_notes.size(); ++i) {
-            MidiSequence one;
+            MidiLists one;
             one.notes.push_back(op.add_notes[i]);
             if (!value_ok(one, "add_notes", i)) return false;
         }
         for (std::size_t i = 0; i < op.add_events.size(); ++i) {
-            MidiSequence one;
+            MidiLists one;
             one.events.push_back(op.add_events[i]);
             if (!value_ok(one, "add_events", i)) return false;
         }
         for (std::size_t i = 0; i < op.add_sysex.size(); ++i) {
-            MidiSequence one;
+            MidiLists one;
             one.sysex.push_back(op.add_sysex[i]);
             if (!value_ok(one, "add_sysex", i)) return false;
         }
@@ -897,24 +897,52 @@ public:
                             "); it cannot be edited until the file is restored or it is"
                             " rebuilt from its take");
             }
-            auto seq = std::make_shared<MidiSequence>();
-            if (!kept(old.notes, op.remove_notes, "remove_notes", "note", seq->notes) ||
-                !kept(old.events, op.remove_events, "remove_events", "event", seq->events) ||
-                !kept(old.sysex, op.remove_sysex, "remove_sysex", "SysEx message",
-                      seq->sysex)) {
+            // Only the chunks the edit touches are copied (ADR-0015 §2); every
+            // other one, and every leaf none of them is in, stays shared.
+            std::map<std::int64_t, Touched> touched;
+            if (!removals(old, old.notes(), op.remove_notes, "remove_notes", "note", touched,
+                          &Touched::notes) ||
+                !removals(old, old.events(), op.remove_events, "remove_events", "event",
+                          touched, &Touched::events) ||
+                !removals(old, old.sysex(), op.remove_sysex, "remove_sysex", "SysEx message",
+                          touched, &Touched::sysex)) {
                 return false;
             }
-            // Stable throughout: what was there stays before what is added
-            // at the same place, and the additions keep their own order.
-            seq->notes.insert(seq->notes.end(), op.add_notes.begin(), op.add_notes.end());
-            midi::sort_notes(seq->notes);
-            seq->events.insert(seq->events.end(), op.add_events.begin(), op.add_events.end());
-            std::stable_sort(seq->events.begin(), seq->events.end(),
-                             [](const MidiEvent& a, const MidiEvent& b) { return a.tick < b.tick; });
-            seq->sysex.insert(seq->sysex.end(), op.add_sysex.begin(), op.add_sysex.end());
-            std::stable_sort(seq->sysex.begin(), seq->sysex.end(),
-                             [](const MidiSysEx& a, const MidiSysEx& b) { return a.tick < b.tick; });
-            p.regions[i].data = std::move(seq);
+            for (const midi::Note& n : op.add_notes) {
+                touched[midi_chunk_of(n.start)].add.notes.push_back(n);
+            }
+            for (const MidiEvent& e : op.add_events) {
+                touched[midi_chunk_of(e.tick)].add.events.push_back(e);
+            }
+            for (const MidiSysEx& x : op.add_sysex) {
+                touched[midi_chunk_of(x.tick)].add.sysex.push_back(x);
+            }
+            static const MidiLists kNothing;
+            std::vector<std::shared_ptr<const MidiChunk>> replace;
+            replace.reserve(touched.size());
+            for (auto& [k, t] : touched) {
+                auto c = std::make_shared<MidiChunk>();
+                c->index = k;
+                const MidiChunk* before = old.chunk_at(k);
+                const MidiLists& was = before != nullptr ? before->data : kNothing;
+                // Stable throughout: what was there stays before what is
+                // added at the same place, and the additions keep their own
+                // order. A chunk is a tick range, so sorting within it is
+                // sorting the whole list.
+                rebuilt(was.notes, t.notes, t.add.notes, c->data.notes);
+                midi::sort_notes(c->data.notes);
+                rebuilt(was.events, t.events, t.add.events, c->data.events);
+                std::stable_sort(
+                    c->data.events.begin(), c->data.events.end(),
+                    [](const MidiEvent& a, const MidiEvent& b) { return a.tick < b.tick; });
+                rebuilt(was.sysex, t.sysex, t.add.sysex, c->data.sysex);
+                std::stable_sort(
+                    c->data.sysex.begin(), c->data.sysex.end(),
+                    [](const MidiSysEx& a, const MidiSysEx& b) { return a.tick < b.tick; });
+                replace.push_back(std::move(c));
+            }
+            p.regions[i].data =
+                std::make_shared<const MidiSequence>(MidiSequence::replaced(old, replace));
             return true;
         });
     }
@@ -981,7 +1009,7 @@ private:
                             " in ticks"));
     }
 
-    bool value_ok(const MidiSequence& one, const char* list, std::size_t i) {
+    bool value_ok(const MidiLists& one, const char* list, std::size_t i) {
         std::string where;
         const std::string why = detail::sequence_problem(one, where);
         if (why.empty()) return true;
@@ -992,14 +1020,28 @@ private:
     static const MidiEvent& expected(const EventRemoval& r) { return r.event; }
     static const MidiSysEx& expected(const SysExRemoval& r) { return r.sysex; }
 
-    // `from` without the elements `remove` names, into `out`. Each must hold
-    // the value its removal expects: an index alone would remove whatever a
-    // concurrent edit moved there.
+    static Ticks tick_of(const midi::Note& n) { return n.start; }
+    static Ticks tick_of(const MidiEvent& e) { return e.tick; }
+    static Ticks tick_of(const MidiSysEx& x) { return x.tick; }
+
+    // What one EditMidi does to one chunk: positions in it to remove, in
+    // increasing order, and what lands in it.
+    struct Touched {
+        std::vector<std::size_t> notes;
+        std::vector<std::size_t> events;
+        std::vector<std::size_t> sysex;
+        MidiLists add;
+    };
+
+    // Each removal names its element by its index in the whole sequence,
+    // and must hold the value the removal expects: an index alone would
+    // remove whatever a concurrent edit moved there. Recorded against the
+    // chunk that holds it.
     template <typename T, typename R>
-    bool kept(const std::vector<T>& from, const std::vector<R>& remove, const char* list,
-              const char* what, std::vector<T>& out) {
-        out.reserve(from.size() + 1);
-        std::size_t r = 0;
+    bool removals(const MidiSequence& seq, const MidiSequence::List<T>& from,
+                  const std::vector<R>& remove, const char* list, const char* what,
+                  std::map<std::int64_t, Touched>& touched,
+                  std::vector<std::size_t> Touched::*into) {
         for (std::size_t k = 0; k < remove.size(); ++k) {
             const std::string at =
                 std::string(list) + "[" + str(static_cast<std::uint64_t>(k)) + "]: ";
@@ -1008,20 +1050,33 @@ private:
                 return fail(at + "indices must be increasing and below " +
                             str(static_cast<std::uint64_t>(from.size())));
             }
-            if (!(from[i] == expected(remove[k]))) {
+            const T& v = from[i];
+            if (!(v == expected(remove[k]))) {
                 return fail(at + what + " " + str(static_cast<std::uint64_t>(i)) +
                             " is not the " + what +
                             " this edit removes; the region changed under it");
             }
-        }
-        for (std::size_t k = 0; k < from.size(); ++k) {
-            if (r < remove.size() && remove[r].index == k) {
-                ++r;
-                continue;
-            }
-            out.push_back(from[k]);
+            const std::int64_t c = midi_chunk_of(tick_of(v));
+            const std::vector<T>& in = detail::ChunkList<T>::of(*seq.chunk_at(c));
+            (touched[c].*into).push_back(static_cast<std::size_t>(&v - in.data()));
         }
         return true;
+    }
+
+    // `was` without the positions in `drop` (increasing), then `add`.
+    template <typename T>
+    static void rebuilt(const std::vector<T>& was, const std::vector<std::size_t>& drop,
+                        const std::vector<T>& add, std::vector<T>& out) {
+        out.reserve(was.size() - drop.size() + add.size());
+        std::size_t d = 0;
+        for (std::size_t k = 0; k < was.size(); ++k) {
+            if (d < drop.size() && drop[d] == k) {
+                ++d;
+                continue;
+            }
+            out.push_back(was[k]);
+        }
+        out.insert(out.end(), add.begin(), add.end());
     }
 
     // Clears [a, b) on a MIDI playlist, as overwrite() does on an audio one:

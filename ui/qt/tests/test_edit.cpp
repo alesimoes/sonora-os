@@ -1820,13 +1820,13 @@ int test_midi_sequence_files() {
     t.kind = TrackKind::Midi;
     t.channels = 0;
     CHECK(h.apply(t, why));
-    auto first = std::make_shared<MidiSequence>();
-    for (int i = 0; i < 20; ++i) first->events.push_back(MidiEvent{i * 1000, 0xB0, 1, 2});
+    MidiLists first;
+    for (int i = 0; i < 20; ++i) first.events.push_back(MidiEvent{i * 1000, 0xB0, 1, 2});
     MidiRegion r;
     r.id = h.current().next_id;
     r.name = "Synth_01";
     r.length = 4 * kTicksPerQuarter;
-    r.data = first;
+    r.data = std::make_shared<const MidiSequence>(first);
     CHECK(h.apply(PlaceMidiRegion{t.playlist, r, 0, {}}, why));
 
     ModelDocument doc(h.current());
@@ -1835,9 +1835,9 @@ int test_midi_sequence_files() {
     OK(session.saveSession(why));
     const QString file = session.sessionFile();
     const QDir seqs(QDir(QFileInfo(file).absolutePath()).filePath(QStringLiteral("MIDI Sequences")));
-    const SequenceFileRef a = sequence_ref(*first);
+    const SequenceFileRef a = sequence_ref(MidiSequence(first));
     const QString a_file = seqs.filePath(QString::fromStdString(a.sha256) + QStringLiteral(".msq"));
-    OK(file_bytes(a_file).toStdString() == encode_sequence(*first));
+    OK(file_bytes(a_file).toStdString() == encode_lists(first));
     OK(seqs.entryList(QDir::Files).size() == 1);   // no ".tmp" left behind
     OK(contains(file_bytes(file).toStdString(), a.sha256.c_str()));
 
@@ -1899,7 +1899,7 @@ int test_midi_sequence_files() {
     OK(missing.value(QStringLiteral("now")).toString().contains(QStringLiteral("MIDI data missing")));
     OK(missing.value(QStringLiteral("why")).toString().contains(QStringLiteral("not there")));
     const MidiRegion& silent = third.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0];
-    OK(silent.data->missing && silent.data->events.empty());
+    OK(silent.data->missing && silent.data->events().empty());
     const QByteArray held = file_bytes(file);
     OK(reopener.saveSession(why));
     OK(file_bytes(file) == held);
@@ -1921,13 +1921,13 @@ Snapshot midi_session(int events, Id& playlist, Id& region) {
     t.channels = 0;
     std::string why;
     h.apply(t, why);
-    auto seq = std::make_shared<MidiSequence>();
-    for (int i = 0; i < events; ++i) seq->events.push_back(MidiEvent{i * 1000, 0xB0, 1, 2});
+    MidiLists seq;
+    for (int i = 0; i < events; ++i) seq.events.push_back(MidiEvent{i * 1000, 0xB0, 1, 2});
     MidiRegion r;
     r.id = h.current().next_id;
     r.name = "Synth_01";
     r.length = 4 * kTicksPerQuarter;
-    r.data = seq;
+    r.data = std::make_shared<const MidiSequence>(seq);
     h.apply(PlaceMidiRegion{t.playlist, r, 0, {}}, why);
     playlist = t.playlist;
     region = r.id;

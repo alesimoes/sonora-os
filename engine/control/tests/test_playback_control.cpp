@@ -1285,13 +1285,13 @@ int test_midi_tracks_build_silent() {
     inst.channels = 2;
     inst.mix = TrackMix{};
     CHECK_APPLY(h, inst);
-    auto data = std::make_shared<MidiSequence>();
-    data->notes.push_back(sonora::midi::Note{});
+    MidiLists data;
+    data.notes.push_back(sonora::midi::Note{});
     MidiRegion r;
     r.id = 106;
     r.name = "Bass_01";
     r.length = kTicksPerQuarter;
-    r.data = data;
+    r.data = std::make_shared<const MidiSequence>(data);
     CHECK_APPLY(h, (PlaceMidiRegion{103, r, 0}));
 
     sonora::BuildLimits limits;

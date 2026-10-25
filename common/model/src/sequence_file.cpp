@@ -120,18 +120,21 @@ private:
 
 }  // namespace
 
-std::string encode_sequence(const MidiSequence& s) {
-    std::string out;
-    out.reserve(kHeaderBytes + 3 + s.notes.size() * 10 + s.events.size() * 6);
+namespace {
+
+template <typename Notes, typename Events, typename Sysex>
+void encode_into(std::string& out, const Notes& notes, const Events& events,
+                 const Sysex& sysex) {
+    out.reserve(out.size() + kHeaderBytes + 3 + notes.size() * 10 + events.size() * 6);
     out.append(kMagic, sizeof kMagic);
     put_byte(out, kSequenceFileVersion);
-    put_leb(out, s.notes.size());
-    put_leb(out, s.events.size());
-    put_leb(out, s.sysex.size());
+    put_leb(out, notes.size());
+    put_leb(out, events.size());
+    put_leb(out, sysex.size());
     // Each section is in non-decreasing order of its first key, so every
     // delta is unsigned.
     std::int64_t prev = 0;
-    for (const midi::Note& n : s.notes) {
+    for (const midi::Note& n : notes) {
         put_leb(out, static_cast<std::uint64_t>(n.start - prev));
         prev = n.start;
         put_leb(out, static_cast<std::uint64_t>(n.length));
@@ -141,7 +144,7 @@ std::string encode_sequence(const MidiSequence& s) {
         put_byte(out, n.release_velocity);
     }
     prev = 0;
-    for (const MidiEvent& e : s.events) {
+    for (const MidiEvent& e : events) {
         put_leb(out, static_cast<std::uint64_t>(e.tick - prev));
         prev = e.tick;
         put_byte(out, e.status);
@@ -149,16 +152,29 @@ std::string encode_sequence(const MidiSequence& s) {
         put_byte(out, e.data2);
     }
     prev = 0;
-    for (const MidiSysEx& x : s.sysex) {
+    for (const MidiSysEx& x : sysex) {
         put_leb(out, static_cast<std::uint64_t>(x.tick - prev));
         prev = x.tick;
         put_leb(out, x.bytes.size());
         out.append(reinterpret_cast<const char*>(x.bytes.data()), x.bytes.size());
     }
+}
+
+}  // namespace
+
+std::string encode_sequence(const MidiSequence& s) {
+    std::string out;
+    encode_into(out, s.notes(), s.events(), s.sysex());
     return out;
 }
 
-bool decode_sequence(std::string_view bytes, MidiSequence& out, std::string& error) {
+std::string encode_lists(const MidiLists& s) {
+    std::string out;
+    encode_into(out, s.notes, s.events, s.sysex);
+    return out;
+}
+
+bool decode_lists(std::string_view bytes, MidiLists& out, std::string& error) {
     Decoder d(bytes, error);
     if (!d.magic()) return false;
     std::uint64_t notes = 0, events = 0, sysex = 0;
@@ -173,7 +189,7 @@ bool decode_sequence(std::string_view bytes, MidiSequence& out, std::string& err
         notes * kMinNoteBytes + events * kMinEventBytes + sysex * kMinSysexBytes > left) {
         return d.fail("the counts promise more entries than the file holds");
     }
-    MidiSequence s;
+    MidiLists s;
     s.notes.reserve(static_cast<std::size_t>(notes));
     s.events.reserve(static_cast<std::size_t>(events));
     s.sysex.reserve(static_cast<std::size_t>(sysex));
@@ -226,6 +242,183 @@ bool decode_sequence(std::string_view bytes, MidiSequence& out, std::string& err
     return true;
 }
 
+bool decode_sequence(std::string_view bytes, MidiSequence& out, std::string& error) {
+    MidiLists lists;
+    if (!decode_lists(bytes, lists, error)) return false;
+    out = MidiSequence(std::move(lists));
+    return true;
+}
+
+// --- the undo window's chunk table, in parts --------------------------------
+
+namespace {
+
+constexpr char kPartMagic[4] = {'S', 'W', 'C', 'P'};
+constexpr std::uint8_t kPartVersion = 1;
+
+Ticks tick_of(const midi::Note& n) { return n.start; }
+Ticks tick_of(const MidiEvent& e) { return e.tick; }
+Ticks tick_of(const MidiSysEx& x) { return x.tick; }
+
+// A list in order is in the span when its ends are.
+template <typename T>
+bool in_span(const std::vector<T>& v, std::int64_t chunk) {
+    return v.empty() || (midi_chunk_of(tick_of(v.front())) == chunk &&
+                         midi_chunk_of(tick_of(v.back())) == chunk);
+}
+
+std::size_t leb_size(std::uint64_t v) {
+    std::size_t n = 1;
+    while (v >= 0x80) {
+        v >>= 7;
+        ++n;
+    }
+    return n;
+}
+
+}  // namespace
+
+std::string oversized_chunk(const MidiChunk& c, const std::string& track) {
+    // A bound on the encoding first (a note is at most 20 bytes, an event
+    // 11, a SysEx message 10 and its own), so a chunk is encoded only when
+    // it may be too large.
+    std::size_t bound = 64 + 32 * static_cast<std::size_t>(c.data.entries());
+    for (const MidiSysEx& x : c.data.sysex) bound += x.bytes.size();
+    if (bound <= kMaxChunkBytes) return {};
+    const std::size_t bytes = encode_lists(c.data).size();
+    if (bytes <= kMaxChunkBytes) return {};
+    return "track \"" + track + "\": the MIDI in chunk " + std::to_string(c.index) +
+           " (four beats from beat " + std::to_string(c.index * 4) + ") would be " +
+           std::to_string(bytes) + " bytes, over the " + std::to_string(kMaxChunkBytes) +
+           " one chunk may hold; spread it over more time";
+}
+
+std::string oversized_chunk(const EditState& state) {
+    std::unordered_set<const void*> seen;
+    for (const auto& t : state.tracks) {
+        for (const auto& p : t->midi_playlists) {
+            if (!seen.insert(p.get()).second) continue;
+            for (const MidiRegion& r : p->regions) {
+                if (!r.data || !seen.insert(r.data.get()).second) continue;
+                for (const MidiSpineNode& n : r.data->spine()) {
+                    if (!seen.insert(n.leaf.get()).second) continue;
+                    for (const MidiSpineEntry& e : n.leaf->chunks) {
+                        if (!seen.insert(e.chunk.get()).second) continue;
+                        std::string why = oversized_chunk(*e.chunk, t->name);
+                        if (!why.empty()) return why;
+                    }
+                }
+            }
+        }
+    }
+    return {};
+}
+
+bool encode_chunk_parts(const std::vector<const MidiChunk*>& table, std::size_t max_part_bytes,
+                        std::vector<std::string>& parts, std::string& error) {
+    parts.clear();
+    std::string part, count_and_chunks;
+    std::size_t first = 0, in_part = 0;
+    const auto header_bytes = [&](std::size_t at, std::size_t n) {
+        return sizeof kPartMagic + 1 + leb_size(at) + leb_size(n);
+    };
+    const auto close = [&]() {
+        part.assign(kPartMagic, sizeof kPartMagic);
+        put_byte(part, kPartVersion);
+        put_leb(part, first);
+        put_leb(part, in_part);
+        part += count_and_chunks;
+        parts.push_back(std::move(part));
+        part.clear();
+        count_and_chunks.clear();
+        first += in_part;
+        in_part = 0;
+    };
+    std::string one;
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        const MidiChunk& c = *table[i];
+        one.clear();
+        put_leb(one, static_cast<std::uint64_t>(c.index));
+        const std::string msq = encode_lists(c.data);
+        put_leb(one, msq.size());
+        one += msq;
+        if (header_bytes(i, 1) + one.size() > max_part_bytes) {
+            error = "chunk " + std::to_string(c.index) + " encodes to " +
+                    std::to_string(one.size()) + " bytes, over the " +
+                    std::to_string(max_part_bytes) + " a part of the chunk table may hold";
+            return false;
+        }
+        if (in_part > 0 &&
+            header_bytes(first, in_part + 1) + count_and_chunks.size() + one.size() >
+                max_part_bytes) {
+            close();
+        }
+        count_and_chunks += one;
+        ++in_part;
+    }
+    if (in_part > 0) close();
+    return true;
+}
+
+bool decode_chunk_part(std::string_view bytes, std::vector<std::shared_ptr<const MidiChunk>>& table,
+                       std::string& error) {
+    if (bytes.size() < sizeof kPartMagic + 1 ||
+        !std::equal(kPartMagic, kPartMagic + 4, bytes.data())) {
+        error = "not a part of the undo window's chunk table (magic)";
+        return false;
+    }
+    if (static_cast<std::uint8_t>(bytes[4]) != kPartVersion) {
+        error = "chunk table part version " +
+                std::to_string(static_cast<std::uint8_t>(bytes[4])) + "; this build reads " +
+                std::to_string(kPartVersion);
+        return false;
+    }
+    Decoder d(bytes.substr(sizeof kPartMagic + 1), error);
+    std::uint64_t first = 0, count = 0;
+    if (!d.leb(first, "the part's first index") || !d.leb(count, "the part's chunk count")) {
+        return false;
+    }
+    if (first != table.size()) {
+        return d.fail("the part starts at chunk " + std::to_string(first) + " and " +
+                      std::to_string(table.size()) + " have arrived");
+    }
+    // A chunk is at least its index, its size and an empty .msq.
+    if (count == 0 || count > d.left() / (2 + kHeaderBytes + 3)) {
+        return d.fail("the part's chunk count does not fit its bytes");
+    }
+    std::vector<std::shared_ptr<const MidiChunk>> got;
+    got.reserve(static_cast<std::size_t>(count));
+    std::vector<std::uint8_t> msq;
+    for (std::uint64_t i = 0; i < count; ++i) {
+        std::uint64_t index = 0, size = 0;
+        if (!d.leb(index, "a chunk's index") || !d.leb(size, "a chunk's size")) return false;
+        if (index > static_cast<std::uint64_t>(kMaxInteger / kMidiChunkTicks)) {
+            return d.fail("chunk index " + std::to_string(index) + " is past the timeline");
+        }
+        if (size > d.left()) return d.fail("a chunk is cut short");
+        if (!d.raw(static_cast<std::size_t>(size), msq)) return false;
+        auto c = std::make_shared<MidiChunk>();
+        c->index = static_cast<std::int64_t>(index);
+        std::string why;
+        if (!decode_lists(std::string_view(reinterpret_cast<const char*>(msq.data()), msq.size()),
+                          c->data, why)) {
+            return d.fail("chunk " + std::to_string(first + i) + ": " + why);
+        }
+        if (c->data.empty()) return d.fail("chunk " + std::to_string(first + i) + " is empty");
+        const MidiLists& l = c->data;
+        if (!in_span(l.notes, c->index) || !in_span(l.events, c->index) ||
+            !in_span(l.sysex, c->index)) {
+            return d.fail("chunk " + std::to_string(first + i) + " holds data outside chunk " +
+                          std::to_string(index) + "'s span");
+        }
+        got.push_back(std::move(c));
+    }
+    if (!d.done()) return false;
+    table.insert(table.end(), std::make_move_iterator(got.begin()),
+                 std::make_move_iterator(got.end()));
+    return true;
+}
+
 SequenceFileRef sequence_ref(const MidiSequence& s, std::string* encoded) {
     if (s.missing) return *s.missing;
     std::string bytes = encode_sequence(s);
@@ -233,9 +426,9 @@ SequenceFileRef sequence_ref(const MidiSequence& s, std::string* encoded) {
     r.sha256 = sha256_hex(bytes);
     r.file = midi_sequence_file(r.sha256);
     r.bytes = bytes.size();
-    r.notes = s.notes.size();
-    r.events = s.events.size();
-    r.sysex = s.sysex.size();
+    r.notes = s.note_count();
+    r.events = s.event_count();
+    r.sysex = s.sysex_count();
     if (encoded != nullptr) *encoded = std::move(bytes);
     return r;
 }

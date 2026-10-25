@@ -98,6 +98,12 @@ add_executable(test_model_midi tests/test_midi.cpp)
 target_link_libraries(test_model_midi PRIVATE sonora_model_audited)
 add_test(NAME model_midi COMMAND test_model_midi)
 
+# ADR-0015 §1, §2, §4, §5: canonical chunks, undo and the budget per chunk,
+# the window's chunk table in parts, a Load in parts.
+add_executable(test_model_midi_chunks tests/test_midi_chunks.cpp)
+target_link_libraries(test_model_midi_chunks PRIVATE sonora_model_audited)
+add_test(NAME model_midi_chunks COMMAND test_model_midi_chunks)
+
 # ADR-0014 Unverified 6 and ADR-0015 Unverified 2: dense MIDI against the
 # file caps and the undo window, and open and save at the 2^24-entry
 # target; run by hand, numbers in the PRs.

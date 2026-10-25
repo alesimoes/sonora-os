@@ -165,19 +165,22 @@ Value midi_source_value(const MidiSource& s) {
     return v;
 }
 
-Value notes_value(const std::vector<midi::Note>& notes) {
+template <typename Notes>
+Value notes_value(const Notes& notes) {
     Value v = Value::array();
     for (const midi::Note& n : notes) v.push(detail::note_row(n));
     return v;
 }
 
-Value events_value(const std::vector<MidiEvent>& events) {
+template <typename Events>
+Value events_value(const Events& events) {
     Value v = Value::array();
     for (const MidiEvent& e : events) v.push(detail::event_row(e));
     return v;
 }
 
-Value sysex_value(const std::vector<MidiSysEx>& sysex) {
+template <typename Sysex>
+Value sysex_value(const Sysex& sysex) {
     Value v = Value::array();
     for (const MidiSysEx& x : sysex) v.push(detail::sysex_row(x));
     return v;
@@ -208,9 +211,9 @@ Value midi_region_value(const MidiRegion& r) {
     Value v = midi_region_fields(r);
     static const MidiSequence kEmpty;
     const MidiSequence& d = r.data ? *r.data : kEmpty;
-    v.set("notes", notes_value(d.notes));
-    v.set("events", events_value(d.events));
-    v.set("sysex", sysex_value(d.sysex));
+    v.set("notes", notes_value(d.notes()));
+    v.set("events", events_value(d.events()));
+    v.set("sysex", sysex_value(d.sysex()));
     return v;
 }
 
@@ -835,13 +838,18 @@ bool read_midi_region_value(Reader& rd, const Value& v, const std::string& p, Mi
         !read_midi_region_fields(rd, v, p, r)) {
         return false;
     }
-    auto data = std::make_shared<MidiSequence>();
-    if (!read_rows(rd, v, p, "notes", detail::read_note_rows, data->notes) ||
-        !read_rows(rd, v, p, "events", detail::read_event_rows, data->events) ||
-        !read_rows(rd, v, p, "sysex", detail::read_sysex_rows, data->sysex)) {
+    MidiLists lists;
+    if (!read_rows(rd, v, p, "notes", detail::read_note_rows, lists.notes) ||
+        !read_rows(rd, v, p, "events", detail::read_event_rows, lists.events) ||
+        !read_rows(rd, v, p, "sysex", detail::read_sysex_rows, lists.sysex)) {
         return false;
     }
-    r.data = std::move(data);
+    // As lists, before they are chunked, which would hide an order broken
+    // across chunks; apply() checks the rest, as for any region.
+    std::string where;
+    const std::string why = detail::sequence_problem(lists, where);
+    if (!why.empty()) return rd.fail(p.empty() ? where : p + "." + where, why);
+    r.data = std::make_shared<const MidiSequence>(std::move(lists));
     return true;
 }
 
@@ -1362,7 +1370,11 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 6: a sequence whose file was missing at open carries its reference
 //    (ADR-0015 O2), so a replica shows the same regions silent and saves
 //    them back with it.
-constexpr std::int64_t kWindowFormat = 6;
+// 7: sequences are spines of chunks (ADR-0015 §1, §4): the chunks travel
+//    apart, in parts, as a chunk table; the window holds the table's size,
+//    a table of spine leaves listing chunks by table index, and sequences
+//    listing leaves.
+constexpr std::int64_t kWindowFormat = 7;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1419,7 +1431,10 @@ public:
     }
 
     Value playlists_ = Value::array();
+    Value leaves_ = Value::array();
     Value sequences_ = Value::array();
+    // The chunk table, in first-reference order: what the parts carry.
+    std::vector<const MidiChunk*> chunks_;
     Value midi_playlists_ = Value::array();
     Value tracks_ = Value::array();
     Value markers_ = Value::array();
@@ -1461,14 +1476,28 @@ private:
         midi_playlists_.push(std::move(v));
         return ix;
     }
+    std::size_t chunk(const MidiChunk& c) {
+        bool added = false;
+        const std::size_t ix = chunk_ix_.index(&c, added);
+        if (added) chunks_.push_back(&c);
+        return ix;
+    }
+    std::size_t leaf(const MidiSpineLeaf& l) {
+        bool added = false;
+        const std::size_t ix = leaf_ix_.index(&l, added);
+        if (!added) return ix;
+        Value v = Value::array();
+        for (const MidiSpineEntry& e : l.chunks) v.push(index_value(chunk(*e.chunk)));
+        leaves_.push(std::move(v));
+        return ix;
+    }
     std::size_t sequence(const MidiSequence& d) {
         bool added = false;
         const std::size_t ix = sequence_ix_.index(&d, added);
         if (!added) return ix;
         Value v = Value::object();
-        v.set("notes", notes_value(d.notes));
-        v.set("events", events_value(d.events));
-        v.set("sysex", sysex_value(d.sysex));
+        Value& ls = v.set("leaves", Value::array());
+        for (const MidiSpineNode& n : d.spine()) ls.push(index_value(leaf(*n.leaf)));
         if (d.missing) {
             const SequenceFileRef& r = *d.missing;
             Value& m = v.set("missing", Value::object());
@@ -1499,6 +1528,8 @@ private:
     }
 
     Table<Playlist> playlist_ix_;
+    Table<MidiChunk> chunk_ix_;
+    Table<MidiSpineLeaf> leaf_ix_;
     Table<MidiSequence> sequence_ix_;
     Table<MidiPlaylist> midi_ix_;
     Table<TrackEdit> track_ix_;
@@ -1506,13 +1537,12 @@ private:
     Table<EditState> edit_ix_;
 };
 
-bool window_value(const History& h, Value& root, std::string& error) {
+bool window_value(const History& h, WindowWriter& w, Value& root, std::string& error) {
     const Snapshot& cur = h.current();
     if (cur.edit != h.step_edit(h.undo_depth())) {
         error = "the current state is not the one at the undo pointer";
         return false;
     }
-    WindowWriter w;
     Value steps = Value::array();
     for (std::size_t i = 0; i < h.step_count(); ++i) {
         Value sv = Value::object();
@@ -1544,6 +1574,8 @@ bool window_value(const History& h, Value& root, std::string& error) {
         }
     }
     root.set("playlists", std::move(w.playlists_));
+    root.set("chunks", index_value(w.chunks_.size()));
+    root.set("leaves", std::move(w.leaves_));
     root.set("sequences", std::move(w.sequences_));
     root.set("midi_playlists", std::move(w.midi_playlists_));
     root.set("tracks", std::move(w.tracks_));
@@ -1595,20 +1627,60 @@ bool read_playlists(Reader& rd, const Value& root,
     return true;
 }
 
+bool read_leaves(Reader& rd, const Value& root,
+                 const std::vector<std::shared_ptr<const MidiChunk>>& chunks,
+                 std::vector<std::shared_ptr<const MidiSpineLeaf>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "leaves", list)) return false;
+    for (const Value& e : list->items()) {
+        if (!e.is_array()) return rd.fail("leaves", "must hold arrays of chunk indices");
+        std::vector<std::shared_ptr<const MidiChunk>> cs;
+        cs.reserve(e.items().size());
+        for (const Value& i : e.items()) {
+            std::size_t ix = 0;
+            if (!table_index(rd, i, "leaves", chunks.size(), ix)) return false;
+            cs.push_back(chunks[ix]);
+        }
+        std::shared_ptr<const MidiSpineLeaf> leaf;
+        std::string why;
+        if (!MidiSequence::make_leaf(std::move(cs), leaf, why)) return rd.fail("leaves", why);
+        out.push_back(std::move(leaf));
+    }
+    return true;
+}
+
 bool read_sequences(Reader& rd, const Value& root,
+                    const std::vector<std::shared_ptr<const MidiSpineLeaf>>& leaves,
                     std::vector<std::shared_ptr<const MidiSequence>>& out) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "sequences", list)) return false;
     for (const Value& e : list->items()) {
-        auto d = std::make_shared<MidiSequence>();
         const bool missing = e.is_object() && e.find("missing") != nullptr;
+        const Value* ls = nullptr;
+        if (!rd.keys(e, "sequences",
+                     missing ? std::initializer_list<const char*>{"leaves", "missing"}
+                             : std::initializer_list<const char*>{"leaves"}) ||
+            !rd.array(e, "sequences", "leaves", ls)) {
+            return false;
+        }
+        std::vector<std::shared_ptr<const MidiSpineLeaf>> spine;
+        spine.reserve(ls->items().size());
+        for (const Value& i : ls->items()) {
+            std::size_t ix = 0;
+            if (!table_index(rd, i, "sequences.leaves", leaves.size(), ix)) return false;
+            spine.push_back(leaves[ix]);
+        }
+        MidiSequence d;
+        std::string why;
+        if (!MidiSequence::from_leaves(std::move(spine), d, why)) {
+            return rd.fail("sequences.leaves", why);
+        }
         if (missing) {
             const Value& m = *e.find("missing");
             const std::string mp = "sequences.missing";
             SequenceFileRef r;
             std::int64_t bytes = 0, notes = 0, events = 0, sysex = 0;
-            if (!rd.keys(e, "sequences", {"notes", "events", "sysex", "missing"}) ||
-                !rd.keys(m, mp, {"file", "sha256", "bytes", "notes", "events", "sysex"}) ||
+            if (!rd.keys(m, mp, {"file", "sha256", "bytes", "notes", "events", "sysex"}) ||
                 !rd.text(m, mp, "file", r.file) || !rd.text(m, mp, "sha256", r.sha256) ||
                 !rd.integer(m, mp, "bytes", kMaxInteger, bytes) ||
                 !rd.integer(m, mp, "notes", kMaxInteger, notes) ||
@@ -1620,20 +1692,15 @@ bool read_sequences(Reader& rd, const Value& root,
             r.notes = static_cast<std::uint64_t>(notes);
             r.events = static_cast<std::uint64_t>(events);
             r.sysex = static_cast<std::uint64_t>(sysex);
-            d->missing = std::move(r);
+            d.missing = std::move(r);
+            // Its reference, here: the invariant check of the current state
+            // below does not see the sequences only older steps hold. The
+            // chunks were checked as their parts arrived.
+            std::string where;
+            const std::string problem = detail::sequence_problem(d, where);
+            if (!problem.empty()) return rd.fail("sequences." + where, problem);
         }
-        if ((!missing && !rd.keys(e, "sequences", {"notes", "events", "sysex"})) ||
-            !read_rows(rd, e, "sequences", "notes", detail::read_note_rows, d->notes) ||
-            !read_rows(rd, e, "sequences", "events", detail::read_event_rows, d->events) ||
-            !read_rows(rd, e, "sequences", "sysex", detail::read_sysex_rows, d->sysex)) {
-            return false;
-        }
-        // Each once, here: the invariant check of the current state below
-        // does not see the sequences only older steps hold.
-        std::string where;
-        const std::string why = detail::sequence_problem(*d, where);
-        if (!why.empty()) return rd.fail("sequences." + where, why);
-        out.push_back(std::move(d));
+        out.push_back(std::make_shared<const MidiSequence>(std::move(d)));
     }
     return true;
 }
@@ -1760,7 +1827,9 @@ bool read_edits(Reader& rd, const Value& root,
     return true;
 }
 
-bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
+bool read_window(Reader& rd, const Value& root,
+                 const std::vector<std::shared_ptr<const MidiChunk>>& chunks,
+                 std::optional<History>& out) {
     // The format first: another version's keys are not this one's to judge.
     if (!root.is_object() || root.find("window_format") == nullptr) {
         return rd.fail("", "missing required key \"window_format\"");
@@ -1774,9 +1843,15 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
     }
     if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
                             "bus", "mix", "insert_mix", "sources", "midi_sources", "playlists",
-                            "sequences", "midi_playlists", "tracks", "markers", "edits",
-                            "steps"})) {
+                            "chunks", "leaves", "sequences", "midi_playlists", "tracks",
+                            "markers", "edits", "steps"})) {
         return false;
+    }
+    std::int64_t chunk_count = 0;
+    if (!rd.integer(root, "", "chunks", kMaxInteger, chunk_count)) return false;
+    if (static_cast<std::uint64_t>(chunk_count) != chunks.size()) {
+        return rd.fail("chunks", "is " + std::to_string(chunk_count) + " and the parts brought " +
+                                     std::to_string(chunks.size()));
     }
     Snapshot cur;
     std::int64_t revision = 0, position = 0;
@@ -1817,12 +1892,14 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
     cur.sources = std::move(pool);
 
     std::vector<std::shared_ptr<const Playlist>> playlists;
+    std::vector<std::shared_ptr<const MidiSpineLeaf>> leaves;
     std::vector<std::shared_ptr<const MidiSequence>> sequences;
     std::vector<std::shared_ptr<const MidiPlaylist>> midi_playlists;
     std::vector<std::shared_ptr<const TrackEdit>> tracks;
     std::vector<std::shared_ptr<const MarkerList>> markers;
     std::vector<std::shared_ptr<const EditState>> edits;
-    if (!read_playlists(rd, root, playlists) || !read_sequences(rd, root, sequences) ||
+    if (!read_playlists(rd, root, playlists) || !read_leaves(rd, root, chunks, leaves) ||
+        !read_sequences(rd, root, leaves, sequences) ||
         !read_midi_playlists(rd, root, sequences, midi_playlists) ||
         !read_tracks(rd, root, playlists, midi_playlists, tracks) ||
         !read_marker_lists(rd, root, markers) || !read_edits(rd, root, tracks, markers, edits)) {
@@ -1861,13 +1938,77 @@ bool read_window(Reader& rd, const Value& root, std::optional<History>& out) {
 
 }  // namespace
 
-bool encode_window(const History& history, std::string& out, std::string& error) {
+bool encode_window(const History& history, WindowParts& out, std::string& error,
+                   std::size_t max_part_bytes) {
+    WindowWriter w;
     Value root;
-    if (!window_value(history, root, error)) return false;
-    return json::write(root, out, error);
+    if (!window_value(history, w, root, error)) return false;
+    WindowParts parts;
+    if (!encode_chunk_parts(w.chunks_, max_part_bytes, parts.parts, error)) return false;
+    if (!json::write(root, parts.window, error)) return false;
+    out = std::move(parts);
+    return true;
 }
 
-bool decode_window(std::string_view bytes, std::optional<History>& out, std::string& error) {
+bool encode_window_alone(const History& history, std::string& window, std::string& error) {
+    WindowWriter w;
+    Value root;
+    return window_value(history, w, root, error) && json::write(root, window, error);
+}
+
+std::uint64_t WindowParts::part_bytes() const {
+    std::uint64_t n = 0;
+    for (const std::string& p : parts) n += p.size();
+    return n;
+}
+
+bool WindowDecoder::begin(std::uint64_t parts, std::uint64_t bytes, std::uint64_t max_bytes,
+                          std::string& error) {
+    *this = WindowDecoder();
+    if (bytes > max_bytes) {
+        error = "the engine's undo window has " + std::to_string(bytes) +
+                " bytes of MIDI chunks, over this interface's limit of " +
+                std::to_string(max_bytes) + "; raise the limit to attach";
+        return false;
+    }
+    if (parts > bytes) {
+        error = "the engine announced " + std::to_string(parts) + " parts in " +
+                std::to_string(bytes) + " bytes";
+        return false;
+    }
+    parts_ = parts;
+    bytes_ = bytes;
+    started_ = true;
+    return true;
+}
+
+bool WindowDecoder::part(std::string_view bytes, std::string& error) {
+    if (!started_ || got_parts_ == parts_) {
+        error = "a part of the undo window that was not announced";
+        return false;
+    }
+    if (bytes.size() > kMaxChunkPartBytes || bytes.size() > bytes_ - got_bytes_) {
+        error = "part " + std::to_string(got_parts_) + " is " + std::to_string(bytes.size()) +
+                " bytes, more than was announced";
+        return false;
+    }
+    std::string why;
+    if (!decode_chunk_part(bytes, table_, why)) {
+        error = "undo window part " + std::to_string(got_parts_) + ": " + why;
+        return false;
+    }
+    ++got_parts_;
+    got_bytes_ += bytes.size();
+    return true;
+}
+
+bool WindowDecoder::finish(std::string_view window, std::optional<History>& out,
+                           std::string& error) {
+    if (started_ && (got_parts_ != parts_ || got_bytes_ != bytes_)) {
+        error = "the undo window arrived after " + std::to_string(got_parts_) + " of its " +
+                std::to_string(parts_) + " parts";
+        return false;
+    }
     // The engine's bytes, already held to the wire's 64 MiB cap. A window
     // has more, smaller values per byte than a session file, so the value
     // and DOM caps are raised to what 64 MiB of it can hold.
@@ -1876,19 +2017,29 @@ bool decode_window(std::string_view bytes, std::optional<History>& out, std::str
     limits.max_dom_bytes = std::size_t{1} << 30;
     Value root;
     json::Error perr;
-    if (!json::parse(bytes, root, perr, limits)) {
+    if (!json::parse(window, root, perr, limits)) {
         error = "undo window: line " + std::to_string(perr.line) + ", column " +
                 std::to_string(perr.column) + ": " + perr.message;
         return false;
     }
     Reader rd(error);
     std::optional<History> decoded;
-    if (!read_window(rd, root, decoded)) {
+    if (!read_window(rd, root, table_, decoded)) {
         error = "undo window: " + error;
         return false;
     }
+    table_.clear();
     out = std::move(decoded);
     return true;
+}
+
+bool decode_window(const WindowParts& in, std::optional<History>& out, std::string& error) {
+    WindowDecoder d;
+    if (!d.begin(in.parts.size(), in.part_bytes(), UINT64_MAX, error)) return false;
+    for (const std::string& p : in.parts) {
+        if (!d.part(p, error)) return false;
+    }
+    return d.finish(in.window, out, error);
 }
 
 bool encode_operation(const Operation& op, std::string& out, std::string& error) {

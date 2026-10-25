@@ -19,6 +19,20 @@
 // client that frames or encodes wrongly is refused and detached, and nothing
 // it sent reaches the session.
 //
+// Snapshots (ADR-0015 §4) are encoded off the document thread: the control
+// thread copies the history, which shares every state, and a worker encodes
+// the copy into a header, the chunk table's parts and the window. Whatever
+// else is sent to that client meanwhile waits behind it, in order, so a
+// replica sees nothing between its Snapshot's header and window. The parts
+// go out as the client's transport drains them (Queued), at most two parts
+// ahead, so a slow interface delays its own attach and nobody else's. One
+// encoded Snapshot is held until every client it is for has been sent it;
+// clients asking at one revision share it, and a client asking again while
+// one it has not begun still waits is answered by that one, since what
+// waits behind it brings the replica to now. What waits behind a Snapshot
+// is bounded per client (Options::max_held_bytes): past it the client is
+// not reading and is refused, as the socket drops one it cannot queue for.
+//
 // Playback (ADR-0009, update "playback on the M4/M7 control server"): the
 // control thread is the document thread. It owns the PlaybackController,
 // shows it the document after every change, adds each closed take to the
@@ -66,6 +80,7 @@ class AudioBackend;
 }
 namespace model {
 class Document;
+class LoadParts;
 struct ReplicationUpdate;
 struct Snapshot;
 }
@@ -80,6 +95,9 @@ public:
     // Called on the control thread when a client is dropped for what it
     // sent; the transport then closes the connection. `why` names the fault.
     using Refuse = std::function<void(const std::string& why)>;
+    // Bytes the client's transport has taken and not yet written, asked on
+    // the control thread; empty for a transport with no limit (in process).
+    using Queued = std::function<std::size_t()>;
     using ClientId = uint64_t;
 
     struct Options {
@@ -150,6 +168,10 @@ public:
         // model::History::kDefaultMidiMaxEntries, which this header does
         // not see.
         uint64_t midi_max_entries = uint64_t{1} << 24;
+        // What may wait for one client behind its Snapshot, the Snapshot
+        // itself apart: ControlSocketServer's max_queued_bytes, which the
+        // pacing would otherwise get round.
+        std::size_t max_held_bytes = api::wire::kMaxMessageBytes + (std::size_t{16} << 20);
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -176,7 +198,7 @@ public:
     // A new client. Any thread; never waits. Its Hello, snapshot and
     // standing events go through `out`, on the control thread, before
     // anything else does. `refuse` may be empty.
-    ClientId attach(Outbound out, Refuse refuse);
+    ClientId attach(Outbound out, Refuse refuse, Queued queued = {});
     // The client is gone; nothing more is sent to it. Any thread.
     void detach(ClientId client);
     // One frame of a client's request (api/wire.h). Any thread; never
@@ -209,6 +231,16 @@ public:
     std::size_t peak_large_in_flight() const {
         return peak_large_.load(std::memory_order_acquire);
     }
+    // Snapshots encoded on the worker since construction, and the longest
+    // the control thread was held taking one's copy, in microseconds
+    // (ADR-0015 Unverified 7).
+    uint64_t snapshots_encoded() const { return snapshots_encoded_.load(std::memory_order_acquire); }
+    // Snapshots asked for, one per client an attach, Resync or Load is for:
+    // each has been answered, shared or queued by the time it is counted.
+    uint64_t snapshots_asked() const { return snapshots_asked_.load(std::memory_order_acquire); }
+    uint64_t longest_snapshot_copy_us() const {
+        return longest_copy_us_.load(std::memory_order_acquire);
+    }
 
     // --- the control thread, housekeeping, or before start() ---
     void post_event(const api::EngineEvent& event);
@@ -228,12 +260,26 @@ public:
     void after_deactivate();
 
 private:
+    struct SnapshotJob;
+    // What waits to go to a client behind a Snapshot: the Snapshot itself,
+    // a message, or a reply whose result is the Snapshot's (a Resync's).
+    struct Held {
+        std::shared_ptr<SnapshotJob> job;
+        std::string bytes;
+        std::vector<Frame> frames;
+        uint64_t reply_to = 0;
+    };
     struct Client {
         Outbound out;
         Refuse refuse;
+        Queued queued;
         api::wire::Reassembler reassembler;
         // Frames held back behind a large message that has no slot yet.
         std::deque<std::string> parked;
+        std::deque<Held> held;
+        std::size_t job_sent = 0;   // messages of the first held job already out
+        std::size_t held_bytes = 0;   // of the messages in `held`
+        bool overflowed = false;
     };
     struct Inbound {
         enum class Kind { Attach, Frame, Detach };
@@ -242,6 +288,12 @@ private:
         std::string bytes;
         Outbound out;
         Refuse refuse;
+        Queued queued;
+    };
+    // A Load in parts from one client (protocol 10).
+    struct LoadInParts {
+        std::unique_ptr<model::LoadParts> parts;
+        std::string refused;
     };
 
     void start_threads();
@@ -255,11 +307,16 @@ private:
     void unpark();
     // The client is gone: its backlog, and any ride it left unreleased.
     void forget(ClientId id);
+    // Refuses each client that went past max_held_bytes.
+    void drop_overflowed();
     // The document's mix onto the engine's tracks; every ride ends there.
     void apply_mix();
     // Handled frames' bytes leave their clients' backlogs.
     void release_handled();
-    void greet(Client& client);
+    void greet(ClientId id);
+    // `bytes` or `frames` to the client now, past anything held.
+    void write_to(Client& client, const std::string& bytes);
+    void write_frames(Client& client, const std::vector<Frame>& frames);
     void refuse(ClientId id, const std::string& why);
     void handle(ClientId from, const std::string& bytes);
     void tick();
@@ -269,6 +326,18 @@ private:
     void send_to(ClientId id, const std::string& bytes);
     // Frames already split, shared as they are.
     void send_frames(Client& client, const std::vector<Frame>& frames);
+    // A Snapshot of the document as it is now, for each of `to`, behind
+    // whatever each is still waiting for. With `reply_seq`, the asker's
+    // reply follows it, Ok or the reason it could not be encoded.
+    void send_snapshot(const std::vector<ClientId>& to, uint64_t reply_seq = 0);
+    // Each client's held messages out, as far as finished Snapshots and the
+    // transports' room allow. True while a client has a Snapshot part-sent.
+    bool pump_snapshots();
+    // The Snapshot to send now: the last one made, while a client still
+    // waits for it and the document is where it was taken, else a new one.
+    std::shared_ptr<SnapshotJob> snapshot_job();
+    void encode_loop();
+    void encode(SnapshotJob& job);
     void reply(ClientId to, uint64_t seq, DispatchResult result, const std::string& message);
     void remember(const api::EngineEvent& event, const std::string& bytes);
     void send_update(const model::ReplicationUpdate& update);
@@ -386,6 +455,26 @@ private:
     std::set<ClientId> large_;
     std::deque<ClientId> parked_;
     std::map<ClientId, std::size_t> handled_;
+    std::map<ClientId, LoadInParts> loads_;
+    // Bumped by every Load, so a Snapshot encoded from the session before
+    // never moves the new one's undo floor.
+    uint64_t session_generation_ = 0;
+    bool sending_snapshot_ = false;
+
+    // The Snapshot worker's queue; its own lock, never held with mutex_.
+    std::mutex jobs_mutex_;
+    std::condition_variable jobs_wake_;
+    std::deque<std::shared_ptr<SnapshotJob>> jobs_;
+    bool jobs_stop_ = false;
+    std::thread encoder_;
+    std::weak_ptr<SnapshotJob> last_job_;
+    bool overflowed_ = false;
+    // Set by the worker when a Snapshot is ready; under mutex_, so the
+    // control thread's wait sees it.
+    bool snapshot_ready_ = false;
+    std::atomic<uint64_t> snapshots_encoded_{0};
+    std::atomic<uint64_t> snapshots_asked_{0};
+    std::atomic<uint64_t> longest_copy_us_{0};
 
     std::mutex mutex_;
     std::condition_variable wake_;

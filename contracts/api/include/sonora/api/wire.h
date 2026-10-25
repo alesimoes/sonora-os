@@ -41,6 +41,10 @@ enum class Type : uint8_t {
 // A message's text fields; a session snapshot gets the larger cap.
 constexpr std::size_t kMaxText = std::size_t{64} << 10;
 constexpr std::size_t kMaxModelBytes = std::size_t{64} << 20;
+// One part of a Snapshot or a Load in parts (ADR-0015 §4): common/model's
+// kMaxChunkPartBytes, which this module may not see. A part is a message
+// like any other, so the 64 MiB cap still bounds what a peer can send.
+constexpr std::size_t kMaxPartBytes = std::size_t{16} << 20;
 constexpr std::size_t kMaxListEntries = 4096;
 // A catalog's plugins, and one plugin's parameters: the chain cap of
 // ADR-0012 §5.1, which no one insert can pass either.

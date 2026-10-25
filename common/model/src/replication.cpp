@@ -84,36 +84,72 @@ bool Document::redo(ReplicationUpdate& out, std::string& why) {
     return true;
 }
 
-bool Document::snapshot(ReplicationUpdate& out, std::string& error, std::size_t max_bytes) {
-    // Trimmed on a copy, which shares every state with the history, so a
-    // snapshot that cannot fit leaves undo as it was.
-    History trimmed = history_;
-    std::string bytes;
+bool encode_snapshot(History history, ReplicationUpdate& out, std::string& error,
+                     std::size_t max_window_bytes) {
+    // Trimmed on this copy, which shares every state with the document's
+    // history, so a snapshot that cannot fit leaves undo as it was.
+    WindowParts w;
     for (;;) {
-        if (!encode_window(trimmed, bytes, error)) return false;
-        if (bytes.size() <= max_bytes) break;
-        if (!trimmed.drop_oldest()) {
-            error = "the document is " + std::to_string(bytes.size()) +
+        if (!encode_window(history, w, error)) return false;
+        if (w.window.size() <= max_window_bytes) break;
+        if (!history.drop_oldest()) {
+            error = "the document is " + std::to_string(w.window.size()) +
                     " bytes with no undo step left to drop, over the " +
-                    std::to_string(max_bytes) + " a snapshot may carry";
+                    std::to_string(max_window_bytes) + " a snapshot may carry";
             return false;
         }
     }
-    history_ = std::move(trimmed);
     out = ReplicationUpdate{};
     out.kind = ReplicationUpdate::Kind::Snapshot;
-    out.revision = history_.current().revision;
-    out.undo_floor = history_.floor();
-    out.next_id = history_.current().next_id;
-    out.bytes = std::move(bytes);
+    out.revision = history.current().revision;
+    out.undo_floor = history.floor();
+    out.next_id = history.current().next_id;
+    out.bytes = std::move(w.window);
+    out.parts = std::move(w.parts);
     return true;
 }
 
+bool Document::snapshot(ReplicationUpdate& out, std::string& error, std::size_t max_bytes) {
+    if (!encode_snapshot(history_, out, error, max_bytes)) return false;
+    follow_floor(out.undo_floor);
+    return true;
+}
+
+void Document::follow_floor(std::uint64_t floor) { history_.evict_below(floor); }
+
 bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
                     ReplicationUpdate& out, std::string& error, std::size_t max_bytes) {
+    History previous = history_;
+    if (!load(session_file, sample_rate, error)) return false;
+    if (!snapshot(out, error, max_bytes)) {
+        history_ = std::move(previous);
+        return false;
+    }
+    return true;
+}
+
+bool Document::load(std::string_view load, std::uint32_t sample_rate, std::string& error,
+                    LoadParts* parts, std::size_t max_window_bytes) {
     Loaded loaded;
     LoadError why;
-    if (!decode_session_bundle(session_file, loaded, why)) {
+    bool ok = false;
+    if (is_load_in_parts(load)) {
+        // A session with no MIDI sends no part.
+        LoadParts none(0);
+        LoadParts& from = parts != nullptr ? *parts : none;
+        std::string_view session_file;
+        if (!from.open(load, session_file, error)) {
+            error = "the session does not load: " + error;
+            return false;
+        }
+        ok = deserialize(session_file, loaded, why, &from);
+    } else if (parts != nullptr && parts->chunks() != 0) {
+        error = "the session does not load: the Load after its parts carries no index of them";
+        return false;
+    } else {
+        ok = decode_session_bundle(load, loaded, why);
+    }
+    if (!ok) {
         error = "the session does not load: " + why.text();
         return false;
     }
@@ -132,33 +168,93 @@ bool Document::load(std::string_view session_file, std::uint32_t sample_rate,
                 std::to_string(history_.midi_max_entries()) + "; raise the setting to open it";
         return false;
     }
-    History previous = std::move(history_);
-    history_ = History(std::move(loaded.snapshot), previous.budget(), previous.midi_max_entries());
-    if (!snapshot(out, error, max_bytes)) {
-        history_ = std::move(previous);
+    History next(std::move(loaded.snapshot), history_.budget(), history_.midi_max_entries());
+    if (max_window_bytes != SIZE_MAX) {
+        std::string window;
+        if (!encode_window_alone(next, window, error)) return false;
+        if (window.size() > max_window_bytes) {
+            error = "the session's document is " + std::to_string(window.size()) +
+                    " bytes, over the " + std::to_string(max_window_bytes) +
+                    " a snapshot may carry, so no interface could be sent it";
+            return false;
+        }
+    }
+    history_ = std::move(next);
+    return true;
+}
+
+bool Replica::attached(std::optional<History> h, const ReplicationUpdate& u,
+                       std::string& error) {
+    if (h->current().revision != u.revision || h->current().next_id != u.next_id ||
+        h->floor() != u.undo_floor) {
+        synced_ = false;
+        error = "the engine's snapshot disagrees with its own revision, id counter or floor";
         return false;
     }
+    history_ = std::move(h);
+    synced_ = true;
     return true;
 }
 
 bool Replica::receive(const ReplicationUpdate& u, std::string& error) {
+    const auto abandon = [&](const std::string& why) {
+        decoder_.reset();
+        dropping_ = true;
+        synced_ = false;
+        error = "the engine's snapshot does not load: " + why;
+        return false;
+    };
+    if (u.kind == ReplicationUpdate::Kind::SnapshotHeader) {
+        dropping_ = false;
+        decoder_.emplace();
+        synced_ = false;
+        std::string why;
+        if (!decoder_->begin(u.part_count, u.part_bytes, max_snapshot_bytes_, why)) {
+            return abandon(why);
+        }
+        return true;
+    }
+    if (u.kind == ReplicationUpdate::Kind::SnapshotPart) {
+        if (dropping_) return true;
+        if (!decoder_) return abandon("a part arrived with no header before it");
+        std::string why;
+        if (!decoder_->part(u.bytes, why)) return abandon(why);
+        return true;
+    }
     if (u.kind == ReplicationUpdate::Kind::Snapshot) {
+        if (dropping_ && !decoder_) {
+            dropping_ = false;
+            return true;
+        }
         std::optional<History> h;
         std::string why;
-        if (!decode_window(u.bytes, h, why)) {
+        bool ok = false;
+        if (decoder_ && !u.parts.empty()) {
+            why = "a snapshot with parts of its own after a header";
+        } else if (decoder_) {
+            ok = decoder_->finish(u.bytes, h, why);
+        } else {
+            WindowParts w;
+            w.parts = u.parts;
+            w.window = u.bytes;
+            WindowDecoder d;
+            ok = d.begin(w.parts.size(), w.part_bytes(), max_snapshot_bytes_, why);
+            for (std::size_t i = 0; ok && i < w.parts.size(); ++i) ok = d.part(w.parts[i], why);
+            ok = ok && d.finish(w.window, h, why);
+        }
+        decoder_.reset();
+        dropping_ = false;
+        if (!ok) {
             synced_ = false;
             error = "the engine's snapshot does not load: " + why;
             return false;
         }
-        if (h->current().revision != u.revision || h->current().next_id != u.next_id ||
-            h->floor() != u.undo_floor) {
-            synced_ = false;
-            error = "the engine's snapshot disagrees with its own revision, id counter or floor";
-            return false;
-        }
-        history_ = std::move(h);
-        synced_ = true;
-        return true;
+        return attached(std::move(h), u, error);
+    }
+    if (decoder_ || dropping_) {
+        // The engine sends nothing to a replica between a Snapshot's header
+        // and its window.
+        return abandon("an update arrived inside a snapshot");
     }
     if (!synced()) {
         error = "waiting for a snapshot";
@@ -198,6 +294,8 @@ bool Replica::receive(const ReplicationUpdate& u, std::string& error) {
             if (!ok) error = "the engine redid a step this replica does not have";
             break;
         case ReplicationUpdate::Kind::Snapshot:
+        case ReplicationUpdate::Kind::SnapshotHeader:
+        case ReplicationUpdate::Kind::SnapshotPart:
             break;
     }
     if (!ok) {

@@ -28,13 +28,15 @@ midi::Note note(Ticks start, Ticks length, std::uint8_t channel, std::uint8_t pi
 }
 
 // The fixture's sequence, as midi.md §4.4 shows it.
-MidiSequence example() {
-    MidiSequence s;
+MidiLists example_lists() {
+    MidiLists s;
     s.notes = {note(0, 480000, 0, 36, 96, 64), note(960000, 455000, 1, 43, 88, 0)};
     s.events = {MidiEvent{0, 0xB0, 0, 1}, MidiEvent{0, 0xC0, 5, 0}, MidiEvent{96000, 0xE0, 0, 72}};
     s.sysex = {MidiSysEx{480000, {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7}}};
     return s;
 }
+
+MidiSequence example() { return MidiSequence(example_lists()); }
 
 std::string from_hex(const std::string& hex) {
     std::string out;
@@ -79,8 +81,9 @@ int test_bytes_are_the_spec() {
 // The edges of LEB128 and of the integer range: a tick of 2^53 - 1 is
 // eight bytes, and one past it is refused.
 int test_largest_values() {
-    MidiSequence s;
-    s.events = {MidiEvent{0, 0xB0, 1, 2}, MidiEvent{kMaxInteger, 0xB0, 1, 3}};
+    MidiLists lists;
+    lists.events = {MidiEvent{0, 0xB0, 1, 2}, MidiEvent{kMaxInteger, 0xB0, 1, 3}};
+    const MidiSequence s(lists);
     const std::string bytes = encode_sequence(s);
     MidiSequence back;
     std::string error;
@@ -117,19 +120,19 @@ int test_refusals() {
     CHECK(refused(from_hex("534d5351018200") + good.substr(6), "not minimal"));
     // Out of order: a delta can only go forward, so the order breaks on the
     // channel of two notes at one tick.
-    MidiSequence unsorted;
+    MidiLists unsorted;
     unsorted.notes = {note(0, 1, 1, 60, 100, 0), note(0, 1, 0, 60, 100, 0)};
-    CHECK(refused(encode_sequence(unsorted), "notes are not in order"));
+    CHECK(refused(encode_lists(unsorted), "notes are not in order"));
     // A value out of range: velocity 0.
-    MidiSequence bad;
+    MidiLists bad;
     bad.notes = {note(0, 1, 0, 60, 0, 0)};
-    CHECK(refused(encode_sequence(bad), "velocity"));
+    CHECK(refused(encode_lists(bad), "velocity"));
     // A SysEx over 4,096 bytes.
-    MidiSequence big;
+    MidiLists big;
     big.sysex = {MidiSysEx{0, std::vector<std::uint8_t>(kMaxSysexBytes + 1, 0x01)}};
     big.sysex[0].bytes.front() = 0xF0;
     big.sysex[0].bytes.back() = 0xF7;
-    CHECK(refused(encode_sequence(big), "at most 4096 bytes"));
+    CHECK(refused(encode_lists(big), "at most 4096 bytes"));
     return 0;
 }
 
@@ -143,11 +146,11 @@ int test_fuzz() {
         x ^= x << 17;
         return x;
     };
-    MidiSequence dense = example();
+    MidiLists dense = example_lists();
     for (int i = 0; i < 200; ++i) {
         dense.events.push_back(MidiEvent{96000 + i * 1000, 0xB1, 7, static_cast<std::uint8_t>(i % 128)});
     }
-    const std::string seeds[] = {from_hex(kExampleHex), encode_sequence(dense),
+    const std::string seeds[] = {from_hex(kExampleHex), encode_lists(dense),
                                  encode_sequence(MidiSequence{})};
     int accepted = 0;
     for (int round = 0; round < 20000; ++round) {
@@ -197,9 +200,9 @@ int test_digests() {
     a.reset();
     // Whatever lands at the old address is hashed afresh.
     for (int i = 0; i < 100; ++i) {
-        auto b = std::make_shared<MidiSequence>();
-        b->events = {MidiEvent{i, 0xB0, 1, 2}};
-        std::shared_ptr<const MidiSequence> cb = b;
+        MidiLists l;
+        l.events = {MidiEvent{i, 0xB0, 1, 2}};
+        std::shared_ptr<const MidiSequence> cb = std::make_shared<const MidiSequence>(l);
         const SequenceFileRef r = d.ref(cb);
         CHECK(r == sequence_ref(*cb));
         if (cb.get() == where) break;

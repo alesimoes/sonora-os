@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "sonora/api/state_block.h"
+#include "sonora/api/wire.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
@@ -130,14 +131,17 @@ struct Session {
 
     // Every model update goes to the replica as it arrives, the way an
     // interface's tick would hand it on.
+    static_assert(static_cast<int>(model::ReplicationUpdate::Kind::SnapshotPart) ==
+                          static_cast<int>(ModelUpdateKind::SnapshotPart),
+                  "the model's update kinds and the wire's are listed in the same order");
     void feed_replica() {
         for (; fed_ < inbox.model.size(); ++fed_) {
             const ModelUpdate& m = inbox.model[fed_];
             model::ReplicationUpdate u;
-            u.kind = m.kind == ModelUpdateKind::Op       ? model::ReplicationUpdate::Kind::Op
-                     : m.kind == ModelUpdateKind::Undo   ? model::ReplicationUpdate::Kind::Undo
-                     : m.kind == ModelUpdateKind::Redo   ? model::ReplicationUpdate::Kind::Redo
-                                                         : model::ReplicationUpdate::Kind::Snapshot;
+            // The two enums list the same kinds in the same order.
+            u.kind = static_cast<model::ReplicationUpdate::Kind>(m.kind);
+            u.part_count = m.part_count;
+            u.part_bytes = m.part_bytes;
             u.revision = m.revision;
             u.undo_floor = m.undo_floor;
             u.next_id = m.next_id;
@@ -1002,6 +1006,115 @@ int check_load(Rig& rig) {
     return C(rig, "load another session").go();
 }
 
+// ADR-0015 §4, protocol 10: a session with MIDI opened as a Load in parts,
+// its sequences' chunks ahead in LoadPart requests, a sequence across
+// several parts where it does not fit one, and sent back to every
+// replica as a Snapshot in parts: header, the chunk table's parts, the
+// window, with nothing in between. A part that does not decode abandons the
+// Load, which is then refused with its reason and changes nothing.
+int check_load_in_parts(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            model::History h(s.replica.current());
+            model::AddTrack t;
+            t.track = h.current().next_id;
+            t.playlist = t.track + 1;
+            t.name = "Keys";
+            t.playlist_name = "Keys.01";
+            t.kind = model::TrackKind::Midi;
+            t.channels = 0;
+            std::string error;
+            EXPECT(h.apply(t, error), error);
+            for (int k = 0; k < 3; ++k) {
+                model::MidiLists l;
+                for (int i = 0; i < 400; ++i) {
+                    l.events.push_back(model::MidiEvent{i * 24000, 0xB0, 1,
+                                                        static_cast<uint8_t>((i + k) & 0x7F)});
+                }
+                model::MidiRegion r;
+                r.id = h.current().next_id;
+                r.name = "Keys_0" + std::to_string(k);
+                r.position = k * 40 * model::kTicksPerQuarter;
+                r.length = 20 * model::kTicksPerQuarter;
+                r.data = std::make_shared<const model::MidiSequence>(l);
+                EXPECT(h.apply(model::PlaceMidiRegion{t.playlist, r, 0, {}}, error), error);
+            }
+            model::Snapshot other = h.current();
+            other.settings.name = "Opened in parts";
+            model::WriteInfo info;
+            info.written_by = "conformance";
+            std::string session;
+            std::vector<std::string> parts;
+            EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 1500),
+                   error);
+            EXPECT(parts.size() > 3, "expected the sequences split across parts");
+
+            const std::size_t updates = s.inbox.model.size();
+            ModelRequest m;
+            CommandReply r;
+            for (const std::string& p : parts) {
+                m.action = ModelAction::LoadPart;
+                m.op = p;
+                EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                       "a part was refused: " + r.message);
+            }
+            EXPECT(s.inbox.model.size() == updates, "a part sent an update");
+            m.action = ModelAction::Load;
+            m.op = session;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "the session was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return s.replica.synced() &&
+                              s.replica.current().settings.name == "Opened in parts";
+                   }),
+                   "the replica is not the opened session: " + s.replica_error);
+            EXPECT(s.inbox.model.size() >= updates + 3 &&
+                       s.inbox.model[updates].kind == ModelUpdateKind::SnapshotHeader,
+                   "the Snapshot did not begin with its header");
+            const ModelUpdate& head = s.inbox.model[updates];
+            EXPECT(s.inbox.model.size() == updates + head.part_count + 2,
+                   "something came between the header and the window");
+            for (uint64_t i = 1; i <= head.part_count; ++i) {
+                EXPECT(s.inbox.model[updates + i].kind == ModelUpdateKind::SnapshotPart &&
+                           s.inbox.model[updates + i].bytes.size() <= wire::kMaxPartBytes,
+                       "not a part");
+            }
+            EXPECT(s.inbox.model.back().kind == ModelUpdateKind::Snapshot, "no window last");
+            const auto& regions =
+                s.replica.current().edit->tracks.back()->midi_playlists[0]->regions;
+            EXPECT(regions.size() == 3 && !regions[1].data->missing &&
+                       regions[1].data->events().size() == 400 &&
+                       regions[1].data->events()[5].data2 == 6,
+                   "the opened session's MIDI did not arrive");
+
+            // A part that does not decode: refused, and the Load after it too.
+            const std::size_t after = s.inbox.model.size();
+            m.action = ModelAction::LoadPart;
+            m.op = parts[0].substr(0, parts[0].size() - 1);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
+                   "a part cut short was accepted");
+            other.settings.name = "Never opened";
+            EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 1500),
+                   error);
+            m.action = ModelAction::Load;
+            m.op = session;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
+                   "a Load after a refused part was opened");
+            EXPECT(mentions(r.message, "a part of the session was refused"),
+                   "the refusal does not name the part: " + r.message);
+            EXPECT(s.inbox.model.size() == after, "a refusal sent an update");
+            EXPECT(s.replica.current().settings.name == "Opened in parts",
+                   "a refusal changed the document");
+            return ok();
+        }
+    };
+    return C(rig, "load in parts, snapshot in parts").go();
+}
+
 // A take that stops writing is said at once, with the take and the reason,
 // and on the state block; stopping it reports the take as failed; the next
 // take that records cleanly clears both.
@@ -1513,6 +1626,7 @@ int run(Rig& rig) {
     failures += check_model(rig);
     failures += check_compound(rig);
     failures += check_load(rig);
+    failures += check_load_in_parts(rig);
     failures += check_inserts(rig);
     failures += check_plugin_faults(rig);
     failures += check_flush_plugin_state(rig);
