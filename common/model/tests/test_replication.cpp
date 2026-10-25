@@ -134,6 +134,16 @@ std::vector<Operation> one_of_each() {
     em.remove_sysex = {SysExRemoval{0, seq->sysex[0]}};
     em.add_sysex = {MidiSysEx{40, {0xF0, 0xF7}}};
 
+    RecordLoopTake loop;
+    loop.track = 2;
+    loop.active_playlist = 3;
+    loop.passes = {LoopTakePass{50, "Kick.T4.P1", r}, LoopTakePass{52, "Kick.T4.P2 \xC3\xA9", r}};
+    loop.passes[1].region.id = 53;
+    loop.chosen = 1;
+    loop.chosen_region = 54;
+    loop.split_right_id = 55;
+    loop.crossfades = {x};
+
     return {AddSource{src},
             SetMix{mix},
             SetMonitorBus{bus},
@@ -167,6 +177,7 @@ std::vector<Operation> one_of_each() {
             PlaceMidiRegion{3, mr, 42, MidiDataRef{5, 9}},
             em,
             SetMidiRouting{2, MidiRouting{"all", 0, "none", 16}},
+            loop,
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

@@ -185,7 +185,8 @@ std::string over_limit(const char* gesture, const char* nothing_was, std::size_t
 std::string step_text(const std::string& label) {
     static const std::map<std::string, const char*> kWords = {
         {"AddTrack", "New Track"},        {"PlaceRegion", "Place Region"},
-        {"RecordTake", "Record"},         {"MoveRegion", "Move"},
+        {"RecordTake", "Record"},         {"RecordLoopTake", "Loop Record"},
+        {"MoveRegion", "Move"},
         {"TrimRegion", "Trim"},           {"SplitRegion", "Separate"},
         {"RemoveRegion", "Clear"},        {"SetFade", "Fade"},
         {"SetCrossfade", "Crossfade"},    {"RemoveCrossfade", "Clear Crossfade"},

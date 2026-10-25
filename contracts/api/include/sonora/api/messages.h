@@ -49,7 +49,9 @@ namespace sonora::api {
 //   the MIDI sequence files it names (session format 6); the undo window's
 //   format 6, where a sequence whose file was missing at open carries its
 //   reference.
-constexpr uint32_t kProtocolVersion = 8;
+// 9 (ADR-0016 §3): loop record. A new operation kind, RecordLoopTake, which
+//   a version-8 peer's decoder refuses.
+constexpr uint32_t kProtocolVersion = 9;
 
 // --- client -> engine -------------------------------------------------------
 

@@ -223,26 +223,25 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // MIDI sequence files (ADR-0015, M-1c) are version 8: a Load carries a
-    // session bundle, and the undo window a missing sequence's reference. A
-    // version-7 interface, which would send a bare session file that names
-    // files the engine cannot read, reads this engine's Hello and refuses it
-    // at connect, naming both numbers. Its check is this function with its
-    // own constants, passed here.
-    CHECK(kProtocolVersion == 8);
+    // Loop record (ADR-0016 §3) is version 9: RecordLoopTake, a new
+    // operation kind. A version-8 interface, whose decoder refuses it, reads
+    // this engine's Hello and refuses it at connect, naming both numbers,
+    // before an operation it cannot decode can reach it. Its check is this
+    // function with its own constants, passed here.
+    CHECK(kProtocolVersion == 9);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
-    const std::string v7 = wire::version_mismatch(pv, lv, 7, kStateLayoutVersion);
-    CHECK(mentions(v7, "the engine speaks control protocol version 8 and this interface "
-                       "speaks version 7"));
-    CHECK(mentions(v7, "same build"));
-    // And this interface refuses a version-7 engine the same way.
-    CHECK(mentions(wire::version_mismatch(7, kStateLayoutVersion),
-                   "the engine speaks control protocol version 7 and this interface "
-                   "speaks version 8"));
+    const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
+    CHECK(mentions(v8, "the engine speaks control protocol version 9 and this interface "
+                       "speaks version 8"));
+    CHECK(mentions(v8, "same build"));
+    // And this interface refuses a version-8 engine the same way.
+    CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
+                   "the engine speaks control protocol version 8 and this interface "
+                   "speaks version 9"));
 }
 
 void domains() {

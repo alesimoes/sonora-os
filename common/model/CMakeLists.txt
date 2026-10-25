@@ -35,6 +35,12 @@ add_executable(test_model_apply tests/test_apply.cpp)
 target_link_libraries(test_model_apply PRIVATE sonora_model_audited)
 add_test(NAME model_apply COMMAND test_model_apply)
 
+# ADR-0016, section 3: a loop take's passes on playlists of their own,
+# the chosen one on the active playlist, one undo step, and on the wire.
+add_executable(test_model_record_loop_take tests/test_record_loop_take.cpp)
+target_link_libraries(test_model_record_loop_take PRIVATE sonora_model_audited)
+add_test(NAME model_record_loop_take COMMAND test_model_record_loop_take)
+
 add_executable(test_model_history tests/test_history.cpp)
 target_link_libraries(test_model_history PRIVATE sonora_model_audited)
 add_test(NAME model_history COMMAND test_model_history)

@@ -80,6 +80,38 @@ struct RecordTake {
     std::vector<Crossfade> crossfades;
 };
 
+// One pass of a loop take: a new playlist on the take's track holding only
+// the pass's region, which plays the take file's span of that pass at A.
+struct LoopTakePass {
+    Id playlist = 0;
+    std::string name;   // "<track name>.T<take>.P<k>"
+    Region region;
+};
+
+// The most passes one RecordLoopTake places (ADR-0016 O2). Changing it
+// changes what a decoder accepts, so it needs a kProtocolVersion bump.
+constexpr std::size_t kMaxLoopTakePasses = 99;
+
+// A loop take on one track (ADR-0016 §3), one undo step: every pass, in
+// pass order, on a new playlist of its own, and, unless `chosen_region` is
+// 0, the chosen pass placed on the active playlist as RecordTake places a
+// take, with its crossfades. The active playlist stays active. A loop take
+// is an AddSource and one of these per track whatever its pass count. Ids
+// rise in this order: each pass's playlist and then its region, then
+// chosen_region, then split_right_id.
+struct RecordLoopTake {
+    Id track = 0;
+    Id active_playlist = 0;
+    std::vector<LoopTakePass> passes;   // at least one, at most kMaxLoopTakePasses
+    std::size_t chosen = 0;             // index into passes
+    // The chosen pass's region on the active playlist, as a region of its
+    // own with this id; 0 when no pass is complete, which leaves the active
+    // playlist as it was (O1).
+    Id chosen_region = 0;
+    Id split_right_id = 0;
+    std::vector<Crossfade> crossfades;  // on the active playlist only
+};
+
 // The region operations by id below act on audio and MIDI regions alike.
 // Each that carries a position says in `timebase` whether it is frames or
 // ticks, and apply() refuses one that does not match the playlist's (A26):
@@ -337,7 +369,7 @@ using Member =
                  RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
-                 PlaceMidiRegion, EditMidi, SetMidiRouting>;
+                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -369,7 +401,7 @@ using Operation =
                  RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
-                 PlaceMidiRegion, EditMidi, SetMidiRouting, Compound>;
+                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

@@ -354,6 +354,65 @@ public:
         return place(op.playlist, op.region, op.split_right_id, op.crossfades);
     }
 
+    // The leaves it is made of, applied in turn as a compound's members
+    // are: each sees what the one before it made, and their own checks
+    // (fresh ids, the overwrite, the crossfades' handles) are the whole
+    // validation, so the result is what those leaves in a compound give.
+    bool operator()(const RecordLoopTake& op) {
+        if (!not_midi(op.active_playlist, "a MIDI take is AddMidiSource and PlaceMidiRegion")) {
+            return false;
+        }
+        Located at;
+        if (!locate_playlist(*before_.edit, op.active_playlist, at)) {
+            return fail("playlist " + str(op.active_playlist) + " does not exist");
+        }
+        if (before_.edit->tracks[at.track]->id != op.track) {
+            return fail("playlist " + str(op.active_playlist) + " is not on track " +
+                        str(op.track));
+        }
+        if (op.passes.empty()) return fail("a loop take needs at least one pass");
+        if (op.passes.size() > kMaxLoopTakePasses) {
+            return fail("a loop take places at most " + std::to_string(kMaxLoopTakePasses) +
+                        " passes; this one has " + std::to_string(op.passes.size()));
+        }
+        if (op.chosen_region != 0 && op.chosen >= op.passes.size()) {
+            return fail("pass " + std::to_string(op.chosen + 1) + " is not one of the take's " +
+                        std::to_string(op.passes.size()));
+        }
+        if (op.chosen_region == 0 && !op.crossfades.empty()) {
+            return fail("a crossfade on the active playlist needs a pass placed there");
+        }
+        Snapshot work = before_;
+        const auto step = [&](const Member& m, const std::string& which) {
+            Snapshot next;
+            std::string why;
+            // The work state's own copies, as in a compound: what a step
+            // made, a later one may edit in place.
+            Applier applier(work, next, why, true);
+            if (!std::visit(applier, m)) return fail(which + ": " + why);
+            work = std::move(next);
+            return true;
+        };
+        for (std::size_t k = 0; k < op.passes.size(); ++k) {
+            const LoopTakePass& p = op.passes[k];
+            const std::string which = "pass " + std::to_string(k + 1);
+            if (!step(AddPlaylist{op.track, p.playlist, p.name}, which)) return false;
+            if (!step(PlaceRegion{p.playlist, p.region, 0}, which)) return false;
+        }
+        if (op.chosen_region != 0) {
+            RecordTake take;
+            take.track = op.track;
+            take.playlist = op.active_playlist;
+            take.region = op.passes[op.chosen].region;
+            take.region.id = op.chosen_region;
+            take.split_right_id = op.split_right_id;
+            take.crossfades = op.crossfades;
+            if (!step(take, "the active playlist")) return false;
+        }
+        after_ = std::move(work);
+        return true;
+    }
+
     bool operator()(const MoveRegion& op) {
         if (!timebase_matches(op.playlist, op.timebase)) return false;
         if (op.timebase == Timebase::Ticks) return move_midi(op);
