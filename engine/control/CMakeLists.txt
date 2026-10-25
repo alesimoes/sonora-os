@@ -38,6 +38,13 @@ add_executable(test_closed_take tests/test_closed_take.cpp)
 target_link_libraries(test_closed_take PRIVATE sonora_control)
 add_test(NAME closed_take COMMAND test_closed_take)
 
+# A loop take into the document (ADR-0016 §3, §5): its passes on playlists,
+# the crossfades it has the handle for, lost wraps placed by loop length,
+# the pass cap, and the record commands' loop and punch refusal.
+add_executable(test_loop_take tests/test_loop_take.cpp)
+target_link_libraries(test_loop_take PRIVATE sonora_control)
+add_test(NAME loop_take COMMAND test_loop_take)
+
 # The handlers on a real Session (moved here from ui/keymap's test in M4).
 add_executable(test_session_commands tests/test_session_commands.cpp)
 target_link_libraries(test_session_commands PRIVATE sonora_control)

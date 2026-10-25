@@ -80,6 +80,14 @@ struct TakeAdded {
 // crossfade of the punch's length and shape, if both sides have the handle
 // for it. A file with nothing recorded inside [A, B) goes into the pool
 // only, and makes no undo step.
+//
+// A loop take (ClosedTake::looped; ADR-0016 §3) goes in as an AddSource and
+// a RecordLoopTake per file, labelled "Loop Record": each pass, up to the
+// session's loop_pass_cap, on a new playlist, and the last complete pass on
+// the active playlist with the punch crossfade at A and at B. A crossfade
+// the take has no handle for is left out, and a track notice names it
+// (C6); wraps the boundary ring lost are placed by loop length, and passes
+// past the cap left in the files, each with a notice (§5, O2).
 TakeAdded add_closed_take(model::Document& document, const Session& session,
                           const Session::ClosedTake& take,
                           std::size_t files_per_compound = model::kMaxCompoundMembers / 2);
@@ -92,6 +100,15 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
 // (timeline-model.md, "Punch in"). False, leaving `out` alone, when no
 // range is set.
 bool document_punch(const model::Snapshot& document, PunchRange& out);
+
+// The loop take the record commands start (ADR-0016 §1) when the document
+// has a loop range [A, B) set (B > A; what the interface shows as loop on,
+// as a punch range is punch on): from A less the pre-roll, cut at the
+// timeline's start, with the punch's H as its handle and `latency` as L.
+// False, leaving `out` alone, when no range is set; false with `refusal`
+// set when a punch range is set too (C3), naming both ranges.
+bool document_loop(const model::Snapshot& document, uint32_t latency, LoopRange& out,
+                   std::string& refusal);
 
 // Whether engine track `engine_track` may be armed: not while a MIDI or
 // instrument track sits on it, which records no audio (ADR-0014 M-1). An

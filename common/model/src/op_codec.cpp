@@ -357,6 +357,24 @@ struct Encoder {
         for (const Crossfade& c : o.crossfades) x.push(crossfade_value(c));
         return v;
     }
+    Value operator()(const RecordLoopTake& o) const {
+        Value v = with_kind("RecordLoopTake");
+        v.set("track", id_value(o.track));
+        v.set("active_playlist", id_value(o.active_playlist));
+        Value& ps = v.set("passes", Value::array());
+        for (const LoopTakePass& p : o.passes) {
+            Value& e = ps.push(Value::object());
+            e.set("playlist", id_value(p.playlist));
+            e.set("name", Value::string(p.name));
+            e.set("region", region_value(p.region));
+        }
+        v.set("chosen", integer(static_cast<std::int64_t>(o.chosen)));
+        v.set("chosen_region", id_value(o.chosen_region));
+        v.set("split_right_id", id_value(o.split_right_id));
+        Value& x = v.set("crossfades", Value::array());
+        for (const Crossfade& c : o.crossfades) x.push(crossfade_value(c));
+        return v;
+    }
     Value operator()(const MoveRegion& o) const {
         Value v = with_kind("MoveRegion");
         v.set("playlist", id_value(o.playlist));
@@ -1030,6 +1048,45 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             !rd.id(v, "", "split_right_id", o.split_right_id) ||
             !rd.array(v, "", "crossfades", xs)) {
             return false;
+        }
+        for (const Value& e : xs->items()) {
+            Crossfade x;
+            if (!read_crossfade(rd, e, "crossfades", x)) return false;
+            o.crossfades.push_back(x);
+        }
+        out = std::move(o);
+    } else if (kind == "RecordLoopTake") {
+        RecordLoopTake o;
+        const Value* ps = nullptr;
+        const Value* xs = nullptr;
+        std::int64_t chosen = 0;
+        if (!rd.keys(v, "", {"op", "track", "active_playlist", "passes", "chosen", "chosen_region",
+                             "split_right_id", "crossfades"}) ||
+            !rd.id(v, "", "track", o.track) ||
+            !rd.id(v, "", "active_playlist", o.active_playlist) ||
+            !rd.array(v, "", "passes", ps) ||
+            !rd.integer(v, "", "chosen", static_cast<std::int64_t>(kMaxLoopTakePasses), chosen) ||
+            !rd.id(v, "", "chosen_region", o.chosen_region) ||
+            !rd.id(v, "", "split_right_id", o.split_right_id) ||
+            !rd.array(v, "", "crossfades", xs)) {
+            return false;
+        }
+        // Bounded before anything is built from it, as a compound is.
+        if (ps->items().size() > kMaxLoopTakePasses) {
+            return rd.fail("passes", "at most " + std::to_string(kMaxLoopTakePasses) +
+                                         " passes; this one has " +
+                                         std::to_string(ps->items().size()));
+        }
+        o.chosen = static_cast<std::size_t>(chosen);
+        for (const Value& e : ps->items()) {
+            LoopTakePass p;
+            if (!rd.keys(e, "passes", {"playlist", "name", "region"}) ||
+                !rd.id(e, "passes", "playlist", p.playlist) ||
+                !rd.text(e, "passes", "name", p.name) ||
+                !read_region(rd, e, "passes", "region", p.region)) {
+                return false;
+            }
+            o.passes.push_back(std::move(p));
         }
         for (const Value& e : xs->items()) {
             Crossfade x;
@@ -1872,7 +1929,7 @@ const char* const kNames[] = {
     "ReorderTracks", "AddInsert",   "RemoveInsert",    "MoveInsert",
     "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
     "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
-    "SetMidiRouting", "Compound"};
+    "SetMidiRouting", "RecordLoopTake", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

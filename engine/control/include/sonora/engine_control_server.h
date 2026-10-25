@@ -324,6 +324,9 @@ private:
     // Item 6: AddInsert and ReplaceInsert against the catalog. Empty when
     // the plugin may be inserted; the refusal otherwise.
     std::string catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const;
+    // A SetSettings that moves the loop range while a loop take records
+    // (ADR-0016 §1), by name; empty otherwise.
+    std::string loop_refusal(const model::Snapshot& doc, model::MemberRef member) const;
     // The plugin side, for one backend activation; null until the period is
     // known, and when no host is configured. Released in after_deactivate().
     std::unique_ptr<PluginHosting> hosting_;
