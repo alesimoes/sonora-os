@@ -231,7 +231,9 @@ bool parse(QGuiApplication& app, Options& o) {
                                                       "region three times and open the Repeat "
                                                       "dialog (repeat), or copy a range on the "
                                                       "first three tracks and paste it later "
-                                                      "on them (multitrack), or add a tempo map "
+                                                      "on them (multitrack), or copy the snare's "
+                                                      "region and paste it on four tracks (fill), "
+                                                      "or add a tempo map "
                                                       "and nudge a region past its change "
                                                       "(nudge), or make a few edits, undo the last "
                                                       "and open the Undo History window "
@@ -239,7 +241,7 @@ bool parse(QGuiApplication& app, Options& o) {
                                                       "selection marker and open the Memory "
                                                       "Locations window (markers), for "
                                                       "screenshots."),
-                                       QStringLiteral("fades|clipboard|repeat|multitrack|nudge|undo-history|markers"));
+                                       QStringLiteral("fades|clipboard|repeat|multitrack|fill|nudge|undo-history|markers"));
     const QCommandLineOption mix_view({QStringLiteral("mix-view")},
                                       QStringLiteral("With --demo, solo Lead Vox and make Room "
                                                      "and Talkback solo safe (solo-safe), for "
@@ -291,10 +293,11 @@ bool parse(QGuiApplication& app, Options& o) {
     o.edit_view = p.value(edit_view);
     if (!o.edit_view.isEmpty() && o.edit_view != QStringLiteral("fades") &&
         o.edit_view != QStringLiteral("clipboard") && o.edit_view != QStringLiteral("repeat") &&
-        o.edit_view != QStringLiteral("multitrack") && o.edit_view != QStringLiteral("nudge") &&
-        o.edit_view != QStringLiteral("undo-history") && o.edit_view != QStringLiteral("markers")) {
+        o.edit_view != QStringLiteral("multitrack") && o.edit_view != QStringLiteral("fill") &&
+        o.edit_view != QStringLiteral("nudge") && o.edit_view != QStringLiteral("undo-history") &&
+        o.edit_view != QStringLiteral("markers")) {
         std::fprintf(stderr, "sonora-ui: --edit-view must be fades, clipboard, repeat, "
-                             "multitrack, nudge, undo-history or markers\n");
+                             "multitrack, fill, nudge, undo-history or markers\n");
         return false;
     }
     if (o.window != QStringLiteral("edit") && o.window != QStringLiteral("mix")) {
@@ -675,6 +678,28 @@ int main(int argc, char** argv) {
                 model.invoke(QStringLiteral("zoom.fit_session"), -1);
                 if (c.selection().tracks != 3)
                     std::fprintf(stderr, "sonora-ui: multitrack: %s\n", qPrintable(model.statusText()));
+            }
+            // The snare's region copied and pasted into a range on four
+            // tracks after the session's end: one track's clipboard fills
+            // every selected track, as in Pro Tools.
+            if (a.opt.edit_view == QStringLiteral("fill") && p && p->regions.size() > 1 &&
+                session.trackCount() >= 5) {
+                EditController& c = session.controller();
+                const auto snare = p->regions[1];
+                c.select_region(snare.id);
+                model.invoke(QStringLiteral("edit.copy"), -1);
+                sonora::model::Frames after = 0;
+                for (int i = 1; i < 5; ++i) {
+                    const auto* lane = active_playlist(c.snapshot().edit->tracks[i].get());
+                    if (lane && !lane->regions.empty())
+                        after = std::max(after, lane->regions.back().end());
+                }
+                const auto at = after + snare.length / 4;
+                c.select_range(track, at, at + snare.length, 4);
+                model.invoke(QStringLiteral("edit.paste"), -1);
+                model.invoke(QStringLiteral("zoom.fit_session"), -1);
+                if (c.selection().tracks != 4)
+                    std::fprintf(stderr, "sonora-ui: fill: %s\n", qPrintable(model.statusText()));
             }
             // On the demo's tempo map, the snare separated where 96 bpm
             // starts and the part after it nudged forward two beats on the

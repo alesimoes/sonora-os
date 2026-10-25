@@ -968,10 +968,17 @@ bool EditController::paste(std::string& why) {
     // the last track. What is left out is said, never silent.
     const int n = static_cast<int>(snapshot().edit->tracks.size());
     const int lanes = static_cast<int>(clipboard_.lanes.size());
-    const int fit = std::min(lanes, n - sel_.track);
+    // One track's material pasted into a selection on several tracks fills
+    // every one of them, as Pro Tools does; a clipboard of several lanes
+    // keeps their layout, so it never repeats onto a selection's extra tracks.
+    const int targets = lanes == 1 && sel_.region == kNoId ? span() : 1;
+    const auto lane_for = [this, targets](int i) -> const Clip& {
+        return clipboard_.lanes[targets > 1 ? 0 : static_cast<std::size_t>(i)];
+    };
+    const int fit = targets > 1 ? targets : std::min(lanes, n - sel_.track);
     bool any = false;
     for (int i = 0; i < fit; ++i) {
-        const Clip& lane = clipboard_.lanes[static_cast<std::size_t>(i)];
+        const Clip& lane = lane_for(i);
         if (lane.empty()) continue;
         any = true;
         const std::string problem = paste_problem(snapshot(), *track(sel_.track + i), lane);
@@ -998,8 +1005,7 @@ bool EditController::paste(std::string& why) {
     const Frames at = sel_.has_range() ? sel_.start : sel_.insertion;
     std::vector<Member> members;
     for (int i = 0; i < fit; ++i) {
-        paste_clip(*active(track(sel_.track + i)), at,
-                   clipboard_.lanes[static_cast<std::size_t>(i)],
+        paste_clip(*active(track(sel_.track + i)), at, lane_for(i),
                    [this]() { return doc_.reserve_id(); }, members);
     }
     if (!submit_compound(std::move(members), "Paste", "pasted", why)) return false;

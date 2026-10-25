@@ -371,9 +371,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              - Logic's marker keys, once confirmed against its guide.
        - [ ] Shuffle's ripple for the clipboard once `ShiftRegions` exists
              (ADR-0009 update 2026-10-14, item 5).
-       - [ ] One clipboard lane pasted onto several selected tracks: pastes
-             on the first only today (the selection then shows it); check
-             Pro Tools' behaviour before filling every selected track.
+       - [x] One clipboard lane pasted into a selection on several tracks
+             fills each of them, as Pro Tools does: one "Paste" `Compound`,
+             the member limit counted over every track, the selection kept
+             across them. A clipboard of several lanes keeps its layout on a
+             wider selection; a selected region pastes on its track only
+             (`t3k-paste-fill`; ui_clipboard test_several_tracks, test_limit).
        - [ ] A clipboard copied in another session pastes nothing today
              (refused by name: its sources are not in this pool). Pro Tools
              copies the audio across; that needs `AddSource` members and the

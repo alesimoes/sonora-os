@@ -77,6 +77,9 @@ if [[ "$MODE" == screenshot ]]; then
   # A range on three tracks copied and pasted later on the same three, the
   # pasted range selected across them.
   shoot "$base-multitrack.png" --window edit --edit-view multitrack
+  # One track's clipboard pasted into a range on four tracks: the snare's
+  # region lands on each of them.
+  shoot "$base-fill.png" --window edit --edit-view fill
   # Nudge on a tempo map: the snare separated where 96 bpm starts and the
   # part after it nudged two beats on the 1/4 grid, landing on 17|3.
   shoot "$base-nudge.png" --window edit --edit-view nudge
@@ -142,7 +145,7 @@ if [[ "$MODE" == screenshot ]]; then
   kill "$pid" 2>/dev/null || true; wait "$pid" || true
   rm -rf "$engine_dir"
   echo "saved /out/$base-refusal.png and /out/$base-refusal-reconnect.png"
-  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-repeat.png, $base-multitrack.png, $base-nudge.png, $base-undo-history.png, $base-markers.png, $base-keys.png and $base-repairs.png"
+  echo "saved /out/$SHOT, /out/$mix, /out/$base-no-engine.png, /out/$base-fades.png, the Mix window's chooser and panel, $base-clipboard.png, $base-repeat.png, $base-multitrack.png, $base-fill.png, $base-nudge.png, $base-undo-history.png, $base-markers.png, $base-keys.png and $base-repairs.png"
   exit 0
 fi
 

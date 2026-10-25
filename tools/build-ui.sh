@@ -16,7 +16,8 @@
 #                                           paste with the Edit menu open
 #                                           (-clipboard), the Repeat dialog
 #                                           (-repeat), a paste on three
-#                                           tracks (-multitrack), a nudge on a
+#                                           tracks (-multitrack), one track's
+#                                           clipboard on four (-fill), a nudge on a
 #                                           tempo map (-nudge), the Undo
 #                                           History window (-undo-history),
 #                                           markers and the Memory Locations
