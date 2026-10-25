@@ -1678,3 +1678,5 @@ ADR-0011 "For the owner".
 - [ ] N7, only after the owner's rulings (item 8): `sonora-assistant`, the
       optional Claude layer over analysis features and session state, never
       audio; graceful fallback to native suggestions. ui-engineer.
+- [ ] M-1c follow-up: a fader ride during an unanswered Open may change the
+      gain of the track at that index in A. Non-blocking; ui-engineer.
