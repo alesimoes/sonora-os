@@ -383,6 +383,7 @@ void EngineControlServer::show_inserts(bool new_session) {
     std::set<uint64_t> in_chain;
     for (std::size_t t = 0; t < session_.tracks().size(); ++t) {
         uint32_t flags[api::kInsertSlots] = {};
+        uint32_t refused[api::kInsertSlots] = {};
         const auto& inserts = t < tracks.size() ? tracks[t]->inserts : kNoInserts;
         for (const model::Insert& in : inserts) {
             const model::InsertMix* m = doc.mix.find_insert(in.id);
@@ -393,6 +394,7 @@ void EngineControlServer::show_inserts(bool new_session) {
             else if (in.active) hosted = hosting_->insert_flags(in.id);
             flags[in.slot] = api::kInsertPresent | hosted | (in.active ? api::kInsertActive : 0u) |
                              (m != nullptr && m->bypass ? api::kInsertBypassed : 0u);
+            if (hosting_) refused[in.slot] = uint32_t(std::min<uint64_t>(hosting_->work_refused(in.id), UINT32_MAX));
             if (!in.active) continue;
             // One fault stands per insert, the latest replacing the last
             // (ADR-0012 §8); from the hosts when there are any.
@@ -410,6 +412,7 @@ void EngineControlServer::show_inserts(bool new_session) {
         }
         for (uint32_t k = 0; k < api::kInsertSlots; ++k) {
             publisher_->set_insert_flags(static_cast<uint32_t>(t), k, flags[k]);
+            publisher_->set_insert_work_refused(static_cast<uint32_t>(t), k, refused[k]);
         }
     }
     std::vector<uint64_t> gone;
@@ -1256,6 +1259,14 @@ void EngineControlServer::tick() {
             hosting_->show(document_->current(), false);
         }
         if (r.replan || !r.ops.empty()) show_document(false);
+        // Not standing (ADR-0012 change G): the count stays in the state
+        // block for whoever attaches later.
+        for (std::string& text : hosting_->take_notices()) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = std::move(text);
+            post_transient(e);
+        }
         show_inserts(false);
     }
     // Every plug-in of the session just opened has loaded or failed, or the

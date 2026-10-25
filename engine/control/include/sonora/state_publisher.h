@@ -63,6 +63,8 @@ public:
     void set_input_connected(uint32_t track, bool connected);
     // An insert slot's InsertFlag bits, as the document and the hosts say.
     void set_insert_flags(uint32_t track, uint32_t slot, uint32_t flags);
+    // InsertState::work_refused: only rises while the slot holds one insert.
+    void set_insert_work_refused(uint32_t track, uint32_t slot, uint32_t count);
     // The playing plan's delay compensation and each track's chain latency
     // (ADR-0012 §7.3), reported honestly: a non-zero shortfall is red.
     void set_compensation(uint32_t frames, uint32_t shortfall_frames);
@@ -87,6 +89,7 @@ private:
     std::atomic<uint32_t> inputs_connected_{0};
     std::unique_ptr<std::atomic<bool>[]> input_connected_;
     std::unique_ptr<std::atomic<uint32_t>[]> insert_flags_;   // track * kInsertSlots + slot
+    std::unique_ptr<std::atomic<uint32_t>[]> insert_work_refused_;  // the same index
     std::unique_ptr<std::atomic<uint32_t>[]> track_latency_;
     std::unique_ptr<std::atomic<uint32_t>[]> track_shortfall_;
     std::atomic<uint32_t> compensation_{0};

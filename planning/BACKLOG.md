@@ -862,15 +862,18 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          that returns and maps a URID 1.5 s after the abandon; the host
          has already exited Faulted, not by a signal).
        - [x] Worker requests and responses refused because a ring was full
-         are told to the operator: the host sends Fault{WorkRefused}
-         (HostControl wire 2) naming the plugin, the first at once and the
-         rest summed at most once per second, and flushes the rest at stop;
-         the engine shows the insert faulted while it runs ("its worker
-         refused N messages ... make the insert inactive and active again"),
-         kept across a restart of the same chain, cleared when the chain is
-         built again. ctest `plugin_host_worker_flood` (the test plugin
-         schedules 1536 requests a block, 1 ms of work() each, at gain 0.0625), and
-         `plugin_hosting_work_refused`; both fail without the change.
+         are told to the operator, as ADR-0012 change G treats non-finite
+         output: the host sends Fault{WorkRefused} (HostControl wire 2)
+         naming the plugin, the first at once and the rest summed at most
+         once per second, and the rest after its last run(); the engine
+         posts one non-standing Notice per run of the chain naming plugin,
+         track and slot, and carries the count in InsertState::work_refused
+         (state layout 3, only rises). No fault stands. ctest
+         `plugin_host_worker_flood` (the test plugin schedules 1536
+         requests a block, 1 ms of work() each, at gain 0.0625),
+         `plugin_hosting_work_refused`, `plugin_hosting_server_work_refused`
+         (the count in the state block, one Notice at the client, no
+         PluginFault); each fails without the change.
          Not yet: Fault{EventsDropped} is still not shown by the engine.
 6. [ ] **Windows VST through yabridge** (next, plugin-engineer; not started).
        What it needs:

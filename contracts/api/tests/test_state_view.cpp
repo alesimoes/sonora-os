@@ -75,6 +75,7 @@ struct Publish {
                 in.misses = k;
                 in.worst_run_us = k;
                 in.nonfinite = k;
+                in.work_refused = k;
             }
         }
     }
@@ -396,6 +397,7 @@ void counter_churn_does_not_starve_a_60hz_reader() {
                 in.misses = k;
                 in.worst_run_us = k;
                 in.nonfinite = k;
+                in.work_refused = k;
             }
         }
     };
@@ -645,6 +647,7 @@ void insert_slots_by_track() {
             in.misses = 1000 * t + k;
             in.worst_run_us = 7 + k;
             in.nonfinite = t;
+            in.work_refused = 3 * t + k;
         }
     }
     p.t.compensation_frames = 2048;
@@ -668,6 +671,7 @@ void insert_slots_by_track() {
             CHECK(((a.flags & kInsertActive) != 0) == (k % 2 == 0));
             CHECK(a.latency_frames == 100 * t + k && b.latency_frames == a.latency_frames);
             CHECK(a.misses == 1000 * t + k && a.worst_run_us == 7 + k && a.nonfinite == t);
+            CHECK(a.work_refused == 3 * t + k && b.work_refused == a.work_refused);
         }
     }
 

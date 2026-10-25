@@ -43,10 +43,12 @@
 //                        defaults plus its params, with a PluginFault that
 //                        stands while the document names that state
 //   work_refused         a plugin whose worker refused messages (its ring
-//                        full) is shown faulted while it runs, with the
-//                        count; another worker plugin is not; the fault
-//                        stands after the flood and goes once the insert is
-//                        made inactive and active again
+//                        full): one notice per run naming plugin, track and
+//                        slot, a count that only rises, no standing fault
+//                        (ADR-0012 change G); another worker plugin counts
+//                        nothing
+//   server_work_refused  the same through the server: the count in the
+//                        state block's InsertState, one Notice, no fault
 //   rescan_drops_stale   a catalog in which a plugin's record changed (a
 //                        rescan found it upgraded) drops the answer cached
 //                        for it; an unchanged record keeps it; the running
@@ -712,7 +714,9 @@ int scenario_state_not_restored(const Args& a) {
 
 // BACKLOG Track 4 item 5: the worker's refused messages were counted in the
 // host and told to nobody, so a sampler that never got its sample played on
-// as if it had.
+// as if it had. ADR-0012 change G, as for non-finite output: one Notice the
+// first time in a run, naming plugin, track and slot, and the count from
+// then on; nothing stands, since the chain plays on.
 int scenario_work_refused(const Args& a) {
     std::printf("work_refused: the worker test plugin floods its worker on A, not on B\n");
     Rig rig(a);
@@ -722,36 +726,125 @@ int scenario_work_refused(const Args& a) {
     rig.apply(insert_op(102, 501, 0, kWorker, {{"gain", 0.5f}}));
     rig.show(true);
     check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock); }, 20000), "both run");
-    const auto said = [&](Id insert) {
-        const auto& f = rig.hosting->faults();
-        return f.count(insert) && f.at(insert).find("worker refused") != std::string::npos;
+    std::vector<std::string> notices;
+    const auto take = [&] {
+        for (std::string& n : rig.hosting->take_notices()) notices.push_back(std::move(n));
     };
-    check(rig.until([&] { return said(500); }, 3000), "A's insert is faulted for its refused worker messages");
-    if (rig.hosting->faults().count(500)) std::printf("  fault: %s\n", rig.hosting->faults().at(500).c_str());
+    check(rig.until(
+              [&] {
+                  take();
+                  return rig.hosting->work_refused(500) > 0;
+              },
+              3000),
+          "A's refused worker messages are counted");
+    // Two more intervals of flood: still one notice, a rising count.
+    const uint64_t first = rig.hosting->work_refused(500);
+    bool standing = false;
+    for (int i = 0; i < 900; ++i) {
+        rig.turn();
+        take();
+        standing = standing || rig.hosting->faults().count(500) != 0;
+    }
+    check(rig.hosting->work_refused(500) > first, "  and the count rises while the flood goes on");
+    check(!standing, "  no fault stands for it");
     const uint32_t flags = rig.hosting->insert_flags(500);
-    check((flags & api::kInsertRunning) && (flags & api::kInsertFaulted), "  running, and shown faulted");
-    check(rig.hosting->faults().count(501) == 0, "B's, whose worker keeps up, is not");
+    check((flags & api::kInsertRunning) && !(flags & api::kInsertFaulted), "  shown running, not faulted");
+    check(notices.size() == 1, "one notice for the run, however many refusals");
+    if (!notices.empty()) std::printf("  notice: %s\n", notices[0].c_str());
+    check(!notices.empty() && notices[0].find(kWorker) != std::string::npos &&
+              notices[0].find("(A, slot A)") != std::string::npos &&
+              notices[0].find("worker refused") != std::string::npos,
+          "  naming the plugin, its track and its slot");
+    check(rig.hosting->work_refused(501) == 0, "B's, whose worker keeps up, counts nothing");
     rig.apply(SetInsertParams{500, {{"gain", 1.f}}});
     rig.show(false);
-    bool stands = true;
-    for (int i = 0; i < 400; ++i) {
-        rig.turn();
-        stands = stands && said(500);
-    }
-    check(stands, "the flood over, the fault stands: the work was still not done");
+    for (int i = 0; i < 200; ++i) rig.turn();
+    const uint64_t after = rig.hosting->work_refused(500);
+    check(after > 0, "the flood over, the count is kept");
+    // A new run: the chain built again, flooding again, says it again, and
+    // the count only rises.
     rig.apply(SetInsertActive{500, false});
     rig.show(false);
-    check(rig.until([&] { return rig.hosting->faults().count(500) == 0 && rig.unbound(0); }, 5000),
-          "made inactive: the fault is gone");
+    check(rig.until([&] { return rig.unbound(0); }, 5000), "made inactive");
     rig.apply(SetInsertActive{500, true});
+    rig.apply(SetInsertParams{500, {{"gain", 0.0625f}}});
     rig.show(false);
-    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 20000), "and active again, it runs");
-    bool clean = true;
-    for (int i = 0; i < 400; ++i) {
-        rig.turn();
-        clean = clean && rig.hosting->faults().count(500) == 0;
+    check(rig.until(
+              [&] {
+                  take();
+                  return rig.bound_at(0, kBlock) && notices.size() == 2;
+              },
+              20000),
+          "active again and flooding: a second notice, for the new run");
+    check(rig.hosting->work_refused(500) >= after, "  the count never went down");
+    return failures ? 1 : 0;
+}
+
+// The same through EngineControlServer: the count reaches the state block's
+// InsertState, the Notice reaches the client once, and no PluginFault is
+// posted for the insert.
+int scenario_server_work_refused(const Args& a) {
+    std::printf("server_work_refused: the worker flood on drivers/fake, through the server\n");
+    std::filesystem::remove_all(kDir);
+    SessionConfig cfg;
+    cfg.dir = kDir;
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    FakeBackend::Config bc;
+    FakeBackend::Device d = FakeBackend::onboard();
+    bc.devices = {d};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    std::string error;
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    h.apply(track_op(100, 101, "A"), e);
+    h.apply(insert_op(100, 500, 0, kWorker, {{"gain", 0.0625f}}), e);
+    EngineControlServer::Options opts;
+    opts.plugin_host = a.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        const auto refused = [&] { return engine.state().track(0).inserts[0].work_refused; };
+        check(until([&] { return refused() > 0; }, 20000), "the state block counts the refused worker messages");
+        const uint32_t first = refused();
+        until([] { return false; }, 2500);
+        check(refused() > first, "  and the count rises");
+        const uint32_t flags = engine.state().track(0).inserts[0].flags;
+        check((flags & api::kInsertRunning) && !(flags & api::kInsertFaulted), "  the insert running, not faulted");
+        int notices = 0;
+        bool fault = false;
+        for (const auto& ev : in.events) {
+            if (ev.kind == api::EventKind::Notice && ev.text.find("worker refused") != std::string::npos) ++notices;
+            if (ev.kind == api::EventKind::PluginFault && ev.insert == 500 && !ev.text.empty()) fault = true;
+        }
+        check(notices == 1, "one Notice reached the client");
+        check(!fault, "no PluginFault for the insert");
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
     }
-    check(clean, "  with no fault, at a gain its worker keeps up with");
+    std::filesystem::remove_all(kDir);
     return failures ? 1 : 0;
 }
 
@@ -1164,6 +1257,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "move_off_missing") rc = scenario_move_off_missing(a);
     else if (a.scenario == "state_not_restored") rc = scenario_state_not_restored(a);
     else if (a.scenario == "work_refused") rc = scenario_work_refused(a);
+    else if (a.scenario == "server_work_refused") rc = scenario_server_work_refused(a);
     else if (a.scenario == "play_waits") rc = scenario_play_waits(a);
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);

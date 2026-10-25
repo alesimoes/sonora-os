@@ -1375,10 +1375,11 @@ int serve(const Options& o) {
     touches.drain(events);
     for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
     gestures.end_all(current, send);
-    for (std::size_t i = 0; i < chain.size(); ++i)
-        if (chain.work_refused(i) != refused_sent[i]) say_refused(i, 0);
     stop_processing();
     join_thread(processing);
+    // After the last run(): no schedule can come later and go unsaid.
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        if (chain.work_refused(i) != refused_sent[i]) say_refused(i, 0);
     if (exit_code == plugin::kHostExitFaulted) send_fault(pc::FaultKind::Plugin, s.fault.instance, 0, s.fault.message);
     link->close();
     return protocol_exit >= 0 ? protocol_exit : exit_code;
