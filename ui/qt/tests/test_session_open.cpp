@@ -237,12 +237,55 @@ int an_open_over_the_load_size_is_held() {
     return 0;
 }
 
+// An edit made while an Open is unanswered is refused by name. A request
+// carries no session tag, so if the engine refuses the Open, it would apply
+// that edit to the session it kept, where the ids usually mean something else.
+int an_edit_while_an_open_is_unanswered_is_refused() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.save(why));
+    const QString a = r.session.sessionFile();
+    const std::size_t markers = r.doc.snapshot().edit->markers->markers.size();
+    const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
+    const QString b = saved_midi_session(r.dir.path(), "Big", kCap + 1);
+    CHECK(!b.isEmpty());
+    CHECK(r.session.openSessionFile(b, false, why));
+
+    model::AddMarker m;
+    m.marker.id = r.doc.reserve_id();
+    m.marker.position = 480;
+    m.marker.name = "during";
+    why.clear();
+    CHECK(!r.doc.submit(m, why));
+    CHECK(why.find("still opening") != std::string::npos);
+    why.clear();
+    CHECK(!r.doc.undo(why) && why.find("still opening") != std::string::npos);
+    why.clear();
+    CHECK(!r.doc.redo(why) && why.find("still opening") != std::string::npos);
+    CHECK(r.doc.in_flight() == 1);   // the Load alone
+
+    r.settle();   // the engine refuses B
+    CHECK(r.session.sessionFile() == a);
+    CHECK(r.doc.in_flight() == 0);
+    CHECK(r.doc.snapshot().edit->markers->markers.size() == markers);
+    CHECK(r.doc.snapshot().edit->tracks.size() == tracks);
+
+    // Answered, edits go through again.
+    m.marker.id = r.doc.reserve_id();
+    CHECK(r.doc.submit(m, why));
+    r.settle();
+    CHECK(r.doc.snapshot().edit->markers->markers.size() == markers + 1);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (a_refused_open_gives_the_window_back() != 0) return 1;
     if (an_open_over_the_load_size_is_held() != 0) return 1;
+    if (an_edit_while_an_open_is_unanswered_is_refused() != 0) return 1;
     std::printf("session open: ok\n");
     return 0;
 }

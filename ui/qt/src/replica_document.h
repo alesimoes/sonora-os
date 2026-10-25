@@ -126,8 +126,8 @@ private:
 
     uint64_t send(api::ModelAction action, std::string bytes);
     void request_resync();
-    // True, with `why`, when an edit must be refused now: offline, or behind
-    // the engine. A Resync the engine refused is asked for again here, on the
+    // True, with `why`, when an edit must be refused now: offline, a Load
+    // the engine has not answered, or behind the engine. A Resync the engine refused is asked for again here, on the
     // operator's next edit, so a refusal never leaves the window waiting on
     // nothing, and a refusing engine is not asked in a loop.
     bool refuse_while_lost(std::string& why);

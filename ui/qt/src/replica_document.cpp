@@ -58,6 +58,16 @@ bool ReplicaDocument::refuse_while_lost(std::string& why) {
         why = kOffline;
         return true;
     }
+    // A request carries no session tag: sent before the engine answers a
+    // Load, it would be applied to the session the engine kept if it refuses
+    // that Load, where the same ids usually name other things.
+    const bool opening = std::any_of(pending_.begin(), pending_.end(), [](const Pending& p) {
+        return p.kind == Pending::Kind::Load && !p.answered;
+    });
+    if (opening) {
+        why = "the session is still opening; nothing was changed";
+        return true;
+    }
     if (!resyncing()) return false;
     if (!resync_pending_ && !resync_refused_.empty()) {
         why = "the engine could not send its document (" + resync_refused_ +
