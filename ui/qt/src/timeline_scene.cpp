@@ -307,6 +307,40 @@ void build_ruler_scene(TimeFormat fmt, const model::SessionSettings& s, const Vi
     }
 }
 
+void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState& v, double height,
+                              Scene& out) {
+    out.clear();
+    if (v.width <= 0 || height <= 0) return;
+    add(out.rects, 0, 0, v.width, height, theme::kPanel);
+    add(out.rects, 0, height - 1, v.width, 1, theme::kBorderSubtle);
+    // Selection markers' bars first, under every flag.
+    for (const Marker& m : markers.markers) {
+        if (m.length <= 0) continue;
+        const double x0 = std::max(0.0, std::floor(v.x_of(m.position)));
+        const double x1 = std::min(v.width, std::floor(v.x_of(m.position + m.length)));
+        add(out.rects, x0, height * 0.55, x1 - x0, height * 0.45 - 1, theme::kMarkerRange);
+    }
+    const double flag_h = std::floor(height * 0.5);
+    for (std::size_t i = 0; i < markers.markers.size(); ++i) {
+        const Marker& m = markers.markers[i];
+        const double x = std::floor(v.x_of(m.position));
+        if (x > v.width) break;   // sorted by position: the rest are further right
+        add(out.rects, x, 1, 1, height - 2, theme::kMarker);
+        add(out.rects, x, 1, theme::kMarkerFlagWidth, flag_h, theme::kMarker);
+        // The name runs to the next marker's flag, so names never overlap.
+        const double lx = x + theme::kMarkerFlagWidth + 3;
+        double room = 160;
+        if (i + 1 < markers.markers.size()) {
+            room = std::floor(v.x_of(markers.markers[i + 1].position)) - lx - 4;
+        }
+        room = std::min(room, v.width - lx);
+        if (room >= 12 && lx + room > 0) {
+            out.labels.push_back({static_cast<float>(lx), 3.0f, static_cast<float>(room), m.name,
+                                  theme::kText, theme::kTextCaption});
+        }
+    }
+}
+
 const SceneRect* rect_at(const std::vector<SceneRect>& rects, float x, float y) {
     for (auto it = rects.rbegin(); it != rects.rend(); ++it) {
         if (x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) return &*it;

@@ -53,6 +53,7 @@ add_library(sonora_ui_qt STATIC
   src/fader_taper.h src/fader_taper.cpp
   src/edit_controller.h src/edit_controller.cpp
   src/edit_clipboard.h src/edit_clipboard.cpp
+  src/edit_markers.cpp
   src/timeline_scene.h src/timeline_scene.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_files.h src/session_files.cpp
@@ -75,6 +76,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
+        qml/MemoryLocationsWindow.qml
 )
 
 add_executable(sonora-ui src/main.cpp)
@@ -128,6 +130,15 @@ target_compile_definitions(test_ui_undo_history PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_undo_history COMMAND test_ui_undo_history)
 set_tests_properties(ui_undo_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Markers and the Memory Locations window: add, recall, clear, the Markers
+# ruler, then the dialog, the window and the ruler in the real QML.
+add_executable(test_ui_markers tests/test_markers.cpp)
+target_link_libraries(test_ui_markers PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_markers PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_markers COMMAND test_ui_markers)
+set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,

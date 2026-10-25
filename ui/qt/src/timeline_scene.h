@@ -63,6 +63,13 @@ void build_timeline_overlay(const ViewState& view, const Selection& sel,
 void build_ruler_scene(TimeFormat fmt, const model::SessionSettings& s, const ViewState& view,
                        double height, Scene& out);
 
+// The marker ruler: each marker a flag at its frame with its name beside it,
+// a selection marker's range a bar along the bottom, as the Edit window's
+// Markers ruler shows Pro Tools' memory locations. EditController::marker_at
+// is the hit test for the same geometry.
+void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState& view,
+                              double height, Scene& out);
+
 // The topmost rectangle containing (x, y), or nullptr. For tests.
 const SceneRect* rect_at(const std::vector<SceneRect>& rects, float x, float y);
 

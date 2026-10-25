@@ -19,6 +19,8 @@
 #                                           tracks (-multitrack), a nudge on a
 #                                           tempo map (-nudge), the Undo
 #                                           History window (-undo-history),
+#                                           markers and the Memory Locations
+#                                           window (-markers),
 #                                           a repaired session
 #                                           opened (-repairs) and the
 #                                           engine-gone state under the cage

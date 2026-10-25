@@ -168,6 +168,28 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.repeat(count, why);
     });
+    // Pro Tools' New Memory Location: stopped, the window asks for the name
+    // and sends it back as the argument; rolling, the marker is named and
+    // dropped at the playhead at once, as Pro Tools does when playing.
+    simple("marker.add", [this](const CommandContext& ctx, Why& why) {
+        const auto at = ctl_.marker_place(overlay_.rolling, overlay_.playhead);
+        if (ctx.argument.empty() && !overlay_.rolling) {
+            const auto& settings = ctl_.snapshot().settings;
+            const QString what =
+                at.length > 0
+                    ? QStringLiteral("from ") + q(format_time(main_fmt_, at.position, settings)) +
+                          QStringLiteral(" to ") +
+                          q(format_time(main_fmt_, at.position + at.length, settings))
+                    : QStringLiteral("at ") + q(format_time(main_fmt_, at.position, settings));
+            emit markerRequested(q(ctl_.next_marker_name()), what, at.length > 0);
+            return true;
+        }
+        return ctl_.add_marker(ctx.argument, at, why);
+    });
+    local.install("window.memory_locations", [this](const CommandContext&) {
+        setMemoryLocationsOpen(!memory_locations_open_);
+        return true;
+    });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
     simple("edit.trim_start_to_insertion",
@@ -228,6 +250,7 @@ void SessionModel::sync() {
         content = true;
         emit contentChanged();
         emit mixChanged();
+        emit markersChanged();
         if (dirty() != seen_dirty_) {
             seen_dirty_ = dirty();
             emit sessionChanged();
@@ -325,6 +348,61 @@ bool SessionModel::undoHistoryAll(bool undo) {
     if (undo && !h.can_undo()) return run(false, "nothing to undo");
     if (!undo && !h.can_redo()) return run(false, "nothing to redo");
     return run(ctl_.undo_to(undo ? 0 : h.step_count() - 1, why), why);
+}
+
+QVariantList SessionModel::markers() const {
+    const auto& settings = ctl_.snapshot().settings;
+    QVariantList rows;
+    int number = 0;
+    for (const Marker& m : ctl_.markers().markers) {
+        QVariantMap row;
+        row[QStringLiteral("id")] = static_cast<double>(m.id);
+        row[QStringLiteral("number")] = ++number;
+        row[QStringLiteral("name")] = q(m.name);
+        row[QStringLiteral("start")] = q(format_time(main_fmt_, m.position, settings));
+        row[QStringLiteral("range")] = m.length > 0;
+        row[QStringLiteral("end")] =
+            m.length > 0 ? q(format_time(main_fmt_, m.position + m.length, settings)) : QString();
+        row[QStringLiteral("length")] = m.length > 0 ? q(format_min_sec(m.length, settings.sample_rate))
+                                                     : QString();
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+void SessionModel::setMemoryLocationsOpen(bool on) {
+    if (on == memory_locations_open_) return;
+    memory_locations_open_ = on;
+    emit memoryLocationsOpenChanged();
+}
+
+bool SessionModel::recallMarker(int row) {
+    const auto& list = ctl_.markers().markers;
+    if (row < 0 || static_cast<std::size_t>(row) >= list.size()) {
+        return run(false, "that marker is no longer in the session");
+    }
+    std::string why;
+    return run(ctl_.recall_marker(list[static_cast<std::size_t>(row)].id, why), why);
+}
+
+bool SessionModel::removeMarker(int row) {
+    const auto& list = ctl_.markers().markers;
+    if (row < 0 || static_cast<std::size_t>(row) >= list.size()) {
+        return run(false, "that marker is no longer in the session");
+    }
+    std::string why;
+    return run(ctl_.remove_marker(list[static_cast<std::size_t>(row)].id, why), why);
+}
+
+void SessionModel::markerRulerClick(qreal x, bool alt) {
+    const Id id = ctl_.marker_at(x);
+    std::string why;
+    if (id == kNoId) {
+        ctl_.set_insertion(ctl_.view().frame_at(x));
+        run(true, why);
+        return;
+    }
+    run(alt ? ctl_.remove_marker(id, why) : ctl_.recall_marker(id, why), why);
 }
 
 bool SessionModel::run(bool ok, const std::string& why) {
@@ -570,6 +648,7 @@ void SessionModel::cycleMainCounter() {
     main_counter_.clear();
     updateCounters(true);
     emit selectionChanged();
+    emit markersChanged();   // the Memory Locations window shows the main counter's format
 }
 
 void SessionModel::setWindow(const QString& w) {
@@ -1006,6 +1085,10 @@ void SessionModel::buildOverlay(std::vector<SceneRect>& out) const {
 
 void SessionModel::buildRuler(TimeFormat fmt, double height, Scene& out) const {
     build_ruler_scene(fmt, ctl_.snapshot().settings, ctl_.view(), height, out);
+}
+
+void SessionModel::buildMarkerRuler(double height, Scene& out) const {
+    build_marker_ruler_scene(ctl_.markers(), ctl_.view(), height, out);
 }
 
 }  // namespace sonora::ui

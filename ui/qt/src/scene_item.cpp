@@ -212,4 +212,6 @@ void RulerItem::buildContent(Scene& out) {
     session_->buildRuler(static_cast<TimeFormat>(format_), height(), out);
 }
 
+void MarkerRulerItem::buildContent(Scene& out) { session_->buildMarkerRuler(height(), out); }
+
 }  // namespace sonora::ui

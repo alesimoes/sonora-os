@@ -244,6 +244,38 @@ public:
     // is refused.
     bool undo_to(std::size_t depth, std::string& why);
 
+    // --- markers: Pro Tools' Memory Locations (edit_markers.cpp) ---
+    //
+    // A marker is session state: adding or clearing one is an operation and
+    // an undo step ("New Marker", "Clear Marker"). Recalling one is how the
+    // operator looks at the session, so it changes the selection only.
+    //
+    // Where a new marker goes: with the transport rolling, the playhead
+    // (`rolling` true), as Pro Tools drops one on the fly; else a selected
+    // range becomes a selection marker over it (Pro Tools' Selection memory
+    // location), and an insertion point a marker there.
+    struct MarkerPlace {
+        model::Frames position = 0;
+        model::Frames length = 0;
+    };
+    MarkerPlace marker_place(bool rolling, model::Frames playhead) const;
+    // The name a new marker is offered: "Marker N", the first N no marker
+    // of the session is called already.
+    std::string next_marker_name() const;
+    // `name` trimmed; an empty one is next_marker_name().
+    bool add_marker(const std::string& name, MarkerPlace at, std::string& why);
+    bool remove_marker(model::Id marker, std::string& why);
+    // A marker: the insertion point moves to it; a selection marker: its
+    // range is selected, on the selected tracks (the first track when none
+    // is). The view scrolls to it when it is off screen. Nothing is snapped
+    // to the grid: the marker is where it was put. The playhead does not
+    // follow until the engine has a locate command (Track 1 item 4).
+    bool recall_marker(model::Id marker, std::string& why);
+    // The marker drawn under `x` on the marker ruler, in its pixels: a
+    // marker's flag, else a selection marker's bar; kNoId over neither.
+    model::Id marker_at(double x) const;
+    const model::MarkerList& markers() const { return *snapshot().edit->markers; }
+
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
     bool set_pan(int track, float pan, std::string& why);

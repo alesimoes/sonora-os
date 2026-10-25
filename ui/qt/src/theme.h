@@ -49,6 +49,8 @@ constexpr uint32_t kAlarm = 0xffff5a5f;      // banners: engine gone, software G
 constexpr uint32_t kAlarmSurface = 0xff3a1618;
 constexpr uint32_t kPlayhead = 0xfff5f7fa;
 constexpr uint32_t kBypass = 0xff9d7cf0;     // a bypassed insert
+constexpr uint32_t kMarker = 0xffe0a83c;     // markers and memory locations
+constexpr uint32_t kMarkerRange = 0x59e0a83c;  // a selection marker's bar: marker at 35 %
 
 // --- timeline ---
 constexpr uint32_t kGridBar = 0xff2b3038;
@@ -115,6 +117,10 @@ constexpr int kRulerHeight = 20;
 constexpr int kTrackHeaderWidth = 216;
 constexpr int kTrackHeight = 64;
 constexpr int kRegionNameBand = 14;
+// The marker ruler's flag, from the marker's frame rightwards, and how far
+// outside it a click still takes the marker.
+constexpr int kMarkerFlagWidth = 9;
+constexpr int kMarkerHitSlop = 3;
 constexpr int kInsertSlotHeight = 16;
 
 // The colour a region on display-order track `index` gets.

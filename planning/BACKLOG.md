@@ -328,6 +328,29 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              Fades and trims to the insertion point refuse several tracks by
              name (`t3-multitrack-clipboard`; ui_clipboard
              test_several_tracks, test_menu).
+       - [x] Markers and memory locations (`t3j-markers`; ui_markers):
+             `marker.add` (Pro Tools' keypad Enter, Edit > New Marker…, the
+             Markers ruler's +) asks for the name while stopped and drops
+             "Marker N" at the playhead at once while rolling; a selected
+             range makes a selection marker over it. Each add and clear is
+             one undo step. The Markers ruler under the time rulers draws
+             them; a click recalls one (insertion point or range, never
+             snapped, the view paged to it), Alt-click clears it. The Memory
+             Locations window (`window.memory_locations`, Ctrl+keypad 5)
+             lists them in the main counter's format, a click recalls, × clears.
+             Still open:
+             - rename a marker: the model has no operation for it
+               (`AddMarker`/`MoveMarker`/`RemoveMarker` only), so a
+               `SetMarkerName` op is a common/model change first;
+             - drag a marker along the ruler (`MoveMarker` exists);
+             - Pro Tools' memory location properties (zoom, track show/hide,
+               the selected tracks) need fields in `Marker` and a session
+               format change;
+             - recall by number (keypad `. N .`) needs chord sequences in the
+               key map schema (research §4 item 2);
+             - recall moves the playhead once `transport.locate` exists
+               (Track 1 item 4); a marker line through the lanes;
+             - Logic's marker keys, once confirmed against its guide.
        - [ ] Shuffle's ripple for the clipboard once `ShiftRegions` exists
              (ADR-0009 update 2026-10-14, item 5).
        - [ ] One clipboard lane pasted onto several selected tracks: pastes
