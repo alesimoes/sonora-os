@@ -256,7 +256,7 @@ enum class EventKind : uint32_t {
     // again). Only takes of the open session are offered: by the session
     // id in their Description. One offer stands at a time, replaced at
     // every session open; empty text withdraws it. A client that attaches
-    // later is sent the one that stands. Protocol 12.
+    // later is sent the one that stands. Protocol 13.
     RecoveryOffer = 5,
 };
 

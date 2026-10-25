@@ -635,7 +635,7 @@ provides them:
   A take that is recording, or punched out and not yet closed and placed,
   when a session opens is never one: the scan waits until no take is in
   flight (`Session::takes_closing()`). The offer is one standing
-  `RecoveryOffer` event (protocol 12), a line per take saying where it
+  `RecoveryOffer` event (protocol 13), a line per take saying where it
   would go; the interface shows it until the operator sends
   `session.place_recovered` (each take placed through `add_closed_take()`,
   one undo step labelled "Place Recovered Takes") or
