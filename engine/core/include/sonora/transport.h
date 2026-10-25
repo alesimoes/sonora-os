@@ -32,6 +32,8 @@ public:
     // this store (Session::start_punch()); a take without one never looks
     // for one, so a range left from an earlier take of that number cannot
     // apply to it.
+    // The start the next set_recording() gives its take. Control thread.
+    uint32_t next_start() const { return (starts_ + 1) & kStartMask; }
     void set_recording(uint32_t take, bool punched = false) {
         starts_ = (starts_ + 1) & kStartMask;
         word_.store(word(TransportState::Recording, take) | (punched ? kPunched : 0) |

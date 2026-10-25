@@ -17,9 +17,12 @@ namespace fs = std::filesystem;
 // What two spellings of one folder compare equal as: "a/../b", "./b" and a
 // symlink to b are all b.
 std::string identity(const std::string& path) {
-    std::error_code ec;
-    const fs::path p = fs::weakly_canonical(fs::absolute(path, ec), ec);
-    return ec ? path : p.string();
+    std::error_code absolute_ec;
+    const fs::path absolute = fs::absolute(path, absolute_ec);
+    if (absolute_ec) return path;
+    std::error_code canonical_ec;
+    const fs::path p = fs::weakly_canonical(absolute, canonical_ec);
+    return canonical_ec ? absolute.string() : p.string();
 }
 
 // True if it is a folder now; `made` says whether this call made it.

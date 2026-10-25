@@ -139,15 +139,37 @@ void DiskThread::move(std::size_t i, uint64_t n) {
     }
 }
 
+namespace {
+
+// The take number alone is not enough: in another session folder a take
+// can have the number of one whose callback, stalled past stop()'s bound,
+// is still sending records (ADR-0018 §1).
+bool slot_is(const Track& t, int slot, const CaptureBoundary& b) {
+    return t.slot_take(slot) == static_cast<int>(b.take) && t.slot_start(slot) == b.start;
+}
+
+}  // namespace
+
 void DiskThread::apply(std::size_t i, const CaptureBoundary& b) {
     TrackState& s = state_[i];
     Track& t = *tracks_[i];
     if (b.kind == CaptureBoundary::Kind::Close) {
-        if (s.active >= 0 && t.slot_take(s.active) == static_cast<int>(b.take)) {
-            finish(i, s.active);
-        }
+        if (s.active >= 0 && slot_is(t, s.active, b)) finish(i, s.active);
         return;
     }
+    int target = -1;
+    bool newer_of_that_number = false;
+    for (int slot = 0; b.take != 0 && slot < Track::kWriterSlots; ++slot) {
+        if (slot_is(t, slot, b)) {
+            target = slot;
+        } else if (t.slot_take(slot) == static_cast<int>(b.take)) {
+            newer_of_that_number = true;
+        }
+    }
+    // Late, for a take of this number stop() has closed, while the next
+    // folder's take of the number waits for its own Open: the record must
+    // neither open that take's file nor end the window before it.
+    if (target < 0 && newer_of_that_number) return;
     // An open window whose close record was lost to a full boundary ring
     // ends where the next one starts.
     if (s.active >= 0) finish(i, s.active);
@@ -155,28 +177,26 @@ void DiskThread::apply(std::size_t i, const CaptureBoundary& b) {
         const int take = t.slot_take(slot);
         // Opened for an earlier take whose window never opened here: the
         // track was disarmed before its first block, or the record was lost.
-        // "Earlier" is "smaller" because take numbers only increase: every
-        // take is numbered by next_free_take(), one past the highest on
-        // disk, and start_recording() puts its files on disk.
+        // "Earlier" is "smaller" because take numbers only increase within
+        // one folder: every take is numbered by next_free_take(), one past
+        // the highest on disk, and start_recording() puts its files on
+        // disk. The folder changes only with every slot free, so the slots
+        // compared here hold takes of one folder.
         if (take != 0 && take < static_cast<int>(b.take)) finish(i, slot);
     }
     // Take 0 has no file: tests drive the ring with it. A take whose files
     // stop() has already closed, its callback late, finds none either, and
     // its samples are read and dropped.
-    for (int slot = 0; b.take != 0 && slot < Track::kWriterSlots; ++slot) {
-        if (t.slot_take(slot) == static_cast<int>(b.take)) {
-            s.active = slot;
-            s.open_at = b.at;
-            t.writer(slot).set_time_reference(b.timeline);
-            return;
-        }
-    }
+    if (target < 0) return;
+    s.active = target;
+    s.open_at = b.at;
+    t.writer(target).set_time_reference(b.timeline);
 }
 
 void DiskThread::wrap(std::size_t i, const CaptureBoundary& b) {
     TrackState& s = state_[i];
     Track& t = *tracks_[i];
-    if (s.active < 0 || t.slot_take(s.active) != static_cast<int>(b.take)) return;
+    if (s.active < 0 || !slot_is(t, s.active, b)) return;
     const int slot = s.active;
     std::vector<uint64_t>& list = s.wraps[slot];
     uint64_t& written = s.wraps_written[slot];

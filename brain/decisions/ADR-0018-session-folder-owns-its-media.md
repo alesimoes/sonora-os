@@ -122,9 +122,12 @@ Because of the invariant, a take always closes into the folder it was
 opened in, and `AddSource` + `RecordTake` always name a file in the
 document's own folder.
 
-`Session::enter_folder(path, why)` runs on the control thread and takes
-these steps in order. The first failure refuses and leaves the old folder
-active:
+`ActiveFolder::enter()` (`engine/control`) runs on the control thread and
+takes these steps in order. The first failure refuses and leaves the old
+folder active. *(Update 2026-10-25: this was `Session::enter_folder`.
+`engine/core` links neither the lock nor recovery (ADR-0007 §1), so the
+steps live in `engine/control`. `Session` keeps the invariant in
+`set_folder()`, which step 6 calls; see checklist item 1.)*
 
 1. Refuse if a take is open or closing.
 2. `FolderLock::acquire(path)`. Busy: refuse, "another engine has this
@@ -420,6 +423,13 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    event. Load during a take is refused. New conformance check, on both
    engines: "a take recorded after Load is in the loaded session's
    `Audio Files/`".
+   Notes from #137's review (N2): `add_closed_take()` and
+   `place_orphan_takes()` resolve paths against the folder active when
+   they run, not the one the take was opened in. Keep `set_folder()` out
+   from between `closed_takes()` and placing what it returned, or carry
+   the folder in `ClosedTake`. `PlaybackController::slots_` caches each
+   source's slot with the path resolved at first use: reset it when the
+   folder or the document changes.
 3. **Orphans per folder** (`engine/control`). Remove #132's name filter
    and its deferral. Test: a renamed session's orphan is offered.
 4. **Untitled sessions** (`engine/app`, `engine/control`, `ui/qt`,

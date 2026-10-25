@@ -588,7 +588,7 @@ private:
     // opened and closed at punch_'s frames.
     // `first`: the take's first block.
     void capture(const backend::AudioBlock& block, bool recording, uint32_t take,
-                 uint64_t playhead, bool first) noexcept SONORA_RT;
+                 uint32_t start, uint64_t playhead, bool first) noexcept SONORA_RT;
     // The running take's origin and `end` into its closing_ entry, before
     // recording_take_ moves on.
     void keep_origin(uint64_t end);
@@ -712,6 +712,8 @@ private:
     // the samples it has written to its capture ring, ever.
     static constexpr uint32_t kNoWindow = kNoWindowTake;
     std::unique_ptr<uint32_t[]> window_take_;
+    // Per track: the Transport::Word::start of the take its window is for.
+    std::unique_ptr<uint32_t[]> window_start_;
     std::unique_ptr<uint64_t[]> captured_;
     // The take take_origin_ was set for, or kNoWindow.
     uint32_t origin_take_ = kNoWindow;

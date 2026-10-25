@@ -249,6 +249,7 @@ Session::Session(SessionConfig cfg)
     source_seen_.reset(new uint64_t[tracks_n + 1]());
     window_take_.reset(new uint32_t[tracks_n + 1]);
     for (uint32_t t = 0; t <= tracks_n; ++t) window_take_[t] = kNoWindow;
+    window_start_.reset(new uint32_t[tracks_n + 1]());
     captured_.reset(new uint64_t[tracks_n + 1]());
 
     // 64 kframes per disk write keeps syscall count low without stalling.
@@ -688,7 +689,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     // rollback above could close them under it. See Track::slot_take().
     for (const auto& o : opened) {
         o.first->set_current_slot(o.second);
-        o.first->set_slot_take(o.second, take_number);
+        o.first->set_slot_take(o.second, take_number, transport_->next_start());
     }
     // A take started over another ends it here.
     keep_origin(transport_->playhead());
@@ -968,7 +969,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // block between them (stop(), a folder switch, the next take: ADR-0018
     // §1), would pass for that take still running and open nothing. stop()
     // closed that take's files, so its windows are dropped here without a
-    // Close: one in this number would close the new take's files.
+    // Close.
     if (recording && word.start != recording_start_) {
         recording_start_ = word.start;
         if (origin_take_ == word.take) origin_take_ = kNoWindow;
@@ -1147,7 +1148,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             roll_end_.compare_exchange_strong(end, kNoRollEnd, std::memory_order_acq_rel);
         }
     }
-    capture(block, recording, word.take, playhead, first);
+    capture(block, recording, word.take, word.start, playhead, first);
     if (block_wraps_ != 0) {
         loop_wrap_count_ += block_wraps_;
         loop_wraps_.store(loop_wrap_count_, std::memory_order_release);
@@ -1213,7 +1214,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 }
 
 void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t take,
-                      uint64_t playhead, bool first) noexcept SONORA_RT {
+                      uint32_t start, uint64_t playhead, bool first) noexcept SONORA_RT {
     const uint32_t nframes = block.nframes;
     // The frames of this block the take records: its range, cut to the
     // block. Empty before the range and after it.
@@ -1239,6 +1240,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (window != kNoWindow && (!wanted || window != take)) {
             b.kind = CaptureBoundary::Kind::Close;
             b.take = window;
+            b.start = window_start_[i];
             b.at = captured_[i];
             // Lost, the file ends where the next window opens, or at stop().
             if (boundaries_->write(&b, 1) != 1) {
@@ -1249,6 +1251,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (passed && t.rec_armed()) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
+            b.start = start;
             b.at = captured_[i];
             if (boundaries_->write(&b, 1) == 1) {
                 b.kind = CaptureBoundary::Kind::Close;
@@ -1264,10 +1267,12 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (wanted && window == kNoWindow) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
+            b.start = start;
             b.at = captured_[i];
             b.timeline = from - take_latency_;
             if (boundaries_->write(&b, 1) == 1) {
                 window = take;
+                window_start_[i] = start;
             } else {
                 // Tried again next block: the take starts late on this track.
                 // If it ends first (punch_out(), a take over it, its range),
@@ -1297,6 +1302,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         for (uint32_t k = 0; k < block_wraps_ && window == take; ++k) {
             b.kind = CaptureBoundary::Kind::Wrap;
             b.take = window;
+            b.start = window_start_[i];
             b.ordinal = loop_wrap_count_ + 1 + k;
             b.at = block_start + block_wrap_offset_ +
                    static_cast<uint64_t>(k) * (loop_to_ - loop_from_) + punch_->latency;
@@ -1312,6 +1318,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (to == capture_to_) {
             b.kind = CaptureBoundary::Kind::Close;
             b.take = window;
+            b.start = window_start_[i];
             b.at = captured_[i];
             b.timeline = to - take_latency_;
             if (boundaries_->write(&b, 1) != 1) {

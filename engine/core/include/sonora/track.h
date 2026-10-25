@@ -72,9 +72,15 @@ public:
     // audio thread never reads either.
     static constexpr int kWriterSlots = 2;
     int slot_take(int slot) const { return slot_take_[slot].load(std::memory_order_acquire); }
-    void set_slot_take(int slot, int take) {
+    // With the take, its Transport::Word::start: a take in another session
+    // folder can have the number of one whose late records are still
+    // coming (ADR-0018 §1), and only the start tells them apart. Stored
+    // before the take, so a reader that saw the take with acquire sees it.
+    void set_slot_take(int slot, int take, uint32_t start = 0) {
+        slot_start_[slot].store(start, std::memory_order_relaxed);
         slot_take_[slot].store(take, std::memory_order_release);
     }
+    uint32_t slot_start(int slot) const { return slot_start_[slot].load(std::memory_order_relaxed); }
     WavWriter& writer(int slot) { return writers_[slot]; }
     // A loop take's wrap list, beside its writer and handed over with it
     // (ADR-0016 §2). Not open for any other take.
@@ -106,6 +112,7 @@ private:
     WavWriter writers_[kWriterSlots];
     WrapSidecar sidecars_[kWriterSlots];
     std::atomic<int> slot_take_[kWriterSlots] = {{0}, {0}};
+    std::atomic<uint32_t> slot_start_[kWriterSlots] = {{0}, {0}};
     int current_slot_ = 0;
     uint64_t document_id_ = 0;
 
