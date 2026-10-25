@@ -1331,12 +1331,7 @@ bool EditController::undo_to(std::size_t depth, std::string& why) {
     const bool back = depth < from;
     const std::size_t total = back ? from - depth : depth - from;
     for (std::size_t done = 0; done < total; ++done) {
-        std::string step_why;
-        if (back ? undo(step_why) : redo(step_why)) continue;
-        why = done == 0 ? step_why
-                        : std::string(back ? "undid " : "redid ") + std::to_string(done) +
-                              " of " + std::to_string(total) + " steps, then: " + step_why;
-        return false;
+        if (!(back ? undo(why) : redo(why))) return false;
     }
     return true;
 }

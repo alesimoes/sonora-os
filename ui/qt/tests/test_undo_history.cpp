@@ -266,6 +266,41 @@ int test_window() {
     click(view, named(win, QStringLiteral("undoHistoryUndoAll")));
     CHECK(doc.history().undo_depth() == 0 && regions(doc) == 1);
 
+    // A history longer than the list shows (12 rows): the newest step is in
+    // view, and a click near the bottom keeps the clicked row in view rather
+    // than the list jumping back to step 1.
+    for (int i = 0; i < 20; ++i) CHECK(add_marker(session, doc, "M"));
+    QQuickItem* list = named(win, QStringLiteral("undoHistoryList"));
+    CHECK(list != nullptr);
+    const auto in_view = [&](int index) {
+        const double top = list->property("contentY").toDouble();
+        const double row = 24.0 * index;
+        return row >= top - 0.5 && row + 24.0 <= top + list->height() + 0.5;
+    };
+    CHECK(QTest::qWaitFor([&]() { return in_view(19); }));
+    QQuickItem* row17 = nullptr;
+    CHECK(QTest::qWaitFor([&]() {
+        for (QQuickItem* r : all_named(win, QStringLiteral("undoHistoryRow"))) {
+            if (r->property("index").toInt() == 17 && r->isVisible()) row17 = r;
+        }
+        return row17 != nullptr;
+    }));
+    click(view, row17);
+    CHECK(doc.history().undo_depth() == 17);
+    QTest::qWait(50);
+    CHECK(in_view(17) && in_view(16));
+    // And the other way: the same row, now undone, redone; still in view.
+    // The list was rebuilt, so the row is looked up again.
+    row17 = nullptr;
+    for (QQuickItem* r : all_named(win, QStringLiteral("undoHistoryRow"))) {
+        if (r->property("index").toInt() == 17 && r->isVisible()) row17 = r;
+    }
+    CHECK(row17 != nullptr);
+    click(view, row17);
+    CHECK(doc.history().undo_depth() == 18);
+    QTest::qWait(50);
+    CHECK(in_view(17));
+
     // The close box sends what the menu sent: the window goes.
     click(view, named(win, QStringLiteral("undoHistoryClose")));
     CHECK(!session.undoHistoryOpen() && !win->isVisible());

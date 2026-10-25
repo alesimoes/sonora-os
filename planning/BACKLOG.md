@@ -330,8 +330,10 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              undone ones in italics below a line. A click on a done step
              undoes it and every later one, on an undone step redoes up to
              it, as Pro Tools does; Undo All and Redo All. Each step is its
-             own Undo or Redo request, as the key pressed that many times;
-             the first refusal stops the jump and says how far it got. A
+             own Undo or Redo request, as the key pressed that many times.
+             A refusal in the window (offline, behind the engine) comes
+             before anything is sent; one from the engine is reported for
+             its step, the steps after it already sent. A
              history that has dropped its oldest steps says undo stops at
              step 1 (`t3i-undo-history`; ui_undo_history,
              ui_replica_document a_history_jump_is_one_request_a_step).

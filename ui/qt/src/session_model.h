@@ -58,6 +58,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QVariantList undoHistory READ undoHistory NOTIFY contentChanged)
     // Older steps were dropped as the history filled (the floor is an edit,
     // not the session as it was opened): undo cannot reach back to the start.
+    // Where the document is in undoHistory: the number of done rows.
+    Q_PROPERTY(int undoHistoryDepth READ undoHistoryDepth NOTIFY contentChanged)
     Q_PROPERTY(bool undoHistoryTrimmed READ undoHistoryTrimmed NOTIFY contentChanged)
     Q_PROPERTY(bool undoHistoryOpen READ undoHistoryOpen NOTIFY undoHistoryOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
@@ -175,6 +177,7 @@ public:
     QString undoText() const;
     QString redoText() const;
     QVariantList undoHistory() const;
+    int undoHistoryDepth() const { return static_cast<int>(doc_.history().undo_depth()); }
     bool undoHistoryTrimmed() const;
     bool undoHistoryOpen() const { return undo_history_open_; }
     void setUndoHistoryOpen(bool on);

@@ -94,20 +94,23 @@ Rectangle {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 model: win.session.undoHistory
-                // The newest done step in view, where the operator is.
-                onCountChanged: positionViewAtIndex(Math.max(0, lastDone()), ListView.Contain)
-                function lastDone() {
-                    const rows = win.session.undoHistory
-                    let at = -1
-                    for (let i = 0; i < rows.length; ++i) if (rows[i].done) at = i
-                    return at
+                // Every change to the history is a new list, which puts the
+                // view back at step 1. Once it is laid out, the row just
+                // clicked is brought back into view, or else the newest done
+                // step, where the operator is.
+                property int keep: -1
+                onModelChanged: Qt.callLater(place)
+                function place() {
+                    const at = keep >= 0 ? keep : win.session.undoHistoryDepth - 1
+                    keep = -1
+                    positionViewAtIndex(Math.max(0, Math.min(at, count - 1)), ListView.Contain)
                 }
                 delegate: Rectangle {
                     id: row
                     objectName: "undoHistoryRow"
                     required property var modelData
                     required property int index
-                    readonly property bool current: index === list.lastDone()
+                    readonly property bool current: index === win.session.undoHistoryDepth - 1
                     width: ListView.view.width
                     height: win.rowHeight
                     color: current ? Theme.selectionFill
@@ -144,7 +147,10 @@ Rectangle {
                         id: area
                         anchors.fill: parent
                         hoverEnabled: true
-                        onClicked: win.session.undoHistoryClick(row.index)
+                        onClicked: {
+                            list.keep = row.index
+                            win.session.undoHistoryClick(row.index)
+                        }
                     }
                 }
             }
