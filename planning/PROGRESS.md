@@ -84,7 +84,7 @@
 | Edit modes: Shuffle, Slip, Spot, Grid | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 3 |
 | Smart Tool and the individual tools | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 3 |
 | Grid and nudge values | Complete DAW / Edit window and editing | `feature/ui-arrange-mixer` | 1 |
-| Markers and memory locations: create, recall, with zoom and selection | Complete DAW / Edit window and editing | `feature/ui-markers` | 3 |
+| Markers and memory locations: create, recall, with zoom and selection | Complete DAW / Edit window and editing | `feat/transport-locate` | 3 |
 | Tempo map and time signatures; bars|beats ruler and grid | Complete DAW / Tempo, time and pitch | `feature/ui-transport` | 3 |
 | Arm, input-monitor, mute and solo buttons on track headers | Complete DAW / Recording workflow: playlists and comping | `feature/ui-arrange-mixer` | 1 |
 | Pan (mono and stereo) | Complete DAW / Mixer, routing and processing graph | `feature/ui-mixer-monitor` | 1 |
