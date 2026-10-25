@@ -100,8 +100,9 @@ public:
     Q_INVOKABLE void setActive(int track, int slot, bool active);
     Q_INVOKABLE void remove(int track, int slot);
 
-    // [{index, name, vendor, format, channels, category, refusal}] for the
-    // chooser's track.
+    // [{index, name, vendor, format, channels, host, category, refusal}]
+    // for the chooser's track; `host` is "Windows (Wine)" for a plug-in
+    // bridged by yabridge, empty for a native one.
     Q_INVOKABLE QVariantList browse(const QString& category, const QString& search) const;
     // Opens the chooser on a slot; on a slot that holds an insert it
     // replaces that insert.

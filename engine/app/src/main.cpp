@@ -949,6 +949,11 @@ int main(int argc, char** argv) {
     // Q2): resolved here and passed down; an empty --plugin-cache keeps
     // the catalog in memory.
     if (!plugin_cache_given) control.plugin_cache = sonora::default_plugin_cache(sonora::platform::user_cache_dir());
+    // Windows plug-ins through yabridge (ADR-0017 Y4): the prefix their
+    // probes and chains run in, created before the first scan that lists
+    // one.
+    control.plugin_wine_prefix = sonora::default_wine_prefix(std::getenv("WINEPREFIX"), std::getenv("HOME"));
+    control.plugin_wine_prefix_command = sonora::wine_prefix_command(std::getenv("PATH"));
     {
         std::ifstream os_release("/etc/os-release");
         std::ostringstream text;

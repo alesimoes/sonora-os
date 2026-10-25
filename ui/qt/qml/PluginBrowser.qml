@@ -174,6 +174,7 @@ Item {
                 Text {
                     anchors { left: rowName.right; leftMargin: Theme.space2; baseline: rowName.baseline }
                     text: row.modelData.format + " · " + row.modelData.channels
+                          + (row.modelData.host.length > 0 ? " · " + row.modelData.host : "")
                     color: Theme.textSecondary
                     font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
                 }

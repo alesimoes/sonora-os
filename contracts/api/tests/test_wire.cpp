@@ -274,26 +274,26 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // The recovery offer (engine.record.orphan_offer) is version 13; Hello's
-    // capabilities 12; Save (ADR-0015 M-1c PR 3) 11; a Snapshot and a Load in
-    // parts are 10, loop record 9. An older interface cannot decode this
-    // Hello, so it reads only its versions and refuses it at connect, naming
-    // both numbers. Its check is this function with its own constants, passed
-    // here.
-    CHECK(kProtocolVersion == 13);
+    // PluginInfo::bridge (ADR-0017 Y2) is version 14; the recovery offer
+    // (engine.record.orphan_offer) 13; Hello's capabilities 12; Save
+    // (ADR-0015 M-1c PR 3) 11; a Snapshot and a Load in parts are 10, loop
+    // record 9. An older interface cannot decode this Hello, so it reads
+    // only its versions and refuses it at connect, naming both numbers. Its
+    // check is this function with its own constants, passed here.
+    CHECK(kProtocolVersion == 14);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
-    CHECK(mentions(v8, "the engine speaks control protocol version 13 and this interface "
+    CHECK(mentions(v8, "the engine speaks control protocol version 14 and this interface "
                        "speaks version 8"));
     CHECK(mentions(v8, "same build"));
     // And this interface refuses a version-8 engine the same way.
     CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
                    "the engine speaks control protocol version 8 and this interface "
-                   "speaks version 13"));
+                   "speaks version 14"));
 }
 
 void domains() {
@@ -472,6 +472,7 @@ PluginCatalog sample_catalog() {
     b.outputs = 2;
     b.usable = false;
     b.refusal = "the scan timed out";
+    b.bridge = PluginBridge::Yabridge;
     return c;
 }
 
@@ -505,6 +506,7 @@ void plugin_messages() {
     CHECK(a.format == PluginFormat::Lv2 && a.id == c.plugins[0].id && a.name == c.plugins[0].name);
     CHECK(a.vendor == "x42" && a.version == "0.9.2" && a.inputs == 1 && a.outputs == 1);
     CHECK(a.usable && a.refusal.empty() && a.has_editor && a.params.size() == 3);
+    CHECK(a.bridge == PluginBridge::None);
     CHECK(a.categories == c.plugins[0].categories);
     CHECK(a.params[0].key == "threshold" && a.params[0].min == -10.0f &&
           a.params[0].max == 0.0f && a.params[0].default_value == -1.0f &&
@@ -516,6 +518,8 @@ void plugin_messages() {
     const PluginInfo& b = back.plugins[1];
     CHECK(b.format == PluginFormat::Vst3 && !b.usable && b.refusal == "the scan timed out");
     CHECK(!b.has_editor && b.params.empty() && b.inputs == 2 && b.categories.empty());
+    // Protocol 14 (ADR-0017 Y2): which plugins run under Wine survives.
+    CHECK(b.bridge == PluginBridge::Yabridge);
 
     // Each refusal names what is wrong, and leaves the output alone.
     const auto refused = [&](PluginCatalog bad, const char* says) {
@@ -542,6 +546,9 @@ void plugin_messages() {
     CHECK(refused(bad, "flags"));
     bad = c;
     bad.plugins[0].format = static_cast<PluginFormat>(2);
+    CHECK(refused(bad, "enum value 2"));
+    bad = c;
+    bad.plugins[1].bridge = static_cast<PluginBridge>(2);
     CHECK(refused(bad, "enum value 2"));
     bad = c;
     bad.plugins.resize(wire::kMaxCatalogPlugins + 1);

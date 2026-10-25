@@ -168,6 +168,7 @@ constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Save);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::RecoveryOffer);
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
+constexpr uint32_t kLastBridge = static_cast<uint32_t>(PluginBridge::Yabridge);
 
 }  // namespace
 
@@ -295,6 +296,7 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
         w.u32(p.usable ? 1 : 0);
         w.str(p.refusal);
         w.u32(p.has_editor ? 1 : 0);
+        w.u32(static_cast<uint32_t>(p.bridge));
         w.u32(static_cast<uint32_t>(p.params.size()));
         for (const PluginParam& q : p.params) {
             w.u32(q.index);
@@ -431,7 +433,7 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
             !r.str(p.vendor) || !r.str(p.version) ||
             !r.list(p.categories, kMaxPluginCategories) || !r.u32(p.inputs) || !r.u32(p.outputs) ||
             !r.flag(p.usable) || !r.str(p.refusal) || !r.flag(p.has_editor) ||
-            !r.count(params, kMaxPluginParams, "parameters")) {
+            !r.enumeration(p.bridge, kLastBridge) || !r.count(params, kMaxPluginParams, "parameters")) {
             return false;
         }
         for (uint32_t k = 0; k < params; ++k) {

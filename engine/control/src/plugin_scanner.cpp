@@ -98,6 +98,7 @@ api::PluginInfo catalog_entry(const pr::Record& r) {
     p.usable = r.ok();
     p.refusal = r.ok() ? std::string() : r.reason;
     p.has_editor = r.has_editor;
+    p.bridge = vst3 && r.bridge == "yabridge" ? api::PluginBridge::Yabridge : api::PluginBridge::None;
     for (const pr::Param& q : r.params) {
         if (p.params.size() >= api::wire::kMaxPluginParams) break;
         // A key past the catalog's cap could not be named by a client.

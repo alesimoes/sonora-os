@@ -242,6 +242,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         sc.bundles = opts_.plugin_bundles;
         sc.cache_path = opts_.plugin_cache;
         sc.build_id = opts_.plugin_build_id;
+        sc.wine_prefix = opts_.plugin_wine_prefix;
+        sc.wine_prefix_command = opts_.plugin_wine_prefix_command;
         sc.scan_at_start = opts_.plugin_scan_at_start;
         sc.max_probes = opts_.plugin_probe_slots;
         scanner_ = std::make_unique<PluginScanner>(sc);

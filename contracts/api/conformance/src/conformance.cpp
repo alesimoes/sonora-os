@@ -1146,6 +1146,12 @@ int check_inserts(Rig& rig) {
             EXPECT(s.until(rig_, [&]() { return s.replica.synced() && !s.inbox.catalogs.empty(); }),
                    "no plugin catalog after the snapshot");
             const PluginCatalog catalog = s.inbox.catalogs.back();
+            // Protocol 14 (ADR-0017 Y2): only a VST3 is bridged, by yabridge;
+            // VST2 and CLAP are not hosted, natively or under Wine (Y6).
+            for (const PluginInfo& p : catalog.plugins) {
+                EXPECT(p.bridge == PluginBridge::None || p.format == PluginFormat::Vst3,
+                       p.name + " is marked as running under Wine but is not a VST3");
+            }
             const model::TrackEdit& track = *s.replica.current().edit->tracks.at(0);
             const PluginInfo* usable = nullptr;
             for (const PluginInfo& p : catalog.plugins) {

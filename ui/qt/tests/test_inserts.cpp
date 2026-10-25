@@ -146,6 +146,13 @@ int catalog_and_chooser() {
     CHECK(r.ctl().refusal(kGain, 0).empty());
     const QVariantList rows = r.inserts.browse(QString(), QString());
     CHECK(rows.size() == 4);
+    // ADR-0017 Y2: the fake's compressor is a Windows build through
+    // yabridge, and says so; the others are native and say nothing.
+    for (const QVariant& row : rows) {
+        const QVariantMap m = row.toMap();
+        const bool comp = m[QStringLiteral("name")].toString() == QStringLiteral("Fake Compressor");
+        CHECK(m[QStringLiteral("host")].toString() == (comp ? QStringLiteral("Windows (Wine)") : QString()));
+    }
     std::printf("  catalog and chooser: ok\n");
     return 0;
 }
@@ -354,6 +361,7 @@ int parameters_and_delay() {
 
     r.inserts.openPanel(0, 0);
     CHECK(r.inserts.panelOpen() && r.inserts.panelTitle() == QStringLiteral("Fake Compressor"));
+    CHECK(r.inserts.panelSubtitle().contains(QStringLiteral(" · Windows (Wine)")));
     CHECK(r.inserts.panelParams().size() == 3);
     // A drag: changes go to the plugin while it runs, the document at the end.
     r.inserts.paramBegin();

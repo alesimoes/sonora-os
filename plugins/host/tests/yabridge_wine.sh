@@ -7,8 +7,9 @@
 # tools/test-yabridge.sh runs it in an image that has all three.
 #
 #   yabridge_wine.sh HOST DRIVER [NATIVE_BUNDLE]
-#   SONORA_YABRIDGE_TEST_VST3_DIR  holds sonora-test-state.vst3 and
-#                                  sonora-test-liar.vst3, Windows builds
+#   SONORA_YABRIDGE_TEST_VST3_DIR  holds sonora-test-state.vst3,
+#                                  sonora-test-liar.vst3 and
+#                                  sonora-test-crash.vst3, Windows builds
 #                                  (CMake makes them when mingw-w64 is found)
 #
 # Every figure it prints is a container figure (tools/build-plugins.sh).
@@ -32,7 +33,8 @@ command -v wineserver >/dev/null || skip "wineserver is not installed"
 command -v yabridgectl >/dev/null || skip "yabridgectl is not installed"
 command -v yabridge-host.exe >/dev/null || skip "yabridge-host.exe is not on PATH"
 WIN_DIR="${SONORA_YABRIDGE_TEST_VST3_DIR:-}"
-[[ -n "$WIN_DIR" && -d "$WIN_DIR/sonora-test-state.vst3" && -d "$WIN_DIR/sonora-test-liar.vst3" ]] ||
+[[ -n "$WIN_DIR" && -d "$WIN_DIR/sonora-test-state.vst3" && -d "$WIN_DIR/sonora-test-liar.vst3" &&
+  -d "$WIN_DIR/sonora-test-crash.vst3" ]] ||
   skip "no Windows builds of the test plugin (mingw-w64 not found)"
 YABRIDGE_DIR="$(dirname "$(command -v yabridgectl)")"
 
@@ -64,10 +66,17 @@ t=$(date +%s%N)
 wineboot -i >"$WORK/wineboot.log" 2>&1 || fail "wineboot -i: $(tail -3 "$WORK/wineboot.log")"
 wineserver -w
 echo "wine: $(wine --version 2>/dev/null), prefix initialised in $(ms "$t") ms"
+# No crash dialog: on a kiosk nobody is there to close it, and a Windows
+# plugin's crash must reach the host as a death or a silence, not wait on
+# a window (step 7).
+wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f >/dev/null 2>&1 ||
+  fail "could not turn Wine's crash dialog off"
+wineserver -w
 
 VST3_WIN="$WINEPREFIX/drive_c/Program Files/Common Files/VST3"
 mkdir -p "$VST3_WIN"
-cp -r "$WIN_DIR/sonora-test-state.vst3" "$WIN_DIR/sonora-test-liar.vst3" "$VST3_WIN/"
+cp -r "$WIN_DIR/sonora-test-state.vst3" "$WIN_DIR/sonora-test-liar.vst3" "$WIN_DIR/sonora-test-crash.vst3" \
+  "$VST3_WIN/"
 
 # Where yabridgectl looks by default. Not `yabridgectl set --path`: 5.1.1's
 # `set` panics in its argument parser (clap, `path_auto`).
@@ -79,7 +88,8 @@ yabridgectl sync >>"$WORK/yabridgectl.log" 2>&1 || fail "yabridgectl sync: $(tai
 echo "yabridgectl sync: $(ms "$t") ms"
 STATE="$HOME/.vst3/yabridge/sonora-test-state.vst3"
 LIAR="$HOME/.vst3/yabridge/sonora-test-liar.vst3"
-for b in "$STATE" "$LIAR"; do
+CRASH="$HOME/.vst3/yabridge/sonora-test-crash.vst3"
+for b in "$STATE" "$LIAR" "$CRASH"; do
   [[ -d "$b" ]] || fail "yabridgectl made no bundle at $b: $(tail -5 "$WORK/yabridgectl.log")"
 done
 
@@ -153,5 +163,19 @@ crash_line="$(grep -F "\"bundle\":\"$STATE\",\"format\":\"vst3\",\"usable\":fals
 [[ -n "$crash_line" ]] ||
   fail "a crashing Windows plugin was not reported unusable: $(grep -F "$STATE" "$WORK/crash.json" | cut -c1-300)"
 echo "ok 6 - a crashing Windows plugin costs its own entry: $(grep -o '"reason":"[^"]*"' <<<"$crash_line")"
+
+# 7. A Windows plugin that segfaults while its chain runs (ADR-0017 Y4): the
+# engine's side of the boundary sees the host die or go silent, drops the
+# chain without waiting on Wine, runs every callback, and names the plugin
+# (ADR-0012 §3). The probe record of a bridged plugin says it runs under
+# Wine (ADR-0017 Y2), which is what the operator's plugin list shows.
+CRASH_URI="vst3:534F4E4F524156535433544553540001"
+"$HOST" --probe "$CRASH_URI" --channels 1 >"$WORK/crash-probe.json" 2>/dev/null || true
+grep -q "\"bundle\":\"$CRASH\",\"bridge\":\"yabridge\"" "$WORK/crash-probe.json" ||
+  fail "the probe record does not say the crash class runs under Wine: $(head -c 600 "$WORK/crash-probe.json")"
+"$DRIVER" --host "$HOST" --bundle "$STATE" --bundle "$CRASH" --scenario crash_bridged \
+  --chain "$STATE_URI,$CRASH_URI" >"$WORK/crash-run.log" 2>&1 || fail "crash_bridged: $(tail -20 "$WORK/crash-run.log")"
+grep -E 'host died|stopped answering|blocks through Wine|callbacks' "$WORK/crash-run.log" | sed 's/^ */  /'
+echo "ok 7 - a Windows plugin's crash mid-chain is the engine's ordinary host fault"
 
 echo "PASS: yabridge"
