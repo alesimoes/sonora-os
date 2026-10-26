@@ -1985,6 +1985,51 @@ void the_round_trip_is_kept_for_the_machine() {
     fs::remove_all(conf_dir, ec);
 }
 
+// The server's own figure stands in for L when nothing else gave one, also
+// when the outputs get connected after the start chose (#152 N3): the
+// control thread reads it again while the source is None, and never once
+// another source gave L.
+void the_backend_figure_follows_a_late_connection() {
+    RealEngine real(fresh_dir("latency_late"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto latest = [&]() -> const api::EngineEvent* {
+        for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+            if (it->kind == api::EventKind::Latency) return &*it;
+        }
+        return nullptr;
+    };
+    CHECK(until(real, in, [&]() { return latest() != nullptr; }));
+    CHECK(latest() && api::latency_source(latest()->flags) == api::LatencySource::None &&
+          latest()->frame == 0);
+
+    real.audio().set_reported_latency(412);
+    CHECK(until(real, in, [&]() {
+        return latest() && api::latency_source(latest()->flags) == api::LatencySource::Backend &&
+               latest()->frame == 412;
+    }));
+    CHECK(real.session().input_latency() == 412);
+
+    api::CommandRequest set;
+    set.command = "latency.set";
+    set.argument = "250";
+    const uint64_t seq = real.send(set);
+    CHECK(until(real, in, [&]() {
+        for (const auto& r : in.replies) {
+            if (r.seq == seq) return r.result == DispatchResult::Ok;
+        }
+        return false;
+    }));
+    real.audio().set_reported_latency(600);
+    // Longer than the re-read's period.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    real.poll(in);
+    CHECK(real.session().input_latency() == 250);
+    CHECK(latest() && api::latency_source(latest()->flags) == api::LatencySource::Manual &&
+          latest()->frame == 250);
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -2015,6 +2060,7 @@ int main() {
     a_new_session_gets_its_own_untitled_folder();
     the_first_save_names_the_untitled_folder();
     the_round_trip_is_kept_for_the_machine();
+    the_backend_figure_follows_a_late_connection();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

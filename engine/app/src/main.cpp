@@ -122,6 +122,8 @@ bool measure_latency(sonora::Session& session, uint32_t output, uint32_t input) 
 // that applies: --input-latency (manual, for this run only),
 // --measure-latency (measured, and kept), what this machine kept for the
 // device, rate and period, the server's own report (the fallback), else 0.
+// With 0 and no source, the control server reads the report again until the
+// outputs are connected and it gives a figure.
 // Before the first take can start: L is fixed during one. False when
 // --input-latency is refused.
 bool choose_latency(sonora::Session& session, sonora::backend::AudioBackend& audio,

@@ -193,6 +193,25 @@ int test_xrun_restarts_the_ping() {
     return 0;
 }
 
+// A second measurement starts at 0 pings heard, before the audio thread
+// has taken its request: the control thread must not announce the last
+// run's count as this run's progress.
+int test_second_run_starts_at_zero_pings() {
+    Rig rig("second", 3, 128, {{2, 0, 2, 300}});
+    CHECK(rig.ok);
+    LatencyProbe& p = rig.session->latency_probe();
+    LatencyProbe::Result r{};
+    CHECK(rig.measure(probe_on(2, 2), r));
+    CHECK(r.outcome == LatencyProbe::Outcome::Measured);
+    CHECK(p.pings_heard() == 3);
+    CHECK(p.start(probe_on(2, 2)));
+    CHECK(p.pings_heard() == 0);
+    for (int b = 0; b < 4000 && !p.poll(r); ++b) rig.audio->run_blocks(1);
+    CHECK(r.outcome == LatencyProbe::Outcome::Measured && r.frames == 300);
+    CHECK(p.pings_heard() == 3);
+    return 0;
+}
+
 // No cable: the input's own signal is as loud before the impulse as after
 // it, which is no arrival. Silence is none either. Neither is a figure.
 int test_no_cable_is_no_signal() {
@@ -452,6 +471,7 @@ int test_punch_covers_its_timeline_range() {
 int main() {
     if (test_measures_the_cable()) return 1;
     if (test_xrun_restarts_the_ping()) return 1;
+    if (test_second_run_starts_at_zero_pings()) return 1;
     if (test_no_cable_is_no_signal()) return 1;
     if (test_refusals_and_cancel()) return 1;
     if (test_monitored_input_arrives_with_the_plans_compensation()) return 1;

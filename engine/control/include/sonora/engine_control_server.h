@@ -209,10 +209,12 @@ public:
         bool (*save_sync_directory)(const std::string& path) = nullptr;
         // The round trip (ADR-0019, update of 2026-10-26): where the
         // session's input_latency() came from at start, which the standing
-        // Latency event says; the file a measured or manual L is kept in
-        // for the next start, under `latency_key` (empty: kept nowhere,
-        // as for --input-latency's run); the outputs the backend was
-        // opened with, the probe's to choose from.
+        // Latency event says (None: the server's figure is read again until
+        // it gives one); the file a measured or manual L is kept in for the
+        // next start, under `latency_key` (empty: kept nowhere). A run
+        // started with --input-latency still keeps a later latency.set or
+        // measurement; only the figure the flag gave is not written. The
+        // outputs the backend was opened with, the probe's to choose from.
         api::LatencySource latency_source = api::LatencySource::None;
         std::string latency_file;
         LatencyKey latency_key;
@@ -546,6 +548,9 @@ private:
     void announce_latency();
     // The probe's progress and result, every turn.
     void follow_latency();
+    // The backend's figure, while no source gave L.
+    void follow_reported_latency();
+    uint64_t next_reported_latency_ms_ = 0;
     // L takes are compensated by may not change: a take runs or is asked for.
     bool latency_fixed(std::string& why) const;
     // A measured or manual L kept for the next start, if a file is given.
