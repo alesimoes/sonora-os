@@ -119,7 +119,9 @@ void round_trips() {
         std::string_view load;
         CHECK(wire::decode_load(back.op, file, load, error));
         CHECK(file == "/home/a/Sessions/Bass/Bass.sonora" && load == std::string("{\0}", 3));
-        CHECK(wire::decode_load(wire::encode_load("", "{}"), file, load, error));
+        // `load` views the op it was decoded from, so the op outlives it.
+        const std::string fresh = wire::encode_load("", "{}");
+        CHECK(wire::decode_load(fresh, file, load, error));
         CHECK(file.empty() && load == "{}");
         CHECK(!wire::decode_load("{\"a session\": \"from protocol 15\"}", file, load, error));
         CHECK(mentions(error, "names no session file"));
