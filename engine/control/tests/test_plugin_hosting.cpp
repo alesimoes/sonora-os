@@ -1182,7 +1182,14 @@ int scenario_flush_read_across_load(const Args& a) {
         const auto running = [&](int track) {
             return (engine.state().track(track).inserts[0].flags & api::kInsertRunning) != 0;
         };
-        check(until([&] { return running(0) && running(1); }, 20000), "both inserts run");
+        if (!until([&] { return running(0) && running(1); }, 20000)) {
+            check(false, "both inserts run");
+            std::printf("  flags: A %#x, B %#x\n", engine.state().track(0).inserts[0].flags,
+                        engine.state().track(1).inserts[0].flags);
+            for (const auto& ev : in.events)
+                if (ev.kind == api::EventKind::Notice || ev.kind == api::EventKind::PluginFault)
+                    std::printf("  event: %s\n", ev.text.c_str());
+        }
         const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
             for (const auto& r : in.replies)
                 if (r.seq == seq) out = r;
