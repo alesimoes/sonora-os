@@ -930,32 +930,48 @@ std::vector<api::EngineEvent> late_greeting(RealEngine& real, api::Inbox& in) {
             got->frames.push_back(*frame);
         },
         {});
+    const auto received = [&got]() {
+        std::vector<std::string> frames;
+        {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            frames = got->frames;
+        }
+        api::wire::Reassembler reassembler;
+        api::Inbox late;
+        std::string message, error;
+        for (const std::string& f : frames) {
+            if (reassembler.add(f, message, error) == api::wire::Reassembler::Result::Complete) {
+                api::wire::decode_into(message, late, error);
+            }
+        }
+        return late;
+    };
     // The control thread takes the attach before a request delivered after
-    // it, so once that request is answered the greeting is all there.
-    api::CommandRequest r;
-    r.command = "no.such.command";
-    const uint64_t seq = real.send(r);
-    CHECK(until(real, in, [&]() {
-        for (const auto& reply : in.replies) {
-            if (reply.seq == seq) return true;
-        }
-        return false;
-    }));
+    // it, so once that request is answered the greeting has been sent.
+    const auto round_trip = [&]() {
+        api::CommandRequest r;
+        r.command = "no.such.command";
+        const uint64_t seq = real.send(r);
+        return until(real, in, [&]() {
+            for (const auto& reply : in.replies) {
+                if (reply.seq == seq) return true;
+            }
+            return false;
+        });
+    };
+    CHECK(round_trip());
+    // Sent, but the catalog and the standing events wait behind the
+    // Snapshot, which another thread encodes; the turn that releases them
+    // writes them all, so once the catalog is here, a second round trip
+    // answers after the rest.
+    const auto end = Clock::now() + std::chrono::seconds(2);
+    while (received().catalogs.empty() && Clock::now() < end) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(!received().catalogs.empty());
+    CHECK(round_trip());
     server.detach(id);
-    std::vector<std::string> frames;
-    {
-        std::lock_guard<std::mutex> lock(got->mutex);
-        frames = got->frames;
-    }
-    api::wire::Reassembler reassembler;
-    api::Inbox late;
-    std::string message, error;
-    for (const std::string& f : frames) {
-        if (reassembler.add(f, message, error) == api::wire::Reassembler::Result::Complete) {
-            api::wire::decode_into(message, late, error);
-        }
-    }
-    return late.events;
+    return received().events;
 }
 
 std::size_t plugin_faults_in(const std::vector<api::EngineEvent>& events) {

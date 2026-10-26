@@ -1556,11 +1556,12 @@ Order and owners are in ADR-0008 §5.
 - [x] t1 latency: fix the Options::latency_file comment; an
       --input-latency run still keeps a later latency.set or measurement
       (#152 N4)
-- [ ] t1 control test flake: `late_greeting()` in test_control can see no
-      Latency event (seen once at test_control.cpp:1983 in
-      the_round_trip_is_kept_for_the_machine, 5 of 5 reruns passed);
-      suspected the greeting still held behind the new client's paced
-      Snapshot when the other client's reply arrives.
+- [x] t1 control test flake: `late_greeting()` in test_control could see
+      no Latency event (test_control.cpp:1983, once locally and once under
+      TSan in CI): the standing events wait behind the new client's
+      Snapshot, which another thread encodes, so one round trip did not
+      prove them sent. It now waits for the catalog and makes a second
+      round trip.
 - [ ] Transport locate without dropping a block.
 - [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
       period PipeWire's dummy driver skipped without an xrun, which the
