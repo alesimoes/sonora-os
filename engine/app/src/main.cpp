@@ -89,6 +89,12 @@ void measure_latency(sonora::Session& session, uint32_t output, uint32_t input) 
     while (!probe.poll(result)) {
         if (std::chrono::steady_clock::now() > deadline) {
             probe.cancel();
+            // The audio thread answers the cancel with a result; taking it
+            // returns the probe to idle, or a later start() is refused.
+            // Bounded: a server that runs no periods never answers.
+            for (int i = 0; i < 100 && !probe.poll(result); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             std::fprintf(stderr, "sonora: %s: no result; is the audio server running periods?\n",
                          which.c_str());
             return;

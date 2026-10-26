@@ -256,7 +256,8 @@ region R:
 The latency term: the take's source is shifted earlier on the timeline by
 the round-trip latency `L` (capture plus playback), so that what was played
 lines up with what was heard. In model terms N's `source_offset` is
-`(A − capture_start_position) + L`. `L` comes from the loopback measurement
+`A − capture_start_position`, which is `H`: the file is already labelled
+`P0 − L` (below), so L is in `capture_start_position` and not added again. `L` comes from the loopback measurement
 (ADR-0019): `sonora-engine --measure-latency OUT:IN`, or `--input-latency`,
 0 when neither is given; the source records the figure used
 (`latency_compensation`). The audio thread applies it at capture: the

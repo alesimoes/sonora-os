@@ -143,7 +143,7 @@ struct LoopRange {
 // a name that does not fit is cut on a UTF-8 character boundary.
 std::string take_description(int take, uint64_t track_id, const std::string& session,
                              const PunchRange* punch, const LoopRange* loop = nullptr,
-                             const std::string& session_id = {});
+                             const std::string& session_id = {}, uint32_t latency = 0);
 // The loop range a Description written by take_description() gives, read
 // from before its " session=", so a session name cannot fake one. False
 // when it is not a loop take's.
@@ -158,6 +158,10 @@ struct TakeDescription {
     bool looped = false;
     uint64_t from = 0;       // the punch or loop range [from, to)
     uint64_t to = 0;
+    // The round-trip L its file was captured with (ADR-0019), so recovery
+    // can say the file is already compensated; 0 when the field is left
+    // out, as it is for L = 0 and for a take written before it.
+    uint32_t latency = 0;
     std::string session_id;  // empty for a take written before session ids
     std::string session;
 };

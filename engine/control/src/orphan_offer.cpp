@@ -191,6 +191,7 @@ OrphansPlaced place_orphan_takes(model::Document& document, const Session& sessi
         if (t.files.empty()) {
             t.take = o.said.take;
             t.origin = o.time_reference;
+            t.latency = o.said.latency;
             if (o.said.punched) {
                 t.punched = true;
                 t.punch.capture_from = o.time_reference;
@@ -253,6 +254,7 @@ OrphansPlaced place_orphan_takes(model::Document& document, const Session& sessi
         a.source.time_reference = static_cast<int64_t>(o->time_reference);
         a.source.kind = model::SourceKind::Recorded;
         a.source.take = o->said.take;
+        a.source.latency_compensation = o->said.latency;
         adds.push_back(std::move(a));
     }
     for (std::size_t first = 0; first < adds.size(); first += model::kMaxCompoundMembers) {
