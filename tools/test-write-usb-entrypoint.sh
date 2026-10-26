@@ -709,12 +709,14 @@ inspect)
       test "$got" == "$EXPECT_MARKER"
   fi
   if [[ "${EXPECT_SESSION:-0}" == 1 ]]; then
-    # The engine creates Sessions/Untitled when it starts. Finding it in the
+    # The engine creates Sessions/ and an Untitled folder in it when it
+    # starts, and removes the folder at exit if nothing was recorded
+    # (ADR-0018 §3), so Sessions/ is what is left. Finding it in the
     # upper layer proves the boot reached the engine and that the session
     # folder ADR-0005 promises is on the stick, not in RAM.
     expect "$LABEL: the engine's session folder is on the persistence partition" \
-      "$LABEL: no Sessions/Untitled on the persistence partition" \
-      test -d "$UPPER/sonora/Sessions/Untitled"
+      "$LABEL: no Sessions/ on the persistence partition" \
+      test -d "$UPPER/sonora/Sessions"
   fi
   ;;
 

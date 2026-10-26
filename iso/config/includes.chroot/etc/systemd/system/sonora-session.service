@@ -26,7 +26,9 @@ ExecStartPre=/usr/local/bin/sonora-wait-for-audio
 # --wait-for-inputs matters at boot: PipeWire can be up before a USB
 # interface is enumerated, and a take that starts first records a silent
 # head with nothing to indicate why.
-ExecStart=/usr/local/bin/sonora-engine --dir /home/sonora/Sessions/Untitled --wait-for-inputs 60
+# Each session gets its own folder under the sessions root, a fresh
+# "Untitled <n>" at every start, renamed by its first Save (ADR-0018 §3).
+ExecStart=/usr/local/bin/sonora-engine --sessions /home/sonora/Sessions --wait-for-inputs 60
 
 # The operator must never land on a shell. If the engine dies, bring it back.
 Restart=always

@@ -109,6 +109,10 @@ public:
     // latency changes only through a new plan: after the resolver's answer
     // changes, show() the snapshot again (ADR-0012 §7.3).
     void set_chain_resolver(ChainResolver resolver) { resolver_ = std::move(resolver); }
+    // The session's folder `from` was renamed to `to` (ADR-0018 §3): each
+    // source registered under it is the same open file under its new path,
+    // so the next plan reuses its slot instead of opening it again.
+    void folder_renamed(const std::string& from, const std::string& to);
     // What the next build starts from. For tests.
     const PlanContinuity& playing_continuity() const { return playing_continuity_; }
     uint64_t plans_published() const { return published_; }

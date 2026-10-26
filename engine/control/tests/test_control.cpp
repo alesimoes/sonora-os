@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "sonora/active_folder.h"
 #include "sonora/api/conformance.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/api/wire.h"
@@ -66,13 +67,25 @@ public:
     // engine/app's does: InputsMissing when they go and when they come
     // back, the health flag and the per-track flags. It does not reconnect
     // them; the test decides when they come back.
-    RealEngine(const fs::path& dir, EngineControlServer::Options opts, bool watch_inputs = false)
+    // With `untitled`, `dir` is entered as engine/app enters the folder it
+    // made for a new session (ADR-0018 §3), through an ActiveFolder of the
+    // rig's own.
+    RealEngine(const fs::path& dir, EngineControlServer::Options opts, bool watch_inputs = false,
+               bool untitled = false)
         : dir_(dir), session_(config(dir)), audio_(backend_config()) {
         if (watch_inputs) {
             opts.housekeeping_period_ns = 20'000'000;
             opts.housekeeping = [this](EngineControlServer& server) { watch(server); };
         }
         std::string error;
+        if (untitled) {
+            std::vector<std::string> notices;
+            if (!folder_.enter(session_, dir.string(), ActiveFolder::Kind::Untitled, error,
+                               notices)) {
+                std::fprintf(stderr, "  rig: %s\n", error.c_str());
+            }
+            opts.active_folder = &folder_;
+        }
         ok_ = session_.create_dirs() &&
               audio_.open({"sonora", kTracks, 0, 48000, ""}, session_, error) &&
               audio_.activate(error) && audio_.connect_inputs_in_order() == kTracks;
@@ -182,6 +195,7 @@ private:
     fs::path dir_;
     Session session_;
     FakeBackend audio_;
+    ActiveFolder folder_;
     std::unique_ptr<InProcessEngine> engine_;
     bool ok_ = false;
 };
@@ -1727,6 +1741,144 @@ void a_load_waits_for_the_save_before_it() {
     CHECK(!slow_save_unlocked.load());
     CHECK(reply_at(saved) < reply_at(moved));
     CHECK(*real.session().folder() == second.lexically_normal().string());
+    // PR #147 review N-A: the control thread waits for the save, so the
+    // operator is told why the Load is not answered yet.
+    CHECK(std::any_of(in.events.begin(), in.events.end(), [](const api::EngineEvent& e) {
+        return e.kind == api::EventKind::Notice &&
+               e.text.find("Finishing the save before opening") != std::string::npos;
+    }));
+}
+
+// The last SessionFolder event `in` holds, or null.
+const api::EngineEvent* last_folder(const api::Inbox& in) {
+    for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+        if (it->kind == api::EventKind::SessionFolder) return &*it;
+    }
+    return nullptr;
+}
+
+bool touch(const fs::path& path) {
+    std::FILE* f = std::fopen(path.string().c_str(), "wb");
+    if (f == nullptr) return false;
+    return std::fclose(f) == 0;
+}
+
+// ADR-0018 §3: a Load with an empty path is a new session, and gets a
+// folder of its own under the sessions root; until this item it kept the
+// folder of the session before it, so two sessions shared one. A fresh
+// Untitled folder, with nothing in it yet, is the new session's as it is.
+void a_new_session_gets_its_own_untitled_folder() {
+    const fs::path root = fresh_dir("untitled_root");
+    struct Gone {
+        fs::path p;
+        ~Gone() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } gone{root};
+    const fs::path first = root / "Untitled";
+    fs::create_directories(first);
+    EngineControlServer::Options opts;
+    opts.sessions_root = root.string();
+    const model::Snapshot start = RealEngine::start_document(first);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(first, opts, false, true);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    CHECK(until(real, in, [&]() { return last_folder(in) != nullptr; }));
+    CHECK(last_folder(in) != nullptr && last_folder(in)->text == first.string() &&
+          (last_folder(in)->flags & api::kFolderUntitled) != 0);
+
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load("", bytes);
+    const auto loaded = [&](uint64_t seq) {
+        return until(real, in, [&]() {
+            return std::any_of(in.replies.begin(), in.replies.end(), [&](const api::CommandReply& r) {
+                return r.seq == seq && r.result == DispatchResult::Ok;
+            });
+        });
+    };
+    // Nothing is in it yet: the new session takes it.
+    CHECK(loaded(real.submit(load)));
+    CHECK(*real.session().folder() == first.string());
+    CHECK(!fs::exists(root / "Untitled 2"));
+
+    CHECK(touch(first / "Audio Files" / "notes.txt"));
+    CHECK(loaded(real.submit(load)));
+    const std::string second = (root / "Untitled 2").string();
+    CHECK(until(real, in, [&]() { return last_folder(in) != nullptr && last_folder(in)->text == second; }));
+    CHECK(last_folder(in) != nullptr && (last_folder(in)->flags & api::kFolderUntitled) != 0);
+    CHECK(*real.session().folder() == second);
+    CHECK(fs::exists(first / "Audio Files" / "notes.txt"));
+}
+
+// ADR-0018 §3 and PR #142 review N2: the first Save of an untitled session
+// renames its folder to the one the interface names, so the takes stay
+// beside the session file and a session called "Bass" is saved as Bass,
+// not as its folder's "Untitled".
+void the_first_save_names_the_untitled_folder() {
+    const fs::path root = fresh_dir("first_save_root");
+    struct Gone {
+        fs::path p;
+        ~Gone() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } gone{root};
+    const fs::path untitled = root / "Untitled";
+    fs::create_directories(untitled);
+    EngineControlServer::Options opts;
+    opts.sessions_root = root.string();
+    model::Snapshot start = RealEngine::start_document(untitled);
+    start.settings.name = "Bass";
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(untitled, opts, false, true);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    CHECK(touch(untitled / "Audio Files" / "notes.txt"));
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const fs::path file = root / "Bass" / "Bass.sonora";
+    api::ModelRequest save;
+    save.action = api::ModelAction::Save;
+    save.op = api::wire::encode_save(file.string(), bytes);
+    const auto saved = [&](uint64_t seq, std::string* message = nullptr) {
+        api::CommandReply got;
+        const bool answered = until(real, in, [&]() {
+            for (const api::CommandReply& r : in.replies)
+                if (r.seq == seq) got = r;
+            return got.seq == seq;
+        });
+        if (message != nullptr) *message = got.message;
+        return answered && got.result == DispatchResult::Ok;
+    };
+    std::string message;
+    CHECK(saved(real.submit(save), &message));
+    if (!message.empty()) std::printf("  save: %s\n", message.c_str());
+    const std::string named = (root / "Bass").string();
+    CHECK(until(real, in, [&]() { return last_folder(in) != nullptr && last_folder(in)->text == named; }));
+    CHECK(last_folder(in) != nullptr && (last_folder(in)->flags & api::kFolderUntitled) == 0);
+    CHECK(*real.session().folder() == named);
+    CHECK(!fs::exists(untitled));
+    CHECK(fs::is_regular_file(file));
+    CHECK(fs::exists(root / "Bass" / "Audio Files" / "notes.txt"));
+    platform::FolderLock probe;
+    CHECK(probe.acquire(named, error) == platform::FolderLock::Result::Busy);
+
+    // Named now: the next Save writes in place.
+    const std::size_t announced = std::count_if(in.events.begin(), in.events.end(), [](const auto& e) {
+        return e.kind == api::EventKind::SessionFolder;
+    });
+    CHECK(saved(real.submit(save)));
+    CHECK(std::count_if(in.events.begin(), in.events.end(), [](const auto& e) {
+              return e.kind == api::EventKind::SessionFolder;
+          }) == static_cast<std::ptrdiff_t>(announced));
+    CHECK(*real.session().folder() == named);
 }
 
 int main() {
@@ -1756,6 +1908,8 @@ int main() {
     a_take_just_punched_out_is_never_offered();
     the_session_folder_follows_the_load();
     a_load_waits_for_the_save_before_it();
+    a_new_session_gets_its_own_untitled_folder();
+    the_first_save_names_the_untitled_folder();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

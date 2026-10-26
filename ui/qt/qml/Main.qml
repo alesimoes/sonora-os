@@ -274,9 +274,11 @@ Rectangle {
         id: openPanel
         objectName: "openPanel"
         property var entries: []
+        property var recordings: []
         property bool discard: false
         function show() {
             entries = root.session.sessionList()
+            recordings = root.session.unsavedRecordingList()
             discard = false
             visible = true
         }
@@ -323,6 +325,36 @@ Rectangle {
                     fontPx: Theme.textBody
                     text: modelData.name + (modelData.current ? "  (open now)" : "")
                     onClicked: if (root.session.openSession(modelData.file, openPanel.discard)) openPanel.visible = false
+                }
+            }
+            // ADR-0018 §3: takes the engine was recording into a session
+            // never saved; opening one offers them for placing.
+            Text {
+                visible: openPanel.recordings.length > 0
+                topPadding: Theme.space2
+                text: "Unsaved recordings"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
+            }
+            Text {
+                visible: openPanel.recordings.length > 0
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: "Takes with no session file. Open one to place its takes, then save to name it."
+                color: Theme.textTertiary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            Repeater {
+                model: openPanel.recordings
+                SButton {
+                    required property var modelData
+                    objectName: "unsavedRecording"
+                    width: panelColumn.width
+                    implicitHeight: 28
+                    bold: false
+                    fontPx: Theme.textBody
+                    text: modelData.name + (modelData.current ? "  (open now)" : "")
+                    onClicked: if (root.session.openRecording(modelData.folder, openPanel.discard)) openPanel.visible = false
                 }
             }
             // Unsaved edits are lost only when the operator says so.

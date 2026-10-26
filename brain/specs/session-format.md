@@ -23,6 +23,16 @@ gets copied to another machine, and what `sonora-convert` reads and writes
 (ADR-0007 §4.5). Every path inside the session file is relative to the
 folder, so moving the folder moves the session.
 
+A session that has never been saved has a folder of its own from its first
+moment (ADR-0018 §3): `<sessions root>/Untitled/`, or the first free of
+`Untitled 2`, `Untitled 3` and so on, with no session file in it. Its first
+Save renames that folder to the one the file is saved in, when that folder
+does not exist and is on the same filesystem, so the takes are already
+beside the file; it is refused while a take is being written. An untitled
+folder with nothing in it is removed when the engine leaves it; one with
+takes and no session file is an unsaved recording, listed by File > Open
+and opened by its folder.
+
 Two rules govern the relationship between the file and the audio:
 
 1. **A closed audio file is never modified.** Not by a save, not by an edit,

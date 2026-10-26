@@ -307,6 +307,8 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
+    // A Load naming an unsaved recording's folder, and a first Save that
+    // renames an untitled folder (ADR-0018 §3), are version 20;
     // SetSettings' transport.loop_playback (transport.toggle_loop) is
     // version 17; Load's path and the session folder (ADR-0018 §2, §4) 16;
     // SetSettings' transport.count_off_bars (ADR-0020) 15;
@@ -316,21 +318,21 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 17);
+    CHECK(kProtocolVersion == 20);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
-    const std::string v16 = wire::version_mismatch(pv, lv, 16, kStateLayoutVersion);
-    CHECK(mentions(v16, "the engine speaks control protocol version 17 and this interface "
-                        "speaks version 16"));
-    CHECK(mentions(v16, "same build"));
-    // And this interface refuses a version-16 engine the same way.
-    CHECK(mentions(wire::version_mismatch(16, kStateLayoutVersion),
-                   "the engine speaks control protocol version 16 and this interface "
-                   "speaks version 17"));
+    const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
+    CHECK(mentions(v17, "the engine speaks control protocol version 20 and this interface "
+                        "speaks version 17"));
+    CHECK(mentions(v17, "same build"));
+    // And this interface refuses a version-17 engine the same way.
+    CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
+                   "the engine speaks control protocol version 17 and this interface "
+                   "speaks version 20"));
 }
 
 void domains() {

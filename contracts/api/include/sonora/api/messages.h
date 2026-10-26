@@ -75,7 +75,15 @@ namespace sonora::api {
 // 17 (transport.toggle_loop): SetSettings carries transport.loop_playback
 //   (session format 9), refused and required as 15's bars are;
 //   transport.toggle_loop takes the selection as an argument.
-constexpr uint32_t kProtocolVersion = 17;
+// 20 (ADR-0018 §3, untitled sessions; 18 and 19 are held by loop record
+//   and the track input monitor, and whichever lands later renumbers):
+//   Load's path may name a folder with no session file, an unsaved
+//   recording, entered untitled; a Load with an empty path is a new
+//   session in a fresh Untitled folder when the engine has a sessions
+//   root; the first Save of an untitled session renames its folder to the
+//   Save's, refused while a take is open or closing. A version-17 engine
+//   refuses the folder as "no session file".
+constexpr uint32_t kProtocolVersion = 20;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -167,10 +175,16 @@ enum class ModelAction : uint32_t {
     // It checks that the path is a regular file and enters its session
     // folder, "Session File Backups/" resolving to the folder above, before
     // the document swaps: lock, recovery, medium. A refusal there keeps the
-    // old session, its document and its folder. An empty path is a new
-    // session, which stays in the active folder until checklist item 4
-    // gives it its own. Refused while a take is open or closing: the take
-    // belongs to the session it was started in.
+    // old session, its document and its folder. Refused while a take is
+    // open or closing: the take belongs to the session it was started in.
+    // Since 20 (ADR-0018 §3) the path may name a folder holding no session
+    // file, an unsaved recording, which is entered untitled; one holding a
+    // session file is refused, naming it. An empty path is a new session:
+    // a fresh Untitled folder under the engine's sessions root (the active
+    // one if it is untitled and holds nothing), or, with no root (--dir
+    // runs, tests), the active folder. And a Save of an untitled session
+    // into a folder that does not exist, beside it on its filesystem,
+    // renames its folder there first, refused during a take.
     Load = 4,
     // Bring the document's plugin values up to date with the running
     // plugins (ADR-0012 §8): before File > Save, and before an insert is

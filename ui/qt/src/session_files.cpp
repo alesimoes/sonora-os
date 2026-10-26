@@ -110,6 +110,19 @@ std::vector<SessionEntry> list_sessions(const QString& dir) {
     return out;
 }
 
+std::vector<RecordingEntry> list_unsaved_recordings(const QString& dir) {
+    std::vector<RecordingEntry> out;
+    const QDir d(dir);
+    for (const QString& name : d.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        const QDir folder(d.filePath(name));
+        if (!folder.entryList({QStringLiteral("*.sonora")}, QDir::Files).isEmpty()) continue;
+        const QDir audio(folder.filePath(QStringLiteral("Audio Files")));
+        if (audio.entryList({QStringLiteral("*.wav")}, QDir::Files).isEmpty()) continue;
+        out.push_back({name, folder.absolutePath()});
+    }
+    return out;
+}
+
 // Sequence files live in the session folder whichever kept file names them.
 QString session_folder_of(const QString& file) {
     const QString dir = QFileInfo(file).absolutePath();

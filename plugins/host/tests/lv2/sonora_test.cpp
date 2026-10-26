@@ -33,7 +33,10 @@
 //                          kFloodGain every run() also schedules
 //                          kFloodMessages requests, more than the host's
 //                          request ring holds, which work() takes 1 ms
-//                          each over and leaves unanswered
+//                          each over and leaves unanswered. With
+//                          SONORA_TEST_SLOW_SAVE_MS set, its save() takes
+//                          that long, so a state read is still out while
+//                          the engine does something else
 
 #include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
@@ -240,6 +243,13 @@ const LV2_Worker_Interface kWorkerInterface = {work, work_response, end_run};
 LV2_State_Status worker_save(LV2_Handle h, LV2_State_Store_Function store, LV2_State_Handle handle, uint32_t,
                              const LV2_Feature* const*) {
     auto* p = static_cast<Plugin*>(h);
+    // save() runs on the host's control thread, never the audio thread.
+    if (const char* ms = std::getenv("SONORA_TEST_SLOW_SAVE_MS")) {
+        const long n = std::atol(ms);
+        timespec ts{n / 1000, (n % 1000) * 1000000L};
+        while (nanosleep(&ts, &ts) != 0) {
+        }
+    }
     const float g = p->applied.load(std::memory_order_relaxed) * p->restored.load(std::memory_order_relaxed);
     return store(handle, p->loaded_urid, &g, sizeof g, p->float_urid, LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
 }

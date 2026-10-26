@@ -198,6 +198,11 @@ public:
         // enters that file's folder through it. Null: the server keeps one
         // of its own, which holds no lock until the first such Load (tests).
         ActiveFolder* active_folder = nullptr;
+        // Where a new session's folder is made (engine/app's --sessions,
+        // ADR-0018 §3): a Load with an empty path enters a fresh Untitled
+        // folder there. Empty: such a Load keeps the active folder, as a
+        // --dir run and the tests have it.
+        std::string sessions_root;
         // The saver's folder sync (SessionFolder::SyncDirectory), for the
         // tests; null: the platform's.
         bool (*save_sync_directory)(const std::string& path) = nullptr;
@@ -519,8 +524,18 @@ private:
     // ModelAction::Load: refused (false, `why`) during a take, for a path
     // that is no session file, or a folder that cannot be entered; the old
     // session, document and folder then stay. `notices` are the entry's.
+    // The path names a session file, or a folder without one (an unsaved
+    // recording, entered Untitled), or nothing (a new session: a fresh
+    // Untitled folder under Options::sessions_root, ADR-0018 §3).
     bool load(ClientId from, const api::ModelRequest& m, std::string& why,
               std::vector<std::string>& notices, bool& entered);
+    // Waits for every job handed to the saver (SessionSaver::fence()),
+    // telling every client first when one is still being written, since
+    // nothing is answered meanwhile; their replies go out before the next.
+    // Before the session leaves or renames its folder. Not bounded: giving
+    // up would leave a save writing a folder whose lock is let go, and a
+    // save across volumes may take minutes (ADR-0018, Consequences).
+    void fence_saver(const char* notice);
     void offer_orphans();
     // A take recording, asked for, or closing: its files are in Audio Files
     // and no source names them yet.

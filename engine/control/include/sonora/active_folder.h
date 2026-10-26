@@ -23,7 +23,18 @@ public:
     // removes on leaving if nothing was put in it (ADR-0018 §3).
     enum class Kind { Named, Untitled };
 
+    // The first free of `root`/Untitled, Untitled 2, Untitled 3.. (the
+    // interface's unused_session_name rule), made now, `root` with it if
+    // missing. Made, not only found, so two engines never take one name.
+    // Empty, with `why`, when none could be made.
+    static std::string make_untitled(const std::string& root, std::string& why);
+    // Removes each "Untitled" or "Untitled <n>" folder of `root` that holds
+    // nothing but an empty "Audio Files/" and that no engine holds: what an
+    // engine that died left of a session nothing was put in.
+    static void remove_empty_untitled(const std::string& root);
+
     ActiveFolder();
+    // Removes the folder if it is Untitled and nothing was put in it.
     ~ActiveFolder();
     ActiveFolder(const ActiveFolder&) = delete;
     ActiveFolder& operator=(const ActiveFolder&) = delete;
@@ -46,6 +57,20 @@ public:
     // 0 when it could not be read.
     uint64_t free_bytes() const { return free_bytes_; }
     bool untitled() const { return kind_ == Kind::Untitled; }
+    // Untitled, and holding nothing but an empty "Audio Files/": a new
+    // session may have it as it is.
+    bool fresh() const;
+
+    // The first Save of an untitled session (ADR-0018 §3). Whether a Save
+    // into `folder` renames the active folder to it: the active folder is
+    // Untitled and has never held a session file, `folder` is another one
+    // and does not exist, and its parent is on the active folder's
+    // filesystem. Otherwise the Save writes where it is told.
+    bool names_on_save(const std::string& folder) const;
+    // That rename, the lock kept (it is on the folder itself), the session
+    // moved to `folder` and the folder Named from then on. Refused while a
+    // take is open or closing, naming the folder it is written to.
+    bool rename(Session& session, const std::string& folder, std::string& why);
 
 private:
     std::unique_ptr<platform::FolderLock> lock_;
