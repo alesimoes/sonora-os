@@ -224,6 +224,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_play", "transport.toggle_record", "transport.toggle_click",
         "transport.toggle_count_off", "session.place_recovered", "session.leave_recovered",
         "transport.toggle_loop", "latency.measure", "latency.cancel", "latency.set",
+        "transport.toggle_loop_record", "transport.toggle_cycle",
     };
     return ids;
 }
@@ -1329,12 +1330,16 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     }
     // As the engine's: the selection becomes the range when loop playback
-    // turns on, and turning it off keeps the range.
-    if (id == "transport.toggle_loop") {
+    // or loop record turns on, and turning either off keeps the range;
+    // Cycle sets both from loop playback's and keeps the range.
+    if (id == "transport.toggle_loop" || id == "transport.toggle_loop_record" ||
+        id == "transport.toggle_cycle") {
         model::SetSettings op{document_->current().settings};
         model::Transport& tr = op.settings.transport;
-        tr.loop_playback = !tr.loop_playback;
-        if (tr.loop_playback && !r.argument.empty()) {
+        bool& mode = id == "transport.toggle_loop_record" ? tr.loop_record : tr.loop_playback;
+        mode = !mode;
+        if (id == "transport.toggle_cycle") tr.loop_record = tr.loop_playback;
+        if (mode && id != "transport.toggle_cycle" && !r.argument.empty()) {
             uint64_t from = 0;
             uint64_t to = 0;
             if (!parse_play_range(r.argument, from, to, why)) return false;

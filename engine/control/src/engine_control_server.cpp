@@ -81,18 +81,46 @@ constexpr const char* kMeasuringRefusal =
 // While nothing gave L, how often the server's own figure is read again.
 constexpr uint64_t kReportedLatencyPeriodMs = 500;
 
-// transport.toggle_loop on the document's transport. Pro Tools loops the
-// timeline selection, so one sent as the argument becomes the range when
-// loop playback turns on; turned off, the range stays for the next time.
+// The loop mode commands on the document's transport (ADR-0016, updates
+// "the loop on switch" and "loop record as a record mode"). Pro Tools loops
+// the timeline selection, so one sent as the argument becomes the range when
+// Loop Playback or Loop Record turns on; turned off, the range stays for the
+// next time. Logic's Cycle is one switch for both and keeps the cycle area,
+// so it sets both modes from loop playback's and reads no selection.
 // FakeEngine's handler is the same.
-bool toggle_loop_playback(model::Transport& tr, const std::string& selection, std::string& why) {
-    tr.loop_playback = !tr.loop_playback;
-    if (!tr.loop_playback || selection.empty()) return true;
+bool toggle_loop_mode(const std::string& id, model::Transport& tr, const std::string& selection,
+                      std::string& why) {
+    if (id == "transport.toggle_cycle") {
+        tr.loop_playback = tr.loop_record = !tr.loop_playback;
+        return true;
+    }
+    bool& mode = id == "transport.toggle_loop_record" ? tr.loop_record : tr.loop_playback;
+    mode = !mode;
+    if (!mode || selection.empty()) return true;
     uint64_t from = 0;
     uint64_t to = 0;
     if (!parse_play_range(selection, from, to, why)) return false;
     tr.loop = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
     return true;
+}
+
+// What a loop take refuses of a transport change, or "". The wraps keep to
+// the A and B the take's files give, which recovery reads back (ADR-0016
+// §1, §5); and a mode changed under the take would have every screen show
+// one the take is not in.
+std::string loop_take_refusal(const model::Transport& was, const model::Transport& now) {
+    if (now.loop != was.loop) {
+        return "the loop range cannot change while loop record runs (from " +
+               frame_text(static_cast<uint64_t>(was.loop[0])) + " to " +
+               frame_text(static_cast<uint64_t>(was.loop[1])) + "); stop ends the take";
+    }
+    if (now.loop_playback != was.loop_playback) {
+        return "loop playback cannot change while loop record runs; stop ends the take";
+    }
+    if (now.loop_record != was.loop_record) {
+        return "the record mode cannot change while loop record runs; stop ends the take";
+    }
+    return {};
 }
 
 bool changes_arming(const std::string& id) {
@@ -330,27 +358,28 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           withdraw_orphans();
                           return true;
                       }));
-    // Pro Tools' Loop Playback, Logic's Cycle: a session setting, saved and
-    // outside undo like the range (ADR-0016, update "the loop on switch").
-    registry_.install("transport.toggle_loop",
-                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
-                          model::SetSettings op{document_->current().settings};
-                          if (!toggle_loop_playback(op.settings.transport, ctx.argument, why)) {
-                              return false;
-                          }
-                          if (session_.loop_take_running()) {
-                              why = "loop playback cannot change while loop record runs; stop "
-                                    "ends the take";
-                              return false;
-                          }
-                          model::ReplicationUpdate u;
-                          if (!document_->apply(model::Operation{std::move(op)}, u, why)) {
-                              return false;
-                          }
-                          send_update(u);
-                          show_document(false);
-                          return true;
-                      }));
+    // Pro Tools' Loop Playback and Loop Record, Logic's Cycle: session
+    // settings, saved and outside undo like the range (ADR-0016, updates
+    // "the loop on switch" and "loop record as a record mode").
+    for (const char* id :
+         {"transport.toggle_loop", "transport.toggle_loop_record", "transport.toggle_cycle"}) {
+        registry_.install(
+            id, ExplainingHandler([this, id = std::string(id)](const CommandContext& ctx,
+                                                               std::string& why) {
+                const model::SessionSettings& was = document_->current().settings;
+                model::SetSettings op{was};
+                if (!toggle_loop_mode(id, op.settings.transport, ctx.argument, why)) return false;
+                if (session_.loop_take_running()) {
+                    why = loop_take_refusal(was.transport, op.settings.transport);
+                    if (!why.empty()) return false;
+                }
+                model::ReplicationUpdate u;
+                if (!document_->apply(model::Operation{std::move(op)}, u, why)) return false;
+                send_update(u);
+                show_document(false);
+                return true;
+            }));
+    }
     install_latency_commands();
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
@@ -1260,13 +1289,7 @@ std::string EngineControlServer::loop_refusal(const model::Snapshot& doc,
                                               model::MemberRef member) const {
     const auto* set = member.get_if<model::SetSettings>();
     if (set == nullptr || !session_.loop_take_running()) return {};
-    const auto& was = doc.settings.transport.loop;
-    if (set->settings.transport.loop == was) return {};
-    // The wraps keep to the A and B the take's files give, which recovery
-    // reads back (ADR-0016 §1, §5).
-    return "the loop range cannot change while loop record runs (from " +
-           frame_text(static_cast<uint64_t>(was[0])) + " to " +
-           frame_text(static_cast<uint64_t>(was[1])) + "); stop ends the take";
+    return loop_take_refusal(doc.settings.transport, set->settings.transport);
 }
 
 std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {

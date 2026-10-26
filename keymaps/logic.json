@@ -5,7 +5,10 @@
     "space": "transport.toggle_play",
     "r": "transport.record",
     "return": "transport.return_to_zero",
-    "c": "transport.toggle_loop",
+    "c": {
+      "command": "transport.toggle_cycle",
+      "comment": "Toggle Cycle Mode: loop playback and loop record together, over the cycle area already set; the Edit selection is not sent."
+    },
     "k": {
       "command": "transport.toggle_click",
       "verified": false,

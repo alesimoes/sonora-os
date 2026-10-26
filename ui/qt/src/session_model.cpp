@@ -585,6 +585,12 @@ bool SessionModel::anySolo() const {
 // selection, and a range kept with the mode off does not loop.
 bool SessionModel::loopOn() const { return ctl_.snapshot().settings.transport.loop_playback; }
 
+// Pro Tools' Loop Record, apart from Loop Playback: what makes Record a
+// loop take.
+bool SessionModel::loopRecordOn() const {
+    return ctl_.snapshot().settings.transport.loop_record;
+}
+
 bool SessionModel::punchOn() const {
     const auto& p = ctl_.snapshot().settings.transport.punch;
     return p[1] > p[0];

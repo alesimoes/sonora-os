@@ -207,7 +207,8 @@ this way, and the click must put its downbeats in the same places:
   "post_roll": 48000,
   "punch_crossfade": 240,
   "count_off_bars": 2,
-  "loop_playback": false
+  "loop_playback": false,
+  "loop_record": false
 }
 ```
 
@@ -218,11 +219,15 @@ ADR-0020 §3) is how many bars of click a take started with the transport
 stopped plays first when count-off is on, at the meter and tempo where it
 starts: 1 to 99, default 2. Whether the click and the count-off are on is
 engine state, not saved yet. `loop_playback` (version 9, ADR-0016 update
-"the loop on switch") is Pro Tools' Loop Playback and Logic's Cycle: with it
-on, a roll wraps from the end of `loop` to its start and a take is a loop
-take; with it off, `loop` is kept and does nothing. Default `false`, as in
-both applications. `transport.toggle_loop` flips it, and turning it on with
-a timeline selection makes the selection `loop`. Transport settings are saved
+"the loop on switch") is Pro Tools' Loop Playback: with it on, a roll wraps
+from the end of `loop` to its start; with it off, `loop` is kept and the roll
+plays through it. `loop_record` (version 10, ADR-0016 update "loop record as
+a record mode") is Pro Tools' Loop Record, a record mode apart from it: with
+it on and `loop` set, a take is a loop take, whatever `loop_playback` is.
+Logic's Cycle is both on together (`transport.toggle_cycle`). Both default to
+`false`, as in both applications. `transport.toggle_loop` and
+`transport.toggle_loop_record` flip one each, and turning one on with a
+timeline selection makes the selection `loop`. Transport settings are saved
 but are not undoable.
 
 ### `monitor_bus`: Phase 2's fixed stereo bus
@@ -869,6 +874,13 @@ it and saves as `v8-count-off.sonora`, byte for byte.
 whenever one was set, and `false` otherwise. Nothing else changes. A
 version 8 file cannot carry the key. The frozen v8 fixture (no loop range)
 loads through it and saves as `v9-loop-playback.sonora`, byte for byte.
+
+**v9→v10 (loop record, ADR-0016 update "loop record as a record mode"):**
+`transport` gains `"loop_record"`, after `loop_playback`, with
+`loop_playback`'s value, since a version 9 take was a loop take exactly when
+loop playback was on. Nothing else changes. A version 9 file cannot carry the
+key. The frozen v9 fixture loads through it and saves as
+`v10-loop-record.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

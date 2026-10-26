@@ -340,10 +340,11 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // EventKind::Latency (ADR-0019, update of 2026-10-26) is version 22;
+    // SetSettings' transport.loop_record (transport.toggle_loop_record) is
+    // version 23; EventKind::Latency (ADR-0019, update of 2026-10-26) 22;
     // a Load naming an unsaved recording's folder, and a first Save that
-    // renames an untitled folder (ADR-0018 §3), 20;
-    // SetSettings' transport.loop_playback (transport.toggle_loop) 17;
+    // renames an untitled folder (ADR-0018 §3), 20 (18, 19 and 21 were
+    // never used); SetSettings' transport.loop_playback (transport.toggle_loop) 17;
     // Load's path and the session folder (ADR-0018 §2, §4) 16;
     // SetSettings' transport.count_off_bars (ADR-0020) 15;
     // PluginInfo::bridge (ADR-0017 Y2) 14; the recovery offer
@@ -352,7 +353,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 22);
+    CHECK(kProtocolVersion == 23);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -360,13 +361,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 22 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 23 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 22"));
+                   "speaks version 23"));
 }
 
 void domains() {

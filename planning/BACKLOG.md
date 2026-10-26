@@ -84,6 +84,22 @@ playback can follow edits; it is in flight.
          gates the roll's loop and loop record; turned on with the Edit
          selection, the selection becomes the range (ADR-0016, update "the
          loop on switch"). The Transport window's Loop button lights from it.
+       Loop record mode (`t1-toggle-loop-record`): `transport.toggle_loop_record`
+         (Pro Tools' Option+L) flips `transport.loop_record` (session format
+         10, v9 opens it as loop playback was; protocol 23), the only gate
+         for a loop take; loop playback gates the roll alone. Logic's C is
+         `transport.toggle_cycle`, both modes together over the kept range,
+         with no selection sent. A loop take refuses any change to the range
+         or either mode, from a command or a SetSettings. Transport window:
+         Loop and Loop Rec, or one Cycle button (ADR-0016, update "loop
+         record as a record mode").
+       - [ ] engine.transport.loop: with loop playback on, a new Edit
+         selection (PT profile) becomes the loop range, as Pro Tools' loop
+         follows the selection. Today the range moves only when a mode turns
+         on, and play A-B over a different kept range locates to A less the
+         pre-roll, stops at B plus the post-roll and wraps at the kept range's
+         B in between: the selection's play and the kept loop disagree. Needs
+         a choice of which wins, per profile (Logic plays the cycle area).
        Remain: pre-roll for a plain take. Input monitoring
          with latency compensation: ADR-0019, `t1-input-monitor`.
        - [ ] Loop record: a track that opens late and loses every later

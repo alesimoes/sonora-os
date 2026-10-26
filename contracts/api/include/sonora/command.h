@@ -90,6 +90,14 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // Optional argument: the selection, as transport.play's, which
         // becomes the loop range when loop playback turns on.
         {"transport.toggle_loop", CommandTarget::None, "Toggle loop playback", true},
+        // Pro Tools' Loop Record, a record mode apart from Loop Playback; the
+        // same optional selection argument (ADR-0016, update "loop record as
+        // a record mode").
+        {"transport.toggle_loop_record", CommandTarget::None, "Toggle loop record", true},
+        // Logic's Cycle: loop playback and loop record together, over the
+        // range already set.
+        {"transport.toggle_cycle", CommandTarget::None,
+         "Toggle cycle: loop playback and loop record together"},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},

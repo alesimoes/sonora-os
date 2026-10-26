@@ -75,19 +75,24 @@ namespace sonora::api {
 // 17 (transport.toggle_loop): SetSettings carries transport.loop_playback
 //   (session format 9), refused and required as 15's bars are;
 //   transport.toggle_loop takes the selection as an argument.
-// 20 (ADR-0018 §3, untitled sessions; 18 and 19 are held by loop record
-//   and the track input monitor, and whichever lands later renumbers):
-//   Load's path may name a folder with no session file, an unsaved
-//   recording, entered untitled; a Load with an empty path is a new
-//   session in a fresh Untitled folder when the engine has a sessions
-//   root; the first Save of an untitled session renames its folder to the
-//   Save's, refused while a take is open or closing. A version-17 engine
-//   refuses the folder as "no session file".
-// 22 (ADR-0019, update of 2026-10-26; 21 is loop record's in flight, and
-//   whichever merges later renumbers): EventKind::Latency, whose flags are
-//   a LatencySource and a LatencyStatus; a version-20 peer's decoder
-//   refuses the kind.
-constexpr uint32_t kProtocolVersion = 22;
+// 20 (ADR-0018 §3, untitled sessions; 19 was never used: the track input
+//   monitor, #148, merged at 17 without a bump, and 18, held for loop
+//   record, was renumbered when it landed later): Load's path may name a
+//   folder with no session file, an unsaved recording, entered untitled; a
+//   Load with an empty path is a new session in a fresh Untitled folder
+//   when the engine has a sessions root; the first Save of an untitled
+//   session renames its folder to the Save's, refused while a take is open
+//   or closing. A version-17 engine refuses the folder as "no session file".
+// 22 (ADR-0019, update of 2026-10-26; 21 was never used: loop record took
+//   23 when it merged after this): EventKind::Latency, whose flags are a
+//   LatencySource and a LatencyStatus; a version-20 peer's decoder refuses
+//   the kind.
+// 23 (transport.toggle_loop_record): SetSettings carries
+//   transport.loop_record (session format 10), refused and required as 17's
+//   loop_playback is; transport.toggle_loop_record, transport.toggle_cycle
+//   (the selection as an optional argument, the range when none is set) and
+//   transport.cycle_selection (the selection, required).
+constexpr uint32_t kProtocolVersion = 23;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

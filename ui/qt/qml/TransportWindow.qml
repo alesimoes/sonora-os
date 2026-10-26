@@ -127,10 +127,24 @@ Rectangle {
                 active: win.transport.recording
                 activeColour: Theme.record
             }
+            // Pro Tools: Loop Playback and Loop Record, two modes. Logic:
+            // Cycle, one switch for both, so one button.
             TransportKey {
+                objectName: "transportLoopPlayback"
                 shell: win.shell
-                text: "Loop"; command: "transport.toggle_loop"; implicitWidth: 48; fontPx: Theme.textSmall
+                text: win.shell.cycleMode ? "Cycle" : "Loop"
+                command: win.shell.cycleMode ? "transport.toggle_cycle" : "transport.toggle_loop"
+                implicitWidth: 48; fontPx: Theme.textSmall
                 active: win.session.loopOn
+            }
+            TransportKey {
+                objectName: "transportLoopRecord"
+                visible: !win.shell.cycleMode
+                shell: win.shell
+                text: "Loop Rec"; command: "transport.toggle_loop_record"
+                implicitWidth: 64; fontPx: Theme.textSmall
+                active: win.session.loopRecordOn
+                activeColour: Theme.record
             }
         }
 
@@ -290,14 +304,15 @@ Rectangle {
                 Value { text: win.transport.postRollText }
             }
             Column {
-                Caption { text: "Loop" }
+                Caption { text: win.shell.cycleMode ? "Cycle" : "Loop" }
                 Value {
                     objectName: "transportLoop"
                     text: win.transport.rangeText(win.transport.loopStart, win.transport.loopEnd,
                                                   win.session.mainCounterFormat)
-                    // A range kept with loop playback off is there, not looping.
+                    // A range kept with both loop modes off is there, unused.
                     color: !win.transport.loopSet ? Theme.textTertiary
-                         : win.session.loopOn ? Theme.text : Theme.textSecondary
+                         : win.session.loopOn || win.session.loopRecordOn ? Theme.text
+                         : Theme.textSecondary
                 }
             }
             Column {

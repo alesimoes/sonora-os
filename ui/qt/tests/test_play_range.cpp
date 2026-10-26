@@ -12,9 +12,12 @@
 //   - no selection, or an empty one, sends no argument;
 //   - an argument the caller gave is left alone;
 //   - a reconnect to another build follows its Hello's capabilities;
-//   - transport.toggle_loop (Pro Tools' Ctrl+Shift+L, Logic's C) carries
-//     the selection too, with no capability asked, and the fake makes it
-//     the loop range as it turns loop playback on.
+//   - transport.toggle_loop (Pro Tools' Ctrl+Shift+L) and
+//     transport.toggle_loop_record (Pro Tools' Option+L) carry the selection
+//     too, with no capability asked, and the fake makes it the loop range as
+//     it turns the mode on;
+//   - Logic's C is transport.toggle_cycle, which sends no selection: Cycle
+//     turns on over the cycle area already set, both modes together.
 #include <QGuiApplication>
 #include <cstdio>
 #include <string>
@@ -163,6 +166,74 @@ int test_toggle_loop(const char* profile, const char* key) {
     return 0;
 }
 
+// Pro Tools' Loop Record: Option+L, a record mode apart from Loop Playback,
+// over the selection as Loop Playback's.
+int test_toggle_loop_record() {
+    api::testing::FakeEngine::Config cfg;
+    cfg.tracks = 4;
+    api::testing::FakeEngine fake(cfg);
+    ControlAdapter engine(fake);
+    std::string err;
+    CHECK(engine.connect(err));
+    KeyRouter router(load("protools.json"), engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    router.setPlayRange([]() { return std::string("2000-3000"); });
+    router.prepare(qt_device_chords(true));
+    RouteResult r = router.route(chord("alt+l"));
+    CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.toggle_loop_record");
+    CHECK(r.ctx.argument == "2000-3000");
+    std::vector<CommandOutcome> replies;
+    engine.poll(replies);
+    CHECK(replies.size() == 1 && replies[0].result == DispatchResult::Ok);
+    const auto& tr = fake.document().settings.transport;
+    CHECK(tr.loop_record && !tr.loop_playback && tr.loop[0] == 2000 && tr.loop[1] == 3000);
+    return 0;
+}
+
+// Logic's C keeps the cycle area: the selection is not sent, and Cycle turns
+// loop playback and loop record on together over the range already set.
+int test_cycle_keeps_the_range() {
+    api::testing::FakeEngine::Config cfg;
+    cfg.tracks = 4;
+    api::testing::FakeEngine fake(cfg);
+    ControlAdapter engine(fake);
+    std::string err;
+    CHECK(engine.connect(err));
+    std::vector<std::string> args;
+    KeyRouter router(load("logic.json"), engine.info().implemented_commands,
+                     [&engine, &args](const std::string& c, const CommandContext& ctx) {
+                         args.push_back(ctx.argument);
+                         return engine.send(c, ctx);
+                     });
+    router.setPlayRange([]() { return std::string("2000-3000"); });
+    router.prepare(qt_device_chords(true));
+    // A cycle area at 9000-12000, set as a Pro Tools selection would.
+    CommandContext set;
+    set.argument = "9000-12000";
+    engine.send("transport.toggle_loop", set);
+    engine.send("transport.toggle_loop", CommandContext{});
+    std::vector<CommandOutcome> replies;
+    engine.poll(replies);
+    CHECK(replies.size() == 2);
+
+    RouteResult r = router.route(chord("c"));
+    CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.toggle_cycle");
+    CHECK(r.ctx.argument.empty());
+    CHECK(args.size() == 1 && args[0].empty());
+    replies.clear();
+    engine.poll(replies);
+    CHECK(replies.size() == 1 && replies[0].result == DispatchResult::Ok);
+    const auto& tr = fake.document().settings.transport;
+    CHECK(tr.loop_playback && tr.loop_record);
+    CHECK(tr.loop[0] == 9000 && tr.loop[1] == 12000);
+    // The Transport window shows one Cycle button for this profile.
+    ShellModel shell(engine, router);
+    CHECK(shell.cycleMode());
+    return 0;
+}
+
 // ShellModel hands each new Hello's capabilities to the router.
 int test_follows_reconnect() {
     test::RecordingAdapter engine(4, api::testing::FakeEngine::engine_commands());
@@ -173,6 +244,8 @@ int test_follows_reconnect() {
     router.setPlayRange([]() { return std::string("2000-3000"); });
     router.prepare(qt_device_chords(true));
     ShellModel shell(engine, router);
+    // Loop and Loop Rec, two buttons, in Pro Tools' Transport window.
+    CHECK(!shell.cycleMode());
     CHECK(router.engineCapabilities().empty());
     CHECK(router.route(chord("space")).ctx.argument.empty());
 
@@ -194,7 +267,9 @@ int main(int argc, char** argv) {
     if (test_fake() != 0) return 1;
     if (test_follows_reconnect() != 0) return 1;
     if (test_toggle_loop("protools.json", "ctrl+shift+l") != 0) return 1;
-    if (test_toggle_loop("logic.json", "c") != 0) return 1;
+    if (test_toggle_loop("protools.json", "numpad_4") != 0) return 1;
+    if (test_toggle_loop_record() != 0) return 1;
+    if (test_cycle_keeps_the_range() != 0) return 1;
     std::printf("ui play range: ok\n");
     return 0;
 }

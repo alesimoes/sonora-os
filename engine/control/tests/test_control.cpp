@@ -719,7 +719,7 @@ void loop_record_on_the_real_engine() {
     const auto settings = [&](std::array<model::Frames, 2> loop, model::Frames post_roll) {
         model::SessionSettings st = replica.current().settings;
         st.transport.loop = loop;
-        st.transport.loop_playback = true;
+        st.transport.loop_record = true;
         st.transport.pre_roll = 0;
         st.transport.post_roll = post_roll;
         api::ModelRequest m;
@@ -760,14 +760,38 @@ void loop_record_on_the_real_engine() {
     load.op = api::wire::encode_load("", load.op);
     CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Failed);
     CHECK(r.message.find("while loop record runs") != std::string::npos);
-    // Nor can loop playback turn off under the take's wraps.
-    api::CommandRequest toggle_loop;
-    toggle_loop.command = "transport.toggle_loop";
-    CHECK(reply_to(real.send(toggle_loop), r) && r.result == DispatchResult::Failed);
+    // Nor can either loop mode change under the take's wraps, by a command
+    // or by a SetSettings: every screen would show a mode the take is not in.
+    for (const char* id :
+         {"transport.toggle_loop", "transport.toggle_loop_record", "transport.toggle_cycle"}) {
+        api::CommandRequest toggle;
+        toggle.command = id;
+        CHECK(reply_to(real.send(toggle), r) && r.result == DispatchResult::Failed);
+        CHECK(r.message.find("cannot change while loop record runs") != std::string::npos);
+    }
+    const auto modes = [&](bool playback, bool record) {
+        model::SessionSettings st = replica.current().settings;
+        st.transport.loop_playback = playback;
+        st.transport.loop_record = record;
+        api::ModelRequest m;
+        m.action = api::ModelAction::Apply;
+        std::string e;
+        model::encode_operation(model::SetSettings{st}, m.op, e);
+        api::CommandReply reply;
+        reply_to(real.submit(m), reply);
+        return reply;
+    };
+    r = modes(true, true);
+    CHECK(r.result == DispatchResult::Failed);
     CHECK(r.message.find("loop playback cannot change while loop record runs") !=
           std::string::npos);
+    r = modes(false, false);
+    CHECK(r.result == DispatchResult::Failed);
+    CHECK(r.message.find("the record mode cannot change while loop record runs") !=
+          std::string::npos);
     feed();
-    CHECK(replica.current().settings.transport.loop_playback);
+    CHECK(!replica.current().settings.transport.loop_playback);
+    CHECK(replica.current().settings.transport.loop_record);
 
     // Past B, so the take has a whole pass.
     CHECK(until(real, in, [&]() {

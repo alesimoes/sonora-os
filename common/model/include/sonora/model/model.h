@@ -731,10 +731,16 @@ struct Transport {
     // so turning it off keeps the range. Off in a new session, as in both
     // (ADR-0016, update "the loop on switch"). It gates loop record too.
     bool loop_playback = false;
+    // Pro Tools' Loop Record, a record mode apart from Loop Playback: a take
+    // is a loop take only with it on and a range set. Logic's Cycle sets
+    // both together (transport.toggle_cycle). ADR-0016, update "loop record
+    // as a record mode".
+    bool loop_record = false;
     bool operator==(const Transport& o) const {
         return loop == o.loop && punch == o.punch && pre_roll == o.pre_roll &&
                post_roll == o.post_roll && punch_crossfade == o.punch_crossfade &&
-               count_off_bars == o.count_off_bars && loop_playback == o.loop_playback;
+               count_off_bars == o.count_off_bars && loop_playback == o.loop_playback &&
+               loop_record == o.loop_record;
     }
 };
 inline constexpr std::uint32_t kMaxCountOffBars = 99;

@@ -281,6 +281,48 @@ Taken on the recommended defaults (`transport.toggle_loop`).
   as a range change is.
 - **Migration v8 to v9:** a file with a loop range opens with the flag on,
   so it plays as it did; one without opens with it off.
+- "It gates both loops" is superseded for takes by the next update: loop
+  record has its own mode.
+
+## Update, 2026-10-26: loop record as a record mode
+
+Taken on the recommended default (`transport.toggle_loop_record`, the
+follow-ups to #144's review).
+
+- **A per-session setting, not a per-profile behaviour.** The engine never
+  knows which profile the interface runs, and a session must record the
+  same whichever profile opens it, so the difference lives in the document
+  and in which command each profile's key sends. `transport.loop_record`,
+  saved and outside undo beside `loop_playback` (session format 10,
+  protocol 23), off in a new session: Pro Tools' Loop Record (Options >
+  Loop Record, Option+L), a record mode apart from Loop Playback.
+- **Loop record alone makes a loop take.** `document_loop()` reads
+  `loop_record` and a range; `loop_playback` gates only the roll's wrap
+  (`PlaybackController::show()`). So in Pro Tools, Loop Playback on to
+  audition a section and Record gives a straight take through it; Loop
+  Record on gives a loop take, with Loop Playback on or off. C3 (loop and
+  punch refused together) applies only with loop record on.
+- **Three commands, one handler.** `transport.toggle_loop` flips loop
+  playback, `transport.toggle_loop_record` flips loop record; each turned
+  on with the selection as its `A-B` argument makes it the range, as Pro
+  Tools loops the selection. `transport.toggle_cycle`, Logic's C, sets both
+  modes together to the opposite of loop playback and never moves the
+  range: Logic's Cycle is one switch for both and keeps the cycle area.
+  The Qt router attaches the selection to the first two only.
+- **Frozen while loop record runs.** A loop take refuses any change to the
+  range, to loop playback or to loop record, from the commands or from a
+  `SetSettings` (`loop_take_refusal()`), so no screen shows a mode the
+  take is not in.
+- **The Transport window** shows Loop and Loop Rec in a profile that binds
+  no `transport.toggle_cycle`, and one Cycle button in one that does.
+- **Migration v9 to v10:** loop record opens as loop playback was, since a
+  version 9 take was a loop take exactly when loop playback was on.
+- Not done here: in Pro Tools the loop follows the Edit selection while
+  Loop Playback is on; here the range moves only when a mode turns on.
+  Recorded in the backlog under `engine.transport.loop`.
+- Unverified: whether Pro Tools turns Loop Playback off when Loop Record is
+  turned on (they are kept independent here), and Option+L's quotation in
+  Avid's guide (bound `"verified": false`).
 
 ## Alternatives rejected
 
