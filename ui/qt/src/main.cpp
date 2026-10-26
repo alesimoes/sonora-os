@@ -371,6 +371,9 @@ int main(int argc, char** argv) {
     } else {
         api::testing::FakeEngine::Config fake_config;
         fake_config.tracks = static_cast<uint32_t>(a.opt.tracks);
+        // A loopback cable, out_2 into the last input, so the Latency window
+        // measures something here as on a patched interface.
+        fake_config.latency_cable = {2, fake_config.tracks, 287};
         auto f = std::make_unique<api::testing::FakeEngine>(fake_config);
         fake = f.get();
         backend = std::move(f);

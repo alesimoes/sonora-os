@@ -181,6 +181,39 @@ void round_trips() {
         wire::encode(e, bytes);
         CHECK(!wire::decode(bytes, back, error));
         CHECK(mentions(error, "flags"));
+        // The round trip (protocol 22): L, its source and the probe's
+        // status, and the outputs the probe may use.
+        e.kind = EventKind::Latency;
+        e.frame = 287;
+        e.insert = 2;
+        e.text = "287 frames (5.98 ms) over 3 pings";
+        e.flags = latency_flags(LatencySource::Measured, LatencyStatus::Measured);
+        wire::encode(e, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.kind == EventKind::Latency && back.frame == 287 && back.insert == 2 &&
+              back.text == e.text && latency_source(back.flags) == LatencySource::Measured &&
+              latency_status(back.flags) == LatencyStatus::Measured);
+        e.flags = latency_flags(LatencySource::Backend, LatencyStatus::Cancelled);
+        wire::encode(e, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(latency_source(back.flags) == LatencySource::Backend &&
+              latency_status(back.flags) == LatencyStatus::Cancelled);
+        // A source or a status this version does not define is refused.
+        e.flags = static_cast<uint32_t>(kLastLatencySource) + 1;
+        wire::encode(e, bytes);
+        CHECK(!wire::decode(bytes, back, error));
+        CHECK(mentions(error, "latency"));
+        e.flags = (kLastLatencyStatus + 1) << 8;
+        wire::encode(e, bytes);
+        CHECK(!wire::decode(bytes, back, error));
+        e.flags = 1u << 16;
+        wire::encode(e, bytes);
+        CHECK(!wire::decode(bytes, back, error));
+        // A folder's flags mean nothing on another kind, and the reverse.
+        e.kind = EventKind::SessionFolder;
+        e.flags = latency_flags(LatencySource::Manual, LatencyStatus::Measuring);
+        wire::encode(e, bytes);
+        CHECK(!wire::decode(bytes, back, error));
     }
     {
         ModelUpdate u;
@@ -307,10 +340,11 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // A Load naming an unsaved recording's folder, and a first Save that
-    // renames an untitled folder (ADR-0018 §3), are version 20;
-    // SetSettings' transport.loop_playback (transport.toggle_loop) is
-    // version 17; Load's path and the session folder (ADR-0018 §2, §4) 16;
+    // EventKind::Latency (ADR-0019, update of 2026-10-26) is version 22;
+    // a Load naming an unsaved recording's folder, and a first Save that
+    // renames an untitled folder (ADR-0018 §3), 20;
+    // SetSettings' transport.loop_playback (transport.toggle_loop) 17;
+    // Load's path and the session folder (ADR-0018 §2, §4) 16;
     // SetSettings' transport.count_off_bars (ADR-0020) 15;
     // PluginInfo::bridge (ADR-0017 Y2) 14; the recovery offer
     // (engine.record.orphan_offer) 13; Hello's capabilities 12; Save
@@ -318,7 +352,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 20);
+    CHECK(kProtocolVersion == 22);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -326,13 +360,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 20 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 22 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 20"));
+                   "speaks version 22"));
 }
 
 void domains() {
@@ -345,7 +379,7 @@ void domains() {
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
                                id == "app.quit" || id == "window.transport" ||
                                id == "window.undo_history" ||
-                               id == "window.memory_locations";
+                               id == "window.memory_locations" || id == "window.latency";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
             ++failures;

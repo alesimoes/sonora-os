@@ -203,6 +203,10 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
             case api::EventKind::SessionFolder:
                 // This interface saves nothing, so it has no use for where.
                 break;
+            case api::EventKind::Latency:
+                // Measured and set from the Qt interface's Latency window or
+                // --measure-latency; the engine says L at start on stderr.
+                break;
         }
     }
     // Model updates are for an editor's replica; this interface draws none.

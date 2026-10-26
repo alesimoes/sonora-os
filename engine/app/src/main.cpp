@@ -35,6 +35,7 @@
 #include "sonora/exit_watchdog.h"
 #include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
+#include "sonora/machine_latency.h"
 #include "sonora/memory_lock.h"
 #include "sonora/platform/file.h"
 #include "sonora/platform/ipc.h"
@@ -66,9 +67,9 @@ std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
 
 // --measure-latency: the round trip from out_<output> to in_<input>, which
 // the operator has cabled together, before anything records (ADR-0019 §4).
-// Measured, it is the session's L; otherwise L stays as it was and the
-// operator is told why. 1-based, as the ports are named.
-void measure_latency(sonora::Session& session, uint32_t output, uint32_t input) {
+// Measured, it is the session's L (true); otherwise L stays as it was and
+// the operator is told why. 1-based, as the ports are named.
+bool measure_latency(sonora::Session& session, uint32_t output, uint32_t input) {
     sonora::LatencyProbe& probe = session.latency_probe();
     sonora::LatencyProbe::Settings settings;
     settings.output = output - 1;
@@ -79,7 +80,7 @@ void measure_latency(sonora::Session& session, uint32_t output, uint32_t input) 
     std::string error;
     if (!probe.start(settings, &error)) {
         std::fprintf(stderr, "sonora: %s: %s\n", which.c_str(), error.c_str());
-        return;
+        return false;
     }
     // Two windows a ping, and three more for each restart it allows, then
     // two seconds for the server to start the periods.
@@ -99,22 +100,92 @@ void measure_latency(sonora::Session& session, uint32_t output, uint32_t input) 
             }
             std::fprintf(stderr, "sonora: %s: no result; is the audio server running periods?\n",
                          which.c_str());
-            return;
+            return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     const std::string said = sonora::LatencyProbe::describe(result, rate);
     if (result.outcome != sonora::LatencyProbe::Outcome::Measured) {
-        std::fprintf(stderr, "sonora: %s: %s. Takes are compensated by %u frames.\n", which.c_str(),
-                     said.c_str(), session.input_latency());
-        return;
+        std::fprintf(stderr, "sonora: %s: %s.\n", which.c_str(), said.c_str());
+        return false;
     }
     if (!session.set_input_latency(result.frames, &error)) {
         std::fprintf(stderr, "sonora: %s: %s: %s\n", which.c_str(), said.c_str(), error.c_str());
-        return;
+        return false;
     }
     std::fprintf(stderr, "sonora: %s: %s. Takes are compensated by it.\n", which.c_str(),
                  said.c_str());
+    return true;
+}
+
+// Where L comes from at start (ADR-0019, update of 2026-10-26), the first
+// that applies: --input-latency (manual, for this run only),
+// --measure-latency (measured, and kept), what this machine kept for the
+// device, rate and period, the server's own report (the fallback), else 0.
+// Before the first take can start: L is fixed during one. False when
+// --input-latency is refused.
+bool choose_latency(sonora::Session& session, sonora::backend::AudioBackend& audio,
+                    long input_latency, uint32_t probe_output, uint32_t probe_input,
+                    bool latency_file_given, sonora::EngineControlServer::Options& control) {
+    using sonora::api::LatencySource;
+    // The period keys the file, and the server says it only once its
+    // periods run.
+    for (int i = 0; i < 100 && audio.buffer_frames() == 0 && !audio.fatal(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    control.latency_key.device = audio.capture_device();
+    control.latency_key.rate = session.config().sample_rate;
+    control.latency_key.period = audio.buffer_frames();
+    if (!latency_file_given) {
+        control.latency_file = sonora::machine_latency_file(sonora::platform::user_config_dir());
+    }
+    control.latency_outputs = std::max<uint32_t>(2, probe_output);
+    if (input_latency >= 0) {
+        std::string why;
+        if (!session.set_input_latency(
+                static_cast<uint32_t>(std::min<long>(input_latency, 0xFFFFFFFFL)), &why)) {
+            std::fprintf(stderr, "sonora: --input-latency: %s\n", why.c_str());
+            return false;
+        }
+        control.latency_source = LatencySource::Manual;
+        if (probe_output != 0) {
+            std::fprintf(stderr, "sonora: --measure-latency: not run, --input-latency gives L\n");
+        }
+        return true;
+    }
+    if (probe_output != 0 && !audio.fatal() && measure_latency(session, probe_output, probe_input)) {
+        control.latency_source = LatencySource::Measured;
+        std::string why;
+        if (!control.latency_file.empty() &&
+            !sonora::save_machine_latency(control.latency_file, control.latency_key,
+                                          {session.input_latency(), LatencySource::Measured},
+                                          why)) {
+            std::fprintf(stderr, "sonora: the round trip is not kept for the next start: %s\n",
+                         why.c_str());
+        }
+        return true;
+    }
+    sonora::KeptLatency kept;
+    if (sonora::load_machine_latency(control.latency_file, control.latency_key, kept) &&
+        session.set_input_latency(kept.frames)) {
+        control.latency_source = kept.source;
+        std::fprintf(stderr, "sonora: round trip %u frames, %s on this machine for %s\n",
+                     kept.frames, kept.source == LatencySource::Manual ? "set" : "measured",
+                     control.latency_key.device.empty() ? "these ports"
+                                                        : control.latency_key.device.c_str());
+        return true;
+    }
+    const uint32_t reported = audio.reported_latency();
+    if (reported != 0 && session.set_input_latency(reported)) {
+        control.latency_source = LatencySource::Backend;
+        std::fprintf(stderr,
+                     "sonora: round trip %u frames, as the audio server reports it; the "
+                     "converters' delay is not in it, so measure it with a cable\n",
+                     reported);
+        return true;
+    }
+    control.latency_source = LatencySource::None;
+    return true;
 }
 
 // Process-wide setup a backend needs before any thread exists.
@@ -424,6 +495,7 @@ int main(int argc, char** argv) {
     bool lock = true;
     sonora::EngineControlServer::Options control;
     bool plugin_cache_given = false;
+    bool latency_file_given = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -484,6 +556,9 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--plugin-cache") == 0 && i + 1 < argc) {
             control.plugin_cache = argv[++i];
             plugin_cache_given = true;
+        } else if (std::strcmp(argv[i], "--latency-file") == 0 && i + 1 < argc) {
+            control.latency_file = argv[++i];
+            latency_file_given = true;
         } else if (std::strcmp(argv[i], "--keymap") == 0 && i + 1 < argc) {
             keymap_path = argv[++i];
         } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
@@ -539,12 +614,17 @@ int main(int argc, char** argv) {
                 "                    that much earlier (default 0)\n"
                 "  --measure-latency OUT:IN\n"
                 "                    measure it on out_OUT, cabled to in_IN, at start\n"
-                "                    (impulses at -20 dBFS on out_OUT)\n"
+                "                    (impulses at -20 dBFS on out_OUT), and keep it for\n"
+                "                    this device, rate and period; without either, L is\n"
+                "                    what was kept, else what the audio server reports\n"
                 "  --plugin-host PATH  the plugin host (default: sonora-plugin-host\n"
                 "                    beside this binary; none: inserts show faulted)\n"
                 "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
                 "  --plugin-cache PATH  the plugin catalog cache (default:\n"
                 "                    ~/.cache/sonora/plugin-catalog.json; \"\": in memory)\n"
+                "  --latency-file PATH  where the round trip is kept per device, rate\n"
+                "                    and period (default: ~/.config/sonora/latency.conf;\n"
+                "                    \"\": neither read nor kept)\n"
                 "  --keymap PATH     key map for the terminal interface\n"
                 "  --midi-max-entries N\n"
                 "                    MIDI notes and events a session may hold, undo\n"
@@ -815,16 +895,10 @@ int main(int argc, char** argv) {
                          why.c_str());
         }
     }
-    // Before the first take can start: L is fixed during one.
-    if (input_latency >= 0) {
-        std::string why;
-        if (!session.set_input_latency(static_cast<uint32_t>(std::min<long>(input_latency, 0xFFFFFFFFL)),
-                                       &why)) {
-            std::fprintf(stderr, "sonora: --input-latency: %s\n", why.c_str());
-            return 2;
-        }
+    if (!choose_latency(session, *audio, input_latency, probe_output, probe_input,
+                        latency_file_given, control)) {
+        return 2;
     }
-    if (probe_output != 0 && !audio->fatal()) measure_latency(session, probe_output, probe_input);
     session.disk().start();
     // Separate from the capture writer: a slow read never delays a drain.
     session.reader().start();

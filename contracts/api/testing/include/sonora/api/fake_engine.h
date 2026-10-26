@@ -113,6 +113,20 @@ public:
         // Whether `folder` is an Untitled one the engine made (ADR-0018 §3):
         // the first Save into a folder that does not exist renames it there.
         bool folder_untitled = false;
+        // The round trip (ADR-0019, update of 2026-10-26). The outputs the
+        // probe may play on, as the engine opens them; a cable from output
+        // `output` to input `input` (port numbers from 1; 0: no cable) whose
+        // round trip latency.measure finds, `measure_ns` after it starts,
+        // with a Latency event at each of its three pings; a measurement on
+        // any other pair hears nothing, and one past the ports says so.
+        uint32_t latency_outputs = 2;
+        struct LatencyCable {
+            uint32_t output = 0;
+            uint32_t input = 0;
+            uint32_t frames = 0;
+        };
+        LatencyCable latency_cable;
+        uint64_t measure_ns = 1'500'000'000;
     };
 
     FakeEngine();
@@ -355,6 +369,20 @@ private:
     // Save's first step for an untitled folder, as engine/control's
     // ActiveFolder::rename(): false, with `why`, when it is refused.
     bool name_folder(const std::string& file, std::string& why);
+    // The round trip and the scripted probe.
+    uint32_t latency_ = 0;
+    LatencySource latency_source_ = LatencySource::None;
+    LatencyStatus latency_status_ = LatencyStatus::Idle;
+    std::string latency_text_;
+    bool measuring_ = false;
+    bool cancel_asked_ = false;
+    uint32_t measure_output_ = 0;
+    uint32_t measure_input_ = 0;
+    uint64_t measure_start_ns_ = 0;
+    uint32_t pings_said_ = 0;
+    void announce_latency();
+    void check_latency();
+    bool latency_command(const CommandRequest& r, std::string& why);
 };
 
 }  // namespace sonora::api::testing

@@ -152,6 +152,7 @@ void LatencyProbe::process(const backend::AudioBlock& block) noexcept SONORA_RT 
         phase_ = Phase::Quiet;
         pos_ = 0;
         ping_ = 0;
+        pings_heard_.store(0, std::memory_order_relaxed);
         restarts_ = 0;
         have_time_ = false;
         floor_ = 0.0f;
@@ -215,7 +216,8 @@ void LatencyProbe::process(const backend::AudioBlock& block) noexcept SONORA_RT 
                     lag_[ping_] = best_at_;
                     peak_[ping_] = best_;
                     if (floor_ > noise_) noise_ = floor_;
-                    if (++ping_ == run_.pings) {
+                    pings_heard_.store(++ping_, std::memory_order_relaxed);
+                    if (ping_ == run_.pings) {
                         evaluate();
                     } else {
                         phase_ = Phase::Quiet;

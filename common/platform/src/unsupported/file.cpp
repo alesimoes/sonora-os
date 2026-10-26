@@ -71,6 +71,8 @@ FolderLock::Result FolderLock::acquire(const std::string&, std::string&) { retur
 // No per-user cache folder is known here yet: the catalog stays in memory.
 std::string user_cache_dir() { return {}; }
 
+std::string user_config_dir() { return {}; }
+
 // Standard C++ has no change time; the modification time stands for both.
 bool path_status(const std::string& path, PathStatus& out) {
     std::error_code ec;

@@ -585,6 +585,26 @@ int test_loopback_needs_its_output() {
     return 0;
 }
 
+// The server's reported round trip (ADR-0019, update of 2026-10-26): what
+// the config says, through the contract, once the backend is open; none
+// before, and none from a default fake, as from a server that says nothing.
+int test_reported_latency() {
+    FakeBackend::Config c;
+    c.reported_latency = 312;
+    FakeBackend f(c);
+    const sonora::backend::AudioBackend& contract = f;
+    CHECK(contract.reported_latency() == 0);
+    Capture cap(2);
+    CHECK(start(f, cap, 2, 2));
+    CHECK(contract.reported_latency() == 312);
+    CHECK(contract.capture_device() == "UMC1820 Pro");
+    FakeBackend plain;
+    Capture cap2(2);
+    CHECK(start(plain, cap2, 2, 2));
+    CHECK(static_cast<const sonora::backend::AudioBackend&>(plain).reported_latency() == 0);
+    return 0;
+}
+
 int main() {
     int failed = 0;
     failed += test_umc1820_shape();
@@ -615,6 +635,7 @@ int main() {
     failed += test_loopback_carries_the_output_late();
     failed += test_loopback_shorter_than_a_period();
     failed += test_loopback_needs_its_output();
+    failed += test_reported_latency();
     if (failed == 0) std::printf("fake_backend: all tests passed\n");
     return failed == 0 ? 0 : 1;
 }

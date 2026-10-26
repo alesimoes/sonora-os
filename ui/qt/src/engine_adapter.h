@@ -146,16 +146,18 @@ enum class EngineEventKind {
     PluginFault,
     RecoveryOffer,
     SessionFolder,
+    Latency,
 };
 
 // api::EngineEvent: a discrete fact, in the order the engine said it.
 struct EngineEvent {
     EngineEventKind kind = EngineEventKind::Notice;
-    uint64_t take = 0;    // TakeFailed: the take it is about; RecoveryOffer: how many takes
-    uint64_t insert = 0;  // PluginFault: the insert's model id
+    uint64_t take = 0;    // TakeFailed: the take it is about; RecoveryOffer: how many takes;
+                          // Latency: L in frames
+    uint64_t insert = 0;  // PluginFault: the insert's model id; Latency: the probe's outputs
     std::string text;     // InputsMissing, TakeFailed, PluginFault, RecoveryOffer: empty clears it;
-                          // SessionFolder: the folder
-    uint32_t flags = 0;   // SessionFolder: api::kFolder* bits
+                          // SessionFolder: the folder; Latency: the probe's words
+    uint32_t flags = 0;   // SessionFolder: api::kFolder* bits; Latency: api::latency_flags()
 };
 
 // api::CommandReply.

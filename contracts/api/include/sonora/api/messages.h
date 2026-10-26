@@ -83,7 +83,11 @@ namespace sonora::api {
 //   root; the first Save of an untitled session renames its folder to the
 //   Save's, refused while a take is open or closing. A version-17 engine
 //   refuses the folder as "no session file".
-constexpr uint32_t kProtocolVersion = 20;
+// 22 (ADR-0019, update of 2026-10-26; 21 is loop record's in flight, and
+//   whichever merges later renumbers): EventKind::Latency, whose flags are
+//   a LatencySource and a LatencyStatus; a version-20 peer's decoder
+//   refuses the kind.
+constexpr uint32_t kProtocolVersion = 22;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -304,22 +308,64 @@ enum class EventKind : uint32_t {
     // there too. One stands from the engine's start, replaced at every
     // folder change; a client that attaches later is sent it. Protocol 16.
     SessionFolder = 6,
+    // The round trip L takes are compensated by, and the loopback probe
+    // (ADR-0019, update of 2026-10-26): `frame` is L in frames, `flags`
+    // latency_flags(), its source and the probe's status, `insert` how many
+    // outputs the probe may play on, `text` the probe's own words with its
+    // figures (empty before any measurement). One stands from the engine's
+    // start, replaced at every change and at every ping while measuring; a
+    // client that attaches later is sent it. Protocol 22.
+    Latency = 7,
 };
 
 // EngineEvent::flags of a SessionFolder.
 inline constexpr uint32_t kFolderUntitled = 1u << 0;   // the engine made it ("Untitled <n>")
 inline constexpr uint32_t kFolderReadOnly = 1u << 1;   // the medium refuses writes
 
+// Where L came from. Append-only.
+enum class LatencySource : uint32_t {
+    None = 0,      // nothing measured, given or reported: L is 0
+    Measured = 1,  // the loopback probe, now or kept for this machine
+    Manual = 2,    // latency.set or --input-latency
+    Backend = 3,   // AudioBackend::reported_latency(), the fallback
+};
+// What the probe is doing, or how its last measurement ended: Measured,
+// or one of LatencyProbe's five failures. Append-only.
+enum class LatencyStatus : uint32_t {
+    Idle = 0,      // nothing measured since the engine started
+    Measuring = 1,
+    Measured = 2,
+    NoSignal = 3,
+    Unstable = 4,
+    Discontinuity = 5,
+    NoPort = 6,
+    Cancelled = 7,
+};
+inline constexpr uint32_t kLastLatencySource = static_cast<uint32_t>(LatencySource::Backend);
+inline constexpr uint32_t kLastLatencyStatus = static_cast<uint32_t>(LatencyStatus::Cancelled);
+// A Latency event's flags: the source in the low byte, the status above it.
+inline constexpr uint32_t latency_flags(LatencySource source, LatencyStatus status) {
+    return static_cast<uint32_t>(source) | static_cast<uint32_t>(status) << 8;
+}
+inline constexpr LatencySource latency_source(uint32_t flags) {
+    return static_cast<LatencySource>(flags & 0xFFu);
+}
+inline constexpr LatencyStatus latency_status(uint32_t flags) {
+    return static_cast<LatencyStatus>((flags >> 8) & 0xFFu);
+}
+
 struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
     // TakeFailed: the take number. RecoveryOffer: how many takes.
-    // SessionFolder: free bytes. 0 otherwise.
+    // SessionFolder: free bytes. Latency: L in frames. 0 otherwise.
     uint64_t frame = 0;
-    // PluginFault: the insert's model id. 0 otherwise. Protocol 3.
+    // PluginFault: the insert's model id. Latency: the outputs the probe
+    // may use. 0 otherwise. Protocol 3.
     uint64_t insert = 0;
     std::string text;
-    // SessionFolder: kFolder* bits. 0 otherwise. Protocol 16.
+    // SessionFolder: kFolder* bits. Latency: latency_flags(). 0 otherwise.
+    // Protocol 16.
     uint32_t flags = 0;
 };
 

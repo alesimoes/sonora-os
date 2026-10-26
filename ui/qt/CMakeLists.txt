@@ -76,7 +76,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -145,6 +145,15 @@ target_compile_definitions(test_ui_markers PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_markers COMMAND test_ui_markers)
 set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
+# measurement, its figure by hand, and refusals held in the window.
+add_executable(test_ui_latency tests/test_latency.cpp)
+target_link_libraries(test_ui_latency PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_latency PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_latency COMMAND test_ui_latency)
+set_tests_properties(ui_latency PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,

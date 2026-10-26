@@ -28,6 +28,7 @@
 #include "sonora/closed_take.h"
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
+#include "sonora/machine_latency.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
@@ -87,7 +88,7 @@ public:
             opts.active_folder = &folder_;
         }
         ok_ = session_.create_dirs() &&
-              audio_.open({"sonora", kTracks, 0, 48000, ""}, session_, error) &&
+              audio_.open({"sonora", kTracks, 2, 48000, ""}, session_, error) &&
               audio_.activate(error) && audio_.connect_inputs_in_order() == kTracks;
         if (!ok_) std::fprintf(stderr, "  rig: %s\n", error.c_str());
         session_.disk().start();
@@ -175,6 +176,10 @@ private:
         }
     }
 
+public:
+    static constexpr uint32_t kCableFrames = 300;
+
+private:
     std::string inputs_said_ = "(unset)";   // the control thread's
     static SessionConfig config(const fs::path& dir) {
         SessionConfig cfg;
@@ -189,6 +194,9 @@ private:
         d.capture = kTracks;
         cfg.devices = {d};
         cfg.mode = FakeBackend::Mode::Thread;
+        // The latency probe's cable (ADR-0019, update of 2026-10-26): out_2
+        // back into the last input.
+        cfg.loopbacks = {{1, 0, kTracks - 1, kCableFrames}};
         return cfg;
     }
 
@@ -239,6 +247,12 @@ public:
                            uint64_t track_id, uint64_t position, uint64_t frames) override {
         return static_cast<RealEngine&>(e).leave_orphan_take(name, session, session_id, take,
                                                              track_id, position, frames);
+    }
+    bool latency_cable(uint32_t& output, uint32_t& input, uint32_t& frames) const override {
+        output = 2;
+        input = kTracks;
+        frames = RealEngine::kCableFrames;
+        return true;
     }
     int take_files_in(api::EngineControl&, const std::string& folder, int take) override {
         char suffix[16];
@@ -881,11 +895,14 @@ void housekeeping_and_early_events() {
     std::string error;
     CHECK(real.connect(error));
     api::Inbox in;
-    // The standing SessionFolder (ADR-0018 §4) is not what this is about.
+    // The standing SessionFolder (ADR-0018 §4) and Latency (ADR-0019) are
+    // not what this is about.
     const auto said = [&]() {
         std::vector<api::EngineEvent> out;
         for (const auto& e : in.events) {
-            if (e.kind != api::EventKind::SessionFolder) out.push_back(e);
+            if (e.kind != api::EventKind::SessionFolder && e.kind != api::EventKind::Latency) {
+                out.push_back(e);
+            }
         }
         return out;
     };
@@ -1881,6 +1898,93 @@ void the_first_save_names_the_untitled_folder() {
     CHECK(*real.session().folder() == named);
 }
 
+// The round trip kept per machine (ADR-0019, update of 2026-10-26): the
+// source the start chose stands for a late client too, and a measured or
+// manual L is written to the machine's file under the server's key; the
+// file is never touched without one.
+void the_round_trip_is_kept_for_the_machine() {
+    const fs::path conf_dir = fresh_dir("latency_conf");
+    const std::string file = machine_latency_file(conf_dir.string());
+    EngineControlServer::Options opts;
+    opts.latency_source = api::LatencySource::Backend;
+    opts.latency_file = file;
+    opts.latency_key = {"UMC1820 Pro", 48000, 128};
+    RealEngine real(fresh_dir("latency"), opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto latest = [&]() -> const api::EngineEvent* {
+        for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+            if (it->kind == api::EventKind::Latency) return &*it;
+        }
+        return nullptr;
+    };
+    CHECK(until(real, in, [&]() { return latest() != nullptr; }));
+    CHECK(latest() && api::latency_source(latest()->flags) == api::LatencySource::Backend);
+    KeptLatency kept;
+    CHECK(!load_machine_latency(file, opts.latency_key, kept));
+
+    api::CommandRequest set;
+    set.command = "latency.set";
+    set.argument = "250";
+    const uint64_t seq = real.send(set);
+    CHECK(until(real, in, [&]() {
+        for (const auto& r : in.replies) {
+            if (r.seq == seq) return r.result == DispatchResult::Ok;
+        }
+        return false;
+    }));
+    CHECK(real.session().input_latency() == 250);
+    // latency.set writes the file before it answers.
+    CHECK(load_machine_latency(file, opts.latency_key, kept) && kept.frames == 250 &&
+          kept.source == api::LatencySource::Manual);
+
+    api::CommandRequest measure;
+    measure.command = "latency.measure";
+    measure.argument = "2:" + std::to_string(kTracks);
+    real.send(measure);
+    // About 1.5 s of real time: three pings of two quarter-second windows.
+    const auto end = Clock::now() + std::chrono::seconds(6);
+    while (Clock::now() < end) {
+        real.poll(in);
+        if (latest() && api::latency_status(latest()->flags) != api::LatencyStatus::Measuring &&
+            api::latency_status(latest()->flags) != api::LatencyStatus::Idle) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(latest() && api::latency_status(latest()->flags) == api::LatencyStatus::Measured);
+    CHECK(real.session().input_latency() == RealEngine::kCableFrames);
+    // Written on the control thread just after the event is sent.
+    CHECK(until(real, in, [&]() {
+        return load_machine_latency(file, opts.latency_key, kept) &&
+               kept.frames == RealEngine::kCableFrames &&
+               kept.source == api::LatencySource::Measured;
+    }));
+    // Every ping was said while it ran.
+    std::size_t progress = 0;
+    for (const auto& e : in.events) {
+        if (e.kind == api::EventKind::Latency &&
+            api::latency_status(e.flags) == api::LatencyStatus::Measuring) {
+            ++progress;
+        }
+    }
+    CHECK(progress >= 3);
+
+    // A client attaching now is greeted with L as it stands, once.
+    const std::vector<api::EngineEvent> late = late_greeting(real, in);
+    std::size_t latency_events = 0;
+    for (const auto& e : late) {
+        if (e.kind != api::EventKind::Latency) continue;
+        ++latency_events;
+        CHECK(e.frame == RealEngine::kCableFrames &&
+              api::latency_source(e.flags) == api::LatencySource::Measured && e.insert == 2);
+    }
+    CHECK(latency_events == 1);
+    std::error_code ec;
+    fs::remove_all(conf_dir, ec);
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -1910,6 +2014,7 @@ int main() {
     a_load_waits_for_the_save_before_it();
     a_new_session_gets_its_own_untitled_folder();
     the_first_save_names_the_untitled_folder();
+    the_round_trip_is_kept_for_the_machine();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

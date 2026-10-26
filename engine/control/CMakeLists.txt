@@ -16,6 +16,7 @@ add_library(sonora_control STATIC
   src/plugin_catalog_cache.cpp
   src/session_saver.cpp
   src/active_folder.cpp
+  src/machine_latency.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -38,6 +39,12 @@ if(UNIX)
   target_link_libraries(test_session_saver PRIVATE sonora_control sonora_sha256 Threads::Threads)
   add_test(NAME session_saver COMMAND test_session_saver)
 endif()
+
+# The machine's round trip kept per device, rate and period (ADR-0019,
+# update of 2026-10-26).
+add_executable(test_machine_latency tests/test_machine_latency.cpp)
+target_link_libraries(test_machine_latency PRIVATE sonora_control)
+add_test(NAME machine_latency COMMAND test_machine_latency)
 
 # Here rather than in engine/core because it also drives the session through
 # the installed commands, and control may link core but not the reverse.

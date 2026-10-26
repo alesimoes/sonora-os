@@ -570,4 +570,26 @@ std::string JackBackend::fatal_reason() const {
     return drivers::describe_fatal(state, context);
 }
 
+std::string JackBackend::capture_device() const { return impl_->capture_device; }
+
+uint32_t JackBackend::reported_latency() const {
+    const Impl& d = *impl_;
+    if (!d.client) return 0;
+    // JACK propagates latency along connections, so an unconnected port
+    // reads 0: then the figure is half a round trip and not reported.
+    const auto largest = [](const std::vector<jack_port_t*>& ports, jack_latency_callback_mode_t mode) {
+        uint32_t most = 0;
+        for (jack_port_t* p : ports) {
+            if (jack_port_connected(p) <= 0) continue;
+            jack_latency_range_t range{};
+            jack_port_get_latency_range(p, mode, &range);
+            most = std::max<uint32_t>(most, range.max);
+        }
+        return most;
+    };
+    const uint32_t capture = largest(d.in_ports, JackCaptureLatency);
+    const uint32_t playback = largest(d.out_ports, JackPlaybackLatency);
+    return capture == 0 || playback == 0 ? 0 : capture + playback;
+}
+
 }  // namespace sonora
