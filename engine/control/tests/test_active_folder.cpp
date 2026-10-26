@@ -544,6 +544,56 @@ int test_a_folder_holding_only_unreferenced_states_goes() {
     return 0;
 }
 
+// #151 review, B1: the checks followed symlinks, so a "Plugin State" that
+// links to another session's had that session's states deleted, and a
+// symlinked "Untitled <n>" had the folder it points to emptied. A symlink
+// at any level is data the operator made: the folder stays as it is.
+int test_a_symlink_keeps_the_folder() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    fs::create_directories(r + "/Mix/Plugin State");
+    CHECK(touch(r + "/Mix/Plugin State/0123.state"));
+    fs::create_directories(r + "/Untitled 3/Audio Files");
+    fs::create_directory_symlink(r + "/Mix/Plugin State", r + "/Untitled 3/Plugin State");
+
+    fs::create_directories(root() + "/Elsewhere/Audio Files");
+    fs::create_directory_symlink(root() + "/Elsewhere", r + "/Untitled 4");
+
+    fs::create_directories(r + "/Untitled 5/Plugin State");
+    fs::create_symlink(r + "/Mix/Plugin State/0123.state", r + "/Untitled 5/Plugin State/0123.state");
+
+    fs::create_directories(root() + "/Empty");
+    fs::create_directory_symlink(root() + "/Empty", r + "/Untitled 6");
+    fs::create_directories(r + "/Untitled 7");
+    fs::create_directory_symlink(root() + "/Empty", r + "/Untitled 7/Audio Files");
+
+    ActiveFolder::remove_empty_untitled(r);
+    CHECK(exists(r + "/Mix/Plugin State/0123.state"));
+    CHECK(fs::is_symlink(r + "/Untitled 3/Plugin State"));
+    CHECK(fs::is_symlink(r + "/Untitled 4"));
+    CHECK(exists(root() + "/Elsewhere/Audio Files"));
+    CHECK(fs::is_symlink(r + "/Untitled 5/Plugin State/0123.state"));
+    CHECK(fs::is_symlink(r + "/Untitled 6"));
+    CHECK(fs::is_symlink(r + "/Untitled 7/Audio Files"));
+    CHECK(exists(root() + "/Empty"));
+
+    // Leaving an untitled folder the same way.
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    {
+        ActiveFolder folder;
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        fs::create_directory_symlink(r + "/Mix/Plugin State", u + "/Plugin State");
+        CHECK(folder.enter(s, r + "/Mix", ActiveFolder::Kind::Named, why, notices));
+    }
+    CHECK(fs::is_symlink(u + "/Plugin State"));
+    CHECK(exists(r + "/Mix/Plugin State/0123.state"));
+    fs::remove_all(root());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -561,6 +611,7 @@ int main() {
     failed += test_a_folder_with_a_session_file_is_not_renamed();
     failed += test_naming_is_refused_during_a_take();
     failed += test_a_folder_holding_only_unreferenced_states_goes();
+    failed += test_a_symlink_keeps_the_folder();
     if (failed) return 1;
     std::printf("active folder: ok\n");
     return 0;

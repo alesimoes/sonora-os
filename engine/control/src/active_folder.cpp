@@ -51,13 +51,26 @@ bool untitled_name(const std::string& name) {
     return true;
 }
 
+// A folder and not a symlink to one: whatever a symlink points to is the
+// operator's, and nothing here may follow it.
+bool real_folder(const fs::directory_entry& e) {
+    std::error_code ec;
+    return fs::is_directory(e.symlink_status(ec)) && !ec;
+}
+
+bool real_folder(const fs::path& p) {
+    std::error_code ec;
+    return fs::is_directory(fs::symlink_status(p, ec)) && !ec;
+}
+
 // Nothing in `dir` but an empty "Audio Files/", which entering made.
 bool holds_nothing(const std::string& dir) {
+    if (!real_folder(fs::path(dir))) return false;
     std::error_code ec;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         if (it->path().filename() != "Audio Files") return false;
         std::error_code inner;
-        if (!it->is_directory(inner) || !fs::is_empty(it->path(), inner) || inner) return false;
+        if (!real_folder(*it) || !fs::is_empty(it->path(), inner) || inner) return false;
     }
     return !ec;
 }
@@ -80,7 +93,7 @@ bool holds_only_states(const fs::path& dir) {
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         const std::string name = it->path().filename().string();
         std::error_code inner;
-        if (!it->is_regular_file(inner) || inner ||
+        if (!fs::is_regular_file(it->symlink_status(inner)) || inner ||
             !(ends_with(name, ".state") || ends_with(name, ".state.tmp"))) {
             return false;
         }
@@ -91,13 +104,14 @@ bool holds_only_states(const fs::path& dir) {
 // No take, no session file, nothing the operator put there: an empty
 // "Audio Files/" and at most the "Plugin State/" files flushes wrote. No
 // session file names those states and no take needs them, so they are not
-// the operator's data (ADR-0018 §3).
+// the operator's data (ADR-0018 §3). A symlink anywhere is data.
 bool holds_no_data(const std::string& dir) {
+    if (!real_folder(fs::path(dir))) return false;
     std::error_code ec;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         const std::string name = it->path().filename().string();
         std::error_code inner;
-        if (!it->is_directory(inner) || inner) return false;
+        if (!real_folder(*it)) return false;
         if (name == "Audio Files") {
             if (!fs::is_empty(it->path(), inner) || inner) return false;
         } else if (name != session_files::kPluginStateDir || !holds_only_states(it->path())) {
@@ -164,8 +178,7 @@ std::string ActiveFolder::make_untitled(const std::string& root, std::string& wh
 void ActiveFolder::remove_empty_untitled(const std::string& root) {
     std::error_code ec;
     for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
-        std::error_code inner;
-        if (!it->is_directory(inner) || !untitled_name(it->path().filename().string())) continue;
+        if (!real_folder(*it) || !untitled_name(it->path().filename().string())) continue;
         const std::string dir = it->path().string();
         if (!holds_no_data(dir)) continue;
         // Held, it is another engine's new session, empty because nothing
