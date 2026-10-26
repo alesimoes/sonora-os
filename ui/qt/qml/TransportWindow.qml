@@ -7,10 +7,11 @@
 // format, as the bar's does), and beside it the position in every format at once, the way Logic's LCD shows bars and timecode
 // together. The tempo and meter are the map's at that position.
 //
-// Pre/post-roll are shown for what they are: saved values the engine does
-// not run yet. Dimmed, and a press says why, rather than a toggle that
-// lights and does nothing. Click and Count-off send their keys' commands and
-// light as the engine says (ADR-0020).
+// Pre/post-roll take a length typed in seconds, and the line under them says
+// what they apply to: a punch, a loop take, a played selection, never a
+// plain take. The punch range is set from the Edit selection or cleared, as
+// the bar's PUNCH chip does. Click and Count-off send their keys' commands
+// and light as the engine says (ADR-0020).
 import QtQuick
 import Sonora
 
@@ -292,16 +293,33 @@ Rectangle {
 
         // --- rolls, loop, punch: as the session holds them ---
         Row {
-            spacing: Theme.space6
+            spacing: Theme.space4
+            // Typed in seconds, as Pro Tools' pre- and post-roll fields take
+            // a length; a refusal leaves the field open with the reason on
+            // the status line.
             Column {
-                opacity: win.transport.rollsAvailable ? 1.0 : 0.55
                 Caption { text: "Pre-roll" }
-                Value { objectName: "transportPreRoll"; text: win.transport.preRollText }
+                ValueField {
+                    id: preRollField
+                    objectName: "transportPreRoll"
+                    width: 76; height: 20
+                    shell: win.shell
+                    fontPx: Theme.textBody
+                    text: win.transport.preRollText
+                    onSubmitted: (t) => { if (win.session.setPreRollText(t)) preRollField.finish() }
+                }
             }
             Column {
-                opacity: win.transport.rollsAvailable ? 1.0 : 0.55
                 Caption { text: "Post-roll" }
-                Value { text: win.transport.postRollText }
+                ValueField {
+                    id: postRollField
+                    objectName: "transportPostRoll"
+                    width: 76; height: 20
+                    shell: win.shell
+                    fontPx: Theme.textBody
+                    text: win.transport.postRollText
+                    onSubmitted: (t) => { if (win.session.setPostRollText(t)) postRollField.finish() }
+                }
             }
             Column {
                 Caption { text: win.shell.cycleMode ? "Cycle" : "Loop" }
@@ -318,9 +336,28 @@ Rectangle {
             Column {
                 Caption { text: "Punch" }
                 Value {
+                    objectName: "transportPunch"
                     text: win.transport.rangeText(win.transport.punchStart, win.transport.punchEnd,
                                                   win.session.mainCounterFormat)
-                    color: win.transport.punchSet ? Theme.text : Theme.textTertiary
+                    color: win.transport.punchSet ? Theme.record : Theme.textTertiary
+                }
+            }
+            // Pro Tools' punch points, Logic's autopunch locators: from the
+            // Edit selection, or cleared. What the bar's PUNCH chip sends.
+            Row {
+                anchors.bottom: parent.bottom
+                spacing: Theme.space1
+                TransportKey {
+                    objectName: "transportPunchSet"
+                    shell: win.shell
+                    text: "Set"; command: "transport.punch_selection"
+                    implicitWidth: 40; implicitHeight: 22; fontPx: Theme.textSmall
+                }
+                TransportKey {
+                    objectName: "transportPunchClear"
+                    shell: win.shell
+                    text: "Clear"; command: "transport.clear_punch"
+                    implicitWidth: 44; implicitHeight: 22; fontPx: Theme.textSmall
                 }
             }
         }

@@ -3,6 +3,7 @@
 
 #include <QVariantMap>
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 #include "session_model.h"
@@ -196,7 +197,50 @@ QString TransportModel::postRollText() const {
 
 QString TransportModel::rollsWhy() {
     return QStringLiteral(
-        "Saved with the session; the engine does not run pre- or post-roll yet.");
+        "Pre-roll and post-roll run around a punch, a loop take and a played selection; a "
+        "plain take starts at the playhead. Click a value to type seconds.");
+}
+
+bool parse_roll_text(const std::string& text, uint32_t rate, model::Frames& frames,
+                     std::string& why) {
+    std::string s;
+    for (const char c : text) {
+        if (c != ' ' && c != '	') s += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    }
+    if (!s.empty() && s.back() == 's') s.pop_back();
+    // Digits with at most one point, at least one digit: no sign, so a
+    // negative roll is refused as text rather than read as zero.
+    double seconds = 0.0;
+    double scale = 0.0;
+    bool digit = false;
+    for (const char c : s) {
+        if (c == '.' && scale == 0.0) {
+            scale = 0.1;
+        } else if (c >= '0' && c <= '9') {
+            digit = true;
+            if (scale == 0.0) {
+                seconds = seconds * 10 + (c - '0');
+            } else {
+                seconds += scale * (c - '0');
+                scale /= 10;
+            }
+            if (seconds > kMaxRollSeconds) break;
+        } else {
+            digit = false;
+            break;
+        }
+    }
+    if (!digit || rate == 0) {
+        why = "\"" + text + "\" is not a length; type seconds, like 2 or 0.5";
+        return false;
+    }
+    if (seconds > kMaxRollSeconds) {
+        why = "a roll goes from 0 to " + std::to_string(kMaxRollSeconds) + " seconds; \"" + text +
+              "\" is past that";
+        return false;
+    }
+    frames = static_cast<model::Frames>(std::llround(seconds * rate));
+    return true;
 }
 
 QString TransportModel::timeText(qint64 frames, const QString& format) const {

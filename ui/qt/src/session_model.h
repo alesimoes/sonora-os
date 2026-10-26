@@ -300,6 +300,11 @@ public:
     // the engine refuses that locate, and the insertion point would have
     // moved under a counter that shows the playhead.
     Q_INVOKABLE bool enterCounter(const QString& text);
+    // The Transport window's pre- and post-roll fields: seconds, as
+    // parse_roll_text() reads them. False, with the reason on the status
+    // line, for text that is not a length and while a take records.
+    Q_INVOKABLE bool setPreRollText(const QString& text);
+    Q_INVOKABLE bool setPostRollText(const QString& text);
     Q_INVOKABLE void setWindow(const QString& w);
 
     // --- File ---
@@ -382,6 +387,9 @@ private:
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);
+    // During a take, `why` says `what` waits for Stop; true then.
+    bool refuse_during_take(const char* what, std::string& why) const;
+    bool setRollText(bool pre, const QString& text);
     void updateCounters(bool force);
     // The save itself, once the document holds what the file must;
     // `caution` is said with the result. True when it was done, or handed to
