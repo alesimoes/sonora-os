@@ -26,7 +26,9 @@ BUILD="${SONORA_BUILD:-$ROOT/build}"
 
 backend=auto
 ui=qt
-dir="$HOME/Sessions/Untitled"
+# Empty: a new session in its own Untitled folder under ~/Sessions
+# (ADR-0018 §3); --dir starts in that folder instead.
+dir=""
 tracks=auto
 ui_args=()
 while [[ $# -gt 0 ]]; do
@@ -65,7 +67,8 @@ if [[ "$backend" == auto ]]; then
   fi
 fi
 
-engine_cmd=("$ENGINE" --backend "$backend" --dir "$dir" --tracks "$tracks" --headless)
+engine_cmd=("$ENGINE" --backend "$backend" --tracks "$tracks" --headless)
+if [[ -n "$dir" ]]; then engine_cmd+=(--dir "$dir"); else engine_cmd+=(--sessions "$HOME/Sessions"); fi
 if [[ "$backend" == jack ]] && command -v pw-jack >/dev/null; then
   # PipeWire's libjack, whichever libjack the binary was linked against.
   engine_cmd=(pw-jack "${engine_cmd[@]}")
@@ -90,7 +93,7 @@ fi
 engine_cmd+=(--control-socket "$sock")
 
 logs="$(mktemp -d "${TMPDIR:-/tmp}/sonora-run.XXXXXX")"
-echo "run-sonora: engine ($backend) -> $dir; logs in $logs"
+echo "run-sonora: engine ($backend) -> ${dir:-a new Untitled folder in $HOME/Sessions}; logs in $logs"
 "${engine_cmd[@]}" >"$logs/engine.out" 2>"$logs/engine.err" &
 engine_pid=$!
 

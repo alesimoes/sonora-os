@@ -299,6 +299,172 @@ int test_only_an_empty_untitled_folder_is_removed() {
     return 0;
 }
 
+bool touch(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (f == nullptr) return false;
+    return std::fclose(f) == 0;
+}
+
+// ADR-0018 §3: each new session gets its own folder, named by the
+// interface's unused_session_name rule, so no two sessions share one.
+int test_untitled_names_follow_the_interface() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    CHECK(ActiveFolder::make_untitled(r, why) == r + "/Untitled");
+    CHECK(ActiveFolder::make_untitled(r, why) == r + "/Untitled 2");
+    CHECK(ActiveFolder::make_untitled(r, why) == r + "/Untitled 3");
+    fs::remove(r + "/Untitled");
+    CHECK(ActiveFolder::make_untitled(r, why) == r + "/Untitled");
+    CHECK(fs::is_directory(r + "/Untitled"));
+    CHECK(touch(root() + "/file.txt"));
+    CHECK(ActiveFolder::make_untitled(root() + "/file.txt", why).empty());
+    CHECK(!why.empty());
+    fs::remove_all(root());
+    return 0;
+}
+
+// Untitled folders pile up after crashes and declined saves; the empty
+// ones are removed (ADR-0018, Consequences): at exit, and at start for
+// those an engine that died left behind.
+int test_empty_untitled_folders_are_removed() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    {
+        const std::string u = ActiveFolder::make_untitled(r, why);
+        sonora::Session s(config(u));
+        ActiveFolder folder;
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        CHECK(folder.fresh());
+    }
+    CHECK(!exists(r + "/Untitled"));
+    {
+        const std::string u = ActiveFolder::make_untitled(r, why);
+        sonora::Session s(config(u));
+        ActiveFolder folder;
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        CHECK(touch(u + "/Audio Files/Audio 1_01.wav"));
+        CHECK(!folder.fresh());
+    }
+    CHECK(exists(r + "/Untitled/Audio Files/Audio 1_01.wav"));
+
+    fs::create_directories(r + "/Untitled 2/Audio Files");
+    fs::create_directories(r + "/Untitled 3/Audio Files");
+    fs::create_directories(r + "/Untitled 4/Plugin State");
+    fs::create_directories(r + "/Mix/Audio Files");
+    fs::create_directories(r + "/Untitled Song/Audio Files");
+    sonora::platform::FolderLock theirs;
+    CHECK(theirs.acquire(r + "/Untitled 3", why) == sonora::platform::FolderLock::Result::Held);
+    ActiveFolder::remove_empty_untitled(r);
+    CHECK(!exists(r + "/Untitled 2"));
+    CHECK(exists(r + "/Untitled 3/Audio Files"));
+    CHECK(exists(r + "/Untitled 4/Plugin State"));
+    CHECK(exists(r + "/Untitled/Audio Files/Audio 1_01.wav"));
+    CHECK(exists(r + "/Mix/Audio Files"));
+    CHECK(exists(r + "/Untitled Song/Audio Files"));
+    ActiveFolder::remove_empty_untitled(root() + "/nowhere");
+    fs::remove_all(root());
+    return 0;
+}
+
+// ADR-0018 §3, first Save: the untitled folder is renamed to the folder the
+// session is saved in, takes and lock with it, so the takes are beside the
+// session file and the session keeps the name the operator gave it.
+int test_the_first_save_renames_the_folder() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    ActiveFolder folder;
+    CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    CHECK(s.start_recording(s.next_free_take()));
+    feed(s, 64);
+    CHECK(s.stop());
+    CHECK(s.closed_takes().size() == 1);
+    CHECK(exists(u + "/Audio Files/Audio 1_01.wav"));
+
+    // Its own folder, or a folder that is there already, is not a rename.
+    CHECK(!folder.names_on_save(u));
+    fs::create_directories(r + "/Taken");
+    CHECK(!folder.names_on_save(r + "/Taken"));
+    CHECK(folder.names_on_save(r + "/Bass"));
+
+    CHECK(folder.rename(s, r + "/Bass", why));
+    CHECK(*s.folder() == r + "/Bass");
+    CHECK(!folder.untitled());
+    CHECK(!exists(u));
+    CHECK(exists(r + "/Bass/Audio Files/Audio 1_01.wav"));
+    sonora::platform::FolderLock probe;
+    CHECK(probe.acquire(r + "/Bass", why) == sonora::platform::FolderLock::Result::Busy);
+    // Named now: a second Save elsewhere is not a rename.
+    CHECK(!folder.names_on_save(r + "/Other"));
+    // The next take is numbered on from the folder's.
+    CHECK(s.next_free_take() == 2);
+    s.stop();
+    fs::remove_all(root());
+    return 0;
+}
+
+// A folder that has held a session file is that session's: renaming it
+// would take its file along.
+int test_a_folder_with_a_session_file_is_not_renamed() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    ActiveFolder folder;
+    CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+    CHECK(touch(u + "/Untitled.sonora"));
+    CHECK(!folder.names_on_save(r + "/Bass"));
+    CHECK(!folder.fresh());
+    sonora::Session named_session(config(r + "/Mix"));
+    ActiveFolder named;
+    CHECK(named.enter(named_session, r + "/Mix", ActiveFolder::Kind::Named, why, notices));
+    CHECK(!named.names_on_save(r + "/Bass"));
+    CHECK(!named.fresh());
+    fs::remove_all(root());
+    return 0;
+}
+
+// Naming the session moves the folder a take is being written to: refused
+// until it closes, saying where the take is (ADR-0018 §3).
+int test_naming_is_refused_during_a_take() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    ActiveFolder folder;
+    CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    CHECK(s.start_recording(s.next_free_take()));
+    feed(s, 64);
+    CHECK(folder.names_on_save(r + "/Bass"));
+    CHECK(!folder.rename(s, r + "/Bass", why));
+    CHECK(why.find("stop recording to name the session") != std::string::npos);
+    CHECK(why.find("the take is being written to Untitled") != std::string::npos);
+    CHECK(*s.folder() == u);
+    CHECK(folder.untitled());
+    CHECK(!exists(r + "/Bass"));
+    CHECK(s.stop());
+    s.closed_takes();
+    CHECK(folder.rename(s, r + "/Bass", why));
+    CHECK(exists(r + "/Bass/Audio Files/Audio 1_01.wav"));
+    s.stop();
+    fs::remove_all(root());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -310,6 +476,11 @@ int main() {
     failed += test_a_take_after_a_switch_lands_in_the_new_folder();
     failed += test_a_take_collected_before_a_switch_is_not_lost_silently();
     failed += test_only_an_empty_untitled_folder_is_removed();
+    failed += test_untitled_names_follow_the_interface();
+    failed += test_empty_untitled_folders_are_removed();
+    failed += test_the_first_save_renames_the_folder();
+    failed += test_a_folder_with_a_session_file_is_not_renamed();
+    failed += test_naming_is_refused_during_a_take();
     if (failed) return 1;
     std::printf("active folder: ok\n");
     return 0;

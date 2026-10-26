@@ -2,6 +2,7 @@
 #include "sonora/platform/file.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -59,6 +60,55 @@ bool read_only(const std::string& path) {
     struct statvfs vfs {};
     if (::statvfs(path.c_str(), &vfs) == 0 && (vfs.f_flag & ST_RDONLY) != 0) return true;
     return ::access(path.c_str(), W_OK) != 0;
+}
+
+bool same_filesystem(const std::string& a, const std::string& b) {
+    struct stat sa {}, sb {};
+    if (::stat(a.c_str(), &sa) != 0 || ::stat(b.c_str(), &sb) != 0) return false;
+    return sa.st_dev == sb.st_dev;
+}
+
+namespace {
+
+std::string parent_of(const std::string& path) {
+    std::string p = path;
+    while (p.size() > 1 && p.back() == '/') p.pop_back();
+    const std::size_t slash = p.rfind('/');
+    if (slash == std::string::npos) return ".";
+    return slash == 0 ? "/" : p.substr(0, slash);
+}
+
+}  // namespace
+
+bool rename_dir_durably(const std::string& from, const std::string& to, std::string& error) {
+#ifdef RENAME_NOREPLACE
+    int rc = ::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE);
+#else
+    int rc = -1;
+    errno = ENOSYS;
+#endif
+    if (rc != 0 && (errno == EINVAL || errno == ENOSYS)) {
+        // A filesystem without RENAME_NOREPLACE (some FUSE ones): checked,
+        // then renamed. Another process could make `to` in between; nothing
+        // of ours does, and the folder lock keeps out other engines.
+        struct stat st {};
+        if (::lstat(to.c_str(), &st) == 0) {
+            errno = EEXIST;
+        } else {
+            rc = ::rename(from.c_str(), to.c_str());
+        }
+    }
+    if (rc != 0) {
+        error = "cannot rename " + from + " to " + to + ": " + std::strerror(errno);
+        return false;
+    }
+    const std::string a = parent_of(from), b = parent_of(to);
+    bool synced = sync_directory(b);
+    if (a != b) synced = sync_directory(a) && synced;
+    // Renamed either way; an unsynced name is what a power cut may undo,
+    // and the caller is told so.
+    if (!synced) error = "renamed, but " + b + " could not be synced: " + std::strerror(errno);
+    return true;
 }
 
 FolderLock::~FolderLock() {

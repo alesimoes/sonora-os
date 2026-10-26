@@ -136,7 +136,8 @@ if(TARGET sonora-plugin-host)
                    down_keeps_latency gestures server values_while_starting reload_starts_afresh
                    repost_bypass_off gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
                    play_no_hosting play_wait_cancel rescan_drops_stale rescan_loses_running
-                   rescan_blocks_running state_flush server_state_flush flush_active_folder)
+                   rescan_blocks_running state_flush server_state_flush flush_active_folder
+                   flush_read_across_load)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()

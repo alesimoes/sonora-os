@@ -124,7 +124,15 @@ public:
     // session file, as <folder>/<folder's name>.sonora, so the session file
     // is beside its audio. Empty, or a folder another session's file is
     // in: the sessions folder above, as before the engine said.
-    void setEngineFolder(const QString& folder) { engine_folder_ = folder; }
+    // `untitled` (kFolderUntitled, ADR-0018 §3): the engine made the folder
+    // for a new session, and renames it at the first Save. A session the
+    // operator named is then saved as <folder's parent>/<name>/<name>.sonora,
+    // which the engine renames the folder to, so it keeps its name; one
+    // without a name of its own is saved in the folder, under its name.
+    void setEngineFolder(const QString& folder, bool untitled = false) {
+        engine_folder_ = folder;
+        engine_untitled_ = untitled;
+    }
     const QString& engineFolder() const { return engine_folder_; }
 
     // File > Save: to the file the session came from, or, the first time, to
@@ -294,6 +302,14 @@ public:
     // [{name, file, current}], for the Open panel.
     Q_INVOKABLE QVariantList sessionList() const;
     Q_INVOKABLE bool openSession(const QString& file, bool discard);
+    // [{name, folder}]: the folders of the sessions folder with takes and
+    // no session file (ADR-0018 §3, "After a crash"), for the Open panel.
+    Q_INVOKABLE QVariantList unsavedRecordingList() const;
+    // Opens one: an empty session with this session's tracks, named after
+    // the folder, loaded with the folder's path, so the engine records
+    // there and offers its takes for placing.
+    Q_INVOKABLE bool openRecording(const QString& folder, bool discard);
+    bool openRecordingFolder(const QString& folder, bool discard, std::string& why);
 
     // --- Mix window ---
     Q_INVOKABLE qreal faderPosition(qreal db) const;
@@ -381,6 +397,7 @@ private:
     bool synthetic_peaks_;
     QString sessions_dir_;
     QString engine_folder_;
+    bool engine_untitled_ = false;
     // What the saves of this window have hashed, so serialize() hashes only
     // what changed since (ADR-0015 §3).
     model::SequenceDigests digests_;

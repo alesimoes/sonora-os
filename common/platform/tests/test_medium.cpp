@@ -2,7 +2,9 @@
 //
 // free_bytes() and read_only(), which the engine reads when it enters a
 // session folder (ADR-0018 §8): a full or read-only medium has to be seen
-// before a take starts, not partway through it.
+// before a take starts, not partway through it. rename_dir_durably() and
+// same_filesystem(), with which an untitled session's first Save names its
+// folder (ADR-0018 §3).
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -62,11 +64,46 @@ int test_read_only() {
     return 0;
 }
 
+// rename(2) replaces an empty folder that is in the way; the first Save
+// must never put a session's takes in place of another folder.
+int test_rename_dir() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "sonora_test_medium_rename";
+    fs::remove_all(root);
+    fs::create_directories(root / "Untitled" / "Audio Files");
+    std::FILE* f = std::fopen((root / "Untitled" / "Audio Files" / "Audio 1_01.wav").c_str(), "wb");
+    CHECK(f != nullptr);
+    std::fclose(f);
+    CHECK(sonora::platform::same_filesystem((root / "Untitled").string(), root.string()));
+    CHECK(!sonora::platform::same_filesystem((root / "missing").string(), root.string()));
+
+    std::string error;
+    CHECK(sonora::platform::rename_dir_durably((root / "Untitled").string(), (root / "Mix").string(),
+                                               error));
+    CHECK(error.empty());
+    CHECK(!fs::exists(root / "Untitled"));
+    CHECK(fs::is_regular_file(root / "Mix" / "Audio Files" / "Audio 1_01.wav"));
+
+    fs::create_directories(root / "Taken");
+    CHECK(!sonora::platform::rename_dir_durably((root / "Mix").string(), (root / "Taken").string(),
+                                                error));
+    CHECK(!error.empty());
+    CHECK(fs::is_regular_file(root / "Mix" / "Audio Files" / "Audio 1_01.wav"));
+    CHECK(fs::is_empty(root / "Taken"));
+    error.clear();
+    CHECK(!sonora::platform::rename_dir_durably((root / "Gone").string(),
+                                                (root / "Elsewhere").string(), error));
+    CHECK(!error.empty());
+    fs::remove_all(root);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_free_bytes() != 0) return 1;
     if (test_read_only() != 0) return 1;
+    if (test_rename_dir() != 0) return 1;
     std::printf("platform medium: ok\n");
     return 0;
 }

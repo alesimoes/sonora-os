@@ -47,6 +47,16 @@ struct SessionEntry {
 // session file is not listed.
 std::vector<SessionEntry> list_sessions(const QString& dir);
 
+struct RecordingEntry {
+    QString name;    // the folder's name
+    QString folder;  // its path
+};
+
+// Every folder of `dir` with a take in its "Audio Files/" and no session
+// file of any name, sorted by name: an untitled session the engine was
+// recording when it stopped, or a Save As cut short (ADR-0018 §3, §5).
+std::vector<RecordingEntry> list_unsaved_recordings(const QString& dir);
+
 // Reads and parses `file`, and each sequence file it names from its
 // session folder's "MIDI Sequences/". On failure `why` says where in the
 // file. A sequence file that is not there or does not verify is not a

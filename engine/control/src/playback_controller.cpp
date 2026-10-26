@@ -85,6 +85,20 @@ bool PlaybackController::registered(const model::Source& source, uint32_t& slot,
     return true;
 }
 
+void PlaybackController::folder_renamed(const std::string& from, const std::string& to) {
+    const std::string prefix = from + "/";
+    std::unordered_map<std::string, uint32_t> moved;
+    moved.reserve(slots_.size());
+    for (auto& [path, slot] : slots_) {
+        if (path.compare(0, prefix.size(), prefix) == 0) {
+            moved.emplace(to + "/" + path.substr(prefix.size()), slot);
+        } else {
+            moved.emplace(path, slot);
+        }
+    }
+    slots_ = std::move(moved);
+}
+
 uint64_t PlaybackController::serve() {
     return session_.reader().serve(session_.plans().current(), pending_,
                                    static_cast<int64_t>(locate_target_), locate_serial_);

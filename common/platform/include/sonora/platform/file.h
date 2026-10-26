@@ -63,6 +63,17 @@ bool free_bytes(const std::string& path, uint64_t& out);
 // read-only, or this process may not write there. Writes no probe file.
 bool read_only(const std::string& path);
 
+// Whether `a` and `b` are on one filesystem (POSIX: st_dev equal), so a
+// folder can be renamed from one to the other. False when either cannot be
+// read. Not claimed where the platform cannot tell.
+bool same_filesystem(const std::string& a, const std::string& b);
+// Renames the folder `from` to `to`, then syncs the folder each is in, so
+// the new name is what a power cut leaves (ADR-0018 §3). Refused when `to`
+// exists, even as an empty folder, which rename(2) alone would replace.
+// False with `error` saying why; `from` is then where it was. True with
+// `error` set when the rename is done but a folder could not be synced.
+bool rename_dir_durably(const std::string& from, const std::string& to, std::string& error);
+
 // An advisory lock on a folder: one engine per session folder, because a
 // second one would run crash recovery over the first one's open takes.
 // Held until the object is destroyed or the process ends, however it ends,

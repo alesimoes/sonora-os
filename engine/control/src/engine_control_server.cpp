@@ -832,27 +832,44 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
         why = l->second.refused;
         return false;
     }
+    namespace fs = std::filesystem;
     std::string folder;
+    ActiveFolder::Kind kind = ActiveFolder::Kind::Named;
+    // A new session in a fresh Untitled folder; one with nothing in it yet
+    // is as good as a new one, and is kept.
+    const bool new_folder = file.empty() && !opts_.sessions_root.empty() && !folder_->fresh();
     if (!file.empty()) {
-        namespace fs = std::filesystem;
         const fs::path p(file);
         std::error_code ec;
         if (!p.is_absolute()) {
             why = "a session is opened by its file's absolute path, not \"" + file + "\"";
             return false;
         }
-        if (!fs::is_regular_file(p, ec)) {
+        if (fs::is_directory(p, ec)) {
+            // An unsaved recording (ADR-0018 §3): takes and no session file.
+            // Untitled, so its first Save names it.
+            for (fs::directory_iterator it(p, ec), end; !ec && it != end; it.increment(ec)) {
+                if (it->path().extension() == ".sonora") {
+                    why = file + " holds a session file; open " + it->path().string() + " instead";
+                    return false;
+                }
+            }
+            folder = p.lexically_normal().string();
+            kind = ActiveFolder::Kind::Untitled;
+        } else if (!fs::is_regular_file(p, ec)) {
             why = "there is no session file at " + file;
             return false;
+        } else {
+            folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
         }
-        folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
+    }
+    if (!folder.empty() || new_folder) {
         // A Save or a flush's states handed to the saver before this Load
         // write the folder the session is in, which is unlocked once it is
         // left (PR #142 review N3); and their replies go before this one.
         // A flush still reading its states is not written at all
         // (follow_flushes()).
-        saver_->fence();
-        follow_saver();
+        fence_saver("Finishing the save before opening the session");
     }
     // The new document is made before the folder is entered and kept only
     // if both succeed, so a refusal at either leaves the session as it was.
@@ -862,15 +879,45 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     if (!next.load(bytes, session_.config().sample_rate, why, parts, api::wire::kMaxModelBytes)) {
         return false;
     }
+    if (new_folder) {
+        // Made only now, so a refused document leaves no folder behind.
+        folder = ActiveFolder::make_untitled(opts_.sessions_root, why);
+        if (folder.empty()) {
+            why = "the new session's folder could not be made: " + why;
+            return false;
+        }
+        kind = ActiveFolder::Kind::Untitled;
+    }
     if (!folder.empty()) {
-        if (!folder_->enter(session_, folder, ActiveFolder::Kind::Named, why, notices)) {
-            why = "the session's folder could not be opened: " + why;
+        if (!folder_->enter(session_, folder, kind, why, notices)) {
+            if (new_folder) {
+                std::error_code ec;
+                fs::remove(fs::path(folder) / "Audio Files", ec);
+                fs::remove(folder, ec);
+            }
+            why = (new_folder ? "the new session's folder could not be opened: "
+                              : "the session's folder could not be opened: ") +
+                  why;
             return false;
         }
         entered = true;
     }
     *document_ = std::move(next);
     return true;
+}
+
+void EngineControlServer::fence_saver(const char* notice) {
+    // What is done already is answered first, so the notice is only for a
+    // save still being written.
+    follow_saver();
+    if (saver_->pending() > 0) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = std::string(notice) + "…";
+        post_transient(e);
+    }
+    saver_->fence();
+    follow_saver();
 }
 
 bool EngineControlServer::takes_in_flight() const {
@@ -1963,6 +2010,35 @@ bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::s
     if (!api::wire::decode_save(m.op, job.file, job.bytes, why)) return false;
     job.client = from;
     job.seq = m.seq;
+    // An untitled session's first Save names it (ADR-0018 §3): its folder
+    // is renamed to the one the Save names, takes and lock with it, before
+    // the file is written there. The saver only ever writes into the
+    // session's own folder, so it is done here, on the control thread,
+    // once the saver has written what it was given into the old name.
+    const std::filesystem::path target =
+        std::filesystem::path(session_files::session_folder_of(job.file)).lexically_normal();
+    if (std::filesystem::path(job.file).is_absolute() && folder_->names_on_save(target.string())) {
+        if (playback_->record_requested() && session_.folder_change_refusal().empty()) {
+            why = "stop recording to name the session; a take is about to start in " +
+                  std::filesystem::path(*session_.folder()).filename().string();
+            return false;
+        }
+        const std::string before = *session_.folder();
+        fence_saver("Finishing the last save before naming the session");
+        std::string caution;
+        if (!folder_->rename(session_, target.string(), caution)) {
+            why = caution;
+            return false;
+        }
+        playback_->folder_renamed(before, *session_.folder());
+        if (!caution.empty()) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = caution;
+            post_transient(e);
+        }
+        announce_folder();
+    }
     // A copy that shares every state: the saver reads it while edits go on.
     job.document = document_->current();
     job.state_source = *session_.folder();

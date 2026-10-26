@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QVariantMap>
 #include <algorithm>
@@ -777,15 +778,26 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     // Beside its takes (ADR-0018 §4), in the folder the engine records this
     // session into, unless another session's file is already there: then
     // the takes stay where they are and the file goes where it went before.
+    // Where a new session's folder goes: beside the engine's untitled one,
+    // which the engine renames there (ADR-0018 §3), so on its filesystem.
+    QString root = sessions_dir_;
     if (file.isEmpty() && !engine_folder_.isEmpty()) {
         const QDir folder(engine_folder_);
         const QString name = QFileInfo(engine_folder_).fileName();
-        if (folder.exists() && session_name_problem(name).empty() &&
-            folder.entryList({QStringLiteral("*.sonora")}, QDir::Files).isEmpty()) {
-            file = folder.filePath(name + QStringLiteral(".sonora"));
-            if (name.toStdString() != to_write.settings.name) {
-                to_write.settings.name = name.toStdString();
-                rename = true;
+        const QString own = q(to_write.settings.name);
+        // A name the operator gave, not the one a new session starts with.
+        static const QRegularExpression untitled(QStringLiteral("^Untitled( [0-9]+)?$"));
+        const bool named = engine_untitled_ && !own.isEmpty() && own != name &&
+                           !untitled.match(own).hasMatch() && session_name_problem(own).empty();
+        if (folder.exists() && folder.entryList({QStringLiteral("*.sonora")}, QDir::Files).isEmpty()) {
+            if (named) {
+                root = QFileInfo(engine_folder_).absolutePath();
+            } else if (session_name_problem(name).empty()) {
+                file = folder.filePath(name + QStringLiteral(".sonora"));
+                if (name.toStdString() != to_write.settings.name) {
+                    to_write.settings.name = name.toStdString();
+                    rename = true;
+                }
             }
         }
     }
@@ -797,7 +809,7 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
             why = "cannot save as \"" + n + "\": " + bad;
             return false;
         }
-        const QString name = unused_session_name(sessions_dir_, wanted);
+        const QString name = unused_session_name(root, wanted);
         bad = session_name_problem(name);
         if (!bad.empty()) {
             why = "cannot save as \"" + name.toStdString() + "\", the first free name: " + bad;
@@ -809,7 +821,7 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
             to_write.settings.name = name.toStdString();
             rename = true;
         }
-        file = session_file_path(sessions_dir_, name);
+        file = session_file_path(root, name);
     }
     // A session saved before format 7 has no id: this save gives it one,
     // and the document takes it once the file is written, as with the name.
@@ -1105,6 +1117,74 @@ QVariantList SessionModel::sessionList() const {
 bool SessionModel::openSession(const QString& file, bool discard) {
     std::string why;
     return run(openSessionFile(file, discard, why), why);
+}
+
+QVariantList SessionModel::unsavedRecordingList() const {
+    QVariantList out;
+    for (const RecordingEntry& e : list_unsaved_recordings(sessions_dir_)) {
+        QVariantMap m;
+        m.insert(QStringLiteral("name"), e.name);
+        m.insert(QStringLiteral("folder"), e.folder);
+        m.insert(QStringLiteral("current"), e.folder == engine_folder_);
+        out << m;
+    }
+    return out;
+}
+
+bool SessionModel::openRecording(const QString& folder, bool discard) {
+    std::string why;
+    return run(openRecordingFolder(folder, discard, why), why);
+}
+
+bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std::string& why) {
+    if (overlay_.recording) {
+        why = "a take is open; stop recording before opening another session";
+        return false;
+    }
+    if (save_waiting_ || save_writing_) {
+        why = "a save is still being written; open the recording once it is saved";
+        return false;
+    }
+    if (dirty() && !discard) {
+        why = "this session has unsaved edits; save it first, or open with \"Discard edits\"";
+        return false;
+    }
+    const Snapshot& now = ctl_.snapshot();
+    // The engine records into this session's tracks, so the empty session
+    // has as many; its takes are offered for placing once it is open.
+    Snapshot empty = make_empty_session(static_cast<uint32_t>(now.edit->tracks.size()),
+                                        now.settings.sample_rate);
+    const QString name = QFileInfo(folder).fileName();
+    empty.settings.name = name.toStdString();
+    empty.settings.session_id = model::new_session_id();
+    const std::string path = QFileInfo(folder).absoluteFilePath().toStdString();
+    if (!doc_.reset(std::move(empty), path, why)) {
+        emit openNotice(folder + QStringLiteral(" was not opened: ") + q(why));
+        return false;
+    }
+    ctl_.document_replaced();
+    before_open_.valid = true;
+    before_open_.opened = folder;
+    before_open_.file = file_;
+    before_open_.saved_revision = saved_revision_;
+    before_open_.save_generation = save_generation_;
+    before_open_.saved_bytes = saved_bytes_;
+    before_open_.repairs = repairs_;
+    emit openNotice(QString());
+    file_.clear();
+    saved_bytes_.clear();
+    save_generation_ = 0;
+    saved_revision_ = doc_.revision();
+    seen_dirty_ = false;
+    seen_revision_ = UINT64_MAX;
+    seen_sel_valid_ = seen_view_valid_ = false;
+    setRepairs({});
+    updateCounters(true);
+    sync();
+    emit sessionChanged();
+    emit notice(QStringLiteral("Opened the unsaved recording ") + name +
+                QStringLiteral("; place its takes, then save to name it"));
+    return true;
 }
 
 // --- Mix window ---

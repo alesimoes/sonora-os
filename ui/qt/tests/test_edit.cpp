@@ -1465,6 +1465,46 @@ int test_first_save_beside_its_takes() {
     return 0;
 }
 
+// PR #142 review N2, ADR-0018 §3: a first Save while the engine records into
+// an untitled folder asks for <sessions root>/<name>/<name>.sonora, which the
+// engine renames that folder to, so the session keeps the name the operator
+// gave it; it used to be saved as "Untitled", after the folder. A session
+// with no name of its own is saved in its folder, under the folder's name.
+int test_first_save_keeps_the_sessions_name() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why;
+    const QString untitled = dir.filePath(QStringLiteral("Untitled 3"));
+    CHECK(QDir(dir.path()).mkpath(QStringLiteral("Untitled 3/Audio Files")));
+    CHECK(QDir(dir.path()).mkpath(QStringLiteral("Bass")));
+
+    Snapshot named = make_demo_session(4, kRate);
+    named.settings.name = "Bass";
+    ModelDocument doc(named);
+    doc.set_saver(engine_saver());
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.filePath(QStringLiteral("elsewhere")));
+    session.setEngineFolder(untitled, true);
+    OK(session.saveSession(why));
+    // "Bass" is taken, so the first free name, as for any first Save; and
+    // under the folder the engine's folder is in, not the interface's own.
+    OK(session.sessionFile() == dir.filePath(QStringLiteral("Bass 2/Bass 2.sonora")));
+    OK(doc.snapshot().settings.name == "Bass 2");
+
+    Snapshot plain = make_demo_session(4, kRate);
+    plain.settings.name = "Untitled";
+    ModelDocument next(plain);
+    next.set_saver(engine_saver());
+    SessionModel second(next, peaks, true);
+    second.setSessionsDir(dir.path());
+    second.setEngineFolder(untitled, true);
+    OK(second.saveSession(why));
+    OK(second.sessionFile() == untitled + QStringLiteral("/Untitled 3.sonora"));
+    OK(next.snapshot().settings.name == "Untitled 3");
+    return 0;
+}
+
 int test_files() {
     QTemporaryDir dir;
     CHECK(dir.isValid());
@@ -2048,6 +2088,7 @@ int main(int argc, char** argv) {
         test_taper() ||
         test_time() || test_nudge_tempo_map() ||
         test_scene() || test_routing() || test_files() || test_first_save_beside_its_takes() ||
+        test_first_save_keeps_the_sessions_name() ||
         test_save_failures() ||
         test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups() || test_input_monitor()) {

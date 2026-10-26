@@ -265,6 +265,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
         hello_.implemented_commands.push_back(id);
     }
     folder_ = cfg_.folder;
+    folder_untitled_ = cfg_.folder_untitled;
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
     muted_.assign(cfg_.tracks, false);
@@ -343,7 +344,39 @@ void FakeEngine::announce_folder() {
     EngineEvent e;
     e.kind = EventKind::SessionFolder;
     e.text = folder_;
+    e.flags = folder_untitled_ ? kFolderUntitled : 0u;
     post_event(e);
+}
+
+bool FakeEngine::name_folder(const std::string& file, std::string& why) {
+    namespace fs = std::filesystem;
+    if (!folder_untitled_ || folder_.empty()) return true;
+    const fs::path target = fs::path(file).parent_path().lexically_normal();
+    std::error_code ec;
+    if (target.string() == folder_ || fs::exists(target, ec)) return true;
+    for (fs::directory_iterator it(folder_, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->path().extension() == ".sonora") return true;
+    }
+    // The engine's words: ActiveFolder::rename().
+    if (mode_ == TransportState::Recording) {
+        why = "stop recording to name the session; the take is being written to " +
+              fs::path(folder_).filename().string() + " (take " + std::to_string(take_) + " is open)";
+        return false;
+    }
+    if (fs::exists(folder_, ec)) {
+        fs::rename(folder_, target, ec);
+        if (ec) {
+            why = "cannot rename " + folder_ + " to " + target.string() + ": " + ec.message();
+            return false;
+        }
+    }
+    for (auto& [take, folder] : take_folders_) {
+        if (folder == folder_) folder = target.string();
+    }
+    folder_ = target.string();
+    folder_untitled_ = false;
+    announce_folder();
+    return true;
 }
 
 bool FakeEngine::load(const std::string& op, std::string& why) {
@@ -362,6 +395,7 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
         return false;
     }
     std::string folder;
+    bool untitled = false;
     if (!file.empty()) {
         const fs::path p(file);
         std::error_code ec;
@@ -369,15 +403,27 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
             why = "a session is opened by its file's absolute path, not \"" + file + "\"";
             return false;
         }
-        if (!fs::is_regular_file(p, ec)) {
+        if (fs::is_directory(p, ec)) {
+            // An unsaved recording, as engine/control opens one.
+            for (fs::directory_iterator it(p, ec), end; !ec && it != end; it.increment(ec)) {
+                if (it->path().extension() == ".sonora") {
+                    why = file + " holds a session file; open " + it->path().string() + " instead";
+                    return false;
+                }
+            }
+            folder = p.lexically_normal().string();
+            untitled = true;
+        } else if (!fs::is_regular_file(p, ec)) {
             why = "there is no session file at " + file;
             return false;
+        } else {
+            // common/session_files' session_folder_of(), which this module
+            // may not link: a file in "Session File Backups/" is of the
+            // folder above.
+            fs::path dir = p.parent_path();
+            if (dir.filename() == "Session File Backups") dir = dir.parent_path();
+            folder = dir.lexically_normal().string();
         }
-        // common/session_files' session_folder_of(), which this module may
-        // not link: a file in "Session File Backups/" is of the folder above.
-        fs::path dir = p.parent_path();
-        if (dir.filename() == "Session File Backups") dir = dir.parent_path();
-        folder = dir.lexically_normal().string();
     }
     // As engine/control: refused, the old session kept, when the new one's
     // Snapshot could not be sent.
@@ -386,6 +432,7 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
     }
     if (!folder.empty()) {
         folder_ = folder;
+        folder_untitled_ = untitled;
         // A take is numbered from what the folder holds; the fake's hold none.
         take_ = 1;
         announce_folder();
@@ -542,6 +589,7 @@ bool FakeEngine::save(const std::string& op, std::string& why) {
         why = "a session file is an absolute path ending in \".sonora\", not \"" + file + "\"";
         return false;
     }
+    if (!name_folder(file, why)) return false;
     std::set<std::string> refs;
     std::string parse_why;
     if (!model::sequence_references(bytes, refs, parse_why)) {

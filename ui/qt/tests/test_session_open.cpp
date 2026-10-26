@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QTemporaryDir>
+#include <QVariantMap>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -286,6 +287,57 @@ int an_edit_while_an_open_is_unanswered_is_refused() {
     return 0;
 }
 
+bool write_file(const QString& path, const QByteArray& bytes) {
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+}
+
+// ADR-0018 §3, "After a crash": a folder under the sessions root with takes
+// and no session file is an unsaved recording. Open lists it, and opening
+// it is a Load of an empty session that names the folder, so the engine
+// records there and offers its takes; the first Save names the session
+// after it, in it.
+int an_unsaved_recording_is_listed_and_opened() {
+    Rig r;
+    QObject::connect(&r.shell, &ShellModel::sessionFolder, &r.session, &SessionModel::setEngineFolder);
+    CHECK(r.connect());
+    const QDir root(r.dir.path());
+    CHECK(root.mkpath(QStringLiteral("Untitled 2/Audio Files")));
+    CHECK(write_file(root.filePath(QStringLiteral("Untitled 2/Audio Files/Audio 1_01.wav")), "RIFF"));
+    CHECK(root.mkpath(QStringLiteral("Untitled 3/Audio Files")));
+    CHECK(root.mkpath(QStringLiteral("Mix/Audio Files")));
+    CHECK(write_file(root.filePath(QStringLiteral("Mix/Audio Files/Audio 1_01.wav")), "RIFF"));
+    CHECK(write_file(root.filePath(QStringLiteral("Mix/Mix.sonora")), "{}"));
+
+    const QVariantList listed = r.session.unsavedRecordingList();
+    CHECK(listed.size() == 1);
+    const QVariantMap entry = listed.value(0).toMap();
+    CHECK(entry.value(QStringLiteral("name")).toString() == QStringLiteral("Untitled 2"));
+    const QString folder = root.filePath(QStringLiteral("Untitled 2"));
+    CHECK(entry.value(QStringLiteral("folder")).toString() == folder);
+    // Not in the sessions list: it has no session file.
+    for (const QVariant& v : r.session.sessionList()) {
+        CHECK(v.toMap().value(QStringLiteral("name")).toString() != QStringLiteral("Untitled 2"));
+    }
+
+    const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
+    CHECK(r.session.openRecording(folder, false));
+    r.settle();
+    CHECK(r.doc.in_flight() == 0);
+    CHECK(r.fake.folder() == folder.toStdString());
+    CHECK(r.session.engineFolder() == folder);
+    CHECK(r.session.sessionFile().isEmpty());
+    CHECK(r.doc.snapshot().edit->tracks.size() == tracks);
+    CHECK(r.doc.snapshot().settings.name == "Untitled 2");
+
+    std::string why;
+    CHECK(r.save(why));
+    CHECK(r.session.sessionFile() == folder + QStringLiteral("/Untitled 2.sonora"));
+    CHECK(QFileInfo(r.session.sessionFile()).isFile());
+    CHECK(r.session.unsavedRecordingList().isEmpty());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -293,6 +345,7 @@ int main(int argc, char** argv) {
     if (a_refused_open_gives_the_window_back() != 0) return 1;
     if (an_open_with_a_chunk_over_a_part_is_refused() != 0) return 1;
     if (an_edit_while_an_open_is_unanswered_is_refused() != 0) return 1;
+    if (an_unsaved_recording_is_listed_and_opened() != 0) return 1;
     std::printf("session open: ok\n");
     return 0;
 }

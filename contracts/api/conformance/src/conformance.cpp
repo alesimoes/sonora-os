@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <sstream>
 #include <functional>
 #include <limits>
@@ -1748,6 +1749,116 @@ int check_load_enters_its_folder(Rig& rig) {
     return C(rig, "load enters its session folder").go();
 }
 
+// ADR-0018 §3 (protocol 20): an untitled folder with takes and no session
+// file, an unsaved recording, is opened by a Load that names the folder.
+// It stays untitled, so its first Save renames it to the folder the Save
+// names, takes and all; refused while a take is being written to it. A
+// folder that holds a session file is opened by that file instead.
+int check_unsaved_recording_is_opened_and_named(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            namespace fs = std::filesystem;
+            static int n = 0;
+            std::error_code ec;
+            const fs::path root = fs::temp_directory_path(ec) /
+                                  ("sonora-conformance-unsaved-" + std::to_string(
+                                       reinterpret_cast<std::uintptr_t>(this)) + "-" +
+                                   std::to_string(n++));
+            fs::remove_all(root, ec);
+            struct Gone {
+                fs::path p;
+                ~Gone() {
+                    std::error_code e;
+                    fs::remove_all(p, e);
+                }
+            } gone{root};
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            StateView& v = s.engine->state();
+            const auto folder = [&]() -> std::pair<std::string, uint32_t> {
+                const EngineEvent* e = s.last_event(EventKind::SessionFolder);
+                return e == nullptr ? std::make_pair(std::string(), 0u) : std::make_pair(e->text, e->flags);
+            };
+
+            std::string bytes, error;
+            EXPECT(model::serialize(s.replica.current(), model::WriteInfo{"conformance", 1}, bytes,
+                                    error),
+                   error);
+            const fs::path recording = root / "Untitled 7";
+            fs::create_directories(recording / "Audio Files", ec);
+            fs::create_directories(root / "Saved", ec);
+            {
+                std::ofstream out(root / "Saved" / "Saved.sonora", std::ios::binary);
+                out << bytes;
+            }
+            ModelRequest load;
+            load.action = ModelAction::Load;
+            CommandReply r;
+            load.op = wire::encode_load((root / "Saved").string(), bytes);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Failed,
+                   "a folder with a session file was opened as an unsaved recording");
+            EXPECT(mentions(r.message, "Saved.sonora"), "the refusal does not name the file to open");
+
+            load.op = wire::encode_load(recording.string(), bytes);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
+                   "the unsaved recording was refused: " + r.message);
+            const std::string at = recording.lexically_normal().string();
+            EXPECT(s.until(rig_, [&]() { return folder().first == at; }),
+                   "no SessionFolder naming " + at + ", but \"" + folder().first + "\"");
+            EXPECT((folder().second & kFolderUntitled) != 0, "the recording's folder is not untitled");
+
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published after arming");
+            const int32_t take = v.transport().take;
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Recording &&
+                              v.transport().playhead > 0;
+                   }),
+                   "the take never ran");
+            const fs::path file = root / "Named" / "Named.sonora";
+            ModelRequest save;
+            save.action = ModelAction::Save;
+            save.op = wire::encode_save(file.string(), bytes);
+            EXPECT(s.await(rig_, s.engine->submit(save), r) && r.result == DispatchResult::Failed,
+                   "the session was named during a take");
+            EXPECT(mentions(r.message, "stop recording to name the session") &&
+                       mentions(r.message, "Untitled 7"),
+                   "the refusal does not say why: " + r.message);
+            EXPECT(!fs::exists(root / "Named", ec), "a refused naming left a folder");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Stopped &&
+                              v.transport().take == take + 1;
+                   }),
+                   "the take did not end");
+
+            EXPECT(s.await(rig_, s.engine->submit(save), r) && r.result == DispatchResult::Ok,
+                   "the first save was refused: " + r.message);
+            const std::string named = (root / "Named").lexically_normal().string();
+            EXPECT(s.until(rig_, [&]() { return folder().first == named; }),
+                   "no SessionFolder naming " + named + " after the first save, but \"" +
+                       folder().first + "\"");
+            EXPECT((folder().second & kFolderUntitled) == 0, "the named folder is still untitled");
+            EXPECT(fs::is_regular_file(file, ec), "the session file is not in the named folder");
+            EXPECT(!fs::exists(recording, ec), "the untitled folder is still there");
+            const int files = rig_.take_files_in(*s.engine, named, take);
+            if (files < 0) return skip("the rig cannot tell where a take was written");
+            EXPECT(files > 0, "take " + std::to_string(take) + " did not move to " + named);
+            return ok();
+        }
+    };
+    return C(rig, "an unsaved recording is opened by its folder and named by its first save").go();
+}
+
 // Save (protocol 11): the session file is in place when the reply says Ok;
 // what is not a session file, and a path that is not absolute, are refused.
 int check_save(Rig& rig) {
@@ -2148,6 +2259,7 @@ int run(Rig& rig) {
     failures += check_flush_plugin_state(rig);
     failures += check_save(rig);
     failures += check_load_enters_its_folder(rig);
+    failures += check_unsaved_recording_is_opened_and_named(rig);
     failures += check_recovery_offer(rig);
     failures += check_take_failed(rig);
     failures += check_inputs_missing(rig);

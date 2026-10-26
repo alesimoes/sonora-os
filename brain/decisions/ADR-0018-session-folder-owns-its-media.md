@@ -460,6 +460,24 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    `iso/` unit, `tools/`). `--sessions`; a fresh `Untitled <n>` at start
    and on a new session; empty folders removed; the first Save renames
    the folder, refused during a take; "Unsaved recordings" in Open.
+   **Done.** Protocol 20 (18 and 19 are loop record's and the track input
+   monitor's; the later to merge renumbers): a Load may name a folder with
+   no session file, entered untitled. Without `--dir` the engine starts in
+   a fresh folder under `--sessions` (default `~/Sessions`); with `--dir`
+   and no `--sessions`, a new session keeps the active folder, so the
+   tests and `tools/*` run unchanged. A new session keeps an untitled
+   folder that holds nothing rather than making another. The rename is
+   `ActiveFolder::rename()` on the control thread after
+   `SessionSaver::fence()`, not on the saver thread: the saver then never
+   writes a folder whose name is changing. Empty untitled folders go when
+   the engine leaves them and at start. The interface asks for
+   `<root>/<name>/<name>.sonora` only for a name the operator gave (#142
+   N2); otherwise the first Save goes in the folder under its name. A
+   first Save that cannot rename still writes where it is told, until
+   item 5. A Load or a rename that waits on the saver posts a Notice first
+   (#147 N-A); the wait is not bounded, since giving up would leave a save
+   writing an unlocked folder. #147 N-B has its test
+   (`plugin_hosting_flush_read_across_load`).
 5. **Save As** (`common/session_files`, `engine/control`, `ui/qt`,
    `keymaps/`). §5 gather: link or copy, `.part` cleanup, space check,
    progress, refused while recording. The Save As command in both key

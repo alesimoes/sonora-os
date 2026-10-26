@@ -69,6 +69,8 @@
 //   flush_active_folder  a flush after the session entered another folder
 //                        writes its state into that folder's Plugin State/,
 //                        not into the folder the engine started in
+//   flush_read_across_load  a flush whose reads end after a Load writes
+//                        nothing, in the old folder or the new one
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -1108,6 +1110,128 @@ int scenario_flush_active_folder(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// PR #147 review N-B: a flush whose states were read for the session a
+// Load then replaced must write nothing, in either folder. Track A's state
+// is read at once; track B's (the worker plugin, its save() slowed) is
+// still out when the Load comes, which fails it, so the flush ends with A's
+// state in hand after the session changed. Written, it would land in the
+// new session's Plugin State/, a state no document of that session names.
+int scenario_flush_read_across_load(const Args& a) {
+    namespace fs = std::filesystem;
+    std::printf("flush_read_across_load: a flush read across a Load writes nothing\n");
+    ::setenv("SONORA_TEST_SLOW_SAVE_MS", "1500", 1);
+    const fs::path first = fs::absolute(kDir);
+    const fs::path other = fs::absolute(kDir + "_other");
+    fs::remove_all(first);
+    fs::remove_all(other);
+    SessionConfig cfg;
+    cfg.dir = first.string();
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    FakeBackend::Config bc;
+    bc.devices = {FakeBackend::onboard()};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    std::string error;
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    // Tracks before inserts: an insert id moves the next fresh id past it,
+    // and a track added after would be refused as not fresh.
+    check(h.apply(track_op(100, 101, "A"), e) && h.apply(track_op(102, 103, "B"), e) &&
+              h.apply(insert_op(100, 500, 0, "urn:sonora:test#state"), e) &&
+              h.apply(insert_op(102, 501, 0, kWorker, {{"gain", 0.5f}}), e),
+          "the document: A with the state plugin, B with the worker");
+    if (!e.empty()) std::printf("  refused: %s\n", e.c_str());
+    std::string bytes;
+    check(serialize(h.current(), WriteInfo{"test", 1}, bytes, error), "serialised");
+    fs::create_directories(other);
+    {
+        std::ofstream out(other / "Other.sonora", std::ios::binary);
+        out << bytes;
+    }
+    EngineControlServer::Options opts;
+    opts.plugin_host = a.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    const auto states_in = [](const fs::path& dir) {
+        int files = 0;
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(dir / "Plugin State", ec)) {
+            const std::string name = entry.path().filename().string();
+            if (name.size() > 6 && name.substr(name.size() - 6) == ".state") ++files;
+        }
+        return files;
+    };
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        const auto running = [&](int track) {
+            return (engine.state().track(track).inserts[0].flags & api::kInsertRunning) != 0;
+        };
+        if (!until([&] { return running(0) && running(1); }, 20000)) {
+            check(false, "both inserts run");
+            std::printf("  flags: A %#x, B %#x\n", engine.state().track(0).inserts[0].flags,
+                        engine.state().track(1).inserts[0].flags);
+            for (const auto& ev : in.events)
+                if (ev.kind == api::EventKind::Notice || ev.kind == api::EventKind::PluginFault)
+                    std::printf("  event: %s\n", ev.text.c_str());
+        }
+        const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+            for (const auto& r : in.replies)
+                if (r.seq == seq) out = r;
+            return out.seq == seq;
+        };
+        api::ModelRequest flush;
+        flush.action = api::ModelAction::FlushPluginState;
+        const uint64_t flush_seq = engine.submit(flush);
+        // A's answer is in long before B's slowed save ends.
+        until([] { return false; }, 400);
+        api::CommandReply flushed;
+        check(!reply_to(flush_seq, flushed), "  B's state is still being read");
+        api::ModelRequest load;
+        load.action = api::ModelAction::Load;
+        load.op = api::wire::encode_load((other / "Other.sonora").string(), bytes);
+        const uint64_t load_seq = engine.submit(load);
+        api::CommandReply loaded;
+        check(until([&] { return reply_to(flush_seq, flushed) && reply_to(load_seq, loaded); }, 10000),
+              "the flush and the Load answered");
+        check(loaded.result == DispatchResult::Ok, "the Load: Ok");
+        if (!flushed.message.empty()) std::printf("  flush: %s\n", flushed.message.c_str());
+        check(flushed.result == DispatchResult::Failed &&
+                  flushed.message.find("a session was opened while") != std::string::npos,
+              "the flush: Failed, saying a session was opened");
+        until([] { return false; }, 300);
+        check(*session.folder() == other.string(), "  the session is in the loaded folder");
+        check(states_in(other) == 0, "  no state in the loaded session's Plugin State/");
+        check(states_in(first) == 0, "  nor in the folder it left");
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
+    }
+    ::unsetenv("SONORA_TEST_SLOW_SAVE_MS");
+    fs::remove_all(first);
+    fs::remove_all(other);
+    return failures ? 1 : 0;
+}
+
 // BACKLOG Track 4 item 5: the worker's refused messages were counted in the
 // host and told to nobody, so a sampler that never got its sample played on
 // as if it had. ADR-0012 change G, as for non-finite output: one Notice the
@@ -1793,6 +1917,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "state_flush") rc = scenario_state_flush(a);
     else if (a.scenario == "server_state_flush") rc = scenario_server_state_flush(a);
     else if (a.scenario == "flush_active_folder") rc = scenario_flush_active_folder(a);
+    else if (a.scenario == "flush_read_across_load") rc = scenario_flush_read_across_load(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

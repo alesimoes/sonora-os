@@ -34,10 +34,141 @@ bool make_folder(const std::string& path, bool& made, std::string& why) {
     return false;
 }
 
+const char kUntitled[] = "Untitled";
+
+// "Untitled", or "Untitled <n>": the names make_untitled() gives.
+bool untitled_name(const std::string& name) {
+    const std::string base = kUntitled;
+    if (name == base) return true;
+    if (name.size() <= base.size() + 1 || name.compare(0, base.size() + 1, base + " ") != 0) {
+        return false;
+    }
+    for (std::size_t i = base.size() + 1; i < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') return false;
+    }
+    return true;
+}
+
+// Nothing in `dir` but an empty "Audio Files/", which entering made.
+bool holds_nothing(const std::string& dir) {
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->path().filename() != "Audio Files") return false;
+        std::error_code inner;
+        if (!it->is_directory(inner) || !fs::is_empty(it->path(), inner) || inner) return false;
+    }
+    return !ec;
+}
+
+bool holds_a_session_file(const std::string& dir) {
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->path().extension() == ".sonora") return true;
+    }
+    return false;
+}
+
+// rmdir, which fails on a folder with anything in it: never deletes a file.
+void remove_if_empty(const std::string& dir) {
+    std::error_code ec;
+    fs::remove(fs::path(dir) / "Audio Files", ec);
+    fs::remove(fs::path(dir), ec);
+}
+
 }  // namespace
 
+std::string ActiveFolder::make_untitled(const std::string& root, std::string& why) {
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    if (!fs::is_directory(root, ec)) {
+        why = "cannot make the sessions folder " + root + (ec ? ": " + ec.message() : ": not a folder");
+        return {};
+    }
+    // Bounded only so that a filesystem that answers nonsense cannot spin
+    // the control thread for ever.
+    for (int n = 1; n < 100000; ++n) {
+        const std::string name = n == 1 ? std::string(kUntitled) : kUntitled + (" " + std::to_string(n));
+        const fs::path p = fs::path(root) / name;
+        std::error_code made_ec;
+        if (fs::create_directory(p, made_ec)) {
+            platform::sync_directory(root);
+            return p.string();
+        }
+        if (made_ec) {
+            why = "cannot make " + p.string() + ": " + made_ec.message();
+            return {};
+        }
+    }
+    why = "every Untitled name in " + root + " is taken";
+    return {};
+}
+
+void ActiveFolder::remove_empty_untitled(const std::string& root) {
+    std::error_code ec;
+    for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code inner;
+        if (!it->is_directory(inner) || !untitled_name(it->path().filename().string())) continue;
+        const std::string dir = it->path().string();
+        if (!holds_nothing(dir)) continue;
+        // Held, it is another engine's new session, empty because nothing
+        // was recorded yet.
+        platform::FolderLock lock;
+        std::string err;
+        if (lock.acquire(dir, err) != platform::FolderLock::Result::Held) continue;
+        remove_if_empty(dir);
+    }
+}
+
 ActiveFolder::ActiveFolder() = default;
-ActiveFolder::~ActiveFolder() = default;
+
+ActiveFolder::~ActiveFolder() {
+    // While the lock is still held, so no other engine has entered it.
+    if (fresh()) remove_if_empty(path_);
+}
+
+bool ActiveFolder::fresh() const {
+    return kind_ == Kind::Untitled && !path_.empty() && holds_nothing(path_);
+}
+
+bool ActiveFolder::names_on_save(const std::string& folder) const {
+    if (kind_ != Kind::Untitled || path_.empty() || holds_a_session_file(path_)) return false;
+    const std::string id = identity(folder);
+    if (id == path_) return false;
+    std::error_code ec;
+    if (fs::exists(id, ec) || ec) return false;
+    const fs::path parent = fs::path(id).parent_path();
+    return fs::is_directory(parent, ec) && platform::same_filesystem(parent.string(), path_);
+}
+
+bool ActiveFolder::rename(Session& session, const std::string& folder, std::string& why) {
+    const std::string busy = session.folder_change_refusal();
+    if (!busy.empty()) {
+        why = "stop recording to name the session; the take is being written to " +
+              fs::path(path_).filename().string() + " (" + busy + ")";
+        return false;
+    }
+    if (!names_on_save(folder)) {
+        why = "the session's folder cannot be renamed to " + folder;
+        return false;
+    }
+    const std::string id = identity(folder);
+    std::string caution;
+    if (!platform::rename_dir_durably(path_, id, caution)) {
+        why = caution;
+        return false;
+    }
+    if (!session.set_folder(folder, why)) {
+        // Unreachable while the refusal above holds on this thread; put
+        // back rather than leave the session naming a folder that is gone.
+        std::string back;
+        platform::rename_dir_durably(id, path_, back);
+        return false;
+    }
+    path_ = id;
+    kind_ = Kind::Named;
+    why = caution;
+    return true;
+}
 
 bool ActiveFolder::enter(Session& session, const std::string& path, Kind kind,
                           std::string& why, std::vector<std::string>& notices) {

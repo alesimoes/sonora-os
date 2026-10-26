@@ -110,6 +110,9 @@ public:
         // The fake writes no audio there: it remembers which folder each
         // take was recorded in (take_folder()).
         std::string folder;
+        // Whether `folder` is an Untitled one the engine made (ADR-0018 §3):
+        // the first Save into a folder that does not exist renames it there.
+        bool folder_untitled = false;
     };
 
     FakeEngine();
@@ -229,6 +232,8 @@ public:
     // it started. Empty for a take not recorded, or recorded with no
     // folder announced.
     std::string take_folder(int32_t take) const;
+    // The active session folder, as SessionFolder last said it.
+    const std::string& folder() const { return folder_; }
 
 private:
     uint64_t now() const;
@@ -344,8 +349,12 @@ private:
     bool load(const std::string& op, std::string& why);
     // The active session folder, and the folder of every take recorded.
     std::string folder_;
+    bool folder_untitled_ = false;
     std::map<int32_t, std::string> take_folders_;
     void announce_folder();
+    // Save's first step for an untitled folder, as engine/control's
+    // ActiveFolder::rename(): false, with `why`, when it is refused.
+    bool name_folder(const std::string& file, std::string& why);
 };
 
 }  // namespace sonora::api::testing

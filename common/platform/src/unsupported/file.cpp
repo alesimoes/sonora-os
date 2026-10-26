@@ -43,6 +43,26 @@ bool read_only(const std::string& path) {
     return (perms & std::filesystem::perms::owner_write) == std::filesystem::perms::none;
 }
 
+// Standard C++ cannot see which volume a path is on.
+bool same_filesystem(const std::string&, const std::string&) { return false; }
+
+// No durability is claimed (sync_directory), and the check for `to` is not
+// atomic with the rename. Windows, later: MoveFileExW (ADR-0018 §9).
+bool rename_dir_durably(const std::string& from, const std::string& to, std::string& error) {
+    std::error_code ec;
+    if (std::filesystem::exists(to, ec)) {
+        error = "cannot rename " + from + " to " + to + ": it exists";
+        return false;
+    }
+    std::filesystem::rename(from, to, ec);
+    if (ec) {
+        error = "cannot rename " + from + " to " + to + ": " + ec.message();
+        return false;
+    }
+    error = "renamed, but this platform cannot make the new name durable";
+    return true;
+}
+
 FolderLock::~FolderLock() = default;
 
 // Standard C++ has no file lock, so nothing is held and nothing excluded.

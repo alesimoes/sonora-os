@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -393,8 +394,12 @@ int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProces
 
 int main(int argc, char** argv) {
     sonora::SessionConfig cfg;
-    cfg.dir = std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") +
-              "/Sessions/Untitled";
+    // ADR-0018 §3: without --dir the engine starts a new session, in a
+    // fresh Untitled folder under the sessions root (~/Sessions, on the
+    // machine's own disk on an installed system), and makes another for
+    // every new session after it.
+    std::string sessions_root;
+    bool dir_given = false;
 
     // Headless operation exists so the engine can be tested without a human
     // at a keyboard. Booting a machine to find out whether a change records
@@ -423,6 +428,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
             cfg.dir = argv[++i];
+            dir_given = true;
+        } else if (std::strcmp(argv[i], "--sessions") == 0 && i + 1 < argc) {
+            sessions_root = argv[++i];
         } else if (std::strcmp(argv[i], "--tracks") == 0 && i + 1 < argc) {
             ++i;
             if (std::strcmp(argv[i], "auto") == 0) {
@@ -503,7 +511,12 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(
                 "usage: sonora-engine [options]\n"
-                "  --dir PATH        session directory\n"
+                "  --dir PATH        start in this session folder; a new session\n"
+                "                    opened later stays in it unless --sessions\n"
+                "                    is given too\n"
+                "  --sessions ROOT   where new sessions get their own Untitled\n"
+                "                    folder (default ~/Sessions); without --dir\n"
+                "                    the engine starts in a fresh one\n"
                 "  --tracks N|auto   track count, or one per capture channel\n"
                 "  --device NAME     capture device to record from. Without it,\n"
                 "                    the first line of ~/.config/sonora/device or\n"
@@ -687,6 +700,24 @@ int main(int argc, char** argv) {
                     capture_device.c_str());
     }
 
+    // --dir and the tests keep the folder they name for every session;
+    // --sessions, or neither, gives each new session its own.
+    if (sessions_root.empty() && !dir_given) {
+        sessions_root = std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") + "/Sessions";
+    }
+    if (!dir_given) {
+        // An earlier engine that died left empty ones behind; they would
+        // push this session's name on to "Untitled 2".
+        sonora::ActiveFolder::remove_empty_untitled(sessions_root);
+        std::string why;
+        cfg.dir = sonora::ActiveFolder::make_untitled(sessions_root, why);
+        if (cfg.dir.empty()) {
+            std::fprintf(stderr, "sonora: %s\n", why.c_str());
+            return 1;
+        }
+    }
+    control.sessions_root = sessions_root;
+
     sonora::Session session(cfg);
     // Locked before recovery: a second engine on the folder would treat the
     // first one's open takes as unfinished and cut the frame being written.
@@ -699,9 +730,15 @@ int main(int argc, char** argv) {
     std::vector<std::string> recovered;
     {
         std::string why;
-        if (!active_folder.enter(session, cfg.dir, sonora::ActiveFolder::Kind::Named, why,
-                                 recovered)) {
+        const sonora::ActiveFolder::Kind kind =
+            dir_given ? sonora::ActiveFolder::Kind::Named : sonora::ActiveFolder::Kind::Untitled;
+        if (!active_folder.enter(session, cfg.dir, kind, why, recovered)) {
             std::fprintf(stderr, "sonora: %s\n", why.c_str());
+            if (!dir_given) {
+                std::error_code ec;
+                std::filesystem::remove(std::filesystem::path(cfg.dir) / "Audio Files", ec);
+                std::filesystem::remove(cfg.dir, ec);
+            }
             return 1;
         }
     }
@@ -1061,7 +1098,12 @@ int main(int argc, char** argv) {
     audio->deactivate();
     server.after_deactivate();
     // The folder in use now: a Load moves the session from cfg.dir.
-    std::printf("sonora: session written to %s\n", session.folder()->c_str());
+    if (active_folder.fresh()) {
+        // Removed as the engine exits (ActiveFolder's destructor).
+        std::printf("sonora: nothing was put in %s; it is removed\n", session.folder()->c_str());
+    } else {
+        std::printf("sonora: session written to %s\n", session.folder()->c_str());
+    }
 
     // The server dying, or changing rate or buffer size, stops the callback
     // without stopping us. The take is closed, so what was captured is a
