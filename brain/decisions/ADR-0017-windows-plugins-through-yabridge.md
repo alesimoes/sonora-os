@@ -267,11 +267,22 @@ sign-off (Y6) is still open: it needs the UMC1820.
   ends. The prefix is `$WINEPREFIX`, or `~/.wine` when it is unset, resolved
   by the entry layer. Packaging can still create the prefix at first boot;
   the scanner then finds it and does nothing. Doing it in the scanner too
-  covers a deleted prefix and a developer's machine. If the prefix cannot
+  covers a deleted prefix (one deleted while the engine runs is only
+  re-checked at the next scan) and a developer's machine. If the prefix cannot
   be made (no Wine, a failure, the limit), the operator is told. Nothing
   bridged is probed or cached Blocked, and the next scan tries again. The
   Mono and Gecko installers are off because their dialogs would wait for
   an answer on a kiosk where nobody can give one.
+- **wineboot ends before `system.reg` exists (follow-up).** Wine saves the
+  registry when wineserver shuts down, not when `wineboot --init` exits, so
+  the first scan on a fresh prefix could still skip bridged plugins. After
+  wineboot ends 0 with `system.reg` still missing, the scanner runs
+  `wineserver -w` (absolute path, no shell, the same environment) as a second
+  job inside the same 120 s deadline, and checks again. Measured in the
+  container (Docker Desktop, fresh prefix, Wine 10.0, two runs): `system.reg`
+  was absent when wineboot returned, after 7.8 s and 8.8 s, and present
+  after `wineserver -w` returned 4.4 s and 4.3 s later, so about 12 to 13 s
+  in all, well inside the limit. A container figure, not an appliance one.
 - **A crash during a running chain (Y4).** `yabridge_wine.sh` step 7 runs
   the Crash class, built for Windows, after the State pass-through through
   the plugin boundary (`plugin_driver --scenario crash_bridged`) and

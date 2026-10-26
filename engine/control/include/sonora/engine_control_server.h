@@ -164,6 +164,7 @@ public:
         // scan of a bridged bundle (PluginScannerConfig). Empty: no step.
         std::string plugin_wine_prefix;
         std::vector<std::string> plugin_wine_prefix_command;
+        std::vector<std::string> plugin_wine_server_wait_command;
         // Q1: a scan at every engine start. Off only in tests of the chains.
         bool plugin_scan_at_start = true;
         // Probe slots, one of them reserved for chain starts (change E); 0

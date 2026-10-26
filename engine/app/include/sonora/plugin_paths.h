@@ -36,4 +36,8 @@ std::string default_wine_prefix(const char* wineprefix_env, const char* home_env
 // timeout. Empty when wineboot is not on the path (Wine not installed).
 std::vector<std::string> wine_prefix_command(const char* path_env);
 
+// `wineserver -w`, which returns once the prefix's registry has been saved
+// (wineboot exits before that); empty when wineserver is not on PATH.
+std::vector<std::string> wine_server_wait_command(const char* path_env);
+
 }  // namespace sonora

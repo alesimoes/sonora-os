@@ -132,6 +132,8 @@ struct PluginScanner::Job {
     std::string out_path;
     uint64_t started_ms = 0;
     uint64_t timeout_ms = 0;
+    bool wine_waiting = false;   // WinePrefix: the wineserver -w step, after wineboot
+    uint64_t wine_began_ms = 0;  // WinePrefix: when wineboot started, for the one deadline
     bool catalog() const { return !(kind == Kind::Probe && chain); }
 };
 
@@ -492,6 +494,7 @@ struct PluginScanner::Worker {
         j->kind = Job::Kind::WinePrefix;
         j->out_path = scratch("wine");
         j->timeout_ms = cfg.wine_prefix_timeout_ms;
+        j->wine_began_ms = steady_ms();
         if (!spawn(*j, cfg.wine_prefix_command)) {
             wine_unavailable("does not exist, and " + cfg.wine_prefix_command.front() + " could not start");
             return false;
@@ -508,12 +511,30 @@ struct PluginScanner::Worker {
             notice("the Wine prefix for Windows plug-ins was created: " + cfg.wine_prefix);
             return;
         }
+        // wineboot ends before wineserver has saved the registry: system.reg
+        // is written when wineserver shuts down. Wait for it, in the same
+        // job style and inside the same deadline, never blocking the loop.
+        if (exited_ok && !j.wine_waiting && !cfg.wine_server_wait_command.empty()) {
+            const uint64_t spent = steady_ms() - j.wine_began_ms;
+            if (spent < cfg.wine_prefix_timeout_ms) {
+                auto w = std::make_unique<Job>();
+                w->kind = Job::Kind::WinePrefix;
+                w->wine_waiting = true;
+                w->wine_began_ms = j.wine_began_ms;
+                w->out_path = scratch("wine");
+                w->timeout_ms = cfg.wine_prefix_timeout_ms - spent;
+                if (spawn(*w, cfg.wine_server_wait_command)) {
+                    jobs.push_back(std::move(w));
+                    return;
+                }
+            }
+        }
         const uint64_t t = cfg.wine_prefix_timeout_ms;
         if (timed_out)
             wine_unavailable("was not created within " +
                              (t % 1000 == 0 ? std::to_string(t / 1000) + " s" : std::to_string(t) + " ms"));
         else if (exited_ok)
-            wine_unavailable("is still missing after " + cmd + " ended");
+            wine_unavailable("is still missing after " + cmd + (j.wine_waiting ? " and wineserver ended" : " ended"));
         else
             wine_unavailable("could not be created: " + cmd + " " + ended(*j.child));
     }
@@ -757,6 +778,10 @@ struct PluginScanner::Worker {
     void refuse(const Key& k, const std::string& why, const std::string& bundle) {
         pr::Record r = blocked(k, why);
         r.outcome = pr::Outcome::Refused;
+        // Run-only, so the refusal is not cached and the next start probes
+        // again; the marker is set here because store() cannot find the
+        // bundle of a record it is not told one for.
+        if (r.format == "vst3" && is_bridged(bundle)) r.bridge = "yabridge";
         store(k, std::move(r), std::string());
         settle_one(bundle);
     }
