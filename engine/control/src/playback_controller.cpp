@@ -10,6 +10,12 @@
 namespace sonora {
 namespace {
 
+// The document validates count_off_bars against the model's bound and the
+// click clamps to its own; they are the same number or one rejects what the
+// other plays.
+static_assert(Click::kMaxCountOffBars == model::kMaxCountOffBars,
+              "the count-off bar limit differs between the model and the click");
+
 Track::Monitor monitor_of(model::MonitorMode m) {
     switch (m) {
         case model::MonitorMode::Input:
