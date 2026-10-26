@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "session_model.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QTimer>
 #include <QVariantMap>
 #include <algorithm>
@@ -760,6 +762,21 @@ bool SessionModel::writeSession(std::string& why, std::string caution) {
     // and a retry is not pushed to "<Name> 2".
     Snapshot to_write = ctl_.snapshot();
     bool rename = false;
+    // Beside its takes (ADR-0018 §4), in the folder the engine records this
+    // session into, unless another session's file is already there: then
+    // the takes stay where they are and the file goes where it went before.
+    if (file.isEmpty() && !engine_folder_.isEmpty()) {
+        const QDir folder(engine_folder_);
+        const QString name = QFileInfo(engine_folder_).fileName();
+        if (folder.exists() && session_name_problem(name).empty() &&
+            folder.entryList({QStringLiteral("*.sonora")}, QDir::Files).isEmpty()) {
+            file = folder.filePath(name + QStringLiteral(".sonora"));
+            if (name.toStdString() != to_write.settings.name) {
+                to_write.settings.name = name.toStdString();
+                rename = true;
+            }
+        }
+    }
     if (file.isEmpty()) {
         const std::string& n = to_write.settings.name;
         const QString wanted = n.empty() ? QStringLiteral("Untitled") : q(n);
@@ -925,7 +942,8 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
         return false;
     }
     const std::shared_ptr<const model::SourcePool> pool = loaded.snapshot.sources;
-    if (!doc_.reset(std::move(loaded.snapshot), why)) {
+    const std::string path = QFileInfo(file).absoluteFilePath().toStdString();
+    if (!doc_.reset(std::move(loaded.snapshot), path, why)) {
         emit openNotice(file + QStringLiteral(" was not opened: ") + q(why));
         return false;
     }

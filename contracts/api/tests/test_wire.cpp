@@ -109,6 +109,24 @@ void round_trips() {
         CHECK(!wire::decode_save(std::string("\0{}", 3), file, session, error));
         CHECK(!wire::decode_save(std::string(wire::kMaxSavePath + 1, 'a') + std::string(1, '\0'),
                                  file, session, error));
+        // Load (protocol 16): the same form, and an empty path is a new
+        // session; bytes with no path ahead of them are refused, by name.
+        m.action = ModelAction::Load;
+        m.op = wire::encode_load("/home/a/Sessions/Bass/Bass.sonora", std::string("{\0}", 3));
+        wire::encode(m, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.action == ModelAction::Load);
+        std::string_view load;
+        CHECK(wire::decode_load(back.op, file, load, error));
+        CHECK(file == "/home/a/Sessions/Bass/Bass.sonora" && load == std::string("{\0}", 3));
+        // `load` views the op it was decoded from, so the op outlives it.
+        const std::string fresh = wire::encode_load("", "{}");
+        CHECK(wire::decode_load(fresh, file, load, error));
+        CHECK(file.empty() && load == "{}");
+        CHECK(!wire::decode_load("{\"a session\": \"from protocol 15\"}", file, load, error));
+        CHECK(mentions(error, "names no session file"));
+        CHECK(!wire::decode_load(std::string(wire::kMaxSavePath + 1, 'a') + std::string(1, '\0'),
+                                 file, load, error));
         // An action past the last this protocol has is refused.
         m.action = static_cast<ModelAction>(static_cast<uint32_t>(ModelAction::Save) + 1);
         wire::encode(m, bytes);
@@ -148,6 +166,21 @@ void round_trips() {
         wire::encode(e, bytes);
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.kind == EventKind::RecoveryOffer && back.frame == 2 && back.text == e.text);
+        CHECK(back.flags == 0);
+        // The session folder (protocol 16): path, free bytes and flags.
+        e.kind = EventKind::SessionFolder;
+        e.frame = 123456789012ull;
+        e.text = "/home/sonora/Sessions/Bass";
+        e.flags = kFolderUntitled | kFolderReadOnly;
+        wire::encode(e, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.kind == EventKind::SessionFolder && back.frame == e.frame &&
+              back.text == e.text && back.flags == e.flags);
+        // A flag this version does not define is refused, not dropped.
+        e.flags = 1u << 7;
+        wire::encode(e, bytes);
+        CHECK(!wire::decode(bytes, back, error));
+        CHECK(mentions(error, "flags"));
     }
     {
         ModelUpdate u;
@@ -274,28 +307,29 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // SetSettings' transport.count_off_bars (ADR-0020) is version 15;
+    // Load's path and the session folder (ADR-0018 §2, §4) are version 16;
+    // SetSettings' transport.count_off_bars (ADR-0020) 15;
     // PluginInfo::bridge (ADR-0017 Y2) 14; the recovery offer
     // (engine.record.orphan_offer) 13; Hello's capabilities 12; Save
     // (ADR-0015 M-1c PR 3) 11; a Snapshot and a Load in parts are 10, loop
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 15);
+    CHECK(kProtocolVersion == 16);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
-    const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
-    CHECK(mentions(v8, "the engine speaks control protocol version 15 and this interface "
-                       "speaks version 8"));
-    CHECK(mentions(v8, "same build"));
-    // And this interface refuses a version-8 engine the same way.
-    CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
-                   "the engine speaks control protocol version 8 and this interface "
-                   "speaks version 15"));
+    const std::string v15 = wire::version_mismatch(pv, lv, 15, kStateLayoutVersion);
+    CHECK(mentions(v15, "the engine speaks control protocol version 16 and this interface "
+                        "speaks version 15"));
+    CHECK(mentions(v15, "same build"));
+    // And this interface refuses a version-15 engine the same way.
+    CHECK(mentions(wire::version_mismatch(15, kStateLayoutVersion),
+                   "the engine speaks control protocol version 15 and this interface "
+                   "speaks version 16"));
 }
 
 void domains() {

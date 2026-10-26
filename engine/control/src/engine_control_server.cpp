@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "sonora/active_folder.h"
 #include "sonora/api/wire.h"
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
@@ -19,6 +21,7 @@
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
+#include "sonora/session_files/session_folder.h"
 #include "sonora/session_saver.h"
 
 namespace sonora {
@@ -320,6 +323,9 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     start_hosting();
     // Standing, so the first interface to attach is offered them.
     offer_orphans();
+    if (opts_.active_folder == nullptr) own_folder_ = std::make_unique<ActiveFolder>();
+    folder_ = opts_.active_folder != nullptr ? opts_.active_folder : own_folder_.get();
+    announce_folder();
 }
 
 EngineControlServer::~EngineControlServer() {
@@ -736,7 +742,86 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
         case api::EventKind::RecoveryOffer:
             recovery_offer_ = event.text.empty() ? std::string() : bytes;
             break;
+        case api::EventKind::SessionFolder: session_folder_ = bytes; break;
     }
+}
+
+void EngineControlServer::announce_folder() {
+    // Absolute, because a client builds the Save path from it, and Save
+    // takes only an absolute path: --dir and the tests may give a relative
+    // one.
+    std::error_code ec;
+    const std::filesystem::path absolute = std::filesystem::absolute(*session_.folder(), ec);
+    api::EngineEvent e;
+    e.kind = api::EventKind::SessionFolder;
+    e.text = ec ? *session_.folder() : absolute.lexically_normal().string();
+    e.frame = folder_->free_bytes();
+    e.flags = (folder_->untitled() ? api::kFolderUntitled : 0u) |
+              (folder_->read_only() ? api::kFolderReadOnly : 0u);
+    post_event(e);
+}
+
+bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::string& why,
+                               std::vector<std::string>& notices, bool& entered) {
+    entered = false;
+    std::string file;
+    std::string_view bytes;
+    if (!api::wire::decode_load(m.op, file, bytes, why)) return false;
+    const auto l = loads_.find(from);
+    model::LoadParts* parts = l != loads_.end() ? l->second.parts.get() : nullptr;
+    if (session_.loop_take_running()) {
+        // Another document's loop range would move the frozen one
+        // (ADR-0016 §1) as a SetSettings would.
+        why = "a session cannot be opened while loop record runs; stop first";
+        return false;
+    }
+    // A take belongs to the session it was started in, and closes into that
+    // session's folder (ADR-0018 §1, §2): one asked for and waiting on
+    // residency would start in the other.
+    if (std::string busy = session_.folder_change_refusal(); !busy.empty()) {
+        why = "stop recording before opening another session: " + busy;
+        return false;
+    }
+    if (playback_->record_requested()) {
+        why = "stop recording before opening another session: a take is about to start";
+        return false;
+    }
+    if (l != loads_.end() && !l->second.refused.empty()) {
+        why = l->second.refused;
+        return false;
+    }
+    std::string folder;
+    if (!file.empty()) {
+        namespace fs = std::filesystem;
+        const fs::path p(file);
+        std::error_code ec;
+        if (!p.is_absolute()) {
+            why = "a session is opened by its file's absolute path, not \"" + file + "\"";
+            return false;
+        }
+        if (!fs::is_regular_file(p, ec)) {
+            why = "there is no session file at " + file;
+            return false;
+        }
+        folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
+    }
+    // The new document is made before the folder is entered and kept only
+    // if both succeed, so a refusal at either leaves the session as it was.
+    // Refused, the old session kept, when the new one's Snapshot could not
+    // be sent (Document::load); only the chunk table is left for the worker.
+    model::Document next(*document_);
+    if (!next.load(bytes, session_.config().sample_rate, why, parts, api::wire::kMaxModelBytes)) {
+        return false;
+    }
+    if (!folder.empty()) {
+        if (!folder_->enter(session_, folder, ActiveFolder::Kind::Named, why, notices)) {
+            why = "the session's folder could not be opened: " + why;
+            return false;
+        }
+        entered = true;
+    }
+    *document_ = std::move(next);
+    return true;
 }
 
 bool EngineControlServer::takes_in_flight() const {
@@ -876,7 +961,8 @@ void EngineControlServer::greet(ClientId id) {
     send_catalog(client);
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
-    for (const std::string* e : {&inputs_missing_, &take_failed_, &fatal_, &recovery_offer_}) {
+    for (const std::string* e :
+         {&session_folder_, &inputs_missing_, &take_failed_, &fatal_, &recovery_offer_}) {
         if (!e->empty()) send_to(client, *e);
     }
 }
@@ -1698,6 +1784,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         bool ok = false;
         DispatchResult refusal = DispatchResult::Failed;
+        // A Load's: the session folder it entered, and what recovery there said.
+        std::vector<std::string> entry_notices;
+        bool entered = false;
         // Faders are written from the document only when it changed what
         // they hold, whichever request changed it: a fader ride sent as a
         // ParameterChange must not snap back on an unrelated edit. A change
@@ -1760,22 +1849,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 return;
             }
             case api::ModelAction::Load: {
-                const auto l = loads_.find(from);
-                if (session_.loop_take_running()) {
-                    // Another document's loop range would move the frozen
-                    // one (ADR-0016 §1) as a SetSettings would.
-                    why = "a session cannot be opened while loop record runs; stop first";
-                } else if (l != loads_.end() && !l->second.refused.empty()) {
-                    why = l->second.refused;
-                } else {
-                    // Refused, the old session kept, when the new one's
-                    // Snapshot could not be sent (Document::load); only the
-                    // chunk table is left for the worker.
-                    ok = document_->load(m.op, session_.config().sample_rate, why,
-                                         l != loads_.end() ? l->second.parts.get() : nullptr,
-                                         api::wire::kMaxModelBytes);
-                }
-                if (l != loads_.end()) loads_.erase(l);
+                ok = load(from, m, why, entry_notices, entered);
+                loads_.erase(from);
                 mix_changed = true;
                 break;
             }
@@ -1793,6 +1868,18 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         if (ok) {
             if (m.action == api::ModelAction::Load) {
                 ++session_generation_;
+                if (entered) {
+                    for (const std::string& line : entry_notices) {
+                        api::EngineEvent e;
+                        e.kind = api::EventKind::Notice;
+                        e.text = line;
+                        post_event(e);
+                    }
+                    // Numbered from the folder entered, as at start.
+                    take_ = session_.next_free_take();
+                    publisher_->set_take(take_);
+                    announce_folder();
+                }
                 std::vector<ClientId> everyone;
                 for (const auto& [id, c] : clients_) everyone.push_back(id);
                 send_snapshot(everyone);

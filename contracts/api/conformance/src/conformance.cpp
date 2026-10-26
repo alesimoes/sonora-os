@@ -806,6 +806,7 @@ int check_mix(Rig& rig) {
             model::WriteInfo info;
             info.written_by = "conformance";
             EXPECT(model::serialize(fewer, info, m.op, error), error);
+            m.op = wire::encode_load("", m.op);
             m.action = ModelAction::Load;
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
                    "a session one track short was refused: " + r.message);
@@ -1022,7 +1023,7 @@ int check_load(Rig& rig) {
             EXPECT(model::serialize(other, info, bytes, error), error);
             const std::size_t updates = s.inbox.model.size();
             m.action = ModelAction::Load;
-            m.op = bytes;
+            m.op = wire::encode_load("", bytes);
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
                    "a valid session was refused: " + r.message);
             EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() > updates; }),
@@ -1036,12 +1037,13 @@ int check_load(Rig& rig) {
 
             // Refusals.
             const std::size_t after = s.inbox.model.size();
-            m.op = "{\"not\": \"a session\"}";
+            m.op = wire::encode_load("", "{\"not\": \"a session\"}");
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
                    "bytes that are not a session were loaded");
             EXPECT(mentions(r.message, "session"), "the refusal does not say why");
             other.settings.sample_rate = s.engine->hello().sample_rate == 44100 ? 48000 : 44100;
             EXPECT(model::serialize(other, info, m.op, error), error);
+            m.op = wire::encode_load("", m.op);
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
                    "a session at another rate was loaded");
             EXPECT(mentions(r.message, "Hz"), "the refusal does not name the rates");
@@ -1111,7 +1113,7 @@ int check_load_in_parts(Rig& rig) {
             }
             EXPECT(s.inbox.model.size() == updates, "a part sent an update");
             m.action = ModelAction::Load;
-            m.op = session;
+            m.op = wire::encode_load("", session);
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
                    "the session was refused: " + r.message);
             EXPECT(s.until(rig_, [&]() {
@@ -1148,7 +1150,7 @@ int check_load_in_parts(Rig& rig) {
             EXPECT(model::encode_load_parts(other, info, session, parts, error, nullptr, 1500),
                    error);
             m.action = ModelAction::Load;
-            m.op = session;
+            m.op = wire::encode_load("", session);
             EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Failed,
                    "a Load after a refused part was opened");
             EXPECT(mentions(r.message, "a part of the session was refused"),
@@ -1398,6 +1400,7 @@ int check_plugin_faults(Rig& rig) {
             std::string error;
             EXPECT(model::serialize(doc, model::WriteInfo{"conformance", 1}, load.op, error),
                    error);
+            load.op = wire::encode_load("", load.op);
             CommandReply r;
             EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
                    "the session was refused: " + r.message);
@@ -1443,6 +1446,7 @@ int check_plugin_faults(Rig& rig) {
             plain.mix.inserts.clear();
             EXPECT(model::serialize(plain, model::WriteInfo{"conformance", 1}, load.op, error),
                    error);
+            load.op = wire::encode_load("", load.op);
             EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
                    "the session without inserts was refused: " + r.message);
             EXPECT(s.until(rig_, [&]() { return standing(s.inbox).empty(); }),
@@ -1483,6 +1487,133 @@ int check_flush_plugin_state(Rig& rig) {
         }
     };
     return C(rig, "flush plugin state").go();
+}
+
+// ADR-0018 §2, §4 (protocol 16): a Load that names its session file moves
+// the engine into that file's folder. The SessionFolder event says so, and
+// a take recorded after the Load is in the loaded session's "Audio Files/",
+// numbered from that folder. A Load during a take is refused and the folder
+// stays, as for a path that is no session file or is not absolute.
+int check_load_enters_its_folder(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        static std::string folder(const Inbox& in) {
+            for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+                if (it->kind == EventKind::SessionFolder) return it->text;
+            }
+            return {};
+        }
+
+        int go() {
+            namespace fs = std::filesystem;
+            static int n = 0;
+            std::error_code ec;
+            const fs::path root = fs::temp_directory_path(ec) /
+                                  ("sonora-conformance-folder-" + std::to_string(
+                                       reinterpret_cast<std::uintptr_t>(this)) + "-" +
+                                   std::to_string(n++));
+            fs::remove_all(root, ec);
+            struct Gone {
+                fs::path p;
+                ~Gone() {
+                    std::error_code e;
+                    fs::remove_all(p, e);
+                }
+            } gone{root};
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            StateView& v = s.engine->state();
+
+            // The session as the interface's File > Open finds it: its file
+            // on disk, the same bytes in the Load.
+            model::Snapshot song = s.replica.current();
+            song.settings.name = "Song";
+            std::string bytes, error;
+            EXPECT(model::serialize(song, model::WriteInfo{"conformance", 1}, bytes, error), error);
+            const fs::path dir = root / "Song";
+            const fs::path file = dir / "Song.sonora";
+            fs::create_directories(dir, ec);
+            {
+                std::ofstream out(file, std::ios::binary);
+                out << bytes;
+            }
+            EXPECT(fs::is_regular_file(file, ec), "the session file could not be written");
+            ModelRequest load;
+            load.action = ModelAction::Load;
+            load.op = wire::encode_load(file.string(), bytes);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
+                   "the session was refused: " + r.message);
+            const std::string expected = dir.lexically_normal().string();
+            EXPECT(s.until(rig_, [&]() { return folder(s.inbox) == expected; }),
+                   "no SessionFolder naming " + expected + " after the Load, but \"" +
+                       folder(s.inbox) + "\"");
+
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published after arming");
+            const int32_t take = v.transport().take;
+            EXPECT(take == 1, "the next take is " + std::to_string(take) +
+                                  ", not the empty folder's first");
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Recording &&
+                              v.transport().playhead > 0;
+                   }),
+                   "the take never ran");
+
+            // A take belongs to the session it was started in.
+            const std::size_t announced = s.count_events(EventKind::SessionFolder);
+            fs::create_directories(root / "Other", ec);
+            {
+                std::ofstream out(root / "Other" / "Other.sonora", std::ios::binary);
+                out << bytes;
+            }
+            load.op = wire::encode_load((root / "Other" / "Other.sonora").string(), bytes);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Failed,
+                   "a session was opened during a take");
+            EXPECT(mentions(r.message, "stop recording before opening another session"),
+                   "the refusal does not say why");
+
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Stopped &&
+                              v.transport().take == take + 1;
+                   }),
+                   "the take did not end");
+            const int files = rig_.take_files_in(*s.engine, expected, take);
+            if (files >= 0) {
+                EXPECT(files > 0, "take " + std::to_string(take) + " is not in " + expected +
+                                      "/Audio Files");
+                EXPECT(rig_.take_files_in(*s.engine, (root / "Other").string(), take) == 0,
+                       "the take is in the folder of the session refused");
+            }
+
+            // Refusals keep the folder.
+            load.op = wire::encode_load((root / "Nowhere" / "Nowhere.sonora").string(), bytes);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Failed,
+                   "a Load naming no file was accepted");
+            EXPECT(mentions(r.message, "no session file"), "the refusal does not say why");
+            load.op = wire::encode_load("Song.sonora", bytes);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Failed,
+                   "a Load naming a relative path was accepted");
+            EXPECT(mentions(r.message, "absolute path"), "the refusal does not say why");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusals");
+            EXPECT(s.count_events(EventKind::SessionFolder) == announced &&
+                       folder(s.inbox) == expected,
+                   "a refused Load moved the session folder");
+            if (files < 0) return skip("the rig cannot tell where a take was written");
+            return ok();
+        }
+    };
+    return C(rig, "load enters its session folder").go();
 }
 
 // Save (protocol 11): the session file is in place when the reply says Ok;
@@ -1741,6 +1872,7 @@ int check_recovery_offer(Rig& rig) {
             if (!model::serialize(doc, model::WriteInfo{"conformance", 1}, load.op, error)) {
                 return false;
             }
+            load.op = wire::encode_load("", load.op);
             return s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok;
         }
 
@@ -1876,6 +2008,7 @@ int run(Rig& rig) {
     failures += check_plugin_faults(rig);
     failures += check_flush_plugin_state(rig);
     failures += check_save(rig);
+    failures += check_load_enters_its_folder(rig);
     failures += check_recovery_offer(rig);
     failures += check_take_failed(rig);
     failures += check_inputs_missing(rig);

@@ -200,6 +200,9 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
                     }
                 }
                 break;
+            case api::EventKind::SessionFolder:
+                // This interface saves nothing, so it has no use for where.
+                break;
         }
     }
     // Model updates are for an editor's replica; this interface draws none.

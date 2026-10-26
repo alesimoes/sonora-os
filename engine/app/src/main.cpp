@@ -956,6 +956,9 @@ int main(int argc, char** argv) {
         control.plugin_build_id = sonora::image_build_id(text.str());
     }
 
+    // The one that holds the folder lock: a Load enters its session's folder
+    // through it, so the lock moves with the session.
+    control.active_folder = &active_folder;
     sonora::EngineControlServer server(session, audio.get(), std::move(control));
     // Kept on screen for the whole session, by every interface that ever
     // connects: the operator must not take the laptop's microphone for the

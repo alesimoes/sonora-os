@@ -48,6 +48,11 @@
 // in order with whatever else that client is sent. While a take is open
 // every client is told "Saving after the next checkpoint".
 //
+// The session folder (ADR-0018 §2, §4): a Load that names its session file
+// enters that file's folder (ActiveFolder::enter()) before the new document
+// takes over, and is refused while a take is open or closing. One
+// SessionFolder event stands, replaced at every folder change.
+//
 // Nothing here runs on the audio thread. The handlers reach it only
 // through the atomics Track and Transport already have, the plan exchange
 // and the session's command ring; the publisher reads those atomics on its
@@ -79,6 +84,7 @@
 
 namespace sonora {
 
+class ActiveFolder;
 class PlaybackController;
 class PluginHosting;
 class PluginScanner;
@@ -187,6 +193,11 @@ public:
         // itself apart: ControlSocketServer's max_queued_bytes, which the
         // pacing would otherwise get round.
         std::size_t max_held_bytes = api::wire::kMaxMessageBytes + (std::size_t{16} << 20);
+        // The folder the session was entered with (engine/app's, holding the
+        // folder lock), outliving the server; a Load that names its file
+        // enters that file's folder through it. Null: the server keeps one
+        // of its own, which holds no lock until the first such Load (tests).
+        ActiveFolder* active_folder = nullptr;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -496,6 +507,18 @@ private:
     OrphanOffer orphans_;
     std::string recovery_offer_;
     bool orphan_scan_pending_ = false;
+    // Options::active_folder, or one of the server's own when none was
+    // given. Entered by a Load that names its file (ADR-0018 §2).
+    std::unique_ptr<ActiveFolder> own_folder_;
+    ActiveFolder* folder_ = nullptr;
+    // The standing SessionFolder (ADR-0018 §4).
+    std::string session_folder_;
+    void announce_folder();
+    // ModelAction::Load: refused (false, `why`) during a take, for a path
+    // that is no session file, or a folder that cannot be entered; the old
+    // session, document and folder then stay. `notices` are the entry's.
+    bool load(ClientId from, const api::ModelRequest& m, std::string& why,
+              std::vector<std::string>& notices, bool& entered);
     void offer_orphans();
     // A take recording, asked for, or closing: its files are in Audio Files
     // and no source names them yet.

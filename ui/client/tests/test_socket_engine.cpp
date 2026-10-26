@@ -196,6 +196,25 @@ public:
     }
     void kill(api::EngineControl& e) override { static_cast<Remote&>(e).kill(); }
     bool has_signal() const override { return true; }
+    // The engine process writes on this machine's disk, so its takes are
+    // counted where it said it put them.
+    int take_files_in(api::EngineControl&, const std::string& folder, int take) override {
+        namespace fs = std::filesystem;
+        char suffix[16];
+        std::snprintf(suffix, sizeof suffix, "_%02d.wav", take);
+        const std::string tail = suffix;
+        int files = 0;
+        std::error_code ec;
+        for (fs::directory_iterator it(fs::path(folder) / "Audio Files", ec), end;
+             !ec && it != end; it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > tail.size() &&
+                name.compare(name.size() - tail.size(), tail.size(), tail) == 0) {
+                ++files;
+            }
+        }
+        return files;
+    }
 };
 
 // Polls `e` until `pred` holds or `ms` pass.

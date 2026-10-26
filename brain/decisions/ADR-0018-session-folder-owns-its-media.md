@@ -158,7 +158,7 @@ engine and the interface see one filesystem. The engine:
   before opening another session". Today a Load during a take is accepted
   and the take lands in the new document (#132 defers its scan for that).
   That puts one session's take into another session. It is gone;
-- runs `enter_folder(session_folder_of(path))`, which handles a file
+- runs `ActiveFolder::enter(session_folder_of(path))`, which handles a file
   opened from `Session File Backups/`, before the document swaps. A
   refusal keeps the old session, its document and its folder, as a
   refused Load does today;
@@ -240,7 +240,7 @@ than §3's rename). The saver thread:
    existing steps. The session file is written **last**, so a folder
    without one is an interrupted Save As. It is never mistaken for a
    session, and it is listed among the unsaved recordings.
-6. Asks the control thread to `enter_folder(target)`. Takes recorded from
+6. The control thread runs `ActiveFolder::enter(target)`. Takes recorded from
    then on go to the new folder.
 
 The source folder is never modified or deleted. That includes an
@@ -404,7 +404,7 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
 ## Implementation checklist (one PR each, in order)
 
 1. **Engine: the active folder** (`engine/core`, `engine/control`,
-   `common/platform`). `Session::enter_folder` with §1's steps and
+   `common/platform`). `ActiveFolder::enter()` with §1's steps and
    invariant. Playback, plugin hosting and flushes read the folder from
    the session. `free_bytes` and `read_only`. Tests, each failing first:
    refused while a take is open and while one is closing; a busy lock is
@@ -430,6 +430,21 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    the folder in `ClosedTake`. `PlaybackController::slots_` caches each
    source's slot with the path resolved at first use: reset it when the
    folder or the document changes.
+   **Done.** Protocol 16 (15 is engine.core.click's; the second of the two
+   to merge renumbers). Load's `op` is `wire::encode_load()`, path then
+   bytes; an empty path keeps the active folder until item 4. The new
+   document is decoded before `ActiveFolder::enter()` and swapped in only
+   when both succeed. `SessionFolder` carries the path in `text`, the free
+   bytes in `frame` and `kFolderUntitled`/`kFolderReadOnly` in the new
+   `EngineEvent::flags`; the medium's filesystem kind waits for item 7.
+   The interface's first Save goes to `<folder>/<folder's name>.sonora`
+   while the folder holds no session file, else to the sessions folder as
+   before. N2: `slots_` is keyed by the resolved path, so neither a new
+   folder nor a new document can reuse another file's slot;
+   `add_closed_take()` names a file outside the active folder in a track
+   notice instead of dropping it silently; an `OrphanOffer` carries its
+   folder and places nothing in another one. `orphan_scan_pending_` is
+   now unreachable and goes with item 3.
 3. **Orphans per folder** (`engine/control`). Remove #132's name filter
    and its deferral. Test: a renamed session's orphan is offered.
 4. **Untitled sessions** (`engine/app`, `engine/control`, `ui/qt`,

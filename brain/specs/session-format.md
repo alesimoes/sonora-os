@@ -638,8 +638,9 @@ provides them:
   before session ids carries none, and is this session's when it names
   the document's name, except "Untitled", the name every new session has.
   A take that is recording, or punched out and not yet closed and placed,
-  when a session opens is never one: the scan waits until no take is in
-  flight (`Session::takes_closing()`). The offer is one standing
+  is never one: no session opens while a take is open or closing (the
+  Load is refused, ADR-0018 §2), and the scan at engine start runs before
+  any take. The offer is one standing
   `RecoveryOffer` event (protocol 13), a line per take saying where it
   would go; the interface shows it until the operator sends
   `session.place_recovered` (each take placed through `add_closed_take()`,
@@ -651,7 +652,9 @@ provides them:
 - **A take whose header was never finalised** gets its length from the
   file size, in whole frames. That is the one write to a closed file the
   format allows. Built (`common/audiofile` `recover_take()`): the engine
-  runs it over `Audio Files/` at startup, before anything records, and says
+  runs it over `Audio Files/` at startup, and again whenever it enters a
+  session's folder (a Load that names the file, ADR-0018 §1), before
+  anything records there, and says
   each recovered take as a Notice; the take is left unplaced. It touches
   only files whose bext Originator is `Sonora Engine` (another program's WAV
   may carry chunks after its data), and of those only files whose RIFF size
@@ -670,8 +673,10 @@ provides them:
   idempotent. **One engine per session folder:** the engine holds an
   advisory lock on the folder (`common/platform` `FolderLock`, `flock` on
   the folder itself, so nothing is written into it) from before recovery
-  until it exits, and a second engine on the same folder is refused with
-  the reason. Without it the second engine's recovery would treat the
+  until it exits or enters another session's folder, whose lock it takes
+  before it lets go of this one; a second engine on the same folder is
+  refused with the reason, and so is a Load of a session another engine
+  holds. Without it the second engine's recovery would treat the
   first one's open takes as unfinished and cut the frame being written.
 - **The header is kept valid during a take.** At every checkpoint (below)
   the disk thread patches the RIFF and data sizes, and the TimeReference
@@ -743,6 +748,14 @@ physical stick with the power pulled, when hardware time exists.
 In order, failing loudly at the first problem that would make the session
 lie:
 
+0. The interface reads the file and sends its bytes and its path in one
+   Load (protocol 16). The engine refuses it while a take is open or
+   closing; otherwise it checks the path is a regular file and, once the
+   bytes have passed 1 to 3 and 5, enters the file's folder ("Session File
+   Backups/" counts as the folder above): its lock, recovery, the medium
+   (ADR-0018 §1, §2). A refusal at any step keeps the old session, its
+   document and its folder. From then on its takes, wrap lists and plugin
+   states are written there, and the `SessionFolder` event says where.
 1. Parse and validate (strict, as above). Failure: say where, offer the
    newest backup or autosave.
 2. Version check and migration (below).

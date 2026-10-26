@@ -143,7 +143,10 @@ private:
 
     Session& session_;
     BuildLimits limits_;
-    std::unordered_map<model::Id, uint32_t> slots_;
+    // By the path a source resolved to, not by its id: another document can
+    // give the same id another file, and the same relative path names
+    // another file in another folder (ADR-0018 §1).
+    std::unordered_map<std::string, uint32_t> slots_;
     ChainResolver resolver_;
     // Each build starts from the playing plan's continuity, so a plan
     // cancelled before it plays cannot move a playing edge to another line

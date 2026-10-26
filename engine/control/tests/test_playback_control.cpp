@@ -1819,6 +1819,79 @@ int test_play_range_with_pre_and_post_roll() {
     return 0;
 }
 
+// A source's slot is its file's, not its id's (ADR-0018 checklist item 2,
+// N2): after the folder changes, or another document gives the same id
+// another file, playback reads the file the source names now. A cache keyed
+// by id alone went on playing the first file.
+int test_a_slot_follows_the_folder_and_the_document() {
+    const std::string other = kDir + "_other";
+    std::filesystem::remove_all(other);
+    std::filesystem::create_directories(other + "/Audio Files");
+    const auto write_at = [&](const std::string& dir, const std::string& name, Id content) {
+        const std::string path = dir + "/Audio Files/" + name;
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        if (!w.open(path, 48000, 1, sonora::WavWriter::Format::Float32, 0)) return false;
+        std::vector<float> buf(40 * kChunk);
+        for (std::size_t f = 0; f < buf.size(); ++f) {
+            buf[f] = value(content, static_cast<int64_t>(f));
+        }
+        return w.write(buf.data(), buf.size()) && w.close();
+    };
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_at(kDir, "src_1.wav", 1));
+    CHECK(write_at(other, "src_1.wav", 5));
+    CHECK(write_at(other, "src_2.wav", 7));
+    const auto document = [&](const std::string& path) {
+        History h(new_session(SessionSettings{}));
+        std::string e;
+        AddSource src = source_op(1, 40 * kChunk);
+        src.source.path = path;
+        h.apply(src, e);
+        h.apply(track_op(100, 101, "A"), e);
+        h.apply(PlaceRegion{101, region(210, 1, 0, 40 * kChunk, 0), 0}, e);
+        return h.current();
+    };
+    PlaybackController ctl(s);
+    std::string error;
+    // Plays on from the playhead; true if every frame is `content`'s.
+    const auto plays = [&](const Snapshot& snapshot, Id content) {
+        ctl.stop();
+        if (!show(ctl, snapshot, error) || !ctl.settle(2.0)) return false;
+        Out o;
+        run_block(s, o);
+        ctl.play();
+        if (!ctl.settle(2.0)) return false;
+        for (int blk = 0; blk < 4; ++blk) {
+            s.reader().run_pass();
+            ctl.pump();
+            const int64_t at = static_cast<int64_t>(s.transport().playhead());
+            run_block(s, o);
+            for (uint32_t i = 0; i < kBlock; ++i) {
+                if (o.l[i] != value(content, at + i)) {
+                    std::fprintf(stderr, "  frame %lld: %f, not source %llu's\n",
+                                 static_cast<long long>(at + i), o.l[i],
+                                 static_cast<unsigned long long>(content));
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    CHECK(plays(document("Audio Files/src_1.wav"), 1));
+    CHECK(s.set_folder(other, error));
+    CHECK(plays(document("Audio Files/src_1.wav"), 5));
+    CHECK(plays(document("Audio Files/src_2.wav"), 7));
+    // A file already open keeps its slot: the table is append-only.
+    const uint32_t sources = s.reader().source_count();
+    CHECK(plays(document("Audio Files/src_1.wav"), 5));
+    CHECK(s.reader().source_count() == sources);
+    ctl.stop();
+    std::filesystem::remove_all(other);
+    return 0;
+}
+
 int main() {
     std::filesystem::remove_all(kDir);
     ::mkdir(kDir.c_str(), 0775);
@@ -1857,6 +1930,7 @@ int main() {
     if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
     if (test_punch_pre_and_post_roll()) return 1;
     if (test_play_range_with_pre_and_post_roll()) return 1;
+    if (test_a_slot_follows_the_folder_and_the_document()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;

@@ -116,6 +116,13 @@ public:
     // (session_files.h). Set before the first save.
     void setSessionsDir(const QString& dir) { sessions_dir_ = dir; }
     const QString& sessionsDir() const { return sessions_dir_; }
+    // The engine's SessionFolder (ADR-0018 §4): where it writes this
+    // session's takes. A first Save goes there while the folder holds no
+    // session file, as <folder>/<folder's name>.sonora, so the session file
+    // is beside its audio. Empty, or a folder another session's file is
+    // in: the sessions folder above, as before the engine said.
+    void setEngineFolder(const QString& folder) { engine_folder_ = folder; }
+    const QString& engineFolder() const { return engine_folder_; }
 
     // File > Save: to the file the session came from, or, the first time, to
     // a new folder named after the session ("Untitled" when it has no
@@ -369,6 +376,7 @@ private:
     const PeakSource& peaks_;
     bool synthetic_peaks_;
     QString sessions_dir_;
+    QString engine_folder_;
     // What the saves of this window have hashed, so serialize() hashes only
     // what changed since (ADR-0015 §3).
     model::SequenceDigests digests_;

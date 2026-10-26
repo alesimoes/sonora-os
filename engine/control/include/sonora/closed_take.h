@@ -90,6 +90,12 @@ struct TakeAdded {
 // the take has no handle for is left out, and a track notice names it
 // (C6); wraps the boundary ring lost are placed by loop length, and passes
 // past the cap left in the files, each with a notice (§5, O2).
+//
+// Paths resolve against the session's active folder when this runs
+// (ADR-0018 §1). A take always closes into the folder it was opened in, but
+// the folder may change between closed_takes() and this call: a file
+// outside the active folder is then not placed, and a track notice names
+// where it is.
 TakeAdded add_closed_take(model::Document& document, const Session& session,
                           const Session::ClosedTake& take,
                           std::size_t files_per_compound = model::kMaxCompoundMembers / 2,

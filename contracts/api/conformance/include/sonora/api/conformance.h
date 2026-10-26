@@ -95,6 +95,15 @@ public:
         (void)frames;
         return false;
     }
+    // How many files of take `take` the engine wrote into `folder`'s
+    // "Audio Files/": a real engine's on disk, the fake's as it remembers
+    // them. -1 if this rig cannot tell; the check then says so.
+    virtual int take_files_in(EngineControl& engine, const std::string& folder, int take) {
+        (void)engine;
+        (void)folder;
+        (void)take;
+        return -1;
+    }
 };
 
 // Runs every check, prints "ok <check>" or "FAIL <check>: <why>" for each,
