@@ -688,7 +688,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             return refuse_after_open("the audio thread has not taken the last locates yet");
         }
     }
-    if (count_off && !click_->post_count_off(static_cast<uint32_t>(take_number))) {
+    if (count_off && !click_->post_count_off(transport_->next_start())) {
         return refuse_after_open("the audio thread has not taken the last count-off yet");
     }
     // Only now may the disk thread see these writers; until here the

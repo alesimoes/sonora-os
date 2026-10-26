@@ -45,9 +45,12 @@ public:
     // The document's transport.count_off_bars; clamped to [1, kMaxCountOffBars].
     void set_count_off_bars(uint32_t bars);
     uint32_t count_off_bars() const { return bars_.load(std::memory_order_relaxed); }
-    // Session::begin_take(), before the take's transport store: take `take`
-    // counts off first. False when the ring is full.
-    bool post_count_off(uint32_t take);
+    // Session::begin_take(), before the take's transport store: the take
+    // set_recording() starts as `start` (Transport::next_start()) counts
+    // off first. Its start, not its number: a take in another session
+    // folder can have the last one's number (ADR-0018 §1). False when the
+    // ring is full.
+    bool post_count_off(uint32_t start);
     // Whether a count-off is running: begun, and not yet at its end.
     bool counting_off() const { return counting_.load(std::memory_order_relaxed); }
 
@@ -70,7 +73,7 @@ public:
 
 private:
     struct CountOffRecord {
-        uint32_t take;
+        uint32_t start;
         uint32_t bars;
     };
     // Where the timeline click is: the next beat to sound, in plan segment
@@ -110,16 +113,19 @@ private:
     uint32_t done_ = 0;               // frames of this block the voice has sounded
     uint32_t out_[2] = {0, 1};        // this block's click outputs
     Cursor cursor_;
-    // A count-off posted, not yet begun: the take it is for, 0 for none.
-    uint32_t pending_take_ = 0;
+    // A count-off posted, not yet begun, for the take started as
+    // `pending_start_`.
+    bool pending_ = false;
+    uint32_t pending_start_ = 0;
     uint32_t pending_bars_ = 0;
-    // The one running: for take `take_`, its beats laid out like a segment
-    // from frame 0, `lead_` frames into its first block so that it ends on
-    // a block boundary, `total_` frames long with the lead, `elapsed_` of
-    // them played. set_up_ once the length is known, after the locates.
+    // The one running, for the take started as `start_`: its beats laid
+    // out like a segment from frame 0, `lead_` frames into its first block
+    // so that it ends on a block boundary, `total_` frames long with the
+    // lead, `elapsed_` of them played. set_up_ once the length is known,
+    // after the locates.
     bool counting_off_ = false;
     bool set_up_ = false;
-    uint32_t take_ = 0;
+    uint32_t start_ = 0;
     uint32_t bars_now_ = 0;
     ClickSegment seg_;
     uint64_t lead_ = 0;

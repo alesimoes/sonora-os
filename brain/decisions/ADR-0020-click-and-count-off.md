@@ -100,8 +100,10 @@ switches are later options.
 `transport.count_off_bars` (session format 8, default 2, 1 to 99, Pro
 Tools' default and range) is the length. With count-off on, a take started
 with the transport stopped (a plain take, a punch from its pre-roll start,
-a loop take from its start) posts its take number to the audio thread
-ahead of the take's transport store. While that take's count-off runs, the
+a loop take from its start) posts the start count its transport store
+will carry (`Transport::next_start()`, ADR-0018 §1: a take in another
+session folder can have the last one's number) to the audio thread ahead
+of that store. While that take's count-off runs, the
 block is treated as stopped: no roll, no capture, the playhead still. Its
 length is `bars` bars of the meter at the take's start, at the tempo there,
 whatever the map does later: the count-off is not on the timeline. It

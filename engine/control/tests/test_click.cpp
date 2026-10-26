@@ -92,7 +92,7 @@ int test_beats_follow_the_tempo_map() {
     Session s(cfg);
     s.create_dirs();
     History h(new_session(changing_map()));
-    PlaybackController ctl(s, dir.string());
+    PlaybackController ctl(s);
     std::string error;
     CHECK(ctl.show(h.current(), error));
     CHECK(ctl.settle(2.0));
@@ -188,7 +188,7 @@ int test_document_bars_and_toggles() {
     SessionSettings settings;
     settings.transport.count_off_bars = 3;
     History h(new_session(settings));
-    PlaybackController ctl(s, dir.string());
+    PlaybackController ctl(s);
     std::string error;
     CHECK(ctl.show(h.current(), error));
     CHECK(s.click().count_off_bars() == 3);

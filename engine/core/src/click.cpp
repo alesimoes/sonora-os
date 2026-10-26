@@ -84,30 +84,31 @@ void Click::set_count_off_bars(uint32_t bars) {
     bars_.store(std::min(std::max<uint32_t>(bars, 1), kMaxCountOffBars), std::memory_order_relaxed);
 }
 
-bool Click::post_count_off(uint32_t take) {
-    const CountOffRecord r{take, count_off_bars()};
+bool Click::post_count_off(uint32_t start) {
+    const CountOffRecord r{start, count_off_bars()};
     return posted_->write(&r, 1) == 1;
 }
 
 bool Click::begin_block(const Transport::Word& word) noexcept SONORA_RT {
     CountOffRecord r{};
     while (posted_->read(&r, 1) == 1) {
-        pending_take_ = r.take;
+        pending_ = true;
+        pending_start_ = r.start;
         pending_bars_ = r.bars;
     }
     const bool recording = word.state == TransportState::Recording;
-    if (counting_off_ && !(recording && word.take == take_)) counting_off_ = false;
+    if (counting_off_ && !(recording && word.start == start_)) counting_off_ = false;
     // Posted before the take's store, so a block may drain it while the
     // word is still Stopped: it waits for its take. Any other take means
     // its own was never seen, and it is dropped.
-    if (!counting_off_ && pending_take_ != 0 && recording) {
-        if (word.take == pending_take_) {
+    if (!counting_off_ && pending_ && recording) {
+        if (word.start == pending_start_) {
             counting_off_ = true;
             set_up_ = false;
-            take_ = pending_take_;
+            start_ = pending_start_;
             bars_now_ = pending_bars_;
         }
-        pending_take_ = 0;
+        pending_ = false;
     }
     counting_.store(counting_off_, std::memory_order_relaxed);
     return counting_off_;
