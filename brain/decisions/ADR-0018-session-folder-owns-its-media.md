@@ -447,6 +447,15 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    now unreachable and goes with item 3.
 3. **Orphans per folder** (`engine/control`). Remove #132's name filter
    and its deferral. Test: a renamed session's orphan is offered.
+   **Done.** `take_is_of_session()` and `orphan_scan_pending_` are gone;
+   `FakeEngine` offers the scripted takes of its active folder, and the
+   conformance check's take of another name and id is offered. From
+   #142's review: a Load into another folder first fences the saver
+   (`SessionSaver::fence()`, unpaced, a deferred cleanup dropped) and
+   answers what it held, so the old folder is never written once its lock
+   is released (N3); a flush whose states are read after a Load writes
+   nothing (a guard: no test reaches it, since the Load's chain restart
+   drops the read); the exit line names `Session::folder()` (N1).
 4. **Untitled sessions** (`engine/app`, `engine/control`, `ui/qt`,
    `iso/` unit, `tools/`). `--sessions`; a fresh `Untitled <n>` at start
    and on a new session; empty folders removed; the first Save renames

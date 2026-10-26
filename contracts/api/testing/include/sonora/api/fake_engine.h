@@ -181,10 +181,10 @@ public:
     // A take file in the session's Audio Files that no source names, as
     // its header describes it (session-format.md, "Crash recovery"). The
     // fake has no disk: it offers what is scripted, at connect and at each
-    // Load of the session it is of (by `session_id`, or with none by
-    // `session`'s name, never "Untitled", as the engine's
-    // take_is_of_session()) with no source at `path` and not in the
-    // document's left_takes, as a RecoveryOffer, one line per take;
+    // Load, in the active folder (`folder`), whatever session `session`
+    // and `session_id` name, as the engine does (ADR-0018 §6), with no
+    // source at `path` and not in the document's left_takes, as a
+    // RecoveryOffer, one line per take;
     // session.place_recovered puts each on the track `track_id` names at
     // `position`, `frames` long, as the engine places a whole take, one
     // undo step per take (a punch or loop take's placement is the
@@ -200,8 +200,14 @@ public:
         uint64_t position = 0;
         uint64_t frames = 0;
         uint16_t channels = 1;
+        // The session folder the file is in; empty: the one active when it
+        // is scripted.
+        std::string folder;
     };
-    void script_recovered_take(RecoveredTake take) { recovered_.push_back(std::move(take)); }
+    void script_recovered_take(RecoveredTake take) {
+        if (take.folder.empty()) take.folder = folder_;
+        recovered_.push_back(std::move(take));
+    }
 
     // The linear level channel `ch` shows at `t_s` seconds: a level of its
     // own per channel, so a meter showing a neighbour's signal is visible.

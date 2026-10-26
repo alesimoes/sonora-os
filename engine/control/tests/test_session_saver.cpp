@@ -319,6 +319,48 @@ int test_undurable_save_drops_the_deferred_cleanup() {
     return 0;
 }
 
+// PR #142 review N3: a Load fences the saver before it leaves the folder.
+// What was handed over is written when fence() returns, unpaced, and a
+// cleanup deferred behind a take never runs in the folder left.
+int test_fence_writes_what_was_handed_over() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Keys";
+    const fs::path file = folder / "Keys.sonora";
+    Midi m;
+    Rig rig;
+    rig.saver.submit(m.job(file, 1));
+    CHECK(rig.wait(1).size() == 1);
+    const fs::path a = msq(folder, m.sequence());
+
+    rig.saver.set_take_open(true);
+    rig.saver.set_transport_stopped(false);
+    CHECK(m.edit(1));
+    rig.saver.submit(m.job(file, 2));
+    CHECK(rig.quiet(30));
+    rig.checkpoints = 1;
+    CHECK(rig.wait(1).size() == 1);   // its cleanup deferred
+    CHECK(m.edit(2));
+    rig.saver.submit(m.job(file, 3));
+    SessionSaver::Job j;
+    j.kind = SessionSaver::Kind::States;
+    j.seq = 44;
+    j.file = folder.string();
+    const std::string bytes = "state";
+    j.states.push_back({sonora::sha256_hex(bytes), bytes});
+    rig.saver.submit(std::move(j));
+    rig.saver.fence();
+    CHECK(fs::exists(folder / "Plugin State" / (sonora::sha256_hex(bytes) + ".state")));
+    const auto done = rig.saver.take_done();
+    CHECK(done.size() == 2 && done[0].ok && done[0].seq == 3 && done[1].seq == 44);
+    CHECK(rig.saver.pending() == 0);
+
+    rig.saver.set_take_open(false);
+    rig.saver.set_transport_stopped(true);
+    CHECK(rig.quiet(60));
+    CHECK(rig.saver.cleanups() == 1 && fs::exists(a));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -335,6 +377,7 @@ int main() {
     t(test_stop_finishes_what_was_handed_over);
     t(test_refusal_answered);
     t(test_undurable_save_drops_the_deferred_cleanup);
+    t(test_fence_writes_what_was_handed_over);
     if (failed != 0) {
         std::fprintf(stderr, "session_saver: %d of %d failed\n", failed, run);
         return 1;

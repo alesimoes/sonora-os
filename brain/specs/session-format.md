@@ -634,15 +634,12 @@ provides them:
   `Audio Files/` that no source references is an orphan. Orphans are listed
   and offered for recovery, using `TimeReference` and `Description` to place
   them. They are never deleted. Built (`engine/control` `orphan_offer.h`):
-  at every open, and at engine start, the engine lists the takes in its
-  `Audio Files/` that no source names and `left_takes` does not list,
-  written by this engine (`parse_take_description()` reads the field back)
-  for this session, at its rate, with audio in them. One engine folder
-  holds every session's takes, and another session's take is not this
-  one's orphan: a take is this session's when its `Description` carries
-  the document's `session_id` (`take_is_of_session()`). A take written
-  before session ids carries none, and is this session's when it names
-  the document's name, except "Untitled", the name every new session has.
+  at every open, and at engine start, the engine lists the takes in the
+  session folder's `Audio Files/` that no source names and `left_takes`
+  does not list, written by this engine (`parse_take_description()` reads
+  the field back), at its rate, with audio in them. The folder holds one
+  session (ADR-0018 §6), so the `Description`'s `session=` and `id=` do
+  not choose: a renamed session's takes carry its old name, and are its.
   A take that is recording, or punched out and not yet closed and placed,
   is never one: no session opens while a take is open or closing (the
   Load is refused, ADR-0018 §2), and the scan at engine start runs before

@@ -46,18 +46,12 @@ struct OrphanOffer {
 
 // Every take in `session_dir`'s "Audio Files/" that `document` has no
 // source for and has not left (settings.left_takes), recorded by this
-// engine for this session at its rate. One engine folder holds the takes
-// of every session opened on it, and another session's take is not this
-// one's orphan: a take is this session's when its Description carries the
-// document's session id. One written before session ids carries none, and
-// is this session's when it names the document's name, unless that name
-// is "Untitled", which every new session has. A file with no audio, one
-// another program wrote, or one that does not read is not offered.
+// engine at the document's rate. The folder holds one session (ADR-0018
+// §6), so a take in it is that session's whatever name or id its
+// Description carries: a renamed session's takes carry its old name. A
+// file with no audio, one another program wrote, or one that does not
+// read is not offered.
 OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string& session_dir);
-
-// Whether a take described as `said` is of the session `settings` holds,
-// by the rule above.
-bool take_is_of_session(const TakeDescription& said, const model::SessionSettings& settings);
 
 // Adds every take `offer` holds to `settings.left_takes`, sorted, with no
 // file twice: "Leave in Audio Files", remembered with the session. False

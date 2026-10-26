@@ -2,8 +2,8 @@
 //
 // Takes on disk the open session does not name are offered for placement,
 // never placed silently (session-format.md, "Crash recovery"). What is
-// offered: this engine's takes of a session of the document's name, at its
-// rate, with audio in them, and no source naming them. What placing does:
+// offered: this engine's takes in the session's folder, at its rate, with
+// audio in them, and no source naming them (ADR-0018 §6). What placing does:
 // each take on the track its Description names, at its TimeReference, one
 // undo step; a punch take over its punch range only; a loop take as its
 // passes on new playlists, said when they were placed by loop length; a
@@ -131,16 +131,13 @@ struct Rig {
     }
 };
 
-// Only this engine's takes of this session, with audio, that no source
-// names; in name order, each line saying where it would go.
+// Only this engine's takes, at the session's rate, with audio, that no
+// source names; in name order, each line saying where it would go.
 int test_what_is_offered() {
     Rig rig("sonora_test_orphan_offered");
     const uint64_t t1 = rig.track_id(0);
     CHECK(rig.write("Audio 1_02.wav", rig.whole(2, t1), 48000, 4800));
     CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
-    CHECK(rig.write("Audio 1_03.wav",
-                    take_description(3, t1, "Another Song", nullptr, nullptr, model::new_session_id()),
-                    0, 4800));
     CHECK(rig.write("Audio 1_04.wav", rig.whole(4, t1), 0, 0));
     CHECK(rig.write("Audio 1_05.wav", rig.whole(5, t1), 0, 4800, 44100));
     CHECK(rig.write("Imported.wav", "", 0, 4800));
@@ -152,7 +149,6 @@ int test_what_is_offered() {
     CHECK(offer.takes[1].path == "Audio Files/Audio 1_02.wav");
     CHECK(offer.takes[1].time_reference == 48000 && offer.takes[1].frames == 4800);
     CHECK(mentions(offer.text, "Audio 1_02.wav: take 2 on \"Audio 1\" at 1.000 s, 0.100 s long"));
-    CHECK(offer.text.find("Audio 1_03") == std::string::npos);
 
     // Placed, a take is named by a source and is no longer an orphan.
     const OrphansPlaced placed = place_orphan_takes(*rig.doc, *rig.session, offer);
@@ -261,44 +257,31 @@ int test_loop_take_passes() {
     return 0;
 }
 
-// Which session a take is of (PR #132 review): its Description's session
-// id, which every document has from its creation. Two unsaved sessions are
-// both "Untitled", so another one's take, even under the same name, is not
-// this one's. A take from before session ids has none, and is this
-// session's by name, but never by "Untitled", which every new session is.
-int test_takes_of_this_session_only() {
-    Rig rig("sonora_test_orphan_identity");
+// ADR-0018 §6: one folder holds one session, so every take in it is the
+// session's, whatever name or id its Description carries. #132 matched the
+// session id, or with none the name, never "Untitled": a session renamed
+// after its takes, or saved before ids, hid its own orphans.
+int test_a_renamed_sessions_orphans_are_offered() {
+    Rig rig("sonora_test_orphan_renamed");
     const uint64_t t1 = rig.track_id(0);
-    CHECK(rig.id().size() == 36);
-    // Recorded before the first save, which renamed the session "Song".
-    CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
-    CHECK(rig.set_settings([](model::SessionSettings& s) { s.name = "Song"; }));
-    const std::string other = model::new_session_id();
-    CHECK(rig.write("Audio 1_02.wav", take_description(2, t1, "Untitled", nullptr, nullptr, other),
-                    0, 4800));
-    CHECK(rig.write("Audio 1_03.wav", take_description(3, t1, "Song", nullptr, nullptr, other), 0,
+    CHECK(rig.write("Audio 1_01.wav", take_description(1, t1, "Song", nullptr), 0, 4800));
+    CHECK(rig.write("Audio 1_02.wav", take_description(2, t1, "Untitled", nullptr), 0, 4800));
+    CHECK(rig.write("Audio 1_03.wav",
+                    take_description(3, t1, "Song", nullptr, nullptr, model::new_session_id()), 0,
                     4800));
-    CHECK(rig.write("Audio 1_04.wav", take_description(4, t1, "Song", nullptr), 0, 4800));
-    CHECK(rig.write("Audio 1_05.wav", take_description(5, t1, "Untitled", nullptr), 0, 4800));
-
-    OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
-    CHECK(offer.takes.size() == 2);
-    CHECK(offer.takes[0].path == "Audio Files/Audio 1_01.wav");
-    CHECK(offer.takes[1].path == "Audio Files/Audio 1_04.wav");
-
-    // A new session: its own id, the default name. None of these is its.
-    Rig fresh("sonora_test_orphan_identity_new");
-    CHECK(fresh.id() != rig.id());
-    for (const char* name : {"Audio 1_01.wav", "Audio 1_05.wav"}) {
-        fs::copy_file(rig.dir / "Audio Files" / name, fresh.dir / "Audio Files" / name);
+    CHECK(rig.write("Audio 1_04.wav", rig.whole(4, t1), 0, 4800));
+    CHECK(rig.set_settings([](model::SessionSettings& s) { s.name = "Song (final)"; }));
+    const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
+    CHECK(offer.takes.size() == 4);
+    for (std::size_t i = 0; i < offer.takes.size(); ++i) {
+        CHECK(offer.takes[i].path == "Audio Files/Audio 1_0" + std::to_string(i + 1) + ".wav");
     }
-    CHECK(find_orphan_takes(fresh.doc->current(), fresh.dir.string()).takes.empty());
-
-    // A session saved before ids opens with none: only takes of its name
-    // with no id are its.
     CHECK(rig.set_settings([](model::SessionSettings& s) { s.session_id.clear(); }));
-    offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
-    CHECK(offer.takes.size() == 1 && offer.takes[0].path == "Audio Files/Audio 1_04.wav");
+    CHECK(find_orphan_takes(rig.doc->current(), rig.dir.string()).takes.size() == 4);
+
+    // Scoped by the folder: another session's holds none of them.
+    Rig other("sonora_test_orphan_renamed_other");
+    CHECK(find_orphan_takes(other.doc->current(), other.dir.string()).takes.empty());
     return 0;
 }
 
@@ -399,7 +382,7 @@ int main(int argc, char** argv) {
         {"whole_take_is_one_undo_step", test_whole_take_is_one_undo_step},
         {"punch_and_unplaceable_takes", test_punch_and_unplaceable_takes},
         {"loop_take_passes", test_loop_take_passes},
-        {"takes_of_this_session_only", test_takes_of_this_session_only},
+        {"a_renamed_sessions_orphans_are_offered", test_a_renamed_sessions_orphans_are_offered},
         {"left_takes_are_not_offered", test_left_takes_are_not_offered},
         {"recovered_take_keeps_its_latency", test_recovered_take_keeps_its_latency},
         {"an_offer_from_another_folder_places_nothing", test_an_offer_from_another_folder_places_nothing},

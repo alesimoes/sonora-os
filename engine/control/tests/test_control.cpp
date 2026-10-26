@@ -1641,6 +1641,94 @@ void the_session_folder_follows_the_load() {
     CHECK(*real.session().folder() == opened);
 }
 
+// The folder a slow save writes, and whether its lock was free while it
+// did: Options::save_sync_directory, called on the saver's thread.
+std::mutex slow_save_mutex;
+std::string slow_save_folder;
+std::atomic<int> slow_save_syncs{0};
+std::atomic<bool> slow_save_unlocked{false};
+
+bool slow_save_sync(const std::string&) {
+    if (slow_save_syncs.fetch_add(1) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::lock_guard<std::mutex> lock(slow_save_mutex);
+    platform::FolderLock probe;
+    std::string error;
+    if (probe.acquire(slow_save_folder, error) == platform::FolderLock::Result::Held) {
+        slow_save_unlocked.store(true);
+    }
+    return true;
+}
+
+// PR #142 review N3: a Load did not wait for the saver. A Save sent before
+// it was still writing the old folder after the Load had let go of its
+// lock, so another engine could have taken the folder in the meantime; and
+// the Save's reply came after the Load's.
+void a_load_waits_for_the_save_before_it() {
+    const fs::path dir = fresh_dir("fence");
+    const fs::path first = fresh_dir("fence_first");
+    const fs::path second = fresh_dir("fence_second");
+    struct Gone {
+        std::vector<fs::path> paths;
+        ~Gone() {
+            std::error_code ec;
+            for (const fs::path& p : paths) fs::remove_all(p, ec);
+        }
+    } gone{{first, second}};
+    EngineControlServer::Options opts;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    opts.save_sync_directory = slow_save_sync;
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto reply_at = [&](uint64_t seq) -> std::ptrdiff_t {
+        for (std::size_t i = 0; i < in.replies.size(); ++i) {
+            if (in.replies[i].seq == seq) return static_cast<std::ptrdiff_t>(i);
+        }
+        return -1;
+    };
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const auto write = [&](const fs::path& file) {
+        std::error_code ec;
+        fs::create_directories(file.parent_path(), ec);
+        std::FILE* f = std::fopen(file.string().c_str(), "wb");
+        if (f == nullptr) return false;
+        const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+        return std::fclose(f) == 0 && ok;
+    };
+    const fs::path first_file = first / "First.sonora";
+    CHECK(write(first_file));
+    CHECK(write(second / "Second.sonora"));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load(first_file.string(), bytes);
+    const uint64_t opened = real.submit(load);
+    CHECK(until(real, in, [&]() { return reply_at(opened) >= 0; }));
+    CHECK(in.replies[static_cast<std::size_t>(reply_at(opened))].result == DispatchResult::Ok);
+
+    {
+        std::lock_guard<std::mutex> lock(slow_save_mutex);
+        slow_save_folder = first.lexically_normal().string();
+    }
+    api::ModelRequest save;
+    save.action = api::ModelAction::Save;
+    save.op = api::wire::encode_save(first_file.string(), bytes);
+    const uint64_t saved = real.submit(save);
+    load.op = api::wire::encode_load((second / "Second.sonora").string(), bytes);
+    const uint64_t moved = real.submit(load);
+    CHECK(until(real, in, [&]() { return reply_at(saved) >= 0 && reply_at(moved) >= 0; }));
+    CHECK(reply_at(saved) >= 0 &&
+          in.replies[static_cast<std::size_t>(reply_at(saved))].result == DispatchResult::Ok);
+    CHECK(reply_at(moved) >= 0 &&
+          in.replies[static_cast<std::size_t>(reply_at(moved))].result == DispatchResult::Ok);
+    CHECK(slow_save_syncs.load() > 0);
+    CHECK(!slow_save_unlocked.load());
+    CHECK(reply_at(saved) < reply_at(moved));
+    CHECK(*real.session().folder() == second.lexically_normal().string());
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -1667,6 +1755,7 @@ int main() {
     recovery_offer_at_start_and_after_a_take();
     a_take_just_punched_out_is_never_offered();
     the_session_folder_follows_the_load();
+    a_load_waits_for_the_save_before_it();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;
