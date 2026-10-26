@@ -165,7 +165,7 @@ private:
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Save);
-constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::SessionFolder);
+constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Latency);
 constexpr uint32_t kEventFlags = kFolderUntitled | kFolderReadOnly;
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
@@ -392,7 +392,15 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
         !r.u32(m.flags) || !r.done()) {
         return false;
     }
-    if ((m.flags & ~kEventFlags) != 0) {
+    if (m.kind == EventKind::Latency) {
+        if ((m.flags & ~0xFFFFu) != 0 ||
+            static_cast<uint32_t>(latency_source(m.flags)) > kLastLatencySource ||
+            static_cast<uint32_t>(latency_status(m.flags)) > kLastLatencyStatus) {
+            error = "a latency event with flags " + std::to_string(m.flags) +
+                    " this version does not define";
+            return false;
+        }
+    } else if ((m.flags & ~kEventFlags) != 0) {
         error = "an event with flags " + std::to_string(m.flags) + " this version does not define";
         return false;
     }

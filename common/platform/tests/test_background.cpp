@@ -50,6 +50,23 @@ void cache_dir() {
     if (home) ::setenv("HOME", saved_home.c_str(), 1);
 }
 
+// The machine's settings folder (ADR-0019, update of 2026-10-26), by the
+// same XDG rule as the cache's.
+void config_dir() {
+    const char* home = std::getenv("HOME");
+    const std::string saved_home = home ? home : "";
+    ::setenv("XDG_CONFIG_HOME", "/etc/x", 1);
+    CHECK(user_config_dir() == "/etc/x/sonora");
+    ::setenv("XDG_CONFIG_HOME", "relative/config", 1);
+    ::setenv("HOME", "/home/op", 1);
+    CHECK(user_config_dir() == "/home/op/.config/sonora");
+    ::unsetenv("XDG_CONFIG_HOME");
+    CHECK(user_config_dir() == "/home/op/.config/sonora");
+    ::unsetenv("HOME");
+    CHECK(user_config_dir().empty());
+    if (home) ::setenv("HOME", saved_home.c_str(), 1);
+}
+
 void status_through_symlink() {
     const std::string dir = "test_platform_background";
     std::system(("rm -rf " + dir).c_str());
@@ -181,6 +198,7 @@ void group_kill() {
 
 int main() {
     cache_dir();
+    config_dir();
     status_through_symlink();
     group_kill();
 #ifdef __linux__

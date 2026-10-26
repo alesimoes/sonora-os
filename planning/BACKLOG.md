@@ -1536,9 +1536,14 @@ Order and owners are in ADR-0008 §5.
 - [x] Input monitoring with latency compensation measured by a loopback test
       (ADR-0019, `t1-input-monitor`): `LatencyProbe` in the callback, takes
       captured L later on the playhead and labelled P0 − L, drivers/fake's
-      loopback cable in `test_latency_probe`. Follow-ups: a probe command on
-      the wire and a latency page in the interface; L kept per machine; the
-      backend's reported figure as a fallback.
+      loopback cable in `test_latency_probe`.
+- [x] Its follow-ups (ADR-0019 update of 2026-10-26, `t1-latency-wire`,
+      protocol 22): latency.measure, latency.cancel and latency.set on the
+      wire with a standing Latency event; L kept per capture device, rate
+      and period in `$XDG_CONFIG_HOME/sonora/latency.conf`; at start
+      --input-latency, then --measure-latency, then the kept figure, then
+      the backend's reported round trip (JACK port latencies); the Qt
+      Latency window under Setup with refusals held in it.
 - [ ] Transport locate without dropping a block.
 - [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
       period PipeWire's dummy driver skipped without an xrun, which the

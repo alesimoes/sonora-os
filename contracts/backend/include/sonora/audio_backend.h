@@ -121,6 +121,17 @@ public:
     // Empty until fatal() is true. Control thread only, never the audio
     // thread: it allocates.
     virtual std::string fatal_reason() const = 0;
+
+    // The capture device the inputs come from, by PortInfo::device; empty
+    // while none is chosen. With the rate and the period it keys the
+    // machine's round trip (ADR-0019, update of 2026-10-26).
+    virtual std::string capture_device() const { return {}; }
+    // The round trip in frames the server reports for the session's ports:
+    // its capture latency into the inputs plus its playback latency out of
+    // the outputs. 0 when it reports none, or cannot until an input and an
+    // output are connected. It leaves out the converters' group delay, so
+    // it is only the fallback for a measured L (ADR-0019, Context).
+    virtual uint32_t reported_latency() const { return 0; }
 };
 
 // The ports of `all` that BackendConfig::capture_device selects, in channel

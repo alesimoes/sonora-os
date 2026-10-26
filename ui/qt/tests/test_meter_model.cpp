@@ -246,6 +246,12 @@ int main() {
         e.frame(f);
         CHECK(f.tracks.size() == 18 && f.tracks[0].armed && !f.tracks[1].armed);
 
+        // The round trip stands from the start (protocol 22).
+        std::vector<EngineEvent> standing;
+        e.take_events(standing);
+        CHECK(standing.size() == 1 && standing[0].kind == EngineEventKind::Latency &&
+              standing[0].insert == 2);
+
         // A failed take reaches the shell with its reason and its flag, and
         // events wait until they are taken, however many polls pass.
         fake.script_take_failure(true);

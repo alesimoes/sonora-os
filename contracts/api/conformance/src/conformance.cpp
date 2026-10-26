@@ -500,6 +500,137 @@ int check_click(Rig& rig) {
     return C(rig, "the click and the count-off").go();
 }
 
+// The round trip (ADR-0019, update of 2026-10-26): one Latency event stands
+// from the start, with L, its source and the outputs the probe may use.
+// latency.measure on the rig's cable finds the cable's figure and makes it
+// L; one past the ports says NoPort and leaves L; a second one while one
+// runs is refused; cancel says Cancelled and leaves L; latency.set makes L
+// manual; measuring and setting are refused during a take.
+int check_latency_probe(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        const EngineEvent* latest(Session& s) { return s.last_event(EventKind::Latency); }
+        // Polls until the latest Latency event's status is no longer
+        // Measuring; the real probe takes about 1.5 s.
+        bool settled(Session& s) {
+            for (int round = 0; round < 4; ++round) {
+                if (s.until(rig_, [&]() {
+                        const EngineEvent* e = latest(s);
+                        return e != nullptr &&
+                               latency_status(e->flags) != LatencyStatus::Measuring;
+                    })) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            const auto& impl = s.engine->hello().implemented_commands;
+            for (const char* id : {"latency.measure", "latency.cancel", "latency.set"}) {
+                EXPECT(std::find(impl.begin(), impl.end(), id) != impl.end(),
+                       std::string(id) + " is not announced");
+            }
+            EXPECT(s.until(rig_, [&]() { return latest(s) != nullptr; }),
+                   "no Latency event stands at connect");
+            EXPECT(latency_source(latest(s)->flags) == LatencySource::None &&
+                       latency_status(latest(s)->flags) == LatencyStatus::Idle &&
+                       latest(s)->frame == 0,
+                   "a fresh engine's round trip is not 0 with no source");
+            EXPECT(latest(s)->insert >= 2, "the probe may use fewer than the two monitor outputs");
+            const uint64_t outputs = latest(s)->insert;
+            CommandReply r;
+
+            EXPECT(s.await(rig_, s.command("latency.measure", -1, "two"), r) &&
+                       r.result == DispatchResult::Failed && mentions(r.message, "OUT:IN"),
+                   "a measurement with no ports was not refused by name: " + r.message);
+            EXPECT(s.await(rig_, s.command("latency.cancel"), r) &&
+                       r.result == DispatchResult::Failed,
+                   "cancel with nothing running was not refused");
+
+            uint32_t out = 0, in = 0, frames = 0;
+            const bool cable = rig_.latency_cable(out, in, frames);
+            if (cable) {
+                const std::string pair = std::to_string(out) + ":" + std::to_string(in);
+                EXPECT(s.await(rig_, s.command("latency.measure", -1, pair), r) &&
+                           r.result == DispatchResult::Ok,
+                       "latency.measure on the cable failed: " + r.message);
+                EXPECT(latency_status(latest(s)->flags) == LatencyStatus::Measuring,
+                       "no Measuring event before the reply");
+                EXPECT(s.await(rig_, s.command("latency.measure", -1, pair), r) &&
+                           r.result == DispatchResult::Failed && mentions(r.message, "already"),
+                       "a second measurement was not refused: " + r.message);
+                EXPECT(s.await(rig_, s.command("latency.set", -1, "100"), r) &&
+                           r.result == DispatchResult::Failed,
+                       "latency.set while measuring was not refused");
+                EXPECT(settled(s), "the measurement never ended");
+                EXPECT(latency_status(latest(s)->flags) == LatencyStatus::Measured,
+                       "the cable was not measured: " + latest(s)->text);
+                EXPECT(latest(s)->frame == frames &&
+                           latency_source(latest(s)->flags) == LatencySource::Measured,
+                       "L is not the cable's " + std::to_string(frames) + " frames: " +
+                           std::to_string(latest(s)->frame));
+                EXPECT(mentions(latest(s)->text, std::to_string(frames).c_str()),
+                       "the result does not give the figure");
+
+                // Cancelled: L stays.
+                EXPECT(s.await(rig_, s.command("latency.measure", -1, pair), r) &&
+                           r.result == DispatchResult::Ok,
+                       "a measurement after one ended failed: " + r.message);
+                EXPECT(s.await(rig_, s.command("latency.cancel"), r) &&
+                           r.result == DispatchResult::Ok,
+                       "cancel failed: " + r.message);
+                EXPECT(settled(s), "the cancel was never answered");
+                EXPECT(latency_status(latest(s)->flags) == LatencyStatus::Cancelled &&
+                           latest(s)->frame == frames &&
+                           latency_source(latest(s)->flags) == LatencySource::Measured,
+                       "a cancelled measurement moved L or its source");
+            } else {
+                std::printf("     (no cable on this rig: measuring it not checked)\n");
+            }
+
+            // A port the engine does not have: the probe says so, L stays.
+            const uint64_t before = latest(s)->frame;
+            const LatencySource source_before = latency_source(latest(s)->flags);
+            const std::string past = std::to_string(outputs + 1) + ":1";
+            EXPECT(s.await(rig_, s.command("latency.measure", -1, past), r) &&
+                       r.result == DispatchResult::Ok,
+                   "latency.measure past the outputs failed at once: " + r.message);
+            EXPECT(settled(s), "the measurement past the ports never ended");
+            EXPECT(latency_status(latest(s)->flags) == LatencyStatus::NoPort &&
+                       latest(s)->frame == before &&
+                       latency_source(latest(s)->flags) == source_before,
+                   "a measurement past the ports did not say NoPort, or moved L");
+
+            EXPECT(s.await(rig_, s.command("latency.set", -1, "321"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "latency.set failed: " + r.message);
+            EXPECT(latest(s)->frame == 321 &&
+                       latency_source(latest(s)->flags) == LatencySource::Manual,
+                   "latency.set did not make L 321 frames, manual");
+
+            // During a take neither may change L.
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("latency.set", -1, "500"), r) &&
+                       r.result == DispatchResult::Failed && mentions(r.message, "take"),
+                   "latency.set during a take was not refused: " + r.message);
+            EXPECT(s.await(rig_, s.command("latency.measure", -1, "1:1"), r) &&
+                       r.result == DispatchResult::Failed && mentions(r.message, "take"),
+                   "latency.measure during a take was not refused: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.stop"), r), "stop was not answered");
+            EXPECT(latest(s)->frame == 321, "a refused change moved L");
+            return ok();
+        }
+    };
+    return C(rig, "latency probe").go();
+}
+
 // Loop playback (transport.toggle_loop, ADR-0016 update "the loop on
 // switch"): announced, off in a new session, and a session setting, so the
 // replica sees each press before its reply. Turned on with the selection as
@@ -2246,6 +2377,7 @@ int run(Rig& rig) {
     failures += check_locate(rig);
     failures += check_click(rig);
     failures += check_loop_toggle(rig);
+    failures += check_latency_probe(rig);
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);

@@ -223,7 +223,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.record",     "transport.return_to_zero", "transport.stop",
         "transport.toggle_play", "transport.toggle_record", "transport.toggle_click",
         "transport.toggle_count_off", "session.place_recovered", "session.leave_recovered",
-        "transport.toggle_loop",
+        "transport.toggle_loop", "latency.measure", "latency.cancel", "latency.set",
     };
     return ids;
 }
@@ -330,6 +330,7 @@ bool FakeEngine::connect(std::string& error) {
     send_catalog();
     offer_recovered();
     if (!folder_.empty()) announce_folder();
+    announce_latency();
     return true;
 }
 
@@ -1076,6 +1077,7 @@ void FakeEngine::poll(Inbox& inbox) {
         }
     }
     check_take();
+    check_latency();
     publish();
 
     // The client's half: everything back through the codec.
@@ -1283,6 +1285,7 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     };
     const std::string& id = r.command;
+    if (id.compare(0, 8, "latency.") == 0) return latency_command(r, why);
     if (id == "session.place_recovered") return place_recovered(why);
     if (id == "session.leave_recovered") {
         if (offered_.empty()) {
@@ -1402,6 +1405,125 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     why = "not handled";
     return false;
+}
+
+void FakeEngine::announce_latency() {
+    EngineEvent e;
+    e.kind = EventKind::Latency;
+    e.frame = latency_;
+    e.insert = cfg_.latency_outputs;
+    e.flags = latency_flags(latency_source_, latency_status_);
+    e.text = latency_text_;
+    post_event(e);
+}
+
+// As engine/control's handlers, in the same words; the probe itself is
+// LatencyProbe's, held to engine/core's tests.
+bool FakeEngine::latency_command(const CommandRequest& r, std::string& why) {
+    const auto fixed = [&]() {
+        if (mode_ != TransportState::Recording) return false;
+        why = "the round trip cannot change during a take; stop the take first";
+        return true;
+    };
+    if (r.command == "latency.measure") {
+        if (fixed()) return false;
+        if (measuring_) {
+            why = "a latency measurement is already running; cancel it first";
+            return false;
+        }
+        uint32_t output = 0;
+        uint32_t input = 0;
+        if (!parse_latency_ports(r.argument, output, input, why)) return false;
+        measuring_ = true;
+        cancel_asked_ = false;
+        measure_output_ = output;
+        measure_input_ = input;
+        measure_start_ns_ = now();
+        pings_said_ = 0;
+        latency_status_ = LatencyStatus::Measuring;
+        latency_text_ = "measuring out_" + std::to_string(output) + " to in_" +
+                        std::to_string(input) + ": 0 of 3 pings";
+        announce_latency();
+        return true;
+    }
+    if (r.command == "latency.cancel") {
+        if (!measuring_) {
+            why = "no latency measurement is running";
+            return false;
+        }
+        cancel_asked_ = true;
+        return true;
+    }
+    if (r.command == "latency.set") {
+        if (fixed()) return false;
+        if (measuring_) {
+            why = "a latency measurement is running; cancel it to set the round trip by hand";
+            return false;
+        }
+        uint64_t frames = 0;
+        if (!parse_locate_frame(r.argument, frames, why)) return false;
+        if (frames > cfg_.sample_rate) {
+            why = "a round trip of " + std::to_string(frames) +
+                  " frames is over one second, longer than any interface's";
+            return false;
+        }
+        latency_ = static_cast<uint32_t>(frames);
+        latency_source_ = LatencySource::Manual;
+        announce_latency();
+        return true;
+    }
+    why = "not handled";
+    return false;
+}
+
+void FakeEngine::check_latency() {
+    if (!measuring_) return;
+    const auto finish = [&](LatencyStatus status, std::string text) {
+        measuring_ = false;
+        latency_status_ = status;
+        latency_text_ = std::move(text);
+        announce_latency();
+    };
+    if (cancel_asked_) {
+        finish(LatencyStatus::Cancelled, "cancelled");
+        return;
+    }
+    if (measure_output_ > cfg_.latency_outputs || measure_input_ > cfg_.tracks) {
+        finish(LatencyStatus::NoPort, "the probe's output or input is not one the backend has");
+        return;
+    }
+    const uint64_t elapsed = now() - measure_start_ns_;
+    if (elapsed < cfg_.measure_ns) {
+        const uint32_t heard =
+            static_cast<uint32_t>(3 * elapsed / std::max<uint64_t>(cfg_.measure_ns, 1));
+        if (heard != pings_said_) {
+            pings_said_ = heard;
+            latency_text_ = "measuring out_" + std::to_string(measure_output_) + " to in_" +
+                            std::to_string(measure_input_) + ": " + std::to_string(heard) +
+                            " of 3 pings";
+            announce_latency();
+        }
+        return;
+    }
+    const Config::LatencyCable& cable = cfg_.latency_cable;
+    if (cable.output == 0 || cable.output != measure_output_ || cable.input != measure_input_) {
+        finish(LatencyStatus::NoSignal,
+               "no arrival heard (arrival silence, floor silence): is the output cabled to "
+               "the input, and the input's gain up?");
+        return;
+    }
+    char ms[32];
+    std::snprintf(ms, sizeof ms, "%.2f ms",
+                  cfg_.sample_rate ? 1000.0 * cable.frames / cfg_.sample_rate : 0.0);
+    std::string text = "round trip " + std::to_string(cable.frames) + " frames (" + ms +
+                       "), 3 pings within 0 frame(s), arrival -20.0 dBFS, floor silence";
+    if (mode_ == TransportState::Recording) {
+        text += "; not applied: the round-trip latency cannot change during a take";
+    } else {
+        latency_ = cable.frames;
+        latency_source_ = LatencySource::Measured;
+    }
+    finish(LatencyStatus::Measured, std::move(text));
 }
 
 void FakeEngine::publish() {

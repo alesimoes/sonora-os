@@ -200,6 +200,15 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
 
+        // --- the round trip (ADR-0019, update of 2026-10-26) ---
+        // Argument: "OUT:IN", the output and input port numbers from 1
+        // (parse_latency_ports()), which the operator has cabled together.
+        {"latency.measure", CommandTarget::None,
+         "Measure the round trip through a cable from an output to an input", true},
+        {"latency.cancel", CommandTarget::None, "Stop the round-trip measurement"},
+        // Argument: the frames, decimal, as transport.locate's.
+        {"latency.set", CommandTarget::None, "Set the round trip by hand", true},
+
         // --- plugins (ADR-0012 §8) ---
         {"plugin.rescan", CommandTarget::None, "Scan the installed plugins again"},
         // Argument: "<slot> <parent token>", the slot 0..9 (A..J) and the
@@ -231,6 +240,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // it changes goes through marker operations, undoable like any edit.
         {"window.memory_locations", CommandTarget::None,
          "Show or hide the Memory Locations window", false, CommandDomain::Interface},
+        // Setup > Latency: measures and sets the round trip through the
+        // latency.* commands.
+        {"window.latency", CommandTarget::None, "Show or hide the Latency window",
+         false, CommandDomain::Interface},
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},
@@ -305,6 +318,28 @@ inline bool parse_play_range(const std::string& argument, uint64_t& from, uint64
         why = "\"" + argument + "\" is not a range to play; give it as A-B in frames, A before B";
         return false;
     }
+    return true;
+}
+
+// latency.measure's argument: "OUT:IN", each a port number from 1, as
+// --measure-latency takes them. Whether the ports exist is the probe's to
+// say (LatencyStatus::NoPort), since only the engine knows its ports.
+inline bool parse_latency_ports(const std::string& argument, uint32_t& output, uint32_t& input,
+                                std::string& why) {
+    const std::size_t colon = argument.find(':');
+    uint64_t out = 0;
+    uint64_t in = 0;
+    std::string ignored;
+    if (colon == std::string::npos ||
+        !parse_locate_frame(argument.substr(0, colon), out, ignored) ||
+        !parse_locate_frame(argument.substr(colon + 1), in, ignored) || out == 0 || in == 0 ||
+        out > 0xFFFFu || in > 0xFFFFu) {
+        why = "\"" + argument +
+              "\" is not a cable to measure; give it as OUT:IN, port numbers from 1";
+        return false;
+    }
+    output = static_cast<uint32_t>(out);
+    input = static_cast<uint32_t>(in);
     return true;
 }
 

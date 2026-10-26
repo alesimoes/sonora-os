@@ -192,6 +192,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setMemoryLocationsOpen(!memory_locations_open_);
         return true;
     });
+    local.install("window.latency", [this](const CommandContext&) {
+        setLatencyOpen(!latency_open_);
+        return true;
+    });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
     simple("edit.trim_start_to_insertion",
@@ -383,6 +387,12 @@ void SessionModel::setMemoryLocationsOpen(bool on) {
     if (on == memory_locations_open_) return;
     memory_locations_open_ = on;
     emit memoryLocationsOpenChanged();
+}
+
+void SessionModel::setLatencyOpen(bool on) {
+    if (on == latency_open_) return;
+    latency_open_ = on;
+    emit latencyOpenChanged();
 }
 
 bool SessionModel::recallMarker(int row) {

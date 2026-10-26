@@ -18,6 +18,9 @@ Rectangle {
     // The Edit menu, drawn by the window under the point given.
     signal editMenuRequested(real x, real y)
     property bool editMenuOpen: false
+    // The Setup menu, the same way.
+    signal setupMenuRequested(real x, real y)
+    property bool setupMenuOpen: false
 
     height: Theme.transportHeight
     color: Theme.panel
@@ -36,7 +39,8 @@ Rectangle {
     Row {
         id: left
         anchors { left: parent.left; leftMargin: Theme.space4; verticalCenter: parent.verticalCenter }
-        spacing: Theme.space6
+        // space4, not space6: with the Setup menu the bar is full at 1280 px.
+        spacing: Theme.space4
 
         // --- Edit | Mix ---
         Row {
@@ -86,6 +90,18 @@ Rectangle {
                 onClicked: {
                     const p = editMenuButton.mapToItem(null, 0, editMenuButton.height)
                     bar.editMenuRequested(p.x, p.y)
+                }
+            }
+            // Pro Tools' Setup menu: what belongs to the machine, not the
+            // session (Latency, ADR-0019).
+            SButton {
+                id: setupMenuButton
+                objectName: "setupMenuButton"
+                text: "Setup \u25BE"; implicitHeight: 28; implicitWidth: 60
+                active: bar.setupMenuOpen
+                onClicked: {
+                    const p = setupMenuButton.mapToItem(null, 0, setupMenuButton.height)
+                    bar.setupMenuRequested(p.x, p.y)
                 }
             }
         }

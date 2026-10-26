@@ -703,6 +703,11 @@ std::string FakeBackend::capture_device() const {
     return impl_->capture_device;
 }
 
+uint32_t FakeBackend::reported_latency() const {
+    std::lock_guard<std::mutex> lock(impl_->control);
+    return impl_->open ? impl_->cfg.reported_latency : 0;
+}
+
 std::string FakeBackend::last_warning() const {
     std::lock_guard<std::mutex> lock(impl_->control);
     return impl_->last_warning;

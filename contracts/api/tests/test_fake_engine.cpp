@@ -41,7 +41,14 @@ public:
         cfg.protocol_version = protocol;
         cfg.state_layout_version = layout;
         cfg.clock = [this]() { return now_; };
+        cfg.latency_cable = {2, 4, 287};
         return std::make_unique<FakeEngine>(cfg);
+    }
+    bool latency_cable(uint32_t& output, uint32_t& input, uint32_t& frames) const override {
+        output = 2;
+        input = 4;
+        frames = 287;
+        return true;
     }
     uint64_t now_ns() override { return now_; }
     void wait_ns(uint64_t ns) override { now_ += ns; }
@@ -125,7 +132,9 @@ void deterministic() {
     e.post_event(ev);
     e.poll(in);
     CHECK(e.state().take_peak(2) == 0.75f);
-    CHECK(in.events.size() == 1 && in.events[0].text == ev.text);
+    // After the Latency event that stands from the start (protocol 22).
+    CHECK(in.events.size() == 2 && in.events[0].kind == EventKind::Latency &&
+          in.events[1].text == ev.text);
 
     // Death at a time: no publish, no reply after it.
     e.die_at(now + 1);

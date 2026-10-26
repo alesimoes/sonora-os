@@ -345,6 +345,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           show_document(false);
                           return true;
                       }));
+    install_latency_commands();
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
             implemented_.push_back(spec.id);
@@ -362,6 +363,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     if (opts_.active_folder == nullptr) own_folder_ = std::make_unique<ActiveFolder>();
     folder_ = opts_.active_folder != nullptr ? opts_.active_folder : own_folder_.get();
     announce_folder();
+    latency_source_ = opts_.latency_source;
+    announce_latency();
 }
 
 EngineControlServer::~EngineControlServer() {
@@ -785,6 +788,7 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
             recovery_offer_ = event.text.empty() ? std::string() : bytes;
             break;
         case api::EventKind::SessionFolder: session_folder_ = bytes; break;
+        case api::EventKind::Latency: latency_ = bytes; break;
     }
 }
 
@@ -801,6 +805,138 @@ void EngineControlServer::announce_folder() {
     e.flags = (folder_->untitled() ? api::kFolderUntitled : 0u) |
               (folder_->read_only() ? api::kFolderReadOnly : 0u);
     post_event(e);
+}
+
+void EngineControlServer::announce_latency() {
+    api::EngineEvent e;
+    e.kind = api::EventKind::Latency;
+    e.frame = session_.input_latency();
+    e.insert = opts_.latency_outputs;
+    e.flags = api::latency_flags(latency_source_, latency_status_);
+    e.text = latency_text_;
+    post_event(e);
+}
+
+bool EngineControlServer::latency_fixed(std::string& why) const {
+    if (session_.recording_take() != 0 || playback_->record_requested() ||
+        !held_records_.empty()) {
+        why = "the round trip cannot change during a take; stop the take first";
+        return true;
+    }
+    return false;
+}
+
+void EngineControlServer::keep_latency(uint32_t frames, api::LatencySource source) {
+    if (opts_.latency_file.empty()) return;
+    std::string why;
+    if (save_machine_latency(opts_.latency_file, opts_.latency_key, {frames, source}, why)) return;
+    api::EngineEvent e;
+    e.kind = api::EventKind::Notice;
+    e.text = "the round trip is in effect but not kept for the next start: " + why;
+    post_event(e);
+}
+
+void EngineControlServer::install_latency_commands() {
+    registry_.install("latency.measure",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          if (latency_fixed(why)) return false;
+                          LatencyProbe& probe = session_.latency_probe();
+                          if (probe.running()) {
+                              why = "a latency measurement is already running; cancel it first";
+                              return false;
+                          }
+                          uint32_t output = 0;
+                          uint32_t input = 0;
+                          if (!parse_latency_ports(ctx.argument, output, input, why)) return false;
+                          LatencyProbe::Settings settings;
+                          settings.output = output - 1;
+                          settings.input = input - 1;
+                          if (!probe.start(settings, &why)) return false;
+                          measure_output_ = output;
+                          measure_input_ = input;
+                          measure_pings_ = settings.pings;
+                          pings_said_ = 0;
+                          latency_status_ = api::LatencyStatus::Measuring;
+                          latency_text_ = "measuring out_" + std::to_string(output) + " to in_" +
+                                          std::to_string(input) + ": 0 of " +
+                                          std::to_string(measure_pings_) + " pings";
+                          announce_latency();
+                          return true;
+                      }));
+    registry_.install("latency.cancel",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (!session_.latency_probe().running()) {
+                              why = "no latency measurement is running";
+                              return false;
+                          }
+                          // The audio thread answers; follow_latency() says
+                          // Cancelled when it has.
+                          session_.latency_probe().cancel();
+                          return true;
+                      }));
+    registry_.install("latency.set",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          if (latency_fixed(why)) return false;
+                          if (session_.latency_probe().running()) {
+                              why = "a latency measurement is running; cancel it to set the "
+                                    "round trip by hand";
+                              return false;
+                          }
+                          uint64_t frames = 0;
+                          if (!parse_locate_frame(ctx.argument, frames, why)) return false;
+                          if (frames > 0xFFFFFFFFull) frames = 0xFFFFFFFFull;
+                          if (!session_.set_input_latency(static_cast<uint32_t>(frames), &why)) {
+                              return false;
+                          }
+                          latency_source_ = api::LatencySource::Manual;
+                          announce_latency();
+                          keep_latency(static_cast<uint32_t>(frames), latency_source_);
+                          return true;
+                      }));
+}
+
+void EngineControlServer::follow_latency() {
+    LatencyProbe& probe = session_.latency_probe();
+    if (!probe.running()) return;
+    LatencyProbe::Result r{};
+    if (!probe.poll(r)) {
+        const uint32_t heard = probe.pings_heard();
+        if (heard != pings_said_ && heard <= measure_pings_) {
+            pings_said_ = heard;
+            latency_text_ = "measuring out_" + std::to_string(measure_output_) + " to in_" +
+                            std::to_string(measure_input_) + ": " + std::to_string(heard) +
+                            " of " + std::to_string(measure_pings_) + " pings";
+            announce_latency();
+        }
+        return;
+    }
+    latency_text_ = LatencyProbe::describe(r, session_.config().sample_rate);
+    switch (r.outcome) {
+        case LatencyProbe::Outcome::Measured: latency_status_ = api::LatencyStatus::Measured; break;
+        case LatencyProbe::Outcome::NoSignal: latency_status_ = api::LatencyStatus::NoSignal; break;
+        case LatencyProbe::Outcome::Unstable: latency_status_ = api::LatencyStatus::Unstable; break;
+        case LatencyProbe::Outcome::Discontinuity:
+            latency_status_ = api::LatencyStatus::Discontinuity;
+            break;
+        case LatencyProbe::Outcome::NoPort: latency_status_ = api::LatencyStatus::NoPort; break;
+        case LatencyProbe::Outcome::Cancelled:
+            latency_status_ = api::LatencyStatus::Cancelled;
+            break;
+    }
+    bool keep = false;
+    if (r.outcome == LatencyProbe::Outcome::Measured) {
+        // Measuring is refused during a take, but one may have started
+        // since: L then stays as it was, and the operator is told why.
+        std::string why;
+        if (session_.set_input_latency(r.frames, &why)) {
+            latency_source_ = api::LatencySource::Measured;
+            keep = true;
+        } else {
+            latency_text_ += "; not applied: " + why;
+        }
+    }
+    announce_latency();
+    if (keep) keep_latency(r.frames, latency_source_);
 }
 
 bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::string& why,
@@ -1051,7 +1187,8 @@ void EngineControlServer::greet(ClientId id) {
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
     for (const std::string* e :
-         {&session_folder_, &inputs_missing_, &take_failed_, &fatal_, &recovery_offer_}) {
+         {&session_folder_, &latency_, &inputs_missing_, &take_failed_, &fatal_,
+          &recovery_offer_}) {
         if (!e->empty()) send_to(client, *e);
     }
 }
@@ -2077,6 +2214,7 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
+    follow_latency();
 
     // The scan worker's catalog and notices (one try_lock), before the
     // chains read its answers.

@@ -274,6 +274,61 @@ bool ShellModel::invokeWith(const QString& command, int target, const QString& a
     return r.kind == RouteResult::Kind::Local && r.result == DispatchResult::Ok;
 }
 
+QString ShellModel::latencyMs() const {
+    const uint32_t rate = engine_.info().sample_rate;
+    if (rate == 0) return QString();
+    return QString::number(1000.0 * latency_frames_ / rate, 'f', 2) + QStringLiteral(" ms");
+}
+
+QString ShellModel::latencySource() const {
+    switch (latency_source_) {
+        case api::LatencySource::None: return QStringLiteral("not measured: takes are not moved");
+        case api::LatencySource::Measured: return QStringLiteral("measured through a cable");
+        case api::LatencySource::Manual: return QStringLiteral("set by hand");
+        case api::LatencySource::Backend:
+            return QStringLiteral("as the audio server reports it, without the converters' delay");
+    }
+    return QString();
+}
+
+bool ShellModel::latencyFailed() const {
+    switch (latency_status_) {
+        case api::LatencyStatus::NoSignal:
+        case api::LatencyStatus::Unstable:
+        case api::LatencyStatus::Discontinuity:
+        case api::LatencyStatus::NoPort: return true;
+        default: return false;
+    }
+}
+
+void ShellModel::holdLatencyRefusal(const QString& why) {
+    if (latency_refusal_ == why) return;
+    latency_refusal_ = why;
+    emit latencyChanged();
+}
+
+void ShellModel::latencyCommand(const char* command, const QString& argument) {
+    holdLatencyRefusal(QString());
+    CommandContext ctx;
+    ctx.argument = argument.toStdString();
+    const RouteResult r = router_.invoke(command, ctx);
+    report(r);
+    // Refused before it left (not implemented, say): held as an engine's is.
+    if (r.kind != RouteResult::Kind::Sent && !r.message.empty()) {
+        holdLatencyRefusal(QString::fromStdString(r.message));
+    }
+}
+
+void ShellModel::measureLatency(int output, int input) {
+    latencyCommand("latency.measure", QString::number(output) + QLatin1Char(':') + QString::number(input));
+}
+
+void ShellModel::cancelLatency() { latencyCommand("latency.cancel", QString()); }
+
+void ShellModel::setLatency(int frames) {
+    latencyCommand("latency.set", QString::number(frames));
+}
+
 qreal ShellModel::scaleY(qreal db, qreal h) const {
     const float top = meter_over_band(static_cast<float>(h)) + 1.0f;
     const float span = static_cast<float>(h) - top;
@@ -331,6 +386,7 @@ void ShellModel::tick() {
     for (const auto& r : replies_) {
         const bool recovery =
             r.command == "session.place_recovered" || r.command == "session.leave_recovered";
+        const bool latency = r.command.compare(0, 8, "latency.") == 0;
         if (r.result == DispatchResult::Ok) {
             if (!r.live && !status_.isEmpty()) say(QString());
             continue;
@@ -341,6 +397,7 @@ void ShellModel::tick() {
             recovery_refusal_ = QString::fromStdString(why);
             emit recoveryChanged();
         }
+        if (latency) holdLatencyRefusal(QString::fromStdString(why));
         say(QString::fromStdString(r.command + ": " + why));
     }
     takeEvents();
@@ -418,6 +475,15 @@ void ShellModel::takeEvents() {
                 break;
             case EngineEventKind::SessionFolder:
                 emit sessionFolder(text, (e.flags & api::kFolderUntitled) != 0);
+                break;
+            case EngineEventKind::Latency:
+                latency_known_ = true;
+                latency_frames_ = static_cast<int>(e.take);
+                latency_source_ = api::latency_source(e.flags);
+                latency_status_ = api::latency_status(e.flags);
+                latency_result_ = text;
+                latency_outputs_ = static_cast<int>(e.insert);
+                emit latencyChanged();
                 break;
             case EngineEventKind::PluginFault:
                 if (plugin_sinks_.fault) {

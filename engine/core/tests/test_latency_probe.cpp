@@ -155,6 +155,7 @@ int test_measures_the_cable() {
         CHECK(r.outcome == LatencyProbe::Outcome::Measured);
         CHECK(r.frames == c.frames);
         CHECK(r.pings == 3 && r.spread == 0 && r.restarts == 0);
+        CHECK(rig.session->latency_probe().pings_heard() == 3);
         CHECK(std::fabs(r.peak - 0.1f) < 1e-6f);
         CHECK(r.noise == 0.0f);
         CHECK(!rig.session->latency_probe().running());
@@ -180,6 +181,8 @@ int test_xrun_restarts_the_ping() {
     CHECK(rig.ok);
     CHECK(rig.session->latency_probe().start(probe_on(2, 2)));
     CHECK(rig.audio->run_blocks(40) == 40);  // inside the second ping
+    // The progress the control thread shows: one ping done.
+    CHECK(rig.session->latency_probe().pings_heard() == 1);
     rig.audio->inject_xrun(1000);
     LatencyProbe::Result r{};
     for (int b = 0; b < 4000 && !rig.session->latency_probe().poll(r); ++b) {

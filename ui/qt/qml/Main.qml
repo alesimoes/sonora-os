@@ -36,6 +36,8 @@ Rectangle {
         onOpenRequested: openPanel.show()
         onEditMenuRequested: (x, y) => editMenu.show(x, y)
         editMenuOpen: editMenu.visible
+        onSetupMenuRequested: (x, y) => setupMenu.show(x, y)
+        setupMenuOpen: setupMenu.visible
     }
 
     // --- loud conditions ------------------------------------------------------
@@ -160,6 +162,21 @@ Rectangle {
             shell: root.shell
             session: root.session
             mover: memoryLocationsLoader
+        }
+    }
+
+    // --- the Latency window (Setup > Latency…), floating over either window ---
+    Loader {
+        id: latencyLoader
+        objectName: "latencyLoader"
+        x: root.width - width - Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: LatencyWindow {
+            objectName: "latencyWindow"
+            shell: root.shell
+            session: root.session
+            mover: latencyLoader
         }
     }
 
@@ -555,6 +572,49 @@ Rectangle {
                             root.shell.invoke(modelData.command, -1)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // --- the Setup menu ----------------------------------------------------------
+    MouseArea {
+        anchors.fill: parent
+        visible: setupMenu.visible
+        z: 9
+        onClicked: setupMenu.visible = false
+    }
+    Rectangle {
+        id: setupMenu
+        objectName: "setupMenu"
+        visible: false
+        z: 10
+        function show(px, py) {
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = py + Theme.space1
+            visible = true
+        }
+        width: 220
+        height: setupColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        Column {
+            id: setupColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            SButton {
+                objectName: "setupLatency"
+                width: setupColumn.width
+                implicitHeight: 26
+                bold: false
+                fontPx: Theme.textBody
+                text: "Latency…"
+                onClicked: {
+                    setupMenu.visible = false
+                    root.shell.invoke("window.latency", -1)
                 }
             }
         }

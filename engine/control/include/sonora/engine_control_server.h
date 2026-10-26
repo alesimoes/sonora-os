@@ -76,6 +76,7 @@
 #include "sonora/api/state_block.h"
 #include "sonora/api/wire.h"
 #include "sonora/command.h"
+#include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
 #include "sonora/orphan_offer.h"
 #include "sonora/plugin_hosting.h"
@@ -206,6 +207,16 @@ public:
         // The saver's folder sync (SessionFolder::SyncDirectory), for the
         // tests; null: the platform's.
         bool (*save_sync_directory)(const std::string& path) = nullptr;
+        // The round trip (ADR-0019, update of 2026-10-26): where the
+        // session's input_latency() came from at start, which the standing
+        // Latency event says; the file a measured or manual L is kept in
+        // for the next start, under `latency_key` (empty: kept nowhere,
+        // as for --input-latency's run); the outputs the backend was
+        // opened with, the probe's to choose from.
+        api::LatencySource latency_source = api::LatencySource::None;
+        std::string latency_file;
+        LatencyKey latency_key;
+        uint32_t latency_outputs = 2;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -521,6 +532,25 @@ private:
     // The standing SessionFolder (ADR-0018 §4).
     std::string session_folder_;
     void announce_folder();
+    // The round trip and the probe (ADR-0019, update of 2026-10-26): the
+    // standing Latency event, what it says, and the measurement's cable
+    // and pings said so far. The control thread's.
+    std::string latency_;
+    api::LatencySource latency_source_ = api::LatencySource::None;
+    api::LatencyStatus latency_status_ = api::LatencyStatus::Idle;
+    std::string latency_text_;
+    uint32_t measure_output_ = 0;
+    uint32_t measure_input_ = 0;
+    uint32_t measure_pings_ = 0;
+    uint32_t pings_said_ = 0;
+    void announce_latency();
+    // The probe's progress and result, every turn.
+    void follow_latency();
+    // L takes are compensated by may not change: a take runs or is asked for.
+    bool latency_fixed(std::string& why) const;
+    // A measured or manual L kept for the next start, if a file is given.
+    void keep_latency(uint32_t frames, api::LatencySource source);
+    void install_latency_commands();
     // ModelAction::Load: refused (false, `why`) during a take, for a path
     // that is no session file, or a folder that cannot be entered; the old
     // session, document and folder then stay. `notices` are the entry's.

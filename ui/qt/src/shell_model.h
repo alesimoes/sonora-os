@@ -78,6 +78,20 @@ class ShellModel : public QObject {
     Q_PROPERTY(QStringList recoveryOffer READ recoveryOffer NOTIFY recoveryChanged)
     Q_PROPERTY(int recoveryCount READ recoveryCount NOTIFY recoveryChanged)
     Q_PROPERTY(QString recoveryRefusal READ recoveryRefusal NOTIFY recoveryChanged)
+    // The round trip takes are compensated by, and the loopback probe
+    // (api::EventKind::Latency, ADR-0019 update of 2026-10-26), for the
+    // Latency window. `latencyKnown` false: the engine has said nothing of
+    // it. `latencyRefusal` holds the last latency.* refusal until the next
+    // latency action, as the recovery offer's does.
+    Q_PROPERTY(bool latencyKnown READ latencyKnown NOTIFY latencyChanged)
+    Q_PROPERTY(int latencyFrames READ latencyFrames NOTIFY latencyChanged)
+    Q_PROPERTY(QString latencyMs READ latencyMs NOTIFY latencyChanged)
+    Q_PROPERTY(QString latencySource READ latencySource NOTIFY latencyChanged)
+    Q_PROPERTY(bool latencyMeasuring READ latencyMeasuring NOTIFY latencyChanged)
+    Q_PROPERTY(bool latencyFailed READ latencyFailed NOTIFY latencyChanged)
+    Q_PROPERTY(QString latencyResult READ latencyResult NOTIFY latencyChanged)
+    Q_PROPERTY(int latencyOutputs READ latencyOutputs NOTIFY latencyChanged)
+    Q_PROPERTY(QString latencyRefusal READ latencyRefusal NOTIFY latencyChanged)
     Q_PROPERTY(QStringList helpEntries READ helpEntries NOTIFY keymapChanged)
     Q_PROPERTY(QString renderPath READ renderPath NOTIFY renderPathChanged)
     Q_PROPERTY(bool softwareRendering READ softwareRendering NOTIFY renderPathChanged)
@@ -170,6 +184,21 @@ public:
     // What a RecoveryOffer event does: the screenshot scene's way in, as
     // the demo's engine has no takes on disk.
     void showRecoveryOffer(const QString& text, int count);
+    bool latencyKnown() const { return latency_known_; }
+    int latencyFrames() const { return latency_frames_; }
+    QString latencyMs() const;
+    QString latencySource() const;
+    bool latencyMeasuring() const { return latency_status_ == api::LatencyStatus::Measuring; }
+    bool latencyFailed() const;
+    QString latencyResult() const { return latency_result_; }
+    int latencyOutputs() const { return latency_outputs_; }
+    QString latencyRefusal() const { return latency_refusal_; }
+    // The Latency window's buttons: latency.measure on out_`output` and
+    // in_`input` (from 1), latency.cancel, latency.set. Each takes away the
+    // refusal held from the last one.
+    Q_INVOKABLE void measureLatency(int output, int input);
+    Q_INVOKABLE void cancelLatency();
+    Q_INVOKABLE void setLatency(int frames);
     QStringList helpEntries() const;
     QVariantList profiles() const;
     bool commandsFocus() const { return router_.commandsFocus(); }
@@ -230,6 +259,7 @@ signals:
     void noticesChanged();
     void alertChanged();
     void recoveryChanged();
+    void latencyChanged();
     void renderPathChanged();
     void keymapChanged();
 
@@ -238,6 +268,9 @@ protected:
 
 private:
     void report(const RouteResult& r);
+    // A latency.* command, its refusal held in the window.
+    void latencyCommand(const char* command, const QString& argument);
+    void holdLatencyRefusal(const QString& why);
     // `read_frame` false: tick() has just read frame_.
     void refreshState(bool read_frame = true);
     void takeEvents();
@@ -303,6 +336,13 @@ private:
     QStringList recovery_offer_;
     int recovery_count_ = 0;
     QString recovery_refusal_;
+    bool latency_known_ = false;
+    int latency_frames_ = 0;
+    api::LatencySource latency_source_ = api::LatencySource::None;
+    api::LatencyStatus latency_status_ = api::LatencyStatus::Idle;
+    QString latency_result_;
+    int latency_outputs_ = 0;
+    QString latency_refusal_;
     QString render_path_ = QStringLiteral("not yet known");
     bool software_ = false;
     bool meters_available_ = true;

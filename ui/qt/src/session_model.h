@@ -69,6 +69,8 @@ class SessionModel : public QObject {
     // counter's format; `range` true for a selection marker.
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
+    // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
+    Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
@@ -225,6 +227,8 @@ public:
     QVariantList markers() const;
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
+    bool latencyOpen() const { return latency_open_; }
+    Q_INVOKABLE void setLatencyOpen(bool on);
     // A row of `markers`: recalled (the selection moves to it), or cleared,
     // one undo step.
     Q_INVOKABLE bool recallMarker(int row);
@@ -354,6 +358,7 @@ signals:
     void undoHistoryOpenChanged();
     void markersChanged();
     void memoryLocationsOpenChanged();
+    void latencyOpenChanged();
     // marker.add with no name, stopped: the window asks for one, offering
     // `name`, and sends marker.add again with it. `what` says where the
     // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
@@ -417,6 +422,7 @@ private:
     QString window_ = QStringLiteral("edit");
     bool undo_history_open_ = false;
     bool memory_locations_open_ = false;
+    bool latency_open_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);

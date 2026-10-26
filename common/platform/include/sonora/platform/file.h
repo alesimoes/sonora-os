@@ -35,6 +35,14 @@ bool sync_directory(const std::string& path);
 // later: %LOCALAPPDATA%\Sonora.) Deleting it costs a rebuild, never data.
 std::string user_cache_dir();
 
+// Where this user's settings for the machine go, the application's own
+// folder in it, not created: POSIX $XDG_CONFIG_HOME/sonora when that is an
+// absolute path, else $HOME/.config/sonora; empty when neither is known.
+// (Windows, later: %APPDATA%\Sonora, which roams: a setting is not
+// regenerable.) The machine's round trip lives here (ADR-0019, update of
+// 2026-10-26).
+std::string user_config_dir();
+
 // What a fingerprint needs of one path, following symlinks to their
 // target (a yabridge bundle links into a Wine prefix).
 struct PathStatus {

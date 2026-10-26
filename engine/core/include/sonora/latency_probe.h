@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -73,6 +74,9 @@ public:
     // True once per measurement, when its result has arrived.
     bool poll(Result& out);
     bool running() const { return running_; }
+    // Pings completed by the measurement running now or last, for showing
+    // progress; any thread.
+    uint32_t pings_heard() const { return pings_heard_.load(std::memory_order_relaxed); }
     // In words, with the figures, for the operator. Allocates.
     static std::string describe(const Result& r, uint32_t sample_rate);
 
@@ -101,6 +105,8 @@ private:
     std::unique_ptr<RingBuffer<Request>> requests_;
     std::unique_ptr<RingBuffer<Result>> results_;
     bool running_ = false;  // control thread
+    // ping_, published: the audio thread stores, nothing waits on it.
+    std::atomic<uint32_t> pings_heard_{0};
 
     // Audio thread.
     Settings run_{};

@@ -109,7 +109,10 @@ public:
             {SONORA_ENGINE_BIN, "--backend", "fake", "--tracks", "4", "--dir",
              (dir_ / "session").string(), "--control-socket", endpoint_, "--headless",
              "--no-memlock", "--announce-versions", std::to_string(protocol),
-             std::to_string(layout)},
+             std::to_string(layout),
+             // The conformance suite sets the round trip; this machine's
+             // own file would keep it for every engine after.
+             "--latency-file", (dir_ / "latency.conf").string()},
             o, error);
         if (!process_) std::fprintf(stderr, "  engine: %s\n", error.c_str());
     }

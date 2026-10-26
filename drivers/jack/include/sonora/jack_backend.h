@@ -46,6 +46,8 @@ public:
     uint32_t clock_discontinuities() const override;
     bool fatal() const override;
     std::string fatal_reason() const override;
+    std::string capture_device() const override;
+    uint32_t reported_latency() const override;
 
 private:
     struct Impl;

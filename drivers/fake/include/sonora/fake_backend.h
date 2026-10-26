@@ -100,6 +100,9 @@ public:
         // Each one replaces its capture port's signal. open() refuses one
         // whose output it is not given.
         std::vector<Loopback> loopbacks;
+        // What reported_latency() says once open, as a server's port
+        // latencies would; 0: the server reports none.
+        uint32_t reported_latency = 0;
     };
 
     // Two-input onboard shape in one call: Config with devices {onboard()}.
@@ -190,8 +193,8 @@ public:
     uint64_t output_dropped() const;
     // The registry id of a port by full name, or UINT32_MAX.
     uint32_t port_id(const std::string& name) const;
-    // The capture device inputs come from; empty while none is chosen.
-    std::string capture_device() const;
+    std::string capture_device() const override;
+    uint32_t reported_latency() const override;
     // The last complaint connect_inputs_in_order() would have printed: a
     // channel count that does not match the input count, or why nothing was
     // connected. The fake prints nothing.

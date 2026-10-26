@@ -9,7 +9,7 @@
 - Amends: `brain/specs/timeline-model.md`, "Punch in", the latency term
   (where the capture window sits on the playhead). Fills in ADR-0016 §2's
   deferred L. Changes no contract: neither `contracts/backend` nor the
-  wire protocol.
+  wire protocol. The update of 2026-10-26 changes both (protocol 22).
 - Numbering: follows ADR-0018.
 
 ## Summary
@@ -29,6 +29,8 @@
 - §4: L is a per-machine figure: given or measured at engine start, held by
   the session, refused while a take runs. The drivers fake a loopback cable
   so CI measures it without hardware.
+- Update 2026-10-26: the probe on the wire, L kept per machine, the
+  backend's figure as a fallback.
 
 ## Context
 
@@ -121,4 +123,53 @@ check L in CI.
   shorter than `H + L` past B still records the whole handle.
 - Not here: a probe command on the wire (a protocol change, and the
   interface's latency page), persisting L per machine, and the backend's
-  reported figure as a fallback. Each is a backlog item.
+  reported figure as a fallback. Each is a backlog item; all three are the
+  update of 2026-10-26.
+
+## Update, 2026-10-26: the probe on the wire, L kept per machine, the backend's figure
+
+Taken on the recommended defaults (`t1-latency-wire`). Protocol 22: main is
+at 20 (untitled sessions), and 21 is loop record's in flight; whichever
+merges later renumbers. The engine's `--latency-file PATH` names the
+machine file (tests point it into their own folder; "" keeps nothing).
+
+- **Commands.** `latency.measure` takes `OUT:IN`, the port numbers from 1 as
+  `--measure-latency` takes them, and arms the probe; `latency.cancel`
+  stops it; `latency.set` takes a frame count and makes it L by hand. The
+  control thread handles all three and pumps the probe every turn of its
+  loop. Measuring and setting L are refused during a take, a take asked for
+  included, as `set_input_latency()` is; a second measurement is refused
+  while one runs.
+- **One standing event, `EventKind::Latency`.** `frame` is L in effect,
+  `flags` its source (none, measured, manual, backend) and the probe's
+  status (idle, measuring, or the outcome: measured or one of the five
+  failures), `insert` how many outputs the probe may play on, `text` the
+  probe's own words with its figures. Sent at start, at every ping while
+  measuring and at every change, replaced each time, and sent to a client
+  that attaches later, so a late interface sees L. A failed measurement
+  leaves L and its source as they were.
+- **L is kept per machine, never in the session file** (no session format
+  change). One line per key in `latency.conf` in the user's config folder:
+  `$XDG_CONFIG_HOME/sonora`, else `$HOME/.config/sonora`, on POSIX
+  (`platform::user_config_dir()`, beside `user_cache_dir()`); on the
+  Windows port `%APPDATA%\Sonora`, roaming, since L is a setting and not
+  regenerable. On the appliance that is the persistence partition's home
+  (ADR-0005). The key is the capture device as the server names it (the
+  UMC1820 on the appliance), the rate and the period, because the round
+  trip changes with each. A measured or manual L is written there, by
+  temporary file and rename, from the control thread; `--input-latency`
+  is for the run only and is not written.
+- **Where L comes from at start**, first that applies: `--input-latency`
+  (manual), `--measure-latency` (measured, and kept), the machine file
+  (its recorded source), the backend's reported round trip (backend),
+  else 0 (none). `AudioBackend::reported_latency()` is the server's
+  capture plus playback latency for the session's ports; drivers/jack
+  reads JACK's port latency ranges once an input and an output are
+  connected, and says 0 otherwise. It misses the converters' group delay
+  (Context), so it is a fallback, shown as such. `capture_device()` joins
+  the contract for the key. Both have defaults (0, empty), so a backend
+  that cannot tell says nothing.
+- **The interface's Latency window** (Setup > Latency…): the port pickers,
+  Measure and Cancel, the result in the probe's words, the source, and a
+  manual entry. A refusal is held in the window until the next action, not
+  only on the status line.

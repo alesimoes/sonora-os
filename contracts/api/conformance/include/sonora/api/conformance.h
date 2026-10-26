@@ -95,6 +95,16 @@ public:
         (void)frames;
         return false;
     }
+    // A cable from output `output` to input `input`, port numbers from 1,
+    // that every engine this rig makes has, and its round trip in frames
+    // (ADR-0019, update of 2026-10-26). False if this rig has none; the
+    // latency check then measures nothing on a cable, and says so.
+    virtual bool latency_cable(uint32_t& output, uint32_t& input, uint32_t& frames) const {
+        (void)output;
+        (void)input;
+        (void)frames;
+        return false;
+    }
     // How many files of take `take` the engine wrote into `folder`'s
     // "Audio Files/": a real engine's on disk, the fake's as it remembers
     // them. -1 if this rig cannot tell; the check then says so.
