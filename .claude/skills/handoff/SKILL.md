@@ -61,5 +61,6 @@ reason to bounce or amend the PR.
   handoff path rather than sending a long-running agent another round.
 - The reviewer gets the diff range and the handoff, not the implementer's
   transcript.
-- In an interactive session, `/clear` between unrelated tasks; `/compact`
-  only when the current task truly needs its history.
+- The coordinator is unattended (CLAUDE.md): nobody runs `/clear` or
+  `/compact`. Keep the handoff current so auto-compaction loses nothing,
+  and never stop a turn to wait for either.
