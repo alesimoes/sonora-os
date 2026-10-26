@@ -1544,6 +1544,24 @@ Order and owners are in ADR-0008 §5.
       --input-latency, then --measure-latency, then the kept figure, then
       the backend's reported round trip (JACK port latencies); the Qt
       Latency window under Setup with refusals held in it.
+- [x] t1 latency: reset LatencyProbe::pings_heard_ in start() (the audio
+      thread is idle then) so a second measurement does not announce the
+      last run's "3 of 3 pings" before "0 of 3" (#152 N1)
+- [x] t1 latency: refuse transport.record (and toggle_record, punch) while
+      a latency measurement runs, so no take starts with the probe
+      overwriting an output; FakeEngine and conformance match (#152 N2)
+- [x] t1 latency: re-read AudioBackend::reported_latency() on the control
+      thread while the source is None, so the backend fallback is not lost
+      to connection order at start (#152 N3)
+- [x] t1 latency: fix the Options::latency_file comment; an
+      --input-latency run still keeps a later latency.set or measurement
+      (#152 N4)
+- [x] t1 control test flake: `late_greeting()` in test_control could see
+      no Latency event (test_control.cpp:1983, once locally and once under
+      TSan in CI): the standing events wait behind the new client's
+      Snapshot, which another thread encodes, so one round trip did not
+      prove them sent. It now waits for the catalog and makes a second
+      round trip.
 - [ ] Transport locate without dropping a block.
 - [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
       period PipeWire's dummy driver skipped without an xrun, which the

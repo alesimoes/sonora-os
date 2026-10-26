@@ -43,6 +43,11 @@ bool LatencyProbe::start(const Settings& settings, std::string* error) {
     if (!(s.level > 0.0f) || s.level > 1.0f) {
         return refuse("the impulse level must be above 0 and at most 1 (0 dBFS)");
     }
+    // Not running, so the audio thread is idle and no longer counts. Reset
+    // here, or the control thread shows the last run's count until the audio
+    // thread takes the request; before the write, so it cannot undo a ping
+    // the new run has already heard.
+    pings_heard_.store(0, std::memory_order_relaxed);
     const Request r{0, s.output, s.input, s.pings, s.window, s.level};
     if (requests_->write(&r, 1) != 1) {
         return refuse("the audio thread has not taken the last latency requests yet");

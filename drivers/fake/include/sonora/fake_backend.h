@@ -179,6 +179,9 @@ public:
     // order pw-jack 1.4.2 delivers them. Fatal if one fed an input. False
     // if no such device is present.
     bool unplug(const std::string& device);
+    // What reported_latency() says from now on, as a server's figure does
+    // once something connects the outputs after open(). Control thread.
+    void set_reported_latency(uint32_t frames);
 
     // --- observing it ---
     uint64_t periods() const;        // periods the server ran, refused included

@@ -75,6 +75,12 @@ bool starts_a_take(const std::string& id) {
     return id == "transport.record" || id == "transport.toggle_record" || id == "transport.punch";
 }
 
+constexpr const char* kMeasuringRefusal =
+    "a latency measurement is running; cancel it or let it finish before recording";
+
+// While nothing gave L, how often the server's own figure is read again.
+constexpr uint64_t kReportedLatencyPeriodMs = 500;
+
 // transport.toggle_loop on the document's transport. Pro Tools loops the
 // timeline selection, so one sent as the argument becomes the range when
 // loop playback turns on; turned off, the range stays for the next time.
@@ -893,6 +899,24 @@ void EngineControlServer::install_latency_commands() {
                           keep_latency(static_cast<uint32_t>(frames), latency_source_);
                           return true;
                       }));
+}
+
+// The start reads the server's figure once, and it is 0 until an output is
+// connected, which WirePlumber or the operator may do later (#152 N3).
+// While no source gave L it is read again here, on the control thread: on
+// JACK it walks the ports' connections, which allocates.
+void EngineControlServer::follow_reported_latency() {
+    if (audio_ == nullptr || latency_source_ != api::LatencySource::None) return;
+    if (session_.latency_probe().running()) return;
+    std::string why;
+    if (latency_fixed(why)) return;
+    const uint64_t now = steady_ms_now();
+    if (now < next_reported_latency_ms_) return;
+    next_reported_latency_ms_ = now + kReportedLatencyPeriodMs;
+    const uint32_t reported = audio_->reported_latency();
+    if (reported == 0 || !session_.set_input_latency(reported)) return;
+    latency_source_ = api::LatencySource::Backend;
+    announce_latency();
 }
 
 void EngineControlServer::follow_latency() {
@@ -1901,6 +1925,15 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         CommandContext ctx;
         ctx.target = r.target;
         ctx.argument = r.argument;
+        // The probe owns an output until its result arrives: a take started
+        // now would lose that output's monitoring and could record the
+        // impulses (#152 N2). Before anything else, so the refusal changes
+        // nothing, a waiting play included. FakeEngine's start() says the
+        // same.
+        if (starts_a_take(r.command) && session_.latency_probe().running()) {
+            reply(from, r.seq, DispatchResult::Failed, kMeasuringRefusal);
+            return;
+        }
         // Play from a session just opened waits for its plug-ins, at most
         // the bound (the owner's decision of 2026-10-18); a second press, a
         // stop or a take withdraws it. Record never waits: capture is
@@ -2215,6 +2248,7 @@ void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
     follow_latency();
+    follow_reported_latency();
 
     // The scan worker's catalog and notices (one try_lock), before the
     // chains read its answers.

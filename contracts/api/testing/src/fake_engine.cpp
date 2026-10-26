@@ -1248,6 +1248,10 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         mode_ = to;
     };
     const auto start = [&]() {
+        if (measuring_) {
+            why = "a latency measurement is running; cancel it or let it finish before recording";
+            return false;
+        }
         if (std::find(armed_.begin(), armed_.end(), true) == armed_.end()) {
             why = "no track is armed";
             return false;

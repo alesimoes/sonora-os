@@ -78,13 +78,17 @@ int test_channel_identity() {
         const std::vector<float> got = drain(t);
         CHECK(got.size() == 2 * kFrames);
         for (uint32_t f = 0; f < 2 * kFrames; ++f) {
-            if (got[f] != sample(c, f % kFrames)) {
-                std::fprintf(stderr, "FAIL track %zu frame %u: %f\n", c + 1, f,
-                             static_cast<double>(got[f]));
+            // Against what was fed, not sample() evaluated again: capture is a
+            // copy, and the GCC 15 CI build failed here comparing with a
+            // second evaluation. Hex, so a last-bit difference shows.
+            if (got[f] != bufs[c][f % kFrames]) {
+                std::fprintf(stderr, "FAIL track %zu frame %u: %a, fed %a\n", c + 1, f,
+                             static_cast<double>(got[f]),
+                             static_cast<double>(bufs[c][f % kFrames]));
                 return 1;
             }
         }
-        CHECK(t.take_peak() == sample(c, kFrames - 1));
+        CHECK(t.take_peak() == bufs[c][kFrames - 1]);
         CHECK(t.overruns() == 0);
     }
     CHECK(s.transport().playhead() == 2 * kFrames);

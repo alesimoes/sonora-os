@@ -930,32 +930,48 @@ std::vector<api::EngineEvent> late_greeting(RealEngine& real, api::Inbox& in) {
             got->frames.push_back(*frame);
         },
         {});
+    const auto received = [&got]() {
+        std::vector<std::string> frames;
+        {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            frames = got->frames;
+        }
+        api::wire::Reassembler reassembler;
+        api::Inbox late;
+        std::string message, error;
+        for (const std::string& f : frames) {
+            if (reassembler.add(f, message, error) == api::wire::Reassembler::Result::Complete) {
+                api::wire::decode_into(message, late, error);
+            }
+        }
+        return late;
+    };
     // The control thread takes the attach before a request delivered after
-    // it, so once that request is answered the greeting is all there.
-    api::CommandRequest r;
-    r.command = "no.such.command";
-    const uint64_t seq = real.send(r);
-    CHECK(until(real, in, [&]() {
-        for (const auto& reply : in.replies) {
-            if (reply.seq == seq) return true;
-        }
-        return false;
-    }));
+    // it, so once that request is answered the greeting has been sent.
+    const auto round_trip = [&]() {
+        api::CommandRequest r;
+        r.command = "no.such.command";
+        const uint64_t seq = real.send(r);
+        return until(real, in, [&]() {
+            for (const auto& reply : in.replies) {
+                if (reply.seq == seq) return true;
+            }
+            return false;
+        });
+    };
+    CHECK(round_trip());
+    // Sent, but the catalog and the standing events wait behind the
+    // Snapshot, which another thread encodes; the turn that releases them
+    // writes them all, so once the catalog is here, a second round trip
+    // answers after the rest.
+    const auto end = Clock::now() + std::chrono::seconds(2);
+    while (received().catalogs.empty() && Clock::now() < end) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(!received().catalogs.empty());
+    CHECK(round_trip());
     server.detach(id);
-    std::vector<std::string> frames;
-    {
-        std::lock_guard<std::mutex> lock(got->mutex);
-        frames = got->frames;
-    }
-    api::wire::Reassembler reassembler;
-    api::Inbox late;
-    std::string message, error;
-    for (const std::string& f : frames) {
-        if (reassembler.add(f, message, error) == api::wire::Reassembler::Result::Complete) {
-            api::wire::decode_into(message, late, error);
-        }
-    }
-    return late.events;
+    return received().events;
 }
 
 std::size_t plugin_faults_in(const std::vector<api::EngineEvent>& events) {
@@ -1985,6 +2001,51 @@ void the_round_trip_is_kept_for_the_machine() {
     fs::remove_all(conf_dir, ec);
 }
 
+// The server's own figure stands in for L when nothing else gave one, also
+// when the outputs get connected after the start chose (#152 N3): the
+// control thread reads it again while the source is None, and never once
+// another source gave L.
+void the_backend_figure_follows_a_late_connection() {
+    RealEngine real(fresh_dir("latency_late"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto latest = [&]() -> const api::EngineEvent* {
+        for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+            if (it->kind == api::EventKind::Latency) return &*it;
+        }
+        return nullptr;
+    };
+    CHECK(until(real, in, [&]() { return latest() != nullptr; }));
+    CHECK(latest() && api::latency_source(latest()->flags) == api::LatencySource::None &&
+          latest()->frame == 0);
+
+    real.audio().set_reported_latency(412);
+    CHECK(until(real, in, [&]() {
+        return latest() && api::latency_source(latest()->flags) == api::LatencySource::Backend &&
+               latest()->frame == 412;
+    }));
+    CHECK(real.session().input_latency() == 412);
+
+    api::CommandRequest set;
+    set.command = "latency.set";
+    set.argument = "250";
+    const uint64_t seq = real.send(set);
+    CHECK(until(real, in, [&]() {
+        for (const auto& r : in.replies) {
+            if (r.seq == seq) return r.result == DispatchResult::Ok;
+        }
+        return false;
+    }));
+    real.audio().set_reported_latency(600);
+    // Longer than the re-read's period.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    real.poll(in);
+    CHECK(real.session().input_latency() == 250);
+    CHECK(latest() && api::latency_source(latest()->flags) == api::LatencySource::Manual &&
+          latest()->frame == 250);
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -2015,6 +2076,7 @@ int main() {
     a_new_session_gets_its_own_untitled_folder();
     the_first_save_names_the_untitled_folder();
     the_round_trip_is_kept_for_the_machine();
+    the_backend_figure_follows_a_late_connection();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

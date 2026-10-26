@@ -65,6 +65,7 @@ struct FakeBackend::Impl {
     drivers::SourceWatch sources;
     std::string gone_port;
     bool open = false;
+    uint32_t reported_latency = cfg.reported_latency;
 
     // --- set by open(), then read by the audio thread ---
     backend::ProcessCallback* callback = nullptr;
@@ -703,9 +704,14 @@ std::string FakeBackend::capture_device() const {
     return impl_->capture_device;
 }
 
+void FakeBackend::set_reported_latency(uint32_t frames) {
+    std::lock_guard<std::mutex> lock(impl_->control);
+    impl_->reported_latency = frames;
+}
+
 uint32_t FakeBackend::reported_latency() const {
     std::lock_guard<std::mutex> lock(impl_->control);
-    return impl_->open ? impl_->cfg.reported_latency : 0;
+    return impl_->open ? impl_->reported_latency : 0;
 }
 
 std::string FakeBackend::last_warning() const {

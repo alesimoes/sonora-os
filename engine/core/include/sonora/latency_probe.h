@@ -105,7 +105,8 @@ private:
     std::unique_ptr<RingBuffer<Request>> requests_;
     std::unique_ptr<RingBuffer<Result>> results_;
     bool running_ = false;  // control thread
-    // ping_, published: the audio thread stores, nothing waits on it.
+    // ping_, published: the audio thread stores it, and start() zeroes it
+    // while the audio thread is idle; nothing waits on it.
     std::atomic<uint32_t> pings_heard_{0};
 
     // Audio thread.

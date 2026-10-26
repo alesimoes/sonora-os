@@ -504,8 +504,9 @@ int check_click(Rig& rig) {
 // from the start, with L, its source and the outputs the probe may use.
 // latency.measure on the rig's cable finds the cable's figure and makes it
 // L; one past the ports says NoPort and leaves L; a second one while one
-// runs is refused; cancel says Cancelled and leaves L; latency.set makes L
-// manual; measuring and setting are refused during a take.
+// runs is refused, and so is a take; cancel says Cancelled and leaves L;
+// latency.set makes L manual; measuring and setting are refused during a
+// take.
 int check_latency_probe(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -564,6 +565,14 @@ int check_latency_probe(Rig& rig) {
                 EXPECT(s.await(rig_, s.command("latency.set", -1, "100"), r) &&
                            r.result == DispatchResult::Failed,
                        "latency.set while measuring was not refused");
+                // No take starts while the probe owns an output; refused
+                // before the arming check, so no track need be armed.
+                for (const char* id :
+                     {"transport.record", "transport.toggle_record", "transport.punch"}) {
+                    EXPECT(s.await(rig_, s.command(id), r) && r.result == DispatchResult::Failed &&
+                               mentions(r.message, "latency measurement"),
+                           std::string(id) + " while measuring was not refused: " + r.message);
+                }
                 EXPECT(settled(s), "the measurement never ended");
                 EXPECT(latency_status(latest(s)->flags) == LatencyStatus::Measured,
                        "the cable was not measured: " + latest(s)->text);

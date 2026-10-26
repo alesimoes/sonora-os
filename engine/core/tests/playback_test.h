@@ -87,7 +87,9 @@ void* memalign(std::size_t align, std::size_t n) {
     playback_test::note_alloc();
     return __libc_memalign(align, n);
 }
-int posix_memalign(void** out, std::size_t align, std::size_t n) {
+// noexcept as glibc declares it: GCC 15's <mm_malloc.h>, which <random>
+// pulls in after this header, redeclares it throw() and refuses a mismatch.
+int posix_memalign(void** out, std::size_t align, std::size_t n) noexcept {
     playback_test::note_alloc();
     void* p = __libc_memalign(align, n);
     if (p == nullptr) return 12;  // ENOMEM
