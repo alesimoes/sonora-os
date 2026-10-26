@@ -240,7 +240,8 @@ different tables. That is itself a schema problem (§4).
 | `space` | `transport.toggle_play` | **Confirmed** | *Global Commands*: "Play or Stop — Space bar". |
 | `r` | `transport.record` | **Confirmed** | *Global Commands*: "Record — R". |
 | `return` | `transport.return_to_zero` | **Confirmed** | *Global Commands*: "Go to Beginning — Return (↩)". |
-| `c` | `transport.toggle_loop` | **Confirmed** | *Global Commands*: "Toggle Cycle Mode — C". |
+| `c` | `transport.toggle_cycle` | **Confirmed** | *Global Commands*: "Toggle Cycle Mode — C". Was `transport.toggle_loop`; Cycle is loop playback and loop record together and keeps the cycle area; with none set, the selection becomes it (ADR-0016, updates "loop record as a record mode" and "Logic's cycle area"). |
+| `cmd+u` | `transport.cycle_selection` | **Unverified** | "Set Locators by Selection and Enable Cycle — Command-U", from Logic's default key commands; not yet quoted from Apple's guide here, so bound `"verified": false`. The only Logic key that moves the cycle area to a later selection. |
 | `comma` | `transport.rewind` | **Confirmed** | *Global Commands*: "Rewind — Comma (,)". |
 | `period` | `transport.fast_forward` | **Confirmed (chord); command approximate** | *Global Commands*: "**Forward** — Period (.)"; "**Fast Forward** — Shift-Period (.)". Logic distinguishes the two and our catalog does not. `.`→`transport.fast_forward` is the right pairing given the catalog, but it is Logic's *Forward*. If `transport.fast_forward` is ever split, `shift+period` is the real Fast Forward. |
 | `numpad_0` | `transport.stop` | **Confirmed** | *Global Commands*: "Stop — 𝍖 0", where Apple's note reads "𝍖 indicates that the key shown is available twice on an extended keyboard, and that you must press the one on the numeric keypad". Was unverified; it is right. |
@@ -586,8 +587,9 @@ already half-have:
   (Control-Option-Command-1..3). These are the first commands that would
   actually use `CommandContext::argument`, and so the first to set the new
   `takes_argument` flag.
-- `transport.toggle_loop_record`, `transport.toggle_quickpunch` — Pro Tools'
-  Option+L and Command+Shift+P.
+- `transport.toggle_quickpunch` — Pro Tools' Command+Shift+P.
+  (`transport.toggle_loop_record`, Option+L, was added 2026-10-26 and is
+  bound `"verified": false` until quoted from Avid's guide.)
 - `edit.quantize` — Logic's `Q`.
 - `region.toggle_loop` — Logic's `L` ("Loop Regions/Cells/Folders On/Off"),
   which is not `transport.toggle_loop`.

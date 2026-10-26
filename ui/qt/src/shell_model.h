@@ -51,6 +51,11 @@ class ShellModel : public QObject {
     // key it gates (the a-z button is shown only then).
     Q_PROPERTY(bool commandsFocus READ commandsFocus NOTIFY keymapChanged)
     Q_PROPERTY(bool focusKeys READ focusKeys NOTIFY keymapChanged)
+    // Logic's Cycle: the profile binds transport.toggle_cycle, one switch for
+    // loop playback and loop record, so the Transport window shows one button
+    // where Pro Tools' shows Loop and Loop Rec (ADR-0016, update "loop record
+    // as a record mode").
+    Q_PROPERTY(bool cycleMode READ cycleMode NOTIFY keymapChanged)
     Q_PROPERTY(QString transportText READ transportText NOTIFY transportChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY transportChanged)
     Q_PROPERTY(QString clockText READ clockText NOTIFY transportChanged)
@@ -203,6 +208,7 @@ public:
     QVariantList profiles() const;
     bool commandsFocus() const { return router_.commandsFocus(); }
     bool focusKeys() const { return router_.hasFocusKeys(); }
+    bool cycleMode() const;
 
     // Switches to the profile in `file` ("" for the built-in default), as
     // listed in `profiles`. A file that no longer loads is refused, loudly,

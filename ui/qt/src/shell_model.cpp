@@ -82,6 +82,12 @@ QString ShellModel::profileName() const {
     return QString::fromStdString(router_.map().name());
 }
 
+bool ShellModel::cycleMode() const {
+    const auto& b = router_.map().bindings();
+    return std::any_of(b.begin(), b.end(),
+                       [](const Binding& x) { return x.command == "transport.toggle_cycle"; });
+}
+
 QStringList ShellModel::helpEntries() const {
     QStringList out;
     for (const auto& h : router_.help()) out << QString::fromStdString(h);

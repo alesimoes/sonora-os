@@ -102,6 +102,7 @@ class SessionModel : public QObject {
     // What the main counter takes typed, in its format.
     Q_PROPERTY(QString counterEntryHint READ counterEntryHint NOTIFY counterChanged)
     Q_PROPERTY(bool loopOn READ loopOn NOTIFY contentChanged)
+    Q_PROPERTY(bool loopRecordOn READ loopRecordOn NOTIFY contentChanged)
     Q_PROPERTY(bool punchOn READ punchOn NOTIFY contentChanged)
     Q_PROPERTY(QString tempoText READ tempoText NOTIFY sessionChanged)
     // What the loader changed so that the open session's file still opened
@@ -270,6 +271,7 @@ public:
     QString subCounterFormat() const { return QString::fromLatin1(time_format_name(sub_fmt_)); }
     QString counterEntryHint() const { return QString::fromLatin1(time_entry_hint(main_fmt_)); }
     bool loopOn() const;
+    bool loopRecordOn() const;
     bool punchOn() const;
     QString tempoText() const;
     QVariantList repairs() const { return repairs_; }

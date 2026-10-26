@@ -20,6 +20,11 @@
     },
     "numpad_4": "transport.toggle_loop",
     "ctrl+shift+l": "transport.toggle_loop",
+    "alt+l": {
+      "command": "transport.toggle_loop_record",
+      "verified": false,
+      "comment": "Loop Record mode on/off, Option+L, a record mode apart from Loop Playback. Listed as Pro Tools' own in brain/research/protools-logic-key-bindings.md section 5, without a quotation from Avid's guide."
+    },
     "numpad_7": {
       "command": "transport.toggle_click",
       "verified": false,

@@ -166,14 +166,26 @@ std::string as_v9(const std::string& v8) {
     return s;
 }
 
+// What v9 -> v10 makes of a file with loop playback off: the version, and
+// loop record off after it.
+std::string as_v10(const std::string& v9) {
+    std::string s = edit(v9, "\"sonora_session\": 9,", "\"sonora_session\": 10,");
+    const std::size_t at = s.find("\"loop_playback\": ");
+    if (at == std::string::npos) return "<bad edit>";
+    s.insert(s.find('\n', at), ",\n    \"loop_record\": false");
+    return s;
+}
+
 // A version 4 file with no MIDI region, as this build saves it.
 std::string as_current(const std::string& v4) {
-    return as_v9(as_v8(as_v7(as_v6(as_v5(v4)))));
+    return as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4))))));
 }
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v9-loop-playback.sonora";
+constexpr const char* kCurrent = "v10-loop-record.sonora";
+// The version 9 fixture: the same session before loop record's mode.
+constexpr const char* kNoLoopRecord = "v9-loop-playback.sonora";
 // The version 8 fixture: the same session before loop playback's switch.
 constexpr const char* kNoLoopPlayback = "v8-count-off.sonora";
 // The version 7 fixture: the same session before the count-off's bars.
@@ -194,7 +206,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 9);
+    CHECK(l.file_version == 10);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.
@@ -205,8 +217,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v9-loop-playback.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v9-loop-playback.out.sonora\n");
+        std::ofstream("v10-loop-record.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v10-loop-record.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -406,12 +418,12 @@ int test_v5_migrates() {
     CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
     CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
     Loaded current;
-    const std::string v9 = as_v9(as_v8(as_v7(read_fixture(kNoSessionId))));
-    CHECK(load(v9, current, e));
+    const std::string v10 = as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId)))));
+    CHECK(load(v10, current, e));
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == v9);
+    CHECK(out == v10);
     SequenceDigests digests;
     const std::vector<NamedSequence> named = named_sequences(l.snapshot, digests);
     CHECK(named.size() == 3);
@@ -419,7 +431,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 9);
+    CHECK(file_format_version(out, version) && version == 10);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -804,22 +816,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 9,", "\"sonora_session\": 10,"),
-                  "format version 10, newer than this program, which reads up to version 9",
+    CHECK(refused(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 11,"),
+                  "format version 11, newer than this program, which reads up to version 10",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 9,", "\"sonora_session\": 10,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 11,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 9,",
+    CHECK(refused(edit(text, "\"sonora_session\": 10,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 9,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 9,", "\"sonora_session\": 9.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 10.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -832,8 +844,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 9,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 9,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 10,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 10,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -1106,7 +1118,7 @@ int test_v6_migrates_and_session_id() {
     CHECK(l.snapshot.settings.session_id.empty() && l.snapshot.settings.left_takes.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v9(as_v8(as_v7(v6))));
+    CHECK(out == as_v10(as_v9(as_v8(as_v7(v6)))));
     const std::string last = "\n  ]\n}\n";
     CHECK(refused(v6.substr(0, v6.size() - last.size()) + "\n  ],\n  \"session_id\": \"\"\n}\n",
                   "migrating from format version 6: the file has \"session_id\"", nullptr));
@@ -1157,7 +1169,7 @@ int test_v7_migrates_and_count_off() {
     CHECK(l.snapshot.settings.transport.count_off_bars == 2);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v9(as_v8(v7)));
+    CHECK(out == as_v10(as_v9(as_v8(v7))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v7, "\"punch_crossfade\": 240", "\"punch_crossfade\": 240,\n    \"count_off_bars\": 2"),
                   "migrating from format version 7: the file has \"transport.count_off_bars\"",
@@ -1192,7 +1204,7 @@ int test_v8_migrates_and_loop_playback() {
     CHECK(!l.snapshot.settings.transport.loop_playback);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v9(v8));
+    CHECK(out == as_v10(as_v9(v8)));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string ranged = edit(v8, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]");
@@ -1225,6 +1237,54 @@ int test_v8_migrates_and_loop_playback() {
     return 0;
 }
 
+// Version 10 (ADR-0016, update "loop record as a record mode"): Pro Tools'
+// Loop Record apart from Loop Playback. A version 9 take looped exactly when
+// loop playback was on, so loop record opens as loop playback was; a version
+// 9 file cannot carry the key; the key is required and must be true or
+// false; the mode survives a save.
+int test_v9_migrates_and_loop_record() {
+    const std::string v9 = read_fixture(kNoLoopRecord);
+    CHECK(!v9.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v9, l, e));
+    CHECK(l.file_version == 9 && l.repairs.empty());
+    CHECK(!l.snapshot.settings.transport.loop_record);
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == as_v10(v9));
+    CHECK(out == read_fixture(kCurrent));
+
+    const std::string on9 = edit(edit(v9, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]"),
+                                 "\"loop_playback\": false", "\"loop_playback\": true");
+    Loaded looped;
+    CHECK(load(on9, looped, e));
+    CHECK(looped.snapshot.settings.transport.loop_playback);
+    CHECK(looped.snapshot.settings.transport.loop_record);
+    CHECK(save(looped, out));
+    CHECK(mentions(out, "\"loop_playback\": true,\n    \"loop_record\": true"));
+    CHECK(refused(edit(v9, "\"loop_playback\": false",
+                       "\"loop_playback\": false,\n    \"loop_record\": true"),
+                  "migrating from format version 9: the file has \"transport.loop_record\"",
+                  nullptr));
+
+    const std::string text = read_fixture(kCurrent);
+    const std::string flag = "\"loop_record\": false";
+    // Loop record with loop playback off: Pro Tools' two modes apart.
+    const std::string on_text = edit(text, flag, "\"loop_record\": true");
+    Loaded on;
+    CHECK(load(on_text, on, e));
+    CHECK(on.snapshot.settings.transport.loop_record);
+    CHECK(!on.snapshot.settings.transport.loop_playback);
+    CHECK(save(on, out));
+    CHECK(out == on_text);
+    CHECK(refused(edit(text, flag, "\"loop_record\": \"on\""), "must be true or false",
+                  "transport.loop_record", line_of(text, "\"loop_record\"")));
+    CHECK(refused(edit(text, ",\n    " + flag, ""), "missing required key \"loop_record\"",
+                  "transport"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1252,6 +1312,7 @@ int main() {
     t(test_v6_migrates_and_session_id);
     t(test_v7_migrates_and_count_off);
     t(test_v8_migrates_and_loop_playback);
+    t(test_v9_migrates_and_loop_record);
     t(test_missing_sequence_opens);
     t(test_session_bundle);
     t(test_comma_locale);

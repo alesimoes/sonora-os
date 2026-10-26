@@ -37,7 +37,9 @@ namespace sonora::model {
 // 8: "transport.count_off_bars" (ADR-0020 §3).
 // 9: "transport.loop_playback", the loop on switch apart from the range
 //    (ADR-0016). A version 8 file with a loop range opens with it on.
-constexpr std::int64_t kFormatVersion = 9;
+// 10: "transport.loop_record", Pro Tools' Loop Record apart from Loop
+//    Playback (ADR-0016). A version 9 file opens with it as loop playback.
+constexpr std::int64_t kFormatVersion = 10;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

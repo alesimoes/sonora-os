@@ -573,6 +573,19 @@ int check_latency_probe(Rig& rig) {
                                mentions(r.message, "latency measurement"),
                            std::string(id) + " while measuring was not refused: " + r.message);
                 }
+                // A loop take starts through the same commands, so with loop
+                // record on and a range it is refused the same way.
+                EXPECT(s.await(rig_, s.command("transport.toggle_loop_record", -1, "48000-96000"),
+                               r) &&
+                           r.result == DispatchResult::Ok,
+                       "toggle_loop_record while measuring failed: " + r.message);
+                EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                           r.result == DispatchResult::Failed &&
+                           mentions(r.message, "latency measurement"),
+                       "a loop take while measuring was not refused: " + r.message);
+                EXPECT(s.await(rig_, s.command("transport.toggle_loop_record"), r) &&
+                           r.result == DispatchResult::Ok,
+                       "toggle_loop_record off failed: " + r.message);
                 EXPECT(settled(s), "the measurement never ended");
                 EXPECT(latency_status(latest(s)->flags) == LatencyStatus::Measured,
                        "the cable was not measured: " + latest(s)->text);
@@ -698,6 +711,107 @@ int check_loop_toggle(Rig& rig) {
         }
     };
     return C(rig, "loop playback on and off").go();
+}
+
+// Loop record as a record mode (transport.toggle_loop_record, Pro Tools'
+// Option+L) and Logic's Cycle (transport.toggle_cycle, C), ADR-0016 update
+// "loop record as a record mode". Both announced; loop record is off in a
+// new session and turns on and off apart from loop playback, taking the
+// selection as the range as toggle_loop does. Cycle sets both modes
+// together from loop playback's state and keeps a range already set, as
+// Logic's C keeps the cycle area; with none, the selection becomes it, and
+// with neither Cycle is refused. cycle_selection (Logic's Cmd+U) makes the
+// selection the range and turns both on.
+int check_loop_record_mode(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            const auto& impl = s.engine->hello().implemented_commands;
+            for (const char* id : {"transport.toggle_loop_record", "transport.toggle_cycle",
+                                   "transport.cycle_selection"}) {
+                EXPECT(std::find(impl.begin(), impl.end(), id) != impl.end(),
+                       std::string(id) + " is not announced");
+            }
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            const auto transport = [&]() { return s.replica.current().settings.transport; };
+            EXPECT(!transport().loop_record, "loop record is on in a new session");
+            CommandReply r;
+
+            // No range yet: Cycle with no selection is refused and turns
+            // nothing on; with one, the selection becomes the range.
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+                       r.result != DispatchResult::Ok,
+                   "toggle_cycle with no range and no selection was accepted");
+            EXPECT(!transport().loop_playback && !transport().loop_record,
+                   "a refused toggle_cycle turned a mode on");
+            EXPECT(s.await(rig_, s.command("transport.cycle_selection"), r) &&
+                       r.result != DispatchResult::Ok,
+                   "cycle_selection with no selection was accepted");
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle", -1, "24000-36000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_cycle with a selection and no range failed: " + r.message);
+            EXPECT(transport().loop_playback && transport().loop_record &&
+                       transport().loop[0] == 24000 && transport().loop[1] == 36000,
+                   "toggle_cycle did not make the selection the range when none was set");
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+                       r.result == DispatchResult::Ok && !transport().loop_playback &&
+                       !transport().loop_record,
+                   "toggle_cycle off failed: " + r.message);
+
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop_record", -1, "48000-96000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_loop_record with a selection failed: " + r.message);
+            EXPECT(transport().loop_record && !transport().loop_playback,
+                   "toggle_loop_record did not turn loop record alone on");
+            EXPECT(transport().loop[0] == 48000 && transport().loop[1] == 96000,
+                   "the selection did not become the loop range");
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop_record", -1, "96000-48000"), r),
+                   "no reply to a backwards selection");
+            EXPECT(r.result == DispatchResult::Ok && !transport().loop_record &&
+                       transport().loop[0] == 48000,
+                   "turning loop record off read the selection: " + r.message);
+
+            // Cycle on: both modes, over the kept range, whatever the
+            // selection.
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle", -1, "1000-2000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_cycle failed: " + r.message);
+            EXPECT(transport().loop_playback && transport().loop_record &&
+                       transport().loop[0] == 48000 && transport().loop[1] == 96000,
+                   "toggle_cycle did not turn both modes on over the kept range");
+            // Loop record off alone, then Cycle off: both off, from loop
+            // playback's state.
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop_record"), r) &&
+                       r.result == DispatchResult::Ok && !transport().loop_record &&
+                       transport().loop_playback,
+                   "toggle_loop_record off did not leave loop playback alone");
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_cycle off failed: " + r.message);
+            EXPECT(!transport().loop_playback && !transport().loop_record &&
+                       transport().loop[0] == 48000,
+                   "toggle_cycle off did not turn both modes off and keep the range");
+            // Cmd+U: the selection becomes the range, both on; again with
+            // Cycle on, the range moves and Cycle stays on.
+            const struct {
+                const char* sel;
+                int64_t from, to;
+            } areas[] = {{"1000-2000", 1000, 2000}, {"3000-5000", 3000, 5000}};
+            for (const auto& a : areas) {
+                EXPECT(s.await(rig_, s.command("transport.cycle_selection", -1, a.sel), r) &&
+                           r.result == DispatchResult::Ok,
+                       "cycle_selection failed: " + r.message);
+                EXPECT(transport().loop_playback && transport().loop_record &&
+                           transport().loop[0] == a.from && transport().loop[1] == a.to,
+                       std::string("cycle_selection did not set the range to ") + a.sel +
+                           " with both modes on");
+            }
+            return ok();
+        }
+    };
+    return C(rig, "loop record as a record mode, and cycle").go();
 }
 
 // transport.locate (marker recall): stopped, the playhead moves to the
@@ -2387,6 +2501,7 @@ int run(Rig& rig) {
     failures += check_click(rig);
     failures += check_loop_toggle(rig);
     failures += check_latency_probe(rig);
+    failures += check_loop_record_mode(rig);
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);

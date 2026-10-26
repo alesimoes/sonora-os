@@ -276,8 +276,27 @@ bool v8_to_v9(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v9 -> v10: the transport gains "loop_record". A version 9 take was a loop
+// take exactly when loop playback was on, so loop record opens as loop
+// playback was and the next take records as it did (ADR-0016, update "loop
+// record as a record mode").
+bool v9_to_v10(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* tr = root.find("transport");
+    if (tr == nullptr || !tr->is_object()) return true;   // the reader names it
+    if (tr->find("loop_record") != nullptr) {
+        error = "the file has \"transport.loop_record\", which version 9 does not define";
+        return false;
+    }
+    // A loop_playback that is not a bool is the reader's to name.
+    const Value* playback = tr->find("loop_playback");
+    const bool on = playback != nullptr && playback->is_bool() && playback->as_bool();
+    tr->set("loop_record", Value::boolean(on));
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
-    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9}};
+    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
+     v9_to_v10}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -668,7 +687,7 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     const Value& tr = *root.find("transport");
     if (!rd.keys(tr, "transport",
                  {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade",
-                  "count_off_bars", "loop_playback"})) {
+                  "count_off_bars", "loop_playback", "loop_record"})) {
         return false;
     }
     if (!rd.range(tr, "transport", "loop", s.transport.loop)) return false;
@@ -684,6 +703,7 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
                                  "must be from 1 to " + std::to_string(kMaxCountOffBars));
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
     if (!rd.flag(tr, "transport", "loop_playback", s.transport.loop_playback)) return false;
+    if (!rd.flag(tr, "transport", "loop_record", s.transport.loop_record)) return false;
     if (!rd.text(root, "", "session_id", s.session_id)) return false;
     const Value* left = nullptr;
     if (!rd.array(root, "", "left_takes", left)) return false;
@@ -1364,6 +1384,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     tr.set("punch_crossfade", integer(st.transport.punch_crossfade));
     tr.set("count_off_bars", integer(st.transport.count_off_bars));
     tr.set("loop_playback", Value::boolean(st.transport.loop_playback));
+    tr.set("loop_record", Value::boolean(st.transport.loop_record));
     Value& bus = root.set("monitor_bus", Value::object());
     bus.set("outputs", pair(s.mix.bus.outputs[0], s.mix.bus.outputs[1]));
     bus.set("gain_db", Value::number_float(s.mix.bus.gain_db));
