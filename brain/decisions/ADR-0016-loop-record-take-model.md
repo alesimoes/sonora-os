@@ -324,6 +324,27 @@ follow-ups to #144's review).
   turned on (they are kept independent here), and Option+L's quotation in
   Avid's guide (bound `"verified": false`).
 
+## Update, 2026-10-26: Logic's cycle area
+
+Taken on the recommended default (#149 review, blocking item 1). With C
+bound to `transport.toggle_cycle` and the selection never sent, the Logic
+profile had no way to set a range: in a new session C turned Cycle on over
+`[0, 0]` and R recorded a straight take.
+
+- **C takes the selection when no area is set.** `transport.toggle_cycle`
+  takes the selection as an optional `A-B` argument, which the Qt router
+  attaches as it does for the other two. Turning Cycle on with no range set
+  (`loop[1] <= loop[0]`) makes the selection the range; a range already set
+  stays, as Logic's C keeps the cycle area. With neither, the command is
+  refused ("no cycle area: select a range first") and no mode turns on: a
+  Cycle button lit over nothing would arm a take that is not a loop take.
+- **Cmd+U, `transport.cycle_selection`.** Logic's Set Locators by Selection
+  and Enable Cycle: the selection, required, becomes the range and both
+  modes turn on; with Cycle already on it moves the range. No existing
+  command fits, since every other one toggles. Refused with no selection,
+  and like the others while loop record runs. Bound `"verified": false`.
+- Inside protocol 23, which this change's own PR introduced (19 and 21 were never used).
+
 ## Alternatives rejected
 
 - **One file per pass** (a Close and an Open at each wrap): no handle at B

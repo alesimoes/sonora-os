@@ -718,8 +718,10 @@ int check_loop_toggle(Rig& rig) {
 // "loop record as a record mode". Both announced; loop record is off in a
 // new session and turns on and off apart from loop playback, taking the
 // selection as the range as toggle_loop does. Cycle sets both modes
-// together from loop playback's state and never moves the range, as
-// Logic's C keeps the cycle area.
+// together from loop playback's state and keeps a range already set, as
+// Logic's C keeps the cycle area; with none, the selection becomes it, and
+// with neither Cycle is refused. cycle_selection (Logic's Cmd+U) makes the
+// selection the range and turns both on.
 int check_loop_record_mode(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -727,7 +729,8 @@ int check_loop_record_mode(Rig& rig) {
             Session s;
             EXPECT(s.open(rig_), "connect failed: " + s.error);
             const auto& impl = s.engine->hello().implemented_commands;
-            for (const char* id : {"transport.toggle_loop_record", "transport.toggle_cycle"}) {
+            for (const char* id : {"transport.toggle_loop_record", "transport.toggle_cycle",
+                                   "transport.cycle_selection"}) {
                 EXPECT(std::find(impl.begin(), impl.end(), id) != impl.end(),
                        std::string(id) + " is not announced");
             }
@@ -735,6 +738,27 @@ int check_loop_record_mode(Rig& rig) {
             const auto transport = [&]() { return s.replica.current().settings.transport; };
             EXPECT(!transport().loop_record, "loop record is on in a new session");
             CommandReply r;
+
+            // No range yet: Cycle with no selection is refused and turns
+            // nothing on; with one, the selection becomes the range.
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+                       r.result != DispatchResult::Ok,
+                   "toggle_cycle with no range and no selection was accepted");
+            EXPECT(!transport().loop_playback && !transport().loop_record,
+                   "a refused toggle_cycle turned a mode on");
+            EXPECT(s.await(rig_, s.command("transport.cycle_selection"), r) &&
+                       r.result != DispatchResult::Ok,
+                   "cycle_selection with no selection was accepted");
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle", -1, "24000-36000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_cycle with a selection and no range failed: " + r.message);
+            EXPECT(transport().loop_playback && transport().loop_record &&
+                       transport().loop[0] == 24000 && transport().loop[1] == 36000,
+                   "toggle_cycle did not make the selection the range when none was set");
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+                       r.result == DispatchResult::Ok && !transport().loop_playback &&
+                       !transport().loop_record,
+                   "toggle_cycle off failed: " + r.message);
 
             EXPECT(s.await(rig_, s.command("transport.toggle_loop_record", -1, "48000-96000"), r) &&
                        r.result == DispatchResult::Ok,
@@ -749,8 +773,9 @@ int check_loop_record_mode(Rig& rig) {
                        transport().loop[0] == 48000,
                    "turning loop record off read the selection: " + r.message);
 
-            // Cycle on: both modes, over the kept range.
-            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+            // Cycle on: both modes, over the kept range, whatever the
+            // selection.
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle", -1, "1000-2000"), r) &&
                        r.result == DispatchResult::Ok,
                    "toggle_cycle failed: " + r.message);
             EXPECT(transport().loop_playback && transport().loop_record &&
@@ -768,6 +793,21 @@ int check_loop_record_mode(Rig& rig) {
             EXPECT(!transport().loop_playback && !transport().loop_record &&
                        transport().loop[0] == 48000,
                    "toggle_cycle off did not turn both modes off and keep the range");
+            // Cmd+U: the selection becomes the range, both on; again with
+            // Cycle on, the range moves and Cycle stays on.
+            const struct {
+                const char* sel;
+                int64_t from, to;
+            } areas[] = {{"1000-2000", 1000, 2000}, {"3000-5000", 3000, 5000}};
+            for (const auto& a : areas) {
+                EXPECT(s.await(rig_, s.command("transport.cycle_selection", -1, a.sel), r) &&
+                           r.result == DispatchResult::Ok,
+                       "cycle_selection failed: " + r.message);
+                EXPECT(transport().loop_playback && transport().loop_record &&
+                           transport().loop[0] == a.from && transport().loop[1] == a.to,
+                       std::string("cycle_selection did not set the range to ") + a.sel +
+                           " with both modes on");
+            }
             return ok();
         }
     };

@@ -224,7 +224,9 @@ from the end of `loop` to its start; with it off, `loop` is kept and the roll
 plays through it. `loop_record` (version 10, ADR-0016 update "loop record as
 a record mode") is Pro Tools' Loop Record, a record mode apart from it: with
 it on and `loop` set, a take is a loop take, whatever `loop_playback` is.
-Logic's Cycle is both on together (`transport.toggle_cycle`). Both default to
+Logic's Cycle is both on together (`transport.toggle_cycle`, which takes the
+selection as `loop` only when none is set; `transport.cycle_selection`,
+Cmd+U, always does). Both default to
 `false`, as in both applications. `transport.toggle_loop` and
 `transport.toggle_loop_record` flip one each, and turning one on with a
 timeline selection makes the selection `loop`. Transport settings are saved

@@ -225,6 +225,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_count_off", "session.place_recovered", "session.leave_recovered",
         "transport.toggle_loop", "latency.measure", "latency.cancel", "latency.set",
         "transport.toggle_loop_record", "transport.toggle_cycle",
+        "transport.cycle_selection",
     };
     return ids;
 }
@@ -1331,15 +1332,32 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     // As the engine's: the selection becomes the range when loop playback
     // or loop record turns on, and turning either off keeps the range;
-    // Cycle sets both from loop playback's and keeps the range.
+    // Cycle sets both from loop playback's and takes the selection only
+    // when no range is set, refusing with neither; cycle_selection always
+    // takes it and turns both on.
     if (id == "transport.toggle_loop" || id == "transport.toggle_loop_record" ||
-        id == "transport.toggle_cycle") {
+        id == "transport.toggle_cycle" || id == "transport.cycle_selection") {
         model::SetSettings op{document_->current().settings};
         model::Transport& tr = op.settings.transport;
-        bool& mode = id == "transport.toggle_loop_record" ? tr.loop_record : tr.loop_playback;
-        mode = !mode;
-        if (id == "transport.toggle_cycle") tr.loop_record = tr.loop_playback;
-        if (mode && id != "transport.toggle_cycle" && !r.argument.empty()) {
+        const bool cycle = id == "transport.toggle_cycle";
+        bool take = !r.argument.empty();
+        if (id == "transport.cycle_selection") {
+            if (!take) {
+                why = "no selection to set the cycle area from";
+                return false;
+            }
+            tr.loop_playback = tr.loop_record = true;
+        } else {
+            bool& mode = id == "transport.toggle_loop_record" ? tr.loop_record : tr.loop_playback;
+            mode = !mode;
+            if (cycle) tr.loop_record = tr.loop_playback;
+            take = take && mode && (!cycle || tr.loop[1] <= tr.loop[0]);
+            if (cycle && mode && tr.loop[1] <= tr.loop[0] && !take) {
+                why = "no cycle area: select a range first";
+                return false;
+            }
+        }
+        if (take) {
             uint64_t from = 0;
             uint64_t to = 0;
             if (!parse_play_range(r.argument, from, to, why)) return false;

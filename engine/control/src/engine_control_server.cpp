@@ -82,26 +82,47 @@ constexpr const char* kMeasuringRefusal =
 constexpr uint64_t kReportedLatencyPeriodMs = 500;
 
 // The loop mode commands on the document's transport (ADR-0016, updates
-// "the loop on switch" and "loop record as a record mode"). Pro Tools loops
-// the timeline selection, so one sent as the argument becomes the range when
-// Loop Playback or Loop Record turns on; turned off, the range stays for the
-// next time. Logic's Cycle is one switch for both and keeps the cycle area,
-// so it sets both modes from loop playback's and reads no selection.
-// FakeEngine's handler is the same.
+// "the loop on switch", "loop record as a record mode" and "Logic's cycle
+// area"). Pro Tools loops the timeline selection, so one sent as the
+// argument becomes the range when Loop Playback or Loop Record turns on;
+// turned off, the range stays for the next time. Logic's Cycle is one switch
+// for both and keeps the cycle area, so it sets both modes from loop
+// playback's and takes the selection only when no area is set; with neither,
+// it refuses rather than show Cycle on over nothing, where R would record a
+// straight take. Set Locators by Selection and Enable Cycle (Cmd+U) always
+// makes the selection the area and turns both on. FakeEngine's handler is
+// the same.
 bool toggle_loop_mode(const std::string& id, model::Transport& tr, const std::string& selection,
                       std::string& why) {
+    const auto adopt = [&]() {
+        uint64_t from = 0;
+        uint64_t to = 0;
+        if (!parse_play_range(selection, from, to, why)) return false;
+        tr.loop = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
+        return true;
+    };
+    if (id == "transport.cycle_selection") {
+        if (selection.empty()) {
+            why = "no selection to set the cycle area from";
+            return false;
+        }
+        if (!adopt()) return false;
+        tr.loop_playback = tr.loop_record = true;
+        return true;
+    }
     if (id == "transport.toggle_cycle") {
         tr.loop_playback = tr.loop_record = !tr.loop_playback;
-        return true;
+        if (!tr.loop_playback || tr.loop[1] > tr.loop[0]) return true;
+        if (selection.empty()) {
+            why = "no cycle area: select a range first";
+            return false;
+        }
+        return adopt();
     }
     bool& mode = id == "transport.toggle_loop_record" ? tr.loop_record : tr.loop_playback;
     mode = !mode;
     if (!mode || selection.empty()) return true;
-    uint64_t from = 0;
-    uint64_t to = 0;
-    if (!parse_play_range(selection, from, to, why)) return false;
-    tr.loop = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
-    return true;
+    return adopt();
 }
 
 // What a loop take refuses of a transport change, or "". The wraps keep to
@@ -360,9 +381,10 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       }));
     // Pro Tools' Loop Playback and Loop Record, Logic's Cycle: session
     // settings, saved and outside undo like the range (ADR-0016, updates
-    // "the loop on switch" and "loop record as a record mode").
-    for (const char* id :
-         {"transport.toggle_loop", "transport.toggle_loop_record", "transport.toggle_cycle"}) {
+    // "the loop on switch", "loop record as a record mode" and "Logic's
+    // cycle area").
+    for (const char* id : {"transport.toggle_loop", "transport.toggle_loop_record",
+                           "transport.toggle_cycle", "transport.cycle_selection"}) {
         registry_.install(
             id, ExplainingHandler([this, id = std::string(id)](const CommandContext& ctx,
                                                                std::string& why) {

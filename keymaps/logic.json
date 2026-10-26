@@ -7,7 +7,12 @@
     "return": "transport.return_to_zero",
     "c": {
       "command": "transport.toggle_cycle",
-      "comment": "Toggle Cycle Mode: loop playback and loop record together, over the cycle area already set; the Edit selection is not sent."
+      "comment": "Toggle Cycle Mode: loop playback and loop record together, over the cycle area already set; with none set, the Edit selection becomes it, and with neither the key is refused."
+    },
+    "cmd+u": {
+      "command": "transport.cycle_selection",
+      "verified": false,
+      "comment": "Set Locators by Selection and Enable Cycle, Command-U: the Edit selection becomes the cycle area and Cycle turns on. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
     },
     "k": {
       "command": "transport.toggle_click",

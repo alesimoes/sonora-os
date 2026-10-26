@@ -95,9 +95,14 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // a record mode").
         {"transport.toggle_loop_record", CommandTarget::None, "Toggle loop record", true},
         // Logic's Cycle: loop playback and loop record together, over the
-        // range already set.
+        // range already set; with none set, the optional selection argument
+        // becomes it, and with neither the command is refused.
         {"transport.toggle_cycle", CommandTarget::None,
-         "Toggle cycle: loop playback and loop record together"},
+         "Toggle cycle: loop playback and loop record together", true},
+        // Logic's Set Locators by Selection and Enable Cycle (Cmd+U): the
+        // selection, required, becomes the range and both modes turn on.
+        {"transport.cycle_selection", CommandTarget::None,
+         "Set the cycle area from the selection and turn cycle on", true},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},

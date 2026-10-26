@@ -72,8 +72,10 @@ public:
     // argument: play_range_argument() of the Edit selection, "" for none.
     // Sent only to an engine whose Hello announces api::kCapabilityPlayRange;
     // an older one would ignore it and play on past the selection.
-    // transport.toggle_loop and transport.toggle_loop_record get it too,
-    // always: it becomes the loop range. transport.toggle_cycle never does.
+    // transport.toggle_loop, transport.toggle_loop_record,
+    // transport.toggle_cycle and transport.cycle_selection get it too,
+    // always: the engine makes it the loop range (toggle_cycle only when no
+    // range is set).
     void setPlayRange(std::function<std::string()> range) { play_range_ = std::move(range); }
     // api::Hello::capabilities, replaced on each new Hello.
     void setEngineCapabilities(std::vector<std::string> caps) { caps_ = std::move(caps); }

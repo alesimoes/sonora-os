@@ -168,8 +168,10 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
         }
         // Pro Tools' Loop Playback and Loop Record loop the selection; an
         // engine that runs them takes it, so no capability is asked. Logic's
-        // Cycle (transport.toggle_cycle) keeps the cycle area, so it gets none.
-        if ((command == "transport.toggle_loop" || command == "transport.toggle_loop_record") &&
+        // Cycle keeps a cycle area already set, and the engine decides that:
+        // it reads the selection only when none is, as Cmd+U always does.
+        if ((command == "transport.toggle_loop" || command == "transport.toggle_loop_record" ||
+             command == "transport.toggle_cycle" || command == "transport.cycle_selection") &&
             ctx.argument.empty() && play_range_) {
             ctx.argument = play_range_();
             r.ctx = ctx;

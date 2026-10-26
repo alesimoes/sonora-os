@@ -769,6 +769,11 @@ void loop_record_on_the_real_engine() {
         CHECK(reply_to(real.send(toggle), r) && r.result == DispatchResult::Failed);
         CHECK(r.message.find("cannot change while loop record runs") != std::string::npos);
     }
+    api::CommandRequest cycle_selection;
+    cycle_selection.command = "transport.cycle_selection";
+    cycle_selection.argument = "24000-36000";
+    CHECK(reply_to(real.send(cycle_selection), r) && r.result == DispatchResult::Failed);
+    CHECK(r.message.find("cannot change while loop record runs") != std::string::npos);
     const auto modes = [&](bool playback, bool record) {
         model::SessionSettings st = replica.current().settings;
         st.transport.loop_playback = playback;

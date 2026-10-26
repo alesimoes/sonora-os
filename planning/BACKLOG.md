@@ -89,7 +89,9 @@ playback can follow edits; it is in flight.
          10, v9 opens it as loop playback was; protocol 23), the only gate
          for a loop take; loop playback gates the roll alone. Logic's C is
          `transport.toggle_cycle`, both modes together over the kept range,
-         with no selection sent. A loop take refuses any change to the range
+         the selection becoming it when none is set (refused with neither);
+         Cmd+U is `transport.cycle_selection` (ADR-0016, update "Logic's
+         cycle area"). A loop take refuses any change to the range
          or either mode, from a command or a SetSettings. Transport window:
          Loop and Loop Rec, or one Cycle button (ADR-0016, update "loop
          record as a record mode").
@@ -543,6 +545,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              Transport window disagree (#62 merge gate): `SessionModel`
              keeps the last state on a stale read, as `TransportModel`
              does (ui_transport test_window).
+       - [ ] ui.transport: the TransportBar LOOP indicator reads loop_playback only; show loop record (e.g. "LOOP REC") so a loop take is never armed invisibly (ADR-0016, update "loop record as a record mode").
 4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy
        (`feature/ui-keymaps`): routing by `CommandSpec::domain`, the engine
