@@ -1140,10 +1140,13 @@ int scenario_flush_read_across_load(const Args& a) {
     session.disk().start();
     History h(new_session(SessionSettings{}));
     std::string e;
-    h.apply(track_op(100, 101, "A"), e);
-    h.apply(insert_op(100, 500, 0, "urn:sonora:test#state"), e);
-    h.apply(track_op(102, 103, "B"), e);
-    h.apply(insert_op(102, 501, 0, kWorker, {{"gain", 0.5f}}), e);
+    // Tracks before inserts: an insert id moves the next fresh id past it,
+    // and a track added after would be refused as not fresh.
+    check(h.apply(track_op(100, 101, "A"), e) && h.apply(track_op(102, 103, "B"), e) &&
+              h.apply(insert_op(100, 500, 0, "urn:sonora:test#state"), e) &&
+              h.apply(insert_op(102, 501, 0, kWorker, {{"gain", 0.5f}}), e),
+          "the document: A with the state plugin, B with the worker");
+    if (!e.empty()) std::printf("  refused: %s\n", e.c_str());
     std::string bytes;
     check(serialize(h.current(), WriteInfo{"test", 1}, bytes, error), "serialised");
     fs::create_directories(other);
