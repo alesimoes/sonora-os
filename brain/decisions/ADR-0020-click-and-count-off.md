@@ -1,7 +1,7 @@
 # ADR-0020 — The click and the count-off: beats in the plan, synthesised on the audio thread
 
-- Status: **Proposed**, 2026-10-25, with the recommended defaults below,
-  for the coordinator to accept or amend at review.
+- Status: **Accepted**, 2026-10-26, by the coordinator on the recommended
+  defaults below, after the #139 review.
 - Date: 2026-10-25
 - Proposed by: rt-engineer (Track 1), backlog item `engine.core.click`
   ("Click generated in the engine from the tempo map, routed to the monitor
