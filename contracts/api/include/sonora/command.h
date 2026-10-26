@@ -87,7 +87,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
          "Move the playhead to the session end"},
         {"transport.rewind", CommandTarget::None, "Rewind"},
         {"transport.fast_forward", CommandTarget::None, "Fast forward"},
-        {"transport.toggle_loop", CommandTarget::None, "Toggle loop playback"},
+        // Optional argument: the selection, as transport.play's, which
+        // becomes the loop range when loop playback turns on.
+        {"transport.toggle_loop", CommandTarget::None, "Toggle loop playback", true},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},

@@ -252,8 +252,32 @@ bool v7_to_v8(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v8 -> v9: the transport gains "loop_playback". A version 8 roll looped
+// whenever a loop range was set, so a file with one opens with loop playback
+// on and plays as it did; one without opens with it off, a new session's
+// default (ADR-0016, update "the loop on switch").
+bool v8_to_v9(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* tr = root.find("transport");
+    if (tr == nullptr || !tr->is_object()) return true;   // the reader names it
+    if (tr->find("loop_playback") != nullptr) {
+        error = "the file has \"transport.loop_playback\", which version 8 does not define";
+        return false;
+    }
+    // A malformed range is the reader's to name; it opens with loop off.
+    bool looped = false;
+    std::int64_t a = 0;
+    std::int64_t b = 0;
+    if (const Value* loop = tr->find("loop");
+        loop != nullptr && loop->is_array() && loop->items().size() == 2 &&
+        loop->items()[0].to_int64(a) && loop->items()[1].to_int64(b)) {
+        looped = a >= 0 && b > a;
+    }
+    tr->set("loop_playback", Value::boolean(looped));
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
-    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8}};
+    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -644,7 +668,7 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     const Value& tr = *root.find("transport");
     if (!rd.keys(tr, "transport",
                  {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade",
-                  "count_off_bars"})) {
+                  "count_off_bars", "loop_playback"})) {
         return false;
     }
     if (!rd.range(tr, "transport", "loop", s.transport.loop)) return false;
@@ -659,6 +683,7 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     if (bars < 1) return rd.fail(*tr.find("count_off_bars"), "transport.count_off_bars",
                                  "must be from 1 to " + std::to_string(kMaxCountOffBars));
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
+    if (!rd.flag(tr, "transport", "loop_playback", s.transport.loop_playback)) return false;
     if (!rd.text(root, "", "session_id", s.session_id)) return false;
     const Value* left = nullptr;
     if (!rd.array(root, "", "left_takes", left)) return false;
@@ -1338,6 +1363,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     tr.set("post_roll", integer(st.transport.post_roll));
     tr.set("punch_crossfade", integer(st.transport.punch_crossfade));
     tr.set("count_off_bars", integer(st.transport.count_off_bars));
+    tr.set("loop_playback", Value::boolean(st.transport.loop_playback));
     Value& bus = root.set("monitor_bus", Value::object());
     bus.set("outputs", pair(s.mix.bus.outputs[0], s.mix.bus.outputs[1]));
     bus.set("gain_db", Value::number_float(s.mix.bus.gain_db));

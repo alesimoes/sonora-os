@@ -75,6 +75,20 @@ bool starts_a_take(const std::string& id) {
     return id == "transport.record" || id == "transport.toggle_record" || id == "transport.punch";
 }
 
+// transport.toggle_loop on the document's transport. Pro Tools loops the
+// timeline selection, so one sent as the argument becomes the range when
+// loop playback turns on; turned off, the range stays for the next time.
+// FakeEngine's handler is the same.
+bool toggle_loop_playback(model::Transport& tr, const std::string& selection, std::string& why) {
+    tr.loop_playback = !tr.loop_playback;
+    if (!tr.loop_playback || selection.empty()) return true;
+    uint64_t from = 0;
+    uint64_t to = 0;
+    if (!parse_play_range(selection, from, to, why)) return false;
+    tr.loop = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
+    return true;
+}
+
 bool changes_arming(const std::string& id) {
     return id == "track.toggle_arm" || id == "track.arm_all" || id == "track.disarm_all";
 }
@@ -307,6 +321,27 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               send_update(u);
                           }
                           withdraw_orphans();
+                          return true;
+                      }));
+    // Pro Tools' Loop Playback, Logic's Cycle: a session setting, saved and
+    // outside undo like the range (ADR-0016, update "the loop on switch").
+    registry_.install("transport.toggle_loop",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          model::SetSettings op{document_->current().settings};
+                          if (!toggle_loop_playback(op.settings.transport, ctx.argument, why)) {
+                              return false;
+                          }
+                          if (session_.loop_take_running()) {
+                              why = "loop playback cannot change while loop record runs; stop "
+                                    "ends the take";
+                              return false;
+                          }
+                          model::ReplicationUpdate u;
+                          if (!document_->apply(model::Operation{std::move(op)}, u, why)) {
+                              return false;
+                          }
+                          send_update(u);
+                          show_document(false);
                           return true;
                       }));
     for (const auto& spec : command_catalog()) {

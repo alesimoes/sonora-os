@@ -691,6 +691,7 @@ void loop_record_on_the_real_engine() {
     const auto settings = [&](std::array<model::Frames, 2> loop, model::Frames post_roll) {
         model::SessionSettings st = replica.current().settings;
         st.transport.loop = loop;
+        st.transport.loop_playback = true;
         st.transport.pre_roll = 0;
         st.transport.post_roll = post_roll;
         api::ModelRequest m;
@@ -731,6 +732,14 @@ void loop_record_on_the_real_engine() {
     load.op = api::wire::encode_load("", load.op);
     CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Failed);
     CHECK(r.message.find("while loop record runs") != std::string::npos);
+    // Nor can loop playback turn off under the take's wraps.
+    api::CommandRequest toggle_loop;
+    toggle_loop.command = "transport.toggle_loop";
+    CHECK(reply_to(real.send(toggle_loop), r) && r.result == DispatchResult::Failed);
+    CHECK(r.message.find("loop playback cannot change while loop record runs") !=
+          std::string::npos);
+    feed();
+    CHECK(replica.current().settings.transport.loop_playback);
 
     // Past B, so the take has a whole pass.
     CHECK(until(real, in, [&]() {

@@ -113,10 +113,10 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
 bool document_punch(const model::Snapshot& document, PunchRange& out);
 
 // The loop take the record commands start (ADR-0016 §1) when the document
-// has a loop range [A, B) set (B > A; what the interface shows as loop on,
-// as a punch range is punch on): from A less the pre-roll, cut at the
-// timeline's start, with the punch's H as its handle and `latency` as L.
-// False, leaving `out` alone, when no range is set; false with `refusal`
+// has loop playback on and a loop range [A, B) set (B > A): from A less the
+// pre-roll, cut at the timeline's start, with the punch's H as its handle
+// and `latency` as L. False, leaving `out` alone, when loop playback is off
+// or no range is set; false with `refusal`
 // set when a punch range is set too (C3), naming both ranges.
 bool document_loop(const model::Snapshot& document, uint32_t latency, LoopRange& out,
                    std::string& refusal);

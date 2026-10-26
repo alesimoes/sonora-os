@@ -307,7 +307,8 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // Load's path and the session folder (ADR-0018 §2, §4) are version 16;
+    // SetSettings' transport.loop_playback (transport.toggle_loop) is
+    // version 17; Load's path and the session folder (ADR-0018 §2, §4) 16;
     // SetSettings' transport.count_off_bars (ADR-0020) 15;
     // PluginInfo::bridge (ADR-0017 Y2) 14; the recovery offer
     // (engine.record.orphan_offer) 13; Hello's capabilities 12; Save
@@ -315,21 +316,21 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 16);
+    CHECK(kProtocolVersion == 17);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
-    const std::string v15 = wire::version_mismatch(pv, lv, 15, kStateLayoutVersion);
-    CHECK(mentions(v15, "the engine speaks control protocol version 16 and this interface "
-                        "speaks version 15"));
-    CHECK(mentions(v15, "same build"));
-    // And this interface refuses a version-15 engine the same way.
-    CHECK(mentions(wire::version_mismatch(15, kStateLayoutVersion),
-                   "the engine speaks control protocol version 15 and this interface "
-                   "speaks version 16"));
+    const std::string v16 = wire::version_mismatch(pv, lv, 16, kStateLayoutVersion);
+    CHECK(mentions(v16, "the engine speaks control protocol version 17 and this interface "
+                        "speaks version 16"));
+    CHECK(mentions(v16, "same build"));
+    // And this interface refuses a version-16 engine the same way.
+    CHECK(mentions(wire::version_mismatch(16, kStateLayoutVersion),
+                   "the engine speaks control protocol version 16 and this interface "
+                   "speaks version 17"));
 }
 
 void domains() {

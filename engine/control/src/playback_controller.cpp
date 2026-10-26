@@ -154,11 +154,12 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
     }
     session_.set_session_name(snapshot.settings.name);
     session_.set_session_id(snapshot.settings.session_id);
-    // The roll loops over the document's loop range, what the interface
-    // shows as loop on (ADR-0016 §1, engine.transport.loop). One too short
-    // for the session to loop plays straight through, as no range does.
+    // The roll loops over the document's loop range while loop playback is
+    // on (ADR-0016, engine.transport.loop and update "the loop on switch").
+    // One too short for the session to loop plays straight through, as no
+    // range does.
     const auto& loop = snapshot.settings.transport.loop;
-    if (loop[0] < 0 || loop[1] <= loop[0] ||
+    if (!snapshot.settings.transport.loop_playback || loop[0] < 0 || loop[1] <= loop[0] ||
         !session_.set_loop(static_cast<uint64_t>(loop[0]), static_cast<uint64_t>(loop[1]))) {
         session_.set_loop(0, 0);
     }

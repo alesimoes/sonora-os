@@ -247,6 +247,7 @@ Value settings_value(const SessionSettings& s) {
     tr.set("post_roll", integer(s.transport.post_roll));
     tr.set("punch_crossfade", integer(s.transport.punch_crossfade));
     tr.set("count_off_bars", integer(s.transport.count_off_bars));
+    tr.set("loop_playback", Value::boolean(s.transport.loop_playback));
     v.set("session_id", Value::string(s.session_id));
     Value& left = v.set("left_takes", Value::array());
     for (const std::string& path : s.left_takes) left.push(Value::string(path));
@@ -933,13 +934,15 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
     std::array<std::int64_t, 2> loop{}, punch{};
     std::int64_t bars = 0;
     if (!rd.keys(tr, trp,
-                 {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade", "count_off_bars"}) ||
+                 {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade", "count_off_bars",
+                  "loop_playback"}) ||
         !rd.range(tr, trp, "loop", kMaxInteger, loop) ||
         !rd.range(tr, trp, "punch", kMaxInteger, punch) ||
         !rd.frames(tr, trp, "pre_roll", s.transport.pre_roll) ||
         !rd.frames(tr, trp, "post_roll", s.transport.post_roll) ||
         !rd.frames(tr, trp, "punch_crossfade", s.transport.punch_crossfade) ||
-        !rd.integer(tr, trp, "count_off_bars", kMaxCountOffBars, bars)) {
+        !rd.integer(tr, trp, "count_off_bars", kMaxCountOffBars, bars) ||
+        !rd.flag(tr, trp, "loop_playback", s.transport.loop_playback)) {
         return false;
     }
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);

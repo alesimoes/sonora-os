@@ -499,6 +499,66 @@ int check_click(Rig& rig) {
     return C(rig, "the click and the count-off").go();
 }
 
+// Loop playback (transport.toggle_loop, ADR-0016 update "the loop on
+// switch"): announced, off in a new session, and a session setting, so the
+// replica sees each press before its reply. Turned on with the selection as
+// its argument, the selection becomes the range; turned off, the range
+// stays, and the next press turns it on over that range. A selection that
+// is not a range is refused by name and changes nothing.
+int check_loop_toggle(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            const auto& impl = s.engine->hello().implemented_commands;
+            EXPECT(std::find(impl.begin(), impl.end(), "transport.toggle_loop") != impl.end(),
+                   "transport.toggle_loop is not announced");
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            const auto transport = [&]() { return s.replica.current().settings.transport; };
+            EXPECT(!transport().loop_playback, "loop playback is on in a new session");
+            const int32_t take = s.engine->state().transport().take;
+            CommandReply r;
+
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop", -1, "48000-96000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_loop with a selection failed: " + r.message);
+            EXPECT(transport().loop_playback, "toggle_loop did not turn loop playback on");
+            EXPECT(transport().loop[0] == 48000 && transport().loop[1] == 96000,
+                   "the selection did not become the loop range");
+
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_loop off failed: " + r.message);
+            EXPECT(!transport().loop_playback, "toggle_loop did not turn loop playback off");
+            EXPECT(transport().loop[0] == 48000 && transport().loop[1] == 96000,
+                   "turning loop playback off lost the range");
+
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop", -1, "96000-48000"), r),
+                   "no reply to a backwards selection");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "A before B"),
+                   "a backwards selection was not refused by name: " + r.message);
+            EXPECT(!transport().loop_playback && transport().loop[0] == 48000,
+                   "a refused toggle changed the document");
+
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_loop on again failed: " + r.message);
+            EXPECT(transport().loop_playback && transport().loop[0] == 48000 &&
+                       transport().loop[1] == 96000,
+                   "toggle_loop with no selection did not loop the range it kept");
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "the last toggle_loop failed: " + r.message);
+            EXPECT(s.engine->state().transport().state == TransportState::Stopped &&
+                       s.engine->state().transport().take == take,
+                   "a toggle moved the transport or the take number");
+            return ok();
+        }
+    };
+    return C(rig, "loop playback on and off").go();
+}
+
 // transport.locate (marker recall): stopped, the playhead moves to the
 // frame and stays; rolling, it jumps there and the roll goes on; a frame
 // that is not one, and any locate during a take, is refused by name.
@@ -1997,6 +2057,7 @@ int run(Rig& rig) {
     failures += check_play(rig);
     failures += check_locate(rig);
     failures += check_click(rig);
+    failures += check_loop_toggle(rig);
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);

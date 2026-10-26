@@ -350,10 +350,11 @@ int test_no_complete_pass() {
 }
 
 model::Snapshot with_ranges(std::array<model::Frames, 2> loop, std::array<model::Frames, 2> punch,
-                            model::Frames pre_roll) {
+                            model::Frames pre_roll, bool loop_playback = true) {
     model::SessionSettings st;
     st.name = "Loop";
     st.transport.loop = loop;
+    st.transport.loop_playback = loop_playback;
     st.transport.punch = punch;
     st.transport.pre_roll = pre_roll;
     return model::new_session(st);
@@ -363,6 +364,12 @@ int test_the_document_loop() {
     LoopRange l;
     std::string refusal;
     CHECK(!document_loop(with_ranges({0, 0}, {0, 0}, 96000), 0, l, refusal) && refusal.empty());
+    // A range kept with loop playback off records straight through, and
+    // a punch range beside it is no conflict.
+    CHECK(!document_loop(with_ranges({48000, 96000}, {0, 0}, 96000, false), 0, l, refusal) &&
+          refusal.empty());
+    CHECK(!document_loop(with_ranges({48000, 96000}, {100000, 200000}, 0, false), 0, l, refusal) &&
+          refusal.empty());
     CHECK(document_loop(with_ranges({48000, 96000}, {0, 0}, 96000), 7, l, refusal));
     CHECK(l.from == 48000 && l.to == 96000 && l.start == 0 && l.latency == 7);
     // H = max(punch_crossfade, 1 s), as for a punch.
