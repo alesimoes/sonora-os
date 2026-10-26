@@ -224,6 +224,13 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("track.toggle_solo", [this](const CommandContext& ctx, Why& why) {
         return ctl_.toggle_solo(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
     });
+    // The interface's, as mute and solo are: Input mode is the document's
+    // (TrackMix::monitor), saved with the session, and the engine follows
+    // it through the mix it applies (PlaybackController::apply_monitoring).
+    simple("track.toggle_input_monitor", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.toggle_input_monitor(ctx.has_target() ? ctx.target : ctl_.selection().track,
+                                         why);
+    });
 
     // Saving is the engine's once it has session commands (session_files.h);
     // until then the interface writes the file itself.
@@ -531,6 +538,12 @@ QList<bool> SessionModel::solos() const {
 
 QList<bool> SessionModel::soloSafes() const {
     return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.solo_safe; });
+}
+
+QList<bool> SessionModel::inputMonitors() const {
+    return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) {
+        return m.monitor == model::MonitorMode::Input;
+    });
 }
 
 QList<bool> SessionModel::implicitMutes() const {

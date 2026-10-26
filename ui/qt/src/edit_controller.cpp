@@ -1417,6 +1417,19 @@ bool EditController::toggle_solo_safe(int index, std::string& why) {
     return submit(SetMix{m}, why);
 }
 
+bool EditController::toggle_input_monitor(int index, std::string& why) {
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    const TrackEdit& t = *snapshot().edit->tracks[static_cast<std::size_t>(index)];
+    if (t.kind != TrackKind::Audio) {
+        why = t.name + (t.kind == TrackKind::Midi ? " is a MIDI track" : " is an instrument track") +
+              ": it has no audio input to monitor";
+        return false;
+    }
+    m.monitor = m.monitor == MonitorMode::Input ? MonitorMode::Auto : MonitorMode::Input;
+    return submit(SetMix{m}, why);
+}
+
 bool EditController::set_bus_gain(float db, std::string& why) {
     MonitorBus bus = snapshot().mix.bus;
     if (!fader_gain(db, bus.gain_db, why)) return false;

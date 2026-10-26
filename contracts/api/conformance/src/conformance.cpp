@@ -883,6 +883,78 @@ int check_mix(Rig& rig) {
     return C(rig, "the mix follows the document").go();
 }
 
+// Pro Tools' TrackInput: a track the document puts in Input mode shows it
+// in the state block, which is what the engine does with it, and back on
+// Auto it does not. A session loaded with a track in Input mode keeps it,
+// in the replica and on the engine.
+int check_input_monitor(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            StateView& v = s.engine->state();
+            const model::Id id = s.replica.current().edit->tracks[0]->id;
+            const model::TrackMix* before = s.replica.current().mix.find(id);
+            EXPECT(before != nullptr, "track 1 has no mix");
+            EXPECT(before->monitor == model::MonitorMode::Auto, "track 1 does not start on Auto");
+            EXPECT(s.next_publish(rig_), "nothing published after connect");
+            EXPECT(!v.track(0).input_monitor(), "an Auto track is shown in Input mode");
+
+            model::SetMix set{*before};
+            set.mix.monitor = model::MonitorMode::Input;
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            EXPECT(model::encode_operation(set, m.op, error), error);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "SetMix to Input was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.track(0).input_monitor(); }),
+                   "the state block does not show track 1 in Input mode");
+            EXPECT(!v.track(1).input_monitor(), "track 2 followed track 1 into Input mode");
+
+            set.mix.monitor = model::MonitorMode::Auto;
+            EXPECT(model::encode_operation(set, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "SetMix back to Auto was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return !v.track(0).input_monitor(); }),
+                   "track 1 stayed in Input mode back on Auto");
+
+            model::Snapshot saved = s.replica.current();
+            for (auto& t : saved.mix.tracks) {
+                if (t.track == id) t.monitor = model::MonitorMode::Input;
+            }
+            model::WriteInfo info;
+            info.written_by = "conformance";
+            EXPECT(model::serialize(saved, info, m.op, error), error);
+            m.op = wire::encode_load("", m.op);
+            m.action = ModelAction::Load;
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "a session with a track in Input mode was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       const model::TrackMix* t = s.replica.current().mix.find(id);
+                       return s.replica.synced() && t != nullptr &&
+                              t->monitor == model::MonitorMode::Input;
+                   }),
+                   "the loaded session lost track 1's Input mode: " + s.replica_error);
+            EXPECT(s.until(rig_, [&]() { return v.track(0).input_monitor(); }),
+                   "the engine does not monitor track 1's input after the load");
+
+            m.action = ModelAction::Apply;
+            EXPECT(model::encode_operation(set, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                   "SetMix back to Auto was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return !v.track(0).input_monitor(); }),
+                   "track 1 stayed in Input mode after the load");
+            return ok();
+        }
+    };
+    return C(rig, "input monitor mode").go();
+}
+
 // ADR-0009 update 2026-10-14: several operations as one. One reply, one
 // update, one undo step; a member refused halfway refuses the whole of it,
 // naming the member, and sends nothing.
@@ -2061,6 +2133,7 @@ int run(Rig& rig) {
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);
+    failures += check_input_monitor(rig);
     failures += check_model(rig);
     failures += check_compound(rig);
     failures += check_load(rig);

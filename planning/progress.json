@@ -181,7 +181,7 @@
           "owner": "ui-engineer, rt-engineer",
           "items": [
             {"id": "ui.arming.keys", "title": "Arm and disarm tracks from the keyboard", "size": "S", "phase": 0, "status": "done", "evidence": "PR #2; keymap and takes ctests"},
-            {"id": "ui.arming.qt", "title": "Arm, input-monitor, mute and solo buttons on track headers", "size": "S", "phase": 2, "status": "doing", "branch": "feature/ui-arrange-mixer", "note": "Arm, mute, solo on headers and strips; input monitor not yet"},
+            {"id": "ui.arming.qt", "title": "Arm, input-monitor, mute and solo buttons on track headers", "size": "S", "phase": 2, "status": "done", "branch": "feature/ui-arrange-mixer", "evidence": "this PR: the I button (track.toggle_input_monitor, Pro Tools' TrackInput) joins R, S and M on the Edit window's headers and the Mix window's strips", "note": "Arm, mute, solo on headers and strips; input monitor not yet"},
             {"id": "ui.record.punch_loop", "title": "Punch, loop and pre-roll from the UI; auto input monitoring; per-track punch", "size": "M", "phase": 3, "status": "todo", "ref": "PT-RG: Recording (QuickPunch, Loop Record); LP-UG: Advanced recording techniques"},
             {"id": "ui.comping.playlists", "title": "Playlists per track", "size": "M", "phase": 3, "status": "todo"},
             {"id": "ui.comping.loop_takes", "title": "Loop record into takes", "size": "M", "phase": 3, "status": "todo"},

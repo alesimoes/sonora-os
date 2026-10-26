@@ -819,6 +819,35 @@ int qml() {
     r.settle();
     CHECK(!engine_safe(2));
     CHECK(!padlock->isVisible() && !solo->property("recessed").toBool() && outlined(2));
+    // The I button, Pro Tools' TrackInput: Input mode on and off, in the
+    // engine's document, lit in the Mix window and the Edit window alike.
+    const auto engine_input = [&r](int track) {
+        const model::Snapshot& s = r.fake.document();
+        return s.mix.find(s.edit->tracks[static_cast<std::size_t>(track)]->id)->monitor ==
+               model::MonitorMode::Input;
+    };
+    QQuickItem* input = named(root, QStringLiteral("input2"));
+    CHECK(input != nullptr && !input->property("active").toBool());
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(input));
+    r.settle();
+    CHECK(engine_input(2) && input->property("active").toBool());
+    CHECK(r.session.inputMonitors() == QList<bool>({false, false, true, false}));
+    r.session.setWindow(QStringLiteral("edit"));
+    QTest::qWait(50);
+    QQuickItem* edit_input2 = named(root, QStringLiteral("editInput2"));
+    QQuickItem* edit_input1 = named(root, QStringLiteral("editInput1"));
+    CHECK(edit_input2 != nullptr && edit_input2->property("active").toBool());
+    CHECK(edit_input1 != nullptr && !edit_input1->property("active").toBool());
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(edit_input1));
+    r.settle();
+    CHECK(engine_input(1) && edit_input1->property("active").toBool());
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(edit_input2));
+    r.settle();
+    CHECK(!engine_input(2) && !edit_input2->property("active").toBool());
+    r.session.setWindow(QStringLiteral("mix"));
+    QTest::qWait(50);
+    CHECK(!input->property("active").toBool());
+    CHECK(r.session.inputMonitors() == QList<bool>({false, true, false, false}));
     CHECK(r.refused.empty());
     std::printf("  qml: ok\n");
     return 0;

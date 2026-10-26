@@ -164,7 +164,7 @@ int test_planned_on_fake_engine() {
     api::testing::FakeEngine::Config cfg;
     cfg.tracks = 4;
     cfg.planned_commands = {"transport.go_to_end", "transport.rewind",
-                            "track.toggle_input_monitor", "tool.smart", "no.such"};
+                            "transport.play_half_speed", "tool.smart", "no.such"};
     api::testing::FakeEngine fake(cfg);
     ControlAdapter engine(fake);
     std::string err;
@@ -183,10 +183,11 @@ int test_planned_on_fake_engine() {
     router.prepare(qt_device_chords(true));
 
     // Option+Return (Pro Tools' Go to end of session), keypad 1 (rewind),
-    // Shift+I (input monitoring, on the selected track).
+    // Shift+Space (half-speed playback). Shift+I left this list when the
+    // interface took track.toggle_input_monitor (test_edit).
     CHECK(router.route(chord("alt+return")).kind == RouteResult::Kind::Sent);
     CHECK(router.route(chord("numpad_1")).kind == RouteResult::Kind::Sent);
-    CHECK(router.route(chord("shift+i")).kind == RouteResult::Kind::Sent);
+    CHECK(router.route(chord("shift+space")).kind == RouteResult::Kind::Sent);
     // Space is a command the engine really runs.
     CHECK(router.route(chord("space")).kind == RouteResult::Kind::Sent);
     std::vector<CommandOutcome> replies;
@@ -197,7 +198,7 @@ int test_planned_on_fake_engine() {
     CHECK(log.size() == 3);
     CHECK(log[0].command == "transport.go_to_end" && log[0].target == -1);
     CHECK(log[1].command == "transport.rewind");
-    CHECK(log[2].command == "track.toggle_input_monitor" && log[2].target == 2);
+    CHECK(log[2].command == "transport.play_half_speed" && log[2].target == -1);
 
     // On the fake as --fake-engine runs it, the same keys are said to be
     // missing and send nothing.
