@@ -10,9 +10,10 @@
 //   plugin <uri> <bundle> <lv2|vst3> <in> <out> <behaviour> [ms]
 //   listfail <bundle> <reason...>          (a VST3 bundle whose scan crashed)
 //   bridged <bundle>                       (a VST3 bundle yabridgectl made)
-//   wineboot <ms> <ok|fail> [late <ms>]    (what --fake-wineboot does; with
+//   wineboot <ms> <ok|fail> [late <ms> [nocreate]]  (what --fake-wineboot does; with
 //                                           `late`, system.reg appears only
-//                                           when --fake-wineserver-wait ends)
+//                                           when --fake-wineserver-wait ends;
+//                                           `nocreate`: it never appears)
 // behaviours: ok, refuse, crash, hang, sleep (then ok after `ms`), wine (a
 // plugin under Wine: hangs, as the first Wine start does while it creates
 // its prefix, unless $WINEPREFIX/system.reg exists; then ok).
@@ -63,6 +64,7 @@ struct World {
     bool wineboot_ok = true;
     bool wineboot_late = false;
     uint32_t wineserver_ms = 0;
+    bool wineserver_creates = true;
 };
 
 std::string prefix_marker() {
@@ -109,6 +111,8 @@ World read_world() {
             if (in >> late && late == "late") {
                 w.wineboot_late = true;
                 in >> w.wineserver_ms;
+                std::string never;
+                if (in >> never && never == "nocreate") w.wineserver_creates = false;
             }
         }
     }
@@ -189,7 +193,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(w.wineserver_ms));
         const std::string m = prefix_marker();
         if (m.empty()) return 1;
-        if (w.wineboot_late) std::ofstream(m) << "WINE REGISTRY Version 2\n";
+        if (w.wineboot_late && w.wineserver_creates) std::ofstream(m) << "WINE REGISTRY Version 2\n";
         return 0;
     }
     if (list) {
