@@ -1788,10 +1788,28 @@ ADR-0011 "For the owner".
       exist. dsp-engineer.
 - [ ] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
       NAB and IEC record and playback EQ, wow and flutter). dsp-engineer.
-- [ ] N2 slice 5: modelled noise and hum in `common/dsp` (seeded, published
-      spectra and levels, digitally silent at zero, per-instance level for
-      the editor: ADR-0011 §3.3), wired into the tube, transformer and tape
-      processors. Default on or off is the owner's (item 7). dsp-engineer.
+- [x] N2 slice 5, `feature/dsp-n2-noise-hum-recovered` (PR #141): modelled noise and hum in
+      `common/dsp` (`noise.h`: seeded xoshiro256** and near-Gaussian noise,
+      a hum oscillator bank; `supply.h`: a bridge rectifier, reservoir and
+      RC filter integrated to steady state; `triode.h`: the stage's
+      thermal and shot noise and its supply transfer, small-signal), each
+      held to ngspice on the same circuit (`measure/spice_noise.h`, ctest
+      `spice_noise_0..4`), wired into the tube drive as `noise`, `hum`
+      (0-100 %, 100 % the modelled level, 0 % digitally silent) and
+      `mains` (50/60 Hz). Off by default until the owner rules on item 7.
+      Measurements: `brain/research/native-noise-hum-n2.md`. dsp-engineer.
+- [ ] N2 slice 5 follow-ups: (a) flicker (1/f) noise of the triode, from
+      measurements of the owner's tubes or a citable published figure (no
+      12AX7 figure found that we could cite; Blencowe's measurements are
+      the lead). (b) Heater hum at the mains fundamental (heater-cathode
+      leakage and capacitance): needs a measured or published coupling
+      figure. (c) Each instance's contribution in dBFS in its editor
+      (ADR-0011 §3.3, "do not stack silently"): needs the N1 telemetry
+      region (with M9); the suite reports the figures today. (d) Wire noise
+      and hum into the transformer (slice 3) and tape (slice 4) processors
+      when they exist; tape hiss from the tape's own published noise
+      spectrum. (e) Owner item 7, the default: flip `noise` and `hum`'s
+      default to 100 % if the owner rules "on". dsp-engineer.
 - [x] N2 slice 6a, `feature/dsp-n2-dynamics`: the optical levelling
       amplifier. `common/dsp` `opto.h` (the published attenuator and side
       chain, the EL brightness law, CdS photoconductor kinetics with two

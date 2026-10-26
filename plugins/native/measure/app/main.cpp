@@ -15,7 +15,9 @@
 //   the same two with --spice-kind opto and plugins/native/opto/tests/spice:
 //       the optical cell's reference (measure/spice_opto.h); with
 //       --spice-kind fet and plugins/native/fet/tests/spice: the FET
-//       stage's (measure/spice_fet.h)
+//       stage's (measure/spice_fet.h); with --spice-kind noise and
+//       plugins/native/tube/tests/spice-noise: the tube stage's noise and
+//       the supply's hum (measure/spice_noise.h)
 //
 // Exit status 0 when every bar in quality.json is met. --host-fixture
 // writes the reference renders the bundles are checked against through
@@ -28,6 +30,7 @@
 
 #include "sonora/measure/measure.h"
 #include "sonora/measure/spice_fet.h"
+#include "sonora/measure/spice_noise.h"
 #include "sonora/measure/spice_opto.h"
 
 namespace sonora::native::suites {
@@ -103,18 +106,21 @@ int main(int argc, char** argv) {
     if (regen != nullptr && std::strcmp(regen, "1") == 0) args.regenerate_golden = true;
 
     // The SPICE reference harness (measure/spice.h).
-    if (spice_kind != "triode" && spice_kind != "opto" && spice_kind != "fet") {
-        std::fprintf(stderr, "unknown --spice-kind '%s' (triode, opto, fet)\n", spice_kind.c_str());
+    if (spice_kind != "triode" && spice_kind != "opto" && spice_kind != "fet" && spice_kind != "noise") {
+        std::fprintf(stderr, "unknown --spice-kind '%s' (triode, opto, fet, noise)\n", spice_kind.c_str());
         return 2;
     }
     if (!spice_gen.empty()) {
         if (spice_kind == "opto") return measure::opto_spice_generate(spice_gen, ngspice, work);
         if (spice_kind == "fet") return measure::fet_spice_generate(spice_gen, ngspice, work);
+        if (spice_kind == "noise") return measure::noise_spice_generate(spice_gen, ngspice, work);
         return measure::spice_generate(spice_gen, ngspice, work);
     }
     if (!spice_chk.empty()) {
         if (spice_kind == "opto") return measure::opto_spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
         if (spice_kind == "fet") return measure::fet_spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
+        if (spice_kind == "noise")
+            return measure::noise_spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
         return measure::spice_check(spice_chk, ngspice, work, spice_case, spice_cases);
     }
     if (!fixture_dir.empty()) {
