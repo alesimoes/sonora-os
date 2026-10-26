@@ -198,7 +198,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
     document_ = std::make_unique<model::Document>(
         opts_.initial_document ? *opts_.initial_document : engine_document(session_),
         model::History::kDefaultBudget, opts_.midi_max_entries);
-    playback_ = std::make_unique<PlaybackController>(session_, session_.config().dir);
+    playback_ = std::make_unique<PlaybackController>(session_);
     playback_->set_input_monitoring(opts_.input_monitoring);
     DiskThread& disk = session_.disk();
     saver_ = std::make_unique<SessionSaver>([&disk]() { return disk.checkpoints(); },
@@ -352,7 +352,6 @@ void EngineControlServer::start_hosting() {
     PluginHostingConfig hc;
     hc.host_path = opts_.plugin_host;
     hc.bundles = opts_.plugin_bundles;
-    hc.session_dir = session_.config().dir;
     hc.sample_rate = session_.config().sample_rate;
     hc.block_frames = frames;
     hc.max_block_frames = session_.config().playback.max_block_frames;
@@ -582,7 +581,7 @@ void EngineControlServer::follow_flushes() {
         SessionSaver::Job job;
         job.kind = SessionSaver::Kind::States;
         job.seq = it->first;
-        job.file = session_.config().dir;
+        job.file = *session_.folder();
         for (const PluginHosting::StateRead& s : it->second.flush.states) {
             if (!s.sha256.empty()) job.states.push_back({s.sha256, s.bytes});
         }
@@ -754,7 +753,7 @@ void EngineControlServer::offer_orphans() {
         return;
     }
     orphan_scan_pending_ = false;
-    orphans_ = find_orphan_takes(document_->current(), session_.config().dir);
+    orphans_ = find_orphan_takes(document_->current(), *session_.folder());
     if (orphans_.takes.empty()) {
         withdraw_orphans();
         return;
@@ -1836,7 +1835,7 @@ bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::s
     job.seq = m.seq;
     // A copy that shares every state: the saver reads it while edits go on.
     job.document = document_->current();
-    job.state_source = session_.config().dir;
+    job.state_source = *session_.folder();
     const bool take_open = session_.recording_take() != 0;
     saver_->set_take_open(take_open);
     if (take_open) {

@@ -15,6 +15,7 @@ add_library(sonora_control STATIC
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
   src/session_saver.cpp
+  src/active_folder.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -43,6 +44,15 @@ endif()
 add_executable(test_takes tests/test_takes.cpp)
 target_link_libraries(test_takes PRIVATE sonora_control)
 add_test(NAME takes COMMAND test_takes)
+
+# The active session folder (ADR-0018 §1): entering one refused during a
+# take or a close and on a busy lock, recovery on entry, the next take in
+# the folder entered. Uses the folder lock, so POSIX's.
+if(UNIX)
+  add_executable(test_active_folder tests/test_active_folder.cpp)
+  target_link_libraries(test_active_folder PRIVATE sonora_control)
+  add_test(NAME active_folder COMMAND test_active_folder)
+endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
 # update 2026-10-14, item 8).
@@ -120,7 +130,7 @@ if(TARGET sonora-plugin-host)
                    down_keeps_latency gestures server values_while_starting reload_starts_afresh
                    repost_bypass_off gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
                    play_no_hosting play_wait_cancel rescan_drops_stale rescan_loses_running
-                   rescan_blocks_running state_flush server_state_flush)
+                   rescan_blocks_running state_flush server_state_flush flush_active_folder)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()

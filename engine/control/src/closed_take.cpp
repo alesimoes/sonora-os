@@ -445,7 +445,7 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
                           const Session::ClosedTake& take, std::size_t files_per_compound,
                           const char* step_label) {
     TakeAdded out;
-    const std::string dir = session.config().dir;
+    const std::string dir = *session.folder();
     const std::string prefix = dir + "/";
     const std::string which = "take " + std::to_string(take.take);
     std::string first_failure;

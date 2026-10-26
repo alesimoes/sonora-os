@@ -37,6 +37,8 @@ struct CaptureBoundary {
     // Wrap: which of the take's wraps, from 1, so one lost to a full ring
     // leaves a gap the next one shows.
     uint32_t ordinal;
+    // The take's Transport::Word::start: with `take`, which take this is.
+    uint32_t start;
     uint64_t at;
     // Open: the timeline frame of the window's first sample, the file's
     // TimeReference. Wrap: A.

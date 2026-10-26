@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 namespace sonora::platform {
@@ -43,6 +44,21 @@ bool sync_directory(const std::string& path) {
     ::close(fd);
     errno = err;
     return ok;
+}
+
+bool free_bytes(const std::string& path, uint64_t& out) {
+    struct statvfs vfs {};
+    if (::statvfs(path.c_str(), &vfs) != 0) return false;
+    // f_bavail, not f_bfree: the blocks reserved for root are not the
+    // engine's to record into.
+    out = static_cast<uint64_t>(vfs.f_bavail) * static_cast<uint64_t>(vfs.f_frsize);
+    return true;
+}
+
+bool read_only(const std::string& path) {
+    struct statvfs vfs {};
+    if (::statvfs(path.c_str(), &vfs) == 0 && (vfs.f_flag & ST_RDONLY) != 0) return true;
+    return ::access(path.c_str(), W_OK) != 0;
 }
 
 FolderLock::~FolderLock() {

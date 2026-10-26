@@ -25,8 +25,8 @@ class Session;
 
 class PlaybackController {
 public:
-    // `session_dir` is where model source paths are relative to.
-    PlaybackController(Session& session, std::string session_dir);
+    // Model source paths are relative to the session's active folder.
+    explicit PlaybackController(Session& session);
     ~PlaybackController();
 
     PlaybackController(const PlaybackController&) = delete;
@@ -142,7 +142,6 @@ private:
     bool registered(const model::Source& source, uint32_t& slot, std::string& error);
 
     Session& session_;
-    const std::string dir_;
     BuildLimits limits_;
     std::unordered_map<model::Id, uint32_t> slots_;
     ChainResolver resolver_;

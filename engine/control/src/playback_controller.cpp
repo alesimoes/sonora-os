@@ -29,8 +29,7 @@ float pan_of(float pan) {
 
 }  // namespace
 
-PlaybackController::PlaybackController(Session& session, std::string session_dir)
-    : session_(session), dir_(std::move(session_dir)) {
+PlaybackController::PlaybackController(Session& session) : session_(session) {
     const PlaybackConfig& pb = session.config().playback;
     limits_.engine_tracks = static_cast<uint32_t>(session.tracks().size());
     limits_.channels_per_track = session.config().channels_per_track;
@@ -73,7 +72,7 @@ bool PlaybackController::registered(const model::Source& source, uint32_t& slot,
     }
     // Sources are append-only in the model and in the engine's table, so a
     // slot, once given, is the source's for the session.
-    if (!session_.reader().add_source(dir_ + "/" + source.path, slot, error)) return false;
+    if (!session_.reader().add_source(*session_.folder() + "/" + source.path, slot, error)) return false;
     slots_.emplace(source.id, slot);
     return true;
 }

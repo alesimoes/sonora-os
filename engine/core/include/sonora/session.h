@@ -173,7 +173,8 @@ bool parse_take_description(const std::string& description, TakeDescription& out
 
 struct SessionConfig {
     std::string name = "Untitled";
-    std::string dir;                 // session folder; audio goes in <dir>/Audio Files
+    // The folder the session starts in; Session::folder() is the one in use.
+    std::string dir;
     uint32_t sample_rate = 48000;
     int track_count = 8;
     uint16_t channels_per_track = 1;
@@ -465,6 +466,21 @@ public:
     Transport& transport() { return *transport_; }
     const std::vector<std::unique_ptr<Track>>& tracks() const { return tracks_; }
     const SessionConfig& config() const { return cfg_; }
+    // The active session folder (ADR-0018 §1): takes, their wrap lists and
+    // next_free_take() resolve against it, and engine/control reads it for
+    // sources, plugin states and flushes. SessionConfig::dir until
+    // set_folder(). Shared, never a reference to a member: a reader keeps
+    // the folder it was given. Control thread.
+    std::shared_ptr<const std::string> folder() const { return folder_; }
+    // Empty, or why the active folder may not change now: a take is open,
+    // or one is closing (a file the disk thread holds, or a take
+    // closed_takes() has not yet collected). A take closes into the folder
+    // it was opened in. Control thread.
+    std::string folder_change_refusal() const;
+    // Makes `path` the active folder, unless folder_change_refusal() says
+    // why not. Locks, creates and recovers nothing: engine/control's
+    // ActiveFolder::enter() does, and then calls this. Control thread.
+    bool set_folder(std::string path, std::string& why);
     // The name a take's files give in their Description: config().name until
     // set, then the document's (PlaybackController::show()). Control thread.
     const std::string& session_name() const { return session_name_; }
@@ -572,7 +588,7 @@ private:
     // opened and closed at punch_'s frames.
     // `first`: the take's first block.
     void capture(const backend::AudioBlock& block, bool recording, uint32_t take,
-                 uint64_t playhead, bool first) noexcept SONORA_RT;
+                 uint32_t start, uint64_t playhead, bool first) noexcept SONORA_RT;
     // The running take's origin and `end` into its closing_ entry, before
     // recording_take_ moves on.
     void keep_origin(uint64_t end);
@@ -619,6 +635,7 @@ private:
     }
 
     SessionConfig cfg_;
+    std::shared_ptr<const std::string> folder_;
     std::string session_name_;
     std::string session_id_;
     std::unique_ptr<Transport> transport_;
@@ -695,9 +712,13 @@ private:
     // the samples it has written to its capture ring, ever.
     static constexpr uint32_t kNoWindow = kNoWindowTake;
     std::unique_ptr<uint32_t[]> window_take_;
+    // Per track: the Transport::Word::start of the take its window is for.
+    std::unique_ptr<uint32_t[]> window_start_;
     std::unique_ptr<uint64_t[]> captured_;
     // The take take_origin_ was set for, or kNoWindow.
     uint32_t origin_take_ = kNoWindow;
+    // Transport::Word::start of the take the callback last saw recording.
+    uint32_t recording_start_ = 0;
     // The ranges drained so far, newest stored last (punch_stored_). One
     // more entry than the ring holds, and the running take's never
     // overwritten: a drain takes at most the ring's capacity, so every

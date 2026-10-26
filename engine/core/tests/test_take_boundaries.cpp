@@ -576,6 +576,88 @@ int test_stop_without_a_callback() {
     return 0;
 }
 
+// ADR-0018 §1: in another session folder the next take can have the number
+// of the take stop() just ended. With no callback between the two, the
+// audio thread took the new take for the old one still running: it opened
+// no window and took no origin, and the new take's files stayed empty.
+int test_same_number_after_a_switch_without_a_callback() {
+    Rig rig("same_number", 2);
+    Session& s = *rig.session;
+    std::string error;
+    CHECK(s.start_recording(1, &error));
+    rig.blocks(2);
+    CHECK(s.stop(&error));
+    Closed first;
+    add(first, s.closed_takes());
+    CHECK(first.count(1) == 1 && first[1][0].frames == 2 * kBlock);
+
+    const fs::path other = rig.dir / "other";
+    CHECK(s.set_folder(other.string(), error));
+    CHECK(s.create_dirs());
+    CHECK(s.next_free_take() == 1);
+    CHECK(s.start_recording(1, &error));
+    rig.blocks(3);
+    CHECK(s.stop(&error));
+    CHECK(g_allocations.load() == 0);
+    Closed second;
+    add(second, s.closed_takes());
+    CHECK(second.count(1) == 1);
+    for (int track = 0; track < 2; ++track) {
+        CHECK(second[1][track].frames == 3 * kBlock);
+        char name[64];
+        std::snprintf(name, sizeof name, "Audio %d_01.wav", track + 1);
+        const FileCheck c = check_file((other / "Audio Files" / name).string());
+        CHECK(c.ok && c.frames == 3 * kBlock && c.time_reference == 2 * kBlock);
+    }
+    // The first take's files are A's and stayed as they were.
+    const FileCheck a = check_file(rig.file(0, 1));
+    CHECK(a.ok && a.frames == 2 * kBlock && a.time_reference == 0);
+    return 0;
+}
+
+// PR #137 review N1. A take's first callback stalls past stop()'s bound;
+// the folder changes and the next take has the same number. The stalled
+// callback's records come late, for the old take, and the disk thread
+// matched them by number: they opened the new take's file at the old
+// take's TimeReference, and the new take's own Open then closed it.
+int test_stalled_open_after_a_switch_stays_out_of_the_new_take() {
+    Rig rig("stalled_switch", 1);
+    Session& s = *rig.session;
+    StallRunner runner;
+    CHECK(rig.publish_chain_on_track_0());
+    s.set_insert_chains(&runner);
+    s.disk().start();
+    std::string error;
+    CHECK(s.start_recording(1, &error));
+    runner.arm(std::chrono::milliseconds(1500));
+    std::thread audio([&] { rig.block(); });
+    for (int i = 0; i < 2000 && !runner.stalled(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(runner.stalled());
+    s.stop(&error);
+    const bool still_stalled = runner.stalled();
+    s.closed_takes();
+    const fs::path other = rig.dir / "other";
+    const bool switched = s.set_folder(other.string(), error) && s.create_dirs();
+    s.disk().start();
+    const bool started = s.start_recording(1, &error);
+    audio.join();
+    rig.blocks(3);
+    CHECK(s.stop(&error));
+    s.set_insert_chains(nullptr);
+
+    CHECK(still_stalled);
+    CHECK(switched);
+    CHECK(started);
+    const FileCheck c = check_file((other / "Audio Files" / "Audio 1_01.wav").string());
+    CHECK(c.ok);
+    CHECK(c.frames == 3 * kBlock);
+    // The stalled block moved the playhead on; the new take starts after it.
+    CHECK(c.time_reference == kBlock);
+    return 0;
+}
+
 // A full boundary ring is an overrun, never a wait: a track whose open
 // record did not fit starts its take a block later, counted, and its file
 // is still exactly its own frames from its own TimeReference.
@@ -737,6 +819,8 @@ int main() {
     if (test_lost_close_record() != 0) return 1;
     if (test_takes_while_rolling() != 0) return 1;
     if (test_stop_without_a_callback() != 0) return 1;
+    if (test_same_number_after_a_switch_without_a_callback() != 0) return 1;
+    if (test_stalled_open_after_a_switch_stays_out_of_the_new_take() != 0) return 1;
     if (test_full_boundary_ring() != 0) return 1;
     if (test_samples_after_the_records_are_kept() != 0) return 1;
     if (test_no_free_slot_is_refused() != 0) return 1;

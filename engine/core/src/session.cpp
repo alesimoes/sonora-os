@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -206,7 +207,10 @@ bool parse_take_description(const std::string& description, TakeDescription& out
     return true;
 }
 
-Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.name) {
+Session::Session(SessionConfig cfg)
+    : cfg_(std::move(cfg)),
+      folder_(std::make_shared<const std::string>(cfg_.dir)),
+      session_name_(cfg_.name) {
     transport_ = std::make_unique<Transport>(cfg_.sample_rate);
     probe_ = std::make_unique<LatencyProbe>(cfg_.sample_rate);
 
@@ -245,6 +249,7 @@ Session::Session(SessionConfig cfg) : cfg_(std::move(cfg)), session_name_(cfg_.n
     source_seen_.reset(new uint64_t[tracks_n + 1]());
     window_take_.reset(new uint32_t[tracks_n + 1]);
     for (uint32_t t = 0; t <= tracks_n; ++t) window_take_[t] = kNoWindow;
+    window_start_.reset(new uint32_t[tracks_n + 1]());
     captured_.reset(new uint64_t[tracks_n + 1]());
 
     // 64 kframes per disk write keeps syscall count low without stalling.
@@ -429,15 +434,36 @@ bool Session::post_plugin_param(uint64_t epoch, uint32_t store, uint32_t instanc
 }
 
 bool Session::create_dirs() {
-    if (!make_dir(cfg_.dir)) return false;
-    return make_dir(audio_dir(cfg_.dir));
+    if (!make_dir(*folder_)) return false;
+    return make_dir(audio_dir(*folder_));
+}
+
+std::string Session::folder_change_refusal() const {
+    if (recording_take_ != 0) return "take " + std::to_string(recording_take_) + " is open";
+    if (!closing_.empty()) return "take " + std::to_string(closing_.begin()->first) + " is closing";
+    // A slot is released only once the disk thread has closed its file.
+    for (const auto& t : tracks_) {
+        for (int s = 0; s < Track::kWriterSlots; ++s) {
+            if (const int take = t->slot_take(s)) {
+                return "take " + std::to_string(take) + " is closing";
+            }
+        }
+    }
+    return {};
+}
+
+bool Session::set_folder(std::string path, std::string& why) {
+    why = folder_change_refusal();
+    if (!why.empty()) return false;
+    folder_ = std::make_shared<const std::string>(std::move(path));
+    return true;
 }
 
 int Session::next_free_take() const {
     // Every track shares the take number, so any file of ours counts, on any
     // track, armed now, open now, or neither.
     int highest = 0;
-    DIR* d = ::opendir(audio_dir(cfg_.dir).c_str());
+    DIR* d = ::opendir(audio_dir(*folder_).c_str());
     if (!d) return 1;
     while (const dirent* e = ::readdir(d)) {
         const int n = take_of(e->d_name);
@@ -569,7 +595,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             slot = free_slot(*t);
         }
         const std::string file =
-            audio_dir(cfg_.dir) + "/" + take_file_name(t->name(), take_number);
+            audio_dir(*folder_) + "/" + take_file_name(t->name(), take_number);
         std::string failed = file;
         int err = 0;
         if (slot < 0) {
@@ -663,7 +689,7 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     // rollback above could close them under it. See Track::slot_take().
     for (const auto& o : opened) {
         o.first->set_current_slot(o.second);
-        o.first->set_slot_take(o.second, take_number);
+        o.first->set_slot_take(o.second, take_number, transport_->next_start());
     }
     // A take started over another ends it here.
     keep_origin(transport_->playhead());
@@ -939,6 +965,18 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // still be queued. Once the take has its first frame such a locate is
     // acknowledged, so nothing waits on it, and dropped.
     if (!recording) origin_take_ = kNoWindow;
+    // A take numbered as the last one this callback saw, with no Stopped
+    // block between them (stop(), a folder switch, the next take: ADR-0018
+    // §1), would pass for that take still running and open nothing. stop()
+    // closed that take's files, so its windows are dropped here without a
+    // Close.
+    if (recording && word.start != recording_start_) {
+        recording_start_ = word.start;
+        if (origin_take_ == word.take) origin_take_ = kNoWindow;
+        for (std::size_t i = 0; i < tracks_.size(); ++i) {
+            if (window_take_[i] == word.take) window_take_[i] = kNoWindow;
+        }
+    }
     const bool take_started = recording && origin_take_ == word.take;
 
     RtCommand cmd{};
@@ -1110,7 +1148,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             roll_end_.compare_exchange_strong(end, kNoRollEnd, std::memory_order_acq_rel);
         }
     }
-    capture(block, recording, word.take, playhead, first);
+    capture(block, recording, word.take, word.start, playhead, first);
     if (block_wraps_ != 0) {
         loop_wrap_count_ += block_wraps_;
         loop_wraps_.store(loop_wrap_count_, std::memory_order_release);
@@ -1176,7 +1214,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
 }
 
 void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t take,
-                      uint64_t playhead, bool first) noexcept SONORA_RT {
+                      uint32_t start, uint64_t playhead, bool first) noexcept SONORA_RT {
     const uint32_t nframes = block.nframes;
     // The frames of this block the take records: its range, cut to the
     // block. Empty before the range and after it.
@@ -1202,6 +1240,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (window != kNoWindow && (!wanted || window != take)) {
             b.kind = CaptureBoundary::Kind::Close;
             b.take = window;
+            b.start = window_start_[i];
             b.at = captured_[i];
             // Lost, the file ends where the next window opens, or at stop().
             if (boundaries_->write(&b, 1) != 1) {
@@ -1212,6 +1251,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (passed && t.rec_armed()) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
+            b.start = start;
             b.at = captured_[i];
             if (boundaries_->write(&b, 1) == 1) {
                 b.kind = CaptureBoundary::Kind::Close;
@@ -1227,10 +1267,12 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (wanted && window == kNoWindow) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
+            b.start = start;
             b.at = captured_[i];
             b.timeline = from - take_latency_;
             if (boundaries_->write(&b, 1) == 1) {
                 window = take;
+                window_start_[i] = start;
             } else {
                 // Tried again next block: the take starts late on this track.
                 // If it ends first (punch_out(), a take over it, its range),
@@ -1260,6 +1302,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         for (uint32_t k = 0; k < block_wraps_ && window == take; ++k) {
             b.kind = CaptureBoundary::Kind::Wrap;
             b.take = window;
+            b.start = window_start_[i];
             b.ordinal = loop_wrap_count_ + 1 + k;
             b.at = block_start + block_wrap_offset_ +
                    static_cast<uint64_t>(k) * (loop_to_ - loop_from_) + punch_->latency;
@@ -1275,6 +1318,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
         if (to == capture_to_) {
             b.kind = CaptureBoundary::Kind::Close;
             b.take = window;
+            b.start = window_start_[i];
             b.at = captured_[i];
             b.timeline = to - take_latency_;
             if (boundaries_->write(&b, 1) != 1) {
