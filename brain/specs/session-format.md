@@ -195,13 +195,18 @@ this way, and the click must put its downbeats in the same places:
   "punch": [0, 0],
   "pre_roll": 96000,
   "post_roll": 48000,
-  "punch_crossfade": 240
+  "punch_crossfade": 240,
+  "count_off_bars": 2
 }
 ```
 
 `[0, 0]` means unset. `punch_crossfade` is the length of the crossfade placed
 at each end of a punched take (default 240, 5 ms at 48 kHz, equal-power,
-centred; see `timeline-model.md`, "Punch in"). Transport settings are saved
+centred; see `timeline-model.md`, "Punch in"). `count_off_bars` (version 8,
+ADR-0020 §3) is how many bars of click a take started with the transport
+stopped plays first when count-off is on, at the meter and tempo where it
+starts: 1 to 99, default 2. Whether the click and the count-off are on is
+engine state, not saved yet. Transport settings are saved
 but are not undoable.
 
 ### `monitor_bus`: Phase 2's fixed stereo bus
@@ -826,6 +831,11 @@ gives it an id, which the document takes once the file is written, as it
 takes the folder's name; its takes from before carry no id and are matched
 by name. The frozen v6 fixture loads through it; v7's is
 `v7-session-id.sonora`, with an id and two left takes.
+
+**v7→v8 (count-off, ADR-0020 §3):** `transport` gains
+`"count_off_bars": 2`, after `punch_crossfade`. Nothing else changes. A
+version 7 file cannot carry the key. The frozen v7 fixture loads through
+it and saves as `v8-count-off.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

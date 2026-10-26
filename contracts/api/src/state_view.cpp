@@ -77,6 +77,7 @@ void read_transport(const StateHeader& h, TransportSnapshot& s) {
     s.buffer_frames = h.buffer_frames.load(acq);
     s.compensation_frames = h.compensation_frames.load(acq);
     s.compensation_shortfall_frames = h.compensation_shortfall_frames.load(acq);
+    s.transport_flags = h.transport_flags.load(acq);
 }
 
 void read_track(const TrackState& t, TrackSnapshot& s) {

@@ -87,8 +87,15 @@ void TransportModel::onTransport(const TransportSnapshot& t, bool alive) {
                              : recording            ? QStringLiteral("REC")
                              : rolling              ? QStringLiteral("PLAY")
                                                     : QStringLiteral("STOP");
+        const bool click = alive && t.click;
+        const bool count_off = alive && t.count_off;
+        const bool counting_off = alive && t.counting_off;
         state_changed = rolling != rolling_ || recording != recording_ || alive != alive_ ||
-                        text != state_text_;
+                        text != state_text_ || click != click_ || count_off != count_off_ ||
+                        counting_off != counting_off_;
+        click_ = click;
+        count_off_ = count_off;
+        counting_off_ = counting_off;
         rolling_ = rolling;
         recording_ = recording;
         alive_ = alive;
@@ -185,10 +192,6 @@ QString TransportModel::preRollText() const {
 
 QString TransportModel::postRollText() const {
     return duration_text(settings_.transport.post_roll, settings_.sample_rate);
-}
-
-QString TransportModel::clickWhy() {
-    return QStringLiteral("No click in this build: the engine does not generate one yet.");
 }
 
 QString TransportModel::rollsWhy() {

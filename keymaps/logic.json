@@ -6,6 +6,16 @@
     "r": "transport.record",
     "return": "transport.return_to_zero",
     "c": "transport.toggle_loop",
+    "k": {
+      "command": "transport.toggle_click",
+      "verified": false,
+      "comment": "Metronome Click, K. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "shift+k": {
+      "command": "transport.toggle_count_off",
+      "verified": false,
+      "comment": "Count-in, Shift-K. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "comma": "transport.rewind",
     "period": {
       "command": "transport.fast_forward",

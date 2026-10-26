@@ -88,6 +88,11 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"transport.rewind", CommandTarget::None, "Rewind"},
         {"transport.fast_forward", CommandTarget::None, "Fast forward"},
         {"transport.toggle_loop", CommandTarget::None, "Toggle loop playback"},
+        // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
+        // Count-in.
+        {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},
+        {"transport.toggle_count_off", CommandTarget::None,
+         "Turn the count-off before a take on or off"},
         {"transport.play_half_speed", CommandTarget::None, "Play at half speed"},
 
         // --- tracks ---

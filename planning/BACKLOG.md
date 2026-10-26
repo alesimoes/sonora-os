@@ -102,8 +102,16 @@ playback can follow edits; it is in flight.
          playback loop wraps first (`t1-postroll-loop`); the Qt UI sends its
          selection as that argument to an engine announcing
          `transport.play.range` in Hello. Remains: pre-roll for a plain take;
-       - the click and count-off from the tempo map (`engine.core.click`),
-         and a state-block flag saying the click is on.
+       - [x] the click and count-off from the tempo map (`engine.core.click`,
+         `t1-click`, ADR-0020): beats from the plan's click segments on the
+         map's frames, accented on beat 1, after the bus gain on the
+         monitor outputs, never in a take; `transport.count_off_bars`
+         (session format 8, default 2) of count-off before a take started
+         stopped, the playhead and the take held; `transport.toggle_click`
+         and `transport.toggle_count_off`, `transport_flags` in the state
+         block (layout 4), protocol 15; the Transport window's two buttons.
+         Remains: the switches saved with the session, a click level and an
+         output of its own, Pro Tools' "only during record".
 5. [x] M4: control API, wire codec, state block and `StateView` per
        ADR-0007 §3, `InProcessEngine`, `FakeEngine`; removes the illegal
        edges (`contract/api`; `engine/app` → `ui/tui` stays as the

@@ -455,6 +455,50 @@ int check_play(Rig& rig) {
     return C(rig, "a roll").go();
 }
 
+// The click and the count-off (ADR-0020): both toggles are announced, each
+// press is answered Ok and flips its flag on the state block, and neither
+// touches the transport or the take number.
+int check_click(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const auto& impl = s.engine->hello().implemented_commands;
+            for (const char* id : {"transport.toggle_click", "transport.toggle_count_off"}) {
+                EXPECT(std::find(impl.begin(), impl.end(), id) != impl.end(),
+                       std::string(id) + " is not announced");
+            }
+            EXPECT(s.until(rig_, [&]() { return !v.transport().stale; }), "state is stale");
+            const TransportSnapshot before = v.transport();
+            EXPECT((before.transport_flags & (kTransportClick | kTransportCountOff)) == 0,
+                   "the click or the count-off is on before anyone turned it on");
+            for (const auto& toggle :
+                 {std::make_pair("transport.toggle_click", kTransportClick),
+                  std::make_pair("transport.toggle_count_off", kTransportCountOff)}) {
+                const char* const id = toggle.first;
+                const uint32_t flag = toggle.second;
+                for (const bool on : {true, false}) {
+                    CommandReply r;
+                    EXPECT(s.await(rig_, s.command(id), r) && r.result == DispatchResult::Ok,
+                           std::string(id) + " failed: " + r.message);
+                    EXPECT(s.until(rig_,
+                                   [&]() {
+                                       return ((v.transport().transport_flags & flag) != 0) == on;
+                                   }),
+                           std::string(id) + " did not turn its flag " + (on ? "on" : "off"));
+                }
+            }
+            const TransportSnapshot after = v.transport();
+            EXPECT(after.state == TransportState::Stopped && after.take == before.take,
+                   "a toggle moved the transport or the take number");
+            return ok();
+        }
+    };
+    return C(rig, "the click and the count-off").go();
+}
+
 // transport.locate (marker recall): stopped, the playhead moves to the
 // frame and stays; rolling, it jumps there and the roll goes on; a frame
 // that is not one, and any locate during a take, is refused by name.
@@ -1820,6 +1864,7 @@ int run(Rig& rig) {
     failures += check_take(rig);
     failures += check_play(rig);
     failures += check_locate(rig);
+    failures += check_click(rig);
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);

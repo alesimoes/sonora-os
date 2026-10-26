@@ -21,7 +21,8 @@ PlaybackPlan* create_plan(const PlanSizes& sizes) {
     const std::size_t nodes = round_up(sizeof(PlanNode) * sizes.nodes);
     const std::size_t edges = round_up(sizeof(PlanEdge) * sizes.edges);
     const std::size_t slots = round_up(sizeof(std::atomic<uint32_t>) * sizes.chunk_slots);
-    const std::size_t total = header + tracks + segments + nodes + edges + slots;
+    const std::size_t click = round_up(sizeof(ClickSegment) * sizes.click_segments);
+    const std::size_t total = header + tracks + segments + nodes + edges + slots + click;
 
     void* raw = ::operator new(total, std::align_val_t{kAlign}, std::nothrow);
     if (!raw) return nullptr;
@@ -49,6 +50,9 @@ PlaybackPlan* create_plan(const PlanSizes& sizes) {
         new (&plan->chunk_slots[i]) std::atomic<uint32_t>(kNoChunk);
     }
     plan->chunk_slot_count = sizes.chunk_slots;
+    at += slots;
+    plan->click = new (at) ClickSegment[sizes.click_segments];
+    plan->click_count = sizes.click_segments;
     return plan;
 }
 

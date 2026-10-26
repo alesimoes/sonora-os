@@ -110,6 +110,13 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error);
 
+// The plan's click segments (ADR-0020 §1): one per reachable entry of the
+// session's tempo map, its beats the ticks on the grid of the bar in
+// progress from the entry's tick to the next entry's, each at the frame
+// model::MusicalMap::frame_at() gives it. Empty when the map does not
+// build: the click is silent rather than wrong.
+std::vector<ClickSegment> click_segments(const model::SessionSettings& settings);
+
 // ((1 -+ pan) / 2) ^ exponent is `pan_law_db` at centre. The law is clamped
 // to the model's range first, as gain_of_db() clamps.
 float pan_exponent_for(float pan_law_db);

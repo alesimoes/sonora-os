@@ -11,6 +11,7 @@ target_link_libraries(sonora_core_chain_runner PUBLIC sonora_base sonora_plugin_
 
 add_library(sonora_core STATIC
   src/session.cpp
+  src/click.cpp
   src/latency_probe.cpp
   src/track.cpp
   src/disk_thread.cpp
@@ -71,6 +72,13 @@ add_test(NAME take_boundaries COMMAND test_take_boundaries)
 # The round trip measured through drivers/fake's loopback cable (ADR-0019):
 # the probe's figure to the frame, through the monitored-input path with and
 # without PDC, no allocation in process(), and takes compensated by it.
+# The click and the count-off (ADR-0020): beats on their frames through a
+# locate and a loop, the count-off's length, the take it holds, nothing of
+# either in the file, no allocation in process().
+add_executable(test_click tests/test_click.cpp)
+target_link_libraries(test_click PRIVATE sonora_core)
+add_test(NAME click COMMAND test_click)
+
 add_executable(test_latency_probe tests/test_latency_probe.cpp)
 target_link_libraries(test_latency_probe PRIVATE sonora_core sonora_backend_fake)
 add_test(NAME latency_probe COMMAND test_latency_probe)

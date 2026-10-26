@@ -724,11 +724,16 @@ struct Transport {
     Frames pre_roll = 96000;
     Frames post_roll = 48000;
     Frames punch_crossfade = 240;
+    // Bars of click before a take started stopped, when count-off is on
+    // (ADR-0020 §3): Pro Tools' default, 1 to kMaxCountOffBars.
+    std::uint32_t count_off_bars = 2;
     bool operator==(const Transport& o) const {
         return loop == o.loop && punch == o.punch && pre_roll == o.pre_roll &&
-               post_roll == o.post_roll && punch_crossfade == o.punch_crossfade;
+               post_roll == o.post_roll && punch_crossfade == o.punch_crossfade &&
+               count_off_bars == o.count_off_bars;
     }
 };
+inline constexpr std::uint32_t kMaxCountOffBars = 99;
 
 // The most take files a session remembers as left (left_takes).
 inline constexpr std::size_t kMaxLeftTakes = 4096;

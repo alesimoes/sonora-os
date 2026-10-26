@@ -66,7 +66,10 @@ namespace sonora::api {
 // 14 (ADR-0017 Y2): PluginInfo::bridge, after has_editor, so the operator
 //   sees which plugins run under Wine; a version-13 peer's decoder refuses
 //   this catalog, and this one refuses its.
-constexpr uint32_t kProtocolVersion = 14;
+// 15 (ADR-0020): SetSettings carries transport.count_off_bars (session
+//   format 8); a version-14 peer's op decoder refuses the key, and this one
+//   requires it.
+constexpr uint32_t kProtocolVersion = 15;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

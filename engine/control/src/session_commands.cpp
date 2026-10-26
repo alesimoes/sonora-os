@@ -133,6 +133,17 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         return start(why);
     });
 
+    // ADR-0020: engine state, heard at the next block; the count-off's
+    // bars are the document's (PlaybackController::show()).
+    reg.install("transport.toggle_click", [&session](const CommandContext&, std::string&) {
+        session.click().set_on(!session.click().on());
+        return true;
+    });
+    reg.install("transport.toggle_count_off", [&session](const CommandContext&, std::string&) {
+        session.click().set_count_off(!session.click().count_off());
+        return true;
+    });
+
     // A roll is not a take: stopping it closes no file and uses no take
     // number.
     reg.install("transport.stop",

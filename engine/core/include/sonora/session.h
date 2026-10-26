@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "sonora/click.h"
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
 #include "sonora/fade_curve.h"
@@ -375,6 +376,9 @@ public:
     // runs it at the end of every callback (latency_probe.h). The result is
     // not applied: the caller decides, and set_input_latency() does it.
     LatencyProbe& latency_probe() { return *probe_; }
+    // The click and the count-off (ADR-0020). A take started with the
+    // transport stopped counts off first while Click::count_off() is on.
+    Click& click() { return *click_; }
 
     // Queues a locate for the audio thread, which applies it at the start of
     // a block. False if the queue is full. engine/control sends it only once
@@ -836,6 +840,7 @@ private:
     // block reads it after.
     std::atomic<uint32_t> input_latency_{0};
     std::unique_ptr<LatencyProbe> probe_;
+    std::unique_ptr<Click> click_;
     // Odd while process() runs; each callback adds one on entry and one on
     // exit. stop() waits, after storing Stopped, for the callback in flight
     // to return, so none that read the take before the store is still

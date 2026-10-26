@@ -240,8 +240,20 @@ bool v6_to_v7(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v7 -> v8: the transport gains "count_off_bars": 2 (ADR-0020 §3).
+bool v7_to_v8(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* tr = root.find("transport");
+    if (tr == nullptr || !tr->is_object()) return true;   // the reader names it
+    if (tr->find("count_off_bars") != nullptr) {
+        error = "the file has \"transport.count_off_bars\", which version 7 does not define";
+        return false;
+    }
+    tr->set("count_off_bars", Value::integer(2));
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
-    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7}};
+    {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -631,7 +643,8 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
 
     const Value& tr = *root.find("transport");
     if (!rd.keys(tr, "transport",
-                 {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade"})) {
+                 {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade",
+                  "count_off_bars"})) {
         return false;
     }
     if (!rd.range(tr, "transport", "loop", s.transport.loop)) return false;
@@ -641,6 +654,11 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     if (!rd.frames(tr, "transport", "punch_crossfade", s.transport.punch_crossfade)) {
         return false;
     }
+    std::int64_t bars = 0;
+    if (!rd.integer(tr, "transport", "count_off_bars", kMaxCountOffBars, bars)) return false;
+    if (bars < 1) return rd.fail(*tr.find("count_off_bars"), "transport.count_off_bars",
+                                 "must be from 1 to " + std::to_string(kMaxCountOffBars));
+    s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
     if (!rd.text(root, "", "session_id", s.session_id)) return false;
     const Value* left = nullptr;
     if (!rd.array(root, "", "left_takes", left)) return false;
@@ -1319,6 +1337,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     tr.set("pre_roll", integer(st.transport.pre_roll));
     tr.set("post_roll", integer(st.transport.post_roll));
     tr.set("punch_crossfade", integer(st.transport.punch_crossfade));
+    tr.set("count_off_bars", integer(st.transport.count_off_bars));
     Value& bus = root.set("monitor_bus", Value::object());
     bus.set("outputs", pair(s.mix.bus.outputs[0], s.mix.bus.outputs[1]));
     bus.set("gain_db", Value::number_float(s.mix.bus.gain_db));

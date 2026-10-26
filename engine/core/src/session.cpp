@@ -213,6 +213,7 @@ Session::Session(SessionConfig cfg)
       session_name_(cfg_.name) {
     transport_ = std::make_unique<Transport>(cfg_.sample_rate);
     probe_ = std::make_unique<LatencyProbe>(cfg_.sample_rate);
+    click_ = std::make_unique<Click>(cfg_.sample_rate);
 
     const auto ring_frames =
         static_cast<std::size_t>(cfg_.ring_seconds * cfg_.sample_rate);
@@ -547,6 +548,8 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     // Provisional: the disk thread writes the frame the audio thread
     // recorded first, from the take's open boundary record.
     const uint64_t origin = transport_->playhead();
+    // Pro Tools counts off only a take started from stop.
+    const bool count_off = click_->count_off() && transport_->state() == TransportState::Stopped;
 
     if (take_number < 1 || take_number > kMaxTake) {
         const std::string why =
@@ -684,6 +687,9 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
         if (!post_locate(loop->start)) {
             return refuse_after_open("the audio thread has not taken the last locates yet");
         }
+    }
+    if (count_off && !click_->post_count_off(static_cast<uint32_t>(take_number))) {
+        return refuse_after_open("the audio thread has not taken the last count-off yet");
     }
     // Only now may the disk thread see these writers; until here the
     // rollback above could close them under it. See Track::slot_take().
@@ -958,8 +964,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     const uint32_t nframes = block.nframes;
     const Transport::Word word = transport_->load_word();
     if (word_hook_ != nullptr) word_hook_(word_hook_context_);
-    const bool recording = word.state == TransportState::Recording;
-    const bool rolling = word.state != TransportState::Stopped;
+    // ADR-0020 §3: a count-off holds its take, rolling and recording nothing.
+    const bool counting = click_->begin_block(word);
+    const bool recording = !counting && word.state == TransportState::Recording;
+    const bool rolling = !counting && word.state != TransportState::Stopped;
     // A take is one contiguous span of the timeline. engine/control sends no
     // locate during one, but one it posted just before the take began can
     // still be queued. Once the take has its first frame such a locate is
@@ -1193,6 +1201,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     bus_applied_ = bus_target_;
+
+    if (plan_valid_) {
+        click_->render(*plan, block, rolling, playhead, play_until_, loop_from_, loop_to_);
+    }
 
     params_count_ = 0;
     // After the mix, which it overwrites on its own output while it runs.

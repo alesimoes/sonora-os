@@ -32,7 +32,8 @@ namespace sonora::api {
 //   session's delay compensation in the header.
 // 3: InsertState::work_refused, the LV2 worker messages a plugin's host
 //   refused (ADR-0012 change G, as for non-finite output).
-constexpr uint32_t kStateLayoutVersion = 3;
+// 4 (ADR-0020): StateHeader::transport_flags, the click and the count-off.
+constexpr uint32_t kStateLayoutVersion = 4;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -67,6 +68,13 @@ enum HealthFlag : uint32_t {
     // The clocksource is not tsc, so reading the time in the callback is a
     // syscall (ADR-0012 §1.1). Layout 2.
     kHealthClocksource = 1u << 4,
+};
+
+// Layout 4 (ADR-0020).
+enum TransportFlag : uint32_t {
+    kTransportClick = 1u << 0,        // the click sounds while rolling
+    kTransportCountOff = 1u << 1,     // a take started stopped counts off first
+    kTransportCountingOff = 1u << 2,  // one is counting off now
 };
 
 // Pro Tools' A to J: insert slots per track (ADR-0012 §2). common/model's
@@ -156,6 +164,7 @@ struct alignas(64) StateHeader {
     // falls when the session maximum clamped it. Non-zero shortfall is red.
     std::atomic<uint32_t> compensation_frames;
     std::atomic<uint32_t> compensation_shortfall_frames;
+    std::atomic<uint32_t> transport_flags;   // TransportFlag; layout 4
 };
 
 // Shared memory needs atomics that never fall back to libatomic's lock
@@ -229,6 +238,7 @@ struct TransportFields {
     uint32_t buffer_frames = 0;
     uint32_t compensation_frames = 0;
     uint32_t compensation_shortfall_frames = 0;
+    uint32_t transport_flags = 0;
 };
 
 struct InsertFields {

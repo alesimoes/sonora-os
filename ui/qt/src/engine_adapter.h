@@ -111,6 +111,11 @@ struct TransportSnapshot {
     // short of what the inserts need it falls when clamped at its maximum.
     uint32_t compensation_frames = 0;
     uint32_t compensation_shortfall_frames = 0;
+    // Layout 4 (ADR-0020): the click and count-off switches, and a count-off
+    // running now.
+    bool click = false;
+    bool count_off = false;
+    bool counting_off = false;
     // Update 2026-10-12 item 3: a seqlock read that ran out of retries. The
     // interface shows it as stale for that tick rather than spinning.
     bool stale = false;

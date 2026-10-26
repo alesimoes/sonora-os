@@ -121,6 +121,10 @@ void StatePublisher::publish_once() {
     t.inputs_connected = inputs_connected_.load(std::memory_order_relaxed);
     t.compensation_frames = compensation_.load(std::memory_order_relaxed);
     t.compensation_shortfall_frames = compensation_shortfall_.load(std::memory_order_relaxed);
+    Click& click = session_.click();
+    t.transport_flags = (click.on() ? api::kTransportClick : 0u) |
+                        (click.count_off() ? api::kTransportCountOff : 0u) |
+                        (click.counting_off() ? api::kTransportCountingOff : 0u);
     if (audio_ != nullptr) {
         t.xruns = audio_->xruns();
         t.clock_steps = audio_->clock_discontinuities();

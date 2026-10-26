@@ -274,26 +274,28 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // PluginInfo::bridge (ADR-0017 Y2) is version 14; the recovery offer
+    // SetSettings' transport.count_off_bars (ADR-0020) is version 15;
+    // PluginInfo::bridge (ADR-0017 Y2) 14; the recovery offer
     // (engine.record.orphan_offer) 13; Hello's capabilities 12; Save
     // (ADR-0015 M-1c PR 3) 11; a Snapshot and a Load in parts are 10, loop
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 14);
+    CHECK(kProtocolVersion == 15);
+    CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v8 = wire::version_mismatch(pv, lv, 8, kStateLayoutVersion);
-    CHECK(mentions(v8, "the engine speaks control protocol version 14 and this interface "
+    CHECK(mentions(v8, "the engine speaks control protocol version 15 and this interface "
                        "speaks version 8"));
     CHECK(mentions(v8, "same build"));
     // And this interface refuses a version-8 engine the same way.
     CHECK(mentions(wire::version_mismatch(8, kStateLayoutVersion),
                    "the engine speaks control protocol version 8 and this interface "
-                   "speaks version 14"));
+                   "speaks version 15"));
 }
 
 void domains() {

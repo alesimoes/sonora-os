@@ -45,6 +45,7 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
     h->buffer_frames.store(0, std::memory_order_relaxed);
     h->compensation_frames.store(0, std::memory_order_relaxed);
     h->compensation_shortfall_frames.store(0, std::memory_order_relaxed);
+    h->transport_flags.store(0, std::memory_order_relaxed);
 
     TrackState* t = state_tracks(memory);
     for (uint32_t i = 0; i < capacity_tracks; ++i) {
@@ -100,6 +101,7 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     h.buffer_frames.store(transport.buffer_frames, rel);
     h.compensation_frames.store(transport.compensation_frames, rel);
     h.compensation_shortfall_frames.store(transport.compensation_shortfall_frames, rel);
+    h.transport_flags.store(transport.transport_flags, rel);
     for (uint32_t i = 0; i < track_count_; ++i) {
         TrackState& t = tracks_[i];
         t.flags.store(tracks[i].flags, rel);

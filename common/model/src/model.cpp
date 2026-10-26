@@ -1087,6 +1087,10 @@ std::string settings_problem(const SessionSettings& s, std::string& where) {
         where = "transport.punch_crossfade";
         return "is out of range";
     }
+    if (tr.count_off_bars < 1 || tr.count_off_bars > kMaxCountOffBars) {
+        where = "transport.count_off_bars";
+        return "must be from 1 to " + std::to_string(kMaxCountOffBars);
+    }
     if (!valid_session_id(s.session_id)) {
         where = "session_id";
         return "must be empty or up to 64 of 0-9, a-f and \"-\"";
