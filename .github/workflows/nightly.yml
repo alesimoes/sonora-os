@@ -13,7 +13,9 @@ on:
 jobs:
   slow:
     name: Slow DSP tests in full (${{ matrix.build }})
-    runs-on: ubuntu-latest
+    # In the sonora-build image, as PR CI's engine job: trixie's GCC 14, the
+    # compiler the appliance ships (brain/research/ci-shipped-toolchain.md).
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -27,49 +29,82 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev
+      - uses: docker/setup-buildx-action@v3
 
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+
+      - name: Start the build container
+        run: |
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
+
+      # A kernel setting, so made on the host; it holds in the container.
       - name: Make ASLR compatible with the sanitizers
         if: matrix.build == 'asan'
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
       - name: Build
+        env:
+          TYPE: ${{ matrix.type }}
+          FLAGS: ${{ matrix.flags }}
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.type }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
-          cmake --build build -j"$(nproc)"
+          docker exec -e TYPE -e FLAGS build bash -ec '
+            cmake -S . -B build -DCMAKE_BUILD_TYPE="$TYPE" -DCMAKE_CXX_FLAGS="$FLAGS"
+            cmake --build build -j"$(nproc)"'
 
       # No SONORA_DSP_QUICK: every rate, ceiling and release.
       - name: Slow tests, every rate and setting
-        run: ctest --test-dir build --output-on-failure -j"$(nproc)" -L slow
+        run: >-
+          docker exec build bash -c
+          'ctest --test-dir build --output-on-failure -j"$(nproc)" -L slow'
 
   cpu:
     name: CPU per instance over 60 s (ADR-0011 §3.5)
-    runs-on: ubuntu-latest
+    # Measures the code the shipped compiler emits: GCC 14 for baseline
+    # x86-64 in the sonora-build image, not the runner's GCC.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+
+      - name: Start the build container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev
+          docker run -d --name build -v "$PWD:/src" -w /src \
+            sonora-build:trixie sleep infinity
+          docker exec build c++ --version
 
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)" --target sonora-dsp-measure
+          docker exec build bash -ec '
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build -j"$(nproc)" --target sonora-dsp-measure'
 
       # A shared runner is not the reference machine (§3.5): a class bar
       # missed here is a figure to look at, not a broken build, so this
       # step does not fail the workflow. The reports are kept.
       - name: Measure
         continue-on-error: true
-        run: tools/dsp-cpu.sh build 60
+        run: docker exec build tools/dsp-cpu.sh build 60
 
       # The one exception, asked for on the review of PR #52: the tube
       # drive's eco quality is the mode ADR-0011 §3.5 lets it ship with
@@ -95,7 +130,7 @@ jobs:
       - name: Tube and opto eco, class bars, runner-calibrated (gates)
         run: |
           rc=0
-          tools/dsp-cpu.sh --calibrated build 60 tube opto || rc=$?
+          docker exec build tools/dsp-cpu.sh --calibrated build 60 tube opto || rc=$?
           if [[ $rc -eq 3 ]]; then
             echo "::warning title=CPU gate inconclusive::the runner changed speed during the run (reference kernel before and after the loads differ by over 5 %); not held this night"
             exit 0

@@ -1591,6 +1591,7 @@ Order and owners are in ADR-0008 §5.
       deterministic run to run, but its bits depend on -march: Ubuntu
       26.04's amd64v3 GCC defaults to x86-64-v3 and fuses a + b * c into
       FMAs that a baseline x86-64 or another arch build does not (#154)
+- [ ] t1 heap counter: test_heap_counter asserts exact operator new/delete counts, not just !heap_untouched() (#154 review)
 - [ ] Transport locate without dropping a block.
 - [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
       period PipeWire's dummy driver skipped without an xrun, which the
