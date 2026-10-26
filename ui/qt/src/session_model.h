@@ -85,6 +85,9 @@ class SessionModel : public QObject {
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> solos READ solos NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> soloSafes READ soloSafes NOTIFY mixChanged)
+    // Per strip, whether the track is in Input mode (Pro Tools' TrackInput,
+    // the "I" button); Auto and Off are not.
+    Q_PROPERTY(QList<bool> inputMonitors READ inputMonitors NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> implicitMutes READ implicitMutes NOTIFY mixChanged)
     Q_PROPERTY(QList<qreal> gains READ gains NOTIFY mixChanged)
     Q_PROPERTY(QList<qreal> pans READ pans NOTIFY mixChanged)
@@ -240,6 +243,7 @@ public:
     QList<bool> mutes() const;
     QList<bool> solos() const;
     QList<bool> soloSafes() const;
+    QList<bool> inputMonitors() const;
     // Per strip, whether another track's solo silences it: some track is
     // soloed, this one is not, and it is not solo safe. The engine's rule
     // (Session::process()), so the Mix window's outline says what is heard.

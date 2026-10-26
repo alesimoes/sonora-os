@@ -67,6 +67,7 @@ struct TrackSnapshot {
 
     bool armed() const { return (flags & kTrackArmed) != 0; }
     bool muted() const { return (flags & kTrackMuted) != 0; }
+    bool input_monitor() const { return (flags & kTrackInputMonitor) != 0; }
     bool input_connected() const { return (flags & kTrackInputConnected) != 0; }
     bool compensation_short() const { return (flags & kTrackCompensationShort) != 0; }
 };

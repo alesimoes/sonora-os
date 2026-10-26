@@ -323,6 +323,13 @@ Item {
                             available: edit.shell.engineAlive
                             onClicked: edit.shell.invoke("track.toggle_arm", header.index)
                         }
+                        SButton {
+                            text: "I"; implicitWidth: 24; implicitHeight: 20
+                            objectName: "editInput" + header.index
+                            active: edit.session.inputMonitors[header.index] === true
+                            activeColour: Theme.input
+                            onClicked: edit.shell.invoke("track.toggle_input_monitor", header.index)
+                        }
                         SoloButton {
                             implicitWidth: 24; implicitHeight: 20
                             soloed: edit.session.solos[header.index] === true

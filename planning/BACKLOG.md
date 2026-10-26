@@ -181,8 +181,7 @@ playback can follow edits; it is in flight.
 10. [ ] Engine commands the shipped key maps bind and no engine runs yet
         (Track 3 item 4; the window says "not implemented" for each):
         `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
-        `transport.play_half_speed`,
-        `track.toggle_input_monitor`. Wired in
+        `transport.play_half_speed`. Wired in
         the interface against `FakeEngine::Config::planned_commands`
         (test_ui_keymaps); each needs its handler in
         `install_session_commands()` and in `FakeEngine::engine_commands()`
@@ -191,6 +190,14 @@ playback can follow edits; it is in flight.
         1, PR #86), and `edit.repeat` and `edit.select_all` too
         (`t3f-repeat`, `t3-multitrack-clipboard`);
         `heal_separation`/`consolidate` are still to build.
+        - [x] `track.toggle_input_monitor` (Pro Tools' TrackInput) runs in
+          the interface, as `track.toggle_mute` does: Input mode is the
+          document's `TrackMix::monitor`, already saved with the session
+          (no format or protocol change), and the engine follows it through
+          `apply_monitoring`. Both engines publish `kTrackInputMonitor`;
+          conformance "input monitor mode". "I" buttons in the Edit
+          window's headers and the Mix window's strips
+          (`t1-track-input-monitor`).
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 

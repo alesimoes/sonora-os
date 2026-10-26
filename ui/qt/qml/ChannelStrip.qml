@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // One channel strip, top to bottom as a console reads: input, pan, record /
-// solo / mute, inserts A to J and the chain's delay, fader beside its
+// input monitor / solo / mute, inserts A to J and the chain's delay, fader beside its
 // meter, gain readout, name. `track` -1 is the monitor bus, which has a
 // fader and two meters and nothing else; its insert area is left empty so
 // every fader starts at the same height.
@@ -52,9 +52,13 @@ Rectangle {
     readonly property bool soloed: !isBus && session.solos[track] === true
     readonly property bool muted: !isBus && session.mutes[track] === true
     readonly property bool soloSafe: !isBus && session.soloSafes[track] === true
+    readonly property bool inputMonitor: !isBus && session.inputMonitors[track] === true
     // Another track's solo silences this one; a console shows that, so does
     // this. SessionModel applies the engine's rule, solo safe included.
     readonly property bool implicitlyMuted: !isBus && session.implicitMutes[track] === true
+    // R, I, S and M share the strip's width: eighteen tracks across a
+    // laptop screen leave about 70 px a strip.
+    readonly property int stateButton: Math.max(12, Math.min(18, Math.floor((width - 10) / 4)))
 
     color: selected ? Theme.raised : Theme.panel
     radius: Theme.radius
@@ -144,14 +148,20 @@ Rectangle {
             spacing: 2
             visible: !strip.isBus
             SButton {
-                text: "R"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
+                text: "R"; implicitWidth: strip.stateButton; implicitHeight: 18; fontPx: Theme.textCaption
                 active: strip.armed; activeColour: Theme.record
                 available: strip.shell.engineAlive
                 onClicked: strip.shell.invoke("track.toggle_arm", strip.track)
             }
+            SButton {
+                objectName: strip.isBus ? "" : "input" + strip.track
+                text: "I"; implicitWidth: strip.stateButton; implicitHeight: 18; fontPx: Theme.textCaption
+                active: strip.inputMonitor; activeColour: Theme.input
+                onClicked: strip.shell.invoke("track.toggle_input_monitor", strip.track)
+            }
             SoloButton {
                 objectName: "solo" + strip.track
-                implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
+                implicitWidth: strip.stateButton; implicitHeight: 18; fontPx: Theme.textCaption
                 soloed: strip.soloed
                 safe: strip.soloSafe
                 padlockName: strip.isBus ? "" : "soloSafe" + strip.track
@@ -162,7 +172,7 @@ Rectangle {
             }
             SButton {
                 objectName: "mute" + strip.track
-                text: "M"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
+                text: "M"; implicitWidth: strip.stateButton; implicitHeight: 18; fontPx: Theme.textCaption
                 active: strip.muted; activeColour: Theme.mute
                 // Outlined in the mute colour when another track's solo
                 // is what silences it.

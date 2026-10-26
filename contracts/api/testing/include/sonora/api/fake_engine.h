@@ -295,6 +295,9 @@ private:
     std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;
     std::vector<bool> muted_;
+    // In Input mode: the document's, on an audio track only, as the real
+    // engine's PlaybackController::apply_monitoring.
+    std::vector<bool> input_monitor_;
     // Engine tracks a MIDI or instrument track sits on: no audio reaches
     // them in this version, as on the real engine (ADR-0014 M-1).
     std::vector<bool> silent_;

@@ -537,6 +537,91 @@ int test_other_switches_ramp() {
     return 0;
 }
 
+// Pro Tools' TrackInput (track.toggle_input_monitor): a track in Input mode
+// hears its input stopped, rolling over its own clip and through a punched
+// take, armed or not, while an Auto track beside it keeps Auto's rule:
+// silent when stopped and disarmed, playback when rolling, the input
+// between the punch points. No callback touches the heap.
+int test_input_mode_ignores_the_transport() {
+    Rig rig("input_mode", 2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(5, 40 * kChunk);
+    const uint32_t b = rig.source(6, 40 * kChunk);
+    SegmentSpec on0;
+    on0.end = 40 * kChunk;
+    on0.source_slot = a;
+    SegmentSpec on1 = on0;
+    on1.track = 1;
+    on1.source_slot = b;
+    CHECK(publish_plan(s, make_plan(s.plans().next_epoch(), 2, {on0, on1}, kChunk)));
+    sonora::Track& input = *s.tracks()[0];
+    sonora::Track& autom = *s.tracks()[1];
+    input.set_pan(-1.0f);
+    autom.set_pan(1.0f);
+    input.set_rec_armed(false);
+    autom.set_rec_armed(false);
+    input.set_monitor(sonora::Track::Monitor::Input);
+    reset_heap_counts();
+
+    const auto heard = [&](uint64_t at, bool auto_hears_input, bool auto_plays) {
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            if (rig.out[0][i] != static_cast<float>(at + i)) return false;
+            const float want = auto_hears_input ? static_cast<float>(at + i)
+                               : auto_plays     ? source_value(6, 0, static_cast<int64_t>(at + i))
+                                                : 0.0f;
+            if (!near(rig.out[1][i], want)) return false;
+        }
+        return true;
+    };
+
+    // Stopped and disarmed, then stopped and armed.
+    rig.block();
+    rig.block();
+    CHECK(heard(s.transport().playhead(), false, false));
+    input.set_rec_armed(true);
+    rig.block();
+    CHECK(heard(s.transport().playhead(), false, false));
+
+    // Rolling over both clips.
+    s.play();
+    rig.block();
+    rig.block();
+    uint64_t at = s.transport().playhead();
+    rig.block();
+    CHECK(heard(at, false, true));
+
+    // A punched take on both, A and B a few blocks ahead, clear of the
+    // crossfade centred on each.
+    autom.set_rec_armed(true);
+    const uint64_t base = s.transport().playhead();
+    PunchRange r;
+    r.capture_from = r.monitor_in = base + 4 * kBlock;
+    r.capture_to = r.monitor_out = base + 8 * kBlock;
+    std::string error;
+    CHECK(s.start_punch(s.next_free_take(), r, &error));
+    for (int k = 0; k < 11; ++k) {
+        at = s.transport().playhead();
+        rig.block();
+        if (k == 3 || k == 4 || k == 7 || k == 8) continue;   // a punch crossfade
+        CHECK(s.transport().state() == TransportState::Recording);
+        CHECK(heard(at, k > 4 && k < 7, k < 3 || k > 8));
+    }
+    CHECK(heap_untouched());
+    CHECK(s.playback_misses() == 0);
+    CHECK(s.stop(&error));
+
+    // Back on Auto, stopped and armed, the track hears its input as Auto
+    // does; disarmed, nothing.
+    input.set_monitor(sonora::Track::Monitor::Auto);
+    rig.block();
+    rig.block();
+    CHECK(near(rig.out[0][0], static_cast<float>(s.transport().playhead())));
+    input.set_rec_armed(false);
+    rig.block();
+    rig.block();
+    CHECK(rig.out[0][0] == 0.0f && rig.out[0][kBlock - 1] == 0.0f);
+    return 0;
+}
 
 // Holds the callback it is called from, right after the transport is loaded
 // and before anything is drained, while armed.
@@ -990,6 +1075,7 @@ int main(int argc, char** argv) {
         {"range_passed_before_the_first_block", test_range_passed_before_the_first_block},
         {"auto_monitor_crossfades", test_auto_monitor_crossfades_at_the_punch_points},
         {"other_switches_ramp", test_other_switches_ramp},
+        {"input_mode_ignores_the_transport", test_input_mode_ignores_the_transport},
         {"burst_of_punches", test_burst_of_punches_keeps_the_running_range},
         {"full_punch_ring", test_full_punch_ring_is_refused},
         {"punch_over_a_punch", test_punch_over_a_punch},

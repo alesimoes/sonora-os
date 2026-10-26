@@ -767,6 +767,7 @@ int test_round_trip_from_edits() {
     m.gain_db = -0.3f;   // not exact in binary: the case that round-trips badly
     m.pan = 0.7f;
     m.solo_safe = true;
+    m.monitor = MonitorMode::Input;   // Pro Tools saves TrackInput per track
     CHECK_APPLY(h, SetMix{m});
 
     std::string bytes, err;
@@ -778,6 +779,8 @@ int test_round_trip_from_edits() {
     CHECK(l.snapshot.mix.find(t.track)->gain_db == -0.3f);
     CHECK(l.snapshot.mix.find(t.track)->solo_safe);
     CHECK(!l.snapshot.mix.find(t2.track)->solo_safe);
+    CHECK(l.snapshot.mix.find(t.track)->monitor == MonitorMode::Input);
+    CHECK(l.snapshot.mix.find(t2.track)->monitor == MonitorMode::Auto);
     CHECK(l.save_generation == 7);
     std::string again;
     CHECK(save(l, again));

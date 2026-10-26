@@ -1404,6 +1404,10 @@ int test_routing() {
     key("semicolon");  // select the next track down
     key("shift+m");
     OK(session.mutes().at(1));
+    // Shift+I puts it in Input mode (Pro Tools' TrackInput), in the
+    // interface as Shift+M is: the mode is the document's.
+    key("shift+i");
+    OK(session.inputMonitors() == QList<bool>({false, true}));
     // The target-less arm key now arms the selection, via the engine.
     key("shift+r");
     OK(!sent.empty() && sent.back() == "track.toggle_arm@1");
@@ -2006,6 +2010,38 @@ int test_midi_sequence_cleanup_follow_ups() {
     return 0;
 }
 
+// Pro Tools' TrackInput (track.toggle_input_monitor): the track's monitor
+// mode in the document, Input or Auto, kept with the rest of its mix and
+// never an undo step. A MIDI track has no audio input to monitor.
+int test_input_monitor() {
+    FlatPeaks peaks;
+    std::string why;
+    Id playlist = 0, region = 0;
+    ModelDocument doc(midi_session(1, playlist, region));
+    SessionModel session(doc, peaks, false);
+    EditController& c = session.controller();
+    const Id audio = doc.snapshot().edit->tracks[0]->id;
+    const auto mode = [&]() { return doc.snapshot().mix.find(audio)->monitor; };
+    const bool could_undo = doc.can_undo();
+    OK(session.inputMonitors() == QList<bool>({false, false}));
+    OK(c.toggle_input_monitor(0, why) && mode() == MonitorMode::Input);
+    OK(session.inputMonitors() == QList<bool>({true, false}));
+    OK(c.toggle_input_monitor(0, why) && mode() == MonitorMode::Auto);
+    OK(session.inputMonitors() == QList<bool>({false, false}));
+    // Off (a file may say so) is not Input, so the button goes to Input.
+    TrackMix off = *doc.snapshot().mix.find(audio);
+    off.monitor = MonitorMode::Off;
+    OK(doc.submit(SetMix{off}, why));
+    OK(session.inputMonitors() == QList<bool>({false, false}));
+    OK(c.toggle_input_monitor(0, why) && mode() == MonitorMode::Input);
+    OK(doc.can_undo() == could_undo);
+    const Id midi = doc.snapshot().edit->tracks[1]->id;
+    OK(!c.toggle_input_monitor(1, why) && contains(why, "Synth is a MIDI track"));
+    OK(doc.snapshot().mix.find(midi)->monitor == MonitorMode::Auto);
+    OK(!c.toggle_input_monitor(-1, why) && why == "no track is selected");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
@@ -2014,7 +2050,7 @@ int main(int argc, char** argv) {
         test_scene() || test_routing() || test_files() || test_first_save_beside_its_takes() ||
         test_save_failures() ||
         test_midi_sequence_files() ||
-        test_midi_sequence_cleanup_follow_ups()) {
+        test_midi_sequence_cleanup_follow_ups() || test_input_monitor()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

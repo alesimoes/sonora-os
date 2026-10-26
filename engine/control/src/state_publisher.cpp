@@ -140,6 +140,7 @@ void StatePublisher::publish_once() {
         api::TrackFields& f = tracks_[i];
         f.flags = (tr.rec_armed() ? api::kTrackArmed : 0u) |
                   (tr.muted() ? api::kTrackMuted : 0u) |
+                  (tr.monitor() == Track::Monitor::Input ? api::kTrackInputMonitor : 0u) |
                   (input_connected_[i].load(std::memory_order_relaxed)
                        ? api::kTrackInputConnected
                        : 0u) |

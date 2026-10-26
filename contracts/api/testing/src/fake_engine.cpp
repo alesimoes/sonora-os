@@ -268,6 +268,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
     muted_.assign(cfg_.tracks, false);
+    input_monitor_.assign(cfg_.tracks, false);
     silent_.assign(cfg_.tracks, false);
     scripted_.assign(cfg_.tracks, -1.0f);
     clips_.assign(cfg_.tracks, 0);
@@ -405,6 +406,8 @@ void FakeEngine::apply_mix() {
         db = std::min(db, model::kMaxGainDb);
         gain_[i] = std::pow(10.0f, db / 20.0f);
         muted_[i] = m->mute;
+        input_monitor_[i] =
+            m->monitor == model::MonitorMode::Input && tracks[i]->kind == model::TrackKind::Audio;
     }
     uint32_t silent = 0;
     for (std::size_t i = 0; i < silent_.size(); ++i) {
@@ -1389,6 +1392,7 @@ void FakeEngine::publish() {
         peaks[i] = peak;
         tracks[i].flags =
             (armed_[i] ? kTrackArmed : 0u) | (muted_[i] ? kTrackMuted : 0u) |
+            (input_monitor_[i] ? kTrackInputMonitor : 0u) |
             (inputs_connected_ ? kTrackInputConnected : 0u);
         tracks[i].gain = gain_[i];
         tracks[i].clip_count = clips_[i];
