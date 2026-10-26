@@ -104,6 +104,12 @@ public:
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
+        // The session folder it announces at connect (ADR-0018 §4), an
+        // absolute path. Empty: none until a Load names its file, and an
+        // interface then saves where it was told to ($SONORA_SESSIONS_DIR).
+        // The fake writes no audio there: it remembers which folder each
+        // take was recorded in (take_folder()).
+        std::string folder;
     };
 
     FakeEngine();
@@ -213,6 +219,10 @@ public:
     // the state block does not carry (solo, solo safe) against, rather than
     // the interface's replica of it.
     const model::Snapshot& document() const;
+    // The session folder take `take` was recorded in: the one active when
+    // it started. Empty for a take not recorded, or recorded with no
+    // folder announced.
+    std::string take_folder(int32_t take) const;
 
 private:
     uint64_t now() const;
@@ -320,6 +330,13 @@ private:
     void offer_recovered();
     void withdraw_recovered();
     bool place_recovered(std::string& why);
+    // ModelAction::Load, as engine/control's: false, with `why`, and the
+    // session as it was.
+    bool load(const std::string& op, std::string& why);
+    // The active session folder, and the folder of every take recorded.
+    std::string folder_;
+    std::map<int32_t, std::string> take_folders_;
+    void announce_folder();
 };
 
 }  // namespace sonora::api::testing

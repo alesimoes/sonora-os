@@ -216,6 +216,9 @@ public:
     void tick();
 
 signals:
+    // The engine's SessionFolder (ADR-0018 §4): where the open session's
+    // takes are written, an absolute path.
+    void sessionFolder(const QString& path);
     // A new engine's Hello with another sample rate, buffer size or track
     // count: trackCount and formatText changed, and what was sized from them
     // here (the meters' peaks, the arm buttons, the clock) already follows.

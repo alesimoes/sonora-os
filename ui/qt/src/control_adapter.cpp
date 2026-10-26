@@ -78,10 +78,12 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
             // Shown on its insert slot, by id; an empty text clears it.
             case api::EventKind::PluginFault: o.kind = EngineEventKind::PluginFault; break;
             case api::EventKind::RecoveryOffer: o.kind = EngineEventKind::RecoveryOffer; break;
+            case api::EventKind::SessionFolder: o.kind = EngineEventKind::SessionFolder; break;
         }
         o.take = e.frame;
         o.insert = e.insert;
         o.text = e.text;
+        o.flags = e.flags;
         events_.push_back(std::move(o));
     }
     if (!inbox_.catalogs.empty()) {

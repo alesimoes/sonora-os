@@ -7,7 +7,8 @@
 // ADR-0015 update of 2026-10-25), so only the engine writes or deletes in a
 // session's "MIDI Sequences/". File > Open reads the session file and the
 // sequence files it names here, because the engine reads nothing from the
-// interface's folder (ModelAction::Load carries the bytes).
+// interface's folder (ModelAction::Load carries the bytes, and the file's
+// path only so the engine records into its folder, ADR-0018 §2).
 //
 // The layout is the spec's: <dir>/<Name>/<Name>.sonora, one folder per
 // session, all under one sessions folder. The interface lists that folder

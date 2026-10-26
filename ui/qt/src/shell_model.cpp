@@ -416,6 +416,9 @@ void ShellModel::takeEvents() {
             case EngineEventKind::RecoveryOffer:
                 showRecoveryOffer(text, static_cast<int>(e.take));
                 break;
+            case EngineEventKind::SessionFolder:
+                emit sessionFolder(text);
+                break;
             case EngineEventKind::PluginFault:
                 if (plugin_sinks_.fault) {
                     plugin_sinks_.fault(e.insert, e.text);

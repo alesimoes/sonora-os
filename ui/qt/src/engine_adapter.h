@@ -138,14 +138,24 @@ struct EngineFrame {
 };
 
 // api::EventKind, spelled again for the same reason as TransportMode.
-enum class EngineEventKind { Notice, InputsMissing, TakeFailed, Fatal, PluginFault, RecoveryOffer };
+enum class EngineEventKind {
+    Notice,
+    InputsMissing,
+    TakeFailed,
+    Fatal,
+    PluginFault,
+    RecoveryOffer,
+    SessionFolder,
+};
 
 // api::EngineEvent: a discrete fact, in the order the engine said it.
 struct EngineEvent {
     EngineEventKind kind = EngineEventKind::Notice;
     uint64_t take = 0;    // TakeFailed: the take it is about; RecoveryOffer: how many takes
     uint64_t insert = 0;  // PluginFault: the insert's model id
-    std::string text;     // InputsMissing, TakeFailed, PluginFault, RecoveryOffer: empty clears it
+    std::string text;     // InputsMissing, TakeFailed, PluginFault, RecoveryOffer: empty clears it;
+                          // SessionFolder: the folder
+    uint32_t flags = 0;   // SessionFolder: api::kFolder* bits
 };
 
 // api::CommandReply.

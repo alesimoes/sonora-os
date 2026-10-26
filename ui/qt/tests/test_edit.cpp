@@ -1424,6 +1424,43 @@ QByteArray file_bytes(const QString& path) {
     return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
 }
 
+// ADR-0018 §4: a first Save goes into the folder the engine says it records
+// the session into, named after that folder, so the session file is beside
+// its takes. A folder that already holds another session's file is not
+// shared: the save goes to a new folder under the sessions folder, as
+// before the engine said where.
+int test_first_save_beside_its_takes() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why;
+    const QString engine_folder = dir.filePath(QStringLiteral("Untitled"));
+    CHECK(QDir(dir.path()).mkpath(QStringLiteral("Untitled/Audio Files")));
+
+    ModelDocument doc(make_demo_session(4, kRate));
+    doc.set_saver(engine_saver());
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    session.setEngineFolder(engine_folder);
+    OK(session.saveSession(why));
+    const QString file = engine_folder + QStringLiteral("/Untitled.sonora");
+    OK(session.sessionFile() == file);
+    OK(QFileInfo(file).isFile());
+    OK(doc.snapshot().settings.name == "Untitled");
+    OK(!QFileInfo(dir.filePath(QStringLiteral("Untitled 2"))).exists());
+
+    // A new session in the same folder: Untitled.sonora is there already.
+    ModelDocument next(make_demo_session(4, kRate));
+    next.set_saver(engine_saver());
+    SessionModel second(next, peaks, true);
+    second.setSessionsDir(dir.path());
+    second.setEngineFolder(engine_folder);
+    OK(second.saveSession(why));
+    OK(second.sessionFile() == dir.filePath(QStringLiteral("Demo session/Demo session.sonora")));
+    OK(file_bytes(file) == file_bytes(session.sessionFile()));
+    return 0;
+}
+
 int test_files() {
     QTemporaryDir dir;
     CHECK(dir.isValid());
@@ -1974,7 +2011,8 @@ int main(int argc, char** argv) {
     if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
         test_taper() ||
         test_time() || test_nudge_tempo_map() ||
-        test_scene() || test_routing() || test_files() || test_save_failures() ||
+        test_scene() || test_routing() || test_files() || test_first_save_beside_its_takes() ||
+        test_save_failures() ||
         test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups()) {
         return 1;

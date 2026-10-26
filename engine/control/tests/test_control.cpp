@@ -30,6 +30,7 @@
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
+#include "sonora/platform/file.h"
 #include "sonora/session.h"
 #include "sonora/state_publisher.h"
 #include "sonora/wav_writer.h"
@@ -224,6 +225,22 @@ public:
                            uint64_t track_id, uint64_t position, uint64_t frames) override {
         return static_cast<RealEngine&>(e).leave_orphan_take(name, session, session_id, take,
                                                              track_id, position, frames);
+    }
+    int take_files_in(api::EngineControl&, const std::string& folder, int take) override {
+        char suffix[16];
+        std::snprintf(suffix, sizeof suffix, "_%02d.wav", take);
+        const std::string tail = suffix;
+        int files = 0;
+        std::error_code ec;
+        for (fs::directory_iterator it(fs::path(folder) / "Audio Files", ec), end;
+             !ec && it != end; it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            if (name.size() > tail.size() &&
+                name.compare(name.size() - tail.size(), tail.size(), tail) == 0) {
+                ++files;
+            }
+        }
+        return files;
     }
 };
 
@@ -434,10 +451,10 @@ void take_failure_reaches_the_interface() {
 }
 
 // A take left on disk is offered to the first interface to attach, from
-// the start (session-format.md, "Crash recovery"). A session opened while
-// a take records is looked at once the take has closed and gone in: the
-// take being written, its header already checkpointed with audio, is in
-// no source yet and must never be offered.
+// the start (session-format.md, "Crash recovery"). The take being written,
+// its header already checkpointed with audio, is in no source yet and must
+// never be offered: a session open during it is refused, and once it
+// closes it goes in.
 void recovery_offer_at_start_and_after_a_take() {
     const fs::path dir = fresh_dir("orphans");
     fs::create_directories(dir / "Audio Files");
@@ -490,26 +507,31 @@ void recovery_offer_at_start_and_after_a_take() {
     api::ModelRequest load;
     load.action = api::ModelAction::Load;
     CHECK(model::serialize(start, model::WriteInfo{"test", 1}, load.op, error));
-    CHECK(replied(real.submit(load), DispatchResult::Ok));
+    load.op = api::wire::encode_load("", load.op);
+    // No session opens during a take (ADR-0018 §2), so the take being
+    // written is never another session's orphan; the offer stands as it was.
+    CHECK(replied(real.submit(load), DispatchResult::Failed));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     real.poll(in);
-    // Withdrawn at the open, and nothing offered while the take is open.
-    CHECK(offers().size() == 2 && offers()[1].empty());
+    CHECK(offers().size() == 1);
 
+    const std::size_t updates = in.model.size();
     api::CommandRequest stop;
     stop.command = "transport.stop";
     CHECK(replied(real.send(stop), DispatchResult::Ok));
-    CHECK(until(real, in, [&]() { return offers().size() == 3; }));
-    const auto all = offers();
-    CHECK(all.size() == 3 && all[2].find("Audio 3_05.wav") != std::string::npos &&
-          all[2].find("Audio 1_06") == std::string::npos);
+    // Placed, its RecordTake sent, and not offered.
+    CHECK(until(real, in, [&]() { return in.model.size() > updates; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    real.poll(in);
+    CHECK(offers().size() == 1);
 }
 
 // PR #132 review 2: a take punched out on the fly is not placed at the
 // punch-out. Its files stay open until the disk thread hears of it, while
 // recording_take() is already 0, and its header, checkpointed with audio,
-// names no source yet. A session opened during the take is looked at only
-// once the take is placed, so the take is never offered.
+// names no source yet. No session opens during the take (ADR-0018 §2), nor
+// while it closes (Session::folder_change_refusal()), so it is never
+// offered.
 void a_take_just_punched_out_is_never_offered() {
     const fs::path dir = fresh_dir("orphans_punch");
     EngineControlServer::Options opts;
@@ -543,7 +565,8 @@ void a_take_just_punched_out_is_never_offered() {
     api::ModelRequest load;
     load.action = api::ModelAction::Load;
     CHECK(model::serialize(start, model::WriteInfo{"test", 1}, load.op, error));
-    CHECK(replied(real.submit(load), DispatchResult::Ok));
+    load.op = api::wire::encode_load("", load.op);
+    CHECK(replied(real.submit(load), DispatchResult::Failed));
     // Past the first checkpoint (SessionConfig::sync_seconds), so the
     // take's header counts audio.
     std::this_thread::sleep_for(std::chrono::milliseconds(2500));
@@ -680,7 +703,7 @@ void loop_record_on_the_real_engine() {
     };
     // One second of loop from the first second; no pre-roll.
     CHECK(settings({48000, 96000}, 48000).result == DispatchResult::Ok);
-    // The session's round trip reaches the loop take (ADR-0019 �4).
+    // The session's round trip reaches the loop take (ADR-0019 §4).
     constexpr uint32_t kLatency = 240;
     CHECK(real.session().set_input_latency(kLatency, &error));
     api::CommandReply r;
@@ -705,6 +728,7 @@ void loop_record_on_the_real_engine() {
     api::ModelRequest load;
     load.action = api::ModelAction::Load;
     CHECK(model::serialize(replica.current(), model::WriteInfo{"test", 1}, load.op, error));
+    load.op = api::wire::encode_load("", load.op);
     CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Failed);
     CHECK(r.message.find("while loop record runs") != std::string::npos);
 
@@ -834,10 +858,18 @@ void housekeeping_and_early_events() {
     std::string error;
     CHECK(real.connect(error));
     api::Inbox in;
-    CHECK(until(real, in, [&]() { return in.events.size() >= 2; }));
-    CHECK(in.events.size() >= 2 && in.events[0].kind == api::EventKind::Notice &&
-          in.events[0].text == early.text);
-    CHECK(in.events.size() >= 2 && in.events[1].kind == api::EventKind::InputsMissing);
+    // The standing SessionFolder (ADR-0018 §4) is not what this is about.
+    const auto said = [&]() {
+        std::vector<api::EngineEvent> out;
+        for (const auto& e : in.events) {
+            if (e.kind != api::EventKind::SessionFolder) out.push_back(e);
+        }
+        return out;
+    };
+    CHECK(until(real, in, [&]() { return said().size() >= 2; }));
+    CHECK(said().size() >= 2 && said()[0].kind == api::EventKind::Notice &&
+          said()[0].text == early.text);
+    CHECK(said().size() >= 2 && said()[1].kind == api::EventKind::InputsMissing);
     CHECK(until(real, in, [&]() {
         return (real.state().transport().health_flags & api::kHealthNoInputs) != 0;
     }));
@@ -977,7 +1009,7 @@ void no_plugin_hosting_yet() {
     std::string bytes;
     CHECK(model::serialize(doc, model::WriteInfo{"test", 1}, bytes, error));
     m.action = api::ModelAction::Load;
-    m.op = bytes;
+    m.op = api::wire::encode_load("", bytes);
     const std::size_t events = in.events.size();
     CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
     CHECK(until(real, in, [&]() {
@@ -1164,7 +1196,7 @@ void midi_budget_at_open_and_its_notice() {
     const auto load = [&](int n, api::CommandReply& out) {
         api::ModelRequest m;
         m.action = api::ModelAction::Load;
-        m.op = bundle(n);
+        m.op = api::wire::encode_load("", bundle(n));
         const uint64_t seq = real.submit(m);
         return until(real, in, [&]() {
             for (const auto& r : in.replies) {
@@ -1235,6 +1267,7 @@ bool load_midi_session(RealEngine& real, api::Inbox& in) {
     if (!model::encode_session_bundle(h.current(), model::WriteInfo{"test", 1}, load.op, error)) {
         return false;
     }
+    load.op = api::wire::encode_load("", load.op);
     const std::size_t before = in.model.size();
     real.submit(load);
     return until(real, in, [&]() { return snapshot_from(before); });
@@ -1479,7 +1512,7 @@ void a_sequence_over_a_part_opens_in_parts() {
     const std::size_t before = in.model.size();
     api::ModelRequest m;
     m.action = api::ModelAction::Load;
-    m.op = load;
+    m.op = api::wire::encode_load("", load);
     CHECK(answer(real.submit(m), reply) && reply.result == DispatchResult::Ok);
     model::Replica replica;
     CHECK(polled([&]() {
@@ -1493,6 +1526,110 @@ void a_sequence_over_a_part_opens_in_parts() {
     CHECK(fed && replica.synced() &&
           replica.current().edit->tracks[0]->midi_playlists[0]->regions[0].data->lists() ==
               r.data->lists());
+}
+
+// ADR-0018 §2, §4 on the real engine: the folder stands from the start, as
+// an absolute path, and a client that attaches later is sent the one that
+// stands now. A file opened from "Session File Backups/" is of the folder
+// above it. A folder another engine holds refuses the Load, and the
+// session, its document and its folder stay.
+void the_session_folder_follows_the_load() {
+    const fs::path dir = fresh_dir("folder");
+    const fs::path other = fresh_dir("folder_other");
+    const fs::path busy = fresh_dir("folder_busy");
+    struct Gone {
+        std::vector<fs::path> paths;
+        ~Gone() {
+            std::error_code ec;
+            for (const fs::path& p : paths) fs::remove_all(p, ec);
+        }
+    } gone{{other, busy}};
+    EngineControlServer::Options opts;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto replied = [&](uint64_t seq, DispatchResult want, std::string* message = nullptr) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq != seq) continue;
+                if (message != nullptr) *message = r.message;
+                return r.result == want;
+            }
+            return false;
+        });
+    };
+    const auto folder = [](const api::Inbox& from) -> const api::EngineEvent* {
+        for (auto it = from.events.rbegin(); it != from.events.rend(); ++it) {
+            if (it->kind == api::EventKind::SessionFolder) return &*it;
+        }
+        return nullptr;
+    };
+    const std::string at_start = fs::absolute(dir).lexically_normal().string();
+    CHECK(until(real, in, [&]() { return folder(in) != nullptr; }));
+    CHECK(folder(in)->text == at_start);
+    CHECK((folder(in)->flags & api::kFolderUntitled) == 0);
+
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const auto write = [&](const fs::path& file) {
+        std::error_code ec;
+        fs::create_directories(file.parent_path(), ec);
+        std::FILE* f = std::fopen(file.string().c_str(), "wb");
+        if (f == nullptr) return false;
+        const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+        return std::fclose(f) == 0 && ok;
+    };
+    const fs::path backup = other / "Session File Backups" / "Song.v3.sonora";
+    CHECK(write(backup));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load(backup.string(), bytes);
+    const std::size_t before_load = in.model.size();
+    CHECK(replied(real.submit(load), DispatchResult::Ok));
+    const std::string opened = other.lexically_normal().string();
+    CHECK(until(real, in, [&]() { return folder(in) != nullptr && folder(in)->text == opened; }));
+    // The Load's Snapshot, encoded on the worker, is in before anything is
+    // counted below.
+    CHECK(until(real, in, [&]() {
+        for (std::size_t i = before_load; i < in.model.size(); ++i) {
+            if (in.model[i].kind == api::ModelUpdateKind::Snapshot) return true;
+        }
+        return false;
+    }));
+    CHECK(fs::is_directory(other / "Audio Files"));
+    CHECK(!fs::exists(other / "Session File Backups" / "Audio Files"));
+
+    // Late: the folder that stands now, not the one at start.
+    StuckClient late(real.engine().server());
+    late.queued->store(0);
+    CHECK(wait_for([&]() {
+        const api::Inbox got = late.inbox();
+        return folder(got) != nullptr && folder(got)->text == opened;
+    }));
+
+    // Another engine holds this one: refused, nothing moves.
+    CHECK(write(busy / "Busy.sonora"));
+    platform::FolderLock theirs;
+    CHECK(theirs.acquire(busy.string(), error) == platform::FolderLock::Result::Held);
+    const std::size_t updates = in.model.size();
+    const std::size_t announced = std::count_if(in.events.begin(), in.events.end(), [](const auto& e) {
+        return e.kind == api::EventKind::SessionFolder;
+    });
+    load.op = api::wire::encode_load((busy / "Busy.sonora").string(), bytes);
+    std::string message;
+    CHECK(replied(real.submit(load), DispatchResult::Failed, &message));
+    CHECK(message.find("the session's folder could not be opened") != std::string::npos);
+    CHECK(message.find("Stop the other engine first") != std::string::npos);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    real.poll(in);
+    CHECK(in.model.size() == updates);
+    CHECK(std::count_if(in.events.begin(), in.events.end(), [](const auto& e) {
+              return e.kind == api::EventKind::SessionFolder;
+          }) == static_cast<std::ptrdiff_t>(announced));
+    CHECK(*real.session().folder() == opened);
 }
 
 int main() {
@@ -1520,6 +1657,7 @@ int main() {
     a_save_during_a_take_follows_a_checkpoint();
     recovery_offer_at_start_and_after_a_take();
     a_take_just_punched_out_is_never_offered();
+    the_session_folder_follows_the_load();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

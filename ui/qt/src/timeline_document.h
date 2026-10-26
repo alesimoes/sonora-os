@@ -17,7 +17,7 @@
 //                             shown at once, taken back if refused
 //   undo / redo               ModelAction::Undo / Redo
 //   reset (File > Open)       ModelAction::Load with the session file's
-//                             bytes; every replica gets a Snapshot
+//                             path and bytes; every replica gets a Snapshot
 //   reserve_id                from what is shown; a clash with another
 //                             interface's edit is refused by the engine
 //
@@ -72,8 +72,12 @@ public:
     virtual model::Id reserve_id() = 0;
     // A different session (one was opened): the snapshot replaced, and a new
     // history, because undo never crosses into another session. Refused,
-    // with `why`, when the document's owner cannot be reached.
-    virtual bool reset(model::Snapshot s, std::string& why) = 0;
+    // with `why`, when the document's owner cannot be reached. `file` is the
+    // session file it was read from, an absolute path, which the engine
+    // takes the session's folder from (ADR-0018 §2); empty for a session
+    // with no file yet.
+    virtual bool reset(model::Snapshot s, const std::string& file, std::string& why) = 0;
+    bool reset(model::Snapshot s, std::string& why) { return reset(std::move(s), {}, why); }
     uint64_t revision() const { return snapshot().revision; }
     // Changes whenever the document may have become another session (an
     // Open here, or a whole document from the engine), whose ids mean other
@@ -130,7 +134,8 @@ public:
     std::string undo_label() const override { return history_.undo_label(); }
     std::string redo_label() const override { return history_.redo_label(); }
     model::Id reserve_id() override;
-    bool reset(model::Snapshot s, std::string& why) override;
+    using TimelineDocument::reset;
+    bool reset(model::Snapshot s, const std::string& file, std::string& why) override;
 
     const model::History& history() const override { return history_; }
 

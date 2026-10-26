@@ -235,6 +235,41 @@ int test_a_take_after_a_switch_lands_in_the_new_folder() {
     return 0;
 }
 
+// A take is placed only into the folder it was recorded in (ADR-0018
+// checklist item 2, N2). Its files are collected by closed_takes(), and
+// from then the folder may change, so placing it after a switch must not
+// lose it silently: add_closed_take() used to skip every file outside the
+// new folder with no word, and the take was in no session at all.
+int test_a_take_collected_before_a_switch_is_not_lost_silently() {
+    const std::string a = root() + "/A", b = root() + "/B";
+    fs::remove_all(root());
+    fs::create_directories(root());
+    sonora::Session s(config(a));
+    ActiveFolder folder;
+    std::string why;
+    std::vector<std::string> notices;
+    CHECK(folder.enter(s, a, ActiveFolder::Kind::Named, why, notices));
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    CHECK(s.start_recording(s.next_free_take()));
+    feed(s, 64);
+    CHECK(s.stop());
+    std::vector<sonora::Session::ClosedTake> closed = s.closed_takes();
+    CHECK(closed.size() == 1);
+
+    CHECK(folder.enter(s, b, ActiveFolder::Kind::Named, why, notices));
+    sonora::model::Document document(sonora::engine_document(s));
+    const sonora::TakeAdded added = sonora::add_closed_take(document, s, closed[0]);
+    CHECK(added.updates.empty());
+    CHECK(document.current().sources->sources.empty());
+    CHECK(added.track_notices.size() == 1);
+    CHECK(added.track_notices[0].find("not in the open session's folder") != std::string::npos);
+    CHECK(added.track_notices[0].find(a + "/Audio Files/Audio 1_01.wav") != std::string::npos);
+    CHECK(exists(a + "/Audio Files/Audio 1_01.wav"));
+    fs::remove_all(root());
+    return 0;
+}
+
 // An Untitled folder the engine made is removed on leaving only if nothing
 // was put in it; a named one never is.
 int test_only_an_empty_untitled_folder_is_removed() {
@@ -273,6 +308,7 @@ int main() {
     failed += test_busy_folder_is_refused_and_the_old_one_stays();
     failed += test_recovery_runs_on_entry();
     failed += test_a_take_after_a_switch_lands_in_the_new_folder();
+    failed += test_a_take_collected_before_a_switch_is_not_lost_silently();
     failed += test_only_an_empty_untitled_folder_is_removed();
     if (failed) return 1;
     std::printf("active folder: ok\n");

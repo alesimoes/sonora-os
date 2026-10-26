@@ -135,7 +135,7 @@ model::Id ReplicaDocument::reserve_id() {
     return next_unreserved_++;
 }
 
-bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
+bool ReplicaDocument::reset(model::Snapshot s, const std::string& file, std::string& why) {
     if (offline_) {
         why = kOffline;
         return false;
@@ -174,7 +174,7 @@ bool ReplicaDocument::reset(model::Snapshot s, std::string& why) {
     Pending p;
     p.kind = Pending::Kind::Load;
     p.load = s;
-    p.seq = send(api::ModelAction::Load, std::move(session));
+    p.seq = send(api::ModelAction::Load, api::wire::encode_load(file, session));
     pending_.push_back(std::move(p));
     shown_ = model::History(std::move(s), shown_.budget());
     next_unreserved_ = 0;

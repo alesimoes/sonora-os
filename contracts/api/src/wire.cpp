@@ -165,7 +165,8 @@ private:
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Save);
-constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::RecoveryOffer);
+constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::SessionFolder);
+constexpr uint32_t kEventFlags = kFolderUntitled | kFolderReadOnly;
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
 constexpr uint32_t kLastBridge = static_cast<uint32_t>(PluginBridge::Yabridge);
@@ -227,6 +228,7 @@ void encode(const EngineEvent& m, std::string& out) {
     w.u64(m.frame);
     w.u64(m.insert);
     w.str(m.text);
+    w.u32(m.flags);
 }
 
 void encode(const ModelUpdate& m, std::string& out) {
@@ -387,7 +389,11 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
     EngineEvent m;
     if (!r.type(Type::EngineEvent) || !r.enumeration(m.kind, kLastEvent) ||
         !r.i32(m.track) || !r.u64(m.frame) || !r.u64(m.insert) || !r.str(m.text) ||
-        !r.done()) {
+        !r.u32(m.flags) || !r.done()) {
+        return false;
+    }
+    if ((m.flags & ~kEventFlags) != 0) {
+        error = "an event with flags " + std::to_string(m.flags) + " this version does not define";
         return false;
     }
     out = std::move(m);
@@ -537,6 +543,26 @@ bool decode_save(std::string_view op, std::string& file, std::string& session,
     }
     file.assign(op.data(), end);
     session.assign(op.data() + end + 1, op.size() - end - 1);
+    return true;
+}
+
+std::string encode_load(std::string_view file, std::string_view load) {
+    return encode_save(file, load);
+}
+
+bool decode_load(std::string_view op, std::string& file, std::string_view& load,
+                 std::string& error) {
+    const std::size_t end = op.find('\0');
+    if (end == std::string_view::npos) {
+        error = "a session open that names no session file (protocol 16 carries its path)";
+        return false;
+    }
+    if (end > kMaxSavePath) {
+        error = "a session open whose path is over " + std::to_string(kMaxSavePath) + " bytes";
+        return false;
+    }
+    file.assign(op.data(), end);
+    load = op.substr(end + 1);
     return true;
 }
 

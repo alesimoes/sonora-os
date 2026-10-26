@@ -329,7 +329,7 @@ int test_left_takes_are_not_offered() {
     return 0;
 }
 
-// The file was labelled P0 - L when it was captured (ADR-0019 ง2), and the
+// The file was labelled P0 - L when it was captured (ADR-0019 ยง2), and the
 // Description carries the L it was captured with: the recovered source says
 // so too, for a whole take, a punch take and one pooled unplaced.
 int test_recovered_take_keeps_its_latency() {
@@ -357,6 +357,36 @@ int test_recovered_take_keeps_its_latency() {
     return 0;
 }
 
+// An offer is of the folder it was found in (ADR-0018 checklist item 2,
+// N2). Placed after the session folder changed, it used to resolve its
+// relative paths against the new folder and put that folder's file of the
+// same name on the timeline, and that file's source into the pool.
+int test_an_offer_from_another_folder_places_nothing() {
+    Rig rig("sonora_test_orphan_other_folder");
+    const uint64_t t1 = rig.track_id(0);
+    CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
+    CHECK(rig.write("Audio 9_02.wav", take_description(2, 999, "Untitled", nullptr, nullptr, rig.id()), 0, 4800));
+    const OrphanOffer offer = find_orphan_takes(rig.doc->current(), rig.dir.string());
+    CHECK(offer.takes.size() == 2);
+
+    const fs::path other = rig.dir.string() + "_other";
+    fs::remove_all(other);
+    fs::create_directories(other / "Audio Files");
+    fs::copy_file(rig.dir / "Audio Files" / "Audio 1_01.wav", other / "Audio Files" / "Audio 1_01.wav");
+    fs::copy_file(rig.dir / "Audio Files" / "Audio 9_02.wav", other / "Audio Files" / "Audio 9_02.wav");
+    std::string why;
+    CHECK(rig.session->set_folder(other.string(), why));
+
+    const uint64_t revision = rig.doc->current().revision;
+    const OrphansPlaced placed = place_orphan_takes(*rig.doc, *rig.session, offer);
+    CHECK(placed.updates.empty());
+    CHECK(placed.placed == 0 && placed.pooled == 0);
+    CHECK(rig.doc->current().revision == revision);
+    CHECK(any_mentions(placed.notices, "not in the open session's folder"));
+    fs::remove_all(other);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -372,6 +402,7 @@ int main(int argc, char** argv) {
         {"takes_of_this_session_only", test_takes_of_this_session_only},
         {"left_takes_are_not_offered", test_left_takes_are_not_offered},
         {"recovered_take_keeps_its_latency", test_recovered_take_keeps_its_latency},
+        {"an_offer_from_another_folder_places_nothing", test_an_offer_from_another_folder_places_nothing},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

@@ -65,15 +65,17 @@ PlaybackController::~PlaybackController() {
 
 bool PlaybackController::registered(const model::Source& source, uint32_t& slot,
                                     std::string& error) {
-    const auto it = slots_.find(source.id);
+    std::string path = *session_.folder() + "/" + source.path;
+    const auto it = slots_.find(path);
     if (it != slots_.end()) {
         slot = it->second;
         return true;
     }
-    // Sources are append-only in the model and in the engine's table, so a
-    // slot, once given, is the source's for the session.
-    if (!session_.reader().add_source(*session_.folder() + "/" + source.path, slot, error)) return false;
-    slots_.emplace(source.id, slot);
+    // The engine's table is append-only, so a slot, once given, is the
+    // file's for the run. A file is not rewritten under its name: a take
+    // number is never reused in a folder (Session::next_free_take()).
+    if (!session_.reader().add_source(path, slot, error)) return false;
+    slots_.emplace(std::move(path), slot);
     return true;
 }
 

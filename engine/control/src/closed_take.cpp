@@ -485,7 +485,16 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
             }
         }
         if (f.frames == 0) continue;
-        if (f.path.compare(0, prefix.size(), prefix) != 0) continue;
+        // Collected by closed_takes() before the folder changed: the
+        // document is another folder's now, and a source path is relative to
+        // its own folder, so this file cannot be named from it. It stays
+        // where it was written, and the operator is told where.
+        if (f.path.compare(0, prefix.size(), prefix) != 0) {
+            out.track_notices.push_back(which + " is on disk but not in the session: track " +
+                                        std::to_string(f.track + 1) + ", " + f.path +
+                                        " is not in the open session's folder, " + dir);
+            continue;
+        }
         const std::string relative = f.path.substr(prefix.size());
 
         std::string why;

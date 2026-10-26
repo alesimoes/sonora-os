@@ -69,7 +69,10 @@ namespace sonora::api {
 // 15 (ADR-0020): SetSettings carries transport.count_off_bars (session
 //   format 8); a version-14 peer's op decoder refuses the key, and this one
 //   requires it.
-constexpr uint32_t kProtocolVersion = 15;
+// 16 (ADR-0018 §2, §4): ModelAction::Load's `op` is wire::encode_load(),
+//   the session file's path ahead of the bytes; EventKind::SessionFolder,
+//   and EngineEvent::flags after `text`.
+constexpr uint32_t kProtocolVersion = 16;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -153,6 +156,18 @@ enum class ModelAction : uint32_t {
     // requests, an index of the parts' chunks by sequence and the bare
     // session file (common/model's encode_load_parts). Refused, the session
     // kept, when the new document's Snapshot could not be sent.
+    //
+    // Since 16 `op` is wire::encode_load(): the session file's absolute path
+    // in the engine's filesystem (the control socket is local, as for Save),
+    // then those bytes. The engine reads the session from the bytes, not
+    // the file; the path says which folder the session owns (ADR-0018 §2).
+    // It checks that the path is a regular file and enters its session
+    // folder, "Session File Backups/" resolving to the folder above, before
+    // the document swaps: lock, recovery, medium. A refusal there keeps the
+    // old session, its document and its folder. An empty path is a new
+    // session, which stays in the active folder until checklist item 4
+    // gives it its own. Refused while a take is open or closing: the take
+    // belongs to the session it was started in.
     Load = 4,
     // Bring the document's plugin values up to date with the running
     // plugins (ADR-0012 §8): before File > Save, and before an insert is
@@ -264,16 +279,31 @@ enum class EventKind : uint32_t {
     // every session open; empty text withdraws it. A client that attaches
     // later is sent the one that stands. Protocol 13.
     RecoveryOffer = 5,
+    // Where the open session lives (ADR-0018 §4): `text` is the active
+    // session folder's absolute path in the engine's filesystem, `flags`
+    // kFolderUntitled and kFolderReadOnly, `frame` the medium's free bytes
+    // when the folder was entered (0: not known). Its takes, wrap lists and
+    // plugin states are written there, so a Save of this session belongs
+    // there too. One stands from the engine's start, replaced at every
+    // folder change; a client that attaches later is sent it. Protocol 16.
+    SessionFolder = 6,
 };
+
+// EngineEvent::flags of a SessionFolder.
+inline constexpr uint32_t kFolderUntitled = 1u << 0;   // the engine made it ("Untitled <n>")
+inline constexpr uint32_t kFolderReadOnly = 1u << 1;   // the medium refuses writes
 
 struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
-    // TakeFailed: the take number. RecoveryOffer: how many takes. 0 otherwise.
+    // TakeFailed: the take number. RecoveryOffer: how many takes.
+    // SessionFolder: free bytes. 0 otherwise.
     uint64_t frame = 0;
     // PluginFault: the insert's model id. 0 otherwise. Protocol 3.
     uint64_t insert = 0;
     std::string text;
+    // SessionFolder: kFolder* bits. 0 otherwise. Protocol 16.
+    uint32_t flags = 0;
 };
 
 // One change to the document, sent to every replica in revision order.

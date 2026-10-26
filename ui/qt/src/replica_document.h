@@ -82,8 +82,9 @@ public:
     // api::wire::kMaxPartBytes, then ModelAction::Load with their index and
     // the session file (ADR-0015 §4). Refused by name instead, with nothing
     // shown or sent, when the parts together are over max_snapshot_bytes(),
-    // or one chunk alone is over a part.
-    bool reset(model::Snapshot s, std::string& why) override;
+    // or one chunk alone is over a part. The Load names `file` (protocol 16).
+    using TimelineDocument::reset;
+    bool reset(model::Snapshot s, const std::string& file, std::string& why) override;
     // This interface's cap on a Snapshot's chunk table and a Load's
     // sequence files (ADR-0015 §4: the replica's own, an interface setting).
     void set_max_snapshot_bytes(uint64_t bytes) { replica_.set_max_snapshot_bytes(bytes); }

@@ -45,6 +45,7 @@ public:
     bool read_only() const { return read_only_; }
     // 0 when it could not be read.
     uint64_t free_bytes() const { return free_bytes_; }
+    bool untitled() const { return kind_ == Kind::Untitled; }
 
 private:
     std::unique_ptr<platform::FolderLock> lock_;

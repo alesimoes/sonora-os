@@ -693,6 +693,10 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     }
     // Only now may the disk thread see these writers; until here the
     // rollback above could close them under it. See Track::slot_take().
+    // next_start() is the start the set_recording() at the end of this
+    // function gives the take; it holds only because nothing between here
+    // and there calls set_recording(). One that did would label these slots
+    // with a start the take never gets.
     for (const auto& o : opened) {
         o.first->set_current_slot(o.second);
         o.first->set_slot_take(o.second, take_number, transport_->next_start());

@@ -263,6 +263,7 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
         planned_.push_back(id);
         hello_.implemented_commands.push_back(id);
     }
+    folder_ = cfg_.folder;
     armed_.assign(cfg_.tracks, false);
     gain_.assign(cfg_.tracks, 1.0f);
     muted_.assign(cfg_.tracks, false);
@@ -325,10 +326,70 @@ bool FakeEngine::connect(std::string& error) {
     apply_mix();
     send_catalog();
     offer_recovered();
+    if (!folder_.empty()) announce_folder();
     return true;
 }
 
 const model::Snapshot& FakeEngine::document() const { return document_->current(); }
+
+std::string FakeEngine::take_folder(int32_t take) const {
+    const auto it = take_folders_.find(take);
+    return it == take_folders_.end() ? std::string() : it->second;
+}
+
+void FakeEngine::announce_folder() {
+    EngineEvent e;
+    e.kind = EventKind::SessionFolder;
+    e.text = folder_;
+    post_event(e);
+}
+
+bool FakeEngine::load(const std::string& op, std::string& why) {
+    namespace fs = std::filesystem;
+    std::string file;
+    std::string_view bytes;
+    if (!wire::decode_load(op, file, bytes, why)) return false;
+    if (!load_refused_.empty()) {
+        why = load_refused_;
+        return false;
+    }
+    // The engine's words: Session::folder_change_refusal() after the prefix.
+    if (mode_ == TransportState::Recording) {
+        why = "stop recording before opening another session: take " + std::to_string(take_) +
+              " is open";
+        return false;
+    }
+    std::string folder;
+    if (!file.empty()) {
+        const fs::path p(file);
+        std::error_code ec;
+        if (!p.is_absolute()) {
+            why = "a session is opened by its file's absolute path, not \"" + file + "\"";
+            return false;
+        }
+        if (!fs::is_regular_file(p, ec)) {
+            why = "there is no session file at " + file;
+            return false;
+        }
+        // common/session_files' session_folder_of(), which this module may
+        // not link: a file in "Session File Backups/" is of the folder above.
+        fs::path dir = p.parent_path();
+        if (dir.filename() == "Session File Backups") dir = dir.parent_path();
+        folder = dir.lexically_normal().string();
+    }
+    // As engine/control: refused, the old session kept, when the new one's
+    // Snapshot could not be sent.
+    if (!document_->load(bytes, cfg_.sample_rate, why, load_parts_.get(), wire::kMaxModelBytes)) {
+        return false;
+    }
+    if (!folder.empty()) {
+        folder_ = folder;
+        // A take is numbered from what the folder holds; the fake's hold none.
+        take_ = 1;
+        announce_folder();
+    }
+    return true;
+}
 
 void FakeEngine::apply_mix() {
     const model::Snapshot& doc = document_->current();
@@ -1062,16 +1123,9 @@ void FakeEngine::handle(const std::string& bytes) {
                 ok = document_->snapshot(u, why, wire::kMaxModelBytes);
                 break;
             case ModelAction::Load:
-                // As engine/control: refused, the old session kept, when
-                // the new one's Snapshot could not be sent; accepted, its
-                // Snapshot always encodes, and a failure there is only the
-                // backstop's Notice.
-                if (!load_refused_.empty()) {
-                    why = load_refused_;
-                } else {
-                    ok = document_->load(m.op, cfg_.sample_rate, why, load_parts_.get(),
-                                         wire::kMaxModelBytes);
-                }
+                // Accepted, its Snapshot always encodes, and a failure there
+                // is only the backstop's Notice.
+                ok = load(m.op, why);
                 load_parts_.reset();
                 load_refused_.clear();
                 if (ok && !document_->snapshot(u, snapshot_failed, wire::kMaxModelBytes)) {
@@ -1159,6 +1213,7 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             return false;
         }
         move(TransportState::Recording);
+        take_folders_[take_] = folder_;
         return true;
     };
     // Failed reports the take, not the stop, as the real one does.

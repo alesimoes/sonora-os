@@ -35,6 +35,9 @@ struct OrphanTake {
 };
 
 struct OrphanOffer {
+    // The session folder the takes were found in: their paths are relative
+    // to it, and to no other.
+    std::string folder;
     std::vector<OrphanTake> takes;   // in file name order
     // What the operator reads: one line per take, saying where it would
     // go. Empty when there is nothing to offer.
@@ -80,6 +83,8 @@ struct OrphansPlaced {
 // track is gone, whose header names none, or whose length does not cover
 // its punch range goes into the audio pool as an unused source, never over
 // existing material. A file a source has named since the offer is skipped.
+// An offer found in another folder than the active one places nothing and
+// says so: its paths would name that folder's files of the same name.
 OrphansPlaced place_orphan_takes(model::Document& document, const Session& session,
                                  const OrphanOffer& offer);
 

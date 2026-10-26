@@ -506,6 +506,7 @@ int main(int argc, char** argv) {
     ShellModel model(engine, router);
     a.model = &model;
     QObject::connect(&session, &SessionModel::openNotice, &model, &ShellModel::setOpenNotice);
+    QObject::connect(&model, &ShellModel::sessionFolder, &session, &SessionModel::setEngineFolder);
     link_transport(model, session, transport);
     link_marker_locate(model, session);
     ShellModel::PluginSinks plugin_sinks;

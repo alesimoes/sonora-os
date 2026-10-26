@@ -117,6 +117,15 @@ std::string encode_save(std::string_view file, std::string_view session);
 bool decode_save(std::string_view op, std::string& file, std::string& session,
                  std::string& error);
 
+// --- ModelAction::Load's `op` (protocol 16) ------------------------------------
+//
+// As a save's: the session file's path, a NUL byte, then what Load carried
+// before 16 (a bundle, or encode_load_parts()'s bytes). The path may be
+// empty, for a new session; it is at most kMaxSavePath bytes.
+std::string encode_load(std::string_view file, std::string_view load);
+bool decode_load(std::string_view op, std::string& file, std::string_view& load,
+                 std::string& error);
+
 // --- frames ------------------------------------------------------------------
 //
 // One frame is one datagram: a u32 length of the whole message, a u32

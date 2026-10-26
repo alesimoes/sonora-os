@@ -119,6 +119,7 @@ bool leave_orphan_takes(model::SessionSettings& settings, const OrphanOffer& off
 
 OrphanOffer find_orphan_takes(const model::Snapshot& document, const std::string& session_dir) {
     OrphanOffer offer;
+    offer.folder = session_dir;
     namespace fs = std::filesystem;
     const fs::path dir = fs::path(session_dir) / kAudioDir;
     std::error_code ec;
@@ -171,6 +172,12 @@ OrphansPlaced place_orphan_takes(model::Document& document, const Session& sessi
                                  const OrphanOffer& offer) {
     OrphansPlaced out;
     const std::string dir = *session.folder();
+    if (!offer.takes.empty() && offer.folder != dir) {
+        out.notices.push_back("the recovered takes offered are in " + offer.folder +
+                              ", not in the open session's folder, " + dir +
+                              "; nothing was placed");
+        return out;
+    }
     std::set<std::string> named;
     for (const model::Source& s : document.current().sources->sources) named.insert(s.path);
 

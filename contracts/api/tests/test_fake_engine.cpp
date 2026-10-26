@@ -85,6 +85,10 @@ public:
         static_cast<FakeEngine&>(e).script_recovered_take(r);
         return true;
     }
+    int take_files_in(EngineControl& e, const std::string& folder, int take) override {
+        // One file per take: the fake records track 1 only, in its mind.
+        return static_cast<FakeEngine&>(e).take_folder(take) == folder ? 1 : 0;
+    }
 
 private:
     uint64_t now_ = 5'000'000'000;
@@ -327,7 +331,7 @@ void scripted_plugins() {
     const std::size_t events = in.events.size();
     ModelRequest load;
     load.action = ModelAction::Load;
-    load.op = bytes;
+    load.op = wire::encode_load("", bytes);
     CHECK(reply_to(e.submit(load)).result == DispatchResult::Ok);
     CHECK(in.events.size() == events + 2);
     CHECK(in.events[events].insert == gain && in.events[events].text.empty());
