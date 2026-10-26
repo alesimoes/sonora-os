@@ -198,6 +198,9 @@ public:
         // enters that file's folder through it. Null: the server keeps one
         // of its own, which holds no lock until the first such Load (tests).
         ActiveFolder* active_folder = nullptr;
+        // The saver's folder sync (SessionFolder::SyncDirectory), for the
+        // tests; null: the platform's.
+        bool (*save_sync_directory)(const std::string& path) = nullptr;
     };
 
     static constexpr ClientId kFirstClient = 1;
@@ -502,11 +505,10 @@ private:
     std::string fatal_;
     // The takes on disk the open session does not name (orphan_offer.h),
     // offered as one standing RecoveryOffer until placed or left. Found at
-    // every session open; while a take records, once it has closed, so the
-    // take being written is never one of them.
+    // start and at every session open, never during a take (a Load is
+    // refused then), so the take being written is never one of them.
     OrphanOffer orphans_;
     std::string recovery_offer_;
-    bool orphan_scan_pending_ = false;
     // Options::active_folder, or one of the server's own when none was
     // given. Entered by a Load that names its file (ADR-0018 §2).
     std::unique_ptr<ActiveFolder> own_folder_;

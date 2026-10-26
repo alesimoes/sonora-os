@@ -855,14 +855,10 @@ void FakeEngine::offer_recovered() {
     std::set<std::string> named;
     for (const model::Source& s : doc.sources->sources) named.insert(s.path);
     named.insert(doc.settings.left_takes.begin(), doc.settings.left_takes.end());
-    const auto ours = [&doc](const RecoveredTake& r) {
-        if (!r.session_id.empty()) return r.session_id == doc.settings.session_id;
-        return r.session == doc.settings.name && doc.settings.name != "Untitled";
-    };
     offered_.clear();
     std::string text;
     for (const RecoveredTake& r : recovered_) {
-        if (!ours(r) || named.count(r.path) != 0 || r.frames == 0) continue;
+        if (r.folder != folder_ || named.count(r.path) != 0 || r.frames == 0) continue;
         offered_.push_back(r);
         const std::string name = r.path.substr(r.path.rfind('/') + 1);
         if (!text.empty()) text += "\n";

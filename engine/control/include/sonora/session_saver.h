@@ -100,6 +100,12 @@ public:
     void set_transport_stopped(bool stopped);
     void submit(Job job);
     std::vector<Done> take_done();
+    // Waits until every job handed over is written, unpaced, and drops a
+    // deferred cleanup: a Load calls it before the session leaves its
+    // folder, which is unlocked from then on and is the folder the jobs
+    // and a cleanup write (ADR-0018 §1). Their results wait in take_done().
+    // Returns at once when the thread is not running.
+    void fence();
 
     // For the tests and the measurement: saves that waited for a
     // checkpoint, and cleanups run.
@@ -122,7 +128,11 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;
+    // fence()'s: the thread has nothing queued and nothing in hand.
+    std::condition_variable idle_;
     std::deque<Job> jobs_;
+    bool busy_ = false;      // a job or a cleanup between the queue and done_
+    bool fencing_ = false;   // a fence() waits: no pacing
     std::vector<Done> done_;
     std::size_t in_hand_ = 0;   // submitted, not yet taken back
     bool stopping_ = false;

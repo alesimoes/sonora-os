@@ -225,7 +225,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                                     save_ready_ = true;
                                                 }
                                                 wake_.notify_all();
-                                            });
+                                            },
+                                            std::chrono::milliseconds(2), opts_.save_sync_directory);
     // Read as the take starts, which with the residency gate is in pump(),
     // on this thread: the range then is the one the operator last set.
     install_session_commands(registry_, session_, take_, quit_, opts_.may_record,
@@ -620,6 +621,12 @@ void EngineControlServer::follow_flushes() {
         if (it == flushes_.end()) continue;
         it->second.reading = 0;
         it->second.flush = std::move(done);
+        // Read for a session since closed: its states are not this one's,
+        // and the folder they were for may be another engine's by now.
+        if (it->second.generation != session_generation_) {
+            finish_flush(it->first, false, "");
+            continue;
+        }
         SessionSaver::Job job;
         job.kind = SessionSaver::Kind::States;
         job.seq = it->first;
@@ -839,6 +846,13 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
             return false;
         }
         folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
+        // A Save or a flush's states handed to the saver before this Load
+        // write the folder the session is in, which is unlocked once it is
+        // left (PR #142 review N3); and their replies go before this one.
+        // A flush still reading its states is not written at all
+        // (follow_flushes()).
+        saver_->fence();
+        follow_saver();
     }
     // The new document is made before the folder is entered and kept only
     // if both succeed, so a refusal at either leaves the session as it was.
@@ -867,13 +881,6 @@ bool EngineControlServer::takes_in_flight() const {
 }
 
 void EngineControlServer::offer_orphans() {
-    // A take being written, or closed and not yet placed, is in the folder
-    // and in no source yet.
-    if (takes_in_flight()) {
-        orphan_scan_pending_ = true;
-        return;
-    }
-    orphan_scan_pending_ = false;
     orphans_ = find_orphan_takes(document_->current(), *session_.folder());
     if (orphans_.takes.empty()) {
         withdraw_orphans();
@@ -1994,8 +2001,6 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
-    // After pump_playback(), which places a take that just closed.
-    if (orphan_scan_pending_) offer_orphans();
 
     // The scan worker's catalog and notices (one try_lock), before the
     // chains read its answers.

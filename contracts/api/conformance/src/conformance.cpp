@@ -1906,8 +1906,10 @@ int check_alive(Rig& rig) {
 
 // A take on disk the open session does not name is offered at the open,
 // never placed silently (session-format.md, "Crash recovery"): one
-// RecoveryOffer standing, naming the file; another session's take, even
-// one of the same name, is not in it, since its session id differs. Left,
+// RecoveryOffer standing, naming the file. Every take in the session's
+// folder is the session's (ADR-0018 §6): one recorded under another name
+// and id, as a renamed session's or a copied folder's is, is offered too.
+// Left,
 // the offer is withdrawn and the document remembers the take as left, so
 // an open of the session as it now is offers nothing; the file is never
 // deleted, and an open of the session from before still offers it. Placed,
@@ -1962,13 +1964,12 @@ int check_recovery_offer(Rig& rig) {
                                         4800)) {
                 return skip("this rig cannot leave a take on disk");
             }
-            // Another session of the same name: two unsaved ones are both
-            // "Untitled".
+            // Recorded before the session was renamed, under another id.
             const std::string other = id == "00000000-0000-4000-8000-000000000001"
                                           ? "00000000-0000-4000-8000-000000000002"
                                           : "00000000-0000-4000-8000-000000000001";
-            EXPECT(rig_.leave_orphan_take(*s.engine, "Audio 2_08.wav", name, other, 8, track, 0,
-                                          4800),
+            EXPECT(rig_.leave_orphan_take(*s.engine, "Audio 2_08.wav", name + " (old name)", other,
+                                          8, track, 0, 4800),
                    "the rig left one take and not the other");
             EXPECT(offer(s.inbox).empty(), "an offer stands before the session was opened again");
 
@@ -1978,9 +1979,9 @@ int check_recovery_offer(Rig& rig) {
                    "no RecoveryOffer at the open");
             const EngineEvent* e = s.last_event(EventKind::RecoveryOffer);
             EXPECT(mentions(e->text, "Audio 1_07.wav"), "the offer does not name the take");
-            EXPECT(e->text.find("Audio 2_08") == std::string::npos,
-                   "another session's take is offered");
-            EXPECT(e->frame == 1, "the offer does not count its takes");
+            EXPECT(mentions(e->text, "Audio 2_08.wav"),
+                   "a take in the session's folder under another name is not offered");
+            EXPECT(e->frame == 2, "the offer does not count its takes");
             EXPECT(take_region(s.replica.current(), track) == nullptr,
                    "the take was placed before the operator said so");
 
@@ -1992,7 +1993,8 @@ int check_recovery_offer(Rig& rig) {
                    "the offer still stands after it was left");
             const auto left = [&]() {
                 const auto& l = s.replica.current().settings.left_takes;
-                return l == std::vector<std::string>{"Audio Files/Audio 1_07.wav"};
+                return l == std::vector<std::string>{"Audio Files/Audio 1_07.wav",
+                                                     "Audio Files/Audio 2_08.wav"};
             };
             EXPECT(s.until(rig_, left), "the document does not remember the take as left");
             EXPECT(take_region(s.replica.current(), track) == nullptr,
@@ -2031,10 +2033,13 @@ int check_recovery_offer(Rig& rig) {
             EXPECT(s.until(rig_, [&]() { return offer(s.inbox).empty(); }),
                    "the offer still stands after the takes were placed");
 
+            // One step per take: take 8's, then this one's.
             ModelRequest undo;
             undo.action = ModelAction::Undo;
-            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
-                   "the placement could not be undone: " + r.message);
+            for (int step = 0; step < 2; ++step) {
+                EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                       "the placement could not be undone: " + r.message);
+            }
             EXPECT(s.until(rig_, [&]() { return take_region(s.replica.current(), track) == nullptr; }),
                    "undo left the take on the timeline");
             EXPECT(!s.inbox.model.empty() && s.inbox.model.back().label == "Place Recovered Takes",

@@ -67,19 +67,29 @@ std::vector<SessionSaver::Done> SessionSaver::take_done() {
     return out;
 }
 
+void SessionSaver::fence() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!thread_.joinable()) return;
+    fencing_ = true;
+    wake_.notify_all();
+    idle_.wait(lock, [this]() { return stopping_ || (jobs_.empty() && !busy_); });
+    fencing_ = false;
+    clean_pending_ = false;
+}
+
 std::size_t SessionSaver::pending() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return in_hand_;
 }
 
 bool SessionSaver::pace(std::unique_lock<std::mutex>& lock) {
-    if (!take_open_ || stopping_) return false;
+    if (!take_open_ || stopping_ || fencing_) return false;
     // A bump after the save arrived, not one already behind it: the next
     // checkpoint may be due any moment, and a commit must not sit in front
     // of it.
     const uint32_t at = checkpoints_();
     bool waited = false;
-    while (take_open_ && !stopping_ && checkpoints_() == at) {
+    while (take_open_ && !stopping_ && !fencing_ && checkpoints_() == at) {
         waited = true;
         wake_.wait_for(lock, poll_);
     }
@@ -103,6 +113,7 @@ void SessionSaver::run() {
         if (!jobs_.empty()) {
             Job job = std::move(jobs_.front());
             jobs_.pop_front();
+            busy_ = true;
             Done d;
             d.kind = job.kind;
             d.client = job.client;
@@ -116,6 +127,8 @@ void SessionSaver::run() {
                 job = Job{};
                 lock.lock();
                 done_.push_back(std::move(d));
+                busy_ = false;
+                idle_.notify_all();
                 lock.unlock();
                 if (ready_) ready_();
                 lock.lock();
@@ -146,6 +159,8 @@ void SessionSaver::run() {
             // replaced; the next durable save's cleanup covers it.
             if (!durable) clean_pending_ = false;
             done_.push_back(std::move(d));
+            busy_ = false;
+            idle_.notify_all();
             lock.unlock();
             if (ready_) ready_();
             lock.lock();
@@ -153,10 +168,13 @@ void SessionSaver::run() {
         }
         if (clean_pending_ && stopped_ && !take_open_) {
             clean_pending_ = false;
+            busy_ = true;
             lock.unlock();
             Done d;
             clean(d);
             lock.lock();
+            busy_ = false;
+            idle_.notify_all();
             if (!d.notice.empty()) {
                 done_.push_back(std::move(d));
                 lock.unlock();

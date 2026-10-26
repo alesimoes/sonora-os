@@ -1060,7 +1060,8 @@ int main(int argc, char** argv) {
     sonora::arm_exit_watchdog(kTeardownSeconds, kTeardownHung);
     audio->deactivate();
     server.after_deactivate();
-    std::printf("sonora: session written to %s\n", cfg.dir.c_str());
+    // The folder in use now: a Load moves the session from cfg.dir.
+    std::printf("sonora: session written to %s\n", session.folder()->c_str());
 
     // The server dying, or changing rate or buffer size, stops the callback
     // without stopping us. The take is closed, so what was captured is a
