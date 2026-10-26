@@ -205,7 +205,7 @@ int main(int argc, char** argv) {
 
     // An unimplemented command is said out loud without reaching the engine.
     const std::size_t before = engine.sent.size();
-    key(view, Qt::Key_L, Qt::ControlModifier | Qt::ShiftModifier);  // transport.toggle_loop
+    key(view, Qt::Key_Return, Qt::AltModifier);  // transport.go_to_end
     CHECK(engine.sent.size() == before);
     CHECK(model.statusText().contains(QStringLiteral("not implemented")));
     // Undo is the interface's own now, and says why it did nothing.

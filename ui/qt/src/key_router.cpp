@@ -166,6 +166,12 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
             ctx.argument = play_range_();
             r.ctx = ctx;
         }
+        // Loop playback loops the selection, as Pro Tools' does; an engine
+        // that runs the command takes it, so no capability is asked.
+        if (command == "transport.toggle_loop" && ctx.argument.empty() && play_range_) {
+            ctx.argument = play_range_();
+            r.ctx = ctx;
+        }
         r.kind = RouteResult::Kind::Sent;
         r.seq = send_(command, ctx);
         return r;

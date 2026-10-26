@@ -295,7 +295,9 @@ Rectangle {
                     objectName: "transportLoop"
                     text: win.transport.rangeText(win.transport.loopStart, win.transport.loopEnd,
                                                   win.session.mainCounterFormat)
-                    color: win.transport.loopSet ? Theme.text : Theme.textTertiary
+                    // A range kept with loop playback off is there, not looping.
+                    color: !win.transport.loopSet ? Theme.textTertiary
+                         : win.session.loopOn ? Theme.text : Theme.textSecondary
                 }
             }
             Column {

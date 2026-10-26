@@ -767,7 +767,9 @@ bool document_loop(const model::Snapshot& document, uint32_t latency, LoopRange&
     const auto& t = document.settings.transport;
     const model::Frames a = t.loop[0];
     const model::Frames b = t.loop[1];
-    if (a < 0 || b <= a) return false;
+    // With loop playback off a take records straight through the range, as
+    // Logic's with Cycle off does.
+    if (!t.loop_playback || a < 0 || b <= a) return false;
     // ADR-0016 C3: Pro Tools keeps loop record and QuickPunch apart.
     if (t.punch[0] >= 0 && t.punch[1] > t.punch[0]) {
         refusal = "loop record and punch cannot run together: the loop is from " +

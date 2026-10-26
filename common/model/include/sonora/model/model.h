@@ -727,10 +727,14 @@ struct Transport {
     // Bars of click before a take started stopped, when count-off is on
     // (ADR-0020 §3): Pro Tools' default, 1 to kMaxCountOffBars.
     std::uint32_t count_off_bars = 2;
+    // Pro Tools' Loop Playback, Logic's Cycle: a mode apart from the range,
+    // so turning it off keeps the range. Off in a new session, as in both
+    // (ADR-0016, update "the loop on switch"). It gates loop record too.
+    bool loop_playback = false;
     bool operator==(const Transport& o) const {
         return loop == o.loop && punch == o.punch && pre_roll == o.pre_roll &&
                post_roll == o.post_roll && punch_crossfade == o.punch_crossfade &&
-               count_off_bars == o.count_off_bars;
+               count_off_bars == o.count_off_bars && loop_playback == o.loop_playback;
     }
 };
 inline constexpr std::uint32_t kMaxCountOffBars = 99;

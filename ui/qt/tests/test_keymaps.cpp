@@ -163,14 +163,14 @@ int test_planned_on_fake_engine() {
     // Track 1), announced by the fake so the keys can be wired now.
     api::testing::FakeEngine::Config cfg;
     cfg.tracks = 4;
-    cfg.planned_commands = {"transport.go_to_end", "transport.toggle_loop",
+    cfg.planned_commands = {"transport.go_to_end", "transport.rewind",
                             "track.toggle_input_monitor", "tool.smart", "no.such"};
     api::testing::FakeEngine fake(cfg);
     ControlAdapter engine(fake);
     std::string err;
     CHECK(engine.connect(err));
     const auto& impl = engine.info().implemented_commands;
-    CHECK(has(impl, "transport.go_to_end") && has(impl, "transport.toggle_loop"));
+    CHECK(has(impl, "transport.go_to_end") && has(impl, "transport.rewind"));
     // Interface commands and unknown ids are never announced.
     CHECK(!has(impl, "tool.smart") && !has(impl, "no.such"));
 
@@ -182,10 +182,10 @@ int test_planned_on_fake_engine() {
     router.setSelection([&selected]() { return selected; });
     router.prepare(qt_device_chords(true));
 
-    // Option+Return (Pro Tools' Go to end of session), Ctrl+Shift+L (loop
-    // playback), Shift+I (input monitoring, on the selected track).
+    // Option+Return (Pro Tools' Go to end of session), keypad 1 (rewind),
+    // Shift+I (input monitoring, on the selected track).
     CHECK(router.route(chord("alt+return")).kind == RouteResult::Kind::Sent);
-    CHECK(router.route(chord("ctrl+shift+l")).kind == RouteResult::Kind::Sent);
+    CHECK(router.route(chord("numpad_1")).kind == RouteResult::Kind::Sent);
     CHECK(router.route(chord("shift+i")).kind == RouteResult::Kind::Sent);
     // Space is a command the engine really runs.
     CHECK(router.route(chord("space")).kind == RouteResult::Kind::Sent);
@@ -196,7 +196,7 @@ int test_planned_on_fake_engine() {
     const auto& log = fake.planned_log();
     CHECK(log.size() == 3);
     CHECK(log[0].command == "transport.go_to_end" && log[0].target == -1);
-    CHECK(log[1].command == "transport.toggle_loop");
+    CHECK(log[1].command == "transport.rewind");
     CHECK(log[2].command == "track.toggle_input_monitor" && log[2].target == 2);
 
     // On the fake as --fake-engine runs it, the same keys are said to be

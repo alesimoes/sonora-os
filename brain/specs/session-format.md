@@ -196,7 +196,8 @@ this way, and the click must put its downbeats in the same places:
   "pre_roll": 96000,
   "post_roll": 48000,
   "punch_crossfade": 240,
-  "count_off_bars": 2
+  "count_off_bars": 2,
+  "loop_playback": false
 }
 ```
 
@@ -206,7 +207,12 @@ centred; see `timeline-model.md`, "Punch in"). `count_off_bars` (version 8,
 ADR-0020 §3) is how many bars of click a take started with the transport
 stopped plays first when count-off is on, at the meter and tempo where it
 starts: 1 to 99, default 2. Whether the click and the count-off are on is
-engine state, not saved yet. Transport settings are saved
+engine state, not saved yet. `loop_playback` (version 9, ADR-0016 update
+"the loop on switch") is Pro Tools' Loop Playback and Logic's Cycle: with it
+on, a roll wraps from the end of `loop` to its start and a take is a loop
+take; with it off, `loop` is kept and does nothing. Default `false`, as in
+both applications. `transport.toggle_loop` flips it, and turning it on with
+a timeline selection makes the selection `loop`. Transport settings are saved
 but are not undoable.
 
 ### `monitor_bus`: Phase 2's fixed stereo bus
@@ -849,6 +855,13 @@ by name. The frozen v6 fixture loads through it; v7's is
 `"count_off_bars": 2`, after `punch_crossfade`. Nothing else changes. A
 version 7 file cannot carry the key. The frozen v7 fixture loads through
 it and saves as `v8-count-off.sonora`, byte for byte.
+
+**v8→v9 (loop playback, ADR-0016 update "the loop on switch"):**
+`transport` gains `"loop_playback"`, after `count_off_bars`: `true` when
+`loop` is a range (start ≥ 0, end > start), since a version 8 roll looped
+whenever one was set, and `false` otherwise. Nothing else changes. A
+version 8 file cannot carry the key. The frozen v8 fixture (no loop range)
+loads through it and saves as `v9-loop-playback.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

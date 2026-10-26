@@ -557,10 +557,9 @@ bool SessionModel::anySolo() const {
     return false;
 }
 
-bool SessionModel::loopOn() const {
-    const auto& l = ctl_.snapshot().settings.transport.loop;
-    return l[1] > l[0];
-}
+// The mode, not the range: Pro Tools lights Loop Playback with no
+// selection, and a range kept with the mode off does not loop.
+bool SessionModel::loopOn() const { return ctl_.snapshot().settings.transport.loop_playback; }
 
 bool SessionModel::punchOn() const {
     const auto& p = ctl_.snapshot().settings.transport.punch;

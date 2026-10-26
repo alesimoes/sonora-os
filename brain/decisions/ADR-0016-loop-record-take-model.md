@@ -257,6 +257,30 @@ Track 1; it changes no take, file or protocol):
   a toggle that keeps the range needs a loop-enabled flag in the session
   settings (Pro Tools' Loop Playback and Logic's Cycle are modes apart
   from the range); that is a format change and waits for its own decision.
+  Decided 2026-10-26, below.
+
+## Update, 2026-10-26: the loop on switch
+
+Taken on the recommended defaults (`transport.toggle_loop`).
+
+- **`transport.loop_playback`, saved, outside undo** (session format 9,
+  protocol 17): Pro Tools' Loop Playback toggle, which Pro Tools saves with
+  the session and starts off. A new session has it off.
+- **It gates both loops.** A roll wraps, and a take is a loop take (§1),
+  only with the flag on and a range set. With it off the range is kept and
+  a take records straight through it, as Logic's does with Cycle off; one
+  switch, so a lit LOOP never means "playback only". `document_loop()` and
+  `PlaybackController::show()` read it; the audio thread is unchanged
+  (`Session::set_loop(0, 0)` as for no range).
+- **The command edits the document.** `transport.toggle_loop` is handled
+  by the control server (the recovery commands' pattern): a `SetSettings`
+  with the flag flipped, sent to every replica before the reply. Turned on
+  with an argument, the timeline selection as `A-B` (what `transport.play`
+  takes), the selection becomes the range, as Pro Tools loops the
+  selection; turned off, the range stays. Refused while loop record runs,
+  as a range change is.
+- **Migration v8 to v9:** a file with a loop range opens with the flag on,
+  so it plays as it did; one without opens with it off.
 
 ## Alternatives rejected
 

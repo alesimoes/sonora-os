@@ -380,8 +380,9 @@ int test_undo_while_rolling() {
 }
 
 // engine.transport.loop: the document's loop range loops the roll at the
-// sample, through PlaybackController's gate; cleared, or too short for the
-// session to loop, the roll plays straight through.
+// sample, through PlaybackController's gate; cleared, kept with loop
+// playback off (transport.toggle_loop), or too short for the session to
+// loop, the roll plays straight through.
 int test_the_document_loop_loops_the_roll() {
     auto session = make_session(1);
     Session& s = *session;
@@ -390,9 +391,10 @@ int test_the_document_loop_loops_the_roll() {
     CHECK_APPLY(h, source_op(1, 40 * kChunk));
     CHECK_APPLY(h, track_op(100, 101, "A"));
     CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 30 * kChunk, 0), 0}));
-    const auto set_loop = [&](Frames a, Frames b) {
+    const auto set_loop = [&](Frames a, Frames b, bool on = true) {
         SetSettings op{h.current().settings};
         op.settings.transport.loop = {{a, b}};
+        op.settings.transport.loop_playback = on;
         std::string why;
         return h.apply(op, why);
     };
@@ -437,6 +439,20 @@ int test_the_document_loop_loops_the_roll() {
     CHECK(ctl.settle(2.0));
     roll(20);
     CHECK(s.transport().playhead() > 1700);
+
+    // The range kept with loop playback off: straight through it.
+    ctl.stop();
+    CHECK(set_loop(1000, 1700, false));
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    CHECK(!s.loop_pending());
+    CHECK(ctl.locate(900, error));
+    CHECK(ctl.settle(2.0));
+    run_block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    roll(10);
+    CHECK(s.transport().playhead() == 900 + 10 * kBlock);
 
     // Shorter than one 256-frame block: not looped.
     CHECK(set_loop(2000, 2100));

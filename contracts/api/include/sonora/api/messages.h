@@ -72,7 +72,10 @@ namespace sonora::api {
 // 16 (ADR-0018 §2, §4): ModelAction::Load's `op` is wire::encode_load(),
 //   the session file's path ahead of the bytes; EventKind::SessionFolder,
 //   and EngineEvent::flags after `text`.
-constexpr uint32_t kProtocolVersion = 16;
+// 17 (transport.toggle_loop): SetSettings carries transport.loop_playback
+//   (session format 9), refused and required as 15's bars are;
+//   transport.toggle_loop takes the selection as an argument.
+constexpr uint32_t kProtocolVersion = 17;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

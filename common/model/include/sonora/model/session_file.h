@@ -34,7 +34,10 @@ namespace sonora::model {
 // 7: "session_id", which every take's Description carries, and
 //    "left_takes", the take files the operator left unplaced. A version 6
 //    session has no id until its first save in this version.
-constexpr std::int64_t kFormatVersion = 8;
+// 8: "transport.count_off_bars" (ADR-0020 §3).
+// 9: "transport.loop_playback", the loop on switch apart from the range
+//    (ADR-0016). A version 8 file with a loop range opens with it on.
+constexpr std::int64_t kFormatVersion = 9;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

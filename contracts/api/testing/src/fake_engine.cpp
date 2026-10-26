@@ -223,6 +223,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.record",     "transport.return_to_zero", "transport.stop",
         "transport.toggle_play", "transport.toggle_record", "transport.toggle_click",
         "transport.toggle_count_off", "session.place_recovered", "session.leave_recovered",
+        "transport.toggle_loop",
     };
     return ids;
 }
@@ -1271,6 +1272,23 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     if (id == "transport.toggle_count_off") {
         transport_flags_ ^= kTransportCountOff;
+        return true;
+    }
+    // As the engine's: the selection becomes the range when loop playback
+    // turns on, and turning it off keeps the range.
+    if (id == "transport.toggle_loop") {
+        model::SetSettings op{document_->current().settings};
+        model::Transport& tr = op.settings.transport;
+        tr.loop_playback = !tr.loop_playback;
+        if (tr.loop_playback && !r.argument.empty()) {
+            uint64_t from = 0;
+            uint64_t to = 0;
+            if (!parse_play_range(r.argument, from, to, why)) return false;
+            tr.loop = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
+        }
+        model::ReplicationUpdate u;
+        if (!document_->apply(model::Operation{std::move(op)}, u, why)) return false;
+        broadcast(u);
         return true;
     }
     const auto locate = [&](uint64_t frame) {

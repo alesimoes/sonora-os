@@ -78,8 +78,13 @@ playback can follow edits; it is in flight.
          wraps from B to A at the sample; a new range goes to the audio
          thread once its start is resident, the old one held until then
          (ADR-0016, update "loop playback when not recording").
-       Remain: `transport.toggle_loop` (needs a loop-enabled setting apart
-         from the range) and pre-roll for a plain take. Input monitoring
+       Loop on/off (`t1-toggle-loop`): `transport.toggle_loop` (Ctrl+Shift+L,
+         keypad 4, Logic's C) flips `transport.loop_playback` (session
+         format 9, off by default, saved, not undoable; protocol 17), which
+         gates the roll's loop and loop record; turned on with the Edit
+         selection, the selection becomes the range (ADR-0016, update "the
+         loop on switch"). The Transport window's Loop button lights from it.
+       Remain: pre-roll for a plain take. Input monitoring
          with latency compensation: ADR-0019, `t1-input-monitor`.
        - [ ] Loop record: a track that opens late and loses every later
          wrap still numbers its passes from P1; the Open record needs the
@@ -90,8 +95,8 @@ playback can follow edits; it is in flight.
          takes (the pool is doubled now).
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
        which draws these unavailable and says why until they exist:
-       - handlers for `transport.rewind`, `transport.fast_forward`,
-         `transport.go_to_end` and `transport.toggle_loop`;
+       - handlers for `transport.rewind`, `transport.fast_forward` and
+         `transport.go_to_end` (`transport.toggle_loop`: `t1-toggle-loop`);
        - a locate command taking a frame (`transport.locate`, argument),
          for counter entry and memory locations;
        - [x] pre/post-roll from the session's `transport.pre_roll`/`post_roll`
@@ -176,7 +181,7 @@ playback can follow edits; it is in flight.
 10. [ ] Engine commands the shipped key maps bind and no engine runs yet
         (Track 3 item 4; the window says "not implemented" for each):
         `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
-        `transport.toggle_loop`, `transport.play_half_speed`,
+        `transport.play_half_speed`,
         `track.toggle_input_monitor`. Wired in
         the interface against `FakeEngine::Config::planned_commands`
         (test_ui_keymaps); each needs its handler in
