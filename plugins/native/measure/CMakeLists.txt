@@ -12,6 +12,7 @@ add_library(sonora_dsp_measure STATIC
   src/signals.cpp
   src/spice.cpp
   src/spice_fet.cpp
+  src/spice_noise.cpp
   src/spice_opto.cpp
   src/suite.cpp
   src/wav.cpp

@@ -13,18 +13,28 @@
 // - unity small-signal gain with auto level, the Newton solver's
 //   iteration bound at the drive extremes, and the common checks
 //   (latency per quality and rate, bypass, non-finite input, denormals,
-//   zipper, golden files, CPU).
+//   zipper, golden files, CPU);
+// - modelled noise and hum (slice 5): the stage's noise density, the
+//   supply's ripple and the reservoir-to-load transfer against ngspice on
+//   the same circuits (tests/spice-noise/, measure/spice_noise.h), then
+//   the processor's noise spectrum band by band and its hum harmonics
+//   against those references; digitally silent at 0 %, deterministic at
+//   100 %, and each level's contribution in dBFS reported.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "sonora/dsp/fft.h"
 #include "sonora/dsp/math.h"
+#include "sonora/dsp/supply.h"
 #include "sonora/dsp/triode.h"
 #include "sonora/measure/measure.h"
 #include "sonora/measure/spice.h"
+#include "sonora/measure/spice_noise.h"
 #include "sonora/native/tube.h"
 
 namespace sonora::native::suites {
@@ -350,6 +360,322 @@ void hot_input(Suite& s) {
     }
 }
 
+// ---- modelled noise and hum (slice 5) -----------------------------------
+
+using measure::NoiseSpiceKind;
+using measure::NoiseSpiceReference;
+
+// One-sided power spectral density by Welch's method (Hann, half overlap):
+// P[k] in units^2/Hz at k fs / size.
+std::vector<double> welch_psd(const std::vector<float>& x, std::size_t from, double fs, std::uint32_t size) {
+    dsp::Fft fft;
+    fft.prepare(size);
+    std::vector<double> w(size), psd(size / 2 + 1, 0.0);
+    double w2 = 0.0;
+    for (std::uint32_t n = 0; n < size; ++n) {
+        w[n] = 0.5 - 0.5 * std::cos(dsp::kTwoPi * n / size);
+        w2 += w[n] * w[n];
+    }
+    std::vector<std::complex<double>> buf(size);
+    std::size_t segments = 0;
+    for (std::size_t at = from; at + size <= x.size(); at += size / 2) {
+        for (std::uint32_t n = 0; n < size; ++n) buf[n] = w[n] * x[at + n];
+        fft.forward(buf.data());
+        for (std::uint32_t k = 0; k <= size / 2; ++k) psd[k] += std::norm(buf[k]);
+        ++segments;
+    }
+    for (std::uint32_t k = 0; k <= size / 2; ++k)
+        psd[k] *= (k == 0 || k == size / 2 ? 1.0 : 2.0) / (fs * w2 * static_cast<double>(segments));
+    return psd;
+}
+
+// The reference density at f, interpolated log-log between ngspice's
+// points (20 a decade).
+double interp_density(const measure::NoiseSpiceResult& r, double f) {
+    if (f <= r.freq.front()) return r.density.front();
+    for (std::size_t i = 1; i < r.freq.size(); ++i) {
+        if (f > r.freq[i]) continue;
+        const double u = std::log(f / r.freq[i - 1]) / std::log(r.freq[i] / r.freq[i - 1]);
+        return std::exp(std::log(r.density[i - 1]) + u * std::log(r.density[i] / r.density[i - 1]));
+    }
+    return r.density.back();
+}
+
+// The processor's gain from the load to its output with drive 0 dB, auto
+// level on, output 0 dB: 1 / |H(1 kHz)| (tube.cpp normalises by it).
+double load_to_output() {
+    dsp::TriodeStage st;
+    st.prepare(192000.0);
+    double mag = 1.0, phase = 0.0;
+    st.small_signal_gain(1000.0, mag, phase);
+    return 1.0 / mag;
+}
+
+const measure::NoiseSpiceResult* find_case(const NoiseSpiceReference& ref, const std::string& name) {
+    for (std::size_t i = 0; i < ref.cases.size(); ++i)
+        if (ref.cases[i].name == name) return &ref.results[i];
+    return nullptr;
+}
+
+std::string mains_name(double hz) { return std::to_string(static_cast<int>(hz)) + " Hz mains"; }
+
+// The model's figures against ngspice on the same circuits.
+void noise_hum_spice(Suite& s, const NoiseSpiceReference& ref) {
+    const dsp::TriodeStageCircuit circuit;
+    const dsp::TriodeDevice device;
+    const dsp::SupplyCircuit supply;
+    const bool same = ref.circuit == measure::circuit_json(circuit) && ref.device == measure::device_json(device) &&
+                      ref.supply == measure::supply_json(supply);
+    s.check("noise and hum SPICE reference made from the model's circuit, device and supply values", same ? 1.0 : 0.0,
+            1.0, same, "bool", "regenerate with --spice-generate --spice-kind noise in a deliberate commit");
+    dsp::TriodeStage st;
+    st.prepare(192000.0);
+    s.info("shot noise: Req = 2.5 / gm at the operating point", st.shot_noise_resistance(), "ohm");
+    json::Value rows = json::Value::array();
+    for (std::size_t i = 0; i < ref.cases.size(); ++i) {
+        const measure::NoiseSpiceCase& c = ref.cases[i];
+        const measure::NoiseSpiceResult& r = ref.results[i];
+        if (c.kind == NoiseSpiceKind::Noise) {
+            double worst = 0.0, at = 0.0;
+            json::Value fm = json::Value::array(), fsp = json::Value::array();
+            for (std::size_t k = 0; k < r.freq.size(); ++k) {
+                const double m = measure::model_noise_density(st, r.freq[k]);
+                const double d = std::fabs(db(m / r.density[k]));
+                if (d > worst) {
+                    worst = d;
+                    at = r.freq[k];
+                }
+                fm.push(json::Value::number_float(static_cast<float>(m)));
+                fsp.push(json::Value::number_float(static_cast<float>(r.density[k])));
+            }
+            s.check_le("stage noise density at the load, 10 Hz-40 kHz: worst |model - SPICE|", worst,
+                       s.bar("noise.spice_db"), "dB", fmt("at %.0f Hz; %.4g V/rtHz at 1 kHz", at,
+                                                          measure::model_noise_density(st, 1000.0)));
+            json::Value row = json::Value::object();
+            row.set("case", json::Value::string(c.name));
+            row.set("model_v_rthz", fm);
+            row.set("spice_v_rthz", fsp);
+            rows.push(row);
+        } else if (c.kind == NoiseSpiceKind::Supply) {
+            dsp::SupplyCircuit sc = supply;
+            sc.mains_hz = c.mains_hz;
+            dsp::SupplyRipple m;
+            dsp::simulate_supply(sc, measure::kSpiceHarmonics, m);
+            const double h1 = std::abs(r.value[0]);
+            double worst = 0.0, err = 0.0;
+            int held = 0;
+            for (std::uint32_t k = 0; k < measure::kSpiceHarmonics; ++k) {
+                err = std::fmax(err, std::abs(m.reservoir[k] - r.value[k]) / h1);
+                if (db(std::abs(r.value[k]) / h1) < s.bar("hum.floor_dbc")) continue;
+                worst = std::fmax(worst, std::fabs(db(std::abs(m.reservoir[k]) / std::abs(r.value[k]))));
+                ++held;
+            }
+            s.check_le("supply, " + mains_name(c.mains_hz) + ": reservoir ripple harmonics, worst |model - SPICE| (" +
+                           std::to_string(held) + " held)",
+                       worst, s.bar("hum.supply_db"), "dB",
+                       fmt("H1 %.4f V at %.0f Hz; complex error %.1f dB of H1", h1, 2.0 * c.mains_hz, db(err)));
+        } else {
+            dsp::SupplyCircuit sc = supply;
+            sc.mains_hz = c.mains_hz;
+            double worst = 0.0, worst_deg = 0.0;
+            for (std::size_t k = 0; k < r.freq.size(); ++k) {
+                const std::complex<double> m = measure::model_chain_transfer(st, sc, r.freq[k]);
+                worst = std::fmax(worst, std::fabs(db(std::abs(m) / std::abs(r.value[k]))));
+                worst_deg = std::fmax(worst_deg, std::fabs(std::arg(m / r.value[k])) * 180.0 / dsp::kPi);
+            }
+            s.check_le("reservoir to load, " + mains_name(c.mains_hz) + ", 9 ripple harmonics: worst |model - SPICE|",
+                       worst, s.bar("hum.chain_db"), "dB",
+                       fmt("%.1f dB at %.0f Hz", db(std::abs(r.value[0])), r.freq[0]));
+            s.check_le("reservoir to load, " + mains_name(c.mains_hz) + ": worst phase difference", worst_deg,
+                       s.bar("hum.chain_deg"), "deg");
+        }
+    }
+    s.data().set("noise_spice", rows);
+}
+
+// The processor's noise, band by band, against ngspice's density through
+// the processor's own gain: drive 0 dB, auto level, so a load voltage v
+// comes out as v / |H(1 kHz)|. Third-octave bands (IEC 61260 nominal
+// centres, base-2 edges) from 25 Hz to 16 kHz, 60 s of output per rate.
+void noise_processor(Suite& s, const NoiseSpiceReference& ref) {
+    const measure::NoiseSpiceResult* r = find_case(ref, "noise");
+    if (r == nullptr) {
+        s.fail("noise reference: no 'noise' case");
+        return;
+    }
+    const double g = load_to_output();
+    const std::vector<double> rates = measure::quick() ? std::vector<double>{48000.0}
+                                                       : std::vector<double>{44100.0, 48000.0, 96000.0};
+    const double secs = measure::quick() ? 30.0 : 60.0;
+    json::Value rows = json::Value::array();
+    for (double fs : rates) {
+        auto p = s.make();
+        measure::apply(*p, {{"drive", 0.0f}, {"noise", 100.0f}, {"mix", 100.0f}});
+        p->prepare(fs, 128, 1);
+        const Chans y = measure::render(*p, measure::silence(fs, secs, 1));
+        const std::uint32_t size = fs > 50000.0 ? 32768u : 16384u;
+        const std::vector<double> psd = welch_psd(y[0], static_cast<std::size_t>(fs), fs, size);
+        const double df = fs / size;
+        double worst = 0.0, worst_f = 0.0, total = 0.0;
+        for (int b = -16; b <= 12; ++b) {  // 25 Hz .. 16 kHz around 1 kHz
+            const double fc = 1000.0 * std::pow(2.0, b / 3.0);
+            const double lo = fc * std::pow(2.0, -1.0 / 6.0), hi = fc * std::pow(2.0, 1.0 / 6.0);
+            double got = 0.0, want = 0.0;
+            for (std::size_t k = 1; k < psd.size(); ++k) {
+                const double f = k * df;
+                if (f < lo || f >= hi) continue;
+                got += psd[k] * df;
+                const double d = interp_density(*r, f) * g;
+                want += d * d * df;
+            }
+            if (want <= 0.0) continue;
+            const double d = std::fabs(10.0 * std::log10(got / want));
+            if (d > worst) {
+                worst = d;
+                worst_f = fc;
+            }
+            json::Value row = json::Value::object();
+            row.set("rate", json::Value::number_float(static_cast<float>(fs)));
+            row.set("band_hz", json::Value::number_float(static_cast<float>(fc)));
+            row.set("processor_db", json::Value::number_float(static_cast<float>(10.0 * std::log10(got))));
+            row.set("spice_db", json::Value::number_float(static_cast<float>(10.0 * std::log10(want))));
+            rows.push(row);
+        }
+        for (std::size_t k = 1; k < psd.size(); ++k)
+            if (k * df >= 20.0 && k * df <= 20000.0) total += psd[k] * df;
+        s.check_le("noise 100 %, drive 0 dB, " + hz(fs) + ": third-octave bands 25 Hz-16 kHz, worst |processor - SPICE|",
+                   worst, s.bar("noise.band_db"), "dB", fmt("at %.0f Hz", worst_f));
+        // A full-scale sine is 0 dBFS: its rms is 1 / sqrt(2).
+        s.info("noise 100 %, drive 0 dB, " + hz(fs) + ": level 20 Hz-20 kHz", db(std::sqrt(total * 2.0)), "dBFS",
+               "the instance's contribution, rms against a full-scale sine");
+    }
+    s.data().set("noise_bands", rows);
+}
+
+// The processor's hum: harmonics of the ripple at the output against
+// ngspice's reservoir harmonics through ngspice's reservoir-to-load
+// transfer, through the processor's gain.
+void hum_processor(Suite& s, const NoiseSpiceReference& ref) {
+    const double g = load_to_output();
+    const double floor = s.bar("hum.floor_dbc");
+    for (int m = 0; m < 2; ++m) {
+        const double mains = m == 0 ? 50.0 : 60.0;
+        const std::string tag = std::to_string(static_cast<int>(mains)) + "hz";
+        const measure::NoiseSpiceResult* sup = find_case(ref, "supply-" + tag);
+        const measure::NoiseSpiceResult* chain = find_case(ref, "chain-" + tag);
+        if (sup == nullptr || chain == nullptr) {
+            s.fail("hum reference: no case for " + tag);
+            return;
+        }
+        Harmonics want(measure::kSpiceHarmonics);
+        for (std::uint32_t k = 0; k < measure::kSpiceHarmonics; ++k) want[k] = sup->value[k] * chain->value[k] * g;
+        for (double fs : measure::kRates) {
+            if (measure::quick() && fs != 48000.0) continue;
+            auto p = s.make();
+            measure::apply(*p, {{"drive", 0.0f}, {"hum", 100.0f}, {"mains", static_cast<float>(m)}, {"mix", 100.0f}});
+            p->prepare(fs, 128, 1);
+            const Chans y = measure::render(*p, measure::silence(fs, 1.5, 1));
+            const std::vector<double> yd(y[0].begin(), y[0].end());
+            const std::size_t from = static_cast<std::size_t>(fs);
+            const std::size_t count = static_cast<std::size_t>(std::llround(0.5 * fs));  // whole ripple periods
+            const Harmonics got = measure::sampled_harmonics(yd, fs, 2.0 * mains, from, count);
+            double worst = 0.0;
+            int held = 0;
+            for (std::uint32_t k = 0; k < measure::kSpiceHarmonics; ++k) {
+                if (db(std::abs(want[k]) / std::abs(want[0])) < floor) continue;
+                worst = std::fmax(worst, std::fabs(db(std::abs(got[k]) / std::abs(want[k]))));
+                ++held;
+            }
+            s.check_le("hum 100 %, " + mains_name(mains) + ", " + hz(fs) + ": ripple harmonics at the output, worst "
+                           "|processor - SPICE| (" + std::to_string(held) + " held)",
+                       worst, s.bar("hum.processor_db"), "dB",
+                       fmt("H1 %.1f dBFS at %.0f Hz", db(std::abs(got[0])),
+                           2.0 * mains));
+            const double rms = measure::rms(y[0], from);
+            s.info("hum 100 %, " + mains_name(mains) + ", drive 0 dB, " + hz(fs) + ": level", db(rms * std::sqrt(2.0)),
+                   "dBFS", "the instance's contribution, rms against a full-scale sine");
+        }
+    }
+}
+
+// 0 % is the path without noise and hum, to the bit (the golden files,
+// recorded before slice 5, also hold it); 100 % is deterministic: two
+// fresh renders and a render after reset() are identical; the two
+// channels' noise is independent and their hum common.
+void noise_hum_silence_and_determinism(Suite& s) {
+    const double fs = 48000.0;
+    {
+        auto p = s.make();
+        measure::apply(*p, {{"noise", 0.0f}, {"hum", 0.0f}});
+        p->prepare(fs, 128, 2);
+        const Chans y = measure::render(*p, measure::silence(fs, 1.0, 2));
+        double peak = 0.0;
+        for (const auto& ch : y) peak = std::fmax(peak, measure::peak(ch));
+        // The generators add exactly nothing at 0 % (tube.cpp skips them);
+        // what is left is the stage's own residue at rest, 3e-14 (-270
+        // dBFS), there before slice 5. The golden files, recorded before
+        // slice 5, pass unchanged at 0 %.
+        s.check_le("noise 0 %, hum 0 %: silence in, peak out", peak, 1e-12, "FS",
+                   "digitally silent: the stage's rest residue only");
+    }
+    const measure::Config on = {{"noise", 100.0f}, {"hum", 100.0f}, {"drive", 12.0f}};
+    const Chans in = measure::golden_input(fs, 1.0);
+    auto a = s.make();
+    auto b = s.make();
+    measure::apply(*a, on);
+    measure::apply(*b, on);
+    a->prepare(fs, 128, 2);
+    b->prepare(fs, 128, 2);
+    const Chans ya = measure::render(*a, in);
+    const Chans yb = measure::render(*b, in);
+    a->reset();
+    const Chans yr = measure::render(*a, in);
+    double d = 0.0;
+    for (std::size_t c = 0; c < 2; ++c)
+        for (std::size_t i = 0; i < ya[c].size(); ++i)
+            d = std::fmax(d, std::fmax(std::fabs(ya[c][i] - yb[c][i]), std::fabs(ya[c][i] - yr[c][i])));
+    s.check("noise 100 %, hum 100 %: two renders and a render after reset, max |difference|", d, 0.0, d == 0.0, "abs",
+            "seeded (ADR-0011 §3.3)");
+    // Noise alone on silence: the channels' correlation.
+    auto q = s.make();
+    measure::apply(*q, {{"noise", 100.0f}, {"drive", 0.0f}});
+    q->prepare(fs, 128, 2);
+    const Chans z = measure::render(*q, measure::silence(fs, 10.0, 2));
+    double xy = 0.0, xx = 0.0, yy = 0.0;
+    for (std::size_t i = static_cast<std::size_t>(fs); i < z[0].size(); ++i) {
+        xy += static_cast<double>(z[0][i]) * z[1][i];
+        xx += static_cast<double>(z[0][i]) * z[0][i];
+        yy += static_cast<double>(z[1][i]) * z[1][i];
+    }
+    const double rho = xy / std::sqrt(xx * yy);
+    s.check_le("noise 100 %, stereo: |correlation between the channels|", std::fabs(rho), 0.02, "",
+               "independent stages, independent seeds");
+}
+
+void noise_hum(Suite& s) {
+    NoiseSpiceReference ref;
+    std::string err;
+    if (!measure::read_noise_spice_reference(s.args().golden_dir + "/../spice-noise/reference.json", ref, err)) {
+        s.fail("noise and hum SPICE reference: " + err);
+        return;
+    }
+    s.info("noise and hum SPICE reference: " + ref.ngspice, 0.0, "");
+    {
+        // prepare() integrates the supply (supply.h): its cost, off the
+        // audio thread, when a host instantiates or re-activates.
+        auto p = s.make();
+        const auto t0 = std::chrono::steady_clock::now();
+        p->prepare(48000.0, 128, 2);
+        const auto t1 = std::chrono::steady_clock::now();
+        s.info("prepare(), 48 kHz stereo, wall time (the supply's integration included)",
+               std::chrono::duration<double, std::milli>(t1 - t0).count(), "ms", "not real-time");
+    }
+    noise_hum_spice(s, ref);
+    noise_processor(s, ref);
+    hum_processor(s, ref);
+    noise_hum_silence_and_determinism(s);
+}
+
 // The Newton solve stays inside its iteration bound from silence to +36 dB
 // of drive on a full-scale input, and its output stays finite.
 void solver_bound(Suite& s) {
@@ -401,6 +727,11 @@ void cpu_qualities(Suite& s, const Config& golden) {
         measure::check_cpu_on(s, c, programme, names[q], q == 0);
         measure::check_cpu_on(s, full, hot, std::string(names[q]) + ", programme +12 dB, drive +36 dB", q == 0);
         measure::check_cpu_on(s, full, square, std::string(names[q]) + ", 0 dBFS square, drive +36 dB", q == 0);
+        // Slice 5: noise and hum at 100 %, both generated every sample.
+        Config noisy = c;
+        noisy.push_back({"noise", 100.0f});
+        noisy.push_back({"hum", 100.0f});
+        measure::check_cpu_on(s, noisy, programme, std::string(names[q]) + ", noise and hum 100 %", q == 0);
     }
 }
 
@@ -415,6 +746,7 @@ measure::Config tube_golden_config() {
 int tube(const measure::Args& args) {
     Suite s("tube", [] { return make_tube(); }, args);
     spice(s);
+    noise_hum(s);
     aliasing(s);
     small_signal(s);
     solver_bound(s);
@@ -427,6 +759,11 @@ int tube(const measure::Args& args) {
                                {"high (8x)", {{"quality", 2.0f}}}});
     measure::check_nonfinite(s, golden);
     measure::check_denormals(s, golden);
+    Config noisy = golden;
+    noisy.push_back({"noise", 100.0f});
+    noisy.push_back({"hum", 100.0f});
+    measure::check_nonfinite(s, noisy);
+    measure::check_denormals(s, noisy);
     measure::check_zipper(s, {{"mix", 60.0f}}, "");
     measure::check_golden(s, golden);
     cpu_qualities(s, golden);

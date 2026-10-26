@@ -72,6 +72,7 @@
 // without limit, and this solver has no anti-aliasing of its own.
 #pragma once
 
+#include <complex>
 #include <cstdint>
 #include <vector>
 
@@ -151,6 +152,40 @@ public:
     // magnitude, and phase in degrees. Not real-time.
     void small_signal_gain(double f_hz, double& magnitude, double& phase_deg) const;
 
+    // The stage's own noise at its operating point (ADR-0011 §3.3, slice
+    // 5): the squared density each source puts across the load at f_hz,
+    // V^2/Hz, from the same linearised circuit, at kNoiseTemperatureK
+    // (supply.h). Thermal noise of each resistor, 4kT/R as a current
+    // across it (J. B. Johnson, "Thermal agitation of electricity in
+    // conductors", and H. Nyquist, "Thermal agitation of electric charge
+    // in conductors", Phys. Rev. 32, 1928). The triode's shot noise as an
+    // equivalent noise resistance Req = 2.5 / gm in series with the grid
+    // (D. O. North, in B. J. Thompson, D. O. North and W. A. Harris,
+    // "Fluctuations in space-charge-limited currents at moderately high
+    // frequencies", RCA Review, 1940-41; the figure G. E. Valley and H.
+    // Wallman use for triodes, *Vacuum Tube Amplifiers*, MIT Radiation
+    // Laboratory Series 18, 1948). Flicker (1/f) noise is not modelled:
+    // no published figure for the 12AX7 was found that we could cite, and
+    // it varies from tube to tube (planning/BACKLOG.md, slice 5
+    // follow-ups). Not real-time.
+    enum NoiseSource : std::uint32_t {
+        kNoiseRLeak = 0,
+        kNoiseRGrid,
+        kNoiseRCathode,
+        kNoiseRPlate,
+        kNoiseRLoad,
+        kNoiseShot,
+        kNoiseSources,
+    };
+    void small_signal_noise(double f_hz, double out[kNoiseSources]) const;
+    // Req at the operating point, ohms.
+    double shot_noise_resistance() const;
+    // A small ripple on B+, linearised at the operating point: the load
+    // voltage per volt of ripple, and the current the stage draws from B+
+    // per volt (its supply admittance, which loads the supply's filter).
+    // Not real-time.
+    void small_signal_supply(double f_hz, std::complex<double>& gain, std::complex<double>& admittance) const;
+
     // Newton iterations of the last tick() and the most any tick took
     // since prepare() or reset(). For tests and reports. A sample that
     // failed (see resets()) counts kMaxIterations, or kMaxIterations + 1
@@ -190,6 +225,10 @@ private:
     };
 
     void build_dc_point_matrices(double s_dc[kNodes][kNodes]) const;
+    // The linearised circuit's impedance matrix at f_hz (the inverse of its
+    // complex nodal admittance), and what a 1 V input injects.
+    void small_signal_impedance(double f_hz, std::complex<double> z[kNodes][kNodes],
+                                std::complex<double> b_in[kNodes]) const;
     // The state at the operating point, as reset() leaves it, without
     // clearing the iteration counts: the solve's restart after a failed
     // sample, which must not erase the record of that failure.

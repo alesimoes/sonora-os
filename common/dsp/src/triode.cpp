@@ -5,6 +5,7 @@
 #include <complex>
 
 #include "sonora/dsp/math.h"
+#include "sonora/dsp/supply.h"
 #include "triode_solve.h"
 
 namespace sonora::dsp {
@@ -581,28 +582,29 @@ void TriodeStage::tick2(TriodeStage& a, TriodeStage& b, double vin_a, double vin
     out_b = out[1];
 }
 
-void TriodeStage::small_signal_gain(double f_hz, double& magnitude, double& phase_deg) const {
+void TriodeStage::small_signal_impedance(double f_hz, std::complex<double> z[kNodes][kNodes],
+                                         std::complex<double> b_in[kNodes]) const {
     using C = std::complex<double>;
     const C jw(0.0, kTwoPi * f_hz);
     double gr[N][N] = {};
     double rhs_unused[N] = {};
     stamp_resistors(ckt_, gr, rhs_unused);
-    C y[N][N];
-    for (std::uint32_t r = 0; r < N; ++r)
-        for (std::uint32_t k = 0; k < N; ++k) y[r][k] = gr[r][k];
-    C b[N] = {};
+    for (std::uint32_t r = 0; r < N; ++r) {
+        b_in[r] = 0.0;
+        for (std::uint32_t k = 0; k < N; ++k) z[r][k] = gr[r][k];
+    }
     double cv[M];
     cap_values(ckt_, dev_, cv);
     for (std::uint32_t m = 0; m < M; ++m) {
         const int a = kCapNodes[m].a, bb = kCapNodes[m].b;
         const C ym = jw * cv[m];
-        if (a >= 0) y[a][a] += ym;
-        if (bb >= 0) y[bb][bb] += ym;
+        if (a >= 0) z[a][a] += ym;
+        if (bb >= 0) z[bb][bb] += ym;
         if (a >= 0 && bb >= 0) {
-            y[a][bb] -= ym;
-            y[bb][a] -= ym;
+            z[a][bb] -= ym;
+            z[bb][a] -= ym;
         }
-        if (a == kVin && bb >= 0) b[bb] += ym;  // a 1 V source
+        if (a == kVin && bb >= 0) b_in[bb] += ym;  // a 1 V source
     }
     // The devices, linearised: the injection -kPort^T Ji Nv V moves left.
     const TriodeCurrents c = currents(op_port_[0], op_port_[1]);
@@ -612,14 +614,60 @@ void TriodeStage::small_signal_gain(double f_hz, double& magnitude, double& phas
             double acc = 0.0;
             for (std::uint32_t a = 0; a < 2; ++a)
                 for (std::uint32_t bb = 0; bb < 2; ++bb) acc += kPort[a][r] * ji[a][bb] * kNv[bb][k];
-            y[r][k] += acc;
+            z[r][k] += acc;
         }
     }
-    invert(y);
-    C vo = 0.0;
-    for (std::uint32_t k = 0; k < N; ++k) vo += y[kO][k] * b[k];
+    invert(z);
+}
+
+void TriodeStage::small_signal_gain(double f_hz, double& magnitude, double& phase_deg) const {
+    std::complex<double> z[N][N], b[N];
+    small_signal_impedance(f_hz, z, b);
+    std::complex<double> vo = 0.0;
+    for (std::uint32_t k = 0; k < N; ++k) vo += z[kO][k] * b[k];
     magnitude = std::abs(vo);
     phase_deg = std::arg(vo) * 180.0 / kPi;
+}
+
+double TriodeStage::shot_noise_resistance() const {
+    const TriodeCurrents c = currents(op_port_[0], op_port_[1]);
+    return c.dip_dvgk > 0.0 ? 2.5 / c.dip_dvgk : 0.0;
+}
+
+void TriodeStage::small_signal_noise(double f_hz, double out[kNoiseSources]) const {
+    std::complex<double> z[N][N], b[N];
+    small_signal_impedance(f_hz, z, b);
+    const double four_kt = 4.0 * kBoltzmann * kNoiseTemperatureK;
+    // A resistor's thermal noise is a current 4kT/R A^2/Hz across it
+    // (Johnson 1928, Nyquist 1928); its terminals at B+, the input source
+    // or ground are AC ground.
+    const auto across = [&](int a, int bb, double r) {
+        const std::complex<double> za = a >= 0 ? z[kO][a] : 0.0, zb = bb >= 0 ? z[kO][bb] : 0.0;
+        return std::norm(za - zb) * four_kt / r;
+    };
+    out[kNoiseRLeak] = across(kA, kGnd, ckt_.r_leak);
+    out[kNoiseRGrid] = across(kA, kG, ckt_.r_grid);
+    out[kNoiseRCathode] = across(kK, kGnd, ckt_.r_cathode);
+    out[kNoiseRPlate] = across(kP, kSupply, ckt_.r_plate);
+    out[kNoiseRLoad] = across(kO, kGnd, ckt_.r_load);
+    // Shot noise: a voltage 4kT Req A^2/Hz in series with the grid, inside
+    // the device, so it moves both currents through their transconductances
+    // and drives none of the electrode capacitances.
+    const TriodeCurrents c = currents(op_port_[0], op_port_[1]);
+    std::complex<double> vo = 0.0;
+    for (std::uint32_t n = 0; n < N; ++n) vo -= z[kO][n] * (kPort[0][n] * c.dip_dvgk + kPort[1][n] * c.dig_dvgk);
+    out[kNoiseShot] = std::norm(vo) * four_kt * shot_noise_resistance();
+}
+
+void TriodeStage::small_signal_supply(double f_hz, std::complex<double>& gain,
+                                      std::complex<double>& admittance) const {
+    std::complex<double> z[N][N], b[N];
+    small_signal_impedance(f_hz, z, b);
+    // 1 V on B+ drives the plate node through Rplate.
+    std::complex<double> v[N];
+    for (std::uint32_t r = 0; r < N; ++r) v[r] = z[r][kP] / ckt_.r_plate;
+    gain = v[kO];
+    admittance = (1.0 - v[kP]) / ckt_.r_plate;
 }
 
 }  // namespace sonora::dsp

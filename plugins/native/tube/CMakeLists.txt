@@ -29,6 +29,21 @@ if(SONORA_NGSPICE)
                      --ngspice ${SONORA_NGSPICE} --work ${_work} --case ${i} --cases ${_spice_cases})
     set_tests_properties(spice_triode_${i} PROPERTIES LABELS spice)
   endforeach()
+  # Slice 5: the noise and hum references (measure/spice_noise.h),
+  # regenerated with
+  #   sonora-dsp-measure --spice-generate plugins/native/tube/tests/spice-noise \
+  #       --spice-kind noise --ngspice ngspice
+  set(_noise_cases 5)  # measure/src/spice_noise.cpp, noise_spice_cases()
+  math(EXPR _last "${_noise_cases} - 1")
+  foreach(i RANGE ${_last})
+    set(_work ${CMAKE_CURRENT_BINARY_DIR}/spice-noise-work-${i})
+    file(MAKE_DIRECTORY ${_work})
+    add_test(NAME spice_noise_${i}
+             COMMAND sonora-dsp-measure --spice-check ${CMAKE_CURRENT_SOURCE_DIR}/tests/spice-noise
+                     --spice-kind noise --ngspice ${SONORA_NGSPICE} --work ${_work} --case ${i}
+                     --cases ${_noise_cases})
+    set_tests_properties(spice_noise_${i} PROPERTIES LABELS spice)
+  endforeach()
 else()
   message(STATUS "plugins/native/tube: ngspice not found; the spice_* reference checks are skipped")
 endif()
