@@ -62,6 +62,11 @@ int main() {
               cmd[1] == "WINEDLLOVERRIDES=mscoree,mshtml=" && cmd[2] == (root / "usr" / "wineboot").string() &&
               cmd[3] == "--init");
         CHECK(wine_prefix_command(nullptr).empty());
+        CHECK(wine_server_wait_command(path.c_str()).empty());
+        exe(root / "usr" / "wineserver");
+        const std::vector<std::string> wait = wine_server_wait_command(path.c_str());
+        CHECK(wait.size() == 2 && wait[0] == (root / "usr" / "wineserver").string() && wait[1] == "-w");
+        CHECK(wine_server_wait_command(nullptr).empty());
         fs::remove_all(root);
     }
 #endif

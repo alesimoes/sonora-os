@@ -67,4 +67,15 @@ std::vector<std::string> wine_prefix_command(const char* path_env) {
 #endif
 }
 
+std::vector<std::string> wine_server_wait_command(const char* path_env) {
+#ifdef _WIN32
+    (void)path_env;
+    return {};
+#else
+    const std::string wineserver = on_path(path_env, "wineserver");
+    if (wineserver.empty()) return {};
+    return {wineserver, "-w"};
+#endif
+}
+
 }  // namespace sonora

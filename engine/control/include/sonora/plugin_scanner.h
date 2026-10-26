@@ -92,6 +92,9 @@ struct PluginScannerConfig {
     // not installed, and bridged bundles are not scanned, said.
     std::string wine_prefix;
     std::vector<std::string> wine_prefix_command;
+    // wineboot ends before the registry is saved; `wineserver -w` (absolute
+    // path) returns once it has been, so system.reg exists. Empty: not waited.
+    std::vector<std::string> wine_server_wait_command;
     uint64_t wine_prefix_timeout_ms = 120000;
     // Q1: scan at every engine start. Tests of the chains turn it off.
     bool scan_at_start = true;

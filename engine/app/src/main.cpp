@@ -948,6 +948,7 @@ int main(int argc, char** argv) {
     // one.
     control.plugin_wine_prefix = sonora::default_wine_prefix(std::getenv("WINEPREFIX"), std::getenv("HOME"));
     control.plugin_wine_prefix_command = sonora::wine_prefix_command(std::getenv("PATH"));
+    control.plugin_wine_server_wait_command = sonora::wine_server_wait_command(std::getenv("PATH"));
     {
         std::ifstream os_release("/etc/os-release");
         std::ostringstream text;

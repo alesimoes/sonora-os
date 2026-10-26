@@ -802,6 +802,30 @@ void test_wine_prefix() {
         }
     }
     {
+        // wineboot exits before system.reg exists (wineserver saves it on
+        // shutdown): the scan waits for wineserver, inside the deadline,
+        // rather than skipping the bridged plugin.
+        Fixture fx("wine_late");
+        const std::string prefix = fx.root + "/home/.wine";
+        ::setenv("WINEPREFIX", prefix.c_str(), 1);
+        fs::create_directories(fx.root + "/home");
+        const std::string w = fx.bundle("win.vst3");
+        fx.set_world({"plugin vst3:" + std::string(kWin) + " " + w + " vst3 2 2 wine", "bridged " + w,
+                      "wineboot 100 ok late 800"});
+        PluginScannerConfig c = fx.config();
+        c.probe_timeout_ms = 1000;
+        c.wine_prefix = prefix;
+        c.wine_prefix_command = {g_host, "--fake-wineboot"};
+        c.wine_server_wait_command = {g_host, "--fake-wineserver-wait"};
+        PluginScanner s(c);
+        check(scanned(s), "the scan completes");
+        const api::PluginInfo* p = entry(s, kWin);
+        check(p && p->usable && p->bridge == api::PluginBridge::Yabridge,
+              "the bridged plugin is probed once the registry was saved (" + (p ? p->refusal : std::string("absent")) + ")");
+        check(fx.log_lines("--fake-wineserver-wait").size() == 1, "wineserver was waited for once");
+        check(!any_says(notices(s), "Windows plug-ins (Wine) are not scanned"), "nothing was skipped");
+    }
+    {
         // Prefix creation fails: said, nothing bridged probed or cached, the
         // rest of the scan unaffected, and tried again at the next scan.
         Fixture fx("wine_fail");

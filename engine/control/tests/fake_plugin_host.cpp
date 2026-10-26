@@ -10,12 +10,16 @@
 //   plugin <uri> <bundle> <lv2|vst3> <in> <out> <behaviour> [ms]
 //   listfail <bundle> <reason...>          (a VST3 bundle whose scan crashed)
 //   bridged <bundle>                       (a VST3 bundle yabridgectl made)
-//   wineboot <ms> <ok|fail>                (what --fake-wineboot does)
+//   wineboot <ms> <ok|fail> [late <ms>]    (what --fake-wineboot does; with
+//                                           `late`, system.reg appears only
+//                                           when --fake-wineserver-wait ends)
 // behaviours: ok, refuse, crash, hang, sleep (then ok after `ms`), wine (a
 // plugin under Wine: hangs, as the first Wine start does while it creates
 // its prefix, unless $WINEPREFIX/system.reg exists; then ok).
 // --fake-wineboot stands in for `wineboot --init` (ADR-0017 Y4): after
 // `ms` it creates $WINEPREFIX/system.reg and exits 0, or exits 1.
+// --fake-wineserver-wait stands in for `wineserver -w`: with `late`, it
+// creates system.reg after that many ms, as wineserver's shutdown does.
 // SONORA_FAKE_HOST_LOG, if set, gets one line per run, appended:
 //   <mode> <args...> pid=<pid> nice=<n> io=<class>
 // which is how the tests count probes and check their priority.
@@ -57,6 +61,8 @@ struct World {
     std::set<std::string> bridged;
     uint32_t wineboot_ms = 0;
     bool wineboot_ok = true;
+    bool wineboot_late = false;
+    uint32_t wineserver_ms = 0;
 };
 
 std::string prefix_marker() {
@@ -99,6 +105,11 @@ World read_world() {
             std::string how;
             in >> w.wineboot_ms >> how;
             w.wineboot_ok = how != "fail";
+            std::string late;
+            if (in >> late && late == "late") {
+                w.wineboot_late = true;
+                in >> w.wineserver_ms;
+            }
         }
     }
     return w;
@@ -143,7 +154,7 @@ int main(int argc, char** argv) {
     ::setrlimit(RLIMIT_CORE, &no_core);
     log_run(argc, argv);
     const World w = read_world();
-    bool list = false, bundles_only = false, only_given = false, version = false, wineboot = false;
+    bool list = false, bundles_only = false, only_given = false, version = false, wineboot = false, wineserver_wait = false;
     std::string format, probe;
     uint32_t channels = 0;
     std::set<std::string> given;
@@ -151,6 +162,7 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--version") version = true;
         else if (a == "--fake-wineboot") wineboot = true;
+        else if (a == "--fake-wineserver-wait") wineserver_wait = true;
         else if (a == "--list") list = true;
         else if (a == "--bundles-only") bundles_only = true;
         else if (a == "--only-given") only_given = true;
@@ -170,7 +182,14 @@ int main(int argc, char** argv) {
         if (!w.wineboot_ok || m.empty()) return 1;
         const std::string dir = m.substr(0, m.rfind('/'));
         ::mkdir(dir.c_str(), 0755);
-        std::ofstream(m) << "WINE REGISTRY Version 2\n";
+        if (!w.wineboot_late) std::ofstream(m) << "WINE REGISTRY Version 2\n";
+        return 0;
+    }
+    if (wineserver_wait) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(w.wineserver_ms));
+        const std::string m = prefix_marker();
+        if (m.empty()) return 1;
+        if (w.wineboot_late) std::ofstream(m) << "WINE REGISTRY Version 2\n";
         return 0;
     }
     if (list) {
