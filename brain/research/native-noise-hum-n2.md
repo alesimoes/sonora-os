@@ -104,8 +104,16 @@ Drive 0 dB, auto level, mix 100 %, silence in, mono.
 | The same, 60 Hz | 0.05 dB | 0.00017 dB | 0.00018 dB | 0.00018 dB |
 
 The band differences scatter with the estimate's own spread (largest in
-the narrow low bands: 25-50 Hz bands span 2-4 FFT bins; the suite takes 3 sigma of that spread off each band before the bar, so a 30 s quick render passes where the raw 39 Hz figure was 0.51 dB); from 400 Hz up
-every band is within 0.06 dB. A small negative bias of about 0.1 dB from
+the narrow low bands: 25-50 Hz bands span 2-4 FFT bins). The suite takes
+3 sigma of that spread off each band before the bar, with the credit capped
+at 0.25 dB, so a 30 s quick render passes where the raw 39 Hz figure was
+0.51 dB (0.26 dB after the credit). The effective bar per band, 48 kHz:
+0.75 dB (0.5 + 0.25) from 25 Hz to 200 Hz in both the 30 s quick and 60 s
+full render; above that the credit is 3 sigma and falls below the cap as
+bins accumulate, to 0.73 dB at 250 Hz, 0.70 dB at 315 Hz and 0.67 dB at 400 Hz in the 60 s
+full render, and 0.75 dB at both in the quick render. The uncapped
+credit it replaces let about 1 dB pass at 100 Hz and 0.75 dB at 400 Hz in
+the quick render. From 400 Hz up every band is within 0.06 dB. A small negative bias of about 0.1 dB from
 60 to 300 Hz may be the single white source standing in for the plate and
 load resistors' noise; it is inside the bar.
 

@@ -536,10 +536,13 @@ void noise_processor(Suite& s, const NoiseSpiceReference& ref) {
             // values (Welch, no overlap credit), so its own spread is
             // 4.343 / sqrt(K) dB. The low bands have a handful of bins:
             // 39 Hz has 3 in a 30 s quick render. The model is held to the
-            // bar after 3 sigma of the estimator is taken off, never below 0.
+            // bar after 3 sigma of the estimator is taken off, but that
+            // credit is capped at 0.25 dB so a real bias of about 1 dB
+            // cannot hide in a noisy band; never below 0.
             const double k_avg = static_cast<double>(bins) * static_cast<double>(segments);
             const double sigma = 4.343 / std::sqrt(k_avg);
-            const double d = std::fmax(0.0, std::fabs(10.0 * std::log10(got / want)) - 3.0 * sigma);
+            const double credit = std::fmin(0.25, 3.0 * sigma);
+            const double d = std::fmax(0.0, std::fabs(10.0 * std::log10(got / want)) - credit);
             if (d > worst) {
                 worst = d;
                 worst_f = fc;
@@ -553,7 +556,8 @@ void noise_processor(Suite& s, const NoiseSpiceReference& ref) {
         }
         for (std::size_t k = 1; k < psd.size(); ++k)
             if (k * df >= 20.0 && k * df <= 20000.0) total += psd[k] * df;
-        s.check_le("noise 100 %, drive 0 dB, " + hz(fs) + ": third-octave bands 25 Hz-16 kHz, worst |processor - SPICE| less 3 sigma of the estimator",
+        s.check_le("noise 100 %, drive 0 dB, " + hz(fs) +
+                       ": third-octave bands 25 Hz-16 kHz, worst |processor - SPICE| less the estimator credit (3 sigma, at most 0.25 dB)",
                    worst, s.bar("noise.band_db"), "dB", fmt("at %.0f Hz", worst_f));
         // A full-scale sine is 0 dBFS: its rms is 1 / sqrt(2).
         s.info("noise 100 %, drive 0 dB, " + hz(fs) + ": level 20 Hz-20 kHz", db(std::sqrt(total * 2.0)), "dBFS",
