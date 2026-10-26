@@ -31,9 +31,9 @@
 //   supply's ripple at its output, each from the circuit (common/dsp
 //   triode.h, small_signal_noise; supply.h), at the modelled level at
 //   100 % and digitally silent at 0 %, the default until the owner rules
-//   on ADR-0011 "For the owner" item 7. The noise enters at the stage's
-//   input, so drive, the stage's response and auto level act on it as on
-//   the signal; the hum enters at the load. Both are in the processed
+//   on ADR-0011 "For the owner" item 7. The noise is added after the drive
+//   gain, at the stage's input, so the drive does not scale it but the
+//   stage's response and auto level act on it as on the signal; the hum enters at the load. Both are in the processed
 //   path, so mix scales them. Mains (50 or 60 Hz) sets the ripple's
 //   frequencies; it reconfigures (the supply is integrated in prepare()).
 //

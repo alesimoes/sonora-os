@@ -97,14 +97,14 @@ the stage's own B+.
 
 Drive 0 dB, auto level, mix 100 %, silence in, mono.
 
-| Check | Bar | 44.1 kHz | 48 kHz | 96 kHz |
+| Check | Bar | 44.1 kHz (not re-measured in the recovery) | 48 kHz | 96 kHz (not re-measured in the recovery) |
 |---|---|---|---|---|
 | Noise, third-octave bands 25 Hz-16 kHz, worst \|processor - SPICE\| (60 s, Welch, Hann, half overlap) | 0.5 dB | 0.33 dB (31 Hz) | 0.41 dB (39 Hz) | 0.25 dB (50 Hz) |
 | Hum, ripple harmonics at the output, worst \|processor - SPICE\| (5 held, at or above -60 dBc), 50 Hz | 0.05 dB | 0.00017 dB | 0.00018 dB | 0.00018 dB |
 | The same, 60 Hz | 0.05 dB | 0.00017 dB | 0.00018 dB | 0.00018 dB |
 
 The band differences scatter with the estimate's own spread (largest in
-the narrow low bands: 25-50 Hz bands span 2-4 FFT bins); from 400 Hz up
+the narrow low bands: 25-50 Hz bands span 2-4 FFT bins; the suite takes 3 sigma of that spread off each band before the bar, so a 30 s quick render passes where the raw 39 Hz figure was 0.51 dB); from 400 Hz up
 every band is within 0.06 dB. A small negative bias of about 0.1 dB from
 60 to 300 Hz may be the single white source standing in for the plate and
 load resistors' noise; it is inside the bar.

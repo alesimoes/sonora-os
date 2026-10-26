@@ -25,7 +25,7 @@ namespace sonora::dsp {
 class NoiseRng {
 public:
     explicit NoiseRng(std::uint64_t seed = 1) noexcept { seed_with(seed); }
-    void seed_with(std::uint64_t seed) noexcept;
+    void seed_with(std::uint64_t seed) noexcept SONORA_RT;
     std::uint64_t next() noexcept SONORA_RT {
         const std::uint64_t r = rotl(s_[1] * 5u, 7) * 9u;
         const std::uint64_t t = s_[1] << 17;
@@ -53,7 +53,7 @@ private:
 class GaussianNoise {
 public:
     explicit GaussianNoise(std::uint64_t seed = 1) noexcept : rng_(seed) {}
-    void seed_with(std::uint64_t seed) noexcept { rng_.seed_with(seed); }
+    void seed_with(std::uint64_t seed) noexcept SONORA_RT { rng_.seed_with(seed); }
     double next() noexcept SONORA_RT {
         const std::uint64_t a = rng_.next(), b = rng_.next();
         std::uint64_t sum = 0;

@@ -516,20 +516,30 @@ void noise_processor(Suite& s, const NoiseSpiceReference& ref) {
         const std::uint32_t size = fs > 50000.0 ? 32768u : 16384u;
         const std::vector<double> psd = welch_psd(y[0], static_cast<std::size_t>(fs), fs, size);
         const double df = fs / size;
+        const double segments = std::floor(secs * fs / size);
         double worst = 0.0, worst_f = 0.0, total = 0.0;
         for (int b = -16; b <= 12; ++b) {  // 25 Hz .. 16 kHz around 1 kHz
             const double fc = 1000.0 * std::pow(2.0, b / 3.0);
             const double lo = fc * std::pow(2.0, -1.0 / 6.0), hi = fc * std::pow(2.0, 1.0 / 6.0);
             double got = 0.0, want = 0.0;
+            std::size_t bins = 0;
             for (std::size_t k = 1; k < psd.size(); ++k) {
                 const double f = k * df;
                 if (f < lo || f >= hi) continue;
+                ++bins;
                 got += psd[k] * df;
                 const double d = interp_density(*r, f) * g;
                 want += d * d * df;
             }
             if (want <= 0.0) continue;
-            const double d = std::fabs(10.0 * std::log10(got / want));
+            // A band's level is a mean of bins x segments chi-squared(2)
+            // values (Welch, no overlap credit), so its own spread is
+            // 4.343 / sqrt(K) dB. The low bands have a handful of bins:
+            // 39 Hz has 3 in a 30 s quick render. The model is held to the
+            // bar after 3 sigma of the estimator is taken off, never below 0.
+            const double k_avg = static_cast<double>(bins) * static_cast<double>(segments);
+            const double sigma = 4.343 / std::sqrt(k_avg);
+            const double d = std::fmax(0.0, std::fabs(10.0 * std::log10(got / want)) - 3.0 * sigma);
             if (d > worst) {
                 worst = d;
                 worst_f = fc;
@@ -543,7 +553,7 @@ void noise_processor(Suite& s, const NoiseSpiceReference& ref) {
         }
         for (std::size_t k = 1; k < psd.size(); ++k)
             if (k * df >= 20.0 && k * df <= 20000.0) total += psd[k] * df;
-        s.check_le("noise 100 %, drive 0 dB, " + hz(fs) + ": third-octave bands 25 Hz-16 kHz, worst |processor - SPICE|",
+        s.check_le("noise 100 %, drive 0 dB, " + hz(fs) + ": third-octave bands 25 Hz-16 kHz, worst |processor - SPICE| less 3 sigma of the estimator",
                    worst, s.bar("noise.band_db"), "dB", fmt("at %.0f Hz", worst_f));
         // A full-scale sine is 0 dBFS: its rms is 1 / sqrt(2).
         s.info("noise 100 %, drive 0 dB, " + hz(fs) + ": level 20 Hz-20 kHz", db(std::sqrt(total * 2.0)), "dBFS",
@@ -617,6 +627,26 @@ void noise_hum_silence_and_determinism(Suite& s) {
         // slice 5, pass unchanged at 0 %.
         s.check_le("noise 0 %, hum 0 %: silence in, peak out", peak, 1e-12, "FS",
                    "digitally silent: the stage's rest residue only");
+    }
+    {
+        // 0 % is the path without noise and hum, to the bit: a unit that
+        // had them at 100 % and is set back to 0 renders exactly as one
+        // that never did, so nothing leaks from the generators.
+        const Chans gin = measure::golden_input(fs, 1.0);
+        auto base = s.make();
+        auto back = s.make();
+        measure::apply(*base, {{"drive", 12.0f}});
+        measure::apply(*back, {{"noise", 100.0f}, {"hum", 100.0f}});
+        measure::apply(*back, {{"noise", 0.0f}, {"hum", 0.0f}, {"drive", 12.0f}});
+        base->prepare(fs, 128, 2);
+        back->prepare(fs, 128, 2);
+        const Chans y0 = measure::render(*base, gin);
+        const Chans y1 = measure::render(*back, gin);
+        double dz = 0.0;
+        for (std::size_t c = 0; c < 2; ++c)
+            for (std::size_t i = 0; i < y0[c].size(); ++i) dz = std::fmax(dz, std::fabs(y0[c][i] - y1[c][i]));
+        s.check("noise 0 %, hum 0 %: against a unit never given them, max |difference|", dz, 0.0, dz == 0.0, "abs",
+                "bit-identical, not within the golden tolerance");
     }
     const measure::Config on = {{"noise", 100.0f}, {"hum", 100.0f}, {"drive", 12.0f}};
     const Chans in = measure::golden_input(fs, 1.0);

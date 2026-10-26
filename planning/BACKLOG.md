@@ -1780,7 +1780,7 @@ ADR-0011 "For the owner".
       exist. dsp-engineer.
 - [ ] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
       NAB and IEC record and playback EQ, wow and flutter). dsp-engineer.
-- [x] N2 slice 5, `feature/dsp-n2-noise-hum`: modelled noise and hum in
+- [x] N2 slice 5, `feature/dsp-n2-noise-hum-recovered` (PR #141): modelled noise and hum in
       `common/dsp` (`noise.h`: seeded xoshiro256** and near-Gaussian noise,
       a hum oscillator bank; `supply.h`: a bridge rectifier, reservoir and
       RC filter integrated to steady state; `triode.h`: the stage's
