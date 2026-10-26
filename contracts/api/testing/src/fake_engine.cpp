@@ -221,8 +221,8 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "track.arm_all",        "track.disarm_all",         "track.toggle_arm",
         "transport.locate",     "transport.play",           "transport.punch",
         "transport.record",     "transport.return_to_zero", "transport.stop",
-        "transport.toggle_play", "transport.toggle_record", "session.place_recovered",
-        "session.leave_recovered",
+        "transport.toggle_play", "transport.toggle_record", "transport.toggle_click",
+        "transport.toggle_count_off", "session.place_recovered", "session.leave_recovered",
     };
     return ids;
 }
@@ -1210,6 +1210,14 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     }
     if (id == "transport.stop") return stop();
+    if (id == "transport.toggle_click") {
+        transport_flags_ ^= kTransportClick;
+        return true;
+    }
+    if (id == "transport.toggle_count_off") {
+        transport_flags_ ^= kTransportCountOff;
+        return true;
+    }
     const auto locate = [&](uint64_t frame) {
         if (recording) {
             why = "locate during a take is not supported yet; stop first";
@@ -1291,6 +1299,7 @@ void FakeEngine::publish() {
     tf.health_flags = health_;
     tf.inputs_connected = inputs_connected_ ? cfg_.tracks : 0;
     tf.buffer_frames = cfg_.buffer_frames;
+    tf.transport_flags = transport_flags_;
 
     std::vector<TrackFields> tracks(cfg_.tracks);
     std::vector<float> peaks(cfg_.tracks, 0.0f);

@@ -157,6 +157,7 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
     const model::Transport& tr = snapshot.settings.transport;
     pre_roll_ = static_cast<uint64_t>(std::max<model::Frames>(tr.pre_roll, 0));
     post_roll_ = static_cast<uint64_t>(std::max<model::Frames>(tr.post_roll, 0));
+    session_.click().set_count_off_bars(tr.count_off_bars);
     PlaybackPlan* plan = nullptr;
     PlanReport report;
     const SourceSlot slot = [this](const model::Source& s, uint32_t& out, std::string& e) {

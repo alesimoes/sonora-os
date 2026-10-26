@@ -286,6 +286,9 @@ private:
     std::vector<float> scripted_;
     std::vector<uint32_t> clips_;
     uint32_t health_ = 0;
+    // TransportFlag: the click and count-off toggles. The fake counts off
+    // nothing; a take starts at once.
+    uint32_t transport_flags_ = 0;
     bool fail_takes_ = false;
     std::string save_failure_;
     uint32_t saves_ = 0;

@@ -20,6 +20,16 @@
     },
     "numpad_4": "transport.toggle_loop",
     "ctrl+shift+l": "transport.toggle_loop",
+    "numpad_7": {
+      "command": "transport.toggle_click",
+      "verified": false,
+      "comment": "Click on/off, 7 on the numeric keypad in Transport mode. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "numpad_8": {
+      "command": "transport.toggle_count_off",
+      "verified": false,
+      "comment": "Count Off on/off, 8 on the numeric keypad in Transport mode. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
 
     "f1": "edit.mode.shuffle",
     "f2": "edit.mode.slip",

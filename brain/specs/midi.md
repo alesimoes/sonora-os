@@ -171,6 +171,11 @@ control thread, the plan builder and the UI. The plan carries frames
 (§5.5). The rt-safety-auditor checks in M-3 that nothing reachable from
 `Session::process()` calls it.
 
+Amended by ADR-0020 §1: the click's plan segments carry one entry's
+integers (a_k, the reduced num/den, the beat grid), and the audio thread
+evaluates `frame(t)` for that entry itself, without the map, in 64-bit steps
+(`click_scale()`), so the click's downbeats are the map's to the frame.
+
 ## 3. The model (`common/model`)
 
 Sketches of shape; rt-engineer settles signatures in the M-1 PR (ADR-0007

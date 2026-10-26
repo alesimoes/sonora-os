@@ -122,12 +122,30 @@ struct PlanEdge {
     uint32_t delay_line = 0;
 };
 
+// One tempo entry's beats, for the click (ADR-0020 §1). Beat j is at frame
+// at + round((first_tick + j * beat_ticks) * den / num), halves up: what
+// model::MusicalMap::frame_at() gives for that beat's tick, with this
+// entry's exact ticks per frame num / den. The audio thread computes it in
+// 64-bit steps (click_beat_frame()), so it never needs the map.
+struct ClickSegment {
+    int64_t at = 0;              // the entry's frame
+    int64_t first_frame = 0;     // beat 0's
+    uint64_t first_tick = 0;     // beat 0's tick less the entry's
+    uint64_t beat_ticks = 0;
+    uint64_t num = 0;
+    uint64_t den = 0;
+    uint64_t beats = 0;          // the entry's, before the next entry's tick
+    uint32_t beats_per_bar = 0;
+    uint32_t first_beat = 0;     // beat 0's place in its bar; 0 is a downbeat
+};
+
 struct PlanSizes {
     uint32_t tracks = 0;
     uint32_t segments = 0;
     uint32_t nodes = 0;
     uint32_t edges = 0;
     uint32_t chunk_slots = 0;
+    uint32_t click_segments = 0;
 };
 
 struct PlaybackPlan {
@@ -148,6 +166,11 @@ struct PlaybackPlan {
     uint32_t chunk_frames = 0;           // the chunk size the slots assume
     uint64_t peak_chunk_demand = 0;      // max over window positions
     uint32_t monitor_out[2] = {0, 1};    // indices into AudioBlock::outputs
+    // The tempo map's beats, sorted by frame, and the outputs the click is
+    // added to, after the bus gain (ADR-0020 §2).
+    ClickSegment* click = nullptr;
+    uint32_t click_count = 0;
+    uint32_t click_out[2] = {0, 1};
     // PDC as built (ADR-0012 §7.3): the slowest path's latency at
     // HardwareOut; how far short of the alignment it needs the worst edge
     // was left by the maximum or the delay-line pool (non-zero is red); and

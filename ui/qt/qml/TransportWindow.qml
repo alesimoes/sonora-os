@@ -7,9 +7,10 @@
 // format, as the bar's does), and beside it the position in every format at once, the way Logic's LCD shows bars and timecode
 // together. The tempo and meter are the map's at that position.
 //
-// Pre/post-roll and the click are shown for what they are: saved values the
-// engine does not run yet, and a click that does not exist. Dimmed, and a
-// press says why, rather than a toggle that lights and does nothing.
+// Pre/post-roll are shown for what they are: saved values the engine does
+// not run yet. Dimmed, and a press says why, rather than a toggle that
+// lights and does nothing. Click and Count-off send their keys' commands and
+// light as the engine says (ADR-0020).
 import QtQuick
 import Sonora
 
@@ -235,13 +236,15 @@ Rectangle {
                 SButton {
                     objectName: "transportClick"
                     text: "Click"; implicitHeight: 24
-                    available: win.transport.clickAvailable
-                    onClicked: win.shell.say(win.transport.clickWhy)
+                    active: win.transport.clickOn
+                    onClicked: win.shell.invoke("transport.toggle_click", -1)
                 }
                 SButton {
-                    text: "Count-off"; implicitHeight: 24
-                    available: win.transport.clickAvailable
-                    onClicked: win.shell.say(win.transport.clickWhy)
+                    objectName: "transportCountOff"
+                    text: win.transport.countingOff ? "Counting" : "Count-off"
+                    implicitHeight: 24
+                    active: win.transport.countOffOn
+                    onClicked: win.shell.invoke("transport.toggle_count_off", -1)
                 }
             }
         }
@@ -307,7 +310,7 @@ Rectangle {
         Text {
             width: parent.width
             wrapMode: Text.Wrap
-            text: win.transport.rollsWhy + " " + win.transport.clickWhy
+            text: win.transport.rollsWhy
             color: Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
         }

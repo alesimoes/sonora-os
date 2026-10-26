@@ -117,6 +117,12 @@ add_executable(test_playback_control tests/test_playback_control.cpp)
 target_link_libraries(test_playback_control PRIVATE sonora_control)
 add_test(NAME playback_control COMMAND test_playback_control)
 
+# The click against model::MusicalMap through the plan builder and the
+# controller (ADR-0020 §1), the document's count-off bars, the toggles.
+add_executable(test_click_control tests/test_click.cpp)
+target_link_libraries(test_click_control PRIVATE sonora_control)
+add_test(NAME click_control COMMAND test_click_control)
+
 # PluginHosting against real hosts (ADR-0012 checklist 5): built where the
 # host is (tools/build-plugins.sh, CI's plugins job).
 if(TARGET sonora-plugin-host)

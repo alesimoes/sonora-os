@@ -398,9 +398,19 @@ void test_model() {
     t.onTransport(TransportSnapshot{}, true);
 
     // What the engine does not run is said, never offered.
-    OK(!TransportModel::clickAvailable());
     OK(!TransportModel::rollsAvailable());
-    OK(TransportModel::clickWhy().contains(QStringLiteral("No click")));
+    // The click and count-off switches are the state block's, off with no
+    // engine.
+    TransportSnapshot lit;
+    lit.click = true;
+    lit.count_off = true;
+    lit.counting_off = true;
+    t.onTransport(lit, true);
+    OK(t.clickOn() && t.countOffOn() && t.countingOff());
+    t.onTransport(lit, false);
+    OK(!t.clickOn() && !t.countOffOn() && !t.countingOff());
+    t.onTransport(TransportSnapshot{}, true);
+    OK(!t.clickOn() && !t.countOffOn());
 
     // window.transport is the interface's, and toggles.
     CommandRegistry local;
@@ -672,14 +682,34 @@ void test_window() {
         }
     }
 
-    // The click is not in this build: a press says so, nothing lights.
-    QQuickItem* click_button = named(root, QStringLiteral("transportClick"));
-    OK(click_button != nullptr);
-    if (click_button != nullptr) {
-        OK(!click_button->property("available").toBool());
-        click(view, click_button);
-        OK(model.statusText().contains(QStringLiteral("No click")));
+    // Click and Count-off send their keys' commands, and light as the
+    // engine says, not on the press.
+    for (const auto& b : {std::make_pair("transportClick", "transport.toggle_click"),
+                          std::make_pair("transportCountOff", "transport.toggle_count_off")}) {
+        QQuickItem* item = named(root, QString::fromLatin1(b.first));
+        OK(item != nullptr);
+        if (item == nullptr) continue;
+        OK(item->property("available").toBool() && !item->property("active").toBool());
+        click(view, item);
+        OK(!engine.sent.empty() && engine.sent.back().command == b.second);
+        OK(!item->property("active").toBool());
     }
+    engine.snapshot.click = true;
+    engine.snapshot.count_off = true;
+    engine.snapshot.counting_off = true;
+    for (int i = 0; i < 4; ++i) model.tick();
+    QQuickItem* click_button = named(root, QStringLiteral("transportClick"));
+    QQuickItem* count_off_button = named(root, QStringLiteral("transportCountOff"));
+    OK(click_button != nullptr && count_off_button != nullptr);
+    if (click_button != nullptr && count_off_button != nullptr) {
+        OK(click_button->property("active").toBool());
+        OK(count_off_button->property("active").toBool());
+        OK(count_off_button->property("text").toString() == QStringLiteral("Counting"));
+    }
+    engine.snapshot.click = false;
+    engine.snapshot.count_off = false;
+    engine.snapshot.counting_off = false;
+    for (int i = 0; i < 4; ++i) model.tick();
 
     // The button in the bar and the close box send the key's command.
     QQuickItem* close = named(root, QStringLiteral("transportClose"));

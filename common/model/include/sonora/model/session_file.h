@@ -34,7 +34,7 @@ namespace sonora::model {
 // 7: "session_id", which every take's Description carries, and
 //    "left_takes", the take files the operator left unplaced. A version 6
 //    session has no id until its first save in this version.
-constexpr std::int64_t kFormatVersion = 7;
+constexpr std::int64_t kFormatVersion = 8;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

@@ -6,6 +6,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sonora/click.h"
+#include "sonora/model/musical_map.h"
+
 namespace sonora {
 namespace {
 
@@ -48,6 +51,45 @@ uint64_t demand_at(const std::vector<std::vector<PlanSegment>>& tracks, int64_t 
 }
 
 }  // namespace
+
+std::vector<ClickSegment> click_segments(const model::SessionSettings& settings) {
+    std::vector<ClickSegment> out;
+    model::MusicalMap map;
+    std::string why;
+    if (!map.build(settings, why)) return out;
+    const auto& entries = map.entries();
+    const std::size_t reachable = map.reachable();
+    out.reserve(reachable);
+    for (std::size_t k = 0; k < reachable; ++k) {
+        const model::MusicalMap::Entry& e = entries[k];
+        const model::Ticks bt = e.beat_ticks;
+        if (bt <= 0 || e.beats == 0) continue;
+        // A tempo change alone carries the bar in progress on (session-
+        // format.md, "How the map is counted"), so its first beat is the
+        // next on that bar's grid; a meter change starts a bar at its tick.
+        const model::Ticks into = e.tick - e.bar_tick;
+        const model::Ticks first = e.bar_tick + (into + bt - 1) / bt * bt;
+        ClickSegment c;
+        c.at = e.at;
+        c.first_tick = static_cast<uint64_t>(first - e.tick);
+        c.beat_ticks = static_cast<uint64_t>(bt);
+        c.num = e.num;
+        c.den = e.den;
+        c.beats_per_bar = e.beats;
+        c.first_beat = static_cast<uint32_t>(((first - e.bar_tick) / bt) % e.beats);
+        if (k + 1 < reachable) {
+            const model::Ticks end = entries[k + 1].tick;
+            c.beats = first < end ? static_cast<uint64_t>((end - first + bt - 1) / bt) : 0;
+        } else {
+            c.beats = first <= model::kMaxMusical
+                          ? static_cast<uint64_t>((model::kMaxMusical - first) / bt + 1)
+                          : 0;
+        }
+        c.first_frame = c.beats != 0 ? click_beat_frame(c, 0) : e.at;
+        out.push_back(c);
+    }
+    return out;
+}
 
 float pan_exponent_for(float pan_law_db) {
     if (!(pan_law_db >= model::kMinPanLawDb)) pan_law_db = model::kMinPanLawDb;
@@ -264,6 +306,8 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     sizes.nodes = graph_nodes(limits.engine_tracks, active_chains);
     sizes.edges = graph_edges(limits.engine_tracks, active_chains);
     sizes.chunk_slots = static_cast<uint32_t>(slot_total);
+    const std::vector<ClickSegment> click = click_segments(snapshot.settings);
+    sizes.click_segments = static_cast<uint32_t>(click.size());
     PlaybackPlan* plan = create_plan(sizes);
     if (!plan) {
         error = "out of memory for a plan of " + str(segment_total) + " segments";
@@ -276,6 +320,10 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     plan->monitor_out[0] = bus.outputs[0];
     plan->monitor_out[1] = bus.outputs[1];
     plan->pan_exponent = pan_exponent_for(bus.pan_law_db);
+    // Phase 2's click goes where the monitor bus goes (ADR-0020 §2).
+    plan->click_out[0] = bus.outputs[0];
+    plan->click_out[1] = bus.outputs[1];
+    std::copy(click.begin(), click.end(), plan->click);
     uint32_t at = 0;
     for (uint32_t t = 0; t < limits.engine_tracks; ++t) {
         PlanTrack& pt = plan->tracks[t];

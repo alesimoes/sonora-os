@@ -3,7 +3,8 @@
 // The Transport window (Pro Tools' Window > Transport, expanded): where the
 // transport is, read every way at once; the tempo and meter in force there
 // and the tempo map around it; pre- and post-roll, loop and punch as the
-// session holds them; and the click, said to be absent.
+// session holds them; and the click and count-off switches, as the engine
+// says they are (ADR-0020).
 //
 // Fed by ShellModel's one tick, like SessionModel (ADR-0006: no second
 // clock), and reading the session's settings through a getter, so it holds
@@ -12,9 +13,8 @@
 //
 // What it must not do is show a control the engine does not run as if it
 // ran. Pre- and post-roll are saved in the session and the engine does not
-// use them yet (progress.json engine.transport.preroll); there is no click
-// in the engine (engine.core.click). Both are drawn as such, with the
-// reason, never as a live toggle that does nothing.
+// use them yet (progress.json engine.transport.preroll), so they are drawn
+// as such, with the reason, never as a live toggle that does nothing.
 #pragma once
 
 #include <QObject>
@@ -74,8 +74,9 @@ class TransportModel : public QObject {
     Q_PROPERTY(bool punchSet READ punchSet NOTIFY settingsChanged)
     Q_PROPERTY(qint64 punchStart READ punchStart NOTIFY settingsChanged)
     Q_PROPERTY(qint64 punchEnd READ punchEnd NOTIFY settingsChanged)
-    Q_PROPERTY(bool clickAvailable READ clickAvailable CONSTANT)
-    Q_PROPERTY(QString clickWhy READ clickWhy CONSTANT)
+    Q_PROPERTY(bool clickOn READ clickOn NOTIFY stateChanged)
+    Q_PROPERTY(bool countOffOn READ countOffOn NOTIFY stateChanged)
+    Q_PROPERTY(bool countingOff READ countingOff NOTIFY stateChanged)
     Q_PROPERTY(bool rollsAvailable READ rollsAvailable CONSTANT)
     Q_PROPERTY(QString rollsWhy READ rollsWhy CONSTANT)
 
@@ -120,8 +121,10 @@ public:
     bool punchSet() const { return range_set(settings_.transport.punch); }
     qint64 punchStart() const { return settings_.transport.punch[0]; }
     qint64 punchEnd() const { return settings_.transport.punch[1]; }
-    static bool clickAvailable() { return false; }
-    static QString clickWhy();
+    // The engine's switches, from the state block; off with no engine.
+    bool clickOn() const { return click_; }
+    bool countOffOn() const { return count_off_; }
+    bool countingOff() const { return counting_off_; }
     static bool rollsAvailable() { return false; }
     static QString rollsWhy();
 
@@ -153,6 +156,9 @@ private:
     bool rolling_ = false;
     bool recording_ = false;
     bool alive_ = false;
+    bool click_ = false;
+    bool count_off_ = false;
+    bool counting_off_ = false;
     QString state_text_ = QStringLiteral("STOP");
     model::Frames position_ = -1;
     model::Frames shown_ = -1;

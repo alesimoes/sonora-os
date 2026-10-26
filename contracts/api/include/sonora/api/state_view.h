@@ -37,6 +37,7 @@ struct TransportSnapshot {
     uint32_t buffer_frames = 0;
     uint32_t compensation_frames = 0;
     uint32_t compensation_shortfall_frames = 0;
+    uint32_t transport_flags = 0;   // TransportFlag
     uint64_t heartbeat = 0;
     // The seqlock ran out of retries: these values may be torn, and are the
     // zeros above. Show "stale", never them.

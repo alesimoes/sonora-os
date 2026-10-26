@@ -139,6 +139,9 @@ void ControlAdapter::frame(EngineFrame& out) const {
                      ((s.health_flags & api::kHealthPluginsDisabled) ? kHealthPluginsDisabled : 0u);
     t.compensation_frames = s.compensation_frames;
     t.compensation_shortfall_frames = s.compensation_shortfall_frames;
+    t.click = (s.transport_flags & api::kTransportClick) != 0;
+    t.count_off = (s.transport_flags & api::kTransportCountOff) != 0;
+    t.counting_off = (s.transport_flags & api::kTransportCountingOff) != 0;
     t.stale = s.stale;
     out.tracks.resize(state_.tracks.size());
     for (std::size_t i = 0; i < state_.tracks.size(); ++i) {

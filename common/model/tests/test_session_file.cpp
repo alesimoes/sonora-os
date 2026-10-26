@@ -146,12 +146,24 @@ std::string as_v7(const std::string& v6) {
     return s + "\n  ],\n  \"session_id\": \"\",\n  \"left_takes\": []\n}\n";
 }
 
+// What v7 -> v8 makes of a file: the version, and the count-off's bars
+// after the punch crossfade.
+std::string as_v8(const std::string& v7) {
+    std::string s = edit(v7, "\"sonora_session\": 7,", "\"sonora_session\": 8,");
+    const std::size_t at = s.find("\"punch_crossfade\": ");
+    if (at == std::string::npos) return "<bad edit>";
+    s.insert(s.find('\n', at), ",\n    \"count_off_bars\": 2");
+    return s;
+}
+
 // A version 4 file with no MIDI region, as this build saves it.
-std::string as_current(const std::string& v4) { return as_v7(as_v6(as_v5(v4))); }
+std::string as_current(const std::string& v4) { return as_v8(as_v7(as_v6(as_v5(v4)))); }
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v7-session-id.sonora";
+constexpr const char* kCurrent = "v8-count-off.sonora";
+// The version 7 fixture: the same session before the count-off's bars.
+constexpr const char* kNoCountOff = "v7-session-id.sonora";
 // The version 6 fixture: the same session with no id and no take left.
 constexpr const char* kNoSessionId = "v6-midi.sonora";
 // The version 5 fixture, the same session with its MIDI inline: what the
@@ -168,7 +180,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 7);
+    CHECK(l.file_version == 8);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.
@@ -179,8 +191,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v7-session-id.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v7-session-id.out.sonora\n");
+        std::ofstream("v8-count-off.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v8-count-off.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -380,12 +392,12 @@ int test_v5_migrates() {
     CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
     CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
     Loaded current;
-    const std::string v7 = as_v7(read_fixture(kNoSessionId));
-    CHECK(load(v7, current, e));
+    const std::string v8 = as_v8(as_v7(read_fixture(kNoSessionId)));
+    CHECK(load(v8, current, e));
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == v7);
+    CHECK(out == v8);
     SequenceDigests digests;
     const std::vector<NamedSequence> named = named_sequences(l.snapshot, digests);
     CHECK(named.size() == 3);
@@ -393,7 +405,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 7);
+    CHECK(file_format_version(out, version) && version == 8);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -775,22 +787,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 8,"),
-                  "format version 8, newer than this program, which reads up to version 7",
+    CHECK(refused(edit(text, "\"sonora_session\": 8,", "\"sonora_session\": 9,"),
+                  "format version 9, newer than this program, which reads up to version 8",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 9,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 8,", "\"sonora_session\": 9,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 7,",
+    CHECK(refused(edit(text, "\"sonora_session\": 8,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 8,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 7,", "\"sonora_session\": 7.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 8,", "\"sonora_session\": 8.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -803,8 +815,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 7,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 7,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 8,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 8,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -1077,7 +1089,7 @@ int test_v6_migrates_and_session_id() {
     CHECK(l.snapshot.settings.session_id.empty() && l.snapshot.settings.left_takes.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v7(v6));
+    CHECK(out == as_v8(as_v7(v6)));
     const std::string last = "\n  ]\n}\n";
     CHECK(refused(v6.substr(0, v6.size() - last.size()) + "\n  ],\n  \"session_id\": \"\"\n}\n",
                   "migrating from format version 6: the file has \"session_id\"", nullptr));
@@ -1114,6 +1126,40 @@ int test_v6_migrates_and_session_id() {
     return 0;
 }
 
+// Version 8 (ADR-0020 §3): the count-off's length in bars. A version 7
+// session opens with Pro Tools' 2 and its first save writes the key; a
+// version 7 file cannot carry it; a length outside 1 to 99 is refused by
+// key path.
+int test_v7_migrates_and_count_off() {
+    const std::string v7 = read_fixture(kNoCountOff);
+    CHECK(!v7.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v7, l, e));
+    CHECK(l.file_version == 7 && l.repairs.empty());
+    CHECK(l.snapshot.settings.transport.count_off_bars == 2);
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == as_v8(v7));
+    CHECK(out == read_fixture(kCurrent));
+    CHECK(refused(edit(v7, "\"punch_crossfade\": 240", "\"punch_crossfade\": 240,\n    \"count_off_bars\": 2"),
+                  "migrating from format version 7: the file has \"transport.count_off_bars\"",
+                  nullptr));
+
+    const std::string text = read_fixture(kCurrent);
+    const std::string bars = "\"count_off_bars\": 2";
+    Loaded four;
+    CHECK(load(edit(text, bars, "\"count_off_bars\": 4"), four, e));
+    CHECK(four.snapshot.settings.transport.count_off_bars == 4);
+    CHECK(refused(edit(text, bars, "\"count_off_bars\": 0"), "must be from 1 to 99",
+                  "transport.count_off_bars", line_of(text, "\"count_off_bars\"")));
+    CHECK(refused(edit(text, bars, "\"count_off_bars\": 100"), "must be an integer from 0 to 99",
+                  "transport.count_off_bars"));
+    CHECK(refused(edit(text, ",\n    " + bars, ""), "missing required key \"count_off_bars\"",
+                  "transport"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1139,6 +1185,7 @@ int main() {
     t(test_malformed_sequence_refs);
     t(test_v5_migrates);
     t(test_v6_migrates_and_session_id);
+    t(test_v7_migrates_and_count_off);
     t(test_missing_sequence_opens);
     t(test_session_bundle);
     t(test_comma_locale);
