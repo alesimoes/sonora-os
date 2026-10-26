@@ -67,28 +67,31 @@ void* __libc_realloc(void*, std::size_t);
 void* __libc_memalign(std::size_t, std::size_t);
 void __libc_free(void*);
 
-void* malloc(std::size_t n) {
+// noexcept on each, as glibc's __THROW declares them. GCC excuses a missing
+// specifier only when the system declaration comes first; <malloc.h>, and
+// <mm_malloc.h> (posix_memalign, reached from <random> when SSE3 is on),
+// redeclare these after this header and make a mismatch a hard error.
+// test_heap_counter builds that order.
+void* malloc(std::size_t n) noexcept {
     playback_test::note_alloc();
     return __libc_malloc(n);
 }
-void* calloc(std::size_t n, std::size_t size) {
+void* calloc(std::size_t n, std::size_t size) noexcept {
     playback_test::note_alloc();
     return __libc_calloc(n, size);
 }
-void* realloc(void* p, std::size_t n) {
+void* realloc(void* p, std::size_t n) noexcept {
     playback_test::note_alloc();
     return __libc_realloc(p, n);
 }
-void* aligned_alloc(std::size_t align, std::size_t n) {
+void* aligned_alloc(std::size_t align, std::size_t n) noexcept {
     playback_test::note_alloc();
     return __libc_memalign(align, n);
 }
-void* memalign(std::size_t align, std::size_t n) {
+void* memalign(std::size_t align, std::size_t n) noexcept {
     playback_test::note_alloc();
     return __libc_memalign(align, n);
 }
-// noexcept as glibc declares it: GCC 15's <mm_malloc.h>, which <random>
-// pulls in after this header, redeclares it throw() and refuses a mismatch.
 int posix_memalign(void** out, std::size_t align, std::size_t n) noexcept {
     playback_test::note_alloc();
     void* p = __libc_memalign(align, n);
@@ -96,7 +99,7 @@ int posix_memalign(void** out, std::size_t align, std::size_t n) noexcept {
     *out = p;
     return 0;
 }
-void free(void* p) {
+void free(void* p) noexcept {
     playback_test::note_free(p);
     __libc_free(p);
 }

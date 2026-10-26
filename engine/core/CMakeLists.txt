@@ -90,6 +90,10 @@ add_executable(test_punch_points tests/test_punch_points.cpp)
 target_link_libraries(test_punch_points PRIVATE sonora_core)
 add_test(NAME punch_points COMMAND test_punch_points)
 
+add_executable(test_heap_counter tests/test_heap_counter.cpp)
+target_link_libraries(test_heap_counter PRIVATE sonora_core)
+add_test(NAME heap_counter COMMAND test_heap_counter)
+
 # Loop record (ADR-0016): one file per track through every wrap, each wrap
 # marked in band and kept in the take's wrap list, a lost one keeping its
 # place, the pass cap, the short-loop refusals, playback across the wrap.

@@ -1562,6 +1562,16 @@ Order and owners are in ADR-0008 §5.
       Snapshot, which another thread encodes, so one round trip did not
       prove them sent. It now waits for the catalog and makes a second
       round trip.
+- [ ] t1 latency: skip follow_reported_latency() once audio_->fatal(), so the control thread stops querying JACK ports after the server is gone (#153 review)
+- [x] t1 heap counter: every glibc allocator override in playback_test.h is
+      noexcept, so a TU that includes <malloc.h> (or <random> on x86-64-v3,
+      via <mm_malloc.h>) after it still builds; test_heap_counter builds
+      that order and checks each allocator is counted (#154)
+- [ ] t1 engine arithmetic: decide whether sonora_core builds with
+      -ffp-contract=off like sonora_dsp (ADR-0011 §2.3). Today the mix is
+      deterministic run to run, but its bits depend on -march: Ubuntu
+      26.04's amd64v3 GCC defaults to x86-64-v3 and fuses a + b * c into
+      FMAs that a baseline x86-64 or another arch build does not (#154)
 - [ ] Transport locate without dropping a block.
 - [x] Flake explained: the loopback PLAYBACK check's swapped blocks were a
       period PipeWire's dummy driver skipped without an xrun, which the
