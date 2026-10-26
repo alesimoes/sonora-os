@@ -57,7 +57,15 @@ or an ADR whole: read the ADR's Summary, grep the heading, Read with
 offset/limit. Progress goes through `tools/progress.sh get|list|set`.
 
 The coordinator runs at most 3 agents at once. After 3–4 merges, or near
-150k of context, it writes the handoff and asks the owner to /clear.
+150k of context, it writes the handoff and carries on.
+
+The coordinator runs unattended: no human reads the terminal, answers a
+question or runs a slash command such as /clear. Never end a turn waiting
+on the owner. A decision with a recommended default is taken and recorded;
+a real blocker goes in the handoff under "waits on the owner" and the work
+moves to the next item. When agents finish and none are running, launch
+the next items in the same turn. Context is reclaimed by auto-compaction,
+which the handoff survives.
 One PR per BACKLOG item, follow-ups included. Review is tiered: Sonnet for
 UI-only and test-only PRs, Opus for the RT path, contracts, storage and
 recovery. Only a blocking finding sends a PR back; non-blocking ones become
