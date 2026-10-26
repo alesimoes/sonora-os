@@ -403,12 +403,20 @@ struct Reader {
         // The version first: a record of another version is refused as
         // that, whatever else it holds.
         if (!u32(o, "record", r.record, w)) return false;
-        if (r.record != kProbeRecordVersion)
+        if (r.record < kOldestProbeRecordVersion || r.record > kProbeRecordVersion)
             return fail("a probe record of version " + std::to_string(r.record) + ", not " +
-                        std::to_string(kProbeRecordVersion));
-        if (!only(o, {"record", "host", "uri", "format", "bundle", "name", "vendor", "version", "categories",
+                        std::to_string(kOldestProbeRecordVersion) + " to " + std::to_string(kProbeRecordVersion));
+        // Version 1 has no "bridge": it is refused there as any unknown key.
+        if (r.record == 1 &&
+            !only(o, {"record", "host", "uri", "format", "bundle", "name", "vendor", "version", "categories",
                       "has_editor", "audio_in", "audio_out", "sidechain_in", "ok", "reason", "channels", "replicas",
                       "latency_frames", "sample_rate", "outcome", "bypass", "params"},
+                  w))
+            return false;
+        if (r.record >= 2 &&
+            !only(o, {"record", "host", "uri", "format", "bundle", "bridge", "name", "vendor", "version",
+                      "categories", "has_editor", "audio_in", "audio_out", "sidechain_in", "ok", "reason", "channels",
+                      "replicas", "latency_frames", "sample_rate", "outcome", "bypass", "params"},
                   w))
             return false;
         bool ok = false;
@@ -425,6 +433,15 @@ struct Reader {
             return false;
         if (r.uri.empty()) return fail("the record names no plugin");
         if (r.format != "lv2" && r.format != "vst3") return fail("the record's format is \"" + r.format + "\"");
+        r.bridge.clear();
+        if (const Node* bridge = o.find("bridge")) {
+            if (bridge->type != Node::Type::String) return fail("the record's bridge is not a string");
+            // Present only when bridged, so never empty; yabridge bridges
+            // VST3 only (ADR-0017 Y2, Y6).
+            if (bridge->text != "yabridge") return fail("the record's bridge is \"" + bridge->text + "\"");
+            if (r.format != "vst3") return fail("the record bridges a plugin that is not a VST3");
+            r.bridge = bridge->text;
+        }
         if (outcome == "ok") r.outcome = Outcome::Ok;
         else if (outcome == "refused") r.outcome = Outcome::Refused;
         else if (outcome == "not_installed") r.outcome = Outcome::NotInstalled;
@@ -468,6 +485,12 @@ std::string encode(const Record& r) {
     put_string(out, r.format);
     key(out, "bundle");
     put_string(out, r.bundle);
+    // Only when bridged, so a native record's line is version 1's but for
+    // the number.
+    if (!r.bridge.empty()) {
+        key(out, "bridge");
+        put_string(out, r.bridge);
+    }
     key(out, "name");
     put_string(out, r.name);
     key(out, "vendor");

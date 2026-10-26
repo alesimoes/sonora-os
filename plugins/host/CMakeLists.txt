@@ -128,12 +128,13 @@ add_test(NAME plugin_host_list_bundles_only COMMAND sonora-plugin-host --list --
          --bundle ${SONORA_TEST_BUNDLE})
 set_tests_properties(plugin_host_list_bundles_only PROPERTIES PASS_REGULAR_EXPRESSION
   "{\"bundle\":\"[^\"]*/lv2/sonora-test.lv2\",\"format\":\"lv2\"}\n")
-# One probe record, version 1 (contracts/plugin probe_record.h), with the
+# One probe record, version 2 (contracts/plugin probe_record.h), with the
 # description the catalog shows: the parameter's name, range and unit-less
-# flags. eg-amp is from Debian's lv2-examples.
+# flags; native, so no "bridge" after the bundle. eg-amp is from Debian's
+# lv2-examples.
 add_test(NAME plugin_host_probe_record COMMAND sonora-plugin-host --probe http://lv2plug.in/plugins/eg-amp --channels 2)
 set_tests_properties(plugin_host_probe_record PROPERTIES PASS_REGULAR_EXPRESSION
-  "^{\"record\":1,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 3 probe 1\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
+  "^{\"record\":2,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 3 probe 2\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
 add_test(NAME plugin_host_probe_not_installed COMMAND sonora-plugin-host --probe "urn:sonora:test#absent")
 set_tests_properties(plugin_host_probe_not_installed PROPERTIES PASS_REGULAR_EXPRESSION
   "\"ok\":false,\"reason\":\"not installed\"[^\n]*\"outcome\":\"not_installed\"")
@@ -153,7 +154,7 @@ set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is n
                      LABELS plugins)
 # The versions the engine checks at start-up (ADR-0012 §5.5).
 add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
-set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 3 probe 1\n$"
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 3 probe 2\n$"
                      LABELS plugins)
 # Hosts are timer-paced by default: the audio thread's futex wake ships gated
 # off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex
@@ -367,7 +368,7 @@ if(VST3SDK_INCLUDE_DIR)
   add_test(NAME plugin_host_yabridge_probe_com_order
            COMMAND ${_host} --probe "vst3:534F4E4F524156535433544553540007" --channels 1 --bundle ${_bridged})
   set_tests_properties(plugin_host_yabridge_probe_com_order PROPERTIES PASS_REGULAR_EXPRESSION
-    "\"bundle\":\"[^\"]*/sonora-test-bridged.vst3\"[^\n]*\"ok\":true")
+    "\"bundle\":\"[^\"]*/sonora-test-bridged.vst3\",\"bridge\":\"yabridge\"[^\n]*\"ok\":true")
   set_tests_properties(plugin_host_yabridge_list_bundles plugin_host_yabridge_list
     plugin_host_yabridge_probe_com_order PROPERTIES LABELS plugins)
 
@@ -376,12 +377,13 @@ if(VST3SDK_INCLUDE_DIR)
   # or mingw-w64 is missing, which is CI's plugins image today.
   find_program(SONORA_MINGW_CXX NAMES x86_64-w64-mingw32-g++-posix)
   # One class per Windows bundle (the test plugin's SONORA_TEST_VST3_ONLY_KIND):
-  # the State pass-through (kind 9) and the Liar (kind 4).
+  # the State pass-through (kind 9), the Liar (kind 4) and the Crash class
+  # (kind 1), which segfaults inside Wine mid-chain.
   set(_win_dir "")
   if(SONORA_MINGW_CXX)
     set(_win_dir ${CMAKE_BINARY_DIR}/vst3-win)
     set(_win_dlls "")
-    foreach(_pair "state;9" "liar;4")
+    foreach(_pair "state;9" "liar;4" "crash;1")
       list(GET _pair 0 _name)
       list(GET _pair 1 _kind)
       set(_dll ${_win_dir}/sonora-test-${_name}.vst3/Contents/x86_64-win/sonora-test-${_name}.vst3)

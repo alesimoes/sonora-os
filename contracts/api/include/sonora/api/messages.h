@@ -63,7 +63,10 @@ namespace sonora::api {
 //   version-11 peer's decoder refuses this Hello and this one refuses its.
 // 13 (engine.record.orphan_offer): EventKind::RecoveryOffer, which a
 //   version-12 peer's decoder refuses.
-constexpr uint32_t kProtocolVersion = 13;
+// 14 (ADR-0017 Y2): PluginInfo::bridge, after has_editor, so the operator
+//   sees which plugins run under Wine; a version-13 peer's decoder refuses
+//   this catalog, and this one refuses its.
+constexpr uint32_t kProtocolVersion = 14;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -316,6 +319,12 @@ struct ModelUpdate {
 // Append-only enum. The model's PluginFormat spells the same two.
 enum class PluginFormat : uint32_t { Lv2 = 0, Vst3 = 1 };
 
+// How a plugin's code runs (ADR-0017 Y2). Append-only. Yabridge: a Windows
+// VST3 bridged into a Linux bundle, running under Wine, which an interface
+// shows as "Windows (Wine)". It is validated by the deadline there rather
+// than by the buffer trap (Y4), and it costs a hop per block.
+enum class PluginBridge : uint32_t { None = 0, Yabridge = 1 };
+
 enum PluginParamFlag : uint32_t {
     kParamAutomatable = 1u << 0,
     kParamToggle = 1u << 1,
@@ -366,6 +375,7 @@ struct PluginInfo {
     bool usable = true;
     std::string refusal;
     bool has_editor = false;
+    PluginBridge bridge = PluginBridge::None;
     std::vector<PluginParam> params;
 };
 

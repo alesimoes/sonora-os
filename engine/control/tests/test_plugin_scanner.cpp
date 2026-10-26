@@ -41,6 +41,10 @@
 //                      on it, counted rather than timed
 //   stop_signal        a probe a stop signal ended is never cached; a signal
 //                      to the engine's group does not reach it (finding 1)
+//   wine_prefix        a bridged bundle's Wine prefix is created before
+//                      anything bridged runs, so a cold probe is not
+//                      cached blocked; a failure is said, nothing bridged
+//                      cached, and retried (ADR-0017 Y4)
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -311,7 +315,8 @@ void test_cache_header() {
         ss << f.rdbuf();
         world = ss.str();
     }
-    std::ofstream(fx.world, std::ios::trunc) << "version sonora-plugin-host layout 1 clock 1 wire 3 probe 1 build 2\n"
+    std::ofstream(fx.world, std::ios::trunc) << "version sonora-plugin-host layout 1 clock 1 wire 3 probe " +
+                                                    std::to_string(pr::kProbeRecordVersion) + " build 2\n"
                                              << world;
     check(discarded(fx.config(), "another plug-in host"), "another host line: discarded, a full scan");
     std::ofstream(fx.cache, std::ios::trunc) << "{not json";
@@ -514,11 +519,12 @@ void test_version() {
     std::printf("version\n");
     Fixture fx("version");
     const std::string a = fx.bundle("a.lv2");
-    fx.set_world({"version sonora-plugin-host layout 1 clock 1 wire 3 probe 2", "plugin urn:x " + a + " lv2 1 1 ok"});
+    const std::string other = std::to_string(pr::kProbeRecordVersion + 1);
+    fx.set_world({"version sonora-plugin-host layout 1 clock 1 wire 3 probe " + other, "plugin urn:x " + a + " lv2 1 1 ok"});
     PluginScanner s(fx.config(false));
     check(scanned(s), "the scan ends at once");
-    check(s.catalog()->disabled.find("probe record 2") != std::string::npos, "disabled, saying why");
-    check(any_says(notices(s), "probe record 2"), "and said");
+    check(s.catalog()->disabled.find("probe record " + other) != std::string::npos, "disabled, saying why");
+    check(any_says(notices(s), "probe record " + other), "and said");
     s.probe("urn:x", 1);
     check(until(s, [&] { return s.catalog()->find("urn:x", 1) != nullptr; }, 5000) &&
               !s.catalog()->find("urn:x", 1)->ok(),
@@ -747,6 +753,96 @@ void test_vst3_list_fail() {
     check(scanned(s) && fx.log_lines("--format vst3").empty(), "not enumerated again while unchanged");
 }
 
+// ADR-0017 Y4: the first Wine start creates its prefix, which takes longer
+// than a probe's timeout. A bridged plugin probed then would be cached
+// Blocked for good, so the prefix is created first, alone, and nothing
+// bridged is enumerated or probed until it exists. The fake's "wine"
+// plugin hangs while there is no prefix, as the first start does.
+std::size_t first_line(const std::vector<std::string>& log, const std::string& has) {
+    for (std::size_t i = 0; i < log.size(); ++i)
+        if (log[i].find(has) != std::string::npos) return i;
+    return log.size();
+}
+
+void test_wine_prefix() {
+    std::printf("wine_prefix\n");
+    const char* const kWin = "W0000000000000000000000000000000";
+    {
+        Fixture fx("wine");
+        const std::string prefix = fx.root + "/home/.wine";
+        ::setenv("WINEPREFIX", prefix.c_str(), 1);
+        fs::create_directories(fx.root + "/home");
+        const std::string w = fx.bundle("win.vst3"), n = fx.bundle("native.lv2");
+        fx.set_world({"plugin vst3:" + std::string(kWin) + " " + w + " vst3 2 2 wine", "plugin urn:n " + n + " lv2 1 1 ok",
+                      "bridged " + w, "wineboot 1500 ok"});
+        PluginScannerConfig c = fx.config();
+        c.probe_timeout_ms = 1000;  // shorter than the prefix takes to create
+        c.wine_prefix = prefix;
+        c.wine_prefix_command = {g_host, "--fake-wineboot"};
+        {
+            PluginScanner s(c);
+            check(scanned(s), "the cold scan completes");
+            const api::PluginInfo* p = entry(s, kWin);
+            check(p && p->usable, "the bridged plugin is usable, not cached blocked: probed once its prefix existed (" +
+                                      (p ? p->refusal : std::string("absent")) + ")");
+            check(p && p->bridge == api::PluginBridge::Yabridge, "and marked as running under Wine");
+            const api::PluginInfo* q = entry(s, "urn:n");
+            check(q && q->usable && q->bridge == api::PluginBridge::None, "a native plugin is not marked");
+            const auto log = fx.log_lines();
+            const std::size_t boot = first_line(log, "--fake-wineboot");
+            check(fx.log_lines("--fake-wineboot").size() == 1, "the prefix is created once");
+            check(boot < first_line(log, "--format vst3") && boot < first_line(log, std::string("--probe vst3:") + kWin),
+                  "before anything bridged is enumerated or probed");
+            check(fs::exists(prefix + "/system.reg"), "the prefix exists after the scan");
+        }
+        fx.clear_log();
+        {
+            PluginScanner s(c);
+            check(scanned(s) && fx.log_lines("--fake-wineboot").empty(), "a prefix that exists is not created again");
+        }
+    }
+    {
+        // Prefix creation fails: said, nothing bridged probed or cached, the
+        // rest of the scan unaffected, and tried again at the next scan.
+        Fixture fx("wine_fail");
+        const std::string prefix = fx.root + "/home/.wine";
+        ::setenv("WINEPREFIX", prefix.c_str(), 1);
+        const std::string w = fx.bundle("win.vst3"), n = fx.bundle("native.lv2");
+        fx.set_world({"plugin vst3:" + std::string(kWin) + " " + w + " vst3 2 2 wine", "plugin urn:n " + n + " lv2 1 1 ok",
+                      "bridged " + w, "wineboot 0 fail"});
+        PluginScannerConfig c = fx.config();
+        c.probe_timeout_ms = 1000;
+        c.wine_prefix = prefix;
+        c.wine_prefix_command = {g_host, "--fake-wineboot"};
+        {
+            PluginScanner s(c);
+            check(scanned(s), "the scan completes");
+            check(any_says(notices(s), "Windows plug-ins (Wine) are not scanned"), "the operator is told");
+            check(!entry(s, kWin) && fx.log_lines(std::string("--probe vst3:") + kWin).empty(),
+                  "the bridged plugin is neither probed nor cached blocked");
+            check(entry(s, "urn:n") && entry(s, "urn:n")->usable, "the native plugin is scanned as ever");
+        }
+        fx.clear_log();
+        PluginScanner s(c);
+        check(scanned(s) && fx.log_lines("--fake-wineboot").size() == 1, "tried again at the next scan");
+    }
+    {
+        // No bridged bundle: Wine is never started, prefix or not.
+        Fixture fx("wine_none");
+        const std::string prefix = fx.root + "/home/.wine";
+        ::setenv("WINEPREFIX", prefix.c_str(), 1);
+        const std::string n = fx.bundle("native.lv2");
+        fx.set_world({"plugin urn:n " + n + " lv2 1 1 ok", "wineboot 0 ok"});
+        PluginScannerConfig c = fx.config();
+        c.wine_prefix = prefix;
+        c.wine_prefix_command = {g_host, "--fake-wineboot"};
+        PluginScanner s(c);
+        check(scanned(s) && fx.log_lines("--fake-wineboot").empty() && !fs::exists(prefix),
+              "no bridged bundle, no prefix made");
+    }
+    ::unsetenv("WINEPREFIX");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -777,6 +873,7 @@ int main(int argc, char** argv) {
     test_exchange_frees_nothing();
     test_chain_during_walk();
     test_stop_signal();
+    test_wine_prefix();
     if (failures) {
         std::printf("test_plugin_scanner: %d failure(s)\n", failures);
         return 1;

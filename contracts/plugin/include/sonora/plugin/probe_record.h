@@ -2,8 +2,8 @@
 #pragma once
 
 // ============================================================================
-//  The probe record, record version 1 (ADR-0012, amendment of 2026-10-19,
-//  item 2).
+//  The probe record, record version 2 (ADR-0012, amendment of 2026-10-19,
+//  item 2; version 2: ADR-0017 Y2, `bridge`).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6),
 //  like protocol.h and host_control.h. A change to a field, its meaning or
@@ -20,14 +20,18 @@
 // Versioning. The record carries its own version (`record`) and the host's
 // `--version` line (`host`). The host's --version line names the record
 // version it writes as `probe <kProbeRecordVersion>`, after layout, clock
-// and wire (parse_probe_version). A record of another version is refused
-// by decode(), never guessed at: for the engine's cache it is a miss, and
-// the plugin is probed again.
+// and wire (parse_probe_version). decode() reads versions
+// kOldestProbeRecordVersion to kProbeRecordVersion: version 1 is version 2
+// with no `bridge`, so it reads as a native plugin's. A record of any other
+// version is refused, never guessed at: for the engine's cache it is a
+// miss, and the plugin is probed again. encode() writes only the current
+// version.
 //
 // The line. One JSON object, UTF-8, no newline inside, its keys in this
 // order (a reader must not depend on the order; the tests that grep the
 // host's output do):
-//   record, host, uri, format, bundle, name, vendor, version, categories,
+//   record, host, uri, format, bundle, bridge (version 2, only when
+//   bridged), name, vendor, version, categories,
 //   has_editor, audio_in, audio_out, sidechain_in, ok, reason (only when
 //   ok is false), channels, replicas, latency_frames, sample_rate, outcome,
 //   bypass, params
@@ -54,7 +58,8 @@
 
 namespace sonora::plugin::probe {
 
-inline constexpr uint32_t kProbeRecordVersion = 1;
+inline constexpr uint32_t kProbeRecordVersion = 2;
+inline constexpr uint32_t kOldestProbeRecordVersion = 1;
 
 // Caps a reader enforces: a record over any of them is refused whole.
 inline constexpr std::size_t kMaxRecordBytes = std::size_t{16} << 20;
@@ -114,6 +119,10 @@ struct Record {
     // The bundle the plugin was found in, absolute: what the engine's cache
     // fingerprints. Empty for NotInstalled.
     std::string bundle;
+    // Empty for a native plugin; "yabridge" for a Windows VST3 bridged
+    // into a Linux bundle, which runs under Wine (ADR-0017 Y2). Never set
+    // on an LV2.
+    std::string bridge;
     std::string name;
     std::string vendor;
     std::string version;
@@ -145,9 +154,10 @@ struct Record {
 // and no range or default a reader could use is one.
 std::string encode(const Record& r);
 
-// False, with `error`, for a line that is not a version-1 record within the
-// caps: another `record` version, a missing or mistyped field, an unknown
-// outcome, ok disagreeing with outcome, steps of 1, more labels than steps.
+// False, with `error`, for a line that is not a version-1 or version-2
+// record within the caps: another `record` version, a missing or mistyped
+// field, an unknown outcome, ok disagreeing with outcome, steps of 1, more
+// labels than steps, a bridge other than "yabridge" or on an LV2.
 // Unknown keys are refused too: a record is the contract's or it is not.
 bool decode(std::string_view line, Record& out, std::string& error);
 

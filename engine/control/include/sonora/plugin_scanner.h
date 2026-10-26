@@ -8,7 +8,7 @@
 // What it does, on its own thread, which may block (it is not the control
 // thread, and never the audio thread):
 //   - at start: `sonora-plugin-host --version` (it must name probe record
-//     1), the cache read and every cached bundle fingerprinted again, then
+//     2, kProbeRecordVersion), the cache read and every cached bundle fingerprinted again, then
 //     the catalog published (generation 1);
 //   - a scan: `--list --bundles-only` (no plugin code), each bundle
 //     fingerprinted; new or changed ones enumerated (`--list --format lv2`,
@@ -32,6 +32,10 @@
 //     start-up scan included; those in flight finish, and the scan resumes
 //     when the take ends; chain-start probes stay allowed (change D);
 //   - one probe slot is reserved for chain-start probes (change E);
+//   - a scan that lists a bridged bundle creates the Wine prefix first when
+//     there is none, before anything bridged runs; if it cannot, that is
+//     said and nothing bridged is enumerated, probed or cached (ADR-0017
+//     Y4);
 //   - the thread lives until the scanner is destroyed, and is joined only
 //     after it has killed and reaped every child (change C: the death
 //     signal of a child fires when the thread that forked it exits).
@@ -76,6 +80,19 @@ struct PluginScannerConfig {
     // inside it, each with its own 120 s).
     uint64_t list_timeout_ms = 600000;
     std::string scratch_dir = "/tmp";
+    // Windows plug-ins through yabridge (ADR-0017 Y4), resolved by the
+    // entry layer. The Wine prefix they run in, and the command that
+    // creates it (wineboot --init, an absolute path: children are not
+    // looked up on PATH). When a scan lists a bridged bundle and
+    // `<wine_prefix>/system.reg` does not exist, the command runs first,
+    // alone, within wine_prefix_timeout_ms; nothing bridged is enumerated
+    // or probed until it has. A first Wine start that creates the prefix
+    // takes longer than a probe's timeout, which would cache the plug-in
+    // Blocked. Empty prefix: no step. Empty command with a prefix: Wine is
+    // not installed, and bridged bundles are not scanned, said.
+    std::string wine_prefix;
+    std::vector<std::string> wine_prefix_command;
+    uint64_t wine_prefix_timeout_ms = 120000;
     // Q1: scan at every engine start. Tests of the chains turn it off.
     bool scan_at_start = true;
     int nice = 10;

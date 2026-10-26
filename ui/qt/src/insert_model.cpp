@@ -32,6 +32,13 @@ const char* format_name(api::PluginFormat f) {
     return f == api::PluginFormat::Vst3 ? "VST3" : "LV2";
 }
 
+// ADR-0017 Y2: a Windows build running under Wine through yabridge is
+// validated by its deadline, not the buffer trap, and costs a hop per
+// block, so the operator is told which plug-ins those are.
+QString runs_under(api::PluginBridge b) {
+    return b == api::PluginBridge::Yabridge ? QStringLiteral("Windows (Wine)") : QString();
+}
+
 QString channels_name(uint32_t n) {
     return n == 1 ? QStringLiteral("Mono") : n == 2 ? QStringLiteral("Stereo")
                                                     : QStringLiteral("%1 ch").arg(n);
@@ -196,6 +203,7 @@ QVariantList InsertModel::browse(const QString& category, const QString& search)
         m.insert(QStringLiteral("vendor"), q(p.vendor));
         m.insert(QStringLiteral("format"), QString::fromLatin1(format_name(p.format)));
         m.insert(QStringLiteral("channels"), channels_name(p.inputs));
+        m.insert(QStringLiteral("host"), runs_under(p.bridge));
         QStringList cats;
         for (const std::string& c : p.categories) {
             if (c != "Fx") cats << q(c);
@@ -289,6 +297,7 @@ void InsertModel::refreshPanel() {
     if (p != nullptr) {
         subtitle += QStringLiteral(" · %1 %2 · %3")
                         .arg(QString::fromLatin1(format_name(p->format)), q(p->version), q(p->vendor));
+        if (p->bridge != api::PluginBridge::None) subtitle += QStringLiteral(" · ") + runs_under(p->bridge);
     }
     if (v.latency_frames > 0) subtitle += QStringLiteral(" · %1 samples").arg(v.latency_frames);
 

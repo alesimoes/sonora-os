@@ -21,8 +21,9 @@
   (ADR-0010). The audio path was measured working on 10.0.
 - Y2: no new discovery path. A bundle counts as bridged when it carries a
   Windows module *and* its Linux binary is yabridge's chainloader. The host
-  marks it `"bridge":"yabridge"`. The marker is not yet in the probe record
-  or the catalog (follow-up).
+  marks it `"bridge":"yabridge"`. Since the update of 2026-10-25 the marker
+  is in the probe record (version 2) and the catalog (protocol 14), shown
+  as "Windows (Wine)".
 - Y3: class IDs in a bundle's `moduleinfo.json` are matched in both byte
   orders, and both files are read (`Contents/Resources/` and `Contents/`).
   Without this a bridged bundle is "not installed".
@@ -33,7 +34,8 @@
   `tools/test-yabridge.sh` with Sonora's own test plugin cross-built for
   Windows. CI skips that test (77).
 - Y6: deferred: VST2, CLAP, appliance packaging, the deadline sign-off on
-  the target, the catalog field.
+  the target. The catalog field, the prefix before the first scan and the
+  run-time crash test are done (update of 2026-10-25).
 
 ## Context
 
@@ -242,3 +244,43 @@ The Y5 test measured the following:
   be caught.
 - The test image (`sonora-yabridge:trixie`) is local and labelled
   `org.sonora=1`. `tools/clean.sh` removes it with the rest.
+
+## Update, 2026-10-25: the Y2, Y4 and Y6 follow-ups
+
+Made by the follow-up PR (BACKLOG Track 4 item 6). The appliance deadline
+sign-off (Y6) is still open: it needs the UMC1820.
+
+- **The marker reaches the operator (Y2).** The probe record is version 2:
+  `bridge` comes after `bundle`, only on a bridged VST3, and its only value
+  is `"yabridge"`. `decode()` still reads version 1, as a native plugin's.
+  The engine's cache is discarded anyway, because the host's `--version`
+  line now names `probe 2`. `contracts/api` `PluginInfo::bridge`
+  (`PluginBridge::None | Yabridge`, after `has_editor`) is control protocol
+  14. The chooser and the insert panel show "Windows (Wine)". A Blocked
+  record, which the engine writes itself, takes the marker from the
+  bundle's listing. A Windows plug-in that hung is still shown as one.
+- **The prefix is created by the scanner, not only by packaging (Y4,
+  Y6).** When a scan lists a bridged bundle and `<prefix>/system.reg` is
+  missing, the scanner first runs `env WINEDLLOVERRIDES=mscoree,mshtml=
+  wineboot --init` as a child of its own, with a 120 s limit. Nothing
+  bridged is enumerated, probed, or started for a chain until that child
+  ends. The prefix is `$WINEPREFIX`, or `~/.wine` when it is unset, resolved
+  by the entry layer. Packaging can still create the prefix at first boot;
+  the scanner then finds it and does nothing. Doing it in the scanner too
+  covers a deleted prefix and a developer's machine. If the prefix cannot
+  be made (no Wine, a failure, the limit), the operator is told. Nothing
+  bridged is probed or cached Blocked, and the next scan tries again. The
+  Mono and Gecko installers are off because their dialogs would wait for
+  an answer on a kiosk where nobody can give one.
+- **A crash during a running chain (Y4).** `yabridge_wine.sh` step 7 runs
+  the Crash class, built for Windows, after the State pass-through through
+  the plugin boundary (`plugin_driver --scenario crash_bridged`) and
+  triggers the segfault inside Wine. The crash is in Wine's process. The
+  host may die, if yabridge aborts, or stop answering. The scenario accepts
+  either, because both are faults the engine already handles (ADR-0012
+  §3). What must hold: every callback runs, none waits on Wine, nothing
+  completes from the crashed chain, and the Crash class is the plugin
+  named. Wine's crash dialog is turned off in the test prefix, for the same
+  kiosk reason as the installers; packaging must do the same. The test
+  runs only under `tools/test-yabridge.sh` (CI skips it, 77). Which of the
+  two outcomes Wine 10.0 and yabridge 5.1.1 give is not yet measured.

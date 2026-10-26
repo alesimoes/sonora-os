@@ -98,6 +98,7 @@ api::PluginInfo catalog_entry(const pr::Record& r) {
     p.usable = r.ok();
     p.refusal = r.ok() ? std::string() : r.reason;
     p.has_editor = r.has_editor;
+    p.bridge = vst3 && r.bridge == "yabridge" ? api::PluginBridge::Yabridge : api::PluginBridge::None;
     for (const pr::Param& q : r.params) {
         if (p.params.size() >= api::wire::kMaxPluginParams) break;
         // A key past the catalog's cap could not be named by a client.
@@ -121,7 +122,7 @@ api::PluginInfo catalog_entry(const pr::Record& r) {
 // ---- the worker's own state
 
 struct PluginScanner::Job {
-    enum class Kind { Bundles, ListLv2, ListVst3, Probe };
+    enum class Kind { Bundles, ListLv2, ListVst3, Probe, WinePrefix };
     Kind kind = Kind::Probe;
     Key key;
     bool chain = false;      // a chain-start probe, or joined by one
@@ -159,7 +160,12 @@ struct PluginScanner::Worker {
     bool rescan = false;           // this scan probes blocked plugins again
     bool scanned_once = false;
     std::map<std::string, std::string> listed;           // bundle -> format, this scan
+    std::set<std::string> bridged;                       // the last listing's, run under Wine
     std::set<std::string> changed_lv2, changed_vst3;
+    // ADR-0017 Y4, per scan: the prefix looked at, and why it could not be
+    // made (empty: it exists, or nothing bridged is installed).
+    bool wine_checked = false;
+    std::string wine_failed;
     // Bundles enumerated whose probes are not all in: the new fingerprint
     // is cached only once they are, so a scan cut short re-enumerates them.
     std::map<std::string, std::pair<BundleFingerprint, uint32_t>> settling;
@@ -214,7 +220,7 @@ struct PluginScanner::Worker {
         j.child = platform::ChildProcess::spawn(argv, o, error);
         if (!j.child) {
             std::remove(j.out_path.c_str());
-            notice("the plug-in scan could not start " + cfg.host_path + ": " + error);
+            notice("the plug-in scan could not start " + argv.front() + ": " + error);
             return false;
         }
         j.started_ms = steady_ms();
@@ -419,6 +425,9 @@ struct PluginScanner::Worker {
         // enumeration named.
         if (chain_asked.erase(k)) urgent = true;
         std::string bundle = r.bundle.empty() ? bundle_hint : r.bundle;
+        // A record the engine wrote (Blocked) says no more than the key: a
+        // Windows plug-in that hung is still shown as one.
+        if (r.bridge.empty() && r.format == "vst3" && is_bridged(bundle)) r.bridge = "yabridge";
         if (r.outcome == pr::Outcome::NotInstalled || bundle.empty()) {
             run_only[k] = std::move(r);
             publish_wanted = true;
@@ -441,6 +450,72 @@ struct PluginScanner::Worker {
         b.plugins.push_back(std::move(r));
         dirty = true;
         publish_wanted = true;
+    }
+
+    // ---- Windows plug-ins (ADR-0017 Y4)
+
+    bool is_bridged(const std::string& bundle) const {
+        if (bundle.empty()) return false;
+        if (bridged.count(bundle)) return true;
+        const auto it = cache.bundles.find(bundle);
+        return it != cache.bundles.end() && std::any_of(it->second.plugins.begin(), it->second.plugins.end(),
+                                                        [](const pr::Record& r) { return !r.bridge.empty(); });
+    }
+
+    bool wine_prefix_exists() const { return std::ifstream(cfg.wine_prefix + "/system.reg").good(); }
+
+    bool wine_preparing() const {
+        return std::any_of(jobs.begin(), jobs.end(), [](const auto& j) { return j->kind == Job::Kind::WinePrefix; });
+    }
+
+    // Nothing bridged runs this scan. A changed bridged bundle is left
+    // unsettled, so the next scan enumerates it again; what an unchanged one
+    // had cached stays as it was.
+    void wine_unavailable(const std::string& why) {
+        wine_failed = "its Wine prefix " + cfg.wine_prefix + " " + why;
+        notice("Windows plug-ins (Wine) are not scanned: " + wine_failed);
+        for (const std::string& b : bridged) {
+            changed_vst3.erase(b);
+            settling.erase(b);
+        }
+    }
+
+    // Before the enumeration, once per scan: true when the prefix is being
+    // created, which the enumeration then waits on.
+    bool prepare_wine() {
+        if (cfg.wine_prefix.empty() || bridged.empty() || wine_prefix_exists()) return false;
+        if (cfg.wine_prefix_command.empty()) {
+            wine_unavailable("does not exist, and Wine is not installed (no wineboot)");
+            return false;
+        }
+        auto j = std::make_unique<Job>();
+        j->kind = Job::Kind::WinePrefix;
+        j->out_path = scratch("wine");
+        j->timeout_ms = cfg.wine_prefix_timeout_ms;
+        if (!spawn(*j, cfg.wine_prefix_command)) {
+            wine_unavailable("does not exist, and " + cfg.wine_prefix_command.front() + " could not start");
+            return false;
+        }
+        jobs.push_back(std::move(j));
+        return true;
+    }
+
+    void finish_wine(Job& j, bool timed_out) {
+        std::remove(j.out_path.c_str());
+        const std::string& cmd = cfg.wine_prefix_command.front();
+        const bool exited_ok = !timed_out && j.child->exited_normally() && j.child->exit_code() == 0;
+        if (exited_ok && wine_prefix_exists()) {
+            notice("the Wine prefix for Windows plug-ins was created: " + cfg.wine_prefix);
+            return;
+        }
+        const uint64_t t = cfg.wine_prefix_timeout_ms;
+        if (timed_out)
+            wine_unavailable("was not created within " +
+                             (t % 1000 == 0 ? std::to_string(t / 1000) + " s" : std::to_string(t) + " ms"));
+        else if (exited_ok)
+            wine_unavailable("is still missing after " + cmd + " ended");
+        else
+            wine_unavailable("could not be created: " + cmd + " " + ended(*j.child));
     }
 
     pr::Record blocked(const Key& k, const std::string& why) const {
@@ -516,6 +591,7 @@ struct PluginScanner::Worker {
             return;
         }
         listed.clear();
+        bridged.clear();
         for (const std::string& line : lines_of(out)) {
             json::Value v;
             json::Error e;
@@ -524,6 +600,9 @@ struct PluginScanner::Worker {
             const json::Value* f = v.find("format");
             if (!b || !b->is_string() || !f || !f->is_string() || b->text().empty()) continue;
             listed[b->text()] = f->text();
+            // ADR-0017 Y2: only on a bridged line, and only a VST3 is.
+            const json::Value* br = v.find("bridge");
+            if (br && br->is_string() && !br->text().empty() && f->text() == "vst3") bridged.insert(b->text());
         }
         changed_lv2.clear();
         changed_vst3.clear();
@@ -779,6 +858,7 @@ struct PluginScanner::Worker {
                 case Job::Kind::ListVst3:
                     finish_list(j, timed_out || !j.child->exited_normally() || j.child->exit_code() != 0);
                     break;
+                case Job::Kind::WinePrefix: finish_wine(j, timed_out); break;
             }
         }
     }
@@ -810,6 +890,8 @@ struct PluginScanner::Worker {
                     }
                     if (rescan) run_only.clear();
                     probed_this_scan.clear();
+                    wine_checked = false;
+                    wine_failed.clear();
                     if (start_list(Job::Kind::Bundles)) {
                         scan_wanted = false;
                         phase = Phase::Bundles;
@@ -820,6 +902,12 @@ struct PluginScanner::Worker {
             case Phase::Enumerate:
                 if (list_running) break;
                 if (!may_start) break;
+                // ADR-0017 Y4: the prefix before anything bridged runs. Its
+                // job is not a probe, so list_running holds the phase.
+                if (!wine_checked) {
+                    wine_checked = true;
+                    if (prepare_wine()) break;
+                }
                 if (!changed_lv2.empty() && !listed_lv2 && catalog_slot())
                     listed_lv2 = start_list(Job::Kind::ListLv2);
                 if (!changed_vst3.empty() && !listed_vst3 && catalog_slot())
@@ -834,6 +922,9 @@ struct PluginScanner::Worker {
                 while (!recording_now() && !stopping && !catalog_queue.empty() && catalog_slot()) {
                     const Pending p = catalog_queue.front();
                     catalog_queue.pop_front();
+                    // A rescan's blocked Windows plug-in, with no prefix to
+                    // run in: kept as it was cached.
+                    if (!wine_failed.empty() && is_bridged(p.bundle)) continue;
                     start_probe(p.key, false, p.bundle);
                 }
                 const bool catalog_running =
@@ -853,16 +944,24 @@ struct PluginScanner::Worker {
     bool listed_lv2 = false, listed_vst3 = false;
 
     // Chain-start probes: any free slot, the reserved one included.
+    // One of a Windows plug-in waits while its prefix is being created, and
+    // is refused for this run if it could not be (ADR-0017 Y4).
     void start_chain_probes() {
-        while (!chain_queue.empty() && jobs.size() < s.slots_ && !stopping) {
-            const Key k = chain_queue.front();
-            chain_queue.pop_front();
+        const bool preparing = wine_preparing();
+        for (auto it = chain_queue.begin(); it != chain_queue.end() && jobs.size() < s.slots_ && !stopping;) {
+            const Key k = *it;
             std::string bundle;
-            if (auto b = chain_bundles.find(k); b != chain_bundles.end()) {
-                bundle = b->second;
-                chain_bundles.erase(b);
+            const auto b = chain_bundles.find(k);
+            if (b != chain_bundles.end()) bundle = b->second;
+            const bool windows = is_bridged(bundle);
+            if (windows && preparing) {
+                ++it;
+                continue;
             }
-            start_probe(k, true, bundle);
+            it = chain_queue.erase(it);
+            if (b != chain_bundles.end()) chain_bundles.erase(b);
+            if (windows && !wine_failed.empty()) refuse(k, "it runs under Wine, and " + wine_failed, bundle);
+            else start_probe(k, true, bundle);
         }
     }
 

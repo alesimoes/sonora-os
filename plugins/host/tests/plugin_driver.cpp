@@ -1389,6 +1389,87 @@ int scenario_crash(const Args& a) {
     return 0;
 }
 
+// A Windows plugin that segfaults mid-chain under yabridge (ADR-0017 Y4,
+// run by tests/yabridge_wine.sh): the crash is in Wine's process, not the
+// host's, so how it reaches the host is yabridge's and Wine's business. The
+// host may die (yabridge aborts when its Wine side goes) or stop answering
+// (a call that never returns). Either is one of the engine's existing
+// faults (ADR-0012 §3): a death is seen at once, a silence leaves the plan
+// after kMaxConsecutiveMisses. What must hold is the same as natively: the
+// callback never waits, every one of them runs, nothing completes from a
+// dead host, and the plugin that crashed is the one named. --chain gives
+// the bridged pass-through then the bridged crash class (index 1).
+int scenario_crash_bridged(const Args& a) {
+    if (a.chain.size() != 2) {
+        std::printf("crash_bridged: --chain PASS,CRASH\n");
+        return 1;
+    }
+    const std::vector<std::string>& chain = a.chain;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("crash_bridged: %s\n", join(chain, ',').c_str());
+    Host host;
+    if (int r = start_ready(host, a, clock, chain, 1)) return r;
+    // A Wine crash handler can take a while; 1500 blocks is 4 s.
+    const uint64_t total = 1500, trigger = 200;
+    uint64_t gone_at = 0, removed_at = 0, completed_before = 0, completed_after = 0;
+    int streak = 0;
+    int32_t culprit = -2;
+    Signal sig(1);
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == trigger) host.send(1, 0, 0, 1.f);  // crash := 1
+        sig.sine(i, 440.0, 0.1f);
+        const bool out_of_plan = gone_at || removed_at;
+        // The control thread's job in the engine (a pidfd there): one
+        // non-blocking waitpid, kept inside the callback for brevity.
+        if (!gone_at && !host.alive()) {
+            gone_at = i;
+            if (!removed_at)
+                culprit = plugin::checked_instance(host.h->current_instance.load(std::memory_order_relaxed),
+                                                   uint32_t(chain.size()));
+        }
+        if (out_of_plan || gone_at) {
+            sig.silence_out();
+            return true;
+        }
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0) {
+            streak = 0;
+            ++(i < trigger ? completed_before : completed_after);
+            return true;
+        }
+        sig.silence_out();
+        if (i == 0 || i < trigger) return true;  // the pipeline's first, and Wine warming up
+        const int32_t running = plugin::checked_instance(
+            host.h->current_instance.load(std::memory_order_relaxed), uint32_t(chain.size()));
+        if (streak == 0) culprit = -1;
+        if (running >= 0) culprit = running;
+        if (++streak >= kMaxConsecutiveMisses) removed_at = i;
+        return true;
+    });
+    const bool died = gone_at != 0 && (removed_at == 0 || gone_at <= removed_at);
+    const std::string death = host.death();
+    host.kill_now();
+    report_loop(st);
+    if (died)
+        std::printf("  the host died at block %llu (%s), running instance %d (%s)\n",
+                    (unsigned long long)gone_at, death.c_str(), culprit, chain_name(chain, culprit));
+    else if (removed_at)
+        std::printf("  the host stopped answering; out of the plan at block %llu after %d misses, in instance %d "
+                    "(%s)%s\n",
+                    (unsigned long long)removed_at, kMaxConsecutiveMisses, culprit, chain_name(chain, culprit),
+                    gone_at ? "; it died later" : "");
+    std::printf("  %llu blocks through Wine before the crash, %llu completed after it\n",
+                (unsigned long long)completed_before, (unsigned long long)completed_after);
+    check(completed_before >= trigger / 2, "the bridged chain ran before the crash");
+    const uint64_t left = died ? gone_at : removed_at;
+    check(left >= trigger && left < trigger + 1000, "the crashed chain left the plan (died, or the miss limit)");
+    check(culprit == 1, "the crashing Windows plugin is named (chain index 1)");
+    check(completed_after <= 2, "no block completed from the crashed chain past the one in flight");
+    check(st.callbacks == total, "the driver ran every callback after the crash");
+    check(st.over_period <= kOsNoiseCallbacks, "no callback waited on Wine");
+    return 0;
+}
+
 // A plugin that stops returning in time is dropped per block, never waited
 // on, and removed after kMaxConsecutiveMisses with its name.
 int scenario_deadline(const Args& a) {
@@ -3153,6 +3234,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "latency") r = scenario_latency(a);
     else if (a.scenario == "latency_change") r = scenario_latency_change(a);
     else if (a.scenario == "crash") r = scenario_crash(a);
+    else if (a.scenario == "crash_bridged") r = scenario_crash_bridged(a);
     else if (a.scenario == "deadline") r = scenario_deadline(a);
     else if (a.scenario == "nonfinite") r = scenario_nonfinite(a);
     else if (a.scenario == "worker") r = scenario_worker(a);

@@ -9,7 +9,13 @@
 //   version <the whole --version line>
 //   plugin <uri> <bundle> <lv2|vst3> <in> <out> <behaviour> [ms]
 //   listfail <bundle> <reason...>          (a VST3 bundle whose scan crashed)
-// behaviours: ok, refuse, crash, hang, sleep (then ok after `ms`).
+//   bridged <bundle>                       (a VST3 bundle yabridgectl made)
+//   wineboot <ms> <ok|fail>                (what --fake-wineboot does)
+// behaviours: ok, refuse, crash, hang, sleep (then ok after `ms`), wine (a
+// plugin under Wine: hangs, as the first Wine start does while it creates
+// its prefix, unless $WINEPREFIX/system.reg exists; then ok).
+// --fake-wineboot stands in for `wineboot --init` (ADR-0017 Y4): after
+// `ms` it creates $WINEPREFIX/system.reg and exits 0, or exits 1.
 // SONORA_FAKE_HOST_LOG, if set, gets one line per run, appended:
 //   <mode> <args...> pid=<pid> nice=<n> io=<class>
 // which is how the tests count probes and check their priority.
@@ -18,6 +24,7 @@
 #include <sys/syscall.h>
 #endif
 #include <sys/resource.h>
+#include <sys/stat.h>
 
 #include <chrono>
 #include <csignal>
@@ -43,10 +50,24 @@ struct Plugin {
 };
 
 struct World {
-    std::string version = "sonora-plugin-host layout 1 clock 1 wire 3 probe 1";
+    std::string version =
+        "sonora-plugin-host layout 1 clock 1 wire 3 probe " + std::to_string(pr::kProbeRecordVersion);
     std::vector<Plugin> plugins;
     std::vector<std::pair<std::string, std::string>> listfail;
+    std::set<std::string> bridged;
+    uint32_t wineboot_ms = 0;
+    bool wineboot_ok = true;
 };
+
+std::string prefix_marker() {
+    const char* p = std::getenv("WINEPREFIX");
+    return p && *p ? std::string(p) + "/system.reg" : std::string();
+}
+
+bool prefix_exists() {
+    const std::string m = prefix_marker();
+    return !m.empty() && std::ifstream(m).good();
+}
 
 World read_world() {
     World w;
@@ -70,6 +91,14 @@ World read_world() {
             std::getline(in, reason);
             while (!reason.empty() && reason.front() == ' ') reason.erase(0, 1);
             w.listfail.emplace_back(b, reason);
+        } else if (kind == "bridged") {
+            std::string b;
+            in >> b;
+            w.bridged.insert(b);
+        } else if (kind == "wineboot") {
+            std::string how;
+            in >> w.wineboot_ms >> how;
+            w.wineboot_ok = how != "fail";
         }
     }
     return w;
@@ -114,13 +143,14 @@ int main(int argc, char** argv) {
     ::setrlimit(RLIMIT_CORE, &no_core);
     log_run(argc, argv);
     const World w = read_world();
-    bool list = false, bundles_only = false, only_given = false, version = false;
+    bool list = false, bundles_only = false, only_given = false, version = false, wineboot = false;
     std::string format, probe;
     uint32_t channels = 0;
     std::set<std::string> given;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--version") version = true;
+        else if (a == "--fake-wineboot") wineboot = true;
         else if (a == "--list") list = true;
         else if (a == "--bundles-only") bundles_only = true;
         else if (a == "--only-given") only_given = true;
@@ -134,13 +164,27 @@ int main(int argc, char** argv) {
         std::printf("%s\n", w.version.c_str());
         return 0;
     }
+    if (wineboot) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(w.wineboot_ms));
+        const std::string m = prefix_marker();
+        if (!w.wineboot_ok || m.empty()) return 1;
+        const std::string dir = m.substr(0, m.rfind('/'));
+        ::mkdir(dir.c_str(), 0755);
+        std::ofstream(m) << "WINE REGISTRY Version 2\n";
+        return 0;
+    }
     if (list) {
         std::set<std::string> seen;
         for (const Plugin& p : w.plugins) {
             if (!format.empty() && p.format != format) continue;
             if (only_given && p.format == "vst3" && !given.count(p.bundle)) continue;
             if (bundles_only) {
-                if (seen.insert(p.bundle).second)
+                if (!seen.insert(p.bundle).second) continue;
+                // As the host writes it: "bridge" only on a bridged line.
+                if (w.bridged.count(p.bundle))
+                    std::printf("{\"bundle\":\"%s\",\"format\":\"%s\",\"bridge\":\"yabridge\"}\n",
+                                esc(p.bundle).c_str(), p.format.c_str());
+                else
                     std::printf("{\"bundle\":\"%s\",\"format\":\"%s\"}\n", esc(p.bundle).c_str(), p.format.c_str());
                 continue;
             }
@@ -175,6 +219,7 @@ int main(int argc, char** argv) {
         return 5;
     }
     r.bundle = found->bundle;
+    if (w.bridged.count(found->bundle) && r.format == "vst3") r.bridge = "yabridge";
     r.name = "Fake " + found->uri;
     r.vendor = "Sonora tests";
     r.version = "1.0";
@@ -194,7 +239,7 @@ int main(int argc, char** argv) {
     // SIGKILL, not SIGSEGV: a sanitizer build catches SIGSEGV and exits
     // with a code instead, which is not what a crashing plugin looks like.
     if (found->behaviour == "crash") ::kill(::getpid(), SIGKILL);
-    if (found->behaviour == "hang")
+    if (found->behaviour == "hang" || (found->behaviour == "wine" && !prefix_exists()))
         for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
     if (found->behaviour == "sleep") std::this_thread::sleep_for(std::chrono::milliseconds(found->ms));
     if (found->behaviour == "refuse") {

@@ -48,7 +48,7 @@
 // and later when it stops being so (ipc.h, die_with_parent).
 //
 // --version prints the contract versions this binary speaks, the probe
-// record's included (`probe 1`); the engine runs it at start-up (ADR-0012
+// record's included (`probe 2`); the engine runs it at start-up (ADR-0012
 // §5.5) and its plugin scanner before it trusts a record.
 //
 // --list gives every record the bundle it came from (ADR-0012, amendment of
@@ -532,6 +532,7 @@ int probe(const Options& o) {
         return plugin::kHostExitRefused;
     }
     r.bundle = info.bundle;
+    r.bridge = info.bridge;
     r.name = info.name;
     r.vendor = info.vendor;
     r.version = info.version;

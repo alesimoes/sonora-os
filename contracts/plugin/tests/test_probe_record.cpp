@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The probe record, version 1 (probe_record.h): the golden line is pinned,
-// every record round-trips exactly, a record of another version is refused
-// as that, and malformed, mistyped, inconsistent or over-cap records are
-// refused rather than guessed at. A fuzzed line never crashes the decoder.
+// The probe record, version 2 (probe_record.h): the golden line is pinned,
+// every record round-trips exactly, a version-1 record still reads (as a
+// native plugin's), a record of another version is refused as that, and
+// malformed, mistyped, inconsistent or over-cap records are refused rather
+// than guessed at. A fuzzed line never crashes the decoder.
 #include "sonora/plugin/probe_record.h"
 
 #include <cstdio>
@@ -11,7 +12,7 @@
 
 using namespace sonora::plugin::probe;
 
-static_assert(kProbeRecordVersion == 1, "the golden line below describes record version 1");
+static_assert(kProbeRecordVersion == 2, "the golden lines below describe record version 2");
 
 namespace {
 
@@ -26,7 +27,7 @@ int failures = 0;
 
 Record sample() {
     Record r;
-    r.host = "sonora-plugin-host layout 1 clock 1 wire 1 probe 1";
+    r.host = "sonora-plugin-host layout 1 clock 1 wire 1 probe 2";
     r.uri = "urn:sonora:test#gain";
     r.format = "lv2";
     r.bundle = "/usr/lib/lv2/sonora-test.lv2";
@@ -75,7 +76,7 @@ bool same(const Record& a, const Record& b) {
             return false;
     }
     return a.record == b.record && a.host == b.host && a.uri == b.uri && a.format == b.format &&
-           a.bundle == b.bundle && a.name == b.name && a.vendor == b.vendor && a.version == b.version &&
+           a.bundle == b.bundle && a.bridge == b.bridge && a.name == b.name && a.vendor == b.vendor && a.version == b.version &&
            a.categories == b.categories && a.has_editor == b.has_editor && a.audio_in == b.audio_in &&
            a.audio_out == b.audio_out && a.sidechain_in == b.sidechain_in && a.outcome == b.outcome &&
            a.reason == b.reason && a.channels == b.channels && a.replicas == b.replicas &&
@@ -85,7 +86,7 @@ bool same(const Record& a, const Record& b) {
 
 void golden() {
     const std::string want =
-        "{\"record\":1,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 1 probe 1\",\"uri\":\"urn:sonora:test#gain\","
+        "{\"record\":2,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 1 probe 2\",\"uri\":\"urn:sonora:test#gain\","
         "\"format\":\"lv2\",\"bundle\":\"/usr/lib/lv2/sonora-test.lv2\",\"name\":\"Gain \\\"test\\\"\","
         "\"vendor\":\"Sonora\",\"version\":\"1.2\",\"categories\":[\"Utility\",\"Amplifier\"],\"has_editor\":false,"
         "\"audio_in\":1,\"audio_out\":1,\"sidechain_in\":0,\"ok\":true,\"channels\":2,\"replicas\":2,"
@@ -97,6 +98,17 @@ void golden() {
     const std::string got = encode(sample());
     if (got != want) std::printf("golden:\n  got  %s\n  want %s\n", got.c_str(), want.c_str());
     CHECK(got == want);
+    // A bridged VST3 (ADR-0017 Y2): `bridge` right after `bundle`, as the
+    // host's --list has it.
+    Record r = sample();
+    r.uri = "vst3:534F4E4F524156535433544553540009";
+    r.format = "vst3";
+    r.bundle = "/home/op/.vst3/yabridge/sonora-test-state.vst3";
+    r.bridge = "yabridge";
+    r.params.clear();
+    const std::string bridged = encode(r);
+    CHECK(bridged.find("\"bundle\":\"/home/op/.vst3/yabridge/sonora-test-state.vst3\",\"bridge\":\"yabridge\","
+                       "\"name\":") != std::string::npos);
 }
 
 void round_trips() {
@@ -132,6 +144,18 @@ void round_trips() {
         "\"outcome\":\"ok\",\"bypass\":\"plugin\",\"params\":[]}";
     CHECK(decode(other, back, e));
     CHECK(back.bundle == "/b" && back.name == "\xc3\xa9\xf0\x9f\x8e\xb5" && back.plugin_bypass && back.has_editor);
+    // That line is a version-1 record, as an engine before ADR-0017's
+    // follow-up wrote it: it still reads, as a native plugin's.
+    CHECK(back.record == 1 && back.bridge.empty());
+    // A bridged plugin's record comes back bridged.
+    r = sample();
+    r.format = "vst3";
+    r.uri = "vst3:534F4E4F524156535433544553540009";
+    r.bridge = "yabridge";
+    CHECK(decode(encode(r), back, e) && same(r, back) && back.bridge == "yabridge");
+    r.outcome = Outcome::Blocked;
+    r.reason = "its probe did not answer within 30 s";
+    CHECK(decode(encode(r), back, e) && same(r, back));
 }
 
 void refusals() {
@@ -149,8 +173,26 @@ void refusals() {
         if (at != std::string::npos) s.replace(at, from.size(), to);
         return s;
     };
-    CHECK(refused(swap("\"record\":1", "\"record\":2"), "version 2"));
-    CHECK(refused(swap("\"record\":1,", ""), "no \"record\""));
+    CHECK(refused(swap("\"record\":2", "\"record\":3"), "version 3"));
+    CHECK(refused(swap("\"record\":2", "\"record\":0"), "version 0"));
+    CHECK(refused(swap("\"record\":2,", ""), "no \"record\""));
+    // `bridge`: version 2's only, "yabridge" only, a VST3's only.
+    const std::string bridged_lv2 = swap("\"name\":", "\"bridge\":\"yabridge\",\"name\":");
+    CHECK(refused(bridged_lv2, "not a VST3"));
+    std::string vst3 = good;
+    vst3.replace(vst3.find("\"format\":\"lv2\""), 14, "\"format\":\"vst3\"");
+    const auto with_bridge = [&](const std::string& line, const std::string& value) {
+        std::string s = line;
+        s.replace(s.find("\"name\":"), 7, "\"bridge\":" + value + ",\"name\":");
+        return s;
+    };
+    CHECK(decode(with_bridge(vst3, "\"yabridge\""), back, e) && back.bridge == "yabridge");
+    CHECK(refused(with_bridge(vst3, "\"wine\""), "bridge is \"wine\""));
+    CHECK(refused(with_bridge(vst3, "\"\""), "bridge is \"\""));
+    CHECK(refused(with_bridge(vst3, "1"), "bridge is not a string"));
+    std::string v1 = with_bridge(vst3, "\"yabridge\"");
+    v1.replace(v1.find("\"record\":2"), 10, "\"record\":1");
+    CHECK(refused(v1, "unknown key \"bridge\""));
     CHECK(refused(swap("\"ok\":true", "\"ok\":false"), "disagree"));
     CHECK(refused(swap("\"outcome\":\"ok\"", "\"outcome\":\"maybe\""), "outcome"));
     CHECK(refused(swap("\"format\":\"lv2\"", "\"format\":\"au\""), "format"));

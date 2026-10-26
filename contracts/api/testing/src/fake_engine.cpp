@@ -192,6 +192,9 @@ std::vector<PluginInfo> fake_catalog() {
     c[2].categories = {"Fx", "Dynamics"};
     c[2].inputs = c[2].outputs = 1;
     c[2].has_editor = true;
+    // A Windows build through yabridge (ADR-0017 Y2), so an interface's
+    // "Windows (Wine)" tag has something to show against the fake.
+    c[2].bridge = PluginBridge::Yabridge;
     c[2].params = {param(0, "0", "Threshold", 0.0f, 1.0f, 0.5f, kParamAutomatable, "dB"),
                    param(1, "1", "Ratio", 0.0f, 1.0f, 0.25f, kParamAutomatable),
                    param(2, "7", "Mode", 0.0f, 1.0f, 0.0f, kParamAutomatable | kParamEnum, "", 3,

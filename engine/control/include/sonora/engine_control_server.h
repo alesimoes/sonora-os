@@ -159,6 +159,11 @@ public:
         std::string plugin_cache;
         // The image build id, in the cache header (change B).
         std::string plugin_build_id;
+        // Windows plug-ins (ADR-0017 Y4), resolved by the entry layer: the
+        // Wine prefix and the command that creates it before the first
+        // scan of a bridged bundle (PluginScannerConfig). Empty: no step.
+        std::string plugin_wine_prefix;
+        std::vector<std::string> plugin_wine_prefix_command;
         // Q1: a scan at every engine start. Off only in tests of the chains.
         bool plugin_scan_at_start = true;
         // Probe slots, one of them reserved for chain starts (change E); 0

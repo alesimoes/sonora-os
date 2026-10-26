@@ -1104,13 +1104,27 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          3000-block run, a factory crash costing one entry, and the Liar
          refused by the timeout (Y4). Container round trip: p50 161 µs and
          p99 598 µs through yabridge, against 58 µs and 250 µs native.
-       - [ ] Follow-ups (ADR-0017 Y2, Y4, Y6):
-         - `bridge` in the probe record (version 2) and in `contracts/api`
-           PluginInfo, so the operator sees "Windows (Wine)".
-         - A crash during a running chain under Wine.
-         - The Wine prefix created before the first scan, so a cold probe
-           is not cached Blocked.
-         - The deadline sign-off on the appliance with the UMC1820 and a
+       - [ ] Follow-ups (ADR-0017 Y2, Y4, Y6; update of 2026-10-25):
+         - [x] `bridge` in the probe record (version 2, version 1 still
+           read) and in `contracts/api` PluginInfo (protocol 14), so the
+           operator sees "Windows (Wine)" in the chooser and the insert
+           panel. ctest `plugin_probe_record`, `api_wire`, `ui_inserts`,
+           `plugin_host_yabridge_probe_com_order`; the conformance check
+           (`api_conformance_fake` and the engine's) holds that only a
+           VST3 is bridged.
+         - [x] A crash during a running chain under Wine:
+           `yabridge_wine.sh` step 7 (`plugin_driver --scenario
+           crash_bridged`), in the Wine-only run (`tools/test-yabridge.sh`;
+           skipped, 77, in CI). The host dying and the host going silent
+           are both accepted, as long as the callback never waits and the
+           plugin is named. Which one Wine gives is not yet measured.
+         - [x] The Wine prefix created before the first scan, so a cold probe
+           is not cached Blocked: the scanner runs `wineboot --init` before
+           anything bridged when `<prefix>/system.reg` is missing. A failure
+           is said and nothing bridged is cached. ctest
+           `plugin_scanner` (`wine_prefix`, fixtures, no Wine; the cold
+           probe is cached Blocked without it) and `plugin_paths`.
+         - [ ] The deadline sign-off on the appliance with the UMC1820 and a
            real Windows plugin, before it is offered.
        What it needs:
        - Wine and yabridge (GPL-3.0) in the plugins image and, later, the
