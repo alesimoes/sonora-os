@@ -108,6 +108,13 @@ add_executable(test_loop_playback tests/test_loop_playback.cpp)
 target_link_libraries(test_loop_playback PRIVATE sonora_core)
 add_test(NAME loop_playback COMMAND test_loop_playback)
 
+# Region fades through process(): every shape in and out, the same output
+# however the roll is cut into blocks, a locate into a fade, a loop wrapping
+# from a fade out into a fade in, with no allocation in process().
+add_executable(test_region_fades tests/test_region_fades.cpp)
+target_link_libraries(test_region_fades PRIVATE sonora_core)
+add_test(NAME region_fades COMMAND test_region_fades)
+
 # A loop take's passes from its wraps (ADR-0016 §5): lost wraps and a wrap
 # list that stops early or is missing derived from the loop length, and
 # recovery reading a take's file and list.
