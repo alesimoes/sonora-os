@@ -8,33 +8,51 @@ on:
 jobs:
   engine:
     name: Engine build and tests
-    runs-on: ubuntu-latest
+    # In tools/Dockerfile.build, the image tools/build-engine.sh uses: Debian
+    # trixie and its GCC 14, the compiler and baseline x86-64 codegen the
+    # appliance ships. The runner's own compiler moved with ubuntu-latest
+    # (Ubuntu 26.04's amd64v3 GCC 15 defaults to -march=x86-64-v3 and fuses
+    # FMAs, PR #154), so the host only runs Docker, and is pinned.
+    # brain/research/ci-shipped-toolchain.md.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+          cache-to: type=gha,scope=sonora-build,mode=max
+
+      # Unlimited memlock as tools/build-engine.sh and the appliance grant
+      # it, so test_memory_lock checks that locking works.
+      - name: Start the build container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev locales
-          # The comma-decimal regression tests (common/json, common/model,
-          # ui/keymap) skip without it.
-          sudo locale-gen de_DE.UTF-8
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: docker exec build cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        run: docker exec build bash -c 'cmake --build build -j"$(nproc)"'
 
       # The slow DSP tests (ctest label "slow") run one rate and one setting
       # here; .github/workflows/nightly.yml runs them in full. Tests run in
       # parallel: the timing checks among them compare blocks measured side
       # by side, so a neighbour's load does not move them.
       - name: Test
-        env:
-          SONORA_DSP_QUICK: "1"
-        run: ctest --test-dir build --output-on-failure -j"$(nproc)"
+        run: >-
+          docker exec -e SONORA_DSP_QUICK=1 build
+          bash -c 'ctest --test-dir build --output-on-failure -j"$(nproc)"'
 
   ui:
     name: Qt interface build and headless tests
@@ -60,6 +78,9 @@ jobs:
           cache-from: type=gha,scope=sonora-ui
           cache-to: type=gha,scope=sonora-ui,mode=max
 
+      - name: Compiler
+        run: docker run --rm sonora-ui:trixie c++ --version
+
       # tools/build-ui-entrypoint.sh fails before building if any UI test is
       # not registered: ui/qt skips itself when Qt is missing or too old, and
       # a green job that ran no UI test would say the interface was tested.
@@ -73,18 +94,30 @@ jobs:
 
   sanitizers:
     name: Thread and address sanitizers
-    runs-on: ubuntu-latest
+    # GCC 14's TSan, ASan and UBSan, in the engine job's trixie image: the
+    # shipped compiler's instrumentation, not whatever the runner carries.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+          cache-to: type=gha,scope=sonora-build,mode=max
+
+      - name: Start the build container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libjack-jackd2-dev locales
-          # The comma-decimal regression tests (common/json, common/model,
-          # ui/keymap) skip without it.
-          sudo locale-gen de_DE.UTF-8
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
 
       # The ring buffer is the one piece of genuinely concurrent code in the
       # tree, so a data race in it is worth a dedicated job. TSan is the only
@@ -92,39 +125,46 @@ jobs:
       # Newer kernels randomise more address bits than TSan's shadow mapping
       # expects, and it aborts with "unexpected memory mapping" before running
       # a single test. That looks like a test failure and is not one, so pin
-      # it rather than letting the job go flaky.
+      # it rather than letting the job go flaky. The setting is the kernel's,
+      # so it is made on the host and holds in the container.
       - name: Make ASLR compatible with the sanitizers
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
       - name: Build with TSan
         run: |
-          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
-          cmake --build build-tsan -j"$(nproc)"
+          docker exec build bash -ec '
+            cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
+            cmake --build build-tsan -j"$(nproc)"'
 
       - name: Run under TSan
         # TSan is here for the concurrent code. The DSP and native processor
         # tests are single-threaded arithmetic, slow under TSan's
         # instrumentation and with nothing for it to find, so they are left
         # out (ASan and UBSan below run them).
-        run: ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -E '^(dsp|native)_'
+        run: >-
+          docker exec build bash -c
+          'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -E "^(dsp|native)_"'
 
       # Except the format adapter, which is concurrent: a VST3 host sets
       # parameters from its main thread while process() runs. These drive
       # the Bridge and every bundle binary from two threads.
       - name: Run the native format tests under TSan
-        run: ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R '^native_format'
+        run: >-
+          docker exec build bash -c
+          'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R "^native_format"'
 
       - name: Build with ASan and UBSan
         run: |
-          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
-          cmake --build build-asan -j"$(nproc)"
+          docker exec build bash -ec '
+            cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+            cmake --build build-asan -j"$(nproc)"'
 
       - name: Run under ASan and UBSan
-        env:
-          SONORA_DSP_QUICK: "1"
-        run: ctest --test-dir build-asan --output-on-failure -j"$(nproc)"
+        run: >-
+          docker exec -e SONORA_DSP_QUICK=1 build bash -c
+          'ctest --test-dir build-asan --output-on-failure -j"$(nproc)"'
 
   rtsan:
     name: RealtimeSanitizer over the SONORA_RT call graph
@@ -143,7 +183,7 @@ jobs:
     # jackd2 (dummy driver) and PipeWire (pipewire-jack, the shipped pin):
     # a canary that must be reported, the backend conformance suite and a
     # recorded take.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -160,6 +200,9 @@ jobs:
           cache-from: type=gha,scope=sonora-rtsan
           cache-to: type=gha,scope=sonora-rtsan,mode=max
 
+      - name: Compiler
+        run: docker run --rm sonora-rtsan:trixie clang++-22 --version
+
       - name: Build with clang-22 -fsanitize=realtime and run every test under RTSan
         env:
           SONORA_RTSAN_IMAGE_BUILT: "1"
@@ -167,27 +210,64 @@ jobs:
 
   record:
     name: Records audio against PipeWire
-    runs-on: ubuntu-latest
+    # tools/build-engine.sh builds the engine in the sonora-build image, as
+    # the engine job does; only Docker runs on the host.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+
+      - name: Compiler
+        run: docker run --rm sonora-build:trixie c++ --version
 
       # The unit tests cover the data path; this covers the thing the product
       # is for. It caught an engine that recorded silence from unconnected
       # ports and reported success, which no unit test would have.
       - name: Record and verify
+        env:
+          SONORA_BUILD_IMAGE_BUILT: "1"
         run: tools/test-engine-docker.sh
 
   interop:
     name: BWF files read back by third-party tools
-    runs-on: ubuntu-latest
+    # The engine is built as in the record job, in the sonora-build image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+
+      - name: Compiler
+        run: docker run --rm sonora-build:trixie c++ --version
 
       # Phase 1 promises the takes open in another DAW at the right timecode.
       # ffprobe, soxi, libsndfile, mediainfo and a headless Ardour 8 judge two
       # recorded takes, the second starting off zero. About two minutes, most
       # of it installing Ardour into the reader image.
       - name: Record two takes and read them back
+        env:
+          SONORA_BUILD_IMAGE_BUILT: "1"
         run: tools/test-bwf-interop.sh
 
   quantum:
@@ -205,7 +285,7 @@ jobs:
 
   plugins:
     name: Plugin host against real LV2 and VST3 plugins
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -224,6 +304,9 @@ jobs:
           load: true
           cache-from: type=gha,scope=sonora-plugins
           cache-to: type=gha,scope=sonora-plugins,mode=max
+
+      - name: Compiler
+        run: docker run --rm sonora-plugins:trixie c++ --version
 
       # The engine job has no lilv, so plugins/host is skipped there. This
       # builds the whole root in the sonora-plugins image (lilv, eg-amp,

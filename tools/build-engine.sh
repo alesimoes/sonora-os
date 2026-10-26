@@ -53,7 +53,11 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
-docker build -t "$IMAGE" --label org.sonora=1 -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")"
+# CI builds the image beforehand with its layers in the Actions cache and
+# sets SONORA_BUILD_IMAGE_BUILT=1 so it is not built a second time here.
+if [[ "${SONORA_BUILD_IMAGE_BUILT:-0}" != 1 ]]; then
+  docker build -t "$IMAGE" --label org.sonora=1 -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")"
+fi
 # The build directory is container-specific; keep it out of the host tree.
 # Unlimited memlock, as the appliance grants it, so test_memory_lock can
 # check that locking works and not only that a finite limit is refused.
