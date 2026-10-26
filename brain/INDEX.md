@@ -32,6 +32,7 @@ One line per entry. Agents read this before opening anything else.
 - [Timeline model](specs/timeline-model.md) — `common/model`: snapshots, operations, undo, punch-in as the exit criterion, the playback plan and the monitor bus graph, residency-gated plan swap.
 
 ## Research
+- [CI compiles with the shipped toolchain](research/ci-shipped-toolchain.md) — every CI job that compiles C++ does so in a trixie image (GCC 14, baseline x86-64; clang-22 for RTSan) on a pinned `ubuntu-24.04` runner and prints its compiler; `ubuntu-latest` had moved to Ubuntu 26.04's x86-64-v3 GCC 15 unnoticed (#154).
 - [Multichannel USB interfaces](research/multichannel-usb-interfaces.md) — Pro Audio profile, WirePlumber state hooks, port ordering; what is verified and what is not.
 - [ADR-0007 measurements](research/adr-0007-measurements.md): the six "Unverified" items. RTSan is available (`clang-22` in trixie main; the default clang 19 lacks it). 8-byte atomics are lock-free on amd64 and arm64. Container IPC figures: socket and seqlock costs are fine, but a seqlock publisher must be paced and spinning at FIFO hits RT throttling. `snd-dummy model=rme9652` gives 26 ordered AUX ports in QEMU. cage maximizes parentless X11 editors.
 - [Pro Tools and Logic key bindings](research/protools-logic-key-bindings.md) — every binding in both profiles checked against Avid's and Apple's own guides; corrections, collisions, the Commands Keyboard Focus problem, and what the schema cannot express.
