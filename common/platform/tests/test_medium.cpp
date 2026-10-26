@@ -9,8 +9,10 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -98,12 +100,33 @@ int test_rename_dir() {
     return 0;
 }
 
+// The caution names the folder whose sync failed, with that sync's errno.
+// "<root>/Late/../Late" renames <root>/Late, and once it has moved, its own
+// spelling of its parent no longer opens, while <root> still syncs.
+int test_rename_dir_names_the_folder_that_did_not_sync() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "sonora_test_medium_rename_sync";
+    fs::remove_all(root);
+    fs::create_directories(root / "Late");
+    const std::string from = (root / "Late").string() + "/../Late";
+    std::string error;
+    CHECK(sonora::platform::rename_dir_durably(from, (root / "Named").string(), error));
+    CHECK(fs::is_directory(root / "Named"));
+    const std::string expected = "renamed, but " + (root / "Late").string() +
+                                 "/.. could not be synced: " + std::strerror(ENOENT);
+    if (error != expected) std::fprintf(stderr, "caution: %s\n", error.c_str());
+    CHECK(error == expected);
+    fs::remove_all(root);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_free_bytes() != 0) return 1;
     if (test_read_only() != 0) return 1;
     if (test_rename_dir() != 0) return 1;
+    if (test_rename_dir_names_the_folder_that_did_not_sync() != 0) return 1;
     std::printf("platform medium: ok\n");
     return 0;
 }

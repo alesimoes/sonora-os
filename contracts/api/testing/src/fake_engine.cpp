@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <limits>
 #include <utility>
@@ -356,7 +357,15 @@ bool FakeEngine::name_folder(const std::string& file, std::string& why) {
     if (!folder_untitled_ || folder_.empty()) return true;
     const fs::path target = fs::path(file).parent_path().lexically_normal();
     std::error_code ec;
-    if (target.string() == folder_ || fs::exists(target, ec)) return true;
+    if (fs::exists(target, ec)) return true;
+    // The engine's ActiveFolder::names_on_save(): a folder inside the
+    // active one, itself included, is written to, not renamed to.
+    const fs::path active = fs::path(folder_).lexically_normal();
+    const auto mismatch = std::mismatch(active.begin(), active.end(), target.begin(), target.end());
+    if (mismatch.first == active.end() ||
+        (mismatch.first->empty() && std::next(mismatch.first) == active.end())) {
+        return true;
+    }
     for (fs::directory_iterator it(folder_, ec), end; !ec && it != end; it.increment(ec)) {
         if (it->path().extension() == ".sonora") return true;
     }
@@ -413,6 +422,21 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
                     why = file + " holds a session file; open " + it->path().string() + " instead";
                     return false;
                 }
+            }
+            // The engine's words: only a session folder, which its first
+            // Save would rename.
+            const auto spelled = [](const fs::path& d) {
+                std::error_code e;
+                fs::path c = fs::weakly_canonical(d, e);
+                if (e) return fs::path();
+                return c.filename().empty() ? c.parent_path() : c;
+            };
+            const bool of_root = !cfg_.sessions_root.empty() &&
+                                 !spelled(p).empty() &&
+                                 spelled(p).parent_path() == spelled(cfg_.sessions_root);
+            if (!fs::is_directory(p / "Audio Files", ec) && !of_root) {
+                why = file + " is not a session folder: it has no \"Audio Files\" folder";
+                return false;
             }
             folder = p.lexically_normal().string();
             untitled = true;

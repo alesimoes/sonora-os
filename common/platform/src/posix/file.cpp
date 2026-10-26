@@ -103,11 +103,22 @@ bool rename_dir_durably(const std::string& from, const std::string& to, std::str
         return false;
     }
     const std::string a = parent_of(from), b = parent_of(to);
-    bool synced = sync_directory(b);
-    if (a != b) synced = sync_directory(a) && synced;
     // Renamed either way; an unsynced name is what a power cut may undo,
-    // and the caller is told so.
-    if (!synced) error = "renamed, but " + b + " could not be synced: " + std::strerror(errno);
+    // and the caller is told which folder and why. errno is read at the
+    // sync that failed: the other sync may since have changed it.
+    std::string unsynced;
+    int unsynced_errno = 0;
+    if (!sync_directory(b)) {
+        unsynced = b;
+        unsynced_errno = errno;
+    }
+    if (a != b && !sync_directory(a) && unsynced.empty()) {
+        unsynced = a;
+        unsynced_errno = errno;
+    }
+    if (!unsynced.empty()) {
+        error = "renamed, but " + unsynced + " could not be synced: " + std::strerror(unsynced_errno);
+    }
     return true;
 }
 

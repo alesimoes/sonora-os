@@ -2075,6 +2075,67 @@ void the_backend_figure_follows_a_late_connection() {
           latest()->frame == 250);
 }
 
+// #150 review, item 2: a Load of a folder accepted any directory, such as
+// ~/Music, entered it untitled (making "Audio Files/" there), and the first
+// Save then renamed it. Only a session folder is entered: one with "Audio
+// Files/", or a folder of the sessions root.
+void a_folder_load_enters_only_a_session_folder() {
+    const fs::path root = fresh_dir("folder_load_root");
+    const fs::path elsewhere = fresh_dir("folder_load_elsewhere");
+    struct Gone {
+        fs::path a, b;
+        ~Gone() {
+            std::error_code ec;
+            fs::remove_all(a, ec);
+            fs::remove_all(b, ec);
+        }
+    } gone{root, elsewhere};
+    const fs::path first = root / "Untitled";
+    fs::create_directories(first);
+    EngineControlServer::Options opts;
+    opts.sessions_root = root.string();
+    const model::Snapshot start = RealEngine::start_document(first);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(first, opts, false, true);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const auto load = [&](const fs::path& folder, std::string& message) {
+        api::ModelRequest m;
+        m.action = api::ModelAction::Load;
+        m.op = api::wire::encode_load(folder.string(), bytes);
+        const uint64_t seq = real.submit(m);
+        api::CommandReply got;
+        const bool answered = until(real, in, [&]() {
+            for (const api::CommandReply& r : in.replies)
+                if (r.seq == seq) got = r;
+            return got.seq == seq;
+        });
+        message = got.message;
+        return answered && got.result == DispatchResult::Ok;
+    };
+    std::string message;
+    const fs::path music = elsewhere / "Music";
+    fs::create_directories(music);
+    CHECK(touch(music / "song.flac"));
+    CHECK(!load(music, message));
+    CHECK(message.find("not a session folder") != std::string::npos);
+    CHECK(!fs::exists(music / "Audio Files"));
+    CHECK(*real.session().folder() == first.string());
+
+    const fs::path recording = elsewhere / "Rec";
+    fs::create_directories(recording / "Audio Files");
+    CHECK(load(recording, message));
+    CHECK(*real.session().folder() == recording.string());
+
+    const fs::path bare = root / "Untitled 3";
+    fs::create_directories(bare);
+    CHECK(load(fs::path(root.string() + "/./Untitled 3/"), message));
+    CHECK(fs::is_directory(bare / "Audio Files"));
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -2106,6 +2167,7 @@ int main() {
     the_first_save_names_the_untitled_folder();
     the_round_trip_is_kept_for_the_machine();
     the_backend_figure_follows_a_late_connection();
+    a_folder_load_enters_only_a_session_folder();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

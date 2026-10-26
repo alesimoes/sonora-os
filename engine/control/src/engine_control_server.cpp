@@ -236,6 +236,20 @@ uint64_t steady_ms_now() {
                                      .count());
 }
 
+// Whether `dir` is a folder of the sessions root `root`, however either is
+// spelled. False with no root.
+bool folder_of_root(const std::filesystem::path& dir, const std::string& root) {
+    if (root.empty()) return false;
+    const auto spelled = [](const std::filesystem::path& p, std::error_code& ec) {
+        std::filesystem::path c = std::filesystem::weakly_canonical(p, ec);
+        return c.filename().empty() ? c.parent_path() : c;   // a trailing '/'
+    };
+    std::error_code a, b;
+    const std::filesystem::path d = spelled(dir, a);
+    const std::filesystem::path r = spelled(root, b);
+    return !a && !b && d.parent_path() == r;
+}
+
 }  // namespace
 
 EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend* audio,
@@ -1064,6 +1078,12 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
                     why = file + " holds a session file; open " + it->path().string() + " instead";
                     return false;
                 }
+            }
+            // Entered Untitled, the first Save would rename it: only a
+            // session folder, never any directory such as ~/Music.
+            if (!fs::is_directory(p / "Audio Files", ec) && !folder_of_root(p, opts_.sessions_root)) {
+                why = file + " is not a session folder: it has no \"Audio Files\" folder";
+                return false;
             }
             folder = p.lexically_normal().string();
             kind = ActiveFolder::Kind::Untitled;
