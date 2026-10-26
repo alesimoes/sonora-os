@@ -688,7 +688,11 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             return refuse_after_open("the audio thread has not taken the last locates yet");
         }
     }
-    if (count_off && !click_->post_count_off(transport_->next_start())) {
+    // The tempo is the record point's, not the held playhead's.
+    const uint64_t record_point = range != nullptr  ? range->monitor_in
+                                  : loop != nullptr ? loop->from
+                                                    : Click::kAtPlayhead;
+    if (count_off && !click_->post_count_off(transport_->next_start(), record_point)) {
         return refuse_after_open("the audio thread has not taken the last count-off yet");
     }
     // Only now may the disk thread see these writers; until here the
@@ -965,7 +969,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     const Transport::Word word = transport_->load_word();
     if (word_hook_ != nullptr) word_hook_(word_hook_context_);
     // ADR-0020 §3: a count-off holds its take, rolling and recording nothing.
-    const bool counting = click_->begin_block(word);
+    const bool counting = click_->begin_block(word, plan_valid_);
     const bool recording = !counting && word.state == TransportState::Recording;
     const bool rolling = !counting && word.state != TransportState::Stopped;
     // A take is one contiguous span of the timeline. engine/control sends no

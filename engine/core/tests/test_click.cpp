@@ -74,7 +74,9 @@ ClickSegment four_four(uint64_t bpm, int64_t at = 0, uint32_t beats_per_bar = 4)
     return c;
 }
 
-bool publish_click(Session& s, const std::vector<ClickSegment>& segs) {
+// `valid` false: a track names an engine track the session does not have,
+// which plan_in_bounds() refuses.
+bool publish_click(Session& s, const std::vector<ClickSegment>& segs, bool valid = true) {
     sonora::PlanSizes sizes;
     sizes.tracks = 1;
     sizes.nodes = 3;
@@ -86,6 +88,7 @@ bool publish_click(Session& s, const std::vector<ClickSegment>& segs) {
     p->pan_exponent = 0.5f;
     p->tracks[0].channels = 1;
     sonora::layout_monitor_graph(*p);
+    if (!valid) p->tracks[0].engine_track = 99;
     for (std::size_t i = 0; i < segs.size(); ++i) p->click[i] = segs[i];
     return playback_test::publish_plan(s, p);
 }
@@ -107,6 +110,20 @@ void run(Session& s, std::vector<float>& l, std::vector<float>& r,
     playback_test::t_counting = true;
     s.process(b);
     playback_test::t_counting = false;
+}
+
+// A callback of `frames` frames and no input, outputs discarded.
+void run_frames(Session& s, uint32_t frames) {
+    std::vector<float> l(kBlock), r(kBlock);
+    float* outs[2] = {l.data(), r.data()};
+    const float* ins[1] = {nullptr};
+    sonora::backend::AudioBlock b{};
+    b.inputs = ins;
+    b.input_count = 1;
+    b.outputs = outs;
+    b.output_count = 2;
+    b.nframes = frames;
+    s.process(b);
 }
 
 struct Onset {
@@ -370,6 +387,90 @@ int test_count_off_only_from_stop() {
     return 0;
 }
 
+// An invalid plan has no tempo and no render() to end a count-off: the take
+// records at once, as it did before the count-off, rather than showing REC
+// and capturing nothing until Stop.
+int test_invalid_plan_does_not_hold_the_count_off() {
+    Rig rig("count_off_invalid");
+    Session& s = *rig.session;
+    CHECK(publish_click(s, {four_four(120)}, false));
+    sonora::Click& c = s.click();
+    c.set_count_off(true);
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    std::vector<float> l, r, in(kBlock, 0.5f);
+    std::string error;
+    CHECK(s.start_recording(1, &error));
+    for (int b = 0; b < 4; ++b) run(s, l, r, in.data());
+    CHECK(!c.counting_off());
+    CHECK(s.take_origin() == 0);
+    CHECK(s.transport().playhead() == 4 * kBlock);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+// A first callback of no frames cannot place the count-off's lead; it must
+// not spend the count-off.
+int test_zero_frame_first_block_keeps_the_count_off() {
+    Rig rig("count_off_zero");
+    Session& s = *rig.session;
+    CHECK(publish_click(s, {four_four(120)}));
+    sonora::Click& c = s.click();
+    c.set_count_off(true);
+    c.set_count_off_bars(1);
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    std::vector<float> l, r;
+    std::string error;
+    CHECK(s.start_recording(1, &error));
+    run_frames(s, 0);
+    run(s, l, r);
+    CHECK(c.counting_off());
+    CHECK(s.transport().playhead() == 0);
+    CHECK(s.take_origin() == Session::kNoOrigin);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
+// A punch with pre-roll holds the playhead at the pre-roll start, under
+// 120 bpm here; its record point is under 60 bpm. The count-off takes the
+// record point's tempo: 1 bar of 4 beats of 48000 frames, 3000 blocks,
+// not the 1500 of 120 bpm.
+int test_count_off_takes_the_record_points_tempo() {
+    Rig rig("count_off_point");
+    Session& s = *rig.session;
+    CHECK(publish_click(s, {four_four(120), four_four(60, 100000)}));
+    sonora::Click& c = s.click();
+    c.set_count_off(true);
+    c.set_count_off_bars(1);
+    s.tracks()[0]->set_rec_armed(true);
+    s.disk().start();
+    CHECK(s.post_locate(20000));
+    std::vector<float> l, r;
+    run(s, l, r);
+    sonora::PunchRange range;
+    range.capture_from = 150000;
+    range.capture_to = 300000;
+    range.monitor_in = 150000;
+    range.monitor_out = 300000;
+    range.start = 20000;
+    std::string error;
+    CHECK(s.start_punch(1, range, &error));
+    std::vector<Onset> got;
+    uint64_t blocks = 0;
+    do {
+        run(s, l, r);
+        onsets(c, l, blocks * kBlock, got);
+        ++blocks;
+    } while (c.counting_off() && blocks < 5000);
+    CHECK(blocks == 3000);
+    CHECK(got.size() == 4);
+    CHECK(got.size() < 2 || got[1].frame - got[0].frame == 48000);
+    CHECK(s.transport().playhead() == 20000);
+    CHECK(s.stop(&error));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +484,9 @@ int main() {
         {"locate_and_loop", test_locate_and_loop},
         {"count_off_holds_the_take", test_count_off_holds_the_take},
         {"count_off_only_from_stop", test_count_off_only_from_stop},
+        {"invalid_plan_does_not_hold_the_count_off", test_invalid_plan_does_not_hold_the_count_off},
+        {"zero_frame_first_block_keeps_the_count_off", test_zero_frame_first_block_keeps_the_count_off},
+        {"count_off_takes_the_record_points_tempo", test_count_off_takes_the_record_points_tempo},
     };
     for (const auto& t : tests) {
         const int r = t.fn();

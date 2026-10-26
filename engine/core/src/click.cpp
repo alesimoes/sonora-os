@@ -84,29 +84,34 @@ void Click::set_count_off_bars(uint32_t bars) {
     bars_.store(std::min(std::max<uint32_t>(bars, 1), kMaxCountOffBars), std::memory_order_relaxed);
 }
 
-bool Click::post_count_off(uint32_t start) {
-    const CountOffRecord r{start, count_off_bars()};
+bool Click::post_count_off(uint32_t start, uint64_t point) {
+    const CountOffRecord r{start, count_off_bars(), point};
     return posted_->write(&r, 1) == 1;
 }
 
-bool Click::begin_block(const Transport::Word& word) noexcept SONORA_RT {
+bool Click::begin_block(const Transport::Word& word, bool usable) noexcept SONORA_RT {
     CountOffRecord r{};
     while (posted_->read(&r, 1) == 1) {
         pending_ = true;
         pending_start_ = r.start;
         pending_bars_ = r.bars;
+        pending_point_ = r.point;
     }
     const bool recording = word.state == TransportState::Recording;
-    if (counting_off_ && !(recording && word.start == start_)) counting_off_ = false;
+    if (counting_off_ && !(usable && recording && word.start == start_)) counting_off_ = false;
     // Posted before the take's store, so a block may drain it while the
     // word is still Stopped: it waits for its take. Any other take means
     // its own was never seen, and it is dropped.
     if (!counting_off_ && pending_ && recording) {
-        if (word.start == pending_start_) {
+        // Without a plan the take records at once, as it did before the
+        // count-off: nothing would end a hold, and a take showing REC while
+        // capturing nothing is worse than one with no count.
+        if (usable && word.start == pending_start_) {
             counting_off_ = true;
             set_up_ = false;
             start_ = pending_start_;
             bars_now_ = pending_bars_;
+            point_now_ = pending_point_;
         }
         pending_ = false;
     }
@@ -122,8 +127,8 @@ void Click::render(const PlaybackPlan& plan, const backend::AudioBlock& block, b
     done_ = 0;
     const uint32_t nframes = block.nframes;
     if (counting_off_) {
-        if (!set_up_) start_count_off(plan, playhead, nframes);
-        count_off_beats(block, nframes);
+        if (!set_up_) start_count_off(plan, point_now_ == kAtPlayhead ? playhead : point_now_, nframes);
+        if (set_up_) count_off_beats(block, nframes);
     } else if (rolling && on() && plan.click_count != 0) {
         const bool looped = loop_to > loop_from;
         uint64_t t = playhead;
@@ -208,17 +213,19 @@ void Click::timeline(const PlaybackPlan& plan, const backend::AudioBlock& block,
     cursor_.at = t + n;
 }
 
-void Click::start_count_off(const PlaybackPlan& plan, uint64_t playhead,
+void Click::start_count_off(const PlaybackPlan& plan, uint64_t point,
                             uint32_t nframes) noexcept SONORA_RT {
+    // A block of no frames cannot place the lead: wait for one that has some.
+    if (nframes == 0) return;
     set_up_ = true;
     elapsed_ = 0;
     next_ = 0;
     lead_ = 0;
     total_ = 0;
     seg_ = ClickSegment{};
-    // The tempo and meter in force where the take starts: the last entry
-    // at or before the playhead.
-    const auto at = static_cast<int64_t>(playhead);
+    // The tempo and meter in force where the take records: the last entry
+    // at or before that point.
+    const auto at = static_cast<int64_t>(point);
     uint32_t lo = 0;
     uint32_t hi = plan.click_count;
     while (lo < hi) {
@@ -229,7 +236,7 @@ void Click::start_count_off(const PlaybackPlan& plan, uint64_t playhead,
             hi = mid;
         }
     }
-    if (lo == 0 || nframes == 0) return;
+    if (lo == 0) return;
     const ClickSegment& c = plan.click[lo - 1];
     if (c.num == 0 || c.beat_ticks == 0 || c.beats_per_bar == 0) return;
     seg_ = c;

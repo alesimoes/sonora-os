@@ -50,7 +50,12 @@ public:
     // off first. Its start, not its number: a take in another session
     // folder can have the last one's number (ADR-0018 §1). False when the
     // ring is full.
-    bool post_count_off(uint32_t start);
+    // `point` is where the take records from (a punch's A, a loop's A), whose
+    // tempo and meter the count-off takes: the playhead is held at the
+    // pre-roll start, which can be under another tempo. kAtPlayhead: the
+    // playhead, for a take with no pre-roll.
+    static constexpr uint64_t kAtPlayhead = ~uint64_t{0};
+    bool post_count_off(uint32_t start, uint64_t point = kAtPlayhead);
     // Whether a count-off is running: begun, and not yet at its end.
     bool counting_off() const { return counting_.load(std::memory_order_relaxed); }
 
@@ -61,9 +66,11 @@ public:
     // --- audio thread ---
     // Once per block, after the transport word is loaded and before
     // anything reads it: true while this block counts off, in which case it
-    // must roll nothing and record nothing. A count-off ends with the take
+    // must roll nothing and record nothing. With `usable` false (no valid
+    // plan, so no tempo and no render() to end it) none begins or holds.
+    // A count-off ends with the take
     // it was posted for, stopped or replaced, and with its last frame.
-    bool begin_block(const Transport::Word& word) noexcept SONORA_RT;
+    bool begin_block(const Transport::Word& word, bool usable) noexcept SONORA_RT;
     // After the mix. `playhead` is the block's, locates applied; `frames`
     // the frames it rolls (to the roll's end); [loop_from, loop_to) the
     // range it wraps at, [0, 0) for none.
@@ -75,6 +82,7 @@ private:
     struct CountOffRecord {
         uint32_t start;
         uint32_t bars;
+        uint64_t point;
     };
     // Where the timeline click is: the next beat to sound, in plan segment
     // `seg`, valid for the plan `epoch` while the block starts at `at`.
@@ -118,6 +126,7 @@ private:
     bool pending_ = false;
     uint32_t pending_start_ = 0;
     uint32_t pending_bars_ = 0;
+    uint64_t pending_point_ = 0;
     // The one running, for the take started as `start_`: its beats laid
     // out like a segment from frame 0, `lead_` frames into its first block
     // so that it ends on a block boundary, `total_` frames long with the
@@ -127,6 +136,7 @@ private:
     bool set_up_ = false;
     uint32_t start_ = 0;
     uint32_t bars_now_ = 0;
+    uint64_t point_now_ = 0;
     ClickSegment seg_;
     uint64_t lead_ = 0;
     uint64_t total_ = 0;
