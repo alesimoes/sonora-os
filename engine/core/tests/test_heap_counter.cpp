@@ -49,7 +49,10 @@ int test_counts_each_allocator() {
 #endif
     reset_heap_counts();
     t_counting = true;
-    delete new int(1);
+    // Through the volatile sink: a new/delete pair the compiler can see is
+    // one it may elide ([expr.new]), and clang does.
+    g_sink = new int(1);
+    delete static_cast<int*>(g_sink);
     t_counting = false;
     CHECK(!heap_untouched());
     return 0;
