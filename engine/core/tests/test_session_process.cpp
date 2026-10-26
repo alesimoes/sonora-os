@@ -79,8 +79,10 @@ int test_channel_identity() {
         CHECK(got.size() == 2 * kFrames);
         for (uint32_t f = 0; f < 2 * kFrames; ++f) {
             // Against what was fed, not sample() evaluated again: capture is a
-            // copy, and the GCC 15 CI build failed here comparing with a
-            // second evaluation. Hex, so a last-bit difference shows.
+            // copy. sample()'s a + b * c may be fused into an FMA at one call
+            // site and not another (x86-64-v3, -ffp-contract=fast by default),
+            // so two evaluations can differ in the last bit; track 1 frame 37
+            // did on CI. Hex, so a last-bit difference shows.
             if (got[f] != bufs[c][f % kFrames]) {
                 std::fprintf(stderr, "FAIL track %zu frame %u: %a, fed %a\n", c + 1, f,
                              static_cast<double>(got[f]),
