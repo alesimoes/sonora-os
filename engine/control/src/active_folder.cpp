@@ -2,11 +2,13 @@
 #include "sonora/active_folder.h"
 
 #include <filesystem>
+#include <iterator>
 #include <system_error>
 
 #include "sonora/closed_take.h"
 #include "sonora/platform/file.h"
 #include "sonora/session.h"
+#include "sonora/session_files/session_folder.h"
 
 namespace sonora {
 
@@ -49,13 +51,26 @@ bool untitled_name(const std::string& name) {
     return true;
 }
 
+// A folder and not a symlink to one: whatever a symlink points to is the
+// operator's, and nothing here may follow it.
+bool real_folder(const fs::directory_entry& e) {
+    std::error_code ec;
+    return fs::is_directory(e.symlink_status(ec)) && !ec;
+}
+
+bool real_folder(const fs::path& p) {
+    std::error_code ec;
+    return fs::is_directory(fs::symlink_status(p, ec)) && !ec;
+}
+
 // Nothing in `dir` but an empty "Audio Files/", which entering made.
 bool holds_nothing(const std::string& dir) {
+    if (!real_folder(fs::path(dir))) return false;
     std::error_code ec;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         if (it->path().filename() != "Audio Files") return false;
         std::error_code inner;
-        if (!it->is_directory(inner) || !fs::is_empty(it->path(), inner) || inner) return false;
+        if (!real_folder(*it) || !fs::is_empty(it->path(), inner) || inner) return false;
     }
     return !ec;
 }
@@ -68,11 +83,68 @@ bool holds_a_session_file(const std::string& dir) {
     return false;
 }
 
-// rmdir, which fails on a folder with anything in it: never deletes a file.
-void remove_if_empty(const std::string& dir) {
+bool ends_with(const std::string& s, const std::string& tail) {
+    return s.size() >= tail.size() && s.compare(s.size() - tail.size(), tail.size(), tail) == 0;
+}
+
+// Only plugin state files, or nothing: what flushes leave there.
+bool holds_only_states(const fs::path& dir) {
     std::error_code ec;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        std::error_code inner;
+        if (!fs::is_regular_file(it->symlink_status(inner)) || inner ||
+            !(ends_with(name, ".state") || ends_with(name, ".state.tmp"))) {
+            return false;
+        }
+    }
+    return !ec;
+}
+
+// No take, no session file, nothing the operator put there: an empty
+// "Audio Files/" and at most the "Plugin State/" files flushes wrote. No
+// session file names those states and no take needs them, so they are not
+// the operator's data (ADR-0018 §3). A symlink anywhere is data.
+bool holds_no_data(const std::string& dir) {
+    if (!real_folder(fs::path(dir))) return false;
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        std::error_code inner;
+        if (!real_folder(*it)) return false;
+        if (name == "Audio Files") {
+            if (!fs::is_empty(it->path(), inner) || inner) return false;
+        } else if (name != session_files::kPluginStateDir || !holds_only_states(it->path())) {
+            return false;
+        }
+    }
+    return !ec;
+}
+
+// The state files go only once holds_no_data() has said no document can
+// name them; the folders are rmdir'd, which fails on anything else in them.
+void remove_unreferenced(const std::string& dir) {
+    if (!holds_no_data(dir)) return;
+    std::error_code ec;
+    const fs::path states = fs::path(dir) / session_files::kPluginStateDir;
+    std::vector<fs::path> files;
+    for (fs::directory_iterator it(states, ec), end; !ec && it != end; it.increment(ec)) {
+        files.push_back(it->path());
+    }
+    for (const fs::path& f : files) fs::remove(f, ec);
+    fs::remove(states, ec);
     fs::remove(fs::path(dir) / "Audio Files", ec);
     fs::remove(fs::path(dir), ec);
+}
+
+// Whether `p` is `dir` or lies inside it, both in identity()'s spelling.
+bool within(const fs::path& p, const fs::path& dir) {
+    auto pi = p.begin();
+    for (auto di = dir.begin(); di != dir.end(); ++di, ++pi) {
+        if (di->empty() && std::next(di) == dir.end()) break;   // a trailing '/'
+        if (pi == p.end() || *pi != *di) return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -106,16 +178,15 @@ std::string ActiveFolder::make_untitled(const std::string& root, std::string& wh
 void ActiveFolder::remove_empty_untitled(const std::string& root) {
     std::error_code ec;
     for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
-        std::error_code inner;
-        if (!it->is_directory(inner) || !untitled_name(it->path().filename().string())) continue;
+        if (!real_folder(*it) || !untitled_name(it->path().filename().string())) continue;
         const std::string dir = it->path().string();
-        if (!holds_nothing(dir)) continue;
+        if (!holds_no_data(dir)) continue;
         // Held, it is another engine's new session, empty because nothing
         // was recorded yet.
         platform::FolderLock lock;
         std::string err;
         if (lock.acquire(dir, err) != platform::FolderLock::Result::Held) continue;
-        remove_if_empty(dir);
+        remove_unreferenced(dir);
     }
 }
 
@@ -123,7 +194,13 @@ ActiveFolder::ActiveFolder() = default;
 
 ActiveFolder::~ActiveFolder() {
     // While the lock is still held, so no other engine has entered it.
-    if (fresh()) remove_if_empty(path_);
+    if (disposable()) remove_unreferenced(path_);
+}
+
+bool ActiveFolder::disposable() const {
+    // A first Save that renamed the folder and then failed to write its
+    // file leaves a named folder with no session file in it.
+    return (kind_ == Kind::Untitled || renamed_) && !path_.empty();
 }
 
 bool ActiveFolder::fresh() const {
@@ -133,7 +210,9 @@ bool ActiveFolder::fresh() const {
 bool ActiveFolder::names_on_save(const std::string& folder) const {
     if (kind_ != Kind::Untitled || path_.empty() || holds_a_session_file(path_)) return false;
     const std::string id = identity(folder);
-    if (id == path_) return false;
+    // Inside it, rename(2) would refuse with EINVAL; the Save writes there
+    // instead, as told.
+    if (within(fs::path(id), fs::path(path_))) return false;
     std::error_code ec;
     if (fs::exists(id, ec) || ec) return false;
     const fs::path parent = fs::path(id).parent_path();
@@ -166,6 +245,7 @@ bool ActiveFolder::rename(Session& session, const std::string& folder, std::stri
     }
     path_ = id;
     kind_ = Kind::Named;
+    renamed_ = true;
     why = caution;
     return true;
 }
@@ -230,17 +310,12 @@ bool ActiveFolder::enter(Session& session, const std::string& path, Kind kind,
         return true;
     }
     const std::string old_path = path_;
-    const Kind old_kind = kind_;
+    const bool old_disposable = disposable();
     lock_ = std::move(lock);
     path_ = id;
     kind_ = kind;
-    if (old_kind == Kind::Untitled && !old_path.empty()) {
-        // remove() is rmdir for a folder, which fails on one with anything
-        // in it: this can never delete a file.
-        std::error_code ec;
-        fs::remove(fs::path(old_path) / "Audio Files", ec);
-        fs::remove(fs::path(old_path), ec);
-    }
+    renamed_ = false;
+    if (old_disposable) remove_unreferenced(old_path);
     return true;
 }
 

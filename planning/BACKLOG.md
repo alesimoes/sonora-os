@@ -216,6 +216,24 @@ playback can follow edits; it is in flight.
           conformance "input monitor mode". "I" buttons in the Edit
           window's headers and the Mix window's strips
           (`t1-track-input-monitor`).
+11. [ ] Session-folder follow-ups (ADR-0018 step 4; #150 review items 1-4
+        done in #151, `t1-folder-followups`):
+        - [ ] ActiveFolder::enter() releases the old folder's flock before
+          remove_unreferenced(); delete while still holding it, and unlink
+          only the *.state(.tmp) entries holds_no_data() checked (#151
+          review N1)
+        - [ ] ADR-0018 §1 step 6 still says the cleanup "can never delete a
+          file"; update it for the states-only removal of #151 (#151 review
+          N2)
+        - [ ] A Save into a subfolder of the untitled folder writes a session
+          file whose relative take paths do not resolve; refuse it or route
+          it to Save As (§5) (#151 review N3)
+        - [ ] main.cpp exit message and the new-session reuse check still use
+          ActiveFolder::fresh(); align them with the states-only disposal so
+          the journal is right and a New does not become "Untitled 2" (#151
+          review N4)
+        - [ ] FakeEngine::Config::sessions_root is never set by a rig; cover
+          its folder-Load sessions-root branch in a test (#151 review N5)
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 

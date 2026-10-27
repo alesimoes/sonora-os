@@ -127,6 +127,9 @@ public:
         };
         LatencyCable latency_cable;
         uint64_t measure_ns = 1'500'000'000;
+        // The engine's --sessions root: a Load may name a folder of it with
+        // no session file even before it has "Audio Files/". Empty: none.
+        std::string sessions_root;
     };
 
     FakeEngine();

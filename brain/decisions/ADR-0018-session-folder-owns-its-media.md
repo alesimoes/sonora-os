@@ -478,6 +478,14 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    (#147 N-A); the wait is not bounded, since giving up would leave a save
    writing an unlocked folder. #147 N-B has its test
    (`plugin_hosting_flush_read_across_load`).
+   Follow-ups of #150's review: "empty" means no data. A folder with no
+   take and no session file, holding only an empty `Audio Files/` and the
+   `Plugin State/` files of flushes, is removed like an empty one: no
+   document on disk names those states. A folder a first Save renamed and
+   then wrote no file into goes the same way when left. A Load of a
+   folder enters only a session folder: one with `Audio Files/`, or a
+   folder of the sessions root. A Save into a folder inside the untitled
+   one writes there and renames nothing.
 5. **Save As** (`common/session_files`, `engine/control`, `ui/qt`,
    `keymaps/`). §5 gather: link or copy, `.part` cleanup, space check,
    progress, refused while recording. The Save As command in both key

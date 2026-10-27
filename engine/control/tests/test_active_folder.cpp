@@ -352,7 +352,12 @@ int test_empty_untitled_folders_are_removed() {
 
     fs::create_directories(r + "/Untitled 2/Audio Files");
     fs::create_directories(r + "/Untitled 3/Audio Files");
+    // Only the states of flushes no session file names: not data.
     fs::create_directories(r + "/Untitled 4/Plugin State");
+    CHECK(touch(r + "/Untitled 4/Plugin State/0123.state"));
+    CHECK(touch(r + "/Untitled 4/Plugin State/4567.state.tmp"));
+    fs::create_directories(r + "/Untitled 5/Plugin State");
+    CHECK(touch(r + "/Untitled 5/Plugin State/notes.txt"));
     fs::create_directories(r + "/Mix/Audio Files");
     fs::create_directories(r + "/Untitled Song/Audio Files");
     sonora::platform::FolderLock theirs;
@@ -360,7 +365,8 @@ int test_empty_untitled_folders_are_removed() {
     ActiveFolder::remove_empty_untitled(r);
     CHECK(!exists(r + "/Untitled 2"));
     CHECK(exists(r + "/Untitled 3/Audio Files"));
-    CHECK(exists(r + "/Untitled 4/Plugin State"));
+    CHECK(!exists(r + "/Untitled 4"));
+    CHECK(exists(r + "/Untitled 5/Plugin State/notes.txt"));
     CHECK(exists(r + "/Untitled/Audio Files/Audio 1_01.wav"));
     CHECK(exists(r + "/Mix/Audio Files"));
     CHECK(exists(r + "/Untitled Song/Audio Files"));
@@ -393,6 +399,12 @@ int test_the_first_save_renames_the_folder() {
     CHECK(!folder.names_on_save(u));
     fs::create_directories(r + "/Taken");
     CHECK(!folder.names_on_save(r + "/Taken"));
+    // Nor is a folder inside it, which rename(2) refuses: the Save writes
+    // there. A sibling whose name only starts with its name is not inside.
+    CHECK(!folder.names_on_save(u + "/Sub"));
+    CHECK(!folder.names_on_save(u + "/Sub/Deeper"));
+    CHECK(!folder.names_on_save(r + "/./Untitled/Sub"));
+    CHECK(folder.names_on_save(u + " 9"));
     CHECK(folder.names_on_save(r + "/Bass"));
 
     CHECK(folder.rename(s, r + "/Bass", why));
@@ -465,6 +477,123 @@ int test_naming_is_refused_during_a_take() {
     return 0;
 }
 
+// #150 review, item 1: a flush with no take and no Save, or a first Save
+// that renamed the folder and then failed to write its file, left a folder
+// that was neither removed nor listed, and pushed later sessions on to
+// "Untitled <n+1>". With no take and no session file, nothing names those
+// states: the folder goes when the engine leaves it. Anything else stays.
+int test_a_folder_holding_only_unreferenced_states_goes() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    const std::string mix = r + "/Mix";
+    sonora::Session s(config(u));
+    std::string exiting;
+    {
+        ActiveFolder folder;
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        fs::create_directories(u + "/Plugin State");
+        CHECK(touch(u + "/Plugin State/0123.state"));
+        CHECK(!folder.fresh());
+        CHECK(folder.enter(s, mix, ActiveFolder::Kind::Named, why, notices));
+        CHECK(!exists(u));
+        CHECK(ActiveFolder::make_untitled(r, why) == u);
+        // A take beside the states, or a file of the operator's: kept.
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        fs::create_directories(u + "/Plugin State");
+        CHECK(touch(u + "/Plugin State/0123.state"));
+        CHECK(touch(u + "/Audio Files/Audio 1_01.wav"));
+        CHECK(folder.enter(s, mix, ActiveFolder::Kind::Named, why, notices));
+        CHECK(exists(u + "/Plugin State/0123.state"));
+        fs::remove(u + "/Audio Files/Audio 1_01.wav");
+        CHECK(touch(u + "/notes.txt"));
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        CHECK(folder.enter(s, mix, ActiveFolder::Kind::Named, why, notices));
+        CHECK(exists(u + "/notes.txt"));
+        fs::remove_all(u);
+
+        // Renamed by a first Save whose file write then failed.
+        const std::string v = ActiveFolder::make_untitled(r, why);
+        CHECK(folder.enter(s, v, ActiveFolder::Kind::Untitled, why, notices));
+        CHECK(folder.rename(s, r + "/Bass", why));
+        fs::create_directories(r + "/Bass/Plugin State");
+        CHECK(touch(r + "/Bass/Plugin State/0123.state"));
+        CHECK(folder.enter(s, mix, ActiveFolder::Kind::Named, why, notices));
+        CHECK(!exists(r + "/Bass"));
+        // Renamed, and the file written: the session's own.
+        const std::string w = ActiveFolder::make_untitled(r, why);
+        CHECK(folder.enter(s, w, ActiveFolder::Kind::Untitled, why, notices));
+        CHECK(folder.rename(s, r + "/Keys", why));
+        CHECK(touch(r + "/Keys/Keys.sonora"));
+        CHECK(folder.enter(s, mix, ActiveFolder::Kind::Named, why, notices));
+        CHECK(exists(r + "/Keys/Keys.sonora"));
+        // A folder entered by name is never removed, whatever it holds.
+        CHECK(exists(mix + "/Audio Files"));
+
+        // And as the engine exits.
+        const std::string x = ActiveFolder::make_untitled(r, why);
+        CHECK(folder.enter(s, x, ActiveFolder::Kind::Untitled, why, notices));
+        fs::create_directories(x + "/Plugin State");
+        CHECK(touch(x + "/Plugin State/89ab.state"));
+        exiting = x;
+    }
+    CHECK(!exists(exiting));
+    fs::remove_all(root());
+    return 0;
+}
+
+// #151 review, B1: the checks followed symlinks, so a "Plugin State" that
+// links to another session's had that session's states deleted, and a
+// symlinked "Untitled <n>" had the folder it points to emptied. A symlink
+// at any level is data the operator made: the folder stays as it is.
+int test_a_symlink_keeps_the_folder() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    fs::create_directories(r + "/Mix/Plugin State");
+    CHECK(touch(r + "/Mix/Plugin State/0123.state"));
+    fs::create_directories(r + "/Untitled 3/Audio Files");
+    fs::create_directory_symlink(r + "/Mix/Plugin State", r + "/Untitled 3/Plugin State");
+
+    fs::create_directories(root() + "/Elsewhere/Audio Files");
+    fs::create_directory_symlink(root() + "/Elsewhere", r + "/Untitled 4");
+
+    fs::create_directories(r + "/Untitled 5/Plugin State");
+    fs::create_symlink(r + "/Mix/Plugin State/0123.state", r + "/Untitled 5/Plugin State/0123.state");
+
+    fs::create_directories(root() + "/Empty");
+    fs::create_directory_symlink(root() + "/Empty", r + "/Untitled 6");
+    fs::create_directories(r + "/Untitled 7");
+    fs::create_directory_symlink(root() + "/Empty", r + "/Untitled 7/Audio Files");
+
+    ActiveFolder::remove_empty_untitled(r);
+    CHECK(exists(r + "/Mix/Plugin State/0123.state"));
+    CHECK(fs::is_symlink(r + "/Untitled 3/Plugin State"));
+    CHECK(fs::is_symlink(r + "/Untitled 4"));
+    CHECK(exists(root() + "/Elsewhere/Audio Files"));
+    CHECK(fs::is_symlink(r + "/Untitled 5/Plugin State/0123.state"));
+    CHECK(fs::is_symlink(r + "/Untitled 6"));
+    CHECK(fs::is_symlink(r + "/Untitled 7/Audio Files"));
+    CHECK(exists(root() + "/Empty"));
+
+    // Leaving an untitled folder the same way.
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    {
+        ActiveFolder folder;
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        fs::create_directory_symlink(r + "/Mix/Plugin State", u + "/Plugin State");
+        CHECK(folder.enter(s, r + "/Mix", ActiveFolder::Kind::Named, why, notices));
+    }
+    CHECK(fs::is_symlink(u + "/Plugin State"));
+    CHECK(exists(r + "/Mix/Plugin State/0123.state"));
+    fs::remove_all(root());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -481,6 +610,8 @@ int main() {
     failed += test_the_first_save_renames_the_folder();
     failed += test_a_folder_with_a_session_file_is_not_renamed();
     failed += test_naming_is_refused_during_a_take();
+    failed += test_a_folder_holding_only_unreferenced_states_goes();
+    failed += test_a_symlink_keeps_the_folder();
     if (failed) return 1;
     std::printf("active folder: ok\n");
     return 0;

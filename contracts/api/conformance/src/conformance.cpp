@@ -2197,6 +2197,18 @@ int check_unsaved_recording_is_opened_and_named(Rig& rig) {
                    "a folder with a session file was opened as an unsaved recording");
             EXPECT(mentions(r.message, "Saved.sonora"), "the refusal does not name the file to open");
 
+            // Entered untitled, any directory would be renamed by the first
+            // Save: one that is not a session folder is refused untouched.
+            const fs::path plain = root / "Music";
+            fs::create_directories(plain, ec);
+            load.op = wire::encode_load(plain.string(), bytes);
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Failed,
+                   "a directory that is not a session folder was opened as an unsaved recording");
+            EXPECT(mentions(r.message, "not a session folder"),
+                   "the refusal does not say why: " + r.message);
+            EXPECT(!fs::exists(plain / "Audio Files", ec),
+                   "the refused Load made \"Audio Files\" in " + plain.string());
+
             load.op = wire::encode_load(recording.string(), bytes);
             EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
                    "the unsaved recording was refused: " + r.message);
@@ -2204,6 +2216,20 @@ int check_unsaved_recording_is_opened_and_named(Rig& rig) {
             EXPECT(s.until(rig_, [&]() { return folder().first == at; }),
                    "no SessionFolder naming " + at + ", but \"" + folder().first + "\"");
             EXPECT((folder().second & kFolderUntitled) != 0, "the recording's folder is not untitled");
+
+            // A folder cannot be renamed into itself: a Save inside the
+            // untitled folder writes there, as told, and names nothing.
+            {
+                const fs::path inside = recording / "Sub" / "Sub.sonora";
+                ModelRequest save;
+                save.action = ModelAction::Save;
+                save.op = wire::encode_save(inside.string(), bytes);
+                EXPECT(s.await(rig_, s.engine->submit(save), r) && r.result == DispatchResult::Ok,
+                       "a save inside the untitled folder was refused: " + r.message);
+                EXPECT(fs::is_regular_file(inside, ec), "no session file at " + inside.string());
+                EXPECT(folder().first == at && (folder().second & kFolderUntitled) != 0,
+                       "a save inside the untitled folder renamed it");
+            }
 
             EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
                        r.result == DispatchResult::Ok,

@@ -20,7 +20,9 @@ class FolderLock;
 class ActiveFolder {
 public:
     // Untitled: an "Untitled <n>" folder the engine made itself, which it
-    // removes on leaving if nothing was put in it (ADR-0018 §3).
+    // removes on leaving if it holds no data (ADR-0018 §3): no take, no
+    // session file, only an empty "Audio Files/" and the "Plugin State/"
+    // files of flushes no session file names.
     enum class Kind { Named, Untitled };
 
     // The first free of `root`/Untitled, Untitled 2, Untitled 3.. (the
@@ -29,12 +31,13 @@ public:
     // Empty, with `why`, when none could be made.
     static std::string make_untitled(const std::string& root, std::string& why);
     // Removes each "Untitled" or "Untitled <n>" folder of `root` that holds
-    // nothing but an empty "Audio Files/" and that no engine holds: what an
-    // engine that died left of a session nothing was put in.
+    // no data, as above, and that no engine holds: what an engine that died
+    // left of a session nothing was recorded or saved in.
     static void remove_empty_untitled(const std::string& root);
 
     ActiveFolder();
-    // Removes the folder if it is Untitled and nothing was put in it.
+    // Removes the folder if it is Untitled, or a first Save renamed it and
+    // then wrote no session file there, and it holds no data.
     ~ActiveFolder();
     ActiveFolder(const ActiveFolder&) = delete;
     ActiveFolder& operator=(const ActiveFolder&) = delete;
@@ -44,8 +47,8 @@ public:
     // lock taken while the old one is still held; "Audio Files/" created,
     // and the folder synced when that made it; unclosed takes recovered,
     // their notices appended to `notices`; the medium read. Then the switch,
-    // the old lock released, and the old folder removed if it was Untitled
-    // and empty. The first step that fails returns false with `why` and
+    // the old lock released, and the old folder removed as the destructor
+    // would. The first step that fails returns false with `why` and
     // leaves the old folder active and locked. Entering the folder already
     // active keeps its lock and runs the rest again.
     bool enter(Session& session, const std::string& path, Kind kind, std::string& why,
@@ -64,8 +67,9 @@ public:
     // The first Save of an untitled session (ADR-0018 §3). Whether a Save
     // into `folder` renames the active folder to it: the active folder is
     // Untitled and has never held a session file, `folder` is another one
-    // and does not exist, and its parent is on the active folder's
-    // filesystem. Otherwise the Save writes where it is told.
+    // and does not exist, is not inside the active folder, and its parent
+    // is on the active folder's filesystem. Otherwise the Save writes where
+    // it is told.
     bool names_on_save(const std::string& folder) const;
     // That rename, the lock kept (it is on the folder itself), the session
     // moved to `folder` and the folder Named from then on. Refused while a
@@ -73,9 +77,13 @@ public:
     bool rename(Session& session, const std::string& folder, std::string& why);
 
 private:
+    // Removed on leaving if it holds no data.
+    bool disposable() const;
+
     std::unique_ptr<platform::FolderLock> lock_;
     std::string path_;
     Kind kind_ = Kind::Named;
+    bool renamed_ = false;   // named by rename(), not entered by name
     bool read_only_ = false;
     uint64_t free_bytes_ = 0;
 };
