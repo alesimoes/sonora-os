@@ -92,7 +92,14 @@ namespace sonora::api {
 //   loop_playback is; transport.toggle_loop_record, transport.toggle_cycle
 //   (the selection as an optional argument, the range when none is set) and
 //   transport.cycle_selection (the selection, required).
-constexpr uint32_t kProtocolVersion = 23;
+// 25 (ADR-0016, update "transport settings at the authority"; 24 is held
+//   for the fades PR in flight): transport.punch_selection (the selection,
+//   required), transport.clear_punch, transport.set_pre_roll and
+//   transport.set_post_roll (frames) are engine commands, and the engine
+//   refuses a punch range change, by command or SetSettings, while a take
+//   is open or requested. A version-23 engine left them to the interface's
+//   whole-settings SetSettings.
+constexpr uint32_t kProtocolVersion = 25;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

@@ -299,17 +299,6 @@ public:
     // track, whose engine track carries no audio of its own (ADR-0014 M-1).
     bool toggle_input_monitor(int track, std::string& why);
     bool set_bus_gain(float db, std::string& why);
-    // The session's punch range (transport.punch, Pro Tools' punch points,
-    // Logic's autopunch locators) from the Edit selection's range. Refused
-    // with no range selected, and with loop record on: a take cannot both
-    // loop and punch, and the engine would refuse R over the two (ADR-0016
-    // section 1, C3), so the refusal comes now, with the reason.
-    bool set_punch_from_selection(std::string& why);
-    // Refused when no punch range is set: there is nothing to clear.
-    bool clear_punch(std::string& why);
-    // transport.pre_roll and post_roll, in frames, each 0 or more.
-    bool set_pre_roll(model::Frames frames, std::string& why);
-    bool set_post_roll(model::Frames frames, std::string& why);
 
     // The end of the last region, or one minute when the session is empty.
     model::Frames session_end() const;

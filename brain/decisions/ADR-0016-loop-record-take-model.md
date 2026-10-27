@@ -345,6 +345,53 @@ profile had no way to set a range: in a new session C turned Cycle on over
   and like the others while loop record runs. Bound `"verified": false`.
 - Inside protocol 23, which this change's own PR introduced (19 and 21 were never used).
 
+## Update, 2026-10-26: transport settings at the authority
+
+Taken on the recommended default (#156 review, N1 and N2). An interface
+edited the punch range and the rolls by sending `SetSettings` with a whole
+copy of the settings from its replica. That copy can be stale: it reverts
+any field the engine changed since (a mode toggled by a key on another
+interface, a loop range set by Cmd+U), and a punch edit that arrives during
+a take, through a recording overlay not yet updated, moves the saved range
+away from the one the take uses.
+
+- **One command per field, run by the engine.** `transport.punch_selection`
+  (the selection as `A-B`, required; the Qt router attaches it as it does
+  for the loop commands), `transport.clear_punch`, `transport.set_pre_roll`
+  and `transport.set_post_roll` (frames, as `transport.locate` reads a
+  frame). Each handler edits its one field on the engine's own document
+  and broadcasts the update, as the loop commands already do. The
+  interface sends only what changed, so no stale copy crosses the wire.
+  Punch is refused with no selection and with loop record on (C3), as the
+  Qt stand-in did.
+- **The punch range is frozen while a take is open or requested.** A change
+  is refused by name, from these commands and from a `SetSettings`
+  (`take_punch_refusal()`, beside `loop_take_refusal()`), from record until
+  the take stops: the take's Description names its range, which recovery
+  reads back. A take that is closing has the range in its files already, so
+  it does not hold it. The rolls are in no file and a take copies them when
+  it starts, so they still change during a take, for the next roll (the
+  "any other setting still applies" of the loop take, test_control).
+- **The rule for every `SetSettings` sender.** A setting the operator edits
+  from an interface while the engine or another interface may change
+  settings gets a field command at the engine; a whole-settings
+  `SetSettings` is only for the authority itself (the engine's handlers,
+  the recovery offer), tests, and a document not yet sent. One sender is
+  left: the interface's rename after an engine Save (`session_model.cpp`),
+  which copies the name and id into its snapshot; it moves to the engine's
+  Save handler, recorded in the backlog.
+- **Rejected: compare-and-set on a base revision.** A `ModelRequest`
+  carrying the revision its edit was built on, refused when settings
+  changed after it. The interface pipelines edits optimistically, so its
+  base for a second edit includes a first still in flight; a refused first
+  edit makes every later base wrong, and an unrelated edit would need a
+  separate settings revision kept by every engine and replica. Larger, and
+  it refuses an edit the operator meant rather than applying the one field.
+- **Rejected: a field mask on `SetSettings`.** It would change the op
+  codec and every replica's decoder for what four commands do.
+- Protocol 25 (24 is held for the fades PR in flight). Session format
+  unchanged.
+
 ## Alternatives rejected
 
 - **One file per pass** (a Close and an Open at each wrap): no handle at B

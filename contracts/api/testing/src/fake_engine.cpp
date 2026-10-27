@@ -107,6 +107,51 @@ std::string insert_refusal(const model::Snapshot& s, const std::vector<PluginInf
     return {};
 }
 
+// engine/control's edit_transport_field() and take_punch_refusal():
+// one field edited on the authority's document, and a punch range change
+// refused while a take runs.
+bool edit_transport_field(const std::string& id, model::Transport& tr,
+                          const std::string& argument, std::string& why) {
+    if (id == "transport.punch_selection") {
+        if (argument.empty()) {
+            why = "no selection to set the punch range from; select a range first";
+            return false;
+        }
+        if (tr.loop_record) {
+            why = "loop record is on, and a take cannot both loop and punch; turn Loop Record "
+                  "off first";
+            return false;
+        }
+        uint64_t from = 0;
+        uint64_t to = 0;
+        if (!parse_play_range(argument, from, to, why)) return false;
+        tr.punch = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
+        return true;
+    }
+    if (id == "transport.clear_punch") {
+        if (tr.punch[1] <= tr.punch[0]) {
+            why = "no punch range to clear";
+            return false;
+        }
+        tr.punch = {{0, 0}};
+        return true;
+    }
+    const bool pre = id == "transport.set_pre_roll";
+    if (argument.empty()) {
+        why = pre ? "no pre-roll given" : "no post-roll given";
+        return false;
+    }
+    uint64_t frames = 0;
+    if (!parse_locate_frame(argument, frames, why)) return false;
+    (pre ? tr.pre_roll : tr.post_roll) = static_cast<model::Frames>(frames);
+    return true;
+}
+
+std::string take_punch_refusal(const model::Transport& was, const model::Transport& now) {
+    if (now.punch == was.punch) return {};
+    return "a take is recording; the punch range changes after Stop";
+}
+
 PluginParam param(uint32_t index, const char* key, const char* name, float min, float max,
                   float def, uint32_t flags, const char* unit = "", uint32_t steps = 0,
                   std::vector<std::string> labels = {}) {
@@ -225,7 +270,8 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_count_off", "session.place_recovered", "session.leave_recovered",
         "transport.toggle_loop", "latency.measure", "latency.cancel", "latency.set",
         "transport.toggle_loop_record", "transport.toggle_cycle",
-        "transport.cycle_selection",
+        "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
+        "transport.set_pre_roll", "transport.set_post_roll",
     };
     return ids;
 }
@@ -1164,6 +1210,12 @@ void FakeEngine::handle(const std::string& bytes) {
                     if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
                         mix_changed = true;
                     }
+                    const auto* set = member.get_if<model::SetSettings>();
+                    if (set != nullptr && mode_ == TransportState::Recording) {
+                        std::string refusal = take_punch_refusal(
+                            at.settings.transport, set->settings.transport);
+                        if (!refusal.empty()) return refusal;
+                    }
                     return insert_refusal(at, cfg_.plugins, member);
                 };
                 ok = document_->apply(op, u, why, check);
@@ -1362,6 +1414,20 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             uint64_t to = 0;
             if (!parse_play_range(r.argument, from, to, why)) return false;
             tr.loop = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
+        }
+        model::ReplicationUpdate u;
+        if (!document_->apply(model::Operation{std::move(op)}, u, why)) return false;
+        broadcast(u);
+        return true;
+    }
+    if (id == "transport.punch_selection" || id == "transport.clear_punch" ||
+        id == "transport.set_pre_roll" || id == "transport.set_post_roll") {
+        const model::SessionSettings& was = document_->current().settings;
+        model::SetSettings op{was};
+        if (!edit_transport_field(id, op.settings.transport, r.argument, why)) return false;
+        if (recording) {
+            why = take_punch_refusal(was.transport, op.settings.transport);
+            if (!why.empty()) return false;
         }
         model::ReplicationUpdate u;
         if (!document_->apply(model::Operation{std::move(op)}, u, why)) return false;

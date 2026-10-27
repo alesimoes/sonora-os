@@ -1436,42 +1436,4 @@ bool EditController::set_bus_gain(float db, std::string& why) {
     return submit(SetMonitorBus{bus}, why);
 }
 
-bool EditController::set_punch_from_selection(std::string& why) {
-    if (!sel_.has_range()) {
-        why = "no selection to set the punch range from; select a range first";
-        return false;
-    }
-    SetSettings op{snapshot().settings};
-    if (op.settings.transport.loop_record) {
-        why = "loop record is on, and a take cannot both loop and punch; turn Loop Record off "
-              "first";
-        return false;
-    }
-    op.settings.transport.punch = {{sel_.start, sel_.end}};
-    return submit(op, why);
-}
-
-bool EditController::clear_punch(std::string& why) {
-    SetSettings op{snapshot().settings};
-    auto& p = op.settings.transport.punch;
-    if (p[1] <= p[0]) {
-        why = "no punch range to clear";
-        return false;
-    }
-    p = {{0, 0}};
-    return submit(op, why);
-}
-
-bool EditController::set_pre_roll(Frames frames, std::string& why) {
-    SetSettings op{snapshot().settings};
-    op.settings.transport.pre_roll = frames;
-    return submit(op, why);
-}
-
-bool EditController::set_post_roll(Frames frames, std::string& why) {
-    SetSettings op{snapshot().settings};
-    op.settings.transport.post_roll = frames;
-    return submit(op, why);
-}
-
 }  // namespace sonora::ui

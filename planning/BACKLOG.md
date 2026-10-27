@@ -576,11 +576,33 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              ruler to set them.
        - [ ] ui.record.punch_loop: the loop and punch ranges drawn on the
              ruler (Pro Tools' timeline markers), punch in the record colour.
-       - [ ] ui.record.punch_loop: engine handlers for
-             `transport.punch_selection`/`clear_punch`, refusing a punch range
-             change while a punched take runs at the authority (today the Qt
-             stand-in refuses it); and a Logic key for Set Autopunch
-             Locators by Selection once quoted from Apple's guide.
+       - [x] #156 review N1 (`t3-transport-followups`): engine handlers for
+             `transport.punch_selection` (the selection attached by the Qt
+             router, as for `transport.toggle_cycle`) and
+             `transport.clear_punch`, in engine/control and FakeEngine;
+             refused with no selection, with loop record on, and, with a
+             punch change by `SetSettings` too, while a take is open or
+             requested. The Qt stand-in is gone (conformance "punch range
+             and rolls at the authority", ui_play_range
+             test_punch_selection_goes_to_the_engine). Protocol 25.
+       - [x] #156 review N2 (`t3-transport-followups`): the punch range and
+             the rolls no longer go as a whole copy of the replica's settings,
+             which a stale replica could use to revert a field the engine
+             changed: `transport.set_pre_roll`/`set_post_roll` (frames) edit
+             one field at the engine (ADR-0016, update "transport settings at
+             the authority"; compare-and-set on a base revision rejected
+             there). ui_transport test_punch_from_the_ui.
+       - [x] #156 review N3 (`t3-transport-followups`): `parse_roll_text`
+             names the tab as `'\t'`; the bar's loop and punch chips use
+             `Theme.space1`.
+       - [ ] The last interface `SetSettings` built from a whole replica
+             copy: the rename after an engine Save (`SessionModel::finishSave`)
+             copies name and id into the shown
+             settings; the engine's Save handler should apply the rename
+             itself (ADR-0016, update "transport settings at the authority",
+             the rule for every sender).
+       - [ ] ui.record.punch_loop: a Logic key for Set Autopunch Locators by
+             Selection once quoted from Apple's guide.
 4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy
        (`feature/ui-keymaps`): routing by `CommandSpec::domain`, the engine

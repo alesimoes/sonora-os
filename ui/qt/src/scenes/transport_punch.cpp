@@ -6,37 +6,34 @@
 // PUNCH lit on the bar, the range in the window in the main counter's
 // format, the rolls live with the line saying where they apply.
 //
-// Both are edits through the replica, which refuses them until the fake
-// engine has answered the demo's load; on a loaded machine that can be later
-// than the scene's hook, so a refused edit is tried again a little later.
+// Both are engine commands. Sent before the fake engine has answered the
+// demo's load, which on a loaded machine can be later than the scene's
+// hook, they land on the document the load then replaces; so what the
+// replica shows is checked a little later, and what is missing sent again.
 #include <QCoreApplication>
 #include <QTimer>
 #include <cstdio>
-#include <string>
 
 #include "screenshot_scene.h"
 
 namespace sonora::ui {
 namespace {
 
-void punch_and_roll(SessionModel& session, int tries) {
-    std::string why;
-    EditController& edit = session.controller();
-    const auto& settings = edit.snapshot().settings;
-    const model::Frames pre = settings.sample_rate * 3 / 2;
-    const bool punched = settings.transport.punch[1] > settings.transport.punch[0] ||
-                         edit.set_punch_from_selection(why);
-    const bool rolled =
-        punched && (edit.snapshot().settings.transport.pre_roll == pre || edit.set_pre_roll(pre, why));
-    // Republishes what changed, as a key's edit does.
-    session.reportEdit(true, why);
+void punch_and_roll(SessionModel& session, ShellModel& shell, int tries) {
+    const auto& settings = session.controller().snapshot().settings;
+    const bool punched = settings.transport.punch[1] > settings.transport.punch[0];
+    const bool rolled = settings.transport.pre_roll == settings.sample_rate * 3 / 2;
     if (punched && rolled) return;
     if (tries <= 0) {
-        std::fprintf(stderr, "sonora-ui: transport-punch: %s\n", why.c_str());
+        std::fprintf(stderr, "sonora-ui: transport-punch: the engine did not take %s\n",
+                     punched ? "the pre-roll" : "the punch range");
         return;
     }
-    QTimer::singleShot(250, QCoreApplication::instance(),
-                       [&session, tries]() { punch_and_roll(session, tries - 1); });
+    if (!punched) shell.invoke(QStringLiteral("transport.punch_selection"), -1);
+    if (!rolled) session.setPreRollText(QStringLiteral("1.5"));
+    QTimer::singleShot(250, QCoreApplication::instance(), [&session, &shell, tries]() {
+        punch_and_roll(session, shell, tries - 1);
+    });
 }
 
 const ShotRegistrar registrar{[] {
@@ -50,7 +47,7 @@ const ShotRegistrar registrar{[] {
         const auto* p = c.playlist;
         if (p == nullptr || p->regions.size() <= 2) return;
         c.session.controller().select_range(c.track, p->regions[1].position, p->regions[2].end());
-        punch_and_roll(c.session, 12);
+        punch_and_roll(c.session, c.model, 12);
     };
     return s;
 }()};

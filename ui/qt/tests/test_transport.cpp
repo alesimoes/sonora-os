@@ -949,6 +949,10 @@ struct BarRig {
           model(engine, router) {
         session.installCommands(router.local());
         transport.installCommands(router.local());
+        router.setPlayRange([this]() {
+            const auto& sel = session.controller().selection();
+            return play_range_argument(sel.start, sel.end);
+        });
         router.prepare(qt_device_chords(true));
         link_transport(model, session, transport);
         view.resize(1280, 720);
@@ -1014,10 +1018,15 @@ void test_bar_loop_record() {
     }
 }
 
-// The punch range from the bar's PUNCH chip and the Transport window: set
-// from the Edit selection, shown, cleared; refused with no selection, with
-// loop record on, and while a take records. Pre- and post-roll typed into
-// the window's fields.
+// The punch range from the bar's PUNCH chip and the Transport window, and
+// the rolls typed into the window's fields. #156 review N1 and N2: these
+// were edits of this window's copy of the settings, sent whole, so a copy
+// behind the engine's could revert a field the engine had changed, and a
+// punch edit through a stale recording overlay could move the range a take
+// used. Each is now an engine command carrying only what changed: the
+// selection, or the roll in frames. Nothing is edited here; the engine's
+// answer (its refusals with no selection, with loop record on and during a
+// take are conformance's) comes back through the replica.
 void test_punch_from_the_ui() {
     model::Snapshot demo = make_demo_session(4, kRate);
     demo.settings.transport.punch = {{0, 0}};
@@ -1026,37 +1035,40 @@ void test_punch_from_the_ui() {
     QQuickItem* punch = r.item("barPunch");
     OK(punch != nullptr);
     if (punch == nullptr) return;
-    OK(r.model.implemented(QStringLiteral("transport.punch_selection")));
-    OK(r.model.implemented(QStringLiteral("transport.clear_punch")));
     OK(!r.active("barPunch"));
+    const auto last = [&r]() {
+        return r.engine.sent.empty() ? test::RecordingAdapter::Sent{}
+                                     : r.engine.sent.back();
+    };
 
-    // No selection: refused, said, and nothing set.
+    // No selection: sent with none, for the engine to refuse.
     r.session.controller().select_range(0, 2 * kRate, 2 * kRate);
     click(r.view, punch);
-    OK(r.tr().punch[1] <= r.tr().punch[0]);
-    OK(r.model.statusText().contains(QStringLiteral("no selection")));
-    OK(!r.active("barPunch"));
+    OK(last().command == "transport.punch_selection" && last().argument.empty());
 
-    // A selection becomes the punch range; the chip lights, the window
-    // shows the range, and nothing went to the engine as a command.
+    // A selection goes as the argument; this window's settings stay as the
+    // engine last sent them.
     r.session.controller().select_range(0, 2 * kRate, 5 * kRate);
     click(r.view, punch);
-    OK(r.tr().punch[0] == 2 * kRate && r.tr().punch[1] == 5 * kRate);
+    OK(last().command == "transport.punch_selection" && last().argument == "96000-240000");
+    OK(r.tr().punch[1] <= r.tr().punch[0]);
+
+    // Once the engine's range arrives the chip lights, the window shows it,
+    // and the chip sends clear_punch.
+    SessionSettings st = r.session.controller().snapshot().settings;
+    st.transport.punch = {{2 * kRate, 5 * kRate}};
+    std::string why;
+    OK(r.document.submit(model::SetSettings{st}, why));
+    r.session.documentUpdated();   // as the replica's update calls it
     r.model.tick();
     OK(r.active("barPunch"));
     OK(r.session.punchOn());
     OK(r.transport.punchSet());
     QQuickItem* shown = r.item("transportPunch");
     OK(shown != nullptr && shown->property("text").toString() != QStringLiteral("not set"));
-    OK(r.sent().empty());
-
-    // Lit, the chip clears it; clearing nothing is refused.
     click(r.view, punch);
-    OK(r.tr().punch[0] == 0 && r.tr().punch[1] == 0);
-    r.model.tick();
-    OK(!r.active("barPunch"));
-    r.model.invoke(QStringLiteral("transport.clear_punch"), -1);
-    OK(r.model.statusText().contains(QStringLiteral("no punch range")));
+    OK(last().command == "transport.clear_punch");
+    OK(r.tr().punch[0] == 2 * kRate && r.tr().punch[1] == 5 * kRate);
 
     // The Transport window's Set and Clear send the same commands.
     r.transport.setOpen(true);
@@ -1065,20 +1077,21 @@ void test_punch_from_the_ui() {
     OK(set != nullptr && clear != nullptr && set->isVisible());
     if (set && clear) {
         click(r.view, set);
-        OK(r.tr().punch[0] == 2 * kRate && r.tr().punch[1] == 5 * kRate);
+        OK(last().command == "transport.punch_selection" && last().argument == "96000-240000");
         click(r.view, clear);
-        OK(r.tr().punch[1] <= r.tr().punch[0]);
+        OK(last().command == "transport.clear_punch");
     }
 
-    // Pre- and post-roll, typed in seconds.
+    // Pre- and post-roll, typed in seconds, sent in frames.
+    const Frames pre_before = r.tr().pre_roll;
     OK(r.session.setPreRollText(QStringLiteral("1.5")));
-    OK(r.tr().pre_roll == 72000);
-    r.model.tick();   // the window reads the settings on the tick
-    OK(r.transport.preRollText() == QStringLiteral("1.500 s"));
+    OK(last().command == "transport.set_pre_roll" && last().argument == "72000");
+    OK(r.tr().pre_roll == pre_before);
     OK(r.session.setPostRollText(QStringLiteral("0")));
-    OK(r.tr().post_roll == 0);
+    OK(last().command == "transport.set_post_roll" && last().argument == "0");
+    const std::size_t sent = r.engine.sent.size();
     OK(!r.session.setPreRollText(QStringLiteral("-2")));
-    OK(r.tr().pre_roll == 72000);
+    OK(r.engine.sent.size() == sent);
     // Through the field itself: click, type, Return.
     QQuickItem* field = r.item("transportPreRoll");
     QQuickItem* input = r.item("transportPreRollInput");
@@ -1088,38 +1101,20 @@ void test_punch_from_the_ui() {
         OK(input->isVisible());
         type(r.view, "3");
         key(r.view, Qt::Key_Return, Qt::NoModifier);
-        OK(r.tr().pre_roll == 3 * kRate);
+        OK(last().command == "transport.set_pre_roll" && last().argument == "144000");
         OK(!input->isVisible());
     }
 
-    // While a take records, the punch range and the rolls stay as the take
-    // started them.
-    r.session.controller().select_range(0, 2 * kRate, 5 * kRate);
+    // During a take the overlay may be stale either way, so the window does
+    // not decide: the command goes, and the engine refuses it if a take is
+    // open.
     r.engine.snapshot.state = TransportMode::Recording;
     for (int i = 0; i < 4; ++i) r.model.tick();
     OK(r.model.recording());
     r.model.invoke(QStringLiteral("transport.punch_selection"), -1);
-    OK(r.tr().punch[1] <= r.tr().punch[0]);
-    OK(r.model.statusText().contains(QStringLiteral("a take is recording")));
-    OK(!r.session.setPostRollText(QStringLiteral("2")));
-    OK(r.tr().post_roll == 0);
+    OK(last().command == "transport.punch_selection" && last().argument == "96000-240000");
     r.engine.snapshot.state = TransportMode::Stopped;
     for (int i = 0; i < 4; ++i) r.model.tick();
-}
-
-// Loop record on: a take cannot both loop and punch (ADR-0016 section 1,
-// C3), so setting a punch range is refused now, with the reason, rather than
-// at R.
-void test_punch_refused_with_loop_record() {
-    model::Snapshot demo = make_demo_session(4, kRate);
-    demo.settings.transport.loop = {{kRate, 3 * kRate}};
-    demo.settings.transport.loop_record = true;
-    BarRig r("protools.json", std::move(demo));
-    if (r.root == nullptr) return;
-    r.session.controller().select_range(0, 2 * kRate, 5 * kRate);
-    r.model.invoke(QStringLiteral("transport.punch_selection"), -1);
-    OK(r.tr().punch[1] <= r.tr().punch[0]);
-    OK(r.model.statusText().contains(QStringLiteral("loop record is on")));
 }
 
 }  // namespace
@@ -1136,7 +1131,6 @@ int main(int argc, char** argv) {
     test_window();
     test_bar_loop_record();
     test_punch_from_the_ui();
-    test_punch_refused_with_loop_record();
     if (failures != 0) {
         std::fprintf(stderr, "test_ui_transport: %d failure(s)\n", failures);
         return 1;

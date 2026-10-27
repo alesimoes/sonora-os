@@ -205,9 +205,9 @@ Rectangle {
         // loop modes on one row, the punch under them.
         Column {
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 2
+            spacing: Theme.space1
             Row {
-                spacing: 2
+                spacing: Theme.space1
                 SButton {
                     objectName: "barLoop"
                     text: bar.shell.cycleMode ? "CYCLE" : "LOOP"

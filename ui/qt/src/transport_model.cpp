@@ -174,6 +174,9 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
     });
     QObject::connect(&session, &SessionModel::counterChanged, &transport,
                      &TransportModel::followCounter);
+    session.setCommandSender([&shell](const QString& command, const QString& argument) {
+        shell.invokeWith(command, -1, argument);
+    });
 }
 
 void link_marker_locate(ShellModel& shell, SessionModel& session) {
@@ -205,7 +208,7 @@ bool parse_roll_text(const std::string& text, uint32_t rate, model::Frames& fram
                      std::string& why) {
     std::string s;
     for (const char c : text) {
-        if (c != ' ' && c != '	') s += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+        if (c != ' ' && c != '\t') s += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
     }
     if (!s.empty() && s.back() == 's') s.pop_back();
     // Digits with at most one point, at least one digit: no sign, so a

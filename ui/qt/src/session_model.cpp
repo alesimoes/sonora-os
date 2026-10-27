@@ -238,18 +238,6 @@ void SessionModel::installCommands(CommandRegistry& local) {
                                          why);
     });
 
-    // The punch range is the session's, saved with it: the stand-in edits it
-    // through the replica, as mute does, until an engine announces the
-    // commands. A take running was started over the range the document held
-    // then; changing it under the take would show a range the take is not
-    // using.
-    simple("transport.punch_selection", [this](const CommandContext&, Why& why) {
-        return !refuse_during_take("the punch range", why) && ctl_.set_punch_from_selection(why);
-    });
-    simple("transport.clear_punch", [this](const CommandContext&, Why& why) {
-        return !refuse_during_take("the punch range", why) && ctl_.clear_punch(why);
-    });
-
     // Saving is the engine's once it has session commands (session_files.h);
     // until then the interface writes the file itself.
     simple("app.save", [this](const CommandContext&, Why& why) { return saveSession(why); });
@@ -437,20 +425,20 @@ void SessionModel::markerRulerClick(qreal x, bool alt) {
     run(alt ? ctl_.remove_marker(id, why) : ctl_.recall_marker(id, why), why);
 }
 
-bool SessionModel::refuse_during_take(const char* what, std::string& why) const {
-    if (!overlay_.recording) return false;
-    why = std::string("a take is recording; ") + what + " changes after Stop";
-    return true;
-}
-
+// Sent as the one field, never as a copy of the settings this window holds,
+// which may be behind the engine's (ADR-0016, update "transport settings at
+// the authority"). A refusal of the engine's comes back on the status line.
 bool SessionModel::setRollText(bool pre, const QString& text) {
     std::string why;
     model::Frames frames = 0;
-    if (refuse_during_take(pre ? "the pre-roll" : "the post-roll", why) ||
-        !parse_roll_text(text.toStdString(), ctl_.snapshot().settings.sample_rate, frames, why)) {
+    if (!parse_roll_text(text.toStdString(), ctl_.snapshot().settings.sample_rate, frames, why)) {
         return run(false, why);
     }
-    return run(pre ? ctl_.set_pre_roll(frames, why) : ctl_.set_post_roll(frames, why), why);
+    if (!send_command_) return run(false, "no engine to set the roll on");
+    send_command_(pre ? QStringLiteral("transport.set_pre_roll")
+                      : QStringLiteral("transport.set_post_roll"),
+                  QString::number(frames));
+    return true;
 }
 
 bool SessionModel::setPreRollText(const QString& text) { return setRollText(true, text); }

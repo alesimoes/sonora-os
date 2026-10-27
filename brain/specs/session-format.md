@@ -229,8 +229,13 @@ selection as `loop` only when none is set; `transport.cycle_selection`,
 Cmd+U, always does). Both default to
 `false`, as in both applications. `transport.toggle_loop` and
 `transport.toggle_loop_record` flip one each, and turning one on with a
-timeline selection makes the selection `loop`. Transport settings are saved
-but are not undoable.
+timeline selection makes the selection `loop`. `transport.punch_selection`
+(the selection, required) and `transport.clear_punch` set `punch`;
+`transport.set_pre_roll` and `transport.set_post_roll` (frames) set the
+rolls; each changes its one field at the engine, and `punch` does not change
+while a take is open (ADR-0016, update "transport settings at the
+authority").
+Transport settings are saved but are not undoable.
 
 ### `monitor_bus`: Phase 2's fixed stereo bus
 
