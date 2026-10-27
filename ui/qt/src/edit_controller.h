@@ -287,7 +287,7 @@ public:
     model::Id marker_at(double x) const;
     const model::MarkerList& markers() const { return *snapshot().edit->markers; }
 
-    // --- tracks: Pro Tools' Track menu (ADR-0022), each one undo step ---
+    // --- tracks: Pro Tools' Track menu (ADR-0023), each one undo step ---
     // `count` mono audio tracks named "Audio <n>" with the lowest free
     // numbers, each on the lowest capture input no audio track uses, below
     // the selected track (at the end with none). The first is selected.

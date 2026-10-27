@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Pro Tools' Track menu (ADR-0022): new tracks below the selection on free
+// Pro Tools' Track menu (ADR-0023): new tracks below the selection on free
 // inputs, duplicate with the playlist and plug-ins, delete, move up and
 // down, each one undo step with the selection following; the commands, the
 // count asked for, the engine's track count and a take's armed track

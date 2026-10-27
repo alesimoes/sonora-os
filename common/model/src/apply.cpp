@@ -728,6 +728,21 @@ public:
                 }
             }
         }
+        // The same buses: a bus is fed once per strip, and the copy is
+        // another strip, so no loop or second send can follow.
+        std::vector<SendMix> send_values;
+        if (op.sends) {
+            for (const Send& sd : src.sends) {
+                Send c = sd;
+                c.id = next++;
+                copy->sends.push_back(c);
+                if (const SendMix* v = before_.mix.find_send(sd.id)) {
+                    SendMix m = *v;
+                    m.send = c.id;
+                    send_values.push_back(m);
+                }
+            }
+        }
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks.insert(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t) + 1,
                             std::move(copy));
@@ -737,11 +752,12 @@ public:
             TrackMix mix = *m;
             mix.track = op.track;
             // A copy of a soloed track would solo one more track than the
-            // operator asked for (ADR-0022 §2).
+            // operator asked for (ADR-0023 §2).
             mix.solo = false;
             set_mix(after_.mix, mix);
         }
         for (InsertMix& v : values) set_insert_mix(after_.mix, std::move(v));
+        for (const SendMix& v : send_values) set_send_mix(after_.mix, v);
         after_.next_id = next;
         return true;
     }
@@ -2034,6 +2050,7 @@ std::size_t duplicate_track_ids(const Snapshot& s, const DuplicateTrack& op) {
     count(src.playlists);
     count(src.midi_playlists);
     if (op.inserts) n += src.inserts.size();
+    if (op.sends) n += src.sends.size();
     return n;
 }
 

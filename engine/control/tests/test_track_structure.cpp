@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Track structure through PlaybackController (ADR-0022 §4): a reorder, a
+// Track structure through PlaybackController (ADR-0023 §4): a reorder, a
 // duplicate and a delete while rolling are heard exactly as the document
 // says, before the new plan swaps in, at the swap and after it, with no
 // allocation or free in Session::process() throughout; and the record arm
@@ -8,6 +8,7 @@
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
 
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -108,15 +109,16 @@ void block(Session& s, Out& o) {
     playback_test::t_counting = false;
 }
 
-// Left is `left` times source 1 (track A, hard left); right is source 2
-// (track B, hard right) or silence.
-bool heard(Session& s, Out& o, float left, bool right) {
+// Left is `left` times source 1 (track A, hard left); right is `right`
+// times source 2 (track B, hard right): exactly, or within `tol` where
+// more than two copies sum and the order of the sum rounds.
+bool heard(Session& s, Out& o, float left, float right, float tol = 0.0f) {
     const int64_t at = static_cast<int64_t>(s.transport().playhead());
     block(s, o);
     for (uint32_t i = 0; i < kBlock; ++i) {
         const float l = left * source_value(1, 0, at + i);
-        const float r = right ? source_value(2, 0, at + i) : 0.0f;
-        if (o.l[i] != l || o.r[i] != r) {
+        const float r = right * source_value(2, 0, at + i);
+        if (std::fabs(o.l[i] - l) > tol || std::fabs(o.r[i] - r) > tol) {
             std::fprintf(stderr, "  frame %lld: L %f R %f, want %f %f\n",
                          static_cast<long long>(at + i), o.l[i], o.r[i], l, r);
             return false;
@@ -138,10 +140,11 @@ bool show(PlaybackController& ctl, const Snapshot& snapshot) {
 // the new one is resident and published; from the block after that, the
 // new one, exactly. Before and after are what each says is heard.
 bool move(PlaybackController& ctl, Session& s, Out& o, const Snapshot& next,
-          float left_before, bool right_before, float left_after, bool right_after) {
+          float left_before, float right_before, float left_after, float right_after,
+          float tol = 0.0f) {
     if (!show(ctl, next) || !ctl.tracks_moving()) return false;
     for (int blk = 0; blk < 4; ++blk) {
-        if (!heard(s, o, left_before, right_before)) return false;
+        if (!heard(s, o, left_before, right_before, tol)) return false;
     }
     bool swapped = false;
     for (int i = 0; i < 64 && (ctl.tracks_moving() || !swapped); ++i) {
@@ -150,7 +153,7 @@ bool move(PlaybackController& ctl, Session& s, Out& o, const Snapshot& next,
         ctl.pump();
         swapped = swapped || ctl.plans_published() != published;
         if (!heard(s, o, swapped ? left_after : left_before,
-                   swapped ? right_after : right_before)) {
+                   swapped ? right_after : right_before, tol)) {
             return false;
         }
     }
@@ -214,6 +217,63 @@ int test_moves_are_heard_exactly_and_allocate_nothing() {
     CHECK(playback_test::heap_untouched());
     CHECK(s.playback_misses() == 0);
     std::printf("  heap counter: %s\n", playback_test::heap_counter_scope());
+    return 0;
+}
+
+// Sends and aux buses (ADR-0022) under a move. A sends to Verb from slot
+// 0 and B from slot 1, post-fader, panning with their tracks, so the bus
+// returns A on the left and B on the right: 2A and 2B. The engine keys a
+// send's state by row and slot; a reorder, a duplicate and deletes that
+// move rows keep each send on its own track through every swap, and a
+// deleted track's send stops feeding the bus at its swap. Nothing is
+// allocated in process().
+int test_sends_move_with_their_tracks() {
+    auto session = make_session(4);
+    Session& s = *session;
+    CHECK(write_source(1) && write_source(2));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1));
+    CHECK_APPLY(h, source_op(2));
+    CHECK_APPLY(h, track_op(100, "A", -1.0f, 0));
+    CHECK_APPLY(h, track_op(102, "B", 1.0f, 1));
+    CHECK_APPLY(h, (PlaceRegion{101, region(110, 1), 0}));
+    CHECK_APPLY(h, (PlaceRegion{103, region(111, 2), 0}));
+    CHECK_APPLY(h, (AddBus{200, "Verb", BusMix{}}));
+    SendMix unity;
+    unity.level_db = 0.0f;
+    CHECK_APPLY(h, (AddSend{100, 201, 0, 200, unity}));
+    CHECK_APPLY(h, (AddSend{102, 202, 1, 200, unity}));
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    for (int blk = 0; blk < 3; ++blk) block(s, o);   // the sends ramp in
+    playback_test::reset_heap_counts();
+    for (int blk = 0; blk < 4; ++blk) CHECK(heard(s, o, 2.0f, 2.0f));
+
+    CHECK_APPLY(h, (ReorderTracks{{102, 100}}));
+    CHECK(move(ctl, s, o, h.current(), 2.0f, 2.0f, 2.0f, 2.0f));
+
+    DuplicateTrack d;
+    d.source = 100;
+    d.track = h.current().next_id;
+    d.name = "A copy";
+    CHECK_APPLY(h, d);
+    CHECK(h.current().edit->tracks[2]->sends.size() == 1);
+    // Four copies of A sum on the left: the order of the sum may round.
+    CHECK(move(ctl, s, o, h.current(), 2.0f, 2.0f, 4.0f, 2.0f, 0.01f));
+
+    CHECK_APPLY(h, RemoveTrack{d.track});
+    CHECK(move(ctl, s, o, h.current(), 4.0f, 2.0f, 2.0f, 2.0f, 0.01f));
+    // B goes, and its send with it: A moves up to row 0.
+    CHECK_APPLY(h, RemoveTrack{102});
+    CHECK(move(ctl, s, o, h.current(), 2.0f, 2.0f, 2.0f, 0.0f));
+    for (int blk = 0; blk < 4; ++blk) CHECK(heard(s, o, 2.0f, 0.0f));
+
+    CHECK(playback_test::heap_untouched());
+    CHECK(s.playback_misses() == 0);
     return 0;
 }
 
@@ -304,6 +364,7 @@ int main() {
     if (test_moves_are_heard_exactly_and_allocate_nothing() != 0) return 1;
     if (test_arm_and_input_follow_the_track() != 0) return 1;
     if (test_atomics_wait_for_the_old_plans_last_block() != 0) return 1;
+    if (test_sends_move_with_their_tracks() != 0) return 1;
     std::printf("test_track_structure: ok\n");
     return 0;
 }

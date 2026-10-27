@@ -148,7 +148,7 @@ void SessionModel::installCommands(CommandRegistry& local) {
     });
     simple("edit.select_all", [this](const CommandContext&, Why& why) { return ctl_.select_all(why); });
 
-    // --- Pro Tools' Track menu (ADR-0022) ---
+    // --- Pro Tools' Track menu (ADR-0023) ---
     // A track command acts on the track given, or the selected one (the
     // router fills the target from the selection).
     const auto order = [this]() { return model::track_order(*ctl_.snapshot().edit); };

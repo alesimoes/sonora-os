@@ -155,7 +155,7 @@ struct ClickSegment {
 };
 
 // One engine track's mix as a plan places the document's tracks after a
-// change of their order or set (ADR-0022 §4). The values Track's atomics
+// change of their order or set (ADR-0023 §4). The values Track's atomics
 // will hold once the control thread has caught up with the plan.
 struct PlanTrackMix {
     float gain = 1.0f;   // linear
@@ -168,6 +168,18 @@ struct PlanTrackMix {
     uint32_t input = 0;
 };
 
+// One send slot of an engine track, as the same plan places the tracks:
+// the send state Session::set_send() will hold for that strip and slot.
+// A send's state is keyed by row (ADR-0022 sends, section 5), so it moves
+// with its track at the swap as the fader does.
+struct PlanSendMix {
+    float level = 0.0f;   // linear
+    float pan = 0.0f;
+    bool follow_pan = true;
+    bool mute = false;
+    bool pre = false;
+};
+
 struct PlanSizes {
     uint32_t tracks = 0;
     uint32_t segments = 0;
@@ -176,6 +188,7 @@ struct PlanSizes {
     uint32_t chunk_slots = 0;
     uint32_t click_segments = 0;
     uint32_t track_mix = 0;   // engine tracks, or 0 for a plan that carries no mix
+    uint32_t send_mix = 0;    // engine tracks x kStripSendSlots, or 0
 };
 
 struct PlaybackPlan {
@@ -214,7 +227,7 @@ struct PlaybackPlan {
     // Mono tracks pan as ((1 -+ pan) / 2) ^ pan_exponent, which is
     // pan_law_db at centre; precomputed so the audio thread takes no log.
     float pan_exponent = 0.5f;
-    // ADR-0022 §4. Engine track e plays the plan's track at e, and its mix
+    // ADR-0023 §4. Engine track e plays the plan's track at e, and its mix
     // is in Track's atomics, which the control thread writes. After a change
     // of track order those still hold the order the last plan played until
     // the control thread rewrites them, just after it publishes this plan.
@@ -225,6 +238,10 @@ struct PlaybackPlan {
     uint32_t mix_serial = 0;
     PlanTrackMix* track_mix = nullptr;
     uint32_t track_mix_count = 0;
+    // The tracks' send slots the same way, at e * kStripSendSlots + slot:
+    // read for a track strip's send while that track lags the plan.
+    PlanSendMix* send_mix = nullptr;
+    uint32_t send_mix_count = 0;
 };
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "chunk slots");

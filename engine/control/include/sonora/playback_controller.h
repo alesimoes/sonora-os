@@ -49,7 +49,9 @@ public:
     // or NaN on the audio thread.
     void apply_mix(const model::Snapshot& snapshot);
     // The sends' and the aux returns' part of apply_mix() (ADR-0022 §6).
-    void apply_sends(const model::Snapshot& snapshot);
+    // `tracks` false: the aux returns and the buses' own sends only, which
+    // no change of track order moves (ADR-0023 §4).
+    void apply_sends(const model::Snapshot& snapshot, bool tracks = true);
     // Engine track `track`'s gain alone, from the document's track there:
     // a ride whose rider left ends without the other faders moving. Nothing
     // for a track past the document's end.
@@ -102,7 +104,7 @@ public:
 
     bool pending() const { return pending_ != nullptr; }
     // A plan that moves tracks between engine tracks is waiting to play
-    // (ADR-0022 §4). Until it does, each engine track's atomics belong to
+    // (ADR-0023 §4). Until it does, each engine track's atomics belong to
     // the track that was on it: nothing addressed by position (a fader
     // ride, an arm) may be written to them, and the mix asked for meanwhile
     // is written once the plan plays and no block can still be on the plan
@@ -155,7 +157,7 @@ private:
     // Whether a roll asked for at `generation` may start now.
     bool may_roll(uint64_t generation) const;
     bool registered(const model::Source& source, uint32_t& slot, std::string& error);
-    // ADR-0022 §4. Whether a mix of `snapshot`'s may go to the atomics now:
+    // ADR-0023 §4. Whether a mix of `snapshot`'s may go to the atomics now:
     // they hold its track order and no plan moving tracks is pending.
     bool atoms_follow(const model::Snapshot& snapshot) const;
     // `plan`'s track_mix from `snapshot`, each engine track armed if the

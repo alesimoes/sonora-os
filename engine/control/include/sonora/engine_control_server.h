@@ -470,7 +470,7 @@ private:
     // (ADR-0016 §1), or the punch range while any take is open or
     // requested, by name; empty otherwise.
     std::string transport_refusal(const model::Snapshot& doc, model::MemberRef member) const;
-    // ADR-0022 §5. Why no change of track order or set may go through now
+    // ADR-0023 §5. Why no change of track order or set may go through now
     // (a take about to start, or one still closing), or empty with
     // `pinned` the rows a running take records (none when no take runs).
     std::string structure_lock(std::vector<bool>& pinned) const;

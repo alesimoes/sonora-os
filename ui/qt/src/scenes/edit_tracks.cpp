@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The Track menu (ADR-0022): the last two tracks deleted to make room on
+// The Track menu (ADR-0023): the last two tracks deleted to make room on
 // the engine, the snare duplicated below itself with its regions, a new
 // audio track below the copy, and the Track menu open on it. Then, as a
 // second scene, the New Tracks dialog asking how many.

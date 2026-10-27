@@ -338,7 +338,7 @@ public:
     // A take other than the running one whose files are not all in yet (a
     // punch-out, a take started over): its number, or 0. Its files are
     // placed on the tracks by row, so nothing may move until it is in
-    // (ADR-0022 §5). Control thread.
+    // (ADR-0023 §5). Control thread.
     int closing_take() const;
     // Whether that take was started by start_loop(). Control thread.
     bool loop_take_running() const { return recording_take_ != 0 && loop_running_; }
@@ -637,7 +637,7 @@ private:
                        float* const out[2]) noexcept SONORA_RT;
     // Engine track e's mix as this block hears it: the plan's, while the
     // track's atomics still hold the track order before the plan's
-    // (ADR-0022 §4), and the atomics' otherwise.
+    // (ADR-0023 §4), and the atomics' otherwise.
     struct TrackMixView {
         float gain = 1.0f;
         float pan = 0.0f;
@@ -877,7 +877,7 @@ private:
     uint64_t seen_epoch_ = 0;
     // A plan that moved tracks between engine tracks has just been adopted:
     // this block's faders start at their targets instead of ramping from
-    // what another track left on the engine track (ADR-0022 §4).
+    // what another track left on the engine track (ADR-0023 §4).
     bool snap_mix_ = false;
     uint64_t expected_playhead_ = 0;
     bool reseek_ = true;

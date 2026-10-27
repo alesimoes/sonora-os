@@ -117,10 +117,11 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
     // carries this mix, or the next show() builds one that does.
     if (!atoms_follow(snapshot)) {
         deferred_mix_ = snapshot;
+        apply_sends(snapshot, false);
         return;
     }
     const auto& tracks = snapshot.edit->tracks;
-    // A take's file never changes input part way (ADR-0022 §4).
+    // A take's file never changes input part way (ADR-0023 §4).
     const bool take = session_.transport().state() == TransportState::Recording ||
                       record_requested() || !session_.folder_change_refusal().empty();
     for (std::size_t i = 0; i < tracks.size() && i < session_.tracks().size(); ++i) {
@@ -152,7 +153,7 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
     apply_sends(snapshot);
 }
 
-void PlaybackController::apply_sends(const model::Snapshot& snapshot) {
+void PlaybackController::apply_sends(const model::Snapshot& snapshot, bool tracks_too) {
     // By strip and slot, as the plan names them (ADR-0022 §5): engine track
     // i is display track i, engine bus b display bus b. A slot left by a
     // removed send keeps its values; no plan edge reads it until a send is
@@ -167,7 +168,7 @@ void PlaybackController::apply_sends(const model::Snapshot& snapshot) {
         }
     };
     const auto& tracks = snapshot.edit->tracks;
-    for (std::size_t i = 0; i < tracks.size() && i < engine_tracks; ++i) {
+    for (std::size_t i = 0; tracks_too && i < tracks.size() && i < engine_tracks; ++i) {
         put(tracks[i]->sends, static_cast<uint32_t>(i));
     }
     const auto& buses = snapshot.edit->buses;
@@ -255,7 +256,7 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
                 " is not the reader's " + std::to_string(session_.reader().chunk_frames());
         return false;
     }
-    // ADR-0022 §4: tracks that land on other engine tracks take their mix
+    // ADR-0023 §4: tracks that land on other engine tracks take their mix
     // with them in the plan, and the atomics follow once it is published.
     std::vector<model::Id> order = model::track_order(*snapshot.edit);
     const bool moves = atoms_order_ && *atoms_order_ != order;
@@ -323,6 +324,21 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
         m.monitor = static_cast<uint8_t>(mon);
         if (audio && !x.input.empty()) m.input = x.input.front();
     }
+    // Each track's sends at its new row, as apply_sends() would write them.
+    // A slot no send holds stays at its zeroed default: no edge reads it.
+    for (std::size_t e = 0; e < tracks.size() && e < engine.size(); ++e) {
+        for (const model::Send& sd : tracks[e]->sends) {
+            const std::size_t k = e * kStripSendSlots + sd.slot;
+            const model::SendMix* v = snapshot.mix.find_send(sd.id);
+            if (v == nullptr || sd.slot >= kStripSendSlots || k >= plan.send_mix_count) continue;
+            PlanSendMix& m = plan.send_mix[k];
+            m.level = gain_of_db(v->level_db);
+            m.pan = pan_of(v->pan);
+            m.follow_pan = v->follow_pan;
+            m.mute = v->mute;
+            m.pre = v->pre;
+        }
+    }
 }
 
 void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
@@ -338,6 +354,15 @@ void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
         t.set_rec_armed(m.armed);
         t.set_monitor(static_cast<Track::Monitor>(m.monitor));
         t.set_input(m.input);
+        // Its sends before the serial: the audio thread reads them from
+        // the atomics once it sees the serial.
+        for (uint32_t slot = 0; slot < kStripSendSlots; ++slot) {
+            const std::size_t k = e * kStripSendSlots + slot;
+            if (k >= plan.send_mix_count) break;
+            const PlanSendMix& sm = plan.send_mix[k];
+            session_.set_send(static_cast<uint32_t>(e), slot, sm.level, sm.pan, sm.follow_pan,
+                              sm.mute, sm.pre);
+        }
         t.set_mix_serial(plan.mix_serial);
     }
     atoms_order_ = std::move(adopting_order_);

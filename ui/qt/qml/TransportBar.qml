@@ -95,7 +95,7 @@ Rectangle {
                     bar.editMenuRequested(p.x, p.y)
                 }
             }
-            // Pro Tools' Track menu (ADR-0022): new, duplicate, delete and
+            // Pro Tools' Track menu (ADR-0023): new, duplicate, delete and
             // move, on the selected track.
             SButton {
                 id: trackMenuButton

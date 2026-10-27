@@ -45,7 +45,7 @@ public:
     }
     // A take closed while rolling (a punch-out) stays closing, its files not
     // yet in the session, until released (false). Never held across a Stop.
-    // False if this rig cannot do it (ADR-0022 §5).
+    // False if this rig cannot do it (ADR-0023 §5).
     virtual bool hold_takes_closing(EngineControl& engine, bool hold) {
         (void)engine;
         (void)hold;

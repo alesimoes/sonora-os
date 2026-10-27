@@ -149,7 +149,7 @@ target_compile_definitions(test_ui_markers PRIVATE
 add_test(NAME ui_markers COMMAND test_ui_markers)
 set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-# The Track menu (ADR-0022): new, duplicate, delete, move, their refusals
+# The Track menu (ADR-0023): new, duplicate, delete, move, their refusals
 # before sending, then the menu, a header's right-click and the New Tracks
 # dialog in the real QML.
 add_executable(test_ui_tracks tests/test_tracks.cpp)

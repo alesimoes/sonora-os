@@ -1,4 +1,4 @@
-# ADR-0022 — Track structure: delete, duplicate, and the positional engine
+# ADR-0023 — Track structure: delete, duplicate, and the positional engine
 
 - Status: **Accepted**, 2026-10-27, by the coordinator on the recommended
   defaults below.
@@ -6,9 +6,11 @@
 - Proposed by: rt-engineer (model squad), backlog item `daw.model.tracks`
   ("Track operations and types").
 - Extends: ADR-0009 (operations, undo), ADR-0012 §6 (insert values outside
-  undo). Session format unchanged (10); control protocol 26 (two new
-  operation kinds).
-- Numbering: follows ADR-0021.
+  undo), ADR-0022 (sends and aux buses: a track's sends go with it).
+  Session format unchanged (11); control protocol 28 (two new operation
+  kinds; 26 was never used).
+- Numbering: follows ADR-0022, sends and aux buses, which merged first
+  while this one was in review as ADR-0022.
 
 ## Summary
 
@@ -67,7 +69,8 @@ words whatever the track holds.
 The copy is a new track, placed directly below its source, as both Pro
 Tools and Logic place it. Ids: `track` is the copy's; then, for each
 playlist copied, in the source's order, the playlist and then each of its
-regions in position order; then each insert copied, in slot order. Every
+regions in position order; then each insert copied, in slot order; then
+each send copied, in slot order. Every
 id must be at least `next_id`, and `next_id` becomes the last one plus 1,
 so the sender reserves `duplicate_track_ids()` ids. Crossfades follow their
 regions' new ids. A MIDI region keeps its `shared_ptr` to the sequence
@@ -86,8 +89,12 @@ Playlist names are the copy's name and the source playlist's suffix after
 the source track's name (`Vox.02` becomes `Vox.dup1.02`), or the
 playlist's own name when it does not start with the track's.
 
-Sends, automation and group membership are copied by this rule when they
-exist: they belong to the track, so the copy gets its own.
+Sends (ADR-0022) are copied unless `sends` is off: the same slot, the same
+bus, the same values (level, pan, follow pan, mute, pre), under the copy's
+own send ids. A strip feeds a bus once and the copy is another strip, so no
+loop and no second send to one bus can follow. Automation and group
+membership will be copied by the same rule when they exist: they belong to
+the track, so the copy gets its own.
 
 ### §3 Delete
 
@@ -98,10 +105,14 @@ until no retained step holds the insert (`History::prune_insert_values`),
 so undo restores the fader and the plugins where they were. Its sources
 stay in the pool, `recorded_on_track` naming a track that may come back.
 
-Routing on delete: today a track's only destination is the monitor bus.
-When buses and sends land (`ui.mixer.io`, `ui.mixer.sends`), a send is part
-of its track and goes with it; a send *to* a bus that is deleted is a
-question for that ADR, not this one.
+Routing on delete: a track's sends (ADR-0022) are part of it and go with
+it, and their values stay in `MixState` as its fader's does, so undo brings
+them back on their slots and buses as they were. A bus names no track (a
+send is held by its strip), so no bus is left naming the deleted track,
+and the bus it fed may then be removed. In the engine the deleted track's
+send edges are gone from the plan that drops the track, and stop feeding
+their bus at its swap. Deleting a bus while a send feeds it is refused by
+ADR-0022.
 
 ### §4 The positional engine
 
@@ -119,13 +130,15 @@ The fix keeps engine tracks positional and moves the mix with the plan:
 - **Plan-carried mix.** When `PlaybackController::show()` builds a plan
   whose track order differs from the one the atomics hold, it gives the
   plan a `mix_serial` and fills `track_mix[e]` for every engine track:
-  gain, pan, mute, solo, solo safe, monitor mode, arm, input. Nothing
+  gain, pan, mute, solo, solo safe, monitor mode, arm, input, and
+  `send_mix` for its send slots (the engine keys a send's state by row and
+  slot, ADR-0022 §5, so a send moves with its track like its fader). Nothing
   positional is written meanwhile (`tracks_moving()`); a mix asked for in
   between is kept and written later.
 - **The audio thread.** For each engine track, while `Track::mix_serial()`
   is not the playing plan's `mix_serial`, it takes the mix from the plan;
-  otherwise from the atomics. On adopting such a plan it snaps the fader
-  ramps and the monitor ramps, because what an engine track ramped from
+  otherwise from the atomics, sends included. On adopting such a plan it
+  snaps the fader, send and monitor ramps, because what an engine track ramped from
   belonged to the track that was on it. The bus sum is then exactly the
   same across the swap.
 - **Catching up.** A block that acquired the old plan just before the
@@ -133,7 +146,7 @@ The fix keeps engine tracks positional and moves the mix with the plan:
   atomics. So the control thread writes them only once
   `PlanExchange::blocks()` has advanced two past its value at the publish
   (no block can still be on the old plan; #162 review B1): the plan's
-  values, each track stamped with the serial (release; the audio thread
+  values, its send slots included, each track stamped with the serial (release; the audio thread
   reads it with acquire), then any mix kept meanwhile. `tracks_moving()`
   holds until then, and `after_deactivate()` writes them at once, since no
   block runs. A later plan that moves nothing replaces one still waiting.
@@ -177,14 +190,14 @@ conformance suite runs them on both.
 
 ## Consequences
 
-- Protocol 26: a version-25 peer's decoder refuses the two new kinds.
-- Session format stays at 10: the states these operations make are ones
-  format 10 already holds.
+- Protocol 28: a version-27 peer's decoder refuses the two new kinds.
+- Session format stays at 11: the states these operations make are ones
+  format 11 already holds.
 - The engine now honours `mix.input` for capture; sessions written so far
   carry input i on track i, as the engine assumed.
 - VCA masters and folder tracks are not track kinds yet (`ui.mixer.vca`,
-  `ui.mixer.folders`); aux and master tracks wait for buses
-  (`ui.mixer.io`); New Track for MIDI and instrument kinds waits on
+  `ui.mixer.folders`); aux buses are ADR-0022's, and a master track waits
+  for `ui.mixer.io`; New Track for MIDI and instrument kinds waits on
   MIDI playback and instrument hosting (`midi.instrument_tracks`).
 
 ## Alternatives rejected

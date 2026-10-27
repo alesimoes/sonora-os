@@ -1259,12 +1259,23 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         track_pan_[e] = pan;
     }
     if (snap_mix_) {
-        snap_mix_ = false;
         for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     }
     bus_target_ = bus_gain_.load(std::memory_order_relaxed);
     // Indices from a plan that is not in bounds are never followed.
     if (plan_valid_) send_targets(*plan);
+    // A track's sends moved with it: what a send state ramped from belonged
+    // to the track that was on its row (ADR-0023 section 4).
+    if (snap_mix_) {
+        snap_mix_ = false;
+        const auto tracks_n = static_cast<uint32_t>(tracks_.size());
+        for (uint32_t ei = 0; plan_valid_ && ei < plan->edge_count; ++ei) {
+            const uint32_t k = plan->edges[ei].send;
+            if (k == kNoSend || k / kStripSendSlots >= tracks_n) continue;
+            send_gain_[2 * k] = send_target_[2 * k];
+            send_gain_[2 * k + 1] = send_target_[2 * k + 1];
+        }
+    }
 
     if (playhead != expected_playhead_) reseek_ = true;
     block_frames_ = nframes;
@@ -1978,12 +1989,29 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         const uint32_t k = plan.edges[ei].send;
         if (k == kNoSend) continue;
         const uint32_t strip = k / kStripSendSlots;
-        const SendState& s = sends_[k];
-        const float level = s.level.load(std::memory_order_relaxed);
-        const float own_pan = s.pan.load(std::memory_order_relaxed);
-        const bool follow = s.follow_pan.load(std::memory_order_relaxed);
-        const bool mute = s.mute.load(std::memory_order_relaxed);
-        const bool pre = s.pre.load(std::memory_order_relaxed);
+        float level = 0.0f;
+        float own_pan = 0.0f;
+        bool follow = true;
+        bool mute = false;
+        bool pre = false;
+        // A track's sends are keyed by its row: while the track lags a plan
+        // that moved it, the plan holds them (ADR-0023 section 4).
+        if (strip < tracks_n && plan.mix_serial != 0 && k < plan.send_mix_count &&
+            tracks_[strip]->mix_serial() != plan.mix_serial) {
+            const PlanSendMix& m = plan.send_mix[k];
+            level = m.level;
+            own_pan = m.pan;
+            follow = m.follow_pan;
+            mute = m.mute;
+            pre = m.pre;
+        } else {
+            const SendState& s = sends_[k];
+            level = s.level.load(std::memory_order_relaxed);
+            own_pan = s.pan.load(std::memory_order_relaxed);
+            follow = s.follow_pan.load(std::memory_order_relaxed);
+            mute = s.mute.load(std::memory_order_relaxed);
+            pre = s.pre.load(std::memory_order_relaxed);
+        }
         float open = 0.0f;
         float fader = 0.0f;
         float strip_pan = 0.0f;

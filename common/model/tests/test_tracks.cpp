@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Track structure (ADR-0022): RemoveTrack and DuplicateTrack, what undo
+// Track structure (ADR-0023): RemoveTrack and DuplicateTrack, what undo
 // brings back, the ids a duplicate takes, what it copies and shares, and
 // both operations through the codec and the session file.
 #include <memory>
@@ -171,7 +171,7 @@ int test_duplicate_copies_the_active_playlist() {
     const InsertMix* values = after.mix.find_insert(d.track + 4);
     CHECK(values != nullptr && values->bypass && values->params == after.mix.find_insert(s.insert)->params);
 
-    // The mix comes along, solo excepted (ADR-0022 §2).
+    // The mix comes along, solo excepted (ADR-0023 §2).
     const TrackMix* m = after.mix.find(d.track);
     CHECK(m != nullptr);
     CHECK(m->gain_db == -6.0f && m->pan == 0.25f && m->solo_safe && !m->solo);
@@ -309,6 +309,83 @@ int test_codec_round_trip() {
     return 0;
 }
 
+// Sends (ADR-0022, sends and aux buses) belong to their track: a duplicate
+// gets its own, with fresh ids and the same values; a delete takes them
+// with the track and keeps their values, so undo brings them back as they
+// were; nothing is left naming a track or send that is gone.
+int test_sends_go_with_the_track() {
+    Session s;
+    if (build(s) != 0) return 1;
+    Ids ids(s.h.current());
+    const Id verb = ids();
+    CHECK_APPLY(s.h, (AddBus{verb, "Verb", BusMix{}}));
+    SendMix values;
+    values.level_db = -6.0f;
+    values.pre = true;
+    values.follow_pan = false;
+    values.pan = 0.5f;
+    const Id send = ids();
+    CHECK_APPLY(s.h, (AddSend{s.vox.track, send, 3, verb, values}));
+    CHECK(invariants_hold(s.h.current()));
+
+    DuplicateTrack d;
+    d.source = s.vox.track;
+    d.track = s.h.current().next_id;
+    d.name = "Vox.dup1";
+    // Track, playlist, two regions, insert, send.
+    CHECK(duplicate_track_ids(s.h.current(), d) == 6);
+    CHECK_APPLY(s.h, d);
+    CHECK(invariants_hold(s.h.current()));
+    const TrackEdit& copy = *s.h.current().edit->tracks[2];
+    CHECK(copy.sends.size() == 1);
+    CHECK(copy.sends[0].id == d.track + 5 && copy.sends[0].slot == 3 && copy.sends[0].bus == verb);
+    const SendMix* m = s.h.current().mix.find_send(d.track + 5);
+    CHECK(m != nullptr && m->level_db == -6.0f && m->pre && !m->follow_pan && m->pan == 0.5f);
+    CHECK(s.h.current().next_id == d.track + 6);
+    // The source's send is untouched.
+    CHECK(s.h.current().edit->tracks[1]->sends[0].id == send);
+    CHECK(s.h.undo());
+
+    DuplicateTrack bare = d;
+    bare.track = s.h.current().next_id;   // undo hands no id back
+    bare.sends = false;
+    CHECK(duplicate_track_ids(s.h.current(), bare) == 5);
+    CHECK_APPLY(s.h, bare);
+    CHECK(s.h.current().edit->tracks[2]->sends.empty());
+    CHECK(s.h.undo());
+
+    const Snapshot before = s.h.current();
+    CHECK_APPLY(s.h, RemoveTrack{s.vox.track});
+    CHECK(invariants_hold(s.h.current()));
+    for (const auto& t : s.h.current().edit->tracks) {
+        for (const Send& sd : t->sends) CHECK(sd.id != send);
+    }
+    // Its values stay, for undo; the bus it fed is free to go now.
+    CHECK(s.h.current().mix.find_send(send) != nullptr);
+    std::string error;
+    Snapshot without_bus;
+    CHECK(apply(s.h.current(), RemoveBus{verb}, without_bus, error));
+    CHECK(s.h.undo());
+    CHECK(*s.h.current().edit == *before.edit);
+    // The undone copies' insert values are pruned when the delete drops
+    // their redo step (History::prune_insert_values); the rest is as it was.
+    const MixState& mix = s.h.current().mix;
+    CHECK(mix.tracks == before.mix.tracks && mix.sends == before.mix.sends);
+    CHECK(*mix.find_insert(s.insert) == *before.mix.find_insert(s.insert));
+    CHECK(s.h.current().edit->tracks[1]->sends.size() == 1);
+
+    // The file holds the copy's send and its values, and reads them back.
+    d.track = s.h.current().next_id;
+    CHECK_APPLY(s.h, d);
+    std::string bytes;
+    CHECK(serialize(s.h.current(), WriteInfo{"test", 1}, bytes, error));
+    Loaded l;
+    LoadError le;
+    CHECK(deserialize(bytes, l, le));
+    CHECK(same_document(l.snapshot, s.h.current()));
+    return 0;
+}
+
 // What an engine that maps tracks by position asks before a member applies.
 int test_order_after_and_pinned_tracks() {
     Session s;
@@ -359,6 +436,7 @@ int main() {
     t(test_duplicate_refusals);
     t(test_codec_round_trip);
     t(test_order_after_and_pinned_tracks);
+    t(test_sends_go_with_the_track);
     if (failed != 0) {
         std::fprintf(stderr, "model_tracks: %d of %d failed\n", failed, run);
         return 1;

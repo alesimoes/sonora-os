@@ -429,7 +429,7 @@ int ride_follows_its_track() {
         Rig r(3);
         CHECK(r.connect());
         std::string why;
-        // Room for it on the four engine tracks (ADR-0022 §5).
+        // Room for it on the four engine tracks (ADR-0023 §5).
         CHECK(r.doc.submit(model::RemoveTrack{r.doc.snapshot().edit->tracks.back()->id}, why));
         r.settle();
         model::AddTrack add;

@@ -207,7 +207,7 @@ int test_fewer_inputs_than_tracks() {
     return 0;
 }
 
-// ADR-0022 §4: an engine track captures and meters the input it is given,
+// ADR-0023 §4: an engine track captures and meters the input it is given,
 // not the one at its own index, so a track moved to another row keeps its
 // input. One past the backend's inputs is unconnected.
 int test_track_input_follows_its_assignment() {

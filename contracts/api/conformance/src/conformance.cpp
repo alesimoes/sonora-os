@@ -1519,7 +1519,7 @@ int check_sends(Rig& rig) {
     return C(rig, "sends and aux buses").go();
 }
 
-// Track structure (ADR-0022): no track past the engine's count; outside a
+// Track structure (ADR-0023): no track past the engine's count; outside a
 // take the record arm goes with its track when the tracks move; during a
 // take nothing may delete or move the armed track, by an operation, an
 // undo or a redo, while what leaves it in place is accepted.
@@ -1572,7 +1572,7 @@ int check_track_structure(Rig& rig) {
                        r.result == DispatchResult::Ok,
                    "deleting the last track failed: " + r.message);
             // An engine whose new plan is not yet playing refuses arming
-            // for a moment, by name (ADR-0022 §4): asked again until done.
+            // for a moment, by name (ADR-0023 §4): asked again until done.
             EXPECT(s.until(rig_,
                            [&]() {
                                return s.await(rig_, s.command("track.toggle_arm", 0), r) &&

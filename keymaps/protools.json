@@ -243,7 +243,7 @@
     },
     "alt+shift+d": {
       "command": "track.duplicate",
-      "comment": "Duplicate Tracks, Option+Shift+D: Shortcuts Guide ch. 8, Track Menu (brain/research/protools-logic-key-bindings.md). The dialog's default choices, without the dialog: the active playlist, the inserts and the mix (ADR-0022)."
+      "comment": "Duplicate Tracks, Option+Shift+D: Shortcuts Guide ch. 8, Track Menu (brain/research/protools-logic-key-bindings.md). The dialog's default choices, without the dialog: the active playlist, the inserts and the mix (ADR-0023)."
     },
     "ctrl+shift+n": {
       "command": "track.new",

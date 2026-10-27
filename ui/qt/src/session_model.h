@@ -112,7 +112,7 @@ class SessionModel : public QObject {
     // the operator must not be said only that briefly.
     Q_PROPERTY(QVariantList repairs READ repairs NOTIFY repairsChanged)
     // Why the last track delete, duplicate, move or new was refused while a
-    // take ran (ADR-0022 §5): held until dismissed or until a track command
+    // take ran (ADR-0023 §5): held until dismissed or until a track command
     // goes through, since the operator may be watching the take, not the
     // status line.
     Q_PROPERTY(QString trackRefusal READ trackRefusal NOTIFY trackRefusalChanged)
@@ -127,7 +127,7 @@ public:
     // (session_files.h). Set before the first save.
     void setSessionsDir(const QString& dir) { sessions_dir_ = dir; }
     // What the engine says about its tracks, for refusing a track command
-    // here before it is sent (ADR-0022 §5): which are armed, by row, and how
+    // here before it is sent (ADR-0023 §5): which are armed, by row, and how
     // many engine tracks there are (0: no limit known, as with no engine).
     void setEngineTracks(std::function<std::vector<bool>()> armed, std::function<int()> count) {
         engine_armed_ = std::move(armed);

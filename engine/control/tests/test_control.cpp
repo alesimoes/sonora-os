@@ -47,7 +47,7 @@ static int failures = 0;
     } while (0)
 
 // The engine's threads, held for the conformance suite's take states
-// (ADR-0022 §5): the disk thread blocks in its pass, so a punched-out take
+// (ADR-0023 §5): the disk thread blocks in its pass, so a punched-out take
 // stays closing; the reader skips its passes, so a Record waits.
 namespace sonora {
 struct DiskThreadTestAccess {

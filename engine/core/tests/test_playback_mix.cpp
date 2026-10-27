@@ -477,7 +477,7 @@ int test_swap_and_delay_continuity() {
     return 0;
 }
 
-// ADR-0022 §4: a plan that swaps two tracks between engine tracks carries
+// ADR-0023 §4: a plan that swaps two tracks between engine tracks carries
 // their mix, and the audio thread uses it until each Track's atomics are
 // stamped with the plan's serial. A, hard left, and B, hard right, swap
 // rows; the outputs never cross, not at the swap block, not while the

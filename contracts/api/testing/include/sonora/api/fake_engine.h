@@ -169,7 +169,7 @@ public:
     void script_take_failure(bool fail) { fail_takes_ = fail; }
     // While held, a take punched out or stopped stays closing, as the real
     // engine's does until its files are in; released, it is in at once.
-    // The conformance suite's take states (ADR-0022 section 5).
+    // The conformance suite's take states (ADR-0023 section 5).
     void hold_takes_closing(bool hold) {
         hold_closing_ = hold;
         if (!hold) closing_take_ = 0;
@@ -297,7 +297,7 @@ private:
     // As engine/control's PlaybackController::apply_mix: the document's
     // faders onto the published tracks, track i being the document's i-th.
     void apply_mix();
-    // As engine/control (ADR-0022 §5): a member adding a track past the
+    // As engine/control (ADR-0023 §5): a member adding a track past the
     // engine's count, or deleting or moving an armed track during a take;
     // and an undo or redo that would do the second. Empty otherwise.
     std::string structure_refusal(const model::Snapshot& at, const model::MemberRef& member) const;

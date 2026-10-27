@@ -136,7 +136,7 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.select", CommandTarget::Track, "Make a track the selected track"},
         {"track.select_next", CommandTarget::None, "Select the next track down"},
         {"track.select_previous", CommandTarget::None, "Select the next track up"},
-        // Pro Tools' Track menu (ADR-0022). New asks how many; the argument
+        // Pro Tools' Track menu (ADR-0023). New asks how many; the argument
         // is the count. The others act on the track given, or the selected one.
         {"track.new", CommandTarget::None, "New mono audio tracks below the selected one", true},
         {"track.duplicate", CommandTarget::Track,

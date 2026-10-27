@@ -2189,7 +2189,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             return;
         }
         // Arming names an engine track by position, which belongs to another
-        // document track until the plan that moves them plays (ADR-0022 §4).
+        // document track until the plan that moves them plays (ADR-0023 §4).
         if (changes_arming(r.command) && playback_->tracks_moving()) {
             reply(from, r.seq, DispatchResult::Failed,
                   "the tracks are being rearranged; arm again in a moment");
@@ -2234,7 +2234,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             return;
         }
         // The track at that row is on another engine track until the plan
-        // that moves them plays (ADR-0022 §4): the step is dropped, and the
+        // that moves them plays (ADR-0023 §4): the step is dropped, and the
         // next one, a few milliseconds on, lands where it should.
         if (!playback_->tracks_moving()) session_.tracks()[c.track]->set_gain(c.value);
         riders_[c.track] = from;

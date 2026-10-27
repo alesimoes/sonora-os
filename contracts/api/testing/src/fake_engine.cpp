@@ -1364,7 +1364,7 @@ void FakeEngine::handle(const std::string& bytes) {
         std::vector<model::Id> order_after;
         for (const auto& t : document_->current().edit->tracks) order_after.push_back(t->id);
         // The arm goes with its track, as the engine's does once the plan
-        // that moves them plays (ADR-0022 §4); another session's tracks
+        // that moves them plays (ADR-0023 §4); another session's tracks
         // are not these.
         if (m.action != ModelAction::Load && m.action != ModelAction::Resync) {
             carry_arms(order_before, order_after);

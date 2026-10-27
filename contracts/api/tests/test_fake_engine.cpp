@@ -412,7 +412,7 @@ void midi_tracks() {
     add.playlist_name = "Bass.01";
     add.kind = model::TrackKind::Midi;
     add.channels = 0;
-    // A fourth track would be past the three engine tracks (ADR-0022 §5):
+    // A fourth track would be past the three engine tracks (ADR-0023 §5):
     // it takes the third audio track's place. Moved onto engine track 0, it
     // carries no audio there, and the operator is told why.
     model::Compound swap_in;

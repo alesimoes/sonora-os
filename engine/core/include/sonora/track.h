@@ -52,13 +52,13 @@ public:
 
     // The backend input this track meters, captures and monitors: its
     // document track's, so a track moved to another engine track keeps its
-    // input (ADR-0022 §4). Its own index until the control thread sets it.
+    // input (ADR-0023 §4). Its own index until the control thread sets it.
     // Read once per block; never changed for an armed track during a take.
     uint32_t input() const { return input_.load(std::memory_order_relaxed); }
     void set_input(uint32_t channel) { input_.store(channel, std::memory_order_relaxed); }
 
     // The PlaybackPlan::mix_serial whose mix the atomics above hold
-    // (ADR-0022 §4). Stored with release after them, so an audio thread that
+    // (ADR-0023 §4). Stored with release after them, so an audio thread that
     // reads it with acquire and finds its plan's serial reads that mix.
     uint32_t mix_serial() const { return mix_serial_.load(std::memory_order_acquire); }
     void set_mix_serial(uint32_t serial) { mix_serial_.store(serial, std::memory_order_release); }

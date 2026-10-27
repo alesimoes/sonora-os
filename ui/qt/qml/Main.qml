@@ -236,7 +236,7 @@ Rectangle {
                     }
                 }
             }
-            // A track command refused during a take (ADR-0022 §5), kept
+            // A track command refused during a take (ADR-0023 §5), kept
             // until dismissed or until a track command goes through.
             Row {
                 objectName: "trackRefusal"
@@ -608,7 +608,7 @@ Rectangle {
     }
 
     // --- the Track menu ---------------------------------------------------------
-    // Pro Tools' Track menu (ADR-0022), on the selected track: each item sends
+    // Pro Tools' Track menu (ADR-0023), on the selected track: each item sends
     // the command its key sends.
     MouseArea {
         anchors.fill: parent

@@ -1489,7 +1489,7 @@ int test_undone_track_leaves_no_solo() {
     CHECK(s.tracks()[2]->soloed() && s.tracks()[2]->muted());
     CHECK(h.undo());
     // The track set changed: the solo goes with the plan that stops
-    // rendering C, not before it (ADR-0022 §4).
+    // rendering C, not before it (ADR-0023 §4).
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.tracks_moving());
     CHECK(ctl.settle(2.0));

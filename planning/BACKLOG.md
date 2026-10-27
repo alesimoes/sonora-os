@@ -385,14 +385,13 @@ playback can follow edits; it is in flight.
        server does (`add_closed_take`): a "Record" compound, its notices,
        and a refused take's TakeFailed. Then UI tests see a compound arrive
        from the engine (PR #75 ui-engineer review, item 5). contracts/api.
-10. [ ] `daw.model.tracks` follow-ups (ADR-0022). The core ops landed:
+10. [ ] `daw.model.tracks` follow-ups (ADR-0023). The core ops landed:
        RemoveTrack, DuplicateTrack, reorder and add with the mix moving at
-       the plan swap, protocol 26. Left, each its own line:
+       the plan swap, protocol 28. Left, each its own line:
        - [ ] VCA masters as a track kind: `ui.mixer.vca`.
        - [ ] Folder tracks and track stacks: `ui.mixer.folders`.
-       - [ ] Aux and master tracks: need buses and sends in the plan
-             (Track 1 item 8, `ui.mixer.io`, `ui.mixer.sends`); then
-             what a send to a deleted bus becomes (ADR-0022 §3).
+       - [ ] A master track (`ui.mixer.io`); aux buses and sends are
+             ADR-0022's, and a track's sends go with it (ADR-0023 §3).
        - [ ] New Tracks offers mono audio only: MIDI and instrument kinds
              once MIDI plays (ADR-0014 M-3) and instruments are hosted
              (`midi.instrument_tracks`); stereo once an engine track
@@ -409,14 +408,14 @@ playback can follow edits; it is in flight.
        - [ ] Closed takes are placed by engine position (`closed_take.cpp`,
              `track_at(document, f.track)`): placed by
              `Track::document_id()`, a closing take would no longer pin its
-             track's row (ADR-0022 §5).
+             track's row (ADR-0023 §5).
        - [ ] A fader ride step that lands while tracks are moving is
-             dropped (ADR-0022 §4): resend the rider's last value once the
+             dropped (ADR-0023 §4): resend the rider's last value once the
              swap is done.
        - [ ] adopt_track_mix() writes set_input(m.input) for an armed track
              during a take, unlike apply_mix(); skip the input for armed
              tracks while a take runs so a take's file never changes input
-             part way (#162 review, ADR-0022 §4)
+             part way (#162 review, ADR-0023 §4)
        - [ ] While tracks are moving every fader ride step is dropped, not
              just one; resend the rider's last value at adoption (#162
              review)
