@@ -10,6 +10,10 @@ add_executable(test_midi_buffer tests/test_midi_buffer.cpp)
 target_link_libraries(test_midi_buffer PRIVATE sonora_base)
 add_test(NAME midi_buffer COMMAND test_midi_buffer)
 
+add_executable(test_fade_curve tests/test_fade_curve.cpp)
+target_link_libraries(test_fade_curve PRIVATE sonora_base)
+add_test(NAME fade_curve COMMAND test_fade_curve)
+
 # SHA-256, which names the files beside a session (plugin state, MIDI
 # sequences; ADR-0015 §3). Compiled, unlike the RT primitives above, and
 # never on the audio thread.

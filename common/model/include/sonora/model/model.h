@@ -118,6 +118,22 @@ struct Crossfade {
 // after the cut.
 void crossfade_extent(const Crossfade& x, Frames& before, Frames& after);
 
+struct SourcePool;
+
+// What a crossfade at the cut between `left` and `right` may draw on: the
+// source frames `right` has before its start (played before the cut) and
+// `left` has past its end (played after it). 0 for a missing source.
+void crossfade_handles(const Region& left, const Region& right, const SourcePool& pool,
+                       Frames& before, Frames& after);
+
+// The crossfade a gesture places on short handles (ADR-0021): x keeps its
+// placement and is shortened until it needs at most `before` frames before
+// the cut and `after` after it. A centred one with nothing on one side
+// moves to the side that has material, as pre or post. False, x untouched,
+// when no length fits. The model itself never shortens (ADR-0009, "Fail
+// loudly").
+bool fit_crossfade(Crossfade& x, Frames before, Frames after);
+
 struct Playlist {
     Id id = 0;
     std::string name;

@@ -193,6 +193,56 @@ int test_crossfade_without_handle_is_refused() {
     return 0;
 }
 
+// ADR-0021: what a gesture places on short handles. The model refuses a
+// crossfade past a handle; fit_crossfade is how the gesture asks for one
+// that fits instead, keeping the placement the selection chose.
+int test_fit_crossfade_to_short_handles() {
+    const auto fit = [](Align a, Frames len, Frames before, Frames after, Crossfade& x) {
+        x = Crossfade{1, 2, len, a, FadeShape::EqualPower};
+        return fit_crossfade(x, before, after);
+    };
+    Crossfade x;
+    // Room enough: untouched.
+    CHECK(fit(Align::Centre, 101, 50, 51, x) && x.length == 101 && x.align == Align::Centre);
+    CHECK(fit(Align::Pre, 100, 100, 0, x) && x.length == 100 && x.align == Align::Pre);
+    CHECK(fit(Align::Post, 100, 0, 100, x) && x.length == 100 && x.align == Align::Post);
+    // Pre and post shorten on their own side and never move.
+    CHECK(fit(Align::Pre, 100, 30, 1000, x) && x.length == 30 && x.align == Align::Pre);
+    CHECK(fit(Align::Post, 100, 1000, 30, x) && x.length == 30 && x.align == Align::Post);
+    CHECK(!fit(Align::Pre, 100, 0, 1000, x) && x.length == 100);
+    CHECK(!fit(Align::Post, 100, 1000, 0, x) && x.length == 100);
+    // Centred: the longest centred length the shorter side allows, the odd
+    // frame after the cut.
+    CHECK(fit(Align::Centre, 100, 1000, 20, x) && x.length == 40 && x.align == Align::Centre);
+    CHECK(fit(Align::Centre, 100, 20, 1000, x) && x.length == 41 && x.align == Align::Centre);
+    Frames before = 0, after = 0;
+    crossfade_extent(x, before, after);
+    CHECK(before == 20 && after == 21);
+    // Nothing on one side: to the other, as pre or post.
+    CHECK(fit(Align::Centre, 100, 60, 0, x) && x.length == 60 && x.align == Align::Pre);
+    CHECK(fit(Align::Centre, 100, 0, 1000, x) && x.length == 100 && x.align == Align::Post);
+    CHECK(!fit(Align::Centre, 100, 0, 0, x) && x.length == 100 && x.align == Align::Centre);
+
+    // The handles, from the pool: the left region's source past its end,
+    // the right one's before its start; the shortest channel counts.
+    SourcePool pool;
+    Source s1, s2;
+    s1.id = 1;
+    s1.length = 5000;
+    s2.id = 2;
+    s2.length = 4500;
+    pool.sources = {s1, s2};
+    Region l = region(10, 1, 0, 3000, 500);
+    l.channels.push_back({2, 0});
+    const Region r = region(11, 1, 3000, 1000, 70);
+    crossfade_handles(l, r, pool, before, after);
+    CHECK(before == 70 && after == 1000);
+    l.channels[1].source = 99;  // missing: no handle, never a negative one
+    crossfade_handles(l, r, pool, before, after);
+    CHECK(after == 0);
+    return 0;
+}
+
 int test_record_take_on_the_wrong_track() {
     Base b;
     CHECK(make_base(b) == 0);
@@ -594,6 +644,7 @@ int main() {
     t(test_punch_in_and_undo);
     t(test_split_inside_a_crossfade_drops_it);
     t(test_crossfade_without_handle_is_refused);
+    t(test_fit_crossfade_to_short_handles);
     t(test_record_take_on_the_wrong_track);
     t(test_move_trim_split_remove);
     t(test_fades_crossfades_playlists_markers_tracks);

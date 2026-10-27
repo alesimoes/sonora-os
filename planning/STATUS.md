@@ -227,6 +227,11 @@ end of its run. Keep it short: what is true now, not a diary.
   crossfaded end shows the crossfade, not the region's own fade the plan
   builder replaces. Fade room counts the fade a crossfade hides, as the model
   does; a crossfade over a region's own fade at its other end is refused.
+  Crossfades (engine.timeline.crossfades, ADR-0021): heard through
+  `process()` for every shape and placement, block-split invariant, on a
+  locate and a loop wrap inside one, no heap (`test_crossfades`); on short
+  handles the gesture shortens to the audio there is, keeping the
+  placement, and says so.
   Open: no Fades dialog, no batch fades over several regions, crossfades
   only pre, centred or post (the model has no other alignment).
 - **Playback landed (#41, ADR-0009 update).** The engine records and plays

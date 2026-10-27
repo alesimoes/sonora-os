@@ -880,8 +880,50 @@ int test_fades() {
     dr.source_offset = 0;
     OK(doc.submit(PlaceRegion{pl2, cr, kNoId}, why) && doc.submit(PlaceRegion{pl2, dr, kNoId}, why));
     OK(range(kBar - kBeat, kBar + kBeat, 1));
-    OK(!c.fade_selection(why) && why.find("handle") != std::string::npos);
+    OK(!c.fade_selection(why) && why.find("no handle") != std::string::npos);
     OK(active_playlist(doc.snapshot().edit->tracks[1].get())->crossfades.empty());
+    // Short handles (ADR-0021): shortened to the audio there is, the
+    // placement kept, and said. E ends where its source does and F has a
+    // beat of handle before its start: the centred crossfade moves before
+    // the cut, where the audio is.
+    const auto place = [&](const char* name, Frames at, Frames offset) {
+        Region e = cr;
+        e.id = doc.reserve_id();
+        e.name = name;
+        e.position = at;
+        e.source_offset = offset;
+        return doc.submit(PlaceRegion{pl2, e, kNoId}, why);
+    };
+    OK(place("E", 3 * kBar, 19 * kBar) && place("F", 4 * kBar, kBeat));
+    OK(range(4 * kBar - kBeat, 4 * kBar + kBeat, 1) && c.fade_selection(why));
+    {
+        const Playlist& p2 = *active_playlist(doc.snapshot().edit->tracks[1].get());
+        OK(p2.crossfades.size() == 1);
+        OK(p2.crossfades[0].align == Align::Pre && p2.crossfades[0].length == kBeat);
+        OK(valid(doc.snapshot()));
+    }
+    OK(why.find("shortened to " + std::to_string(kBeat) + " frames, before the cut") !=
+       std::string::npos);
+    OK(c.selection().start == 4 * kBar - kBeat && c.selection().end == 4 * kBar);
+    // A post crossfade there has nothing to draw on: refused, and pointed at
+    // the side that has audio.
+    OK(range(4 * kBar, 4 * kBar + kBeat, 1) && !c.fade_selection(why));
+    OK(why.find("\"E\" ends where its audio does") != std::string::npos &&
+       why.find("select up to the cut") != std::string::npos);
+    // G has 100 frames past its end, H 50 before its start: centred, the
+    // longest that fits, the odd frame after the cut.
+    OK(place("G", 6 * kBar, 19 * kBar - 100) && place("H", 7 * kBar, 50));
+    OK(range(7 * kBar - kBeat, 7 * kBar + kBeat, 1) && c.fade_selection(why));
+    {
+        const Playlist& p2 = *active_playlist(doc.snapshot().edit->tracks[1].get());
+        OK(p2.crossfades.size() == 2);
+        OK(p2.crossfades[1].align == Align::Centre && p2.crossfades[1].length == 101);
+    }
+    OK(why.find("shortened to 101 frames: \"H\" has 50 frames of handle") != std::string::npos);
+    OK(c.selection().start == 7 * kBar - 50 && c.selection().end == 7 * kBar + 51);
+    // Room enough: nothing to say.
+    OK(range(2 * kBar - kBeat, 2 * kBar + kBeat, 0) && c.fade_selection(why) && why.empty());
+    OK(c.undo(why));
     // Two cuts in one range: batch fades are refused by name.
     OK(doc.submit(SplitRegion{pl, a2, 2 * kBar + half, doc.reserve_id()}, why));
     OK(range(2 * kBar - kBeat, 2 * kBar + half + kBeat, 0));

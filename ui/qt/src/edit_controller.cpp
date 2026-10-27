@@ -153,6 +153,42 @@ std::string crossfaded_refusal(const Playlist& p, const Region& r, const Crossfa
            "; select across the cut and fade the selection to change it";
 }
 
+// Why no crossfade fits the handles at a cut (ADR-0021), and where one would.
+std::string no_handle_refusal(const Region& l, const Region& r, const Crossfade& x, Frames before,
+                              Frames after) {
+    const std::string none_before = named(r) + " starts where its audio does: no handle before the cut";
+    const std::string none_after = named(l) + " ends where its audio does: no handle after the cut";
+    switch (x.align) {
+        case Align::Pre:
+            return none_before + (after > 0 ? "; select from the cut onwards to crossfade after it" : "");
+        case Align::Post:
+            return none_after + (before > 0 ? "; select up to the cut to crossfade before it" : "");
+        case Align::Centre:
+            break;
+    }
+    return "no crossfade fits: " + none_before + ", and " + none_after;
+}
+
+// What a crossfade shortened to its handles became, and which handle held
+// it back (ADR-0021).
+std::string shortened_note(const Region& l, const Region& r, const Crossfade& asked,
+                           const Crossfade& made, Frames before, Frames after) {
+    Frames want_before = 0, want_after = 0;
+    crossfade_extent(asked, want_before, want_after);
+    std::string why;
+    if (made.align != asked.align || before < want_before) {
+        why = named(r) + " has " + std::to_string(before) + " frames of handle before its start";
+    }
+    if (made.align != asked.align || after < want_after) {
+        why += (why.empty() ? "" : ", ") + named(l) + " has " + std::to_string(after) +
+               " frames after its end";
+    }
+    const char* where = made.align == asked.align ? ""
+                        : made.align == Align::Pre ? ", before the cut"
+                                                   : ", after the cut";
+    return "Crossfade shortened to " + std::to_string(made.length) + " frames" + where + ": " + why;
+}
+
 }  // namespace
 
 // --- resolvers -------------------------------------------------------------
@@ -1191,6 +1227,16 @@ bool EditController::fade_selection(std::string& why) {
         // a lopsided range becomes a centred crossfade of its length, and
         // the selection is redrawn to show exactly what was made.
         x.align = b == cut ? Align::Pre : a == cut ? Align::Post : Align::Centre;
+        // Short handles shorten it to the audio there is, keeping that
+        // placement, as Pro Tools' Adjust Bounds does; the selection below
+        // shows what was made, and the note says why (ADR-0021).
+        Frames handle_before = 0, handle_after = 0;
+        crossfade_handles(l, r, *snapshot().sources, handle_before, handle_after);
+        const Crossfade asked = x;
+        if (!fit_crossfade(x, handle_before, handle_after)) {
+            why = no_handle_refusal(l, r, x, handle_before, handle_after);
+            return false;
+        }
         Frames before = 0, after = 0;
         crossfade_extent(x, before, after);
         // Not into the fade at either region's other end. The model refuses
@@ -1224,6 +1270,9 @@ bool EditController::fade_selection(std::string& why) {
             }
             return false;
         }
+        // Before the submit: l and r live in the snapshot it replaces.
+        std::string note;
+        if (!(x == asked)) note = shortened_note(l, r, asked, x, handle_before, handle_after);
         // The fades at the cut go with the crossfade, as in Pro Tools: kept
         // under it, nobody can see them, yet they come back on Clear and
         // still take room from a fade at the regions' other ends. One
@@ -1240,6 +1289,7 @@ bool EditController::fade_selection(std::string& why) {
         sel_.region = kNoId;
         sel_.start = sel_.insertion = cut - before;
         sel_.end = cut + after;
+        why = note;
         return true;
     }
 
