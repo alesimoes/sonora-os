@@ -133,7 +133,7 @@ bool MidiRegion::operator==(const MidiRegion& o) const {
 
 bool TrackEdit::operator==(const TrackEdit& o) const {
     if (id != o.id || kind != o.kind || name != o.name || channels != o.channels ||
-        active_playlist != o.active_playlist || inserts != o.inserts ||
+        active_playlist != o.active_playlist || inserts != o.inserts || sends != o.sends ||
         playlists.size() != o.playlists.size() ||
         midi_playlists.size() != o.midi_playlists.size()) {
         return false;
@@ -148,7 +148,7 @@ bool TrackEdit::operator==(const TrackEdit& o) const {
 }
 
 bool EditState::operator==(const EditState& o) const {
-    if (tracks.size() != o.tracks.size()) return false;
+    if (tracks.size() != o.tracks.size() || buses != o.buses) return false;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         if (!same_ptr_or_value(tracks[i], o.tracks[i])) return false;
     }
@@ -205,6 +205,20 @@ const TrackMix* MixState::find(Id track) const {
 const InsertMix* MixState::find_insert(Id insert) const {
     for (const InsertMix& m : inserts) {
         if (m.insert == insert) return &m;
+    }
+    return nullptr;
+}
+
+const BusMix* MixState::find_bus(Id bus) const {
+    for (const BusMix& m : buses) {
+        if (m.bus == bus) return &m;
+    }
+    return nullptr;
+}
+
+const SendMix* MixState::find_send(Id send) const {
+    for (const SendMix& m : sends) {
+        if (m.send == send) return &m;
     }
     return nullptr;
 }
@@ -519,6 +533,23 @@ bool same_document(const Snapshot& a, const Snapshot& b) {
             if (ia == nullptr || ib == nullptr || !(*ia == *ib)) return false;
         }
     }
+    const auto same_sends = [&](const std::vector<Send>& sends) {
+        for (const Send& sd : sends) {
+            const SendMix* sa = a.mix.find_send(sd.id);
+            const SendMix* sb = b.mix.find_send(sd.id);
+            if (sa == nullptr || sb == nullptr || !(*sa == *sb)) return false;
+        }
+        return true;
+    };
+    for (const auto& t : a.edit->tracks) {
+        if (!same_sends(t->sends)) return false;
+    }
+    for (const Bus& bus : a.edit->buses) {
+        const BusMix* ba = a.mix.find_bus(bus.id);
+        const BusMix* bb = b.mix.find_bus(bus.id);
+        if (ba == nullptr || bb == nullptr || !(*ba == *bb)) return false;
+        if (!same_sends(bus.sends)) return false;
+    }
     return true;
 }
 
@@ -769,6 +800,7 @@ std::string track_shape_problem(const TrackEdit& t) {
     if (t.kind == TrackKind::Midi) {
         if (t.channels != 0) return "a MIDI track has no audio channels; channels must be 0";
         if (!t.inserts.empty()) return "a MIDI track has no audio, and so no insert";
+        if (!t.sends.empty()) return "a MIDI track has no audio, and so no send";
     } else if (t.channels < 1 || t.channels > 2) {
         return "needs 1 or 2 channels";
     }
@@ -1282,6 +1314,134 @@ std::string inserts_problem(const std::vector<Insert>& inserts, std::string& whe
     return {};
 }
 
+std::string send_mix_problem(const SendMix& m, std::string& where) {
+    where.clear();
+    if (!gain_in_range(m.level_db)) {
+        where = "level_db";
+        return gain_range();
+    }
+    if (!(m.pan >= -1.0f && m.pan <= 1.0f)) {
+        where = "pan";
+        return "must be from -1 to 1";
+    }
+    return {};
+}
+
+std::string bus_mix_problem(const BusMix& m, std::string& where) {
+    where.clear();
+    if (!gain_in_range(m.gain_db)) {
+        where = "gain_db";
+        return gain_range();
+    }
+    if (!(m.pan >= -1.0f && m.pan <= 1.0f)) {
+        where = "pan";
+        return "must be from -1 to 1";
+    }
+    return {};
+}
+
+std::string sends_problem(const std::vector<Send>& sends, std::string& where) {
+    for (std::size_t i = 0; i < sends.size(); ++i) {
+        const Send& sd = sends[i];
+        where = "sends[" + str(static_cast<std::int64_t>(i)) + "]";
+        if (sd.id == 0) return "id must be at least 1";
+        if (sd.bus == 0) return "bus must name an aux bus";
+        if (sd.slot >= kSendSlots) {
+            return "slot " + str(static_cast<std::int64_t>(sd.slot)) + " is not one of 0 to " +
+                   str(static_cast<std::int64_t>(kSendSlots - 1));
+        }
+        if (i > 0 && sd.slot == sends[i - 1].slot) {
+            return "slot " + str(static_cast<std::int64_t>(sd.slot)) + " is used twice";
+        }
+        if (i > 0 && sd.slot < sends[i - 1].slot) return "sends are not sorted by slot";
+        for (std::size_t k = 0; k < i; ++k) {
+            if (sends[k].bus == sd.bus) {
+                return "a strip sends to bus " + str(sd.bus) + " once; slot " +
+                       std::string(1, static_cast<char>('A' + sends[k].slot)) +
+                       " already does";
+            }
+        }
+    }
+    where.clear();
+    return {};
+}
+
+const Bus* find_bus(const EditState& e, Id bus) {
+    for (const Bus& b : e.buses) {
+        if (b.id == bus) return &b;
+    }
+    return nullptr;
+}
+
+std::vector<Id> bus_path(const EditState& e, Id from, Id to) {
+    // Depth-first with an explicit stack; the graph is small (kMaxBuses)
+    // and acyclic when this is asked, but a visited set keeps a malformed
+    // one from looping here too.
+    std::vector<Id> path;
+    std::unordered_set<Id> seen;
+    struct Frame {
+        Id bus;
+        std::size_t next;
+    };
+    std::vector<Frame> stack{{from, 0}};
+    seen.insert(from);
+    while (!stack.empty()) {
+        Frame& f = stack.back();
+        if (f.bus == to) {
+            for (const Frame& k : stack) path.push_back(k.bus);
+            return path;
+        }
+        const Bus* b = find_bus(e, f.bus);
+        if (b == nullptr || f.next >= b->sends.size()) {
+            stack.pop_back();
+            continue;
+        }
+        const Id next = b->sends[f.next++].bus;
+        if (seen.insert(next).second) stack.push_back({next, 0});
+    }
+    return path;
+}
+
+std::string bus_loop_problem(const EditState& e, std::string& where) {
+    // Kahn's algorithm: whatever is left with an input after the sources
+    // are peeled off is on a loop.
+    std::unordered_map<Id, std::size_t> inputs;
+    for (const Bus& b : e.buses) inputs.emplace(b.id, 0);
+    for (const Bus& b : e.buses) {
+        for (const Send& sd : b.sends) {
+            const auto it = inputs.find(sd.bus);
+            if (it != inputs.end()) ++it->second;
+        }
+    }
+    std::vector<Id> ready;
+    for (const Bus& b : e.buses) {
+        if (inputs[b.id] == 0) ready.push_back(b.id);
+    }
+    std::size_t done = 0;
+    while (!ready.empty()) {
+        const Id id = ready.back();
+        ready.pop_back();
+        ++done;
+        const Bus* b = find_bus(e, id);
+        for (const Send& sd : b->sends) {
+            const auto it = inputs.find(sd.bus);
+            if (it != inputs.end() && --it->second == 0) ready.push_back(sd.bus);
+        }
+    }
+    if (done == e.buses.size()) {
+        where.clear();
+        return {};
+    }
+    for (std::size_t i = 0; i < e.buses.size(); ++i) {
+        if (inputs[e.buses[i].id] != 0) {
+            where = "buses[" + str(static_cast<std::int64_t>(i)) + "]";
+            return "its sends make a feedback loop through the aux buses";
+        }
+    }
+    where.clear();
+    return "the sends make a feedback loop through the aux buses";
+}
+
 }  // namespace detail
 
 bool check_invariants(const Snapshot& s, std::string& error) {
@@ -1347,6 +1507,42 @@ bool check_invariants(const Snapshot& s, std::string& error) {
         if (!claim(midi_sources[i].id, path)) return false;
     }
 
+    // Sends name buses by id, so the buses are known before any send is
+    // checked; their own ids are claimed with them, below.
+    if (s.edit->buses.size() > kMaxBuses) {
+        error = "buses: a session holds at most " + std::to_string(kMaxBuses) + " aux buses";
+        return false;
+    }
+    std::unordered_set<Id> bus_ids;
+    for (const Bus& b : s.edit->buses) bus_ids.insert(b.id);
+    const auto check_sends = [&](const std::vector<Send>& sends, const std::string& path) {
+        why = sends_problem(sends, where);
+        if (!why.empty()) {
+            error = path + "." + where + ": " + why;
+            return false;
+        }
+        for (std::size_t i = 0; i < sends.size(); ++i) {
+            const Send& sd = sends[i];
+            const std::string spath = path + ".sends[" + std::to_string(i) + "]";
+            if (!claim(sd.id, spath)) return false;
+            if (bus_ids.count(sd.bus) == 0) {
+                error = spath + ": bus " + std::to_string(sd.bus) + " is not an aux bus";
+                return false;
+            }
+            const SendMix* sm = s.mix.find_send(sd.id);
+            if (sm == nullptr) {
+                error = spath + ": has no values (level, pan, mute, pre)";
+                return false;
+            }
+            why = send_mix_problem(*sm, where);
+            if (!why.empty()) {
+                error = spath + "." + where + ": " + why;
+                return false;
+            }
+        }
+        return true;
+    };
+
     const auto& tracks = s.edit->tracks;
     for (std::size_t t = 0; t < tracks.size(); ++t) {
         const TrackEdit& tr = *tracks[t];
@@ -1376,6 +1572,7 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             error = path + "." + where + ": " + why;
             return false;
         }
+        if (!check_sends(tr.sends, path)) return false;
         for (std::size_t i = 0; i < tr.inserts.size(); ++i) {
             const Insert& in = tr.inserts[i];
             const std::string ipath = path + ".inserts[" + std::to_string(i) + "]";
@@ -1429,6 +1626,39 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             error = path + ".active_playlist: names no playlist of this track";
             return false;
         }
+    }
+
+    const auto& buses = s.edit->buses;
+    for (std::size_t b = 0; b < buses.size(); ++b) {
+        const Bus& bus = buses[b];
+        const std::string path = "buses[" + std::to_string(b) + "]";
+        if (bus.id == 0 || !valid_text(bus.name)) {
+            error = path + ": needs an id and a UTF-8 name";
+            return false;
+        }
+        if (!claim(bus.id, path)) return false;
+        const BusMix* bm = s.mix.find_bus(bus.id);
+        if (bm == nullptr) {
+            error = path + ": has no mix";
+            return false;
+        }
+        why = bus_mix_problem(*bm, where);
+        if (!why.empty()) {
+            error = path + "." + where + ": " + why;
+            return false;
+        }
+        if (!check_sends(bus.sends, path)) return false;
+        for (std::size_t i = 0; i < bus.sends.size(); ++i) {
+            if (bus.sends[i].bus == bus.id) {
+                error = path + ".sends[" + std::to_string(i) + "]: a bus cannot send to itself";
+                return false;
+            }
+        }
+    }
+    why = bus_loop_problem(*s.edit, where);
+    if (!why.empty()) {
+        error = (where.empty() ? std::string("buses") : where) + ": " + why;
+        return false;
     }
 
     const auto& markers = s.edit->markers->markers;

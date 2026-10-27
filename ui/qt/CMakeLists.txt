@@ -61,6 +61,8 @@ add_library(sonora_ui_qt STATIC
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
   src/mix_model.h src/mix_model.cpp
+  src/send_controller.h src/send_controller.cpp
+  src/send_model.h src/send_model.cpp
   src/refusal_page.h src/refusal_page.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
@@ -77,6 +79,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
+        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -189,6 +192,15 @@ add_executable(test_ui_inserts tests/test_inserts.cpp)
 target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Sends and aux buses (ADR-0022) on FakeEngine: assign, reassign, a new bus
+# with its send, the send window's values, a loop offered with its reason
+# and refused, undo of structure and not of values; then the Mix window's
+# send slots, aux strips, chooser and send window loaded offscreen.
+add_executable(test_ui_sends tests/test_sends.cpp)
+target_link_libraries(test_ui_sends PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_sends COMMAND test_ui_sends)
+set_tests_properties(ui_sends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # File > Open on FakeEngine (#109 review): a refused Open gives the window
 # back to the session it had, and both Open refusals are held notices.

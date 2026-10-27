@@ -24,7 +24,8 @@ namespace sonora {
 constexpr uint32_t kNoChunk = 0xFFFFFFFFu;
 
 // Append-only. A track with an active insert is TrackSource -> InsertChain
-// -> TrackFader, the three steps TrackOut fuses (ADR-0012 §7.1).
+// -> TrackFader, the three steps TrackOut fuses (ADR-0012 §7.1). An aux bus
+// is AuxSum, its sends summed, -> AuxFader, its return (ADR-0022 §5).
 enum class NodeKind : uint8_t {
     TrackOut = 0,
     BusSum = 1,
@@ -32,7 +33,16 @@ enum class NodeKind : uint8_t {
     TrackSource = 3,
     InsertChain = 4,
     TrackFader = 5,
+    AuxSum = 6,
+    AuxFader = 7,
 };
+
+// Send slots per strip, A to J: model::kSendSlots (ADR-0022 §2). A send's
+// state is at strip * kStripSendSlots + slot, a track's strip its engine
+// track, an aux bus's the engine track count plus its engine bus.
+constexpr uint32_t kStripSendSlots = 10;
+// An edge that is not a send.
+constexpr uint32_t kNoSend = 0xFFFFFFFFu;
 
 // An InsertChain node bound to no host channel: the chain passes its input
 // through. What every chain is until engine/plugin_client binds one.
@@ -82,14 +92,15 @@ struct PlanTrack {
 };
 
 // The graph, in topological order: per track a TrackOut, or TrackSource,
-// InsertChain and TrackFader; then one BusSum, one HardwareOut.
+// InsertChain and TrackFader; per aux bus an AuxSum and an AuxFader; then
+// one BusSum, one HardwareOut.
 struct PlanNode {
     NodeKind kind = NodeKind::TrackOut;
     uint32_t stable_id = 0;          // survives plan swaps
     uint32_t first_input_edge = 0;   // edges are grouped by to_node
     uint32_t input_edge_count = 0;
     uint32_t scratch_buffer = 0;     // stereo, preallocated by the session
-    uint32_t track = 0;              // track nodes: index into tracks
+    uint32_t track = 0;              // track nodes: index into tracks; aux nodes: engine bus
     // InsertChain only (ADR-0012 §7.1). Indices, never pointers: the slot
     // and the parameter store live in engine/plugin_client's private
     // memory, and a plan names them as they were when it was built.
@@ -115,11 +126,15 @@ struct PlanNode {
 // plans, so a swap never restarts a delay from silence. The session resets
 // a line it finds serving a different pair, so a reassigned line never
 // plays another edge's past.
+//
+// A send (ADR-0022 §5) is an edge from its strip's pre-fader node into an
+// AuxSum, scaled by the send's ramped coefficient before its delay line.
 struct PlanEdge {
     uint32_t from_node = 0;
     uint32_t to_node = 0;
     uint32_t delay_frames = 0;
     uint32_t delay_line = 0;
+    uint32_t send = kNoSend;
 };
 
 // One tempo entry's beats, for the click (ADR-0020 §1). Beat j is at frame

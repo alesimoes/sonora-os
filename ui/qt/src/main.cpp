@@ -70,6 +70,46 @@ struct Options {
     uint64_t max_snapshot_mib = 512;
 };
 
+// The demo session's aux buses and sends (ADR-0022), on any engine: a
+// reverb and a delay bus, most tracks sending to the reverb post-fader,
+// one pre-fader send to the delay, and the delay feeding the reverb, so the
+// Mix window shows each kind of send.
+void add_demo_sends(model::Snapshot& s) {
+    const auto apply = [&s](const model::Operation& op) {
+        model::Snapshot after;
+        std::string why;
+        if (model::apply(s, op, after, why)) {
+            s = std::move(after);
+        } else {
+            std::fprintf(stderr, "sonora-ui: the demo sends: %s\n", why.c_str());
+        }
+    };
+    const model::Id verb = s.next_id;
+    apply(model::AddBus{verb, "Verb", model::BusMix{0, -4.0f, 0.0f, false}});
+    const model::Id delay = s.next_id;
+    apply(model::AddBus{delay, "Delay", model::BusMix{0, -8.0f, 0.0f, false}});
+    const auto send = [&](model::Id strip, uint8_t slot, model::Id bus, float db, bool pre) {
+        model::AddSend op;
+        op.strip = strip;
+        op.send = s.next_id;
+        op.slot = slot;
+        op.bus = bus;
+        op.mix.level_db = db;
+        op.mix.pre = pre;
+        apply(op);
+    };
+    const auto& tracks = s.edit->tracks;
+    std::vector<model::Id> audio;
+    for (const auto& t : tracks) {
+        if (t->kind != model::TrackKind::Midi) audio.push_back(t->id);
+    }
+    for (std::size_t i = 0; i < audio.size() && i < 6; ++i) {
+        send(audio[i], 0, verb, -12.0f + static_cast<float>(i), false);
+    }
+    if (audio.size() > 3) send(audio[3], 1, delay, -10.0f, true);
+    send(delay, 0, verb, -6.0f, false);
+}
+
 // The demo session's inserts, on the fake engine's catalog (fake_catalog()):
 // a few plugins on the drums, the bass and the vocal; one bypassed, one
 // inactive, one whose plugin is not installed. Returns the insert the demo
@@ -427,6 +467,7 @@ int main(int argc, char** argv) {
         std::string why;
         sonora::model::Snapshot demo = make_demo_session(engine.info().track_count, rate);
         if (a.opt.scene != nullptr && a.opt.scene->tempo_map) add_demo_tempo_map(demo);
+        add_demo_sends(demo);
         if (fake != nullptr) {
             demo_crash = add_demo_inserts(demo);
             fake->script_plugin_latency(api::testing::fake_catalog()[2].id, 64);
@@ -461,6 +502,7 @@ int main(int argc, char** argv) {
         [&engine](uint32_t track, float linear) { engine.send_track_gain(track, linear); },
         [&engine]() { return engine.info().track_count; }, fake == nullptr);
     InsertModel inserts(document, session);
+    SendModel sends(document, session);
     inserts.controller().set_param_sender(
         [&engine](sonora::model::Id insert, const std::string& key, float value) {
             engine.send_plugin_parameter(insert, key, value);
@@ -553,6 +595,7 @@ int main(int argc, char** argv) {
     view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
                                {QStringLiteral("session"), QVariant::fromValue(&session)},
                                {QStringLiteral("inserts"), QVariant::fromValue(&inserts)},
+                               {QStringLiteral("sends"), QVariant::fromValue(&sends)},
                                {QStringLiteral("mixer"), QVariant::fromValue(&mixer)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);
@@ -585,15 +628,15 @@ int main(int argc, char** argv) {
         // Once the window has its size: the whole session in view, and the
         // snare's second region selected, so a screenshot shows what a
         // selected region looks like.
-        QTimer::singleShot(200, &app, [&session, &model, &inserts, &transport, &a, &view, fake,
-                                       demo_crash]() {
+        QTimer::singleShot(200, &app, [&session, &model, &inserts, &sends, &transport, &a, &view,
+                                       fake, demo_crash]() {
             // The fake engine has the demo session by now; a crash on Tom 1's
             // compressor shows what a fault looks like.
             if (fake != nullptr && demo_crash != 0) {
                 fake->script_insert_fault(
                     demo_crash, "its host crashed (SIGSEGV); the chain plays dry until Retry");
             }
-            ShotContext scene{session, model, inserts, transport, view};
+            ShotContext scene{session, model, inserts, sends, transport, view};
             if (a.opt.scene != nullptr && a.opt.scene->setup) a.opt.scene->setup(scene);
             model.invoke(QStringLiteral("zoom.fit_session"), -1);
             const int track = std::min(1, session.trackCount() - 1);

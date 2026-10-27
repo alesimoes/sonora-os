@@ -294,9 +294,35 @@ bool v9_to_v10(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v10 -> v11 (ADR-0022): the session gains "buses": [], and every track
+// with audio "sends": []. A version 10 session had no bus to send to.
+bool v10_to_v11(Value& root, std::vector<Repair>&, std::string& error) {
+    if (root.find("buses") != nullptr) {
+        error = "the file has \"buses\", which version 10 does not define";
+        return false;
+    }
+    Value* tracks = root.find("tracks");
+    if (tracks != nullptr && tracks->is_array()) {
+        for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+            Value& t = tracks->items()[i];
+            if (!t.is_object()) continue;
+            if (t.find("sends") != nullptr) {
+                error = "tracks[" + std::to_string(i) +
+                        "] has \"sends\", which version 10 does not define";
+                return false;
+            }
+            const Value* kind = t.find("kind");
+            if (kind != nullptr && kind->is_string() && kind->text() == "midi") continue;
+            t.set("sends", Value::array());
+        }
+    }
+    root.set("buses", Value::array());
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
-     v9_to_v10}};
+     v9_to_v10, v10_to_v11}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -436,6 +462,20 @@ Value insert_value(const Insert& in, const InsertMix& m) {
         s.set("sha256", Value::string(m.state->sha256));
         s.set("bytes", integer(static_cast<std::int64_t>(m.state->bytes)));
     }
+    return v;
+}
+
+// A send's structure and values in one object, as an insert's.
+Value send_value(const Send& sd, const SendMix& m) {
+    Value v = Value::object();
+    v.set("id", id_value(sd.id));
+    v.set("slot", integer(sd.slot));
+    v.set("bus", id_value(sd.bus));
+    v.set("level_db", Value::number_float(m.level_db));
+    v.set("pan", Value::number_float(m.pan));
+    v.set("follow_pan", Value::boolean(m.follow_pan));
+    v.set("mute", Value::boolean(m.mute));
+    v.set("pre", Value::boolean(m.pre));
     return v;
 }
 
@@ -1181,6 +1221,70 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
     return true;
 }
 
+bool read_sends(Reader& rd, const Value& strip, const std::string& path,
+                std::vector<Send>& sends, MixState& mix) {
+    const Value* list = nullptr;
+    if (!rd.array(strip, path, "sends", list)) return false;
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& v = list->items()[i];
+        const std::string p = index_path(path + ".sends", i);
+        if (!rd.keys(v, p, {"id", "slot", "bus", "level_db", "pan", "follow_pan", "mute", "pre"})) {
+            return false;
+        }
+        Send sd;
+        SendMix m;
+        if (!rd.id(v, p, "id", sd.id)) return false;
+        if (!rd.claim(sd.id, v, p)) return false;
+        m.send = sd.id;
+        std::int64_t slot = 0;
+        if (!rd.integer(v, p, "slot", kSendSlots - 1, slot)) return false;
+        sd.slot = static_cast<std::uint8_t>(slot);
+        if (!rd.id(v, p, "bus", sd.bus)) return false;
+        if (!rd.real(v, p, "level_db", m.level_db)) return false;
+        if (!rd.real(v, p, "pan", m.pan)) return false;
+        if (!rd.flag(v, p, "follow_pan", m.follow_pan)) return false;
+        if (!rd.flag(v, p, "mute", m.mute)) return false;
+        if (!rd.flag(v, p, "pre", m.pre)) return false;
+        std::string where;
+        if (!rd.checked(detail::send_mix_problem(m, where), v, p, where)) return false;
+        sends.push_back(sd);
+        mix.sends.push_back(m);
+        // Slot order, unique slots and one send per bus, named here with
+        // the send's line; whether the bus exists is check_invariants' to say.
+        if (!rd.checked(detail::sends_problem(sends, where), v, p, "")) return false;
+    }
+    return true;
+}
+
+bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "buses", list)) return false;
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& v = list->items()[i];
+        const std::string p = index_path("buses", i);
+        if (!rd.keys(v, p, {"id", "name", "gain_db", "pan", "mute", "sends"})) return false;
+        Bus b;
+        BusMix m;
+        if (!rd.id(v, p, "id", b.id)) return false;
+        if (!rd.claim(b.id, v, p)) return false;
+        m.bus = b.id;
+        if (!rd.text(v, p, "name", b.name)) return false;
+        if (!rd.checked(detail::valid_text(b.name) ? "" : "is not valid UTF-8", v, p + ".name",
+                        "")) {
+            return false;
+        }
+        if (!rd.real(v, p, "gain_db", m.gain_db)) return false;
+        if (!rd.real(v, p, "pan", m.pan)) return false;
+        if (!rd.flag(v, p, "mute", m.mute)) return false;
+        std::string where;
+        if (!rd.checked(detail::bus_mix_problem(m, where), v, p, where)) return false;
+        if (!read_sends(rd, v, p, b.sends, mix)) return false;
+        edit.buses.push_back(std::move(b));
+        mix.buses.push_back(m);
+    }
+    return true;
+}
+
 bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, SequenceFiles& files,
                  EditState& edit, MixState& mix) {
     const Value* list = nullptr;
@@ -1201,7 +1305,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "channels", "input", "monitor", "gain_db",
                                "pan", "mute", "solo", "solo_safe", "active_playlist", "inserts",
-                               "playlists"});
+                               "sends", "playlists"});
         } else if (midi) {
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "midi_input", "midi_output", "monitor",
@@ -1210,7 +1314,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "channels", "midi_input", "monitor",
                                "gain_db", "pan", "mute", "solo", "solo_safe", "active_playlist",
-                               "inserts", "playlists"});
+                               "inserts", "sends", "playlists"});
         }
         if (!keys_ok) return false;
         TrackMix m;
@@ -1266,6 +1370,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         }
         if (!rd.id(v, p, "active_playlist", t->active_playlist)) return false;
         if (!midi && !read_inserts(rd, v, p, *t, mix)) return false;
+        if (!midi && !read_sends(rd, v, p, t->sends, mix)) return false;
         const Value* pls = nullptr;
         if (!rd.array(v, p, "playlists", pls)) return false;
         if (pls->items().empty()) {
@@ -1430,6 +1535,8 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
                 // check_invariants guarantees every insert its values.
                 inserts.push(insert_value(in, *s.mix.find_insert(in.id)));
             }
+            Value& sends = tv.set("sends", Value::array());
+            for (const Send& sd : t.sends) sends.push(send_value(sd, *s.mix.find_send(sd.id)));
         }
         Value& pls = tv.set("playlists", Value::array());
         for (const auto& mp : t.midi_playlists) {
@@ -1455,6 +1562,19 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
                 xv.set("shape", Value::string(name_of(kShapes, x.shape)));
             }
         }
+    }
+
+    Value& buses = root.set("buses", Value::array());
+    for (const Bus& b : s.edit->buses) {
+        const BusMix& m = *s.mix.find_bus(b.id);   // check_invariants guarantees it
+        Value& bv = buses.push(Value::object());
+        bv.set("id", id_value(b.id));
+        bv.set("name", Value::string(b.name));
+        bv.set("gain_db", Value::number_float(m.gain_db));
+        bv.set("pan", Value::number_float(m.pan));
+        bv.set("mute", Value::boolean(m.mute));
+        Value& sends = bv.set("sends", Value::array());
+        for (const Send& sd : b.sends) sends.push(send_value(sd, *s.mix.find_send(sd.id)));
     }
 
     Value& markers = root.set("markers", Value::array());
@@ -1526,7 +1646,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
     if (!rd.keys(root, "",
                  {"sonora_session", "written_by", "save_generation", "name",
                   "sample_rate", "audio_format", "timecode", "tempo", "transport",
-                  "monitor_bus", "sources", "midi_sources", "tracks", "markers",
+                  "monitor_bus", "sources", "midi_sources", "tracks", "buses", "markers",
                   "session_id", "left_takes"})) {
         return false;
     }
@@ -1547,6 +1667,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
     auto edit = std::make_shared<EditState>();
     SequenceFiles files(sequences);
     if (!read_tracks(rd, root, *pool, files, *edit, mix)) return false;
+    if (!read_buses(rd, root, *edit, mix)) return false;
     auto markers = std::make_shared<MarkerList>();
     if (!read_markers(rd, root, *markers)) return false;
     edit->markers = std::move(markers);

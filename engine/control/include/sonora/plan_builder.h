@@ -33,6 +33,8 @@ struct BuildLimits {
     // Past either the plan is still built, and the shortfall reported.
     uint32_t max_delay_frames = 0;
     uint32_t delay_lines = 0;
+    // The session's aux buses (PlaybackConfig::max_buses, ADR-0022 §8).
+    uint32_t max_buses = 0;
 };
 
 // What the control thread knows of a track's chain when it builds: the host
@@ -56,6 +58,10 @@ struct PlanContinuity {
     DelayLinePool pool;
     std::unordered_map<model::Id, uint32_t> track_keys;
     uint32_t next_key = 1;
+    // The same for aux buses (ADR-0022 §5), from a counter of their own:
+    // their nodes' ids carry tags no track node has.
+    std::unordered_map<model::Id, uint32_t> bus_keys;
+    uint32_t next_bus_key = 1;
 };
 
 // The engine source-table slot of a model source, registering it on first
@@ -100,6 +106,12 @@ struct PlanReport {
 // (ADR-0012 §7.1), bound through `chains` (may be empty); every edge into
 // the bus is delayed so all tracks arrive aligned on the slowest, with lines
 // and track keys from `continuity`, which the build updates.
+//
+// Aux bus i in display order is engine bus i, laid out after the tracks in
+// an order where every bus comes after the buses that send to it, ties in
+// display order; a track with a send is split at its pre-fader point
+// (ADR-0022 §5). More buses than limits.max_buses, or sends that loop, are
+// refused.
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, const ChainResolver& chains,
                 PlanContinuity& continuity, uint64_t epoch, PlaybackPlan*& out,

@@ -556,6 +556,38 @@ struct Insert {
     }
 };
 
+// --- sends and aux buses (ADR-0022, session format version 11) -------------
+
+// Pro Tools' sends A to J, on a track or an aux bus (ADR-0022 §2).
+inline constexpr std::uint8_t kSendSlots = 10;
+// The most aux buses one session holds. The engine sizes for fewer
+// (PlaybackConfig::max_buses) and refuses an AddBus past its own count.
+inline constexpr std::size_t kMaxBuses = 256;
+
+// A send's structure: which slot of its strip, which bus it feeds. Its
+// level, pan, mute and pre/post are a SendMix, because a fader move is not
+// an edit (ADR-0022 §3).
+struct Send {
+    Id id = 0;
+    std::uint8_t slot = 0;   // below kSendSlots; unique on the strip, gaps allowed
+    Id bus = 0;              // an aux bus; a strip sends to a bus at most once
+    bool operator==(const Send& o) const {
+        return id == o.id && slot == o.slot && bus == o.bus;
+    }
+};
+
+// An aux bus and its return strip, one object (ADR-0022 §1): stereo, fed by
+// sends, returned to the monitor bus. Its own sends feed other buses; the
+// buses never form a loop.
+struct Bus {
+    Id id = 0;
+    std::string name;
+    std::vector<Send> sends;   // sorted by slot
+    bool operator==(const Bus& o) const {
+        return id == o.id && name == o.name && sends == o.sends;
+    }
+};
+
 // The undoable part of a track. Input, monitor mode and the mix live in
 // TrackMix, because a fader move is not an edit.
 struct TrackEdit {
@@ -574,6 +606,8 @@ struct TrackEdit {
     // MIDI track has no audio: `channels` is 0 and it holds no insert.
     TrackKind kind = TrackKind::Audio;
     std::vector<std::shared_ptr<const MidiPlaylist>> midi_playlists;
+    // Sorted by slot. A MIDI track has no audio, and so no send.
+    std::vector<Send> sends;
     bool operator==(const TrackEdit& o) const;
 };
 
@@ -596,6 +630,7 @@ struct MarkerList {
 struct EditState {
     std::vector<std::shared_ptr<const TrackEdit>> tracks;   // display order
     std::shared_ptr<const MarkerList> markers;
+    std::vector<Bus> buses;   // display order
     bool operator==(const EditState& o) const;
 };
 
@@ -686,6 +721,35 @@ struct MonitorBus {
     }
 };
 
+// A send's values: saved and not undoable, like a fader (ADR-0022 §3).
+struct SendMix {
+    Id send = 0;
+    // Pro Tools' default for a new send, which the interface sends; the
+    // model holds whatever AddSend carried.
+    float level_db = kMinGainDb;
+    float pan = 0.0f;
+    // Pro Tools' FMP: the send pans as its strip does, and `pan` is kept
+    // for when it is turned off.
+    bool follow_pan = true;
+    bool mute = false;
+    bool pre = false;   // pre-fader: post-insert, before the fader and the pan
+    bool operator==(const SendMix& o) const {
+        return send == o.send && level_db == o.level_db && pan == o.pan &&
+               follow_pan == o.follow_pan && mute == o.mute && pre == o.pre;
+    }
+};
+
+// An aux bus's return strip.
+struct BusMix {
+    Id bus = 0;
+    float gain_db = 0.0f;
+    float pan = 0.0f;   // balance: the bus is stereo
+    bool mute = false;
+    bool operator==(const BusMix& o) const {
+        return bus == o.bus && gain_db == o.gain_db && pan == o.pan && mute == o.mute;
+    }
+};
+
 // An insert's values: saved and not undoable, like a fader (ADR-0012 §6.1).
 struct InsertMix {
     Id insert = 0;
@@ -710,10 +774,16 @@ struct MixState {
     // window holds its insert (History::prune_insert_values): an insert
     // carries up to kMaxInsertParams values.
     std::vector<InsertMix> inserts;
+    // Keyed by bus and by send id, outliving an undone add as a track's do.
+    std::vector<BusMix> buses;
+    std::vector<SendMix> sends;
     const TrackMix* find(Id track) const;
     const InsertMix* find_insert(Id insert) const;
+    const BusMix* find_bus(Id bus) const;
+    const SendMix* find_send(Id send) const;
     bool operator==(const MixState& o) const {
-        return bus == o.bus && tracks == o.tracks && inserts == o.inserts;
+        return bus == o.bus && tracks == o.tracks && inserts == o.inserts &&
+               buses == o.buses && sends == o.sends;
     }
 };
 

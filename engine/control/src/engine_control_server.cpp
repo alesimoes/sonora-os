@@ -213,6 +213,26 @@ std::vector<model::Id> track_order(const model::Snapshot& s) {
     return ids;
 }
 
+// Which send sits in which strip and slot, strips as the engine numbers
+// them: the send state is indexed so (ADR-0022 §5), and a send added,
+// removed or undone moves values onto another index.
+std::vector<model::Id> send_layout(const model::Snapshot& s) {
+    std::vector<model::Id> ids;
+    const auto put = [&](const std::vector<model::Send>& sends) {
+        for (const model::Send& sd : sends) {
+            ids.push_back(sd.id);
+            ids.push_back(sd.slot);
+        }
+        ids.push_back(0);
+    };
+    for (const auto& t : s.edit->tracks) put(t->sends);
+    for (const model::Bus& b : s.edit->buses) {
+        ids.push_back(b.id);
+        put(b.sends);
+    }
+    return ids;
+}
+
 // Notices replayed to a client that attaches later. A device notice comes
 // first and matters most; a flood after it is not worth a restarted
 // interface's screen.
@@ -2204,6 +2224,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         // plays the document's track i in display order.
         bool mix_changed = false;
         const std::vector<model::Id> order_before = track_order(document_->current());
+        const std::vector<model::Id> sends_before = send_layout(document_->current());
         const model::MixState mix_before = document_->current().mix;
         switch (m.action) {
             case api::ModelAction::Apply: {
@@ -2221,6 +2242,14 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                     }
                     if (std::string refusal = transport_refusal(at, member); !refusal.empty()) {
                         return refusal;
+                    }
+                    // Accepted, it would leave the plan unbuildable: the
+                    // engine sizes its buses when it starts (ADR-0022 §8).
+                    if (member.holds<model::AddBus>() &&
+                        at.edit->buses.size() >= session_.max_buses()) {
+                        return "the engine was started with room for " +
+                               std::to_string(session_.max_buses()) +
+                               " aux buses, and this session has them all (limit: max_buses)";
                     }
                     // Even one that leaves the document as it was: it ends a
                     // ride whose last ParameterChange need not be its value.
@@ -2303,7 +2332,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             const model::MixState& mix_after = document_->current().mix;
             mix_changed = mix_changed || !(mix_after.bus == mix_before.bus) ||
                           !(mix_after.tracks == mix_before.tracks) ||
-                          track_order(document_->current()) != order_before;
+                          track_order(document_->current()) != order_before ||
+                          !(mix_after.buses == mix_before.buses) ||
+                          !(mix_after.sends == mix_before.sends) ||
+                          send_layout(document_->current()) != sends_before;
             // Chains from the document diff (undo, redo, active, values
             // included), before the plan is built from it.
             if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);

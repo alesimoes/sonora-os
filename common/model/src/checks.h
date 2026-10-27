@@ -53,6 +53,18 @@ std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::str
 // Empty when `count` values fit one insert.
 std::string insert_param_count_problem(std::size_t count);
 
+// Sends and aux buses (ADR-0022). sends_problem: ids, slots in order and
+// unique, one send per destination; not whether the destination exists.
+std::string send_mix_problem(const SendMix& m, std::string& where);
+std::string bus_mix_problem(const BusMix& m, std::string& where);
+std::string sends_problem(const std::vector<Send>& sends, std::string& where);
+const Bus* find_bus(const EditState& e, Id bus);
+// The buses from `from` to `to` along sends, both included; empty when
+// `to` cannot be reached.
+std::vector<Id> bus_path(const EditState& e, Id from, Id to);
+// Empty when the buses' sends form no loop; else `where` names a bus on one.
+std::string bus_loop_problem(const EditState& e, std::string& where);
+
 // A fade left running into the crossfade at its region's other end is
 // shortened to meet it, as clamp_fades() shortens one that outgrew its
 // region. Used by edits that move edges, clear a crossfade or add a take's

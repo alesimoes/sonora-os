@@ -46,6 +46,7 @@ PlaybackController::PlaybackController(Session& session) : session_(session) {
     limits_.pool_chunks = session.reader().pool_chunks();
     limits_.max_delay_frames = session.max_delay_frames();
     limits_.delay_lines = session.delay_lines();
+    limits_.max_buses = session.max_buses();
     playing_continuity_ = PlanContinuity(session.delay_lines());
 }
 
@@ -127,6 +128,36 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
     }
     apply_monitoring(snapshot);
     session_.set_bus_gain(gain_of_db(snapshot.mix.bus.gain_db));
+    apply_sends(snapshot);
+}
+
+void PlaybackController::apply_sends(const model::Snapshot& snapshot) {
+    // By strip and slot, as the plan names them (ADR-0022 §5): engine track
+    // i is display track i, engine bus b display bus b. A slot left by a
+    // removed send keeps its values; no plan edge reads it until a send is
+    // there again, and that send's values are written here first.
+    const auto engine_tracks = static_cast<uint32_t>(session_.tracks().size());
+    const auto put = [&](const std::vector<model::Send>& sends, uint32_t strip) {
+        for (const model::Send& sd : sends) {
+            const model::SendMix* m = snapshot.mix.find_send(sd.id);
+            if (!m) continue;
+            session_.set_send(strip, sd.slot, gain_of_db(m->level_db), pan_of(m->pan),
+                              m->follow_pan, m->mute, m->pre);
+        }
+    };
+    const auto& tracks = snapshot.edit->tracks;
+    for (std::size_t i = 0; i < tracks.size() && i < engine_tracks; ++i) {
+        put(tracks[i]->sends, static_cast<uint32_t>(i));
+    }
+    const auto& buses = snapshot.edit->buses;
+    for (std::size_t b = 0; b < buses.size() && b < session_.max_buses(); ++b) {
+        const model::BusMix* m = snapshot.mix.find_bus(buses[b].id);
+        if (m) {
+            session_.set_aux(static_cast<uint32_t>(b), gain_of_db(m->gain_db), pan_of(m->pan),
+                             m->mute);
+        }
+        put(buses[b].sends, engine_tracks + static_cast<uint32_t>(b));
+    }
 }
 
 void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t track) {

@@ -42,10 +42,13 @@ public:
     // (Session::set_loop()). False, with `error`, if the plan cannot be
     // built; what is playing does not change.
     bool show(const model::Snapshot& snapshot, std::string& error);
-    // The mix alone: gain, pan, mute, solo, monitor mode, bus gain. Gains and
-    // pan are clamped to what the model allows, so a snapshot that never went
-    // through its validator still puts no inf or NaN on the audio thread.
+    // The mix alone: gain, pan, mute, solo, monitor mode, bus gain, sends
+    // and aux returns. Gains and pan are clamped to what the model allows,
+    // so a snapshot that never went through its validator still puts no inf
+    // or NaN on the audio thread.
     void apply_mix(const model::Snapshot& snapshot);
+    // The sends' and the aux returns' part of apply_mix() (ADR-0022 §6).
+    void apply_sends(const model::Snapshot& snapshot);
     // Engine track `track`'s gain alone, from the document's track there:
     // a ride whose rider left ends without the other faders moving. Nothing
     // for a track past the document's end.

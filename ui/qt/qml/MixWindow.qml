@@ -14,6 +14,11 @@
 // strips; a slot dragged to another strip is dropped through `dragLayer`.
 // The session's delay compensation reads at the top right, in `alarm` when
 // the inserts need more than its maximum.
+//
+// Sends and aux buses (ADR-0022): five send slots on every strip, A-E or
+// F-J as the bank switch at the top says, as Pro Tools' Mix window views;
+// the aux buses' return strips after the tracks, "+ Bus" adding one; the
+// bus chooser and the send window drawn here, over the strips.
 import QtQuick
 import Sonora
 
@@ -22,13 +27,15 @@ Rectangle {
     required property ShellModel shell
     required property SessionModel session
     property InsertModel inserts: null
+    property SendModel sends: null
     property MixModel mixer: null
+    readonly property int auxCount: sends !== null ? sends.auxes.length : 0
     color: Theme.window
 
     Text {
         id: note
         objectName: "mixNote"
-        anchors { left: parent.left; right: compensation.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
+        anchors { left: parent.left; right: sendControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
         elide: Text.ElideRight
         text: (mix.inserts !== null && mix.inserts.pluginsDisabled
                ? "This engine hosts no plugins yet: inserts are kept with the session and do not run. "
@@ -36,6 +43,32 @@ Rectangle {
               + (mix.mixer !== null ? mix.mixer.note : "Mix state is kept with the session.")
         color: Theme.caution
         font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+    }
+    Row {
+        id: sendControls
+        objectName: "sendControls"
+        anchors { right: compensation.left; rightMargin: Theme.space3; top: parent.top; topMargin: Theme.space1 }
+        spacing: 2
+        visible: mix.sends !== null
+        width: visible ? implicitWidth : 0
+        SButton {
+            objectName: "sendBankAE"
+            text: "Sends A-E"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.sends !== null && mix.sends.bank === 0
+            onClicked: mix.sends.setBank(0)
+        }
+        SButton {
+            objectName: "sendBankFJ"
+            text: "F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.sends !== null && mix.sends.bank === 5
+            onClicked: mix.sends.setBank(5)
+        }
+        Item { width: Theme.space2; height: 1 }
+        SButton {
+            objectName: "newBus"
+            text: "+ Bus"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.sends.newBus()
+        }
     }
     Text {
         id: compensation
@@ -55,7 +88,7 @@ Rectangle {
             left: parent.left; right: bus.left; top: note.bottom; bottom: parent.bottom
             leftMargin: Theme.space3; rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3
         }
-        readonly property real stripWidth: Math.floor(width / Math.max(1, mix.session.trackCount))
+        readonly property real stripWidth: Math.floor(width / Math.max(1, mix.session.trackCount + mix.auxCount))
 
         Repeater {
             id: stripRepeater
@@ -69,6 +102,7 @@ Rectangle {
                 shell: mix.shell
                 session: mix.session
                 inserts: mix.inserts
+                sends: mix.sends
                 mixer: mix.mixer
                 dragHost: dragLayer
                 track: index
@@ -76,6 +110,21 @@ Rectangle {
                 gainDb: mix.session.gains[index] || 0
                 pan: mix.session.pans[index] || 0
                 selected: mix.session.selectedTrack === index
+            }
+        }
+        Repeater {
+            model: mix.sends !== null ? mix.sends.auxes : []
+            AuxStrip {
+                required property int index
+                required property var modelData
+                x: (mix.session.trackCount + index) * strips.stripWidth
+                width: strips.stripWidth - 2
+                height: strips.height
+                shell: mix.shell
+                session: mix.session
+                sends: mix.sends
+                bus: index
+                info: modelData
             }
         }
     }
@@ -88,6 +137,7 @@ Rectangle {
         shell: mix.shell
         session: mix.session
         inserts: mix.inserts
+        sends: mix.sends
         mixer: mix.mixer
         track: -1
         name: "Monitor"
@@ -275,6 +325,24 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // --- the bus chooser and the send window ---------------------------------
+    SendChooser {
+        objectName: "sendChooser"
+        anchors.fill: parent
+        z: 41
+        visible: mix.sends !== null && mix.sends.chooserOpen
+        sends: mix.sends
+    }
+    SendWindow {
+        objectName: "sendWindow"
+        anchors { right: parent.right; top: parent.top; rightMargin: 104; topMargin: Theme.space6 }
+        z: 36
+        visible: mix.sends !== null && mix.sends.windowOpen
+        shell: mix.shell
+        session: mix.session
+        sends: mix.sends
     }
 
     // --- the plugin chooser and the parameter panel --------------------------

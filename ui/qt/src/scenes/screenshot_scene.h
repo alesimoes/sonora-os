@@ -18,6 +18,7 @@
 
 #include "insert_model.h"
 #include "model_access.h"
+#include "send_model.h"
 #include "session_model.h"
 #include "shell_model.h"
 #include "transport_model.h"
@@ -29,6 +30,7 @@ struct ShotContext {
     SessionModel& session;
     ShellModel& model;
     InsertModel& inserts;
+    SendModel& sends;
     TransportModel& transport;
     QQuickView& view;
     int track = 0;                              // the snare's, selected

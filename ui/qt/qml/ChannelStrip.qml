@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // One channel strip, top to bottom as a console reads: input, pan, record /
-// input monitor / solo / mute, inserts A to J and the chain's delay, fader beside its
-// meter, gain readout, name. `track` -1 is the monitor bus, which has a
+// input monitor / solo / mute, inserts A to J and the chain's delay, five
+// sends (A-E or F-J, SendModel::bank), fader beside its meter, gain
+// readout, name. `track` -1 is the monitor bus, which has a
 // fader and two meters and nothing else; its insert area is left empty so
 // every fader starts at the same height.
 //
@@ -42,6 +43,8 @@ Rectangle {
     property bool selected: false
     // Null where no insert slots are wired (the shell's routing test).
     property InsertModel inserts: null
+    // Null where no send slots are wired.
+    property SendModel sends: null
     property Item dragHost: null
     readonly property var insertInfo: inserts !== null && !isBus && track < inserts.strips.length
                                       ? inserts.strips[track] : null
@@ -227,12 +230,43 @@ Rectangle {
         }
     }
 
+    // --- sends: five of A to J ---
+    Item {
+        id: sendArea
+        objectName: strip.isBus ? "" : "sends" + strip.track
+        anchors { left: parent.left; right: parent.right; top: insertArea.bottom; topMargin: strip.sends === null ? 0 : Theme.space2
+                  leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        // Fixed, so the bus (no sends) keeps its fader level with the tracks'.
+        height: strip.sends === null ? 0 : 5 * Theme.insertSlotHeight + 4
+        visible: strip.sends !== null
+        readonly property var info: strip.sends !== null && !strip.isBus && strip.track < strip.sends.strips.length
+                                    ? strip.sends.strips[strip.track] : null
+
+        Column {
+            width: parent.width
+            spacing: 1
+            visible: !strip.isBus && sendArea.info !== null && sendArea.info.sends
+            Repeater {
+                model: strip.isBus || strip.sends === null ? 0 : 5
+                SendSlot {
+                    required property int index
+                    width: sendArea.width
+                    sends: strip.sends
+                    stripIndex: strip.track
+                    slot: strip.sends.bank + index
+                    info: sendArea.info !== null ? sendArea.info.slots[strip.sends.bank + index]
+                                                 : ({ present: false, letter: String.fromCharCode(65 + strip.sends.bank + index) })
+                }
+            }
+        }
+    }
+
     // --- fader and meter ---
     Item {
         id: faderArea
         anchors {
             left: parent.left; right: parent.right
-            top: insertArea.bottom; bottom: readout.top
+            top: sendArea.bottom; bottom: readout.top
             topMargin: Theme.space3; bottomMargin: Theme.space2
         }
         readonly property real capH: 26

@@ -340,7 +340,8 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // The punch and roll commands at the engine (ADR-0016, update
+    // Sends and aux buses (ADR-0022) are version 27, 26 being held for a PR
+    // in flight; the punch and roll commands at the engine (ADR-0016, update
     // "transport settings at the authority") are version 25, 24 being held
     // for fades; SetSettings' transport.loop_record
     // (transport.toggle_loop_record) is version 23; EventKind::Latency (ADR-0019, update of 2026-10-26) 22;
@@ -355,7 +356,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 25);
+    CHECK(kProtocolVersion == 27);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -363,13 +364,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 25 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 27 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 25"));
+                   "speaks version 27"));
 }
 
 void domains() {

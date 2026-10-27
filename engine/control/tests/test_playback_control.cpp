@@ -1284,6 +1284,111 @@ int test_region_edits_are_heard() {
     return 0;
 }
 
+// ui.mixer.sends (ADR-0022): a pre-fader send following the track's pan,
+// onto an aux bus at 0 dB, doubles what the left output hears; muting the
+// send through the document takes it away again.
+int test_sends_are_heard() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 8000, 0), 0}));
+    CHECK_APPLY(h, (AddBus{300, "Verb", BusMix{}}));
+    AddSend send;
+    send.strip = 100;
+    send.send = 301;
+    send.slot = 4;
+    send.bus = 300;
+    send.mix.level_db = 0.0f;
+    send.mix.pre = true;
+    CHECK_APPLY(h, send);
+    PlaybackController ctl(s);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    run_block(s, o);
+    CHECK(heard_from_zero(s, ctl, h, "a send at 0 dB", [](int64_t t) {
+        return t < 8000 ? value(1, t) + value(1, t) : 0.0f;
+    }));
+    SendMix muted = *h.current().mix.find_send(301);
+    muted.mute = true;
+    CHECK_APPLY(h, SetSendMix{muted});
+    ctl.apply_mix(h.current());
+    run_block(s, o);  // the mute ramps
+    CHECK(heard_from_zero(s, ctl, h, "the send muted", [](int64_t t) {
+        return t < 8000 ? value(1, t) : 0.0f;
+    }));
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
+// The builder lays a bus out after every bus that sends to it, whatever the
+// display order; refuses more buses than the engine has; and refuses a
+// loop that reached it without the model's check.
+int test_build_with_sends() {
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "Vox"));
+    CHECK_APPLY(h, (AddBus{300, "Verb", BusMix{}}));
+    CHECK_APPLY(h, (AddBus{301, "Room", BusMix{}}));
+    AddSend vox;
+    vox.strip = 100;
+    vox.send = 302;
+    vox.slot = 0;
+    vox.bus = 301;
+    CHECK_APPLY(h, vox);
+    AddSend room;
+    room.strip = 301;
+    room.send = 303;
+    room.slot = 2;
+    room.bus = 300;
+    CHECK_APPLY(h, room);
+    sonora::BuildLimits limits;
+    limits.engine_tracks = 2;
+    limits.max_segments = 64;
+    limits.max_chunk_slots = 1024;
+    limits.chunk_frames = kChunk;
+    limits.window_frames = 1024;
+    limits.pool_chunks = 128;
+    limits.max_buses = 2;
+    const sonora::SourceSlot no_sources = [](const Source&, uint32_t&, std::string& e) {
+        e = "no source expected";
+        return false;
+    };
+    PlaybackPlan* plan = nullptr;
+    sonora::PlanReport report;
+    std::string error;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, 1, plan, report, error));
+    // Vox split, the spare track fused, Room (engine bus 1) before Verb
+    // (engine bus 0), the bus, out.
+    CHECK(plan->node_count == 2 + 1 + 4 + 2);
+    CHECK(plan->nodes[0].kind == sonora::NodeKind::TrackSource);
+    CHECK(plan->nodes[1].kind == sonora::NodeKind::TrackFader);
+    CHECK(plan->nodes[3].kind == sonora::NodeKind::AuxSum && plan->nodes[3].track == 1);
+    CHECK(plan->nodes[5].kind == sonora::NodeKind::AuxSum && plan->nodes[5].track == 0);
+    const sonora::PlanEdge& in_room = plan->edges[plan->nodes[3].first_input_edge];
+    CHECK(in_room.from_node == 0 && in_room.send == 0 * sonora::kStripSendSlots + 0);
+    const sonora::PlanEdge& in_verb = plan->edges[plan->nodes[5].first_input_edge];
+    CHECK(in_verb.from_node == 3 && in_verb.send == (2 + 1) * sonora::kStripSendSlots + 2);
+    sonora::destroy_plan(plan);
+
+    limits.max_buses = 1;
+    CHECK(!sonora::build_plan(h.current(), limits, no_sources, 2, plan, report, error));
+    CHECK(plan == nullptr && error.find("(limit: max_buses)") != std::string::npos);
+
+    limits.max_buses = 2;
+    Snapshot looped = h.current();
+    auto edit = std::make_shared<EditState>(*looped.edit);
+    edit->buses[0].sends.push_back(Send{304, 0, 301});
+    looped.edit = edit;
+    looped.mix.sends.push_back(SendMix{304});
+    CHECK(!sonora::build_plan(looped, limits, no_sources, 3, plan, report, error));
+    CHECK(error.find("feedback loop") != std::string::npos);
+    return 0;
+}
+
 // engine.timeline.region_ops: a duplicate is a second PlaceRegion of the
 // same source. Both copies play, each from the source's start, and a third
 // copy with an offset plays its own part: the reader serves one source to
@@ -2156,6 +2261,8 @@ int main() {
     if (test_midi_tracks_build_silent()) return 1;
     if (test_midi_tracks_are_never_monitored_or_armed()) return 1;
     if (test_build_with_chains()) return 1;
+    if (test_build_with_sends()) return 1;
+    if (test_sends_are_heard()) return 1;
     if (test_latency_change_is_a_new_plan()) return 1;
     if (test_report_shows_the_planned_latency()) return 1;
     if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
