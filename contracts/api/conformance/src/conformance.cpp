@@ -2703,6 +2703,151 @@ int check_save(Rig& rig) {
     return C(rig, "save").go();
 }
 
+// Save As and Save Copy In (protocol 29; ADR-0018 §5, update of
+// 2026-10-27). Save As makes a new folder holding the session file and the
+// old folder's media, moves the session there (the SessionFolder event
+// before the reply), and leaves the old folder as it was; a take recorded
+// after it is in the new folder. Save Copy In writes a copy and the session
+// stays. Refused: during a take, into a folder that is not empty, without
+// the audio unless a copy, and with a flag the engine does not know.
+int check_save_as(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        static std::string folder(const Inbox& in) {
+            for (auto it = in.events.rbegin(); it != in.events.rend(); ++it) {
+                if (it->kind == EventKind::SessionFolder) return it->text;
+            }
+            return {};
+        }
+        static std::string read(const std::filesystem::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            std::stringstream got;
+            got << in.rdbuf();
+            return got.str();
+        }
+
+        int go() {
+            namespace fs = std::filesystem;
+            static int n = 0;
+            std::error_code ec;
+            const fs::path root = fs::temp_directory_path(ec) /
+                                  ("sonora-conformance-save-as-" + std::to_string(
+                                       reinterpret_cast<std::uintptr_t>(this)) + "-" +
+                                   std::to_string(n++));
+            fs::remove_all(root, ec);
+            struct Gone {
+                fs::path p;
+                ~Gone() {
+                    std::error_code e;
+                    fs::remove_all(p, e);
+                }
+            } gone{root};
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            StateView& v = s.engine->state();
+
+            model::Snapshot song = s.replica.current();
+            song.settings.name = "Old";
+            std::string bytes, error;
+            EXPECT(model::serialize(song, model::WriteInfo{"conformance", 1}, bytes, error), error);
+            const fs::path old = root / "Old";
+            fs::create_directories(old / "Audio Files", ec);
+            {
+                std::ofstream out(old / "Old.sonora", std::ios::binary);
+                out << bytes;
+                std::ofstream media(old / "Audio Files" / "notes.txt", std::ios::binary);
+                media << "a file of the session";
+            }
+            ModelRequest load;
+            load.action = ModelAction::Load;
+            load.op = wire::encode_load((old / "Old.sonora").string(), bytes);
+            CommandReply r;
+            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
+                   "the session was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return folder(s.inbox) == old.lexically_normal().string(); }),
+                   "no SessionFolder naming " + old.string());
+
+            const fs::path moved = root / "New";
+            const fs::path file = moved / "New.sonora";
+            ModelRequest as;
+            as.action = ModelAction::SaveAs;
+            as.op = wire::encode_save_as(file.string(), 0, bytes);
+            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Ok,
+                   "a Save As was refused: " + r.message);
+            const std::string expected = moved.lexically_normal().string();
+            EXPECT(folder(s.inbox) == expected,
+                   "the reply came before a SessionFolder naming " + expected + ", the last was \"" +
+                       folder(s.inbox) + "\"");
+            EXPECT(read(file) == bytes, "the new folder does not hold the session file");
+            EXPECT(read(moved / "Audio Files" / "notes.txt") == "a file of the session",
+                   "the new folder does not hold the old one's media");
+            EXPECT(read(old / "Old.sonora") == bytes &&
+                       read(old / "Audio Files" / "notes.txt") == "a file of the session",
+                   "the old folder was changed");
+
+            // Save Copy In, without the audio: written, and the session stays.
+            const std::size_t announced = s.count_events(EventKind::SessionFolder);
+            const fs::path copy = root / "Copy" / "Copy.sonora";
+            as.op = wire::encode_save_as(copy.string(), kSaveAsCopy | kSaveAsNoAudio, bytes);
+            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Ok,
+                   "a Save Copy In was refused: " + r.message);
+            EXPECT(read(copy) == bytes, "the copy does not hold the session file");
+            EXPECT(!fs::exists(copy.parent_path() / "Audio Files" / "notes.txt", ec),
+                   "a copy without the audio holds it");
+            EXPECT(s.count_events(EventKind::SessionFolder) == announced && folder(s.inbox) == expected,
+                   "a Save Copy In moved the session");
+
+            // Refusals.
+            as.op = wire::encode_save_as((old / "Old.sonora").string(), kSaveAsCopy, bytes);
+            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+                   "a Save Copy In over a folder that is not empty was accepted");
+            as.op = wire::encode_save_as((root / "Bare" / "Bare.sonora").string(), kSaveAsNoAudio, bytes);
+            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+                   "a Save As without the audio was accepted");
+            EXPECT(!fs::exists(root / "Bare", ec), "a refused Save As made its folder");
+            as.op = wire::encode_save_as((root / "Odd" / "Odd.sonora").string(), 1u << 7, bytes);
+            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+                   "a Save As with an unknown flag was accepted");
+
+            // A take after the Save As lands in the new folder; none during one.
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published after arming");
+            const int32_t take = v.transport().take;
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Recording &&
+                              v.transport().playhead > 0;
+                   }),
+                   "the take never ran");
+            as.op = wire::encode_save_as((root / "During" / "During.sonora").string(), 0, bytes);
+            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+                   "a Save As during a take was accepted");
+            EXPECT(mentions(r.message, "stop recording"), "the refusal does not say why");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Stopped &&
+                              v.transport().take == take + 1;
+                   }),
+                   "the take did not end");
+            const int files = rig_.take_files_in(*s.engine, expected, take);
+            if (files < 0) return skip("the rig cannot tell where a take was written");
+            EXPECT(files > 0, "take " + std::to_string(take) + " is not in " + expected + "/Audio Files");
+            EXPECT(rig_.take_files_in(*s.engine, old.string(), take) == 0,
+                   "the take is in the folder the session left");
+            return ok();
+        }
+    };
+    return C(rig, "save as").go();
+}
+
 int check_take_failed(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -3058,6 +3203,7 @@ int run(Rig& rig) {
     failures += check_plugin_faults(rig);
     failures += check_flush_plugin_state(rig);
     failures += check_save(rig);
+    failures += check_save_as(rig);
     failures += check_load_enters_its_folder(rig);
     failures += check_unsaved_recording_is_opened_and_named(rig);
     failures += check_recovery_offer(rig);

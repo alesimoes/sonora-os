@@ -31,7 +31,10 @@ does not exist and is on the same filesystem, so the takes are already
 beside the file; it is refused while a take is being written. An untitled
 folder with nothing in it is removed when the engine leaves it; one with
 takes and no session file is an unsaved recording, listed by File > Open
-and opened by its folder.
+and opened by its folder. Save As (protocol 29, ADR-0018 §5) makes a new
+folder of this shape, its media hard-linked or copied from the old one and
+the session file written last, and the session moves there; the old folder
+is left as it was. Save Copy In does the same and stays.
 
 Two rules govern the relationship between the file and the audio:
 
@@ -613,8 +616,9 @@ unanswered until its patience runs out (`SessionModel::saveSession()`),
 and a save sent then is queued behind the first and written after it. While a take is open the saver waits for the disk thread's
 checkpoint counter to move before it touches the disk, at most one save
 per checkpoint, and every client is told "Saving after the next
-checkpoint". Not built yet: step 5's rotated backups and the autosave
-(BACKLOG Track 2 item 3). Files in `MIDI Files/` are never deleted by
+checkpoint". Step 5 is built since protocol 29 (ADR-0018 update of
+2026-10-27): stamps in UTC, `--backups N`, pruning only this stem's rotated
+names and never a symlink. Files in `MIDI Files/` are never deleted by
 this rule.
 
 **Plugin state files (version 2, ADR-0012 §6.1, §8).** File > Save is
@@ -638,7 +642,12 @@ being replaced already names it (lost before, and reported at open).
 every 60 s while there are unsaved edits, the same procedure writes
 `Session File Backups/<name>.autosave.sonora`. Explicit save writes the main
 file. At open, an autosave with a higher `save_generation` than the main
-file is offered, never applied silently.
+file is offered, never applied silently. *As built (ADR-0018 update of
+2026-10-27):* the engine autosaves its own document on the saver thread,
+paced behind a checkpoint during a take, only once the session has a file,
+named after the folder (`<folder>.autosave.sonora`), with the file's
+generation plus one; `--autosave-seconds S`, 0 for never. The interface
+offers it at open in a held notice.
 
 ### Size
 

@@ -496,6 +496,8 @@ int main(int argc, char** argv) {
     bool headless = false;
     bool lock = true;
     sonora::EngineControlServer::Options control;
+    // session-format.md, "Autosave": every 60 s while there are edits.
+    control.autosave_period_ms = 60000;
     bool plugin_cache_given = false;
     bool latency_file_given = false;
 
@@ -582,6 +584,22 @@ int main(int argc, char** argv) {
                 return 2;
             }
             control.midi_max_entries = static_cast<uint64_t>(n);
+        } else if (std::strcmp(argv[i], "--autosave-seconds") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' || n < 0 || n > 86400) {
+                std::fprintf(stderr, "sonora: --autosave-seconds takes 0 (off) to 86400\n");
+                return 2;
+            }
+            control.autosave_period_ms = static_cast<uint64_t>(n) * 1000;
+        } else if (std::strcmp(argv[i], "--backups") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' || n < 0 || n > 1000) {
+                std::fprintf(stderr, "sonora: --backups takes a count from 0 to 1000\n");
+                return 2;
+            }
+            control.backups = static_cast<std::size_t>(n);
         } else if (std::strcmp(argv[i], "--announce-versions") == 0 && i + 2 < argc) {
             control.protocol_version = static_cast<uint32_t>(std::atoi(argv[++i]));
             control.state_layout_version = static_cast<uint32_t>(std::atoi(argv[++i]));
@@ -632,6 +650,12 @@ int main(int argc, char** argv) {
                 "                    MIDI notes and events a session may hold, undo\n"
                 "                    history included (default 16777216); a session\n"
                 "                    over it opens only once this is raised\n"
+                "  --autosave-seconds S\n"
+                "                    autosave a session that has a file this often\n"
+                "                    while it has edits, and after each take\n"
+                "                    (default 60; 0: never)\n"
+                "  --backups N       earlier session files each save keeps in\n"
+                "                    \"Session File Backups\" (default 20; 0: none)\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"
                 "  --wait-for-inputs SECONDS\n"
                 "                    wait for a capture connection, or a USB\n"

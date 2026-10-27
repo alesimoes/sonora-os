@@ -92,6 +92,17 @@ void ModelDocument::save_session(const std::string& file, std::string bytes, Sav
     done(ok, ok ? caution : why);
 }
 
+void ModelDocument::save_session_as(const std::string& file, uint32_t flags, std::string bytes,
+                                    SaveDone done) {
+    if (!saver_as_) {
+        TimelineDocument::save_session_as(file, flags, std::move(bytes), std::move(done));
+        return;
+    }
+    std::string why, caution;
+    const bool ok = saver_as_(file, flags, bytes, history_.current(), why, caution);
+    done(ok, ok ? caution : why);
+}
+
 // --- sessions built from operations -------------------------------------------
 
 namespace {

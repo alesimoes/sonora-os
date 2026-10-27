@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -28,6 +29,12 @@ namespace sonora::session_files {
 inline constexpr const char* kSequenceDir = "MIDI Sequences";
 inline constexpr const char* kBackupsDir = "Session File Backups";
 inline constexpr const char* kPluginStateDir = "Plugin State";
+inline constexpr const char* kAudioDir = "Audio Files";
+inline constexpr const char* kMidiFilesDir = "MIDI Files";
+
+// The session file's rotated copies a save keeps (session-format.md,
+// "Saving", step 5): ADR-0015 §6's bound on sequence files counts on 20.
+inline constexpr std::size_t kDefaultBackups = 20;
 
 // One plugin state to keep beside the session (ADR-0012 §6.1): a StateBlob,
 // opaque here, and the digest that names its file.
@@ -40,6 +47,35 @@ struct StateFile {
 // "Session File Backups/", the folder above it. Sequence files live there
 // whichever kept file names them.
 std::string session_folder_of(const std::string& session_file);
+
+// Where the autosave of `session_file` goes: "<folder>/Session File
+// Backups/<folder's name>.autosave.sonora". Named after the folder, not the
+// file, so a session opened from one of its backups has the same autosave,
+// and the interface finds it at open by the same rule.
+std::string autosave_file_of(const std::string& session_file);
+
+// Whether `name` is one of the rotated backups a save of a session file
+// whose stem is `stem` keeps: "<stem>.<yyyymmdd>-<hhmmss>.sonora", or with
+// "-<n>" before ".sonora" when that second was taken. The only names
+// pruning may delete: never the autosave, a pre-migration copy
+// ("<stem>.v<n>.sonora") or another session's backups.
+bool rotated_backup_name(const std::string& name, const std::string& stem);
+
+// Deletes what an interrupted Save As copy left (ADR-0018 §5, step 4):
+// "<name>.part" regular files in the folder's "Audio Files/" and "MIDI
+// Files/". No session file names one. A symlink is never followed or
+// removed. How many went.
+int sweep_partial_copies(const std::string& folder);
+
+// What a Save As put in the new folder, for the reply and the tests.
+struct SaveAsReport {
+    std::size_t linked = 0;           // files given a second name (same filesystem)
+    std::size_t copied = 0;           // files copied (another filesystem, or link refused)
+    std::uint64_t copied_bytes = 0;
+    // Sources the document names that were not in the old folder either:
+    // offline there, offline in the new one.
+    std::vector<std::string> missing;
+};
 
 class SessionFolder {
 public:
@@ -65,7 +101,13 @@ public:
     //      unless every one is already known durable: a session never points
     //      outside its own folder;
     //   4. `bytes` to "<file>.tmp", synced, renamed over `session_file`, and
-    //      the folder synced.
+    //      the folder synced;
+    //   5. the bytes the file held before, when they differ, kept as
+    //      "Session File Backups/<stem>.<yyyymmdd-hhmmss>.sonora" (UTC) the
+    //      same way, and the rotated backups of this stem past the newest
+    //      backups() deleted (prune_backups()). Not for a file in "Session
+    //      File Backups/" itself. A backup that cannot be kept is a
+    //      `caution`: the session file is already written.
     // False, with `why`, when the save did not happen: the previous session
     // file is as it was, and a session folder this call created is removed
     // again so a retry finds the name free. A sequence `bytes` names that
@@ -86,6 +128,52 @@ public:
     // session file can come back after a power cut, and what it names must
     // still be there.
     int clean(std::string& caution);
+
+    // How many rotated backups save() keeps; 0 keeps none and writes none.
+    void set_backups(std::size_t keep) { backups_ = keep; }
+    std::size_t backups() const { return backups_; }
+    // Seconds since the epoch, for the backups' names; the tests set one.
+    using Clock = long long (*)();
+    void set_clock(Clock clock) { clock_ = clock; }
+
+    // Deletes the rotated backups of `stem` (rotated_backup_name()) in
+    // "<folder>/Session File Backups/" past the newest `keep`, newest by
+    // name. Only regular files are counted or deleted: a symlink, even one
+    // named as a backup, is never followed or removed, and nothing is
+    // deleted when "Session File Backups" is itself a symlink (`caution`
+    // then says so). How many went.
+    int prune_backups(const std::string& folder, const std::string& stem, std::size_t keep,
+                      std::string& caution);
+
+    // The autosave (session-format.md, "Autosave"): `document` serialised
+    // here, off the caller's thread, with the save_generation after the one
+    // `session_file` declares (so the interface offers it at open only
+    // while it is newer than the file), and written to
+    // autosave_file_of(session_file) by save()'s steps 2-4, the plugin
+    // states it names copied from `state_source`. Bytes equal to the
+    // autosave already there write nothing. Refused when "Session File
+    // Backups" is a symlink: an autosave is never written outside the
+    // session's folder. False with `why` when nothing was written.
+    bool autosave(const std::string& session_file, const model::Snapshot& document,
+                  const std::string& written_by, const std::string& state_source, std::string& why,
+                  std::string& caution);
+
+    // Save As and Save Copy In (ADR-0018 §5 and its update of 2026-10-27):
+    // a new, self-contained session folder for `session_file`, made from
+    // `source_folder`, which is only read. Refused when the new folder
+    // exists and is not empty, is the source folder, or holds it or is held
+    // by it. With `media`, every file of the source's "Audio Files/" and
+    // "MIDI Files/" and every source the document names is given a second
+    // name there (platform::hard_link) or, where that is refused, copied
+    // through "<name>.part", synced and renamed, after a check that the
+    // copies fit; each new directory is synced once. Then save() writes the
+    // sequence files, the plugin states (from `source_folder`) and, last,
+    // the session file, so a folder without one is an interrupted Save As.
+    // False with `why`: the folder this call made is removed again and the
+    // source is as it was.
+    bool save_as(const std::string& session_file, const std::string& bytes,
+                 const model::Snapshot& document, const std::string& source_folder, bool media,
+                 std::string& why, std::string& caution, SaveAsReport* report = nullptr);
 
     // Writes each state to "<folder>/Plugin State/<sha256>.state"
     // (model::plugin_state_file) through "<name>.tmp", synced and renamed,
@@ -125,7 +213,14 @@ private:
     // hashes: a file renamed into place only after it was synced.
     bool verified_on_disk(const std::string& sha);
 
+    // Step 5 of save(): `old` kept as the newest rotated backup of `file`.
+    bool keep_backup(const std::string& file, const std::string& old, std::string& caution);
+    // A file the media copy wrote, synced and renamed into place.
+    bool copy_synced(const std::string& from, const std::string& to, std::string& why);
+
     SyncDirectory sync_directory_;
+    std::size_t backups_ = kDefaultBackups;
+    Clock clock_ = nullptr;
     std::string folder_;
     model::SequenceDigests digests_;
     model::SequenceFileSet files_;

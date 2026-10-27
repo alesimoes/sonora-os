@@ -244,6 +244,36 @@ playback can follow edits; it is in flight.
        and 7 on the laptop, labelled proxies (ADR-0009 update 2026-10-13).
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
+       - [x] Save As, Save Copy In, autosave and rolling backups
+             (`daw.model.session_mgmt`, `t2-session-mgmt`, protocol 29,
+             ADR-0018 update of 2026-10-27): ModelAction::SaveAs links or
+             copies the media into a new folder and moves the session
+             there; Save Copy In stays, with or without the audio; the
+             engine autosaves every 60 s and after each take
+             (`--autosave-seconds`); each save keeps the replaced file, 20
+             by default (`--backups`), pruning only this stem's rotated
+             backups and never a symlink. File menu, Save As dialog,
+             Shift+Ctrl/Cmd+S (unverified).
+       - [ ] Session templates (`daw.model.session_mgmt` follow-up): File >
+             Save as Template (a Save Copy In without audio into a
+             templates folder, regions and sources dropped) and New from
+             Template (its bytes loaded as a new session); a template
+             browser beside Open.
+       - [ ] Save Copy In's session-format option: write an older format
+             version for an older build; needs a downgrading writer in
+             common/model.
+       - [ ] Autosave of an untitled session: today only a session with a
+             file is autosaved, so a crash before the first Save keeps the
+             takes (orphan offer) but loses the edits; an autosave in the
+             untitled folder must not look like data to the empty-folder
+             cleanup or block the first Save's rename.
+       - [ ] Preferences for the autosave interval and the backup count
+             (engine settings over the wire; command-line only today).
+       - [ ] Recover an autosave in one step: opening it today saves in
+             place in "Session File Backups/"; offer "restore over the
+             session file" instead (Pro Tools' recovery prompt).
+       - [ ] Save As progress for large copies across volumes: one Notice
+             at the start today; per-file progress and a cancel.
        - [x] #157/#158 review follow-ups (`t2-timeline-followups`):
              region_fades test_fade_gains_by_hand pins each shape's gain at
              hand-computed points, independent of `fade_in_gain`;

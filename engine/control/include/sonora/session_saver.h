@@ -53,11 +53,18 @@ public:
     // states written to "Plugin State/" in the session folder `file`
     // (ADR-0012 §6.1), paced as a save is and in the same queue, so a Save
     // sent after the flush's reply finds them on the medium. No cleanup.
-    enum class Kind { Save, States };
+    // SaveAs: Save As or Save Copy In (ADR-0018 §5, update of 2026-10-27),
+    // a new folder for `file` made from `state_source`'s media and states,
+    // never paced, since the control thread refuses one while a take is
+    // open; the control thread enters the folder after, or not, for a copy.
+    // Autosave: the engine's own (session-format.md, "Autosave"), `document`
+    // serialised on this thread and written to the autosave of `file`,
+    // paced and cleaned up as a save is; seq 0, so no client is answered.
+    enum class Kind { Save, States, SaveAs, Autosave };
     struct Job {
         Kind kind = Kind::Save;
         uint64_t client = 0;
-        uint64_t seq = 0;   // States: the flush's id, never 0
+        uint64_t seq = 0;   // States: the flush's id, never 0; Autosave: 0
         std::string file;
         std::string bytes;
         model::Snapshot document;
@@ -65,7 +72,12 @@ public:
         // Save: the folder whose "Plugin State/" the flushes wrote (the
         // engine's --dir); the states the bytes name are copied from it into
         // the session file's own folder (SessionFolder::save, step 3).
+        // SaveAs: the folder copied from.
         std::string state_source;
+        // SaveAs: the media go too ("All audio files"); false only for a copy.
+        bool media = true;
+        // SaveAs: a Save Copy In, after which the session stays where it is.
+        bool copy = false;
     };
     struct Done {
         Kind kind = Kind::Save;
@@ -78,12 +90,18 @@ public:
         std::string notice;
         // The save waited for a checkpoint.
         bool paced = false;
+        // The job's file and, for SaveAs, whether it was a copy.
+        std::string file;
+        bool copy = false;
+        session_files::SaveAsReport report;
     };
 
     // `sync_directory` is for the tests (SessionFolder::SyncDirectory).
+    // `backups`: the rotated backups each save keeps (SessionFolder).
     SessionSaver(Checkpoints checkpoints, Ready ready,
                  std::chrono::milliseconds poll = std::chrono::milliseconds(2),
-                 session_files::SessionFolder::SyncDirectory sync_directory = nullptr);
+                 session_files::SessionFolder::SyncDirectory sync_directory = nullptr,
+                 std::size_t backups = session_files::kDefaultBackups);
     ~SessionSaver();
     SessionSaver(const SessionSaver&) = delete;
     SessionSaver& operator=(const SessionSaver&) = delete;
@@ -111,8 +129,11 @@ public:
     // checkpoint, and cleanups run.
     uint64_t paced_saves() const { return paced_.load(std::memory_order_acquire); }
     uint64_t cleanups() const { return cleanups_.load(std::memory_order_acquire); }
-    // Saves handed over and not yet taken back with take_done().
+    // Saves handed over and not yet taken back with take_done(); an
+    // autosave, which no client waits for, is not counted.
     std::size_t pending() const;
+    // Autosaves written, for the tests.
+    uint64_t autosaves() const { return autosaves_.load(std::memory_order_acquire); }
 
 private:
     void run();
@@ -143,6 +164,7 @@ private:
 
     std::atomic<uint64_t> paced_{0};
     std::atomic<uint64_t> cleanups_{0};
+    std::atomic<uint64_t> autosaves_{0};
 };
 
 }  // namespace sonora

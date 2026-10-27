@@ -491,6 +491,8 @@ Decided 2026-10-25 by the coordinator: O1, O2 and O3 as recommended.
    progress, refused while recording. The Save As command in both key
    maps, per `brain/research/protools-logic-key-bindings.md`. #131's
    state copy folds in.
+   **Done** (protocol 29): see the update of 2026-10-27 below, which also
+   builds the rotated backups and the autosave.
 6. **Gather for existing sessions** (`engine/control`, `ui/qt`).
    `--legacy-dir`, identity matching, `GatherOffer`, and the two
    commands; reuses step 5.
@@ -538,3 +540,113 @@ not ahead of it.
   with no document to place it in except through the orphan offer,
   which is a silent demotion of a take being recorded. Rejected: refusing
   costs one Stop.
+
+## Update, 2026-10-27: Save As, Save Copy In, autosave and rolling backups (`daw.model.session_mgmt`)
+
+Checklist item 5, with the session file's rotated backups and the autosave
+that session-format.md ("Saving" step 5, "Autosave") designed and nothing
+had built. Accepted by the coordinator on the recommended defaults
+(owner's standing rule).
+
+**Wire (protocol 29; 27 is ADR-0022's sends, 26 and 28 are held by PRs in flight).**
+`ModelAction::SaveAs = 8`, `op` = `wire::encode_save_as()`: the path, a
+NUL, flags in decimal, a NUL, the bytes. `kSaveAsCopy` is Save Copy In
+(the session stays); `kSaveAsNoAudio` leaves the audio out and is refused
+without `kSaveAsCopy`, because a session the operator goes on with never
+points outside its folder (A2). Unknown flags are refused. The engine
+announces the new folder (`SessionFolder`) before the reply, and the
+interface names the new file only when that event says it moved. Session
+format unchanged (11).
+
+**§5 as built.** `SessionFolder::save_as()` in `common/session_files`, run
+on the saver thread; the control thread refuses it while a take is open,
+closing or requested, and enters the new folder after it
+(`ActiveFolder::enter`, make-before-break as ever, the saver fenced first).
+Amendments to §5:
+
+- Step 2: **every regular file of `Audio Files/` and `MIDI Files/`**, plus
+  any pool source elsewhere in the folder, not only the files the document
+  names. With hard links it costs nothing, and an orphan not yet offered,
+  or a take the operator left, is still a recording. `.part` and `.tmp`
+  leftovers are not copied. A source path that is absolute or climbs out
+  with `..` is not copied; it is offline in the copy, as it would be in a
+  copy of the folder.
+- Step 3 decided as written: **hard link on the same filesystem, copy
+  otherwise or where `link` is refused** (`platform::hard_link`, POSIX
+  `linkat` without following). A symlink in the media folders is copied
+  by content, never linked, so nothing in the new folder points outside it.
+- Step 4: the space check is made once the links are done, over what is
+  left to copy only.
+- A Save As that fails partway removes the folder it made (only its links
+  and copies are in it; `remove_all` never follows a symlink) and leaves
+  the source as it was; the same name can be used again.
+- **A crash in the middle**: the new folder has no session file, so it is
+  never taken for a session; it holds `Audio Files/` and is listed as an
+  unsaved recording. Its `.part` files are swept when a folder is entered
+  (`sweep_partial_copies`, regular files only). A retry under the same
+  name is refused as "not empty": the operator opens it or picks another
+  name. The source folder is never written at any point.
+- If the engine cannot enter the new folder (a take started while the
+  copy ran, the lock), the reply is Ok with the reason and the session
+  stays; the interface says so in a held notice and keeps the old file.
+
+**Rolling backups.** Step 5 of `SessionFolder::save()`: when a save
+replaces bytes that differ, the old bytes, read before the rename, are
+written to `Session File Backups/<stem>.<yyyymmdd-hhmmss>.sonora` by the
+same tmp, `fdatasync`, rename and folder `fsync`, after the session file
+is durable. A backup that cannot be kept is a caution, never a failed save.
+Decisions:
+
+- **Keep 20** (the spec's number, which ADR-0015 §6's sequence-file bound
+  counts on); `--backups N`, 0 for none.
+- **UTC stamps**, so names sort in the order written across daylight
+  saving; a clock set back (no network time on a live stick) still names
+  the new backup newest, so pruning never removes what it just wrote; two
+  in one second get `-2`, `-3`.
+- **Pruning deletes only** regular files whose names are exactly this
+  session's rotated pattern (`rotated_backup_name()`): never the autosave,
+  a pre-migration copy, another stem's backups, a directory or a symlink
+  named as a backup (#151's lesson: a symlink is the operator's data).
+  When `Session File Backups` is itself a symlink, nothing is pruned or
+  written through it.
+- Files in `Session File Backups/` themselves are not rotated.
+
+**Autosave.** The engine's, not the interface's: the engine holds the
+authoritative document, so a crashed or disconnected interface does not
+stop it. Decisions:
+
+- **Every 60 s while there are edits** since the last save or autosave,
+  and soon after every take lands (ADR-0015 §6); `--autosave-seconds S`,
+  0 for never (the server's default is 0, so tests and `--dir` runs are
+  unchanged).
+- Only once the session has a file (a Load of one, or a Save). An untitled
+  session's crash keeps its takes (orphan offer) but not its edits: a
+  BACKLOG line.
+- The control thread only hands over the shared snapshot; the saver
+  thread serialises it (never the control thread) and writes
+  `Session File Backups/<folder's name>.autosave.sonora` by save()'s steps
+  2-4, crash-safe by tmp, `fdatasync`, rename and folder `fsync`. One in
+  flight at a time; bytes equal to what is there write nothing.
+- **During a take it is paced, not refused**: like a Save, it touches the
+  disk only just after a disk-thread checkpoint, at most one batch per
+  checkpoint, and its cleanup waits for the transport to stop. That is the
+  pacing that keeps saves from pushing the disk thread into an overrun
+  (ADR-0015 §6, Unverified 5 still open); refusing would lose the
+  autosave-after-a-take ADR-0015 relies on.
+- `save_generation` is the file's plus one, so the interface offers it at
+  open (a held notice) only until the next Save, which writes that
+  generation itself. Never applied silently.
+- A failure is a held Notice, said once until an autosave succeeds.
+- Plugin states are as the document last recorded them; an autosave asks
+  no plugin for its state.
+
+**Interface.** File menu (Save, Save As…, Save Copy In…, Open…); the Save As
+dialog asks for the name (offered: the first free one beside the session)
+and, for a copy, "All audio files". `app.save_as` and `app.save_copy_in`;
+Save As is Shift+Ctrl+S in the Pro Tools map and Shift+Cmd+S in Logic's,
+both `"verified": false`.
+
+**Not in this slice (BACKLOG):** templates; Save Copy In's session-format
+version option (there is no writer for older formats); autosave of
+untitled sessions; Preferences for the interval and the count; restoring
+an autosave over the session file in one step.

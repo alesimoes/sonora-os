@@ -112,6 +112,21 @@ public:
         done(false, "there is no engine to save the session");
     }
 
+    // File > Save As and Save Copy In (ModelAction::SaveAs, protocol 29):
+    // the document's owner makes `file`'s folder a new session folder from
+    // the active one's media and writes `bytes` there last; `flags` are
+    // contracts/api's kSaveAs*. Unless a copy, the owner moves the session
+    // there, and says so (the SessionFolder event) before `done`. `done` as
+    // for save_session; ok with a caution when the copy is written and the
+    // session could not move.
+    virtual void save_session_as(const std::string& file, uint32_t flags, std::string bytes,
+                                 SaveDone done) {
+        (void)file;
+        (void)flags;
+        (void)bytes;
+        done(false, "there is no engine to save the session");
+    }
+
 protected:
     uint64_t session_generation_ = 0;
 };
@@ -147,9 +162,17 @@ public:
                                      std::string& caution)>;
     void set_saver(Saver saver) { saver_ = std::move(saver); }
     void save_session(const std::string& file, std::string bytes, SaveDone done) override;
+    // The same for Save As; unset, refused.
+    using SaverAs = std::function<bool(const std::string& file, uint32_t flags, const std::string& bytes,
+                                       const model::Snapshot& document, std::string& why,
+                                       std::string& caution)>;
+    void set_saver_as(SaverAs saver) { saver_as_ = std::move(saver); }
+    void save_session_as(const std::string& file, uint32_t flags, std::string bytes,
+                         SaveDone done) override;
 
 private:
     Saver saver_;
+    SaverAs saver_as_;
     std::size_t budget_;
     model::History history_;
     model::Id next_unreserved_ = 0;

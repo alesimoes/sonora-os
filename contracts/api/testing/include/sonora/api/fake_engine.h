@@ -34,7 +34,10 @@
 // names that is not there yet, from the fake's document, through a
 // temporary file and a rename, as the engine does, but syncs nothing, keeps
 // no pre-migration copy and never cleans up: those are the engine's saver's
-// (engine/control session_saver.h), held to its own tests.
+// (engine/control session_saver.h), held to its own tests. ModelAction::
+// SaveAs (protocol 29) makes the new folder the same way, the active
+// folder's "Audio Files/" and "MIDI Files/" hard-linked or copied in, and
+// moves the fake there unless it is a copy; no backups and no autosave.
 //
 // The transport rolls on a script: play starts
 // the playhead from where it stands at the sample rate, stop holds it,
@@ -293,6 +296,10 @@ private:
     bool flush_plugin_state(const std::string& which, std::string& why);
     // ModelAction::Save: true once the session file is in place.
     bool save(const std::string& op, std::string& why);
+    // ModelAction::SaveAs: true once the new folder holds the session.
+    bool save_as(const std::string& op, std::string& why);
+    // The sequence files `bytes` names, then the session file at `path`.
+    bool write_session(const std::string& path, const std::string& bytes, std::string& why);
     // An operation the engine makes itself (op_codec bytes), applied and
     // sent to the replica.
     bool apply_own(const std::string& op, std::string& why);

@@ -82,6 +82,14 @@ bool same_filesystem(const std::string& a, const std::string& b);
 // `error` set when the rename is done but a folder could not be synced.
 bool rename_dir_durably(const std::string& from, const std::string& to, std::string& error);
 
+// Gives the file `existing` a second name, `link`, on the same filesystem
+// (POSIX: link(2)), so Save As shares a closed take's inode rather than
+// copying it (ADR-0018 §5). A symlink `existing` is linked as the symlink,
+// never followed, and `link` is never replaced. False with `error` saying
+// why (EXDEV across filesystems, EPERM where the filesystem has no hard
+// links): the caller copies instead.
+bool hard_link(const std::string& existing, const std::string& link, std::string& error);
+
 // An advisory lock on a folder: one engine per session folder, because a
 // second one would run crash recovery over the first one's open takes.
 // Held until the object is destroyed or the process ends, however it ends,

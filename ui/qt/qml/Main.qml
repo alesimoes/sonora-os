@@ -36,6 +36,8 @@ Rectangle {
         transport: root.transport
         z: 2
         onOpenRequested: openPanel.show()
+        onFileMenuRequested: (x, y) => fileMenu.show(x, y)
+        fileMenuOpen: fileMenu.visible
         onEditMenuRequested: (x, y) => editMenu.show(x, y)
         editMenuOpen: editMenu.visible
         onTrackMenuRequested: (x, y) => trackMenu.show(x, y)
@@ -525,6 +527,211 @@ Rectangle {
                     text: "Placing is one undo step per take."
                     color: Theme.textTertiary
                     font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
+            }
+        }
+    }
+
+    // --- the File menu ---------------------------------------------------------
+    // Save, Save As and Save Copy In send what their keys send; Open is the
+    // panel the Open button shows.
+    MouseArea {
+        anchors.fill: parent
+        visible: fileMenu.visible
+        z: 9
+        onClicked: fileMenu.visible = false
+    }
+    Rectangle {
+        id: fileMenu
+        objectName: "fileMenu"
+        visible: false
+        z: 10
+        function show(px, py) {
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = py + Theme.space1
+            visible = true
+        }
+        width: 220
+        height: fileColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        Column {
+            id: fileColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            Repeater {
+                model: [
+                    { name: "fileSave", label: "Save", command: "app.save" },
+                    { name: "fileSaveAs", label: "Save As…", command: "app.save_as" },
+                    { name: "fileSaveCopyIn", label: "Save Copy In…", command: "app.save_copy_in" },
+                    { name: "", label: "", command: "" },
+                    { name: "fileOpen", label: "Open…", command: "open" }
+                ]
+                Item {
+                    required property var modelData
+                    width: fileColumn.width
+                    height: modelData.command.length > 0 ? 26 : 7
+                    Rectangle {
+                        visible: modelData.command.length === 0
+                        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                        height: 1
+                        color: Theme.borderSubtle
+                    }
+                    SButton {
+                        objectName: modelData.name
+                        visible: modelData.command.length > 0
+                        anchors.fill: parent
+                        bold: false
+                        fontPx: Theme.textBody
+                        text: modelData.label
+                        onClicked: {
+                            fileMenu.visible = false
+                            if (modelData.command === "open") openPanel.show()
+                            else root.shell.invoke(modelData.command, -1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Save As / Save Copy In: the new session's name ------------------------
+    // Pro Tools' dialogs, asked for by app.save_as and app.save_copy_in with
+    // no name. OK and Return send the command with the name through the same
+    // router; a refused name keeps the dialog open with the reason in it,
+    // held until it is corrected, not only on the status line.
+    MouseArea {
+        anchors.fill: parent
+        visible: saveAsPanel.visible
+        z: 9
+        onClicked: saveAsPanel.close()
+    }
+    Rectangle {
+        id: saveAsPanel
+        objectName: "saveAsPanel"
+        property bool copy: false
+        property string where
+        property string problem
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 400
+        height: saveAsColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(copy, name, where) {
+            saveAsPanel.copy = copy
+            saveAsPanel.where = where
+            saveAsPanel.problem = ""
+            saveAsInput.text = name
+            visible = true
+            saveAsInput.forceActiveFocus()
+            saveAsInput.selectAll()
+        }
+        function close() {
+            visible = false
+            saveAsInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            const command = saveAsPanel.copy ? "app.save_copy_in" : "app.save_as"
+            if (root.shell.invokeWith(command, -1, saveAsInput.text)) close()
+            else saveAsPanel.problem = root.shell.statusText
+        }
+
+        Column {
+            id: saveAsColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: saveAsPanel.copy ? "Save Copy In" : "Save As"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                objectName: "saveAsWhat"
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: (saveAsPanel.copy
+                       ? "A copy of this session in a new folder. You stay in this session."
+                       : "This session in a new folder, with its audio. You go on in the new one; this one stays as it is.")
+                      + " In " + saveAsPanel.where + "."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Session name"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 240
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: saveAsInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: saveAsInput
+                        objectName: "saveAsInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        onTextChanged: saveAsPanel.problem = ""
+                        Keys.onEscapePressed: saveAsPanel.close()
+                        Keys.onReturnPressed: saveAsPanel.accept()
+                        Keys.onEnterPressed: saveAsPanel.accept()
+                    }
+                }
+            }
+            // Pro Tools' "Items To Copy: All audio files". Without it the
+            // copy's audio is offline until copied in by hand.
+            SButton {
+                objectName: "saveAsAudio"
+                visible: saveAsPanel.copy
+                text: (root.session.copyWithAudio ? "☑" : "☐") + "  All audio files"
+                bold: false
+                implicitHeight: 24
+                onClicked: root.session.copyWithAudio = !root.session.copyWithAudio
+            }
+            Text {
+                objectName: "saveAsProblem"
+                visible: saveAsPanel.problem.length > 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: saveAsPanel.problem
+                color: Theme.alarm
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "saveAsCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: saveAsPanel.close()
+                }
+                SButton {
+                    objectName: "saveAsOk"
+                    text: "Save"
+                    implicitHeight: 24
+                    active: true
+                    onClicked: saveAsPanel.accept()
                 }
             }
         }
@@ -1142,6 +1349,7 @@ Rectangle {
         function onNotice(text) { root.shell.say(text) }
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
         function onNewTracksRequested() { newTracksPanel.show() }
+        function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

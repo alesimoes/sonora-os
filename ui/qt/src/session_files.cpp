@@ -132,6 +132,24 @@ QString session_folder_of(const QString& file) {
     return dir;
 }
 
+QString autosave_file_of(const QString& file) {
+    const QString folder = session_folder_of(file);
+    return QDir(folder).filePath(QLatin1String(kBackupsDir) + QLatin1Char('/') +
+                                 QFileInfo(folder).fileName() + QStringLiteral(".autosave.sonora"));
+}
+
+bool newer_autosave(const QString& file, uint64_t generation, QString& autosave) {
+    autosave = autosave_file_of(file);
+    if (QFileInfo(autosave).absoluteFilePath() == QFileInfo(file).absoluteFilePath()) return false;
+    QFile in(autosave);
+    if (!in.open(QIODevice::ReadOnly)) return false;
+    const QByteArray bytes = in.readAll();
+    uint64_t theirs = 0;
+    return model::file_save_generation(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())),
+                                       theirs) &&
+           theirs > generation;
+}
+
 bool read_session_file(const QString& file, std::string& bytes, model::Loaded& out,
                        std::string& why) {
     QFile in(file);

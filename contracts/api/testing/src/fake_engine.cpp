@@ -723,6 +723,89 @@ bool FakeEngine::save(const std::string& op, std::string& why) {
         return false;
     }
     if (!name_folder(file, why)) return false;
+    if (!write_session(file, bytes, why)) return false;
+    ++saves_;
+    return true;
+}
+
+bool FakeEngine::save_as(const std::string& op, std::string& why) {
+    namespace fs = std::filesystem;
+    std::string file, bytes;
+    uint32_t flags = 0;
+    if (!wire::decode_save_as(op, file, flags, bytes, why)) return false;
+    const bool copy = (flags & kSaveAsCopy) != 0;
+    const bool media = (flags & kSaveAsNoAudio) == 0;
+    if (!media && !copy) {
+        why = "a session saved as without its audio would point outside its folder; Save Copy In "
+              "can leave the audio out";
+        return false;
+    }
+    if (mode_ == TransportState::Recording) {
+        why = "stop recording before saving the session as another: a take is open";
+        return false;
+    }
+    if (!save_failure_.empty()) {
+        why = save_failure_;
+        return false;
+    }
+    const fs::path path(file);
+    if (!path.is_absolute() || path.extension() != ".sonora") {
+        why = "a session file is an absolute path ending in \".sonora\", not \"" + file + "\"";
+        return false;
+    }
+    const fs::path target = path.parent_path().lexically_normal();
+    const auto within = [](const fs::path& inner, const fs::path& outer) {
+        const auto m = std::mismatch(outer.begin(), outer.end(), inner.begin(), inner.end());
+        return m.first == outer.end() || (m.first->empty() && std::next(m.first) == outer.end());
+    };
+    const fs::path active = fs::path(folder_).lexically_normal();
+    if (!folder_.empty() && (within(target, active) || within(active, target))) {
+        why = "a session cannot be saved as into its own folder or around it (" + target.string() +
+              "); use Save";
+        return false;
+    }
+    std::error_code ec;
+    if (fs::exists(fs::symlink_status(target, ec)) &&
+        (!fs::is_directory(fs::symlink_status(target, ec)) || !fs::is_empty(target, ec))) {
+        why = target.string() + " exists and is not empty; choose another name";
+        return false;
+    }
+    const bool made = !fs::exists(target, ec);
+    fs::create_directories(target, ec);
+    const auto fail = [&](std::string reason) {
+        std::error_code rm;
+        if (made) fs::remove_all(target, rm);
+        why = std::move(reason);
+        return false;
+    };
+    if (media && !folder_.empty()) {
+        for (const char* sub : {"Audio Files", "MIDI Files"}) {
+            const fs::path base = active / sub;
+            if (!fs::is_directory(fs::symlink_status(base, ec))) continue;
+            for (fs::recursive_directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+                std::error_code type;
+                if (!fs::is_regular_file(it->symlink_status(type))) continue;
+                const fs::path to = target / it->path().lexically_relative(active);
+                fs::create_directories(to.parent_path(), type);
+                fs::create_hard_link(it->path(), to, type);
+                if (type) fs::copy_file(it->path(), to, type);
+                if (type) return fail("copying " + it->path().string() + " failed: " + type.message());
+            }
+        }
+    }
+    if (!write_session(file, bytes, why)) return fail(why);
+    if (!copy) {
+        folder_ = target.string();
+        folder_untitled_ = false;
+        announce_folder();
+    }
+    ++saves_;
+    return true;
+}
+
+bool FakeEngine::write_session(const std::string& file, const std::string& bytes, std::string& why) {
+    namespace fs = std::filesystem;
+    const fs::path path(file);
     std::set<std::string> refs;
     std::string parse_why;
     if (!model::sequence_references(bytes, refs, parse_why)) {
@@ -759,7 +842,6 @@ bool FakeEngine::save(const std::string& op, std::string& why) {
         why = "saving " + file + " failed";
         return false;
     }
-    ++saves_;
     return true;
 }
 
@@ -1354,6 +1436,11 @@ void FakeEngine::handle(const std::string& bytes) {
                 return;
             case ModelAction::Save:
                 ok = save(m.op, why);
+                reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+                return;
+            case ModelAction::SaveAs:
+                // The SessionFolder event, when it moved, goes before the reply.
+                ok = save_as(m.op, why);
                 reply(m.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
                 return;
         }

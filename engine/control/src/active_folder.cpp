@@ -297,6 +297,8 @@ bool ActiveFolder::enter(Session& session, const std::string& path, Kind kind,
     for (std::string& line : recover_unclosed_takes(path, session.config().sample_rate)) {
         notices.push_back(std::move(line));
     }
+    // A Save As killed mid-copy (ADR-0018 §5, step 4): no file names a ".part".
+    session_files::sweep_partial_copies(path);
 
     const bool read_only = platform::read_only(path);
     uint64_t bytes = 0;

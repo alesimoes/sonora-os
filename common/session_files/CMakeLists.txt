@@ -12,4 +12,11 @@ if(UNIX)
   target_include_directories(test_session_folder PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
   target_link_libraries(test_session_folder PRIVATE sonora_session_files sonora_sha256)
   add_test(NAME session_folder COMMAND test_session_folder)
+
+  # Rotated backups, the autosave and Save As (daw.model.session_mgmt): a
+  # fork killed mid-write, symlinks and hard links, so POSIX's.
+  add_executable(test_session_copies tests/test_session_copies.cpp)
+  target_include_directories(test_session_copies PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+  target_link_libraries(test_session_copies PRIVATE sonora_session_files)
+  add_test(NAME session_copies COMMAND test_session_copies)
 endif()

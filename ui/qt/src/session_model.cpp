@@ -14,6 +14,7 @@
 #include "scene_item.h"
 #include "edit_clipboard.h"
 #include "session_files.h"
+#include "sonora/api/messages.h"
 #include "sonora/command.h"
 #include "sonora/model/session_file.h"
 #include "transport_model.h"
@@ -305,6 +306,28 @@ void SessionModel::installCommands(CommandRegistry& local) {
     // Saving is the engine's once it has session commands (session_files.h);
     // until then the interface writes the file itself.
     simple("app.save", [this](const CommandContext&, Why& why) { return saveSession(why); });
+    // Pro Tools' Save As and Save Copy In ask for the name first; the key
+    // sends none, so the window's dialog asks and sends it back.
+    const auto save_as = [this](bool copy) {
+        return [this, copy](const CommandContext& ctx, Why& why) {
+            if (ctx.argument.empty()) {
+                if (overlay_.recording) {
+                    why = std::string("stop recording before ") + (copy ? "Save Copy In" : "Save As");
+                    return false;
+                }
+                const QString root =
+                    engine_folder_.isEmpty() ? sessions_dir_ : QFileInfo(engine_folder_).absolutePath();
+                const std::string& n = ctl_.snapshot().settings.name;
+                const QString base = n.empty() ? QStringLiteral("Untitled") : q(n);
+                emit saveAsRequested(copy, unused_session_name(root, copy ? base + QStringLiteral(" copy") : base),
+                                     root);
+                return true;
+            }
+            return saveSessionAs(q(ctx.argument), copy, why);
+        };
+    };
+    simple("app.save_as", save_as(false));
+    simple("app.save_copy_in", save_as(true));
 
     simple("window.toggle_mix_edit", [this](const CommandContext&, Why&) {
         setWindow(window_ == QStringLiteral("edit") ? QStringLiteral("mix") : QStringLiteral("edit"));
@@ -829,6 +852,129 @@ bool has_inserts(const Snapshot& s) {
 }  // namespace
 
 bool SessionModel::saveSession(std::string& why) {
+    return flushThenWrite(
+        why, [this](std::string& w, std::string caution) { return writeSession(w, std::move(caution)); });
+}
+
+bool SessionModel::saveSessionAs(const QString& name, bool copy, std::string& why) {
+    const char* what = copy ? "Save Copy In" : "Save As";
+    if (overlay_.recording) {
+        why = std::string("stop recording before ") + what +
+              ": the take being written belongs to this session's folder";
+        return false;
+    }
+    if (save_waiting_ || save_writing_) {
+        why = std::string("a save is still in hand; ") + what + " once it is written";
+        return false;
+    }
+    const QString wanted = name.trimmed();
+    std::string bad = session_name_problem(wanted);
+    if (!bad.empty()) {
+        why = "cannot save as \"" + wanted.toStdString() + "\": " + bad;
+        return false;
+    }
+    // Beside the folder the session is in, on its filesystem, so Save As can
+    // link the audio rather than copy it (ADR-0018 §5).
+    const QString root = engine_folder_.isEmpty() ? sessions_dir_ : QFileInfo(engine_folder_).absolutePath();
+    if (QFileInfo::exists(QDir(root).filePath(wanted))) {
+        why = "a folder named \"" + wanted.toStdString() + "\" is already in " + root.toStdString() +
+              "; choose another name";
+        return false;
+    }
+    SaveAsTarget target;
+    target.file = session_file_path(root, wanted);
+    target.name = wanted;
+    target.copy = copy;
+    target.audio = !copy || copy_with_audio_;
+    return flushThenWrite(why, [this, target](std::string& w, std::string caution) {
+        return writeSessionAs(target, w, std::move(caution));
+    });
+}
+
+bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, std::string caution) {
+    Snapshot to_write = ctl_.snapshot();
+    // Save As renames the session to its new folder; a copy is named after
+    // its folder too, so the Open list and the file agree.
+    to_write.settings.name = target.name.toStdString();
+    if (to_write.settings.session_id.empty()) to_write.settings.session_id = model::new_session_id();
+    model::WriteInfo info;
+    info.written_by = "sonora-ui";
+    info.save_generation = save_generation_ + 1;
+    std::string bytes, error;
+    if (!model::serialize(to_write, info, bytes, error, &digests_)) {
+        why = "the session could not be saved: " + error;
+        sync();
+        return false;
+    }
+    Written w;
+    w.file = target.file;
+    w.revision = doc_.revision();
+    w.rename = true;
+    w.settings = to_write.settings;
+    w.caution = std::move(caution);
+    w.generation = info.save_generation;
+    w.bytes = bytes;
+    const uint32_t flags = (target.copy ? api::kSaveAsCopy : 0u) | (target.audio ? 0u : api::kSaveAsNoAudio);
+
+    save_writing_ = true;
+    write_wait_.start();
+    const uint64_t ticket = ++write_ticket_;
+    struct Inline {
+        bool inside = true;
+        bool answered = false;
+        bool saved = false;
+        std::string why;
+    };
+    auto now = std::make_shared<Inline>();
+    auto pending = std::make_shared<Written>(std::move(w));
+    const bool copy = target.copy;
+    doc_.save_session_as(
+        target.file.toStdString(), flags, std::move(bytes),
+        [this, ticket, now, pending, copy](bool ok, const std::string& message) {
+            if (ticket != write_ticket_) return;
+            save_writing_ = false;
+            std::string why;
+            bool saved = false;
+            const QString folder = QFileInfo(pending->file).absolutePath();
+            if (!ok) {
+                why = std::string(copy ? "the copy was not saved: " : "the session was not saved as ") +
+                      (copy ? message : QFileInfo(folder).fileName().toStdString() + ": " + message);
+                sync();
+            } else if (copy) {
+                saved = true;
+                emit notice(QStringLiteral("Saved a copy in ") + pending->file +
+                            (message.empty() ? QString() : QStringLiteral(", but ") + q(message)));
+            } else if (!engine_folder_.isEmpty() && QDir::cleanPath(engine_folder_) != QDir::cleanPath(folder)) {
+                // Written, and the engine stayed where it was (a take started,
+                // the new folder's lock): the window goes on with the old file.
+                saved = true;
+                emit heldNotice(QStringLiteral("Saved ") + pending->file +
+                                QStringLiteral(" as a copy only: ") + q(message));
+                sync();
+            } else {
+                saved = finishSave(true, message, std::move(*pending), why);
+            }
+            if (now->inside) {
+                now->answered = true;
+                now->saved = saved;
+                now->why = why;
+            } else if (!saved && !why.empty()) {
+                emit heldNotice(q(why));
+            }
+        });
+    now->inside = false;
+    if (now->answered) {
+        why = now->why;
+        return now->saved;
+    }
+    emit notice(copy ? QStringLiteral("Saving a copy in ") + target.file
+                     : QStringLiteral("Saving as ") + target.file);
+    sync();
+    return true;
+}
+
+bool SessionModel::flushThenWrite(std::string& why,
+                                  std::function<bool(std::string&, std::string)> write) {
     if (save_writing_) {
         // While a take is open the engine writes after its next checkpoint,
         // and a large session takes a while on a stick: only an engine that
@@ -848,11 +994,11 @@ bool SessionModel::saveSession(std::string& why) {
         }
         save_waiting_ = false;
         ++save_ticket_;   // its answer, if it ever comes, is ignored
-        return writeSession(why, "the engine never sent the plugins' state, so plugin "
-                                 "settings are as last recorded");
+        return write(why, "the engine never sent the plugins' state, so plugin "
+                          "settings are as last recorded");
     }
     // No insert, no plugin state: nothing to wait for.
-    if (!has_inserts(ctl_.snapshot())) return writeSession(why, {});
+    if (!has_inserts(ctl_.snapshot())) return write(why, {});
 
     save_waiting_ = true;
     save_wait_.start();
@@ -866,11 +1012,11 @@ bool SessionModel::saveSession(std::string& why) {
         std::string why;
     };
     auto now = std::make_shared<Inline>();
-    doc_.flush_plugin_state(kNoId, [this, ticket, now](bool ok, const std::string& flush_why) {
+    doc_.flush_plugin_state(kNoId, [this, ticket, now, write](bool ok, const std::string& flush_why) {
         if (ticket != save_ticket_) return;
         save_waiting_ = false;
         std::string why;
-        const bool saved = writeSession(
+        const bool saved = write(
             why, ok ? std::string() : "these plugins' settings are as last recorded: " + flush_why);
         if (now->inside) {
             now->answered = true;
@@ -1163,6 +1309,14 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
                     .arg(loaded.missing_sequences.size() == 1 ? QString() : QStringLiteral("s"));
     }
     emit notice(said);
+    // Offered, never applied silently (session-format.md, "Autosave"), and
+    // held: the engine wrote it after the last save, so it may hold the edits
+    // a crash took.
+    QString autosave;
+    if (newer_autosave(file_, save_generation_, autosave)) {
+        emit openNotice(QStringLiteral("An autosave newer than this file is in ") + autosave +
+                        QStringLiteral(": open it to get back the edits made after the last save"));
+    }
     return true;
 }
 
