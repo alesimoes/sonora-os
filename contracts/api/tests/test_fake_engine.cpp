@@ -486,6 +486,42 @@ void midi_tracks() {
     CHECK(replica.current() == e.document());
 }
 
+// Config::max_buses stands in for the engine's (#163 review): the AddBus
+// that would pass it is refused in the engine's words, the ones before it
+// accepted.
+void bus_limit() {
+    namespace model = sonora::model;
+    uint64_t now = 1'000'000'000;
+    FakeEngine::Config cfg;
+    cfg.tracks = 2;
+    cfg.max_buses = 2;
+    cfg.clock = [&now]() { return now; };
+    FakeEngine e(cfg);
+    std::string error;
+    CHECK(e.connect(error));
+    Inbox in;
+    e.poll(in);
+    model::Id next = e.document().next_id;
+    const auto add_bus = [&]() {
+        ModelRequest m;
+        m.action = ModelAction::Apply;
+        CHECK(model::encode_operation(model::AddBus{next++, "Bus", model::BusMix{}}, m.op, error));
+        const uint64_t seq = e.submit(m);
+        e.poll(in);
+        for (const CommandReply& r : in.replies) {
+            if (r.seq == seq) return r;
+        }
+        return CommandReply{seq, DispatchResult::UnknownCommand, "no reply"};
+    };
+    CHECK(add_bus().result == DispatchResult::Ok);
+    CHECK(add_bus().result == DispatchResult::Ok);
+    const CommandReply third = add_bus();
+    CHECK(third.result == DispatchResult::Failed &&
+          mentions(third.message, "the engine was started with room for 2 aux buses, and this "
+                                  "session has them all (limit: max_buses)"));
+    CHECK(e.document().edit->buses.size() == 2);
+}
+
 }  // namespace
 
 int main() {
@@ -498,6 +534,7 @@ int main() {
     deterministic();
     scripted_plugins();
     midi_tracks();
+    bus_limit();
     if (failures) return EXIT_FAILURE;
     std::printf("api fake engine: ok\n");
     return EXIT_SUCCESS;

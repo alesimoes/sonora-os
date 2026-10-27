@@ -432,6 +432,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
   - [ ] A send removed by a plan swap stops on the swap's block; fade it out over one block, as a chain's miss is faded.
   - [ ] Pro Tools' expanded send view (a send's fader on the strip) and Alt-click "assign to all selected tracks"; a key binding for the A-E / F-J bank, `"verified": false` until checked.
   - [ ] Two sends of one strip to one bus, which Pro Tools allows (ADR-0022 open question): key the delay-line pair on the send.
+  - [x] Send reassigned in the same slot (Assign Send) kept send_gain_ across the swap, so the new bus started at full level: the session stores each send's destination AuxSum and ramps it in from silence when it changes (#163 review). The old bus's fade-out stays with the removed-send line above.
+  - [x] A track's first send (or its last one's removal) changed its bus edge's pair (TrackOut to TrackFader) and reset its PDC delay line, a dropout of the compensation delay on the dry path: a TrackFader split for sends alone keeps the TrackOut's id (#163 review).
+  - [x] engine/core test_sends: a send kept across a plan swap (other edits republish) continues its ramp and delay line with no step in the output (#163 review).
+  - [x] FakeEngine refuses AddBus past a configurable max_buses (default 32) with the engine's wording; conformance case for it (#163 review).
+  - [x] PDC line budget with sends: a return with no input takes no line, and the edges into the bus get lines before the sends. Measured: at 18 tracks, 32 buses and every send slot used, the dry mix lost lines before; 128 lines stay the default, documented in PlaybackConfig (#163 review).
   - Aux inserts, output assignment, solo and I/O-setup bus paths are `ui.mixer.io`.
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,

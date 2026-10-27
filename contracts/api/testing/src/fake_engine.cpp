@@ -1291,6 +1291,12 @@ void FakeEngine::handle(const std::string& bytes) {
                 // engine/control asks (ADR-0009 update 2026-10-14).
                 const model::MemberCheck check = [&](const model::Snapshot& at,
                                                      model::MemberRef member) {
+                    if (member.holds<model::AddBus>() &&
+                        at.edit->buses.size() >= cfg_.max_buses) {
+                        return "the engine was started with room for " +
+                               std::to_string(cfg_.max_buses) +
+                               " aux buses, and this session has them all (limit: max_buses)";
+                    }
                     if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
                         mix_changed = true;
                     }

@@ -148,7 +148,10 @@ void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixL
         PlanNode& f = plan.nodes[n];
         f = PlanNode{};
         f.kind = NodeKind::TrackFader;
-        f.stable_id = kTrackFaderIdTag | id;
+        // Split for its sends alone, it takes the TrackOut's id: its edge
+        // into the bus keeps its pair, so a first send or the last one's
+        // removal keeps the dry path's delay line (#163 review).
+        f.stable_id = active ? kTrackFaderIdTag | id : id;
         f.first_input_edge = e;
         f.input_edge_count = 1;
         f.scratch_buffer = n;
@@ -246,20 +249,47 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
     if (track_shortfall) std::fill(track_shortfall, track_shortfall + plan.track_count, 0u);
     // 64-bit: a chain of chains could in principle sum past 2^32 frames.
     std::vector<uint64_t> latency(plan.node_count, 0);
+    std::vector<uint64_t> need(plan.edge_count, 0);
+    // An aux bus no send reaches plays silence, and silence needs no delay:
+    // its return takes no line from an edge that carries sound.
+    std::vector<uint8_t> silent(plan.node_count, 0);
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
         uint64_t max_in = 0;
+        bool all_silent = true;
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
-            max_in = std::max(max_in, latency[plan.edges[node.first_input_edge + k].from_node]);
+            const uint32_t from = plan.edges[node.first_input_edge + k].from_node;
+            max_in = std::max(max_in, latency[from]);
+            all_silent = all_silent && silent[from] != 0;
+        }
+        if (node.kind == NodeKind::AuxSum || node.kind == NodeKind::AuxFader) {
+            silent[ni] = all_silent ? 1 : 0;
         }
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
-            PlanEdge& edge = plan.edges[node.first_input_edge + k];
-            const uint64_t need = max_in - latency[edge.from_node];
-            uint64_t applied = std::min<uint64_t>(need, max_delay_frames);
-            if (applied < need) ++result.clamped_edges;
+            const uint32_t ei = node.first_input_edge + k;
+            const uint32_t from = plan.edges[ei].from_node;
+            need[ei] = silent[from] ? 0 : max_in - latency[from];
+        }
+        latency[ni] = max_in + (node.kind == NodeKind::InsertChain ? node.latency_frames : 0);
+        if (node.kind == NodeKind::HardwareOut) {
+            result.compensation_frames =
+                static_cast<uint32_t>(std::min<uint64_t>(latency[ni], 0xFFFFFFFFu));
+        }
+    }
+    // Lines go to the edges into the bus first, the dry tracks and the
+    // returns, then to the sends: a pool too small for every send still
+    // keeps the mix itself aligned (#163 review).
+    for (int pass = 0; pass < 2; ++pass) {
+        for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
+            PlanEdge& edge = plan.edges[ei];
+            if (edge.from_node >= plan.node_count || edge.to_node >= plan.node_count) continue;
+            const PlanNode& to = plan.nodes[edge.to_node];
+            if ((to.kind == NodeKind::BusSum) != (pass == 0)) continue;
+            uint64_t applied = std::min<uint64_t>(need[ei], max_delay_frames);
+            if (applied < need[ei]) ++result.clamped_edges;
             uint32_t line = kNoDelayLine;
             if (applied > 0) {
-                line = pool.assign(edge_pair(plan.nodes[edge.from_node].stable_id, node.stable_id));
+                line = pool.assign(edge_pair(plan.nodes[edge.from_node].stable_id, to.stable_id));
                 if (line == kNoDelayLine) {
                     applied = 0;
                     ++result.undelayed_edges;
@@ -268,18 +298,13 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
             edge.delay_frames = static_cast<uint32_t>(applied);
             edge.delay_line = line;
             const auto short_by = static_cast<uint32_t>(
-                std::min<uint64_t>(need - applied, 0xFFFFFFFFu));
+                std::min<uint64_t>(need[ei] - applied, 0xFFFFFFFFu));
             result.shortfall_frames = std::max(result.shortfall_frames, short_by);
             const PlanNode& from = plan.nodes[edge.from_node];
             const bool track_edge = from.kind == NodeKind::TrackOut || from.kind == NodeKind::TrackFader;
             if (track_shortfall && track_edge && from.track < plan.track_count) {
                 track_shortfall[from.track] = std::max(track_shortfall[from.track], short_by);
             }
-        }
-        latency[ni] = max_in + (node.kind == NodeKind::InsertChain ? node.latency_frames : 0);
-        if (node.kind == NodeKind::HardwareOut) {
-            result.compensation_frames =
-                static_cast<uint32_t>(std::min<uint64_t>(latency[ni], 0xFFFFFFFFu));
         }
     }
     plan.compensation_frames = result.compensation_frames;

@@ -106,6 +106,9 @@ public:
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
+        // The engine's max_buses (ADR-0022 §8): an AddBus past it is
+        // refused, as the engine refuses it.
+        uint32_t max_buses = 32;
         // The session folder it announces at connect (ADR-0018 §4), an
         // absolute path. Empty: none until a Load names its file, and an
         // interface then saves where it was told to ($SONORA_SESSIONS_DIR).
