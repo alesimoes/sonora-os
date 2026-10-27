@@ -207,6 +207,34 @@ int test_fewer_inputs_than_tracks() {
     return 0;
 }
 
+// ADR-0022 §4: an engine track captures and meters the input it is given,
+// not the one at its own index, so a track moved to another row keeps its
+// input. One past the backend's inputs is unconnected.
+int test_track_input_follows_its_assignment() {
+    constexpr uint32_t kFrames = 16;
+    Session s(config(3));
+    for (const auto& t : s.tracks()) t->set_rec_armed(true);
+    CHECK(s.tracks()[1]->input() == 1);   // by default, its own index
+    s.tracks()[0]->set_input(2);
+    s.tracks()[2]->set_input(7);
+    s.transport().set_state(TransportState::Recording);
+    std::vector<std::vector<float>> bufs(3, std::vector<float>(kFrames));
+    std::vector<const float*> inputs(3);
+    for (std::size_t c = 0; c < 3; ++c) {
+        for (uint32_t f = 0; f < kFrames; ++f) bufs[c][f] = sample(c, f);
+        inputs[c] = bufs[c].data();
+    }
+    feed(s, inputs.data(), kFrames);
+
+    const std::vector<float> first = drain(*s.tracks()[0]);
+    CHECK(first == bufs[2]);
+    CHECK(s.tracks()[0]->take_peak() == bufs[2][kFrames - 1]);
+    CHECK(drain(*s.tracks()[1]) == bufs[1]);
+    CHECK(s.tracks()[2]->capture_ring().read_space() == 0);
+    CHECK(s.tracks()[2]->take_peak() == 0.0f);
+    return 0;
+}
+
 // Added with ProcessCallback: nothing is played back yet, and a backend
 // buffer holds whatever its last cycle left in it, so every output comes
 // back silent.
@@ -243,6 +271,7 @@ int main() {
     if (test_playhead_moves_unless_stopped() != 0) return 1;
     if (test_fewer_inputs_than_tracks() != 0) return 1;
     if (test_outputs_are_silenced() != 0) return 1;
+    if (test_track_input_follows_its_assignment() != 0) return 1;
     std::printf("test_session_process: ok\n");
     return 0;
 }

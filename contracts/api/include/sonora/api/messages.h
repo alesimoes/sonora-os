@@ -99,11 +99,15 @@ namespace sonora::api {
 //   refuses a punch range change, by command or SetSettings, while a take
 //   is open or requested. A version-23 engine left them to the interface's
 //   whole-settings SetSettings.
-// 27 (ADR-0022; 26 is held for a PR in flight): the operation codec has
-//   AddBus, RemoveBus, AddSend, RemoveSend, SetSendMix and SetBusMix, and a
-//   Snapshot's undo window is window format 8, with aux buses and sends
-//   (session format 11). A version-25 peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 27;
+// 27 (ADR-0022 sends and aux buses; 26 is held for a PR in flight): the
+//   operation codec has AddBus, RemoveBus, AddSend, RemoveSend, SetSendMix
+//   and SetBusMix, and a Snapshot's undo window is window format 8, with aux
+//   buses and sends (session format 11). A version-25 peer refuses all of
+//   them.
+// 28 (ADR-0023; 26 was never used, numbered while 25 was in flight, and 24
+//   is still held for fades): new operation kinds RemoveTrack and
+//   DuplicateTrack, which a version-27 peer's decoder refuses.
+constexpr uint32_t kProtocolVersion = 28;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

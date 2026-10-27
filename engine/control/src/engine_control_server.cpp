@@ -1440,6 +1440,51 @@ std::string EngineControlServer::transport_refusal(const model::Snapshot& doc,
     return loop_take_refusal(doc.settings.transport, set->settings.transport);
 }
 
+bool EngineControlServer::pinned_tracks(std::vector<bool>& pinned, std::string& doing,
+                                        std::string& remedy) const {
+    const bool recording =
+        session_.transport().state() == TransportState::Recording || playback_->record_requested();
+    // A closing take's files are placed on the document track at their
+    // engine position, once they close (closed_take.cpp).
+    if (!recording && session_.folder_change_refusal().empty()) return false;
+    const auto& tracks = session_.tracks();
+    pinned.assign(tracks.size(), false);
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        bool writing = tracks[i]->rec_armed();
+        for (int s = 0; s < Track::kWriterSlots; ++s) writing = writing || tracks[i]->slot_take(s) != 0;
+        pinned[i] = writing;
+    }
+    doing = recording ? "is recording" : "has a take still closing";
+    remedy = recording ? "stop recording" : "wait for it to close";
+    return true;
+}
+
+std::string EngineControlServer::structure_refusal(const model::Snapshot& doc,
+                                                   model::MemberRef member) const {
+    std::vector<model::Id> after;
+    if (!model::track_order_after(doc, member, after)) return {};
+    const std::size_t engine_tracks = session_.tracks().size();
+    if (after.size() > doc.edit->tracks.size() && after.size() > engine_tracks) {
+        return "the engine was started with " + std::to_string(engine_tracks) +
+               " tracks and the session has them all; delete a track before adding another";
+    }
+    std::vector<bool> pinned;
+    std::string doing, remedy;
+    if (!pinned_tracks(pinned, doing, remedy)) return {};
+    return model::pinned_track_refusal(*doc.edit, after, pinned, doing, remedy);
+}
+
+std::string EngineControlServer::step_refusal(bool undo) const {
+    const model::History& h = document_->history();
+    if (undo ? !h.can_undo() : !h.can_redo()) return {};
+    std::vector<bool> pinned;
+    std::string doing, remedy;
+    if (!pinned_tracks(pinned, doing, remedy)) return {};
+    const auto& target = h.step_edit(undo ? h.undo_depth() - 1 : h.undo_depth() + 1);
+    return model::pinned_track_refusal(*document_->current().edit, model::track_order(*target),
+                                       pinned, doing, remedy);
+}
+
 std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {
     const model::PluginRef* ref = nullptr;
     const model::TrackEdit* on = nullptr;
@@ -2143,6 +2188,13 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             post_transient(e);
             return;
         }
+        // Arming names an engine track by position, which belongs to another
+        // document track until the plan that moves them plays (ADR-0022 §4).
+        if (changes_arming(r.command) && playback_->tracks_moving()) {
+            reply(from, r.seq, DispatchResult::Failed,
+                  "the tracks are being rearranged; arm again in a moment");
+            return;
+        }
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
@@ -2181,7 +2233,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             reply(from, c.seq, DispatchResult::Failed, "gain must be from 0 to 4 (linear)");
             return;
         }
-        session_.tracks()[c.track]->set_gain(c.value);
+        // The track at that row is on another engine track until the plan
+        // that moves them plays (ADR-0022 §4): the step is dropped, and the
+        // next one, a few milliseconds on, lands where it should.
+        if (!playback_->tracks_moving()) session_.tracks()[c.track]->set_gain(c.value);
         riders_[c.track] = from;
         reply(from, c.seq, DispatchResult::Ok, "");
         return;
@@ -2251,6 +2306,9 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                                std::to_string(session_.max_buses()) +
                                " aux buses, and this session has them all (limit: max_buses)";
                     }
+                    if (std::string refusal = structure_refusal(at, member); !refusal.empty()) {
+                        return refusal;
+                    }
                     // Even one that leaves the document as it was: it ends a
                     // ride whose last ParameterChange need not be its value.
                     if (member.holds<model::SetMix>() || member.holds<model::SetMonitorBus>()) {
@@ -2262,8 +2320,14 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 if (!ok && no_host) refusal = DispatchResult::NotImplemented;
                 break;
             }
-            case api::ModelAction::Undo: ok = document_->undo(u, why); break;
-            case api::ModelAction::Redo: ok = document_->redo(u, why); break;
+            case api::ModelAction::Undo:
+            case api::ModelAction::Redo: {
+                const bool undo = m.action == api::ModelAction::Undo;
+                why = step_refusal(undo);
+                if (!why.empty()) break;
+                ok = undo ? document_->undo(u, why) : document_->redo(u, why);
+                break;
+            }
             case api::ModelAction::Resync:
                 // Answered after its Snapshot, with the encoder's reason if
                 // there is none. A resync is the asker's alone; every other

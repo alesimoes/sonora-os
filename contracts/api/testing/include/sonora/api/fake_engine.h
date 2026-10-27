@@ -66,6 +66,8 @@ class Document;
 class LoadParts;
 struct ReplicationUpdate;
 struct Snapshot;
+class MemberRef;
+using Id = std::uint64_t;
 }
 
 namespace sonora::api::testing {
@@ -285,6 +287,13 @@ private:
     // As engine/control's PlaybackController::apply_mix: the document's
     // faders onto the published tracks, track i being the document's i-th.
     void apply_mix();
+    // As engine/control (ADR-0022 §5): a member adding a track past the
+    // engine's count, or deleting or moving an armed track during a take;
+    // and an undo or redo that would do the second. Empty otherwise.
+    std::string structure_refusal(const model::Snapshot& at, const model::MemberRef& member) const;
+    std::string step_refusal(bool undo) const;
+    // Outside a take, each arm stays with its document track (§4).
+    void carry_arms(const std::vector<model::Id>& before, const std::vector<model::Id>& after);
 
     Config cfg_;
     Hello hello_;

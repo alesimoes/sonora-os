@@ -373,6 +373,9 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     sizes.chunk_slots = static_cast<uint32_t>(slot_total);
     const std::vector<ClickSegment> click = click_segments(snapshot.settings);
     sizes.click_segments = static_cast<uint32_t>(click.size());
+    // Filled, and given a mix_serial, by PlaybackController when the plan
+    // moves tracks between engine tracks (ADR-0022 §4).
+    sizes.track_mix = limits.engine_tracks;
     PlaybackPlan* plan = create_plan(sizes);
     if (!plan) {
         error = "out of memory for a plan of " + str(segment_total) + " segments";

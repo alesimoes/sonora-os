@@ -38,6 +38,8 @@ Rectangle {
         onOpenRequested: openPanel.show()
         onEditMenuRequested: (x, y) => editMenu.show(x, y)
         editMenuOpen: editMenu.visible
+        onTrackMenuRequested: (x, y) => trackMenu.show(x, y)
+        trackMenuOpen: trackMenu.visible
         onSetupMenuRequested: (x, y) => setupMenu.show(x, y)
         setupMenuOpen: setupMenu.visible
     }
@@ -93,6 +95,7 @@ Rectangle {
             shell: root.shell
             session: root.session
             mixer: root.mixer
+            onTrackMenuRequested: (x, y) => trackMenu.show(x, y)
         }
         MixWindow {
             objectName: "mixWindow"
@@ -231,6 +234,30 @@ Rectangle {
                         color: Theme.caution
                         font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                     }
+                }
+            }
+            // A track command refused during a take (ADR-0022 §5), kept
+            // until dismissed or until a track command goes through.
+            Row {
+                objectName: "trackRefusal"
+                visible: root.session.trackRefusal.length > 0
+                width: footerColumn.width
+                spacing: Theme.space2
+                SButton {
+                    id: dismissTrackRefusal
+                    objectName: "dismissTrackRefusal"
+                    text: "Dismiss"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.session.dismissTrackRefusal()
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - parent.spacing - dismissTrackRefusal.width
+                    wrapMode: Text.Wrap
+                    text: "! " + root.session.trackRefusal
+                    color: Theme.caution
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
             Repeater {
@@ -575,6 +602,183 @@ Rectangle {
                             root.shell.invoke(modelData.command, -1)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // --- the Track menu ---------------------------------------------------------
+    // Pro Tools' Track menu (ADR-0022), on the selected track: each item sends
+    // the command its key sends.
+    MouseArea {
+        anchors.fill: parent
+        visible: trackMenu.visible
+        z: 9
+        onClicked: trackMenu.visible = false
+    }
+    Rectangle {
+        id: trackMenu
+        objectName: "trackMenu"
+        visible: false
+        z: 10
+        function show(px, py) {
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = Math.min(py + Theme.space1, root.height - height - Theme.space2)
+            visible = true
+        }
+        width: 220
+        height: trackColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        Column {
+            id: trackColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            Repeater {
+                model: {
+                    const sel = root.session.selectedTrack
+                    const n = root.session.trackCount
+                    return [
+                        { name: "trackNew", label: "New…", command: "track.new", on: true },
+                        { name: "trackDuplicate", label: "Duplicate", command: "track.duplicate", on: sel >= 0 },
+                        { name: "trackDelete", label: "Delete", command: "track.delete", on: sel >= 0 },
+                        { name: "", label: "", command: "", on: false },
+                        { name: "trackMoveUp", label: "Move Up", command: "track.move_up", on: sel > 0 },
+                        { name: "trackMoveDown", label: "Move Down", command: "track.move_down", on: sel >= 0 && sel < n - 1 }
+                    ]
+                }
+                Item {
+                    required property var modelData
+                    width: trackColumn.width
+                    height: modelData.command.length > 0 ? 26 : 7
+                    Rectangle {
+                        visible: modelData.command.length === 0
+                        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                        height: 1
+                        color: Theme.borderSubtle
+                    }
+                    SButton {
+                        objectName: modelData.name
+                        visible: modelData.command.length > 0
+                        anchors.fill: parent
+                        bold: false
+                        fontPx: Theme.textBody
+                        available: modelData.on
+                        text: modelData.label
+                        onClicked: {
+                            trackMenu.visible = false
+                            root.shell.invoke(modelData.command, -1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- New Tracks: how many ------------------------------------------------------
+    // Pro Tools' New Tracks dialog, asked for by track.new with no count:
+    // mono audio tracks, below the selected one. Create and Return send
+    // track.new with the number; a refusal keeps the dialog open.
+    MouseArea {
+        anchors.fill: parent
+        visible: newTracksPanel.visible
+        z: 9
+        onClicked: newTracksPanel.close()
+    }
+    Rectangle {
+        id: newTracksPanel
+        objectName: "newTracksPanel"
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 340
+        height: newTracksColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show() {
+            newTracksInput.text = "1"
+            visible = true
+            newTracksInput.forceActiveFocus()
+            newTracksInput.selectAll()
+        }
+        function close() {
+            visible = false
+            newTracksInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith("track.new", -1, newTracksInput.text)) close()
+        }
+
+        Column {
+            id: newTracksColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "New Tracks"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Mono audio tracks, below the selected track, each on the next free input."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Number of tracks"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 72
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: newTracksInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: newTracksInput
+                        objectName: "newTracksInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        horizontalAlignment: TextInput.AlignRight
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody; features: { "tnum": 1 } }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        Keys.onEscapePressed: newTracksPanel.close()
+                        Keys.onReturnPressed: newTracksPanel.accept()
+                        Keys.onEnterPressed: newTracksPanel.accept()
+                    }
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "newTracksCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: newTracksPanel.close()
+                }
+                SButton {
+                    objectName: "newTracksCreate"
+                    text: "Create"
+                    implicitHeight: 24
+                    onClicked: newTracksPanel.accept()
                 }
             }
         }
@@ -937,6 +1141,7 @@ Rectangle {
         function onRefused(why) { root.shell.say(why) }
         function onNotice(text) { root.shell.say(text) }
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
+        function onNewTracksRequested() { newTracksPanel.show() }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

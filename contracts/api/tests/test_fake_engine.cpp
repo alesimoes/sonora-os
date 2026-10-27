@@ -404,9 +404,12 @@ void midi_tracks() {
     add.playlist_name = "Bass.01";
     add.kind = model::TrackKind::Midi;
     add.channels = 0;
-    CHECK(apply(add).result == DispatchResult::Ok);
-    // Fourth, past the three engine tracks; moved onto engine track 0, it
+    // A fourth track would be past the three engine tracks (ADR-0022 §5):
+    // it takes the third audio track's place. Moved onto engine track 0, it
     // carries no audio there, and the operator is told why.
+    model::Compound swap_in;
+    swap_in.ops = {model::RemoveTrack{replica.current().edit->tracks.back()->id}, add};
+    CHECK(apply(swap_in).result == DispatchResult::Ok);
     model::ReorderTracks order;
     order.order.push_back(add.track);
     for (std::size_t i = 0; i + 1 < replica.current().edit->tracks.size(); ++i) {

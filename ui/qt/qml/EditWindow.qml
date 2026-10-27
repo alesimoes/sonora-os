@@ -15,6 +15,8 @@ Item {
     required property SessionModel session
     // The solo button's modifier clicks; null where they are not wired.
     property MixModel mixer: null
+    // A track header was right-clicked: the window draws the Track menu there.
+    signal trackMenuRequested(real x, real y)
 
     // --- toolbar --------------------------------------------------------------
     Rectangle {
@@ -280,6 +282,7 @@ Item {
                 model: edit.session.trackNames
                 Rectangle {
                     id: header
+                    objectName: "trackHeader" + index
                     required property int index
                     required property string modelData
                     readonly property bool selected: edit.session.selectedTrack === index
@@ -290,7 +293,19 @@ Item {
                     visible: y + height >= 0 && y <= headers.height
                     color: selected ? Theme.raised : Theme.panel
 
-                    MouseArea { anchors.fill: parent; onClicked: edit.session.selectTrack(header.index) }
+                    // Right-click, as Pro Tools' track name menu: the track
+                    // is selected and the Track menu acts on it.
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: (mouse) => {
+                            edit.session.selectTrack(header.index)
+                            if (mouse.button === Qt.RightButton) {
+                                const p = mapToItem(null, mouse.x, mouse.y)
+                                edit.trackMenuRequested(p.x, p.y)
+                            }
+                        }
+                    }
                     Rectangle {  // the track's colour, as its regions wear it
                         width: 3; height: parent.height - 2
                         color: Theme.trackColour(header.index)

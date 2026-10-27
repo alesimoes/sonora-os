@@ -1488,13 +1488,19 @@ int test_undone_track_leaves_no_solo() {
     CHECK(show(ctl, h.current(), error));
     CHECK(s.tracks()[2]->soloed() && s.tracks()[2]->muted());
     CHECK(h.undo());
+    // The track set changed: the solo goes with the plan that stops
+    // rendering C, not before it (ADR-0022 §4).
     CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.tracks_moving());
+    CHECK(ctl.settle(2.0));
+    CHECK(!ctl.tracks_moving());
     CHECK(!s.tracks()[2]->soloed());
     CHECK(s.tracks()[2]->muted());
     CHECK(s.tracks()[2]->gain() == sonora::gain_of_db(-12.0f));
     CHECK(s.tracks()[2]->pan() == -1.0f);
     CHECK(h.redo());
     CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
     CHECK(s.tracks()[2]->soloed());
     return 0;
 }

@@ -11,7 +11,8 @@ Track::Track(int id, std::string name, uint16_t channels,
       name_(std::move(name)),
       channels_(channels),
       capture_ring_(
-          std::make_unique<RingBuffer<float>>(ring_frames * channels)) {}
+          std::make_unique<RingBuffer<float>>(ring_frames * channels)),
+      input_(static_cast<uint32_t>(id)) {}
 
 void Track::report_peak(float p) noexcept SONORA_RT {
     p = std::fabs(p);

@@ -385,6 +385,34 @@ playback can follow edits; it is in flight.
        server does (`add_closed_take`): a "Record" compound, its notices,
        and a refused take's TakeFailed. Then UI tests see a compound arrive
        from the engine (PR #75 ui-engineer review, item 5). contracts/api.
+10. [ ] `daw.model.tracks` follow-ups (ADR-0022). The core ops landed:
+       RemoveTrack, DuplicateTrack, reorder and add with the mix moving at
+       the plan swap, protocol 26. Left, each its own line:
+       - [ ] VCA masters as a track kind: `ui.mixer.vca`.
+       - [ ] Folder tracks and track stacks: `ui.mixer.folders`.
+       - [ ] Aux and master tracks: need buses and sends in the plan
+             (Track 1 item 8, `ui.mixer.io`, `ui.mixer.sends`); then
+             what a send to a deleted bus becomes (ADR-0022 §3).
+       - [ ] New Tracks offers mono audio only: MIDI and instrument kinds
+             once MIDI plays (ADR-0014 M-3) and instruments are hosted
+             (`midi.instrument_tracks`); stereo once an engine track
+             captures two inputs.
+       - [ ] The Duplicate Tracks dialog's choices (alternate playlists,
+             inserts, number of duplicates): the model has `all_playlists`
+             and `inserts`; the UI sends the defaults.
+       - [ ] Logic's New Track with Duplicate Settings (Cmd+D): a
+             DuplicateTrack option that copies no regions; Cmd+D is
+             unbound until then.
+       - [ ] Delete, duplicate and move every selected track, as Pro Tools
+             acts on the track selection; the UI acts on one.
+       - [ ] Reorder by dragging a track header or a mixer strip.
+       - [ ] Closed takes are placed by engine position (`closed_take.cpp`,
+             `track_at(document, f.track)`): placed by
+             `Track::document_id()`, a closing take would no longer pin its
+             track's row (ADR-0022 §5).
+       - [ ] A fader ride step that lands while tracks are moving is
+             dropped (ADR-0022 §4): resend the rider's last value once the
+             swap is done.
 
 ### Track 3: UI (ui-engineer)
 

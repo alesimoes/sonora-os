@@ -287,6 +287,19 @@ public:
     model::Id marker_at(double x) const;
     const model::MarkerList& markers() const { return *snapshot().edit->markers; }
 
+    // --- tracks: Pro Tools' Track menu (ADR-0022), each one undo step ---
+    // `count` mono audio tracks named "Audio <n>" with the lowest free
+    // numbers, each on the lowest capture input no audio track uses, below
+    // the selected track (at the end with none). The first is selected.
+    bool new_tracks(int count, std::string& why);
+    // The track's active playlist, plug-ins and mix copied onto a new track
+    // below it, named "<name>.dup<n>" (Pro Tools' Duplicate Tracks with its
+    // default choices). The copy is selected.
+    bool duplicate_track(int track, std::string& why);
+    bool delete_track(int track, std::string& why);
+    // One row up (delta -1) or down (+1); the selection goes with it.
+    bool move_track(int track, int delta, std::string& why);
+
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
     bool set_pan(int track, float pan, std::string& why);

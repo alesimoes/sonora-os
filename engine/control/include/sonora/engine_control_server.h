@@ -470,6 +470,14 @@ private:
     // (ADR-0016 §1), or the punch range while any take is open or
     // requested, by name; empty otherwise.
     std::string transport_refusal(const model::Snapshot& doc, model::MemberRef member) const;
+    // ADR-0022 §5. The engine tracks a take is recording or still closing,
+    // by position, with the words a refusal uses; false when no take runs.
+    bool pinned_tracks(std::vector<bool>& pinned, std::string& doing, std::string& remedy) const;
+    // A member that adds a track past the engine's count, or moves or
+    // deletes a pinned one; empty otherwise.
+    std::string structure_refusal(const model::Snapshot& doc, model::MemberRef member) const;
+    // The same for the step an Undo (or a Redo) would restore.
+    std::string step_refusal(bool undo) const;
     // The plugin side, for one backend activation; null until the period is
     // known, and when no host is configured. Released in after_deactivate().
     std::unique_ptr<PluginHosting> hosting_;

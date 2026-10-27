@@ -5,6 +5,7 @@
 #include <cmath>
 #include <thread>
 
+#include "sonora/model/operations.h"
 #include "sonora/session.h"
 
 namespace sonora {
@@ -105,8 +106,23 @@ uint64_t PlaybackController::serve() {
                                    static_cast<int64_t>(locate_target_), locate_serial_);
 }
 
+bool PlaybackController::atoms_follow(const model::Snapshot& snapshot) const {
+    return pending_mix_serial_ == 0 &&
+           (!atoms_order_ || *atoms_order_ == model::track_order(*snapshot.edit));
+}
+
 void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
+    session_.set_bus_gain(gain_of_db(snapshot.mix.bus.gain_db));
+    // The atomics hold another track order: the plan that moves the tracks
+    // carries this mix, or the next show() builds one that does.
+    if (!atoms_follow(snapshot)) {
+        deferred_mix_ = snapshot;
+        return;
+    }
     const auto& tracks = snapshot.edit->tracks;
+    // A take's file never changes input part way (ADR-0022 §4).
+    const bool take = session_.transport().state() == TransportState::Recording ||
+                      record_requested() || !session_.folder_change_refusal().empty();
     for (std::size_t i = 0; i < tracks.size() && i < session_.tracks().size(); ++i) {
         const model::TrackMix* m = snapshot.mix.find(tracks[i]->id);
         if (!m) continue;
@@ -116,7 +132,13 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
         t.set_solo_safe(m->solo_safe);
+        if (!(take && t.rec_armed())) {
+            t.set_input(tracks[i]->kind == model::TrackKind::Audio && !m->input.empty()
+                            ? m->input.front()
+                            : static_cast<uint32_t>(i));
+        }
     }
+    atoms_order_ = model::track_order(*snapshot.edit);
     // The audio thread counts every engine track's solo: one left on a track
     // the document no longer has (an undone AddTrack) would silence the rest
     // while every replica shows no solo. Only the solo: the old plan renders
@@ -127,7 +149,6 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         session_.tracks()[i]->set_soloed(false);
     }
     apply_monitoring(snapshot);
-    session_.set_bus_gain(gain_of_db(snapshot.mix.bus.gain_db));
     apply_sends(snapshot);
 }
 
@@ -161,6 +182,7 @@ void PlaybackController::apply_sends(const model::Snapshot& snapshot) {
 }
 
 void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t track) {
+    if (!atoms_follow(snapshot)) return;
     const auto& tracks = snapshot.edit->tracks;
     if (track >= tracks.size() || track >= session_.tracks().size()) return;
     const model::TrackMix* m = snapshot.mix.find(tracks[track]->id);
@@ -168,6 +190,7 @@ void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t
 }
 
 void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {
+    if (!atoms_follow(snapshot)) return;
     const auto& tracks = snapshot.edit->tracks;
     for (std::size_t i = 0; i < tracks.size() && i < session_.tracks().size(); ++i) {
         const model::TrackMix* m = snapshot.mix.find(tracks[i]->id);
@@ -232,6 +255,17 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
                 " is not the reader's " + std::to_string(session_.reader().chunk_frames());
         return false;
     }
+    // ADR-0022 §4: tracks that land on other engine tracks take their mix
+    // with them in the plan, and the atomics follow once it is published.
+    std::vector<model::Id> order = model::track_order(*snapshot.edit);
+    const bool moves = atoms_order_ && *atoms_order_ != order;
+    if (moves) {
+        if (++mix_serial_ == 0) ++mix_serial_;   // 0 means "no mix"
+        plan->mix_serial = mix_serial_;
+        fill_track_mix(*plan, snapshot);
+        pending_order_ = std::move(order);
+    }
+    pending_mix_serial_ = moves ? plan->mix_serial : 0;
     report_ = report;
     last_built_epoch_ = plan->epoch;
     pending_continuity_ = std::move(continuity);
@@ -241,7 +275,78 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
     // Never published, so no block can hold it: it goes as soon as the
     // reader has let go, without the epoch wait (ADR-0009 §4.2).
     if (cancelled) cancelled_.push_back({cancelled, pending_gen_});
+    // Back to the order the atomics hold (an edit undone before its plan
+    // played): what was deferred meanwhile can be written now.
+    if (!moves && deferred_mix_) {
+        const model::Snapshot deferred = std::move(*deferred_mix_);
+        deferred_mix_.reset();
+        apply_mix(deferred);
+    }
     return true;
+}
+
+void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapshot& snapshot) const {
+    const auto& tracks = snapshot.edit->tracks;
+    const auto& engine = session_.tracks();
+    const std::vector<model::Id>& before = *atoms_order_;
+    const model::TrackMix none;
+    for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
+        PlanTrackMix& m = plan.track_mix[e];
+        const Track& t = *engine[e];
+        // No document track lands here, and nothing renders it once the
+        // plan plays; only its solo and arm must go, or they would silence
+        // the other tracks or record a track that is not there.
+        m.gain = t.gain();
+        m.pan = t.pan();
+        m.mute = t.muted();
+        m.solo = false;
+        m.solo_safe = t.solo_safe();
+        m.armed = false;
+        m.monitor = static_cast<uint8_t>(t.monitor());
+        m.input = static_cast<uint32_t>(e);
+        if (e >= tracks.size()) continue;
+        const model::TrackEdit& doc = *tracks[e];
+        const bool audio = doc.kind == model::TrackKind::Audio;
+        for (std::size_t j = 0; j < before.size() && j < engine.size(); ++j) {
+            if (before[j] == doc.id) m.armed = audio && engine[j]->rec_armed();
+        }
+        const model::TrackMix* found = snapshot.mix.find(doc.id);
+        const model::TrackMix& x = found != nullptr ? *found : none;
+        m.gain = gain_of_db(x.gain_db);
+        m.pan = pan_of(x.pan);
+        m.mute = x.mute;
+        m.solo = x.solo;
+        m.solo_safe = x.solo_safe;
+        const Track::Monitor mon = !audio ? Track::Monitor::Off
+                                   : !input_monitoring_ && m.armed ? Track::Monitor::Off
+                                                                   : monitor_of(x.monitor);
+        m.monitor = static_cast<uint8_t>(mon);
+        if (audio && !x.input.empty()) m.input = x.input.front();
+    }
+}
+
+void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
+    const auto& engine = session_.tracks();
+    for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
+        const PlanTrackMix& m = plan.track_mix[e];
+        Track& t = *engine[e];
+        t.set_gain(m.gain);
+        t.set_pan(m.pan);
+        t.set_muted(m.mute);
+        t.set_soloed(m.solo);
+        t.set_solo_safe(m.solo_safe);
+        t.set_rec_armed(m.armed);
+        t.set_monitor(static_cast<Track::Monitor>(m.monitor));
+        t.set_input(m.input);
+        t.set_mix_serial(plan.mix_serial);
+    }
+    atoms_order_ = pending_order_;
+    pending_mix_serial_ = 0;
+    if (deferred_mix_) {
+        const model::Snapshot deferred = std::move(*deferred_mix_);
+        deferred_mix_.reset();
+        apply_mix(deferred);
+    }
 }
 
 bool PlaybackController::locate(uint64_t frame, std::string& error) {
@@ -323,8 +428,12 @@ void PlaybackController::pump() {
         if (ready) reclaim();
         if (ready && plans.can_publish()) {
             PlaybackPlan* const old = plans.current();
+            PlaybackPlan* const published = pending_;
             plans.publish(pending_);
             pending_ = nullptr;
+            // The audio thread uses the plan's mix until each track is
+            // stamped with its serial, so the atomics can be written now.
+            if (pending_mix_serial_ != 0) adopt_track_mix(*published);
             playing_report_ = report_;
             playing_continuity_ = pending_continuity_;
             ++published_;

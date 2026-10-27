@@ -1519,6 +1519,142 @@ int check_sends(Rig& rig) {
     return C(rig, "sends and aux buses").go();
 }
 
+// Track structure (ADR-0022): no track past the engine's count; outside a
+// take the record arm goes with its track when the tracks move; during a
+// take nothing may delete or move the armed track, by an operation, an
+// undo or a redo, while what leaves it in place is accepted.
+int check_track_structure(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        uint64_t apply(Session& s, const model::Operation& op) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return 0;
+            return s.engine->submit(m);
+        }
+        uint64_t step(Session& s, ModelAction a) {
+            ModelRequest m;
+            m.action = a;
+            return s.engine->submit(m);
+        }
+        std::vector<model::Id> order(Session& s) {
+            return model::track_order(*s.replica.current().edit);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            StateView& v = s.engine->state();
+            const uint32_t n = s.engine->hello().track_count;
+            EXPECT(n >= 3, "the suite needs three tracks");
+            EXPECT(s.replica.current().edit->tracks.size() == n, "not one track per engine track");
+            CommandReply r;
+
+            model::AddTrack add;
+            add.track = s.replica.current().next_id;
+            add.playlist = add.track + 1;
+            add.name = "One more";
+            add.playlist_name = "One more.01";
+            add.mix.input = {0};
+            EXPECT(s.await(rig_, apply(s, add), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed &&
+                       mentions(r.message, "delete a track before adding another"),
+                   "a track past the engine's count was accepted");
+
+            const std::vector<model::Id> start = order(s);
+            const model::Id t0 = start[0], t1 = start[1];
+            const std::string name0 = s.replica.current().edit->tracks[0]->name;
+            EXPECT(s.await(rig_, apply(s, model::RemoveTrack{start.back()}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "deleting the last track failed: " + r.message);
+            // An engine whose new plan is not yet playing refuses arming
+            // for a moment, by name (ADR-0022 §4): asked again until done.
+            EXPECT(s.until(rig_,
+                           [&]() {
+                               return s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                                      r.result == DispatchResult::Ok;
+                           }),
+                   "arming track 1 failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.track(0).armed(); }), "track 1 never armed");
+
+            // Swapped: the arm moves to row 2 with its track.
+            std::vector<model::Id> swapped = order(s);
+            std::swap(swapped[0], swapped[1]);
+            EXPECT(s.await(rig_, apply(s, model::ReorderTracks{swapped}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "the reorder failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.track(1).armed() && !v.track(0).armed(); }),
+                   "the arm did not follow its track to row 2");
+
+            // A duplicate lands below its source, disarmed.
+            model::DuplicateTrack dup;
+            dup.source = t0;
+            dup.track = s.replica.current().next_id;
+            dup.name = model::duplicate_track_name(s.replica.current(), t0);
+            EXPECT(s.await(rig_, apply(s, dup), r) && r.result == DispatchResult::Ok,
+                   "the duplicate failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return order(s).size() == n; }), "no duplicate");
+            EXPECT(order(s)[2] == dup.track, "the duplicate is not below its source");
+            EXPECT(s.next_publish(rig_), "nothing published after the duplicate");
+            EXPECT(v.track(1).armed() && !v.track(2).armed(),
+                   "the duplicate took the arm, or the source lost it");
+            EXPECT(s.await(rig_, step(s, ModelAction::Undo), r) && r.result == DispatchResult::Ok,
+                   "undoing the duplicate failed: " + r.message);
+
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Recording; }),
+                   "no take");
+            EXPECT(s.await(rig_, apply(s, model::RemoveTrack{t0}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed &&
+                       mentions(r.message, ("\"" + name0 + "\" is recording").c_str()) &&
+                       mentions(r.message, "before deleting it"),
+                   "the recording track was deleted during its take");
+            EXPECT(s.await(rig_, apply(s, model::RemoveTrack{t1}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "before moving it"),
+                   "a delete above the recording track moved it during its take");
+            // Below it, nothing moves: the redo and a delete are accepted.
+            EXPECT(s.await(rig_, step(s, ModelAction::Redo), r) && r.result == DispatchResult::Ok,
+                   "a redo below the recording track was refused: " + r.message);
+            EXPECT(s.await(rig_, apply(s, model::RemoveTrack{dup.track}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "a delete below the recording track was refused: " + r.message);
+            EXPECT(s.await(rig_, step(s, ModelAction::Undo), r) && r.result == DispatchResult::Ok,
+                   "undoing that delete failed: " + r.message);
+            EXPECT(s.await(rig_, step(s, ModelAction::Undo), r) && r.result == DispatchResult::Ok,
+                   "undoing the duplicate again failed: " + r.message);
+            // The reorder would put it back on row 1.
+            EXPECT(s.await(rig_, step(s, ModelAction::Undo), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "before moving it"),
+                   "an undo moved the recording track during its take");
+            EXPECT(order(s)[1] == t0, "a refusal changed the order");
+
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) && r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            // Once the take has closed, undo reaches the reorder (an engine
+            // that places its takes undoes that step first) and the arm
+            // goes back to row 1 with its track.
+            EXPECT(s.until(rig_,
+                           [&]() {
+                               if (order(s)[0] == t0) return true;
+                               CommandReply u;
+                               s.await(rig_, step(s, ModelAction::Undo), u);
+                               return order(s)[0] == t0;
+                           }),
+                   "the reorder could not be undone after the take");
+            EXPECT(s.until(rig_, [&]() { return v.track(0).armed() && !v.track(1).armed(); }),
+                   "the arm did not follow its track back to row 1");
+            return ok();
+        }
+    };
+    return C(rig, "track structure").go();
+}
+
 int check_model(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -2775,6 +2911,7 @@ int run(Rig& rig) {
     failures += check_model(rig);
     failures += check_compound(rig);
     failures += check_sends(rig);
+    failures += check_track_structure(rig);
     failures += check_load(rig);
     failures += check_load_in_parts(rig);
     failures += check_inserts(rig);

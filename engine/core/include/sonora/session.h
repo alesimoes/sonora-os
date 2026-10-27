@@ -630,6 +630,20 @@ private:
                        const backend::AudioBlock& block, uint32_t offset, uint32_t n,
                        bool rolling, bool recording, uint64_t from,
                        float* const out[2]) noexcept SONORA_RT;
+    // Engine track e's mix as this block hears it: the plan's, while the
+    // track's atomics still hold the track order before the plan's
+    // (ADR-0022 §4), and the atomics' otherwise.
+    struct TrackMixView {
+        float gain = 1.0f;
+        float pan = 0.0f;
+        bool mute = false;
+        bool solo = false;
+        bool solo_safe = false;
+        bool armed = false;
+        Track::Monitor monitor = Track::Monitor::Auto;
+        uint32_t input = 0;
+    };
+    TrackMixView mix_view(const PlaybackPlan& plan, std::size_t e) const noexcept SONORA_RT;
     // Zeroes what render_track() put in `out` at or past play_until_.
     void cut_at_roll_end(float* const out[2], uint32_t offset, uint32_t n) const noexcept SONORA_RT;
     // Step 3: the track's ramped gain and pan, from `in` into stereo `out`.
@@ -856,6 +870,10 @@ private:
     float bus_applied_ = 1.0f;
     float bus_target_ = 1.0f;
     uint64_t seen_epoch_ = 0;
+    // A plan that moved tracks between engine tracks has just been adopted:
+    // this block's faders start at their targets instead of ramping from
+    // what another track left on the engine track (ADR-0022 §4).
+    bool snap_mix_ = false;
     uint64_t expected_playhead_ = 0;
     bool reseek_ = true;
     uint32_t block_frames_ = 0;              // the whole block, for ramps

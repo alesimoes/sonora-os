@@ -642,6 +642,110 @@ public:
         return true;
     }
 
+    bool operator()(const RemoveTrack& op) {
+        const std::size_t t = locate_track(*before_.edit, op.track);
+        if (t == kNone) return fail("track " + str(op.track) + " does not exist");
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->tracks.erase(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t));
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    bool operator()(const DuplicateTrack& op) {
+        const std::size_t t = locate_track(*before_.edit, op.source);
+        if (t == kNone) return fail("track " + str(op.source) + " does not exist");
+        if (!detail::valid_text(op.name)) return fail("name is not valid UTF-8");
+        if (!fresh(op.track)) return false;
+        const std::size_t count = duplicate_track_ids(before_, op);
+        if (op.track > static_cast<Id>(kMaxInteger) - count) {
+            return fail("id " + str(op.track) + " leaves no room for the " +
+                        str(static_cast<std::uint64_t>(count)) + " ids the copy needs");
+        }
+        const TrackEdit& src = *before_.edit->tracks[t];
+        auto copy = std::make_shared<TrackEdit>();
+        copy->id = op.track;
+        copy->name = op.name;
+        copy->kind = src.kind;
+        copy->channels = src.channels;
+        Id next = op.track + 1;
+        const auto renamed = [&](const std::string& name) {
+            // "Vox.02" on "Vox" is "Vox.dup1.02" on its copy.
+            if (name.compare(0, src.name.size(), src.name) == 0) {
+                return op.name + name.substr(src.name.size());
+            }
+            return name;
+        };
+        const auto wanted = [&](Id playlist) {
+            return op.all_playlists || playlist == src.active_playlist;
+        };
+        for (const auto& p : src.playlists) {
+            if (!wanted(p->id)) continue;
+            auto c = std::make_shared<Playlist>();
+            c->id = next++;
+            c->name = renamed(p->name);
+            if (p->id == src.active_playlist) copy->active_playlist = c->id;
+            std::vector<std::pair<Id, Id>> ids;   // source region id, copy's
+            c->regions = p->regions;
+            for (Region& r : c->regions) {
+                ids.emplace_back(r.id, next);
+                r.id = next++;
+            }
+            const auto map = [&](Id id) {
+                for (const auto& [from, to] : ids)
+                    if (from == id) return to;
+                return Id{0};
+            };
+            c->crossfades = p->crossfades;
+            for (Crossfade& x : c->crossfades) {
+                x.left = map(x.left);
+                x.right = map(x.right);
+            }
+            copy->playlists.push_back(std::move(c));
+        }
+        for (const auto& p : src.midi_playlists) {
+            if (!wanted(p->id)) continue;
+            auto c = std::make_shared<MidiPlaylist>();
+            c->id = next++;
+            c->name = renamed(p->name);
+            if (p->id == src.active_playlist) copy->active_playlist = c->id;
+            // Each region keeps its pointer to the sequence: copy-on-write
+            // (ADR-0014 §1), so the copy holds no notes of its own.
+            c->regions = p->regions;
+            for (MidiRegion& r : c->regions) r.id = next++;
+            copy->midi_playlists.push_back(std::move(c));
+        }
+        std::vector<InsertMix> values;
+        if (op.inserts) {
+            for (const Insert& in : src.inserts) {
+                Insert c = in;
+                c.id = next++;
+                copy->inserts.push_back(c);
+                if (const InsertMix* v = before_.mix.find_insert(in.id)) {
+                    InsertMix m = *v;
+                    m.insert = c.id;
+                    values.push_back(std::move(m));
+                }
+            }
+        }
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->tracks.insert(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t) + 1,
+                            std::move(copy));
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (const TrackMix* m = before_.mix.find(op.source)) {
+            TrackMix mix = *m;
+            mix.track = op.track;
+            // A copy of a soloed track would solo one more track than the
+            // operator asked for (ADR-0022 §2).
+            mix.solo = false;
+            set_mix(after_.mix, mix);
+        }
+        for (InsertMix& v : values) set_insert_mix(after_.mix, std::move(v));
+        after_.next_id = next;
+        return true;
+    }
+
     bool operator()(const AddMarker& op) {
         return edit_markers([&](MarkerList& m) {
             const std::string why = detail::marker_problem(op.marker);
@@ -1915,6 +2019,83 @@ bool is_undoable(const Operation& op) {
         return std::any_of(c->ops.begin(), c->ops.end(), member_is_undoable);
     }
     return leaf_is_undoable(MemberRef(op));
+}
+
+std::size_t duplicate_track_ids(const Snapshot& s, const DuplicateTrack& op) {
+    const std::size_t t = locate_track(*s.edit, op.source);
+    if (t == kNone) return 0;
+    const TrackEdit& src = *s.edit->tracks[t];
+    std::size_t n = 1;
+    const auto count = [&](const auto& playlists) {
+        for (const auto& p : playlists) {
+            if (op.all_playlists || p->id == src.active_playlist) n += 1 + p->regions.size();
+        }
+    };
+    count(src.playlists);
+    count(src.midi_playlists);
+    if (op.inserts) n += src.inserts.size();
+    return n;
+}
+
+std::string duplicate_track_name(const Snapshot& s, Id source) {
+    const std::size_t t = locate_track(*s.edit, source);
+    if (t == kNone) return {};
+    const std::string& base = s.edit->tracks[t]->name;
+    for (std::uint64_t n = 1;; ++n) {
+        std::string name = base + ".dup" + std::to_string(n);
+        const bool taken = std::any_of(s.edit->tracks.begin(), s.edit->tracks.end(),
+                                       [&](const auto& k) { return k->name == name; });
+        if (!taken) return name;
+    }
+}
+
+std::vector<Id> track_order(const EditState& e) {
+    std::vector<Id> ids;
+    ids.reserve(e.tracks.size());
+    for (const auto& t : e.tracks) ids.push_back(t->id);
+    return ids;
+}
+
+bool track_order_after(const Snapshot& at, MemberRef member, std::vector<Id>& order) {
+    if (const auto* a = member.get_if<AddTrack>()) {
+        order = track_order(*at.edit);
+        order.push_back(a->track);
+        return true;
+    }
+    if (const auto* r = member.get_if<RemoveTrack>()) {
+        const std::size_t t = locate_track(*at.edit, r->track);
+        if (t == kNone) return false;
+        order = track_order(*at.edit);
+        order.erase(order.begin() + static_cast<std::ptrdiff_t>(t));
+        return true;
+    }
+    if (const auto* r = member.get_if<ReorderTracks>()) {
+        if (r->order.size() != at.edit->tracks.size()) return false;
+        order = r->order;
+        return true;
+    }
+    if (const auto* d = member.get_if<DuplicateTrack>()) {
+        const std::size_t t = locate_track(*at.edit, d->source);
+        if (t == kNone) return false;
+        order = track_order(*at.edit);
+        order.insert(order.begin() + static_cast<std::ptrdiff_t>(t) + 1, d->track);
+        return true;
+    }
+    return false;
+}
+
+std::string pinned_track_refusal(const EditState& before, const std::vector<Id>& after,
+                                 const std::vector<bool>& pinned, const std::string& doing,
+                                 const std::string& remedy) {
+    for (std::size_t i = 0; i < pinned.size() && i < before.tracks.size(); ++i) {
+        if (!pinned[i]) continue;
+        const TrackEdit& t = *before.tracks[i];
+        if (i < after.size() && after[i] == t.id) continue;
+        const bool kept = std::find(after.begin(), after.end(), t.id) != after.end();
+        return "\"" + t.name + "\" " + doing + ": " + remedy +
+               (kept ? " before moving it, or a track above it" : " before deleting it");
+    }
+    return {};
 }
 
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,

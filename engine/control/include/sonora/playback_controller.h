@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -100,6 +101,12 @@ public:
     bool settle(double seconds);
 
     bool pending() const { return pending_ != nullptr; }
+    // A plan that moves tracks between engine tracks is waiting to play
+    // (ADR-0022 §4). Until it does, each engine track's atomics belong to
+    // the track that was on it: nothing addressed by position (a fader
+    // ride, an arm) may be written to them, and the mix asked for meanwhile
+    // is written when the plan is published.
+    bool tracks_moving() const { return pending_mix_serial_ != 0; }
     bool locating() const { return locate_serial_ != 0 && !locate_sent_; }
     bool play_requested() const { return play_requested_; }
     bool record_requested() const { return record_requested_; }
@@ -147,6 +154,15 @@ private:
     // Whether a roll asked for at `generation` may start now.
     bool may_roll(uint64_t generation) const;
     bool registered(const model::Source& source, uint32_t& slot, std::string& error);
+    // ADR-0022 §4. Whether a mix of `snapshot`'s may go to the atomics now:
+    // they hold its track order and no plan moving tracks is pending.
+    bool atoms_follow(const model::Snapshot& snapshot) const;
+    // `plan`'s track_mix from `snapshot`, each engine track armed if the
+    // document track now on it was armed where it was before.
+    void fill_track_mix(PlaybackPlan& plan, const model::Snapshot& snapshot) const;
+    // Just after `plan` is published: its track_mix to the atomics, stamped
+    // with its serial, then any mix deferred meanwhile.
+    void adopt_track_mix(const PlaybackPlan& plan);
 
     Session& session_;
     BuildLimits limits_;
@@ -172,6 +188,13 @@ private:
     uint64_t last_built_epoch_ = 0;
 
     bool input_monitoring_ = true;
+    // The document track whose mix each engine track's atomics hold, by
+    // position; unset before the first mix is written.
+    std::optional<std::vector<model::Id>> atoms_order_;
+    uint32_t mix_serial_ = 0;           // the last PlaybackPlan::mix_serial given
+    uint32_t pending_mix_serial_ = 0;   // pending_'s; 0 when it moves no track
+    std::vector<model::Id> pending_order_;
+    std::optional<model::Snapshot> deferred_mix_;
     // The document's transport.pre_roll and post_roll, from the last show().
     uint64_t pre_roll_ = 0;
     uint64_t post_roll_ = 0;

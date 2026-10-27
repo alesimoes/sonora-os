@@ -477,6 +477,74 @@ int test_swap_and_delay_continuity() {
     return 0;
 }
 
+// ADR-0022 §4: a plan that swaps two tracks between engine tracks carries
+// their mix, and the audio thread uses it until each Track's atomics are
+// stamped with the plan's serial. A, hard left, and B, hard right, swap
+// rows; the outputs never cross, not at the swap block, not while the
+// atomics still hold the old order, not after they catch up. The meters
+// follow the plan's inputs the same way.
+int test_moved_tracks_keep_their_mix() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(1, 1, 16 * kChunk);
+    const uint32_t b = rig.source(2, 1, 16 * kChunk);
+    SegmentSpec sa;
+    sa.end = 16 * kChunk;
+    sa.source_slot = a;
+    SegmentSpec sb = sa;
+    sb.track = 1;
+    sb.source_slot = b;
+    CHECK(rig.publish(rig.plan(2, {sa, sb})));
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_pan(1.0f);
+    rig.block(kBlock);
+    s.play();
+    const auto exact = [&]() {
+        const uint64_t at = s.transport().playhead();
+        rig.block(kBlock);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const int64_t t = static_cast<int64_t>(at + i);
+            if (rig.out[0][i] != source_value(1, 0, t) || rig.out[1][i] != source_value(2, 0, t)) {
+                std::fprintf(stderr, "  frame %lld: L %f R %f\n", static_cast<long long>(t),
+                             rig.out[0][i], rig.out[1][i]);
+                return false;
+            }
+        }
+        return true;
+    };
+    for (int blk = 0; blk < 3; ++blk) CHECK(exact());
+
+    // B on engine track 0, A on 1, and inputs swapped with them.
+    SegmentSpec sb0 = sb;
+    sb0.track = 0;
+    SegmentSpec sa1 = sa;
+    sa1.track = 1;
+    PlaybackPlan* moved =
+        make_plan(s.plans().next_epoch(), 2, {sb0, sa1}, kChunk, 0, 2);
+    moved->mix_serial = 7;
+    moved->track_mix[0].pan = 1.0f;
+    moved->track_mix[0].input = 1;
+    moved->track_mix[1].pan = -1.0f;
+    moved->track_mix[1].input = 0;
+    CHECK(rig.publish(moved));
+    for (auto& v : rig.in[1]) v = 0.5f;
+    (void)s.tracks()[0]->take_peak();
+    (void)s.tracks()[1]->take_peak();
+    for (int blk = 0; blk < 3; ++blk) CHECK(exact());
+    CHECK(s.tracks()[0]->take_peak() == 0.5f);
+    CHECK(s.tracks()[1]->take_peak() == 0.0f);
+
+    // The control thread catches up: the same mix, now from the atomics.
+    s.tracks()[0]->set_pan(1.0f);
+    s.tracks()[0]->set_input(1);
+    s.tracks()[1]->set_pan(-1.0f);
+    s.tracks()[1]->set_input(0);
+    for (const auto& t : s.tracks()) t->set_mix_serial(7);
+    for (int blk = 0; blk < 3; ++blk) CHECK(exact());
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
 // Auto monitoring: an armed track hears its input while stopped, and its
 // playback while rolling; Off hears nothing; Input always the input.
 int test_input_monitoring() {
@@ -623,6 +691,7 @@ int main() {
     if (test_miss_is_counted_silence()) return 1;
     if (test_locate_without_dropping_a_block()) return 1;
     if (test_swap_and_delay_continuity()) return 1;
+    if (test_moved_tracks_keep_their_mix()) return 1;
     if (test_input_monitoring()) return 1;
     if (test_large_block_and_other_outputs()) return 1;
     if (test_cursor_after_monitor_switch()) return 1;

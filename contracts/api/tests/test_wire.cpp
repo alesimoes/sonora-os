@@ -340,11 +340,11 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // Sends and aux buses (ADR-0022) are version 27, 26 being held for a PR
-    // in flight; the punch and roll commands at the engine (ADR-0016, update
-    // "transport settings at the authority") are version 25, 24 being held
-    // for fades; SetSettings' transport.loop_record
-    // (transport.toggle_loop_record) is version 23; EventKind::Latency (ADR-0019, update of 2026-10-26) 22;
+    // RemoveTrack and DuplicateTrack (ADR-0023) are version 28, 26 never
+    // used; sends and aux buses (ADR-0022) 27; the punch and roll commands
+    // at the engine (ADR-0016, update "transport settings at the authority")
+    // 25, 24 being held for fades; SetSettings' transport.loop_record
+    // (transport.toggle_loop_record) 23; EventKind::Latency (ADR-0019, update of 2026-10-26) 22;
     // a Load naming an unsaved recording's folder, and a first Save that
     // renames an untitled folder (ADR-0018 §3), 20 (18, 19 and 21 were
     // never used); SetSettings' transport.loop_playback (transport.toggle_loop) 17;
@@ -356,7 +356,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 27);
+    CHECK(kProtocolVersion == 28);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -364,13 +364,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 27 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 28 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 27"));
+                   "speaks version 28"));
 }
 
 void domains() {
