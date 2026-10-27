@@ -148,7 +148,7 @@ std::string loop_take_refusal(const model::Transport& was, const model::Transpor
 // engine's own document (ADR-0016, update "transport settings at the
 // authority"): an interface sends what changed, never a copy of settings
 // its replica may hold stale. FakeEngine's handler is the same.
-bool edit_transport_field(const std::string& id, model::Transport& tr,
+bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t rate,
                           const std::string& argument, std::string& why) {
     if (id == "transport.punch_selection") {
         if (argument.empty()) {
@@ -182,6 +182,13 @@ bool edit_transport_field(const std::string& id, model::Transport& tr,
     }
     uint64_t frames = 0;
     if (!parse_locate_frame(argument, frames, why)) return false;
+    const uint64_t most = static_cast<uint64_t>(model::kMaxRollSeconds) * rate;
+    if (frames > most) {
+        why = std::string(pre ? "a pre-roll" : "a post-roll") + " goes up to " +
+              std::to_string(model::kMaxRollSeconds) + " seconds (" + std::to_string(most) +
+              " frames at " + std::to_string(rate) + " Hz); " + argument + " is past that";
+        return false;
+    }
     (pre ? tr.pre_roll : tr.post_roll) = static_cast<model::Frames>(frames);
     return true;
 }
@@ -460,7 +467,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                                                std::string& why) {
                 const model::SessionSettings& was = document_->current().settings;
                 model::SetSettings op{was};
-                if (!edit_transport_field(id, op.settings.transport, ctx.argument, why)) {
+                if (!edit_transport_field(id, op.settings.transport, op.settings.sample_rate,
+                                          ctx.argument, why)) {
                     return false;
                 }
                 if (take_open_or_requested()) {

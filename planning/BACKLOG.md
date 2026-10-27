@@ -595,6 +595,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [x] #156 review N3 (`t3-transport-followups`): `parse_roll_text`
              names the tab as `'\t'`; the bar's loop and punch chips use
              `Theme.space1`.
+       - [x] #159 review (`t3-transport-roll-limit`): `transport.set_pre_roll`
+             and `set_post_roll` refuse a roll past `model::kMaxRollSeconds`
+             (60 s) at the session's rate, in the engine and in FakeEngine,
+             not only in the Qt field, which now takes the constant from
+             `common/model`. Conformance "punch range and rolls at the
+             authority". No protocol change.
        - [ ] The last interface `SetSettings` built from a whole replica
              copy: the rename after an engine Save (`SessionModel::finishSave`)
              copies name and id into the shown

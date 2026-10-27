@@ -46,9 +46,8 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
 // the status line.
 void link_marker_locate(ShellModel& shell, SessionModel& session);
 
-// The upper bound of a typed pre- or post-roll: a typo of 200 for 2.00
-// would locate minutes before the punch, so it is refused instead.
-inline constexpr int kMaxRollSeconds = 60;
+// The engine refuses past the same bound; the field says so before sending.
+using model::kMaxRollSeconds;
 
 // A pre- or post-roll typed in seconds, "2", "1.5", "0.25 s": `frames` at
 // `rate`, rounded to the nearest frame. False, with `why` for the status

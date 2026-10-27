@@ -110,7 +110,7 @@ std::string insert_refusal(const model::Snapshot& s, const std::vector<PluginInf
 // engine/control's edit_transport_field() and take_punch_refusal():
 // one field edited on the authority's document, and a punch range change
 // refused while a take runs.
-bool edit_transport_field(const std::string& id, model::Transport& tr,
+bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t rate,
                           const std::string& argument, std::string& why) {
     if (id == "transport.punch_selection") {
         if (argument.empty()) {
@@ -143,6 +143,13 @@ bool edit_transport_field(const std::string& id, model::Transport& tr,
     }
     uint64_t frames = 0;
     if (!parse_locate_frame(argument, frames, why)) return false;
+    const uint64_t most = static_cast<uint64_t>(model::kMaxRollSeconds) * rate;
+    if (frames > most) {
+        why = std::string(pre ? "a pre-roll" : "a post-roll") + " goes up to " +
+              std::to_string(model::kMaxRollSeconds) + " seconds (" + std::to_string(most) +
+              " frames at " + std::to_string(rate) + " Hz); " + argument + " is past that";
+        return false;
+    }
     (pre ? tr.pre_roll : tr.post_roll) = static_cast<model::Frames>(frames);
     return true;
 }
@@ -1424,7 +1431,10 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         id == "transport.set_pre_roll" || id == "transport.set_post_roll") {
         const model::SessionSettings& was = document_->current().settings;
         model::SetSettings op{was};
-        if (!edit_transport_field(id, op.settings.transport, r.argument, why)) return false;
+        if (!edit_transport_field(id, op.settings.transport, op.settings.sample_rate, r.argument,
+                                  why)) {
+            return false;
+        }
         if (recording) {
             why = take_punch_refusal(was.transport, op.settings.transport);
             if (!why.empty()) return false;
