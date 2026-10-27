@@ -207,8 +207,17 @@ void SessionModel::installCommands(CommandRegistry& local) {
            [this](const CommandContext&, Why& why) { return ctl_.fade_to_start(why); });
     simple("edit.fade_to_end",
            [this](const CommandContext&, Why& why) { return ctl_.fade_to_end(why); });
-    simple("edit.fade_selection",
-           [this](const CommandContext&, Why& why) { return ctl_.fade_selection(why); });
+    // A crossfade shortened to its handles still ran; what it became goes
+    // on the status line, queued as paste's is.
+    simple("edit.fade_selection", [this](const CommandContext&, Why& why) {
+        if (!ctl_.fade_selection(why)) return false;
+        if (!why.empty()) {
+            QMetaObject::invokeMethod(
+                this, [this, said = q(why)]() { emit notice(said); }, Qt::QueuedConnection);
+        }
+        why.clear();
+        return true;
+    });
     simple("nudge.forward", [this](const CommandContext&, Why& why) { return ctl_.nudge(1, why); });
     simple("nudge.back", [this](const CommandContext&, Why& why) { return ctl_.nudge(-1, why); });
 

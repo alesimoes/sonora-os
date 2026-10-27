@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "sonora/closed_take.h"
+#include "sonora/fade_curve.h"
 #include "sonora/model/history.h"
 #include "sonora/model/operations.h"
 #include "sonora/playback_controller.h"
@@ -284,6 +285,85 @@ int test_crossfade_past_the_handle_is_refused() {
     CHECK(error.find("before its source") != std::string::npos);
     CHECK(!ctl.pending());
     CHECK(ctl.show(h.current(), error));
+    return 0;
+}
+
+// engine.timeline.crossfades end to end: a SetCrossfade in the document,
+// through the builder, heard in process(). Region 210 plays source 1 to the
+// cut at 4000, region 211 source 2 from it; pre, post and centred (odd, so
+// lopsided by a frame), equal power and linear, each replacing the last.
+// Every frame is the fade law's sum of the two handles.
+int test_crossfades_are_heard() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    CHECK(write_source(2, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, source_op(2, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 1000, 3000, 500), 0}));
+    CHECK_APPLY(h, (PlaceRegion{101, region(211, 2, 4000, 2000, 1000), 0}));
+    PlaybackController ctl(s);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    run_block(s, o);  // ramps settle
+
+    constexpr Frames kLength = 301;
+    for (const Align align : {Align::Pre, Align::Post, Align::Centre}) {
+        for (const FadeShape shape : {FadeShape::EqualPower, FadeShape::Linear}) {
+            const Crossfade x{210, 211, kLength, align, shape};
+            CHECK_APPLY(h, (SetCrossfade{101, x}));
+            Frames before = 0, after = 0;
+            crossfade_extent(x, before, after);
+            const auto curve = static_cast<sonora::FadeCurve>(static_cast<uint8_t>(shape));
+            const int64_t from = 4000 - before;
+            const auto want = [&](int64_t t) {
+                float acc = 0.0f;
+                const float pos = static_cast<float>(t - from) / static_cast<float>(kLength);
+                if (t >= 1000 && t < 4000 + after) {
+                    const float g = t < from ? 1.0f : sonora::fade_in_gain(curve, 1.0f - pos);
+                    acc += value(1, 500 + (t - 1000)) * g;
+                }
+                if (t >= from && t < 6000) {
+                    const float g = t >= 4000 + after ? 1.0f : sonora::fade_in_gain(curve, pos);
+                    acc += value(2, 1000 + (t - 4000)) * g;
+                }
+                return acc;
+            };
+            CHECK(show(ctl, h.current(), error));
+            CHECK(ctl.settle(2.0));
+            CHECK(ctl.locate(0, error));
+            for (int i = 0; i < 10 && (ctl.locating() || s.transport().playhead() != 0); ++i) {
+                s.reader().run_pass();
+                ctl.pump();
+                run_block(s, o);
+            }
+            CHECK(!ctl.locating() && s.transport().playhead() == 0);
+            ctl.play();
+            CHECK(ctl.settle(2.0));
+            for (int blk = 0; blk < 100; ++blk) {
+                const auto at = static_cast<int64_t>(s.transport().playhead());
+                run_block(s, o);
+                for (uint32_t i = 0; i < kBlock; ++i) {
+                    const float w = want(at + i);
+                    if (std::fabs(o.l[i] - w) > 4e-6f * std::fabs(w)) {
+                        std::fprintf(stderr, "  align %d shape %d, frame %lld: %f, want %f\n",
+                                     static_cast<int>(align), static_cast<int>(shape),
+                                     static_cast<long long>(at + i), o.l[i], w);
+                        return 1;
+                    }
+                }
+                s.reader().run_pass();
+                ctl.pump();
+            }
+            ctl.stop();
+            run_block(s, o);
+        }
+    }
+    CHECK(s.playback_misses() == 0);
     return 0;
 }
 
@@ -2006,6 +2086,7 @@ int main() {
     ::mkdir((kDir + "/Audio Files").c_str(), 0775);
     if (test_build_from_model()) return 1;
     if (test_crossfade_past_the_handle_is_refused()) return 1;
+    if (test_crossfades_are_heard()) return 1;
     if (test_limits_are_named()) return 1;
     if (test_undo_while_rolling()) return 1;
     if (test_the_document_loop_loops_the_roll()) return 1;

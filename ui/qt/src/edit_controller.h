@@ -227,6 +227,8 @@ public:
     // or starts at the cut); over one region's start, a fade-in; over its
     // end, a fade-out. Anything else is refused by name rather than guessed.
     // The selection becomes what was made, so Clear takes it away again.
+    // A crossfade longer than the handles at the cut is shortened to them
+    // (ADR-0021): true, with `why` saying what was made instead.
     bool fade_selection(std::string& why);
     model::FadeShape fade_shape() const { return fade_shape_; }
     model::FadeShape crossfade_shape() const { return crossfade_shape_; }

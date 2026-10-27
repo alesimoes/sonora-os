@@ -76,6 +76,43 @@ void crossfade_extent(const Crossfade& x, Frames& before, Frames& after) {
     after = x.length - before;
 }
 
+void crossfade_handles(const Region& left, const Region& right, const SourcePool& pool,
+                       Frames& before, Frames& after) {
+    before = std::max<Frames>(right.source_offset, 0);
+    const Frames shortest = shortest_source(left, pool);
+    after = shortest < 0 ? 0 : std::max<Frames>(shortest - left.source_offset - left.length, 0);
+}
+
+bool fit_crossfade(Crossfade& x, Frames before, Frames after) {
+    if (x.length <= 0) return false;
+    before = std::max<Frames>(before, 0);
+    after = std::max<Frames>(after, 0);
+    switch (x.align) {
+        case Align::Pre:
+            if (before == 0) return false;
+            x.length = std::min(x.length, before);
+            return true;
+        case Align::Post:
+            if (after == 0) return false;
+            x.length = std::min(x.length, after);
+            return true;
+        case Align::Centre:
+            break;
+    }
+    // The longest centred length: the extra frame of an odd one goes after
+    // the cut (crossfade_extent).
+    const Frames centred = after <= before ? 2 * after : 2 * before + 1;
+    if (x.length <= centred) return true;
+    if (before == 0 && after == 0) return false;
+    if (after == 0 || before == 0) {
+        x.align = after == 0 ? Align::Pre : Align::Post;
+        x.length = std::min(x.length, after == 0 ? before : after);
+        return true;
+    }
+    x.length = centred;
+    return true;
+}
+
 bool Region::operator==(const Region& o) const {
     return id == o.id && name == o.name && position == o.position &&
            length == o.length && source_offset == o.source_offset &&

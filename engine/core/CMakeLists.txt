@@ -115,6 +115,13 @@ add_executable(test_region_fades tests/test_region_fades.cpp)
 target_link_libraries(test_region_fades PRIVATE sonora_core)
 add_test(NAME region_fades COMMAND test_region_fades)
 
+# Crossfades through process(): pre, post and centred, every shape, the same
+# output however the roll is cut into blocks, a locate into a crossfade, a
+# loop wrapping into and out of one, with no allocation in process().
+add_executable(test_crossfades tests/test_crossfades.cpp)
+target_link_libraries(test_crossfades PRIVATE sonora_core)
+add_test(NAME crossfades COMMAND test_crossfades)
+
 # A loop take's passes from its wraps (ADR-0016 §5): lost wraps and a wrap
 # list that stops early or is missing derived from the loop length, and
 # recovery reading a take's file and list.
