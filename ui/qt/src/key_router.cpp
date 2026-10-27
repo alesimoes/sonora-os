@@ -170,8 +170,11 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
         // engine that runs them takes it, so no capability is asked. Logic's
         // Cycle keeps a cycle area already set, and the engine decides that:
         // it reads the selection only when none is, as Cmd+U always does.
+        // The punch range is set from it at the engine, never from a copy of
+        // the settings this window holds.
         if ((command == "transport.toggle_loop" || command == "transport.toggle_loop_record" ||
-             command == "transport.toggle_cycle" || command == "transport.cycle_selection") &&
+             command == "transport.toggle_cycle" || command == "transport.cycle_selection" ||
+             command == "transport.punch_selection") &&
             ctx.argument.empty() && play_range_) {
             ctx.argument = play_range_();
             r.ctx = ctx;

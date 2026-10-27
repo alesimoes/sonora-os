@@ -75,7 +75,8 @@ public:
     // transport.toggle_loop, transport.toggle_loop_record,
     // transport.toggle_cycle and transport.cycle_selection get it too,
     // always: the engine makes it the loop range (toggle_cycle only when no
-    // range is set).
+    // range is set). transport.punch_selection gets it, always, as the
+    // punch range.
     void setPlayRange(std::function<std::string()> range) { play_range_ = std::move(range); }
     // api::Hello::capabilities, replaced on each new Hello.
     void setEngineCapabilities(std::vector<std::string> caps) { caps_ = std::move(caps); }

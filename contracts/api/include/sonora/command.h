@@ -104,12 +104,18 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"transport.cycle_selection", CommandTarget::None,
          "Set the cycle area from the selection and turn cycle on", true},
         // The session's punch range (transport.punch), Pro Tools' punch
-        // points and Logic's autopunch locators. Saved state, so Engine; the
-        // Qt window runs a stand-in through the replica, as it does mute,
-        // until an engine announces them.
+        // points and Logic's autopunch locators. punch_selection's argument
+        // is the selection, "A-B" as transport.play takes it, required. The
+        // engine edits the one field on its own document, so a stale replica
+        // never sends back a copy of the others (ADR-0016, update "transport
+        // settings at the authority").
         {"transport.punch_selection", CommandTarget::None,
-         "Set the punch range from the selection"},
+         "Set the punch range from the selection", true},
         {"transport.clear_punch", CommandTarget::None, "Clear the punch range"},
+        // Argument: the pre-roll or post-roll in frames, as transport.locate
+        // takes a frame.
+        {"transport.set_pre_roll", CommandTarget::None, "Set the pre-roll", true},
+        {"transport.set_post_roll", CommandTarget::None, "Set the post-roll", true},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},

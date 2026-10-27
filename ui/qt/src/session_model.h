@@ -301,10 +301,15 @@ public:
     // moved under a counter that shows the playhead.
     Q_INVOKABLE bool enterCounter(const QString& text);
     // The Transport window's pre- and post-roll fields: seconds, as
-    // parse_roll_text() reads them. False, with the reason on the status
-    // line, for text that is not a length and while a take records.
+    // parse_roll_text() reads them, sent as transport.set_pre_roll or
+    // transport.set_post_roll. False, with the reason on the status line,
+    // for text that is not a length; the engine's refusal comes back there.
     Q_INVOKABLE bool setPreRollText(const QString& text);
     Q_INVOKABLE bool setPostRollText(const QString& text);
+    // How an engine command with an argument leaves this model: the shell's
+    // invokeWith(), set by link_transport().
+    using SendCommand = std::function<void(const QString& command, const QString& argument)>;
+    void setCommandSender(SendCommand send) { send_command_ = std::move(send); }
     Q_INVOKABLE void setWindow(const QString& w);
 
     // --- File ---
@@ -387,8 +392,6 @@ private:
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);
-    // During a take, `why` says `what` waits for Stop; true then.
-    bool refuse_during_take(const char* what, std::string& why) const;
     bool setRollText(bool pre, const QString& text);
     void updateCounters(bool force);
     // The save itself, once the document holds what the file must;
@@ -449,6 +452,7 @@ private:
         QVariantList repairs;
     };
     BeforeOpen before_open_;
+    SendCommand send_command_;
 
     TransportOverlay overlay_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;

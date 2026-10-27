@@ -144,6 +144,57 @@ std::string loop_take_refusal(const model::Transport& was, const model::Transpor
     return {};
 }
 
+// The punch range and the rolls, edited one field at a time on the
+// engine's own document (ADR-0016, update "transport settings at the
+// authority"): an interface sends what changed, never a copy of settings
+// its replica may hold stale. FakeEngine's handler is the same.
+bool edit_transport_field(const std::string& id, model::Transport& tr,
+                          const std::string& argument, std::string& why) {
+    if (id == "transport.punch_selection") {
+        if (argument.empty()) {
+            why = "no selection to set the punch range from; select a range first";
+            return false;
+        }
+        // C3: refused here rather than at R.
+        if (tr.loop_record) {
+            why = "loop record is on, and a take cannot both loop and punch; turn Loop Record "
+                  "off first";
+            return false;
+        }
+        uint64_t from = 0;
+        uint64_t to = 0;
+        if (!parse_play_range(argument, from, to, why)) return false;
+        tr.punch = {{static_cast<model::Frames>(from), static_cast<model::Frames>(to)}};
+        return true;
+    }
+    if (id == "transport.clear_punch") {
+        if (tr.punch[1] <= tr.punch[0]) {
+            why = "no punch range to clear";
+            return false;
+        }
+        tr.punch = {{0, 0}};
+        return true;
+    }
+    const bool pre = id == "transport.set_pre_roll";
+    if (argument.empty()) {
+        why = pre ? "no pre-roll given" : "no post-roll given";
+        return false;
+    }
+    uint64_t frames = 0;
+    if (!parse_locate_frame(argument, frames, why)) return false;
+    (pre ? tr.pre_roll : tr.post_roll) = static_cast<model::Frames>(frames);
+    return true;
+}
+
+// What a take refuses of the punch range, or "". The take copied it when it
+// started and its files' Description names it, which recovery reads back; a
+// change saved under it would leave the session saying a range the take did
+// not use. The rolls are in no file, so a change waits for the next roll.
+std::string take_punch_refusal(const model::Transport& was, const model::Transport& now) {
+    if (now.punch == was.punch) return {};
+    return "a take is recording; the punch range changes after Stop";
+}
+
 bool changes_arming(const std::string& id) {
     return id == "track.toggle_arm" || id == "track.arm_all" || id == "track.disarm_all";
 }
@@ -393,6 +444,27 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                 if (!toggle_loop_mode(id, op.settings.transport, ctx.argument, why)) return false;
                 if (session_.loop_take_running()) {
                     why = loop_take_refusal(was.transport, op.settings.transport);
+                    if (!why.empty()) return false;
+                }
+                model::ReplicationUpdate u;
+                if (!document_->apply(model::Operation{std::move(op)}, u, why)) return false;
+                send_update(u);
+                show_document(false);
+                return true;
+            }));
+    }
+    for (const char* id : {"transport.punch_selection", "transport.clear_punch",
+                           "transport.set_pre_roll", "transport.set_post_roll"}) {
+        registry_.install(
+            id, ExplainingHandler([this, id = std::string(id)](const CommandContext& ctx,
+                                                               std::string& why) {
+                const model::SessionSettings& was = document_->current().settings;
+                model::SetSettings op{was};
+                if (!edit_transport_field(id, op.settings.transport, ctx.argument, why)) {
+                    return false;
+                }
+                if (take_open_or_requested()) {
+                    why = take_punch_refusal(was.transport, op.settings.transport);
                     if (!why.empty()) return false;
                 }
                 model::ReplicationUpdate u;
@@ -1131,6 +1203,10 @@ void EngineControlServer::fence_saver(const char* notice) {
     follow_saver();
 }
 
+bool EngineControlServer::take_open_or_requested() const {
+    return session_.recording_take() != 0 || playback_->record_requested();
+}
+
 bool EngineControlServer::takes_in_flight() const {
     // takes_closing() covers a punched-out take whose files the disk thread
     // has not closed yet: recording_take() is already 0 for it.
@@ -1307,10 +1383,12 @@ void EngineControlServer::follow_scanner() {
     }
 }
 
-std::string EngineControlServer::loop_refusal(const model::Snapshot& doc,
-                                              model::MemberRef member) const {
+std::string EngineControlServer::transport_refusal(const model::Snapshot& doc,
+                                                   model::MemberRef member) const {
     const auto* set = member.get_if<model::SetSettings>();
-    if (set == nullptr || !session_.loop_take_running()) return {};
+    if (set == nullptr || !take_open_or_requested()) return {};
+    std::string why = take_punch_refusal(doc.settings.transport, set->settings.transport);
+    if (!why.empty() || !session_.loop_take_running()) return why;
     return loop_take_refusal(doc.settings.transport, set->settings.transport);
 }
 
@@ -2113,7 +2191,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                         no_host = !scanner_;
                         return refusal;
                     }
-                    if (std::string refusal = loop_refusal(at, member); !refusal.empty()) {
+                    if (std::string refusal = transport_refusal(at, member); !refusal.empty()) {
                         return refusal;
                     }
                     // Even one that leaves the document as it was: it ends a

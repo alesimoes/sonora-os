@@ -814,6 +814,134 @@ int check_loop_record_mode(Rig& rig) {
     return C(rig, "loop record as a record mode, and cycle").go();
 }
 
+// The punch range and the rolls at the authority (ADR-0016, update
+// "transport settings at the authority"): each command edits its one field
+// on the engine's document, so the others stay as the engine holds them;
+// punch_selection takes the selection, required, and is refused with loop
+// record on (C3). While a take is open, a punch range change is refused,
+// from these commands or from a SetSettings sent through a stale overlay,
+// so the saved range is the one the take used; the rolls still change.
+int check_punch_and_rolls(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const auto& impl = s.engine->hello().implemented_commands;
+            for (const char* id : {"transport.punch_selection", "transport.clear_punch",
+                                   "transport.set_pre_roll", "transport.set_post_roll"}) {
+                EXPECT(std::find(impl.begin(), impl.end(), id) != impl.end(),
+                       std::string(id) + " is not announced");
+            }
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            const auto transport = [&]() { return s.replica.current().settings.transport; };
+            const auto punch_is = [&](model::Frames a, model::Frames b) {
+                return transport().punch[0] == a && transport().punch[1] == b;
+            };
+            CommandReply r;
+
+            EXPECT(s.await(rig_, s.command("transport.punch_selection"), r) &&
+                       r.result != DispatchResult::Ok && mentions(r.message, "no selection"),
+                   "punch_selection with no selection was not refused by name: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.punch_selection", -1, "48000-96000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "punch_selection failed: " + r.message);
+            EXPECT(punch_is(48000, 96000), "the selection did not become the punch range");
+
+            // One field each: a roll leaves the punch range and the loop
+            // where the engine has them.
+            EXPECT(s.await(rig_, s.command("transport.cycle_selection", -1, "1000-2000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "cycle_selection failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.toggle_cycle"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_cycle off failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.set_pre_roll", -1, "24000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "set_pre_roll failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.set_post_roll", -1, "12000"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "set_post_roll failed: " + r.message);
+            EXPECT(transport().pre_roll == 24000 && transport().post_roll == 12000,
+                   "the rolls were not set");
+            EXPECT(punch_is(48000, 96000) && transport().loop[0] == 1000 &&
+                       transport().loop[1] == 2000,
+                   "a roll command moved another field");
+            for (const char* bad : {"", "-1", "1.5"}) {
+                EXPECT(s.await(rig_, s.command("transport.set_post_roll", -1, bad), r) &&
+                           r.result != DispatchResult::Ok,
+                       std::string("set_post_roll \"") + bad + "\" was accepted");
+            }
+            EXPECT(transport().post_roll == 12000, "a refused roll changed the post-roll");
+
+            EXPECT(s.await(rig_, s.command("transport.clear_punch"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "clear_punch failed: " + r.message);
+            EXPECT(punch_is(0, 0), "clear_punch left a range");
+            EXPECT(s.await(rig_, s.command("transport.clear_punch"), r) &&
+                       r.result != DispatchResult::Ok && mentions(r.message, "no punch range"),
+                   "clearing no punch range was not refused by name: " + r.message);
+
+            // A take open (a straight one: no punch range ends it): the
+            // punch range stays as it started it, whoever asks. The rolls
+            // are in no take file, so they still change.
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Recording;
+                   }),
+                   "the state block never showed the take");
+            EXPECT(s.await(rig_, s.command("transport.punch_selection", -1, "1000-2000"), r) &&
+                       r.result != DispatchResult::Ok &&
+                       mentions(r.message, "a take is recording"),
+                   "punch_selection during a take was not refused by name: " + r.message);
+            model::SetSettings stale;
+            stale.settings = s.replica.current().settings;
+            stale.settings.transport.punch = {{1000, 2000}};
+            ModelRequest m;
+            std::string error;
+            EXPECT(model::encode_operation(stale, m.op, error), error);
+            EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result != DispatchResult::Ok &&
+                       mentions(r.message, "the punch range"),
+                   "a SetSettings moving the punch range during a take was accepted: " +
+                       r.message);
+            EXPECT(punch_is(0, 0), "a refusal during the take changed the punch range");
+            EXPECT(s.await(rig_, s.command("transport.set_post_roll", -1, "6000"), r) &&
+                       r.result == DispatchResult::Ok && transport().post_roll == 6000,
+                   "set_post_roll during a take failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Stopped;
+                   }),
+                   "the take did not stop");
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "disarming failed: " + r.message);
+
+            // C3: with loop record on, no punch range.
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop_record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_loop_record failed: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.punch_selection", -1, "48000-96000"), r) &&
+                       r.result != DispatchResult::Ok && mentions(r.message, "loop record is on"),
+                   "punch_selection with loop record on was not refused: " + r.message);
+            EXPECT(punch_is(0, 0), "a refused punch_selection set a range");
+            EXPECT(s.await(rig_, s.command("transport.toggle_loop_record"), r) &&
+                       r.result == DispatchResult::Ok,
+                   "toggle_loop_record off failed: " + r.message);
+            return ok();
+        }
+    };
+    return C(rig, "punch range and rolls at the authority").go();
+}
+
 // transport.locate (marker recall): stopped, the playhead moves to the
 // frame and stays; rolling, it jumps there and the roll goes on; a frame
 // that is not one, and any locate during a take, is refused by name.
@@ -2502,6 +2630,7 @@ int run(Rig& rig) {
     failures += check_loop_toggle(rig);
     failures += check_latency_probe(rig);
     failures += check_loop_record_mode(rig);
+    failures += check_punch_and_rolls(rig);
     failures += check_punch_on_the_fly(rig);
     failures += check_parameters(rig);
     failures += check_mix(rig);

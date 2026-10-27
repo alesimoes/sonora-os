@@ -19,7 +19,9 @@
 //   - Logic's C is transport.toggle_cycle, both modes together, which
 //     carries the selection too: it becomes the cycle area when none is set
 //     and is ignored when one is; Cmd+U, transport.cycle_selection, always
-//     makes it the area and turns Cycle on.
+//     makes it the area and turns Cycle on;
+//   - transport.punch_selection carries the selection, which the engine
+//     makes the punch range.
 #include <QGuiApplication>
 #include <cstdio>
 #include <string>
@@ -319,6 +321,40 @@ int test_follows_reconnect() {
 
 }  // namespace
 
+// #156 review N1: the punch range was set in this window and sent as a copy
+// of its settings, so an edit through a stale overlay could move the range
+// a take was using. transport.punch_selection now goes to the engine with
+// the selection, and the engine sets the one field.
+int test_punch_selection_goes_to_the_engine() {
+    api::testing::FakeEngine::Config cfg;
+    cfg.tracks = 4;
+    api::testing::FakeEngine fake(cfg);
+    ControlAdapter engine(fake);
+    std::string err;
+    CHECK(engine.connect(err));
+    KeyRouter router(load("protools.json"), engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    router.setPlayRange([]() { return std::string("48000-96000"); });
+    router.prepare(qt_device_chords(true));
+    RouteResult r = router.invoke("transport.punch_selection", CommandContext{});
+    CHECK(r.kind == RouteResult::Kind::Sent);
+    CHECK(r.ctx.argument == "48000-96000");
+    std::vector<CommandOutcome> replies;
+    engine.poll(replies);
+    CHECK(replies.size() == 1 && replies[0].result == DispatchResult::Ok);
+    const auto& tr = fake.document().settings.transport;
+    CHECK(tr.punch[0] == 48000 && tr.punch[1] == 96000);
+    r = router.invoke("transport.clear_punch", CommandContext{});
+    CHECK(r.kind == RouteResult::Kind::Sent && r.ctx.argument.empty());
+    replies.clear();
+    engine.poll(replies);
+    CHECK(replies.size() == 1 && replies[0].result == DispatchResult::Ok);
+    CHECK(tr.punch[0] == 0 && tr.punch[1] == 0);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_argument() != 0) return 1;
@@ -329,6 +365,7 @@ int main(int argc, char** argv) {
     if (test_toggle_loop_record() != 0) return 1;
     if (test_logic_cycle_from_no_range() != 0) return 1;
     if (test_cycle_keeps_the_range() != 0) return 1;
+    if (test_punch_selection_goes_to_the_engine() != 0) return 1;
     std::printf("ui play range: ok\n");
     return 0;
 }

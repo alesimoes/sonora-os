@@ -467,8 +467,9 @@ private:
     // the plugin may be inserted; the refusal otherwise.
     std::string catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const;
     // A SetSettings that moves the loop range while a loop take records
-    // (ADR-0016 §1), by name; empty otherwise.
-    std::string loop_refusal(const model::Snapshot& doc, model::MemberRef member) const;
+    // (ADR-0016 §1), or the punch range while any take is open or
+    // requested, by name; empty otherwise.
+    std::string transport_refusal(const model::Snapshot& doc, model::MemberRef member) const;
     // The plugin side, for one backend activation; null until the period is
     // known, and when no host is configured. Released in after_deactivate().
     std::unique_ptr<PluginHosting> hosting_;
@@ -575,6 +576,9 @@ private:
     // A take recording, asked for, or closing: its files are in Audio Files
     // and no source names them yet.
     bool takes_in_flight() const;
+    // A take recording or asked for. One closing has its punch range in its
+    // files already, so the range is free again.
+    bool take_open_or_requested() const;
     // The offer taken back, with an empty RecoveryOffer, if one stands.
     void withdraw_orphans();
 
