@@ -189,7 +189,7 @@ in real Pro Tools does something else.
 | `shift+7` | `track.toggle_arm` 7 | **Ours** | **No collision** found. |
 | `shift+8` | `track.toggle_arm` 8 | **Ours** | **No collision** found. |
 | `alt+shift+r` | `track.arm_all` | **Ours** | **No collision.** `Option+Shift+R` does not appear in any of the three guides (the only textual matches are prefixes of `Option+Shift+Return`). |
-| `alt+shift+d` | `track.disarm_all` | **Ours** | **COLLIDES, and badly** — "Duplicate Tracks — Option+Shift+D / **Alt+Shift+D**". Ch.8 *Track Menu*, clean in PT-C l.1270, same in PT-A l.2387 and PT-B. In real Pro Tools this chord duplicates the selected tracks. An engineer reaching for "disarm everything" and getting a track duplication is the worst outcome in this file. Recommend moving it. |
+| `alt+shift+d` | `track.disarm_all` | **Ours** | **COLLIDES, and badly** — "Duplicate Tracks — Option+Shift+D / **Alt+Shift+D**". Ch.8 *Track Menu*, clean in PT-C l.1270, same in PT-A l.2387 and PT-B. In real Pro Tools this chord duplicates the selected tracks. An engineer reaching for "disarm everything" and getting a track duplication is the worst outcome in this file. Recommend moving it. Done: `track.disarm_all` moved to `alt+shift+w`, and since `daw.model.tracks` (ADR-0023) this chord is `track.duplicate`, as in Pro Tools. |
 
 The neighbouring `shift+letter` keys are also taken and are worth avoiding:
 `shift+a` bypass all inserts, `shift+q` mute all sends, `shift+e`/`shift+c`/

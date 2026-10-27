@@ -424,9 +424,14 @@ int ride_follows_its_track() {
     }
     // The track leaves (an undone AddTrack) mid-ride: dropped, nothing saved.
     {
-        Rig r;
+        // Three live tracks: the ride on the fourth row has no live path,
+        // so each step goes to the document, where its undo can drop it.
+        Rig r(3);
         CHECK(r.connect());
         std::string why;
+        // Room for it on the four engine tracks (ADR-0023 §5).
+        CHECK(r.doc.submit(model::RemoveTrack{r.doc.snapshot().edit->tracks.back()->id}, why));
+        r.settle();
         model::AddTrack add;
         add.track = r.doc.reserve_id();
         add.name = "Extra";
@@ -435,19 +440,19 @@ int ride_follows_its_track() {
         add.mix.input = {0};
         CHECK(r.doc.submit(add, why));
         r.settle();
-        CHECK(r.session.trackCount() == 5);
-        r.mixer.beginRide(4);
-        r.mixer.ride(4, -30, 200, false);
+        CHECK(r.session.trackCount() == 4);
+        r.mixer.beginRide(3);
+        r.mixer.ride(3, -30, 200, false);
         r.settle();
-        CHECK(r.session.stripGain(4) > 0.0f);
+        CHECK(r.session.stripGain(3) > 0.0f);
         CHECK(r.doc.undo(why));
         r.settle();
-        CHECK(r.session.trackCount() == 4);
+        CHECK(r.session.trackCount() == 3);
         CHECK(r.mixer.rideTrack() == MixModel::kNoRide);
         CHECK(!r.refused.empty() && r.refused.back().find("gone") != std::string::npos);
         const uint64_t rev = r.doc.revision();
-        r.mixer.ride(4, -30, 200, false);
-        r.mixer.endRide(4);
+        r.mixer.ride(3, -30, 200, false);
+        r.mixer.endRide(3);
         r.settle();
         CHECK(r.doc.revision() == rev);
     }

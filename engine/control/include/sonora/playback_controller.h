@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -48,7 +49,9 @@ public:
     // or NaN on the audio thread.
     void apply_mix(const model::Snapshot& snapshot);
     // The sends' and the aux returns' part of apply_mix() (ADR-0022 §6).
-    void apply_sends(const model::Snapshot& snapshot);
+    // `tracks` false: the aux returns and the buses' own sends only, which
+    // no change of track order moves (ADR-0023 §4).
+    void apply_sends(const model::Snapshot& snapshot, bool tracks = true);
     // Engine track `track`'s gain alone, from the document's track there:
     // a ride whose rider left ends without the other faders moving. Nothing
     // for a track past the document's end.
@@ -100,6 +103,13 @@ public:
     bool settle(double seconds);
 
     bool pending() const { return pending_ != nullptr; }
+    // A plan that moves tracks between engine tracks is waiting to play
+    // (ADR-0023 §4). Until it does, each engine track's atomics belong to
+    // the track that was on it: nothing addressed by position (a fader
+    // ride, an arm) may be written to them, and the mix asked for meanwhile
+    // is written once the plan plays and no block can still be on the plan
+    // before it.
+    bool tracks_moving() const { return pending_mix_serial_ != 0 || adopting_ != nullptr; }
     bool locating() const { return locate_serial_ != 0 && !locate_sent_; }
     bool play_requested() const { return play_requested_; }
     bool record_requested() const { return record_requested_; }
@@ -147,6 +157,15 @@ private:
     // Whether a roll asked for at `generation` may start now.
     bool may_roll(uint64_t generation) const;
     bool registered(const model::Source& source, uint32_t& slot, std::string& error);
+    // ADR-0023 §4. Whether a mix of `snapshot`'s may go to the atomics now:
+    // they hold its track order and no plan moving tracks is pending.
+    bool atoms_follow(const model::Snapshot& snapshot) const;
+    // `plan`'s track_mix from `snapshot`, each engine track armed if the
+    // document track now on it was armed where it was before.
+    void fill_track_mix(PlaybackPlan& plan, const model::Snapshot& snapshot) const;
+    // Once no block can be on the plan before `plan`: its track_mix to the
+    // atomics, stamped with its serial, then any mix deferred meanwhile.
+    void adopt_track_mix(const PlaybackPlan& plan);
 
     Session& session_;
     BuildLimits limits_;
@@ -172,6 +191,19 @@ private:
     uint64_t last_built_epoch_ = 0;
 
     bool input_monitoring_ = true;
+    // The document track whose mix each engine track's atomics hold, by
+    // position; unset before the first mix is written.
+    std::optional<std::vector<model::Id>> atoms_order_;
+    uint32_t mix_serial_ = 0;           // the last PlaybackPlan::mix_serial given
+    uint32_t pending_mix_serial_ = 0;   // pending_'s; 0 when it moves no track
+    std::vector<model::Id> pending_order_;
+    // Published, its mix not yet in the atomics: a block that acquired the
+    // plan before it may still be running and reading them (#162 review
+    // B1). Always the playing plan while set, so never freed under it.
+    const PlaybackPlan* adopting_ = nullptr;
+    std::vector<model::Id> adopting_order_;
+    uint64_t adopting_blocks_ = 0;   // PlanExchange::blocks() at its publish
+    std::optional<model::Snapshot> deferred_mix_;
     // The document's transport.pre_roll and post_roll, from the last show().
     uint64_t pre_roll_ = 0;
     uint64_t post_roll_ = 0;

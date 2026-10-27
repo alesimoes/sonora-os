@@ -520,6 +520,59 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
     return true;
 }
 
+std::string FakeEngine::structure_refusal(const model::Snapshot& at,
+                                          const model::MemberRef& member) const {
+    std::vector<model::Id> after;
+    if (!model::track_order_after(at, member, after)) return {};
+    if (after.size() > at.edit->tracks.size() && after.size() > cfg_.tracks) {
+        return "the engine was started with " + std::to_string(cfg_.tracks) +
+               " tracks and the session has them all; delete a track before adding another";
+    }
+    if (std::string locked = structure_lock(); !locked.empty()) return locked;
+    if (mode_ != TransportState::Recording) return {};
+    return model::pinned_track_refusal(*at.edit, after, armed_, "is recording", "stop recording");
+}
+
+std::string FakeEngine::structure_lock() const {
+    if (record_requested_) return model::take_starting_track_refusal();
+    if (closing_take_ != 0) return model::take_closing_track_refusal(closing_take_);
+    return {};
+}
+
+void FakeEngine::hold_record_start(bool hold) {
+    hold_record_ = hold;
+    if (hold || !record_requested_) return;
+    record_requested_ = false;
+    position_ = playhead();
+    moved_ns_ = now();
+    mode_ = TransportState::Recording;
+    take_folders_[take_] = folder_;
+}
+
+std::string FakeEngine::step_refusal(bool undo) const {
+    const model::History& h = document_->history();
+    if (undo ? !h.can_undo() : !h.can_redo()) return {};
+    const auto& target = h.step_edit(undo ? h.undo_depth() - 1 : h.undo_depth() + 1);
+    const model::EditState& now = *document_->current().edit;
+    const std::vector<model::Id> after = model::track_order(*target);
+    if (after == model::track_order(now)) return {};
+    if (std::string locked = structure_lock(); !locked.empty()) return locked;
+    if (mode_ != TransportState::Recording) return {};
+    return model::pinned_track_refusal(now, after, armed_, "is recording", "stop recording");
+}
+
+void FakeEngine::carry_arms(const std::vector<model::Id>& before,
+                            const std::vector<model::Id>& after) {
+    if (before == after || mode_ == TransportState::Recording) return;
+    std::vector<model::Id> armed;
+    for (std::size_t i = 0; i < armed_.size() && i < before.size(); ++i) {
+        if (armed_[i]) armed.push_back(before[i]);
+    }
+    for (std::size_t i = 0; i < armed_.size(); ++i) {
+        armed_[i] = i < after.size() && std::find(armed.begin(), armed.end(), after[i]) != armed.end();
+    }
+}
+
 void FakeEngine::apply_mix() {
     const model::Snapshot& doc = document_->current();
     const auto& tracks = doc.edit->tracks;
@@ -1247,13 +1300,22 @@ void FakeEngine::handle(const std::string& bytes) {
                             at.settings.transport, set->settings.transport);
                         if (!refusal.empty()) return refusal;
                     }
+                    if (std::string refusal = structure_refusal(at, member); !refusal.empty()) {
+                        return refusal;
+                    }
                     return insert_refusal(at, cfg_.plugins, member);
                 };
                 ok = document_->apply(op, u, why, check);
                 break;
             }
-            case ModelAction::Undo: ok = document_->undo(u, why); break;
-            case ModelAction::Redo: ok = document_->redo(u, why); break;
+            case ModelAction::Undo:
+            case ModelAction::Redo: {
+                const bool undo = m.action == ModelAction::Undo;
+                why = step_refusal(undo);
+                if (!why.empty()) break;
+                ok = undo ? document_->undo(u, why) : document_->redo(u, why);
+                break;
+            }
             case ModelAction::Resync:
                 ok = document_->snapshot(u, why, wire::kMaxModelBytes);
                 break;
@@ -1301,6 +1363,12 @@ void FakeEngine::handle(const std::string& bytes) {
         }
         std::vector<model::Id> order_after;
         for (const auto& t : document_->current().edit->tracks) order_after.push_back(t->id);
+        // The arm goes with its track, as the engine's does once the plan
+        // that moves them plays (ADR-0023 §4); another session's tracks
+        // are not these.
+        if (m.action != ModelAction::Load && m.action != ModelAction::Resync) {
+            carry_arms(order_before, order_after);
+        }
         const model::MixState& mix_after = document_->current().mix;
         if (mix_changed || !(mix_after.bus == mix_before.bus) ||
             !(mix_after.tracks == mix_before.tracks) || order_after != order_before) {
@@ -1351,6 +1419,10 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
                   ", before the playhead at " + frame_text(at);
             return false;
         }
+        if (hold_record_) {
+            record_requested_ = true;
+            return true;
+        }
         move(TransportState::Recording);
         take_folders_[take_] = folder_;
         return true;
@@ -1360,11 +1432,13 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         move(TransportState::Stopped);
         const bool failed = failed_take_ == take_ && take_failed_shown_;
         if (failed) why = take_file(take_) + ": no space left on device";
+        if (hold_closing_) closing_take_ = static_cast<int>(take_);
         ++take_;
         return !failed;
     };
     // A roll is not a take: stopping it closes no file and uses no number.
     const auto stop = [&]() {
+        record_requested_ = false;
         if (recording) return finish();
         if (mode_ == TransportState::Rolling) move(TransportState::Stopped);
         return true;
@@ -1401,6 +1475,7 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     if (id == "transport.punch") {
         if (!recording) return start();
         move(TransportState::Rolling);
+        if (hold_closing_) closing_take_ = static_cast<int>(take_);
         ++take_;
         return true;
     }

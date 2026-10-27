@@ -516,6 +516,21 @@ struct Encoder {
         for (const Id id : o.order) order.push(id_value(id));
         return v;
     }
+    Value operator()(const RemoveTrack& o) const {
+        Value v = with_kind("RemoveTrack");
+        v.set("track", id_value(o.track));
+        return v;
+    }
+    Value operator()(const DuplicateTrack& o) const {
+        Value v = with_kind("DuplicateTrack");
+        v.set("source", id_value(o.source));
+        v.set("track", id_value(o.track));
+        v.set("name", Value::string(o.name));
+        v.set("all_playlists", Value::boolean(o.all_playlists));
+        v.set("inserts", Value::boolean(o.inserts));
+        v.set("sends", Value::boolean(o.sends));
+        return v;
+    }
     Value operator()(const AddInsert& o) const {
         Value v = with_kind("AddInsert");
         v.set("track", id_value(o.track));
@@ -1340,6 +1355,21 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
                 return rd.fail("order", "must hold track ids");
             }
             o.order.push_back(static_cast<Id>(n));
+        }
+        out = std::move(o);
+    } else if (kind == "RemoveTrack") {
+        RemoveTrack o;
+        if (!rd.keys(v, "", {"op", "track"}) || !rd.id(v, "", "track", o.track)) return false;
+        out = o;
+    } else if (kind == "DuplicateTrack") {
+        DuplicateTrack o;
+        if (!rd.keys(v, "", {"op", "source", "track", "name", "all_playlists", "inserts",
+                             "sends"}) ||
+            !rd.id(v, "", "source", o.source) || !rd.id(v, "", "track", o.track) ||
+            !rd.text(v, "", "name", o.name) ||
+            !rd.flag(v, "", "all_playlists", o.all_playlists) ||
+            !rd.flag(v, "", "inserts", o.inserts) || !rd.flag(v, "", "sends", o.sends)) {
+            return false;
         }
         out = std::move(o);
     } else if (kind == "AddInsert") {
@@ -2288,7 +2318,8 @@ const char* const kNames[] = {
     "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
     "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
-    "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "Compound"};
+    "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
+    "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

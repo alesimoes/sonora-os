@@ -210,6 +210,39 @@ struct ReorderTracks {
     std::vector<Id> order;
 };
 
+// Takes the track out of the session (ADR-0023 §3). Its mix entry and its
+// inserts' values stay in MixState, as an undone AddTrack's do, so undo
+// brings it back with its faders and plugins as they were; its sources stay
+// in the pool.
+struct RemoveTrack {
+    Id track = 0;
+};
+
+// A new track directly below `source`, holding a copy of what it holds
+// (ADR-0023 §2), Pro Tools' Duplicate Tracks with its default choices. Every
+// object the copy holds gets a new id: `track` is the copy's, and the rest
+// follow it one by one, for each playlist copied, in the source's order, the
+// playlist and then its regions in position order, then each insert copied,
+// in slot order, then each send copied, in slot order. duplicate_track_ids()
+// says how many that is. Sources and MIDI sequences are shared, not copied.
+// The mix, the inserts' values and the sends' values are copied, solo off.
+struct DuplicateTrack {
+    Id source = 0;
+    Id track = 0;
+    std::string name;
+    bool all_playlists = false;   // false: the active playlist only
+    bool inserts = true;          // with their values
+    bool sends = true;            // the same buses, with their values
+};
+
+// How many ids `op` takes from op.track upward on `s`; 0 when op.source is
+// not a track of `s`.
+std::size_t duplicate_track_ids(const Snapshot& s, const DuplicateTrack& op);
+
+// Pro Tools' name for a duplicate: "<name>.dup<n>", the lowest n no track of
+// `s` has. Empty when `source` is not a track of `s`.
+std::string duplicate_track_name(const Snapshot& s, Id source);
+
 // --- inserts (ADR-0012 §6.3) ------------------------------------------------
 //
 // Structure (which plugin, which slot, active) is undoable: owner decision
@@ -413,7 +446,8 @@ using Member =
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
-                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix>;
+                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
+                 DuplicateTrack>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -446,7 +480,8 @@ using Operation =
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
-                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, Compound>;
+                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
+                 DuplicateTrack, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");
@@ -504,5 +539,29 @@ using MemberCheck = std::function<std::string(const Snapshot& at, MemberRef memb
 // is then `error` as it stands).
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,
            std::string& error, const MemberCheck& check = {});
+
+// --- track order, for an engine that maps tracks by position (ADR-0023) ----
+
+std::vector<Id> track_order(const EditState& e);
+
+// The display order `member` leaves on `at`, without applying it: true, with
+// `order`, for AddTrack, RemoveTrack, ReorderTracks and DuplicateTrack that
+// apply() would accept as far as the tracks go; false for anything else.
+bool track_order_after(const Snapshot& at, MemberRef member, std::vector<Id>& order);
+
+// Empty, or why `after` may not replace the order of `before` while the
+// tracks at the positions `pinned` marks are being written: each must stay
+// where it is. `doing` and `remedy` complete the words: "\"Vox\" <doing>:
+// <remedy> before deleting it".
+std::string pinned_track_refusal(const EditState& before, const std::vector<Id>& after,
+                                 const std::vector<bool>& pinned, const std::string& doing,
+                                 const std::string& remedy);
+
+// Why no change of track order or set goes through while a take is about to
+// start, or while take `take` is closing: its files are placed on the
+// tracks at their rows when they are in (ADR-0023 §5). The same words from
+// every engine.
+std::string take_starting_track_refusal();
+std::string take_closing_track_refusal(int take);
 
 }  // namespace sonora::model

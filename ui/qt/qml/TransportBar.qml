@@ -18,6 +18,9 @@ Rectangle {
     // The Edit menu, drawn by the window under the point given.
     signal editMenuRequested(real x, real y)
     property bool editMenuOpen: false
+    // The Track menu, the same way.
+    signal trackMenuRequested(real x, real y)
+    property bool trackMenuOpen: false
     // The Setup menu, the same way.
     signal setupMenuRequested(real x, real y)
     property bool setupMenuOpen: false
@@ -90,6 +93,18 @@ Rectangle {
                 onClicked: {
                     const p = editMenuButton.mapToItem(null, 0, editMenuButton.height)
                     bar.editMenuRequested(p.x, p.y)
+                }
+            }
+            // Pro Tools' Track menu (ADR-0023): new, duplicate, delete and
+            // move, on the selected track.
+            SButton {
+                id: trackMenuButton
+                objectName: "trackMenuButton"
+                text: "Track ▾"; implicitHeight: 28; implicitWidth: 60
+                active: bar.trackMenuOpen
+                onClicked: {
+                    const p = trackMenuButton.mapToItem(null, 0, trackMenuButton.height)
+                    bar.trackMenuRequested(p.x, p.y)
                 }
             }
             // Pro Tools' Setup menu: what belongs to the machine, not the

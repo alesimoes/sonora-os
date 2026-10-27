@@ -240,6 +240,15 @@
       "command": "track.disarm_all",
       "origin": "sonora",
       "comment": "Ours. Moved off alt+shift+d, which is Pro Tools' Duplicate Tracks. Option+Shift+W appears in none of Avid's 12.5, 2021.6 or 2025.6 guides."
+    },
+    "alt+shift+d": {
+      "command": "track.duplicate",
+      "comment": "Duplicate Tracks, Option+Shift+D: Shortcuts Guide ch. 8, Track Menu (brain/research/protools-logic-key-bindings.md). The dialog's default choices, without the dialog: the active playlist, the inserts and the mix (ADR-0023)."
+    },
+    "ctrl+shift+n": {
+      "command": "track.new",
+      "verified": false,
+      "comment": "Track > New, Command+Shift+N: opens New Tracks, which asks how many. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
     }
   }
 }

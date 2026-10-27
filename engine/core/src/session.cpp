@@ -495,6 +495,20 @@ std::string Session::folder_change_refusal() const {
     return {};
 }
 
+int Session::closing_take() const {
+    for (const auto& [take, c] : closing_) {
+        if (take != recording_take_) return take;
+    }
+    // Collected, but a slot is released only once its file is closed.
+    for (const auto& t : tracks_) {
+        for (int s = 0; s < Track::kWriterSlots; ++s) {
+            const int take = t->slot_take(s);
+            if (take != 0 && take != recording_take_) return take;
+        }
+    }
+    return 0;
+}
+
 bool Session::set_folder(std::string path, std::string& why) {
     why = folder_change_refusal();
     if (!why.empty()) return false;
@@ -1008,6 +1022,12 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         reseek_ = true;
         plan_valid_ = plan_in_bounds(*plan);
         adopt_param_order(*plan);
+        snap_mix_ = plan->mix_serial != 0;
+        // The monitor ramps too: what an engine track was sending belonged
+        // to the track that was on it.
+        if (snap_mix_) {
+            for (std::size_t e = 0; e < tracks_.size(); ++e) monitor_stamp_[e] = 0;
+        }
     }
     ++callbacks_;
 
@@ -1131,7 +1151,8 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // Meter every input, armed or not, so the UI shows signal before anyone
     // hits record.
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
-        const float* in = i < block.input_count ? block.inputs[i] : nullptr;
+        const uint32_t c = mix_view(*plan, i).input;
+        const float* in = c < block.input_count ? block.inputs[c] : nullptr;
         if (!in) continue;
         float peak = 0.0f;
         for (uint32_t f = 0; f < nframes; ++f) {
@@ -1221,25 +1242,40 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // last block ended on (ADR-0009 §4.5). Solo, mute and gain fold into one
     // coefficient per side, so each ramps to and from zero like a fader.
     bool any_solo = false;
-    for (const auto& t : tracks_) any_solo = any_solo || t->soloed();
+    for (std::size_t e = 0; e < tracks_.size(); ++e) any_solo = any_solo || mix_view(*plan, e).solo;
     for (std::size_t e = 0; e < tracks_.size(); ++e) {
-        const Track& t = *tracks_[e];
-        const float level = t.gain();
-        const bool open = !(t.muted() || (any_solo && !t.soloed() && !t.solo_safe()));
+        const TrackMixView v = mix_view(*plan, e);
+        const float level = v.gain;
+        const bool open = !(v.mute || (any_solo && !v.solo && !v.solo_safe));
         const float g = open ? level : 0.0f;
-        const float pan = t.pan();
+        const float pan = v.pan;
         float l = 0.0f;
         float r = 0.0f;
-        pan_gains(pan, t.channels() >= 2, plan->pan_exponent, l, r);
+        pan_gains(pan, tracks_[e]->channels() >= 2, plan->pan_exponent, l, r);
         track_target_[2 * e] = g * l;
         track_target_[2 * e + 1] = g * r;
         track_open_[e] = open ? 1.0f : 0.0f;
         track_level_[e] = level;
         track_pan_[e] = pan;
     }
+    if (snap_mix_) {
+        for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
+    }
     bus_target_ = bus_gain_.load(std::memory_order_relaxed);
     // Indices from a plan that is not in bounds are never followed.
     if (plan_valid_) send_targets(*plan);
+    // A track's sends moved with it: what a send state ramped from belonged
+    // to the track that was on its row (ADR-0023 section 4).
+    if (snap_mix_) {
+        snap_mix_ = false;
+        const auto tracks_n = static_cast<uint32_t>(tracks_.size());
+        for (uint32_t ei = 0; plan_valid_ && ei < plan->edge_count; ++ei) {
+            const uint32_t k = plan->edges[ei].send;
+            if (k == kNoSend || k / kStripSendSlots >= tracks_n) continue;
+            send_gain_[2 * k] = send_target_[2 * k];
+            send_gain_[2 * k + 1] = send_target_[2 * k + 1];
+        }
+    }
 
     if (playhead != expected_playhead_) reseek_ = true;
     block_frames_ = nframes;
@@ -1365,7 +1401,8 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
 
         // Capture is pre-fader by design: the fader is a monitoring decision
         // and must not be baked into the recorded file.
-        const float* in = i < block.input_count ? block.inputs[i] : nullptr;
+        const uint32_t c = t.input();
+        const float* in = c < block.input_count ? block.inputs[c] : nullptr;
         const uint64_t block_start = captured_[i];
         if (in) {
             const auto count = static_cast<std::size_t>(to - from);
@@ -1642,9 +1679,9 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
                             float* const out[2]) noexcept SONORA_RT {
     const PlanTrack& pt = plan.tracks[node.track];
     const uint32_t e = pt.engine_track;
-    const Track& t = *tracks_[e];
-    const Track::Monitor mon = t.monitor();
-    const bool armed = t.rec_armed();
+    const TrackMixView v = mix_view(plan, e);
+    const Track::Monitor mon = v.monitor;
+    const bool armed = v.armed;
     // Auto: the input while armed and stopped or recording, playback
     // otherwise; in a take, the punch points say where, frame by frame.
     const bool by_punch = mon == Track::Monitor::Auto && armed && rolling && recording;
@@ -1665,7 +1702,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
 
     const bool steady = !by_punch || !(monitor_ramp_touches(p.monitor_in, xf, from, n) ||
                                        monitor_ramp_touches(p.monitor_out, xf, from, n));
-    const float* in = e < block.input_count ? block.inputs[e] : nullptr;
+    const float* in = v.input < block.input_count ? block.inputs[v.input] : nullptr;
     if (steady && pos == first && pos == 1.0f) {
         if (in) {
             std::memcpy(out[0], in + offset, n * sizeof(float));
@@ -1750,6 +1787,37 @@ uint32_t Session::newest_punch(uint32_t take) const noexcept SONORA_RT {
         if (found == punch_slots_ || punch_stored_[k] > punch_stored_[found]) found = k;
     }
     return found;
+}
+
+Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
+                                        std::size_t e) const noexcept SONORA_RT {
+    const Track& t = *tracks_[e];
+    TrackMixView v;
+    if (plan.mix_serial != 0 && e < plan.track_mix_count && t.mix_serial() != plan.mix_serial) {
+        const PlanTrackMix& m = plan.track_mix[e];
+        v.gain = m.gain;
+        v.pan = m.pan;
+        v.mute = m.mute;
+        v.solo = m.solo;
+        v.solo_safe = m.solo_safe;
+        v.armed = m.armed;
+        // Read before plan_in_bounds() has judged the plan, so a value no
+        // Monitor names is taken as Off rather than trusted.
+        v.monitor = m.monitor <= static_cast<uint8_t>(Track::Monitor::Off)
+                        ? static_cast<Track::Monitor>(m.monitor)
+                        : Track::Monitor::Off;
+        v.input = m.input;
+        return v;
+    }
+    v.gain = t.gain();
+    v.pan = t.pan();
+    v.mute = t.muted();
+    v.solo = t.soloed();
+    v.solo_safe = t.solo_safe();
+    v.armed = t.rec_armed();
+    v.monitor = t.monitor();
+    v.input = t.input();
+    return v;
 }
 
 bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
@@ -1921,12 +1989,29 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         const uint32_t k = plan.edges[ei].send;
         if (k == kNoSend) continue;
         const uint32_t strip = k / kStripSendSlots;
-        const SendState& s = sends_[k];
-        const float level = s.level.load(std::memory_order_relaxed);
-        const float own_pan = s.pan.load(std::memory_order_relaxed);
-        const bool follow = s.follow_pan.load(std::memory_order_relaxed);
-        const bool mute = s.mute.load(std::memory_order_relaxed);
-        const bool pre = s.pre.load(std::memory_order_relaxed);
+        float level = 0.0f;
+        float own_pan = 0.0f;
+        bool follow = true;
+        bool mute = false;
+        bool pre = false;
+        // A track's sends are keyed by its row: while the track lags a plan
+        // that moved it, the plan holds them (ADR-0023 section 4).
+        if (strip < tracks_n && plan.mix_serial != 0 && k < plan.send_mix_count &&
+            tracks_[strip]->mix_serial() != plan.mix_serial) {
+            const PlanSendMix& m = plan.send_mix[k];
+            level = m.level;
+            own_pan = m.pan;
+            follow = m.follow_pan;
+            mute = m.mute;
+            pre = m.pre;
+        } else {
+            const SendState& s = sends_[k];
+            level = s.level.load(std::memory_order_relaxed);
+            own_pan = s.pan.load(std::memory_order_relaxed);
+            follow = s.follow_pan.load(std::memory_order_relaxed);
+            mute = s.mute.load(std::memory_order_relaxed);
+            pre = s.pre.load(std::memory_order_relaxed);
+        }
         float open = 0.0f;
         float fader = 0.0f;
         float strip_pan = 0.0f;

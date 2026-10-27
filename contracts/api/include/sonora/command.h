@@ -136,6 +136,14 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.select", CommandTarget::Track, "Make a track the selected track"},
         {"track.select_next", CommandTarget::None, "Select the next track down"},
         {"track.select_previous", CommandTarget::None, "Select the next track up"},
+        // Pro Tools' Track menu (ADR-0023). New asks how many; the argument
+        // is the count. The others act on the track given, or the selected one.
+        {"track.new", CommandTarget::None, "New mono audio tracks below the selected one", true},
+        {"track.duplicate", CommandTarget::Track,
+         "Duplicate a track: its playlist, plug-ins and mix, below it"},
+        {"track.delete", CommandTarget::Track, "Delete a track"},
+        {"track.move_up", CommandTarget::Track, "Move a track up one row"},
+        {"track.move_down", CommandTarget::Track, "Move a track down one row"},
 
         // --- edit modes (ADR-0004: workflow, reproduced deliberately) ---
         {"edit.mode.shuffle", CommandTarget::None, "Shuffle edit mode",

@@ -111,6 +111,11 @@ class SessionModel : public QObject {
     // would elide them and clear them in seconds; a value changed under
     // the operator must not be said only that briefly.
     Q_PROPERTY(QVariantList repairs READ repairs NOTIFY repairsChanged)
+    // Why the last track delete, duplicate, move or new was refused while a
+    // take ran (ADR-0023 §5): held until dismissed or until a track command
+    // goes through, since the operator may be watching the take, not the
+    // status line.
+    Q_PROPERTY(QString trackRefusal READ trackRefusal NOTIFY trackRefusalChanged)
 
 public:
     // `synthetic_peaks`: the waveforms `peaks` draws are not the sources'
@@ -121,6 +126,15 @@ public:
     // Where File > Save puts a new session and File > Open looks
     // (session_files.h). Set before the first save.
     void setSessionsDir(const QString& dir) { sessions_dir_ = dir; }
+    // What the engine says about its tracks, for refusing a track command
+    // here before it is sent (ADR-0023 §5): which are armed, by row, and how
+    // many engine tracks there are (0: no limit known, as with no engine).
+    void setEngineTracks(std::function<std::vector<bool>()> armed, std::function<int()> count) {
+        engine_armed_ = std::move(armed);
+        engine_track_count_ = std::move(count);
+    }
+    QString trackRefusal() const { return track_refusal_; }
+    Q_INVOKABLE void dismissTrackRefusal() { setTrackRefusal(QString()); }
     const QString& sessionsDir() const { return sessions_dir_; }
     // The engine's SessionFolder (ADR-0018 §4): where it writes this
     // session's takes. A first Save goes there while the folder holds no
@@ -387,8 +401,18 @@ signals:
     // edit.repeat again with it. `what` says what one copy is ("2.000 s of
     // Gtr"), so the number is asked about something the operator can see.
     void repeatRequested(int count, const QString& what);
+    // track.new without a count: the window asks how many, offering 1.
+    void newTracksRequested();
+    void trackRefusalChanged();
 
 private:
+    // A track command through the controller, `run_op`, checked here first
+    // against the engine's tracks with the order it would leave (0 for a
+    // track not made yet): past the engine's count, or moving or deleting a
+    // track a take records (held).
+    bool trackCommand(const std::function<bool(std::string&)>& run_op,
+                      const std::vector<model::Id>& after, std::string& why);
+    void setTrackRefusal(const QString& why);
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);
@@ -455,6 +479,9 @@ private:
     SendCommand send_command_;
 
     TransportOverlay overlay_;
+    std::function<std::vector<bool>()> engine_armed_;
+    std::function<int()> engine_track_count_;
+    QString track_refusal_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;
     TimeFormat sub_fmt_ = TimeFormat::MinSec;
     QString main_counter_, sub_counter_;

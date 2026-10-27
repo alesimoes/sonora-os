@@ -149,6 +149,16 @@ target_compile_definitions(test_ui_markers PRIVATE
 add_test(NAME ui_markers COMMAND test_ui_markers)
 set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The Track menu (ADR-0023): new, duplicate, delete, move, their refusals
+# before sending, then the menu, a header's right-click and the New Tracks
+# dialog in the real QML.
+add_executable(test_ui_tracks tests/test_tracks.cpp)
+target_link_libraries(test_ui_tracks PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_tracks PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_tracks COMMAND test_ui_tracks)
+set_tests_properties(ui_tracks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.
 add_executable(test_ui_latency tests/test_latency.cpp)

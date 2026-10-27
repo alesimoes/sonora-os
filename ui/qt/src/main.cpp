@@ -551,6 +551,12 @@ int main(int argc, char** argv) {
     ShellModel model(engine, router);
     a.model = &model;
     QObject::connect(&session, &SessionModel::openNotice, &model, &ShellModel::setOpenNotice);
+    session.setEngineTracks(
+        [&model]() {
+            const QList<bool> armed = model.armed();
+            return std::vector<bool>(armed.begin(), armed.end());
+        },
+        [&model]() { return model.engineAlive() ? model.trackCount() : 0; });
     QObject::connect(&model, &ShellModel::sessionFolder, &session, &SessionModel::setEngineFolder);
     link_transport(model, session, transport);
     link_marker_locate(model, session);

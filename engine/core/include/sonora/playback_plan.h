@@ -154,6 +154,32 @@ struct ClickSegment {
     uint32_t first_beat = 0;     // beat 0's place in its bar; 0 is a downbeat
 };
 
+// One engine track's mix as a plan places the document's tracks after a
+// change of their order or set (ADR-0023 §4). The values Track's atomics
+// will hold once the control thread has caught up with the plan.
+struct PlanTrackMix {
+    float gain = 1.0f;   // linear
+    float pan = 0.0f;
+    bool mute = false;
+    bool solo = false;
+    bool solo_safe = false;
+    bool armed = false;
+    uint8_t monitor = 0;   // Track::Monitor
+    uint32_t input = 0;
+};
+
+// One send slot of an engine track, as the same plan places the tracks:
+// the send state Session::set_send() will hold for that strip and slot.
+// A send's state is keyed by row (ADR-0022 sends, section 5), so it moves
+// with its track at the swap as the fader does.
+struct PlanSendMix {
+    float level = 0.0f;   // linear
+    float pan = 0.0f;
+    bool follow_pan = true;
+    bool mute = false;
+    bool pre = false;
+};
+
 struct PlanSizes {
     uint32_t tracks = 0;
     uint32_t segments = 0;
@@ -161,6 +187,8 @@ struct PlanSizes {
     uint32_t edges = 0;
     uint32_t chunk_slots = 0;
     uint32_t click_segments = 0;
+    uint32_t track_mix = 0;   // engine tracks, or 0 for a plan that carries no mix
+    uint32_t send_mix = 0;    // engine tracks x kStripSendSlots, or 0
 };
 
 struct PlaybackPlan {
@@ -199,6 +227,21 @@ struct PlaybackPlan {
     // Mono tracks pan as ((1 -+ pan) / 2) ^ pan_exponent, which is
     // pan_law_db at centre; precomputed so the audio thread takes no log.
     float pan_exponent = 0.5f;
+    // ADR-0023 §4. Engine track e plays the plan's track at e, and its mix
+    // is in Track's atomics, which the control thread writes. After a change
+    // of track order those still hold the order the last plan played until
+    // the control thread rewrites them, just after it publishes this plan.
+    // Until a track's Track::mix_serial() is this plan's mix_serial, the
+    // audio thread takes its mix from track_mix[e] instead, so the faders
+    // move with the tracks at the swap and never before or after it. 0, and
+    // no track_mix: the atomics are current.
+    uint32_t mix_serial = 0;
+    PlanTrackMix* track_mix = nullptr;
+    uint32_t track_mix_count = 0;
+    // The tracks' send slots the same way, at e * kStripSendSlots + slot:
+    // read for a track strip's send while that track lags the plan.
+    PlanSendMix* send_mix = nullptr;
+    uint32_t send_mix_count = 0;
 };
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "chunk slots");

@@ -61,6 +61,10 @@ add_test(NAME model_inserts COMMAND test_model_inserts)
 add_executable(test_model_sends tests/test_sends.cpp)
 target_link_libraries(test_model_sends PRIVATE sonora_model_audited)
 add_test(NAME model_sends COMMAND test_model_sends)
+# Track structure: delete, duplicate (ADR-0023).
+add_executable(test_model_tracks tests/test_tracks.cpp)
+target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)
+add_test(NAME model_tracks COMMAND test_model_tracks)
 
 add_executable(test_model_random_edits tests/test_random_edits.cpp)
 target_link_libraries(test_model_random_edits PRIVATE sonora_model_audited)

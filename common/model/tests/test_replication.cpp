@@ -187,6 +187,8 @@ std::vector<Operation> one_of_each() {
             RemoveSend{61},
             SetSendMix{SendMix{61, -6.0f, 0.75f, true, false, false}},
             SetBusMix{BusMix{60, 1.5f, -1.0f, false}},
+            RemoveTrack{9},
+            DuplicateTrack{2, 50, "Kick.dup1", true, false},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

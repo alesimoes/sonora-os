@@ -124,6 +124,13 @@ add_executable(test_playback_control tests/test_playback_control.cpp)
 target_link_libraries(test_playback_control PRIVATE sonora_control)
 add_test(NAME playback_control COMMAND test_playback_control)
 
+# Track structure while rolling (ADR-0023 §4): heard exactly through each
+# swap, nothing allocated in process(); the arm and input follow the track.
+add_executable(test_track_structure tests/test_track_structure.cpp)
+target_link_libraries(test_track_structure PRIVATE sonora_control)
+target_include_directories(test_track_structure PRIVATE ${CMAKE_SOURCE_DIR}/engine/core/tests)
+add_test(NAME track_structure COMMAND test_track_structure)
+
 # The click against model::MusicalMap through the plan builder and the
 # controller (ADR-0020 §1), the document's count-off bars, the toggles.
 add_executable(test_click_control tests/test_click.cpp)

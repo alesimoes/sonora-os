@@ -231,10 +231,12 @@ struct SegmentSpec {
 
 // The Phase 2 graph over `tracks` engine tracks (0..tracks-1), with the
 // given segments, which must be sorted by track then start. Chunk slots are
-// laid out the way engine/control's builder lays them out.
+// laid out the way engine/control's builder lays them out. `track_mix`
+// entries are made for the caller to fill, with mix_serial left at 0.
 inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
                                        const std::vector<SegmentSpec>& specs,
-                                       uint32_t chunk_frames, uint32_t edge_delay = 0) {
+                                       uint32_t chunk_frames, uint32_t edge_delay = 0,
+                                       uint32_t track_mix = 0) {
     uint32_t slots = 0;
     for (const SegmentSpec& s : specs) {
         const int64_t first = s.source_offset / chunk_frames;
@@ -247,6 +249,7 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
     sizes.nodes = tracks + 2;
     sizes.edges = tracks + 1;
     sizes.chunk_slots = slots;
+    sizes.track_mix = track_mix;
     sonora::PlaybackPlan* p = sonora::create_plan(sizes);
     p->epoch = epoch;
     p->chunk_frames = chunk_frames;

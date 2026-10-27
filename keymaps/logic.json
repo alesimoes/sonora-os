@@ -165,6 +165,16 @@
       "command": "track.disarm_all",
       "origin": "sonora",
       "comment": "Ours. Not in Logic's key-command tables, but the guide's event-editor prose gives Option-Shift-D for Deselect All there, so it is close quarters."
+    },
+    "alt+cmd+n": {
+      "command": "track.new",
+      "verified": false,
+      "comment": "New Tracks, Option-Command-N: asks how many. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md. Command-D, New Track with Duplicate Settings, is left unbound: it makes an empty track, and track.duplicate copies the regions too."
+    },
+    "cmd+backspace": {
+      "command": "track.delete",
+      "verified": false,
+      "comment": "Delete Track, Command-Delete. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
     }
   }
 }

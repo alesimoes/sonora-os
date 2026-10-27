@@ -147,6 +147,20 @@ public:
     uint64_t passes() const { return passes_.load(std::memory_order_acquire); }
 
 private:
+    // Only a test defines it, to reach set_hold_hook().
+    friend struct DiskReaderTestAccess;
+    // While it returns true the thread skips its passes, and run_pass()
+    // returns at once, so nothing new becomes resident: a Record then waits
+    // as it does for a slow disk. Set before start(); read unlocked.
+    using HoldHook = bool (*)(void* context);
+    void set_hold_hook(HoldHook hook, void* context) {
+        if (running()) return;
+        hold_ = hook;
+        hold_context_ = context;
+    }
+    HoldHook hold_ = nullptr;
+    void* hold_context_ = nullptr;
+
     struct Source {
         WavReader file;
         uint16_t channels = 0;

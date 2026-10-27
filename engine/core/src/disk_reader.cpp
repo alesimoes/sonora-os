@@ -119,6 +119,7 @@ void DiskReader::after_deactivate() {
 }
 
 void DiskReader::run_pass() {
+    if (hold_ != nullptr && hold_(hold_context_)) return;
     Request req;
     bool deactivated = false;
     {
@@ -146,6 +147,7 @@ void DiskReader::run() {
             deactivate = deactivate_requests_;
         }
         if (!running_.load()) break;
+        if (hold_ != nullptr && hold_(hold_context_)) continue;
         // Adopt first: a plan dropped before the deactivate is detached, so
         // its buffers count as unlinked before it.
         if (req.generation != adopted_.load(std::memory_order_relaxed)) adopt(req);

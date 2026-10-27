@@ -66,6 +66,8 @@ class Document;
 class LoadParts;
 struct ReplicationUpdate;
 struct Snapshot;
+class MemberRef;
+using Id = std::uint64_t;
 }
 
 namespace sonora::api::testing {
@@ -165,6 +167,16 @@ public:
     // stop reports the take as Failed. A later take that records cleanly
     // clears both, as the real engine's control thread does.
     void script_take_failure(bool fail) { fail_takes_ = fail; }
+    // While held, a take punched out or stopped stays closing, as the real
+    // engine's does until its files are in; released, it is in at once.
+    // The conformance suite's take states (ADR-0023 section 5).
+    void hold_takes_closing(bool hold) {
+        hold_closing_ = hold;
+        if (!hold) closing_take_ = 0;
+    }
+    // While held, a Record waits to start, as the real engine's does for
+    // its window; released, a Record still waiting starts.
+    void hold_record_start(bool hold);
     // While not empty, every Save is refused with `why` and writes nothing,
     // as one the disk refused would be.
     void script_save_failure(std::string why) { save_failure_ = std::move(why); }
@@ -285,6 +297,15 @@ private:
     // As engine/control's PlaybackController::apply_mix: the document's
     // faders onto the published tracks, track i being the document's i-th.
     void apply_mix();
+    // As engine/control (ADR-0023 §5): a member adding a track past the
+    // engine's count, or deleting or moving an armed track during a take;
+    // and an undo or redo that would do the second. Empty otherwise.
+    std::string structure_refusal(const model::Snapshot& at, const model::MemberRef& member) const;
+    std::string step_refusal(bool undo) const;
+    // A take about to start or held closing: every structure change waits.
+    std::string structure_lock() const;
+    // Outside a take, each arm stays with its document track (§4).
+    void carry_arms(const std::vector<model::Id>& before, const std::vector<model::Id>& after);
 
     Config cfg_;
     Hello hello_;
@@ -313,6 +334,10 @@ private:
     uint64_t moved_ns_ = 0;
     int32_t take_ = 1;
     std::vector<bool> armed_;
+    bool hold_closing_ = false;
+    int closing_take_ = 0;      // a take held closing, or 0
+    bool hold_record_ = false;
+    bool record_requested_ = false;
     std::vector<std::string> planned_;
     std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;

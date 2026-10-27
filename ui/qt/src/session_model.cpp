@@ -147,6 +147,61 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return true;
     });
     simple("edit.select_all", [this](const CommandContext&, Why& why) { return ctl_.select_all(why); });
+
+    // --- Pro Tools' Track menu (ADR-0023) ---
+    // A track command acts on the track given, or the selected one (the
+    // router fills the target from the selection).
+    const auto order = [this]() { return model::track_order(*ctl_.snapshot().edit); };
+    const auto row = [this](const CommandContext& ctx) {
+        return ctx.has_target() ? ctx.target : ctl_.selection().track;
+    };
+    simple("track.new", [this, order](const CommandContext& ctx, Why& why) {
+        // Pro Tools' New Tracks asks how many first.
+        if (ctx.argument.empty()) {
+            emit newTracksRequested();
+            return true;
+        }
+        int count = 0;
+        if (!parse_repeat_count(ctx.argument, count)) {
+            why = "\"" + ctx.argument +
+                  "\" is not a number of tracks; type a whole number, 1 or more. No track was made.";
+            return false;
+        }
+        std::vector<model::Id> after = order();
+        const int n = static_cast<int>(after.size());
+        const int sel = ctl_.selection().track;
+        const int at = sel >= 0 && sel < n ? sel + 1 : n;
+        after.insert(after.begin() + at, static_cast<std::size_t>(std::max(count, 0)), model::Id{0});
+        return trackCommand([&](Why& w) { return ctl_.new_tracks(count, w); }, after, why);
+    });
+    simple("track.duplicate", [this, order, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        std::vector<model::Id> after = order();
+        if (i >= 0 && i < static_cast<int>(after.size())) {
+            after.insert(after.begin() + i + 1, model::Id{0});
+        }
+        return trackCommand([&](Why& w) { return ctl_.duplicate_track(i, w); }, after, why);
+    });
+    simple("track.delete", [this, order, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        std::vector<model::Id> after = order();
+        if (i >= 0 && i < static_cast<int>(after.size())) after.erase(after.begin() + i);
+        return trackCommand([&](Why& w) { return ctl_.delete_track(i, w); }, after, why);
+    });
+    for (const int delta : {-1, 1}) {
+        simple(delta < 0 ? "track.move_up" : "track.move_down",
+               [this, order, row, delta](const CommandContext& ctx, Why& why) {
+                   const int i = row(ctx);
+                   std::vector<model::Id> after = order();
+                   const int n = static_cast<int>(after.size());
+                   if (i >= 0 && i < n && i + delta >= 0 && i + delta < n) {
+                       std::swap(after[static_cast<std::size_t>(i)],
+                                 after[static_cast<std::size_t>(i + delta)]);
+                   }
+                   return trackCommand([&](Why& w) { return ctl_.move_track(i, delta, w); },
+                                       after, why);
+               });
+    }
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
     // Pro Tools' Repeat asks for the number of repeats first. The key sends
@@ -432,6 +487,37 @@ void SessionModel::markerRulerClick(qreal x, bool alt) {
         return;
     }
     run(alt ? ctl_.remove_marker(id, why) : ctl_.recall_marker(id, why), why);
+}
+
+bool SessionModel::trackCommand(const std::function<bool(std::string&)>& run_op,
+                                const std::vector<model::Id>& after, std::string& why) {
+    const model::EditState& edit = *ctl_.snapshot().edit;
+    const int limit = engine_track_count_ ? engine_track_count_() : 0;
+    if (limit > 0 && after.size() > edit.tracks.size() && static_cast<int>(after.size()) > limit) {
+        why = "the engine was started with " + std::to_string(limit) +
+              " tracks and the session has them all; delete a track before adding another";
+        return false;
+    }
+    // The engine refuses these too; refused here, the reason is held
+    // rather than flashed while the operator watches the take.
+    if (overlay_.recording && engine_armed_) {
+        const std::string r =
+            model::pinned_track_refusal(edit, after, engine_armed_(), "is recording", "stop recording");
+        if (!r.empty()) {
+            setTrackRefusal(q(r));
+            why = r;
+            return false;
+        }
+    }
+    if (!run_op(why)) return false;
+    setTrackRefusal(QString());
+    return true;
+}
+
+void SessionModel::setTrackRefusal(const QString& why) {
+    if (why == track_refusal_) return;
+    track_refusal_ = why;
+    emit trackRefusalChanged();
 }
 
 // Sent as the one field, never as a copy of the settings this window holds,
