@@ -760,6 +760,11 @@ struct Transport {
     }
 };
 inline constexpr std::uint32_t kMaxCountOffBars = 99;
+// The longest pre- or post-roll transport.set_pre_roll/set_post_roll set: a
+// typo of 200 for 2.00 would locate minutes before the punch. The commands
+// refuse past it; the model does not, so a session saved with a longer roll
+// still loads.
+inline constexpr int kMaxRollSeconds = 60;
 
 // The most take files a session remembers as left (left_takes).
 inline constexpr std::size_t kMaxLeftTakes = 4096;

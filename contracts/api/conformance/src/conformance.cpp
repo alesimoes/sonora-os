@@ -874,6 +874,20 @@ int check_punch_and_rolls(Rig& rig) {
                        std::string("set_post_roll \"") + bad + "\" was accepted");
             }
             EXPECT(transport().post_roll == 12000, "a refused roll changed the post-roll");
+            // Up to 60 s at the session's rate, whichever interface sends
+            // it: the Qt field's bound is not the only one.
+            const uint64_t most = static_cast<uint64_t>(model::kMaxRollSeconds) *
+                                  s.replica.current().settings.sample_rate;
+            const std::string at_most = std::to_string(most);
+            const std::string past = std::to_string(most + 1);
+            EXPECT(s.await(rig_, s.command("transport.set_post_roll", -1, at_most), r) &&
+                       r.result == DispatchResult::Ok &&
+                       transport().post_roll == static_cast<model::Frames>(most),
+                   "a post-roll of exactly 60 s was refused: " + r.message);
+            EXPECT(s.await(rig_, s.command("transport.set_pre_roll", -1, past), r) &&
+                       r.result != DispatchResult::Ok && mentions(r.message, "60 seconds"),
+                   "a pre-roll past 60 s was not refused by name: " + r.message);
+            EXPECT(transport().pre_roll == 24000, "a refused pre-roll changed the pre-roll");
 
             EXPECT(s.await(rig_, s.command("transport.clear_punch"), r) &&
                        r.result == DispatchResult::Ok,
