@@ -94,7 +94,9 @@ means exactly what it says (ADR-0009's rule holds for every other path:
 replication, a loaded file, a take's punch crossfades). The selection
 becomes the crossfade made, so Clear takes it away and the length is on
 screen; the status line says "Crossfade shortened to N frames[, before/after
-the cut]: <region> has M frames of handle …". A refusal names the region
+the cut]: <region> has M frames of handle …", or "Crossfade moved
+before/after the cut: …" when a centred one kept its length and only
+changed side (2026-10-27, #158 review). A refusal names the region
 with no handle and, when the other side has audio, the selection that
 would work.
 

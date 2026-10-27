@@ -226,6 +226,14 @@ playback can follow edits; it is in flight.
        and 7 on the laptop, labelled proxies (ADR-0009 update 2026-10-13).
 3. [ ] Session reader and writer; fades and crossfades; track types;
        templates, autosave and backups.
+       - [x] #157/#158 review follow-ups (`t2-timeline-followups`):
+             region_fades test_fade_gains_by_hand pins each shape's gain at
+             hand-computed points, independent of `fade_in_gain`;
+             playback_control test_duplicated_region_is_heard_twice (a
+             second PlaceRegion of one source, both copies through
+             process()); a centred crossfade moved to one side at full
+             length says "Crossfade moved before/after the cut", not
+             "shortened" (ADR-0021 §4; ui_edit test_fades).
 4. [ ] MIDI spec and ADR, then MIDI in the model (DAW 6).
        - [x] ADR-0014 and `brain/specs/midi.md` written (`docs/midi-adr`);
              revised with the rt-engineer and plugin-engineer reviews (PR #93);

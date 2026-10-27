@@ -169,8 +169,10 @@ std::string no_handle_refusal(const Region& l, const Region& r, const Crossfade&
     return "no crossfade fits: " + none_before + ", and " + none_after;
 }
 
-// What a crossfade shortened to its handles became, and which handle held
-// it back (ADR-0021).
+// What a crossfade fitted to its handles became, and which handle held it
+// back (ADR-0021 §4). A centred one that moved to one side at its full
+// length was not shortened, and saying so would send the operator looking
+// for frames that are all there.
 std::string shortened_note(const Region& l, const Region& r, const Crossfade& asked,
                            const Crossfade& made, Frames before, Frames after) {
     Frames want_before = 0, want_after = 0;
@@ -183,10 +185,12 @@ std::string shortened_note(const Region& l, const Region& r, const Crossfade& as
         why += (why.empty() ? "" : ", ") + named(l) + " has " + std::to_string(after) +
                " frames after its end";
     }
-    const char* where = made.align == asked.align ? ""
-                        : made.align == Align::Pre ? ", before the cut"
-                                                   : ", after the cut";
-    return "Crossfade shortened to " + std::to_string(made.length) + " frames" + where + ": " + why;
+    const char* side = made.align == Align::Pre ? "before the cut" : "after the cut";
+    if (made.align != asked.align && made.length == asked.length) {
+        return std::string("Crossfade moved ") + side + ": " + why;
+    }
+    return "Crossfade shortened to " + std::to_string(made.length) + " frames" +
+           (made.align == asked.align ? std::string() : std::string(", ") + side) + ": " + why;
 }
 
 }  // namespace
