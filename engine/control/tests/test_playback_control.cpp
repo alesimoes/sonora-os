@@ -1493,6 +1493,12 @@ int test_undone_track_leaves_no_solo() {
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.tracks_moving());
     CHECK(ctl.settle(2.0));
+    // And once no block can still be on the old plan (#162 review B1).
+    Out o;
+    for (int i = 0; i < 2; ++i) {
+        run_block(s, o);
+        ctl.pump();
+    }
     CHECK(!ctl.tracks_moving());
     CHECK(!s.tracks()[2]->soloed());
     CHECK(s.tracks()[2]->muted());
@@ -1501,6 +1507,10 @@ int test_undone_track_leaves_no_solo() {
     CHECK(h.redo());
     CHECK(show(ctl, h.current(), error));
     CHECK(ctl.settle(2.0));
+    for (int i = 0; i < 2; ++i) {
+        run_block(s, o);
+        ctl.pump();
+    }
     CHECK(s.tracks()[2]->soloed());
     return 0;
 }

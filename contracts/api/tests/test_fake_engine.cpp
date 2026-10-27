@@ -58,6 +58,14 @@ public:
         static_cast<FakeEngine&>(e).script_take_failure(fail);
         return true;
     }
+    bool hold_takes_closing(EngineControl& e, bool hold) override {
+        static_cast<FakeEngine&>(e).hold_takes_closing(hold);
+        return true;
+    }
+    bool hold_record_start(EngineControl& e, bool hold) override {
+        static_cast<FakeEngine&>(e).hold_record_start(hold);
+        return true;
+    }
     bool set_inputs_present(EngineControl& e, bool present) override {
         static_cast<FakeEngine&>(e).script_inputs(present, "the USB interface was unplugged");
         return true;

@@ -29,13 +29,12 @@
   moves each track's fader, pan, mute, solo, monitor mode, record arm and
   capture input to another engine track, and they move at the plan swap:
   the new plan carries them, the audio thread uses the plan's values until
-  the control thread has rewritten the per-track atomics just after
-  publishing it. The capture input is the track's `mix.input`, read from an
+  the control thread has rewritten the per-track atomics, once no block
+  can still be on the plan before it. The capture input is the track's `mix.input`, read from an
   atomic per engine track.
-- §5: while a take is open, requested or closing, a change (apply, undo or
-  redo) that would delete or move an armed track, or one whose take is
-  still closing, is refused by name. So is a track past the engine's track
-  count.
+- §5: while a take is about to start or still closing, no apply, undo or
+  redo may change the tracks at all; while one records, none may delete or
+  move an armed track. A track past the engine's track count is refused.
 
 ## Context
 
@@ -129,10 +128,15 @@ The fix keeps engine tracks positional and moves the mix with the plan:
   ramps and the monitor ramps, because what an engine track ramped from
   belonged to the track that was on it. The bus sum is then exactly the
   same across the swap.
-- **Catching up.** Right after `pump()` publishes the plan, the control
-  thread writes the plan's values to the atomics and stamps each track
-  with the serial (release; the audio thread reads it with acquire), then
-  writes any mix kept meanwhile.
+- **Catching up.** A block that acquired the old plan just before the
+  publish runs on after it, and the old plan carries no mix: it reads the
+  atomics. So the control thread writes them only once
+  `PlanExchange::blocks()` has advanced two past its value at the publish
+  (no block can still be on the old plan; #162 review B1): the plan's
+  values, each track stamped with the serial (release; the audio thread
+  reads it with acquire), then any mix kept meanwhile. `tracks_moving()`
+  holds until then, and `after_deactivate()` writes them at once, since no
+  block runs. A later plan that moves nothing replaces one still waiting.
 - **Arm.** The plan's arm for an engine track is the arm the document
   track now on it had where it was: the arm goes with its track. A deleted
   track's arm goes; a duplicate starts disarmed. Arming commands are
@@ -146,12 +150,23 @@ The fix keeps engine tracks positional and moves the mix with the plan:
 
 ### §5 Refusals
 
-While a take is open, requested or closing (`Session::folder_change_refusal`,
-`record_requested`), the engine refuses a member, an undo or a redo that
-would delete an armed track, move one to another position, or do either to
-a track whose take is still closing: the take's files are placed on the
-track at their engine position when they close. The words name the track
-and say what to do: `"Vox" is recording: stop before deleting it`.
+A take's files are placed on the document's tracks at their engine rows
+when they are in (`closed_take.cpp`). So:
+
+- While a take is about to start (`record_requested`), or while any take
+  other than the running one is still closing (`Session::closing_take()`:
+  a punch-out, a take started over), every member, undo or redo that
+  changes the track order or set is refused, armed tracks or not:
+  `take 3 is still closing: add, delete or move tracks once it is in the
+  session`. Pinning only the armed rows or the rows holding a file was not
+  enough: a track disarmed after a punch-out, whose own file had closed
+  while others still flushed, could move, and its take land on another
+  track (#162 review B2).
+- While a take records, a change that would delete an armed track or move
+  one to another row is refused by name: `"Vox" is recording: stop
+  recording before deleting it`. Adding at the end, and changes below the
+  armed rows, go through.
+
 Outside a take nothing is refused for arming: the arm goes with the track
 (§4) or with its deletion.
 
@@ -180,13 +195,17 @@ conformance suite runs them on both.
   tracks by display index across the contract; keying engine tracks by id
   would change the state block's meaning for every client, and every
   command and the publisher would translate rows to engine tracks.
-- **Write the atomics when the swap is seen.** The control thread learns of
-  the swap after the audio thread makes it, so at least one block would
-  play with the wrong mix, and the order of publish and write leaves one
-  wrong block either way. Only a mix inside the plan swaps with it.
+- **Atomics alone, written at the publish.** Without a mix in the plan,
+  the control thread has no ordering that works: written before the
+  publish, the old plan hears the new order; written at it, a block still
+  on the old plan does. With the mix carried in the plan, writing after the
+  swap is the correct order (§4, "Catching up"): the new plan's blocks read
+  their own values until the atomics agree, and the old plan's last block
+  has ended before they change.
 - **Refuse every structure change during a take.** Safe, but a mix
-  engineer adding a track while a take rolls on others is ordinary; only
-  the tracks a take is writing are pinned.
+  engineer adding a track while a take rolls on others is ordinary; while
+  it records, only the armed rows are pinned. Once it is starting or
+  closing, rows are what place its files, and everything waits (§5).
 
 ## Open questions
 

@@ -43,6 +43,21 @@ public:
         (void)fail;
         return false;
     }
+    // A take closed while rolling (a punch-out) stays closing, its files not
+    // yet in the session, until released (false). Never held across a Stop.
+    // False if this rig cannot do it (ADR-0022 §5).
+    virtual bool hold_takes_closing(EngineControl& engine, bool hold) {
+        (void)engine;
+        (void)hold;
+        return false;
+    }
+    // A Record waits to start, as it waits for its window, until released.
+    // False if this rig cannot do it.
+    virtual bool hold_record_start(EngineControl& engine, bool hold) {
+        (void)engine;
+        (void)hold;
+        return false;
+    }
     // Every capture input goes away (false) or comes back (true), as when
     // an interface is unplugged and plugged in again. False if this rig
     // cannot do it.

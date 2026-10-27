@@ -2098,6 +2098,15 @@ std::string pinned_track_refusal(const EditState& before, const std::vector<Id>&
     return {};
 }
 
+std::string take_starting_track_refusal() {
+    return "a take is about to start: add, delete or move tracks before Record or after Stop";
+}
+
+std::string take_closing_track_refusal(int take) {
+    return "take " + std::to_string(take) +
+           " is still closing: add, delete or move tracks once it is in the session";
+}
+
 bool apply(const Snapshot& before, const Operation& op, Snapshot& after,
            std::string& error, const MemberCheck& check) {
     Snapshot result;

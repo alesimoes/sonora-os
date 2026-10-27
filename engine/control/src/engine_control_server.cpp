@@ -1440,23 +1440,23 @@ std::string EngineControlServer::transport_refusal(const model::Snapshot& doc,
     return loop_take_refusal(doc.settings.transport, set->settings.transport);
 }
 
-bool EngineControlServer::pinned_tracks(std::vector<bool>& pinned, std::string& doing,
-                                        std::string& remedy) const {
-    const bool recording =
-        session_.transport().state() == TransportState::Recording || playback_->record_requested();
-    // A closing take's files are placed on the document track at their
-    // engine position, once they close (closed_take.cpp).
-    if (!recording && session_.folder_change_refusal().empty()) return false;
+std::string EngineControlServer::structure_lock(std::vector<bool>& pinned) const {
+    pinned.clear();
+    // A take about to start has its rows already (#162 review B2).
+    if (playback_->record_requested()) return model::take_starting_track_refusal();
+    // A closing take's files are placed on the document's tracks at their
+    // engine rows once they are in (closed_take.cpp): every row stays, the
+    // tracks that recorded it armed or not (#162 review B2).
+    if (const int take = session_.closing_take()) return model::take_closing_track_refusal(take);
+    if (session_.transport().state() != TransportState::Recording &&
+        session_.recording_take() == 0) {
+        return {};
+    }
+    // Arming is fixed for a take: the armed rows are the ones it records.
     const auto& tracks = session_.tracks();
     pinned.assign(tracks.size(), false);
-    for (std::size_t i = 0; i < tracks.size(); ++i) {
-        bool writing = tracks[i]->rec_armed();
-        for (int s = 0; s < Track::kWriterSlots; ++s) writing = writing || tracks[i]->slot_take(s) != 0;
-        pinned[i] = writing;
-    }
-    doing = recording ? "is recording" : "has a take still closing";
-    remedy = recording ? "stop recording" : "wait for it to close";
-    return true;
+    for (std::size_t i = 0; i < tracks.size(); ++i) pinned[i] = tracks[i]->rec_armed();
+    return {};
 }
 
 std::string EngineControlServer::structure_refusal(const model::Snapshot& doc,
@@ -1469,20 +1469,20 @@ std::string EngineControlServer::structure_refusal(const model::Snapshot& doc,
                " tracks and the session has them all; delete a track before adding another";
     }
     std::vector<bool> pinned;
-    std::string doing, remedy;
-    if (!pinned_tracks(pinned, doing, remedy)) return {};
-    return model::pinned_track_refusal(*doc.edit, after, pinned, doing, remedy);
+    if (std::string locked = structure_lock(pinned); !locked.empty()) return locked;
+    return model::pinned_track_refusal(*doc.edit, after, pinned, "is recording", "stop recording");
 }
 
 std::string EngineControlServer::step_refusal(bool undo) const {
     const model::History& h = document_->history();
     if (undo ? !h.can_undo() : !h.can_redo()) return {};
-    std::vector<bool> pinned;
-    std::string doing, remedy;
-    if (!pinned_tracks(pinned, doing, remedy)) return {};
     const auto& target = h.step_edit(undo ? h.undo_depth() - 1 : h.undo_depth() + 1);
-    return model::pinned_track_refusal(*document_->current().edit, model::track_order(*target),
-                                       pinned, doing, remedy);
+    const model::EditState& now = *document_->current().edit;
+    const std::vector<model::Id> after = model::track_order(*target);
+    if (after == model::track_order(now)) return {};
+    std::vector<bool> pinned;
+    if (std::string locked = structure_lock(pinned); !locked.empty()) return locked;
+    return model::pinned_track_refusal(now, after, pinned, "is recording", "stop recording");
 }
 
 std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {

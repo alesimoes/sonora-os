@@ -413,6 +413,13 @@ playback can follow edits; it is in flight.
        - [ ] A fader ride step that lands while tracks are moving is
              dropped (ADR-0022 §4): resend the rider's last value once the
              swap is done.
+       - [ ] adopt_track_mix() writes set_input(m.input) for an armed track
+             during a take, unlike apply_mix(); skip the input for armed
+             tracks while a take runs so a take's file never changes input
+             part way (#162 review, ADR-0022 §4)
+       - [ ] While tracks are moving every fader ride step is dropped, not
+             just one; resend the rider's last value at adoption (#162
+             review)
 
 ### Track 3: UI (ui-engineer)
 

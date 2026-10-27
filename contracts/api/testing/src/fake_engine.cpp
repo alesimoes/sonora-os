@@ -528,16 +528,37 @@ std::string FakeEngine::structure_refusal(const model::Snapshot& at,
         return "the engine was started with " + std::to_string(cfg_.tracks) +
                " tracks and the session has them all; delete a track before adding another";
     }
+    if (std::string locked = structure_lock(); !locked.empty()) return locked;
     if (mode_ != TransportState::Recording) return {};
     return model::pinned_track_refusal(*at.edit, after, armed_, "is recording", "stop recording");
 }
 
+std::string FakeEngine::structure_lock() const {
+    if (record_requested_) return model::take_starting_track_refusal();
+    if (closing_take_ != 0) return model::take_closing_track_refusal(closing_take_);
+    return {};
+}
+
+void FakeEngine::hold_record_start(bool hold) {
+    hold_record_ = hold;
+    if (hold || !record_requested_) return;
+    record_requested_ = false;
+    position_ = playhead();
+    moved_ns_ = now();
+    mode_ = TransportState::Recording;
+    take_folders_[take_] = folder_;
+}
+
 std::string FakeEngine::step_refusal(bool undo) const {
     const model::History& h = document_->history();
-    if (mode_ != TransportState::Recording || (undo ? !h.can_undo() : !h.can_redo())) return {};
+    if (undo ? !h.can_undo() : !h.can_redo()) return {};
     const auto& target = h.step_edit(undo ? h.undo_depth() - 1 : h.undo_depth() + 1);
-    return model::pinned_track_refusal(*document_->current().edit, model::track_order(*target),
-                                       armed_, "is recording", "stop recording");
+    const model::EditState& now = *document_->current().edit;
+    const std::vector<model::Id> after = model::track_order(*target);
+    if (after == model::track_order(now)) return {};
+    if (std::string locked = structure_lock(); !locked.empty()) return locked;
+    if (mode_ != TransportState::Recording) return {};
+    return model::pinned_track_refusal(now, after, armed_, "is recording", "stop recording");
 }
 
 void FakeEngine::carry_arms(const std::vector<model::Id>& before,
@@ -1398,6 +1419,10 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
                   ", before the playhead at " + frame_text(at);
             return false;
         }
+        if (hold_record_) {
+            record_requested_ = true;
+            return true;
+        }
         move(TransportState::Recording);
         take_folders_[take_] = folder_;
         return true;
@@ -1407,11 +1432,13 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         move(TransportState::Stopped);
         const bool failed = failed_take_ == take_ && take_failed_shown_;
         if (failed) why = take_file(take_) + ": no space left on device";
+        if (hold_closing_) closing_take_ = static_cast<int>(take_);
         ++take_;
         return !failed;
     };
     // A roll is not a take: stopping it closes no file and uses no number.
     const auto stop = [&]() {
+        record_requested_ = false;
         if (recording) return finish();
         if (mode_ == TransportState::Rolling) move(TransportState::Stopped);
         return true;
@@ -1448,6 +1475,7 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     if (id == "transport.punch") {
         if (!recording) return start();
         move(TransportState::Rolling);
+        if (hold_closing_) closing_take_ = static_cast<int>(take_);
         ++take_;
         return true;
     }

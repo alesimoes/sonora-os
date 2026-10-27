@@ -105,8 +105,9 @@ public:
     // (ADR-0022 §4). Until it does, each engine track's atomics belong to
     // the track that was on it: nothing addressed by position (a fader
     // ride, an arm) may be written to them, and the mix asked for meanwhile
-    // is written when the plan is published.
-    bool tracks_moving() const { return pending_mix_serial_ != 0; }
+    // is written once the plan plays and no block can still be on the plan
+    // before it.
+    bool tracks_moving() const { return pending_mix_serial_ != 0 || adopting_ != nullptr; }
     bool locating() const { return locate_serial_ != 0 && !locate_sent_; }
     bool play_requested() const { return play_requested_; }
     bool record_requested() const { return record_requested_; }
@@ -160,8 +161,8 @@ private:
     // `plan`'s track_mix from `snapshot`, each engine track armed if the
     // document track now on it was armed where it was before.
     void fill_track_mix(PlaybackPlan& plan, const model::Snapshot& snapshot) const;
-    // Just after `plan` is published: its track_mix to the atomics, stamped
-    // with its serial, then any mix deferred meanwhile.
+    // Once no block can be on the plan before `plan`: its track_mix to the
+    // atomics, stamped with its serial, then any mix deferred meanwhile.
     void adopt_track_mix(const PlaybackPlan& plan);
 
     Session& session_;
@@ -194,6 +195,12 @@ private:
     uint32_t mix_serial_ = 0;           // the last PlaybackPlan::mix_serial given
     uint32_t pending_mix_serial_ = 0;   // pending_'s; 0 when it moves no track
     std::vector<model::Id> pending_order_;
+    // Published, its mix not yet in the atomics: a block that acquired the
+    // plan before it may still be running and reading them (#162 review
+    // B1). Always the playing plan while set, so never freed under it.
+    const PlaybackPlan* adopting_ = nullptr;
+    std::vector<model::Id> adopting_order_;
+    uint64_t adopting_blocks_ = 0;   // PlanExchange::blocks() at its publish
     std::optional<model::Snapshot> deferred_mix_;
     // The document's transport.pre_roll and post_roll, from the last show().
     uint64_t pre_roll_ = 0;

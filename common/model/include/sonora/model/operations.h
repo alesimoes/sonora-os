@@ -555,4 +555,11 @@ std::string pinned_track_refusal(const EditState& before, const std::vector<Id>&
                                  const std::vector<bool>& pinned, const std::string& doing,
                                  const std::string& remedy);
 
+// Why no change of track order or set goes through while a take is about to
+// start, or while take `take` is closing: its files are placed on the
+// tracks at their rows when they are in (ADR-0022 §5). The same words from
+// every engine.
+std::string take_starting_track_refusal();
+std::string take_closing_track_refusal(int take);
+
 }  // namespace sonora::model

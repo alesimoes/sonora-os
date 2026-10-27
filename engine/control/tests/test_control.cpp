@@ -46,6 +46,22 @@ static int failures = 0;
         }                                                                     \
     } while (0)
 
+// The engine's threads, held for the conformance suite's take states
+// (ADR-0022 §5): the disk thread blocks in its pass, so a punched-out take
+// stays closing; the reader skips its passes, so a Record waits.
+namespace sonora {
+struct DiskThreadTestAccess {
+    static void set_pass_hook(DiskThread& d, DiskThread::PassHook hook, void* context) {
+        d.set_pass_hook(hook, context);
+    }
+};
+struct DiskReaderTestAccess {
+    static void set_hold_hook(DiskReader& r, DiskReader::HoldHook hook, void* context) {
+        r.set_hold_hook(hook, context);
+    }
+};
+}  // namespace sonora
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -91,10 +107,23 @@ public:
               audio_.open({"sonora", kTracks, 2, 48000, ""}, session_, error) &&
               audio_.activate(error) && audio_.connect_inputs_in_order() == kTracks;
         if (!ok_) std::fprintf(stderr, "  rig: %s\n", error.c_str());
+        DiskThreadTestAccess::set_pass_hook(
+            session_.disk(),
+            [](void* c) {
+                auto* self = static_cast<RealEngine*>(c);
+                while (self->hold_disk_.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            },
+            this);
+        DiskReaderTestAccess::set_hold_hook(
+            session_.reader(), [](void* c) { return static_cast<RealEngine*>(c)->hold_reader_.load(); },
+            this);
         session_.disk().start();
         engine_ = std::make_unique<InProcessEngine>(session_, &audio_, std::move(opts));
     }
     ~RealEngine() override {
+        // A Stop joins the disk thread: never with it held.
+        hold_disk_ = false;
+        hold_reader_ = false;
         engine_->shutdown();
         audio_.deactivate();
         session_.stop();
@@ -119,6 +148,8 @@ public:
     api::StateView& state() override { return engine_->state(); }
 
     InProcessEngine& engine() { return *engine_; }
+    void hold_disk(bool hold) { hold_disk_ = hold; }
+    void hold_reader(bool hold) { hold_reader_ = hold; }
     FakeBackend& audio() { return audio_; }
     Session& session() { return session_; }
 
@@ -201,6 +232,8 @@ private:
     }
 
     fs::path dir_;
+    std::atomic<bool> hold_disk_{false};
+    std::atomic<bool> hold_reader_{false};
     Session session_;
     FakeBackend audio_;
     ActiveFolder folder_;
@@ -240,6 +273,14 @@ public:
     }
     bool set_inputs_present(api::EngineControl& e, bool present) override {
         static_cast<RealEngine&>(e).set_inputs_present(present);
+        return true;
+    }
+    bool hold_takes_closing(api::EngineControl& e, bool hold) override {
+        static_cast<RealEngine&>(e).hold_disk(hold);
+        return true;
+    }
+    bool hold_record_start(api::EngineControl& e, bool hold) override {
+        static_cast<RealEngine&>(e).hold_reader(hold);
         return true;
     }
     bool leave_orphan_take(api::EngineControl& e, const std::string& name,

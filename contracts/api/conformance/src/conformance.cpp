@@ -1655,6 +1655,123 @@ int check_track_structure(Rig& rig) {
     return C(rig, "track structure").go();
 }
 
+uint64_t submit_op(Session& s, const model::Operation& op) {
+    ModelRequest m;
+    m.action = ModelAction::Apply;
+    std::string error;
+    if (!model::encode_operation(op, m.op, error)) return 0;
+    return s.engine->submit(m);
+}
+
+// Track 1 armed, asked again while an engine says tracks are moving.
+bool arm_first_track(Rig& rig, Session& s) {
+    CommandReply r;
+    return s.until(rig, [&]() {
+        return s.await(rig, s.command("track.toggle_arm", 0), r) && r.result == DispatchResult::Ok;
+    }) && s.until(rig, [&]() { return s.engine->state().track(0).armed(); });
+}
+
+// #162 review B2: a take punched out while rolling closes on the disk
+// thread, and is placed on the tracks at their rows once its files are
+// in. Until then nothing moves or goes, armed or not, disarmed or not.
+int check_track_structure_while_closing(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            StateView& v = s.engine->state();
+            const std::vector<model::Id> rows = model::track_order(*s.replica.current().edit);
+            CommandReply r;
+            EXPECT(arm_first_track(rig_, s), "track 1 could not be armed");
+            EXPECT(s.await(rig_, s.command("transport.record"), r) && r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Recording &&
+                              v.transport().playhead > 0;
+                   }),
+                   "no take");
+            const int32_t take = v.transport().take;
+            if (!rig_.hold_takes_closing(*s.engine, true)) {
+                s.command("transport.stop");
+                return skip("this rig cannot hold a take closing");
+            }
+            EXPECT(s.await(rig_, s.command("transport.punch"), r) && r.result == DispatchResult::Ok,
+                   "the punch-out failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Rolling; }),
+                   "the punch-out did not leave the transport rolling");
+            EXPECT(s.await(rig_, s.command("track.disarm_all"), r) && r.result == DispatchResult::Ok,
+                   "disarm all failed: " + r.message);
+            const std::string closing = "take " + std::to_string(take) + " is still closing";
+            EXPECT(s.await(rig_, submit_op(s, model::RemoveTrack{rows[0]}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, closing.c_str()),
+                   "the punched take's track was deleted while it closed");
+            EXPECT(s.await(rig_, submit_op(s, model::RemoveTrack{rows.back()}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, closing.c_str()),
+                   "a track was deleted while a take closed");
+            std::vector<model::Id> swapped = rows;
+            std::swap(swapped[0], swapped[1]);
+            EXPECT(s.await(rig_, submit_op(s, model::ReorderTracks{swapped}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, closing.c_str()),
+                   "tracks were reordered while a take closed");
+            EXPECT(model::track_order(*s.replica.current().edit) == rows, "a refusal moved a track");
+
+            EXPECT(rig_.hold_takes_closing(*s.engine, false), "the rig cannot let the take close");
+            EXPECT(s.until(rig_,
+                           [&]() {
+                               CommandReply d;
+                               return s.await(rig_, submit_op(s, model::RemoveTrack{rows.back()}), d) &&
+                                      d.result == DispatchResult::Ok;
+                           }),
+                   "a track could not be deleted once the take was in");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) && r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            return ok();
+        }
+    };
+    return C(rig, "track structure while a take closes").go();
+}
+
+// The same while a take is about to start: it has its rows already.
+int check_track_structure_while_starting(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            StateView& v = s.engine->state();
+            const std::vector<model::Id> rows = model::track_order(*s.replica.current().edit);
+            CommandReply r;
+            EXPECT(arm_first_track(rig_, s), "track 1 could not be armed");
+            if (!rig_.hold_record_start(*s.engine, true)) return skip("this rig cannot hold a take back");
+            // Answered when the take starts or is withdrawn, not awaited.
+            s.command("transport.record");
+            EXPECT(s.await(rig_, submit_op(s, model::RemoveTrack{rows.back()}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "about to start"),
+                   "a track was deleted while a take was about to start");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(v.transport().state != TransportState::Recording, "the held take started");
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) && r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(rig_.hold_record_start(*s.engine, false), "the rig cannot release the take");
+            EXPECT(s.until(rig_,
+                           [&]() {
+                               CommandReply d;
+                               return s.await(rig_, submit_op(s, model::RemoveTrack{rows.back()}), d) &&
+                                      d.result == DispatchResult::Ok;
+                           }),
+                   "a track could not be deleted once the take was withdrawn");
+            EXPECT(v.transport().state != TransportState::Recording, "the withdrawn take started");
+            return ok();
+        }
+    };
+    return C(rig, "track structure while a take starts").go();
+}
+
 int check_model(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -2912,6 +3029,8 @@ int run(Rig& rig) {
     failures += check_compound(rig);
     failures += check_sends(rig);
     failures += check_track_structure(rig);
+    failures += check_track_structure_while_closing(rig);
+    failures += check_track_structure_while_starting(rig);
     failures += check_load(rig);
     failures += check_load_in_parts(rig);
     failures += check_inserts(rig);

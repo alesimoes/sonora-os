@@ -157,6 +157,18 @@ bool move(PlaybackController& ctl, Session& s, Out& o, const Snapshot& next,
     return swapped && !ctl.tracks_moving();
 }
 
+// settle(), then blocks until the moved tracks' mix is in the atomics: it
+// waits for the audio thread to pass the old plan (#162 review B1).
+bool settle_moved(PlaybackController& ctl, Session& s) {
+    if (!ctl.settle(2.0)) return false;
+    Out o;
+    for (int i = 0; i < 8 && ctl.tracks_moving(); ++i) {
+        block(s, o);
+        ctl.pump();
+    }
+    return !ctl.tracks_moving();
+}
+
 int test_moves_are_heard_exactly_and_allocate_nothing() {
     auto session = make_session(4);
     Session& s = *session;
@@ -205,6 +217,44 @@ int test_moves_are_heard_exactly_and_allocate_nothing() {
     return 0;
 }
 
+// #162 review B1: a block that acquired the old plan just before the
+// publish runs on after it, and that plan carries no mix; it reads the
+// atomics. So they keep the old order until the audio thread has begun two
+// blocks past the publish (PlanExchange's own rule for the old plan's
+// last block), and tracks_moving() holds until then.
+int test_atomics_wait_for_the_old_plans_last_block() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, "Kick", -1.0f, 0));
+    CHECK_APPLY(h, track_op(102, "Vox", 1.0f, 1));
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    block(s, o);
+    CHECK_APPLY(h, (ReorderTracks{{102, 100}}));
+    CHECK(show(ctl, h.current()));
+    const uint64_t published = ctl.plans_published();
+    for (int i = 0; i < 64 && ctl.plans_published() == published; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+    }
+    CHECK(ctl.plans_published() == published + 1);
+    // Published, no block since: the old plan may still be in one.
+    CHECK(ctl.tracks_moving());
+    CHECK(s.tracks()[0]->pan() == -1.0f && s.tracks()[1]->pan() == 1.0f);
+    block(s, o);
+    ctl.pump();
+    CHECK(ctl.tracks_moving());
+    CHECK(s.tracks()[0]->pan() == -1.0f);
+    block(s, o);
+    ctl.pump();
+    CHECK(!ctl.tracks_moving());
+    CHECK(s.tracks()[0]->pan() == 1.0f && s.tracks()[1]->pan() == -1.0f);
+    return 0;
+}
+
 // Stopped, with nothing rolling: the arm and the input stay with their
 // document track, and only once the plan that moves it is published.
 int test_arm_and_input_follow_the_track() {
@@ -223,15 +273,14 @@ int test_arm_and_input_follow_the_track() {
     CHECK(show(ctl, h.current()));
     CHECK(ctl.tracks_moving());
     CHECK(s.tracks()[0]->rec_armed() && s.tracks()[0]->input() == 0);
-    CHECK(ctl.settle(2.0));
-    CHECK(!ctl.tracks_moving());
+    CHECK(settle_moved(ctl, s));
     CHECK(!s.tracks()[0]->rec_armed() && s.tracks()[1]->rec_armed());
     CHECK(s.tracks()[0]->input() == 1 && s.tracks()[1]->input() == 0);
     CHECK(s.tracks()[2]->input() == 2);
 
     CHECK_APPLY(h, RemoveTrack{102});
     CHECK(show(ctl, h.current()));
-    CHECK(ctl.settle(2.0));
+    CHECK(settle_moved(ctl, s));
     CHECK(s.tracks()[0]->rec_armed() && s.tracks()[0]->input() == 0);
     CHECK(!s.tracks()[1]->rec_armed() && s.tracks()[1]->input() == 2);
     // No document track on it: its own input, disarmed.
@@ -243,7 +292,7 @@ int test_arm_and_input_follow_the_track() {
     d.name = "A copy";
     CHECK_APPLY(h, d);
     CHECK(show(ctl, h.current()));
-    CHECK(ctl.settle(2.0));
+    CHECK(settle_moved(ctl, s));
     CHECK(s.tracks()[0]->rec_armed() && !s.tracks()[1]->rec_armed());
     CHECK(s.tracks()[1]->input() == 0 && s.tracks()[2]->input() == 2);
     return 0;
@@ -254,6 +303,7 @@ int test_arm_and_input_follow_the_track() {
 int main() {
     if (test_moves_are_heard_exactly_and_allocate_nothing() != 0) return 1;
     if (test_arm_and_input_follow_the_track() != 0) return 1;
+    if (test_atomics_wait_for_the_old_plans_last_block() != 0) return 1;
     std::printf("test_track_structure: ok\n");
     return 0;
 }

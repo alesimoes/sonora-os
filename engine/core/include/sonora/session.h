@@ -335,6 +335,11 @@ public:
     // closed_takes(): the running take, and one punched out or started
     // over whose close the disk thread has not reported. Control thread.
     bool takes_closing() const { return !closing_.empty(); }
+    // A take other than the running one whose files are not all in yet (a
+    // punch-out, a take started over): its number, or 0. Its files are
+    // placed on the tracks by row, so nothing may move until it is in
+    // (ADR-0022 §5). Control thread.
+    int closing_take() const;
     // Whether that take was started by start_loop(). Control thread.
     bool loop_take_running() const { return recording_take_ != 0 && loop_running_; }
     // Empty, or which file of the newest take failed and why, in the words

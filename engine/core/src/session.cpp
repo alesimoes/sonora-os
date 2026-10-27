@@ -495,6 +495,20 @@ std::string Session::folder_change_refusal() const {
     return {};
 }
 
+int Session::closing_take() const {
+    for (const auto& [take, c] : closing_) {
+        if (take != recording_take_) return take;
+    }
+    // Collected, but a slot is released only once its file is closed.
+    for (const auto& t : tracks_) {
+        for (int s = 0; s < Track::kWriterSlots; ++s) {
+            const int take = t->slot_take(s);
+            if (take != 0 && take != recording_take_) return take;
+        }
+    }
+    return 0;
+}
+
 bool Session::set_folder(std::string path, std::string& why) {
     why = folder_change_refusal();
     if (!why.empty()) return false;

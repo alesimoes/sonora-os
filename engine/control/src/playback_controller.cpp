@@ -107,7 +107,7 @@ uint64_t PlaybackController::serve() {
 }
 
 bool PlaybackController::atoms_follow(const model::Snapshot& snapshot) const {
-    return pending_mix_serial_ == 0 &&
+    return pending_mix_serial_ == 0 && adopting_ == nullptr &&
            (!atoms_order_ || *atoms_order_ == model::track_order(*snapshot.edit));
 }
 
@@ -340,8 +340,8 @@ void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
         t.set_input(m.input);
         t.set_mix_serial(plan.mix_serial);
     }
-    atoms_order_ = pending_order_;
-    pending_mix_serial_ = 0;
+    atoms_order_ = std::move(adopting_order_);
+    adopting_ = nullptr;
     if (deferred_mix_) {
         const model::Snapshot deferred = std::move(*deferred_mix_);
         deferred_mix_.reset();
@@ -431,9 +431,24 @@ void PlaybackController::pump() {
             PlaybackPlan* const published = pending_;
             plans.publish(pending_);
             pending_ = nullptr;
-            // The audio thread uses the plan's mix until each track is
-            // stamped with its serial, so the atomics can be written now.
-            if (pending_mix_serial_ != 0) adopt_track_mix(*published);
+            // The audio thread uses this plan's mix until each track is
+            // stamped with its serial, but a block that acquired the plan
+            // before it reads the atomics: they are written once that
+            // block has ended (below). A plan that moves nothing replaces
+            // one still waiting, and matches the atomics as they are.
+            if (pending_mix_serial_ != 0) {
+                adopting_ = published;
+                adopting_order_ = pending_order_;
+                adopting_blocks_ = plans.blocks();
+                pending_mix_serial_ = 0;
+            } else {
+                adopting_ = nullptr;
+                if (deferred_mix_) {
+                    const model::Snapshot deferred = std::move(*deferred_mix_);
+                    deferred_mix_.reset();
+                    apply_mix(deferred);
+                }
+            }
             playing_report_ = report_;
             playing_continuity_ = pending_continuity_;
             ++published_;
@@ -443,6 +458,12 @@ void PlaybackController::pump() {
             if (record_requested_) record_gen_ = gen;
             if (!locate_sent_) locate_gen_ = gen;
         }
+    }
+
+    // Two blocks begun since the publish: the one that may have acquired the
+    // plan before it has ended (#162 review B1).
+    if (adopting_ != nullptr && plans.blocks() >= adopting_blocks_ + 2) {
+        adopt_track_mix(*adopting_);
     }
 
     if (!locate_sent_ && reader.resident() >= locate_gen_) {
@@ -540,6 +561,9 @@ void PlaybackController::after_deactivate() {
     };
     session_.plans().reclaim_after_deactivate(may_free, this);
     reclaim();
+    // No block runs, so none is on an older plan: blocks() will not advance
+    // to let the mix in otherwise.
+    if (adopting_ != nullptr) adopt_track_mix(*adopting_);
 }
 
 }  // namespace sonora
