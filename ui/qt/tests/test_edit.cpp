@@ -921,6 +921,20 @@ int test_fades() {
     }
     OK(why.find("shortened to 101 frames: \"H\" has 50 frames of handle") != std::string::npos);
     OK(c.selection().start == 7 * kBar - 50 && c.selection().end == 7 * kBar + 51);
+    // I ends where its source does and J has two beats before its start:
+    // the centred two-beat crossfade moves before the cut at its full
+    // length, which is a move, not a shortening (ADR-0021 §4).
+    OK(place("I", 9 * kBar, 19 * kBar) && place("J", 10 * kBar, 2 * kBeat));
+    OK(range(10 * kBar - kBeat, 10 * kBar + kBeat, 1) && c.fade_selection(why));
+    {
+        const Playlist& p2 = *active_playlist(doc.snapshot().edit->tracks[1].get());
+        OK(p2.crossfades.size() == 3);
+        OK(p2.crossfades[2].align == Align::Pre && p2.crossfades[2].length == 2 * kBeat);
+    }
+    OK(why.find("Crossfade moved before the cut: \"J\" has " + std::to_string(2 * kBeat) +
+                " frames of handle") != std::string::npos);
+    OK(why.find("shortened") == std::string::npos);
+    OK(c.selection().start == 10 * kBar - 2 * kBeat && c.selection().end == 10 * kBar);
     // Room enough: nothing to say.
     OK(range(2 * kBar - kBeat, 2 * kBar + kBeat, 0) && c.fade_selection(why) && why.empty());
     OK(c.undo(why));

@@ -1188,10 +1188,63 @@ int test_show_leaves_the_faders_alone() {
     return 0;
 }
 
-// engine.timeline.region_ops: a move, a trim and a split reach the audio.
-// Each edit is shown as EngineControlServer shows every successful one
-// (show_document -> PlaybackController::show), and a roll from 0 then
-// plays the region where the edited document has it, frame for frame.
+// Shows the document as EngineControlServer shows every successful edit
+// (show_document -> PlaybackController::show), rolls [0, 9600) and compares
+// the left output with `want(t)`, frame for frame.
+template <typename Want>
+bool heard_from_zero(Session& s, PlaybackController& ctl, const History& h, const char* what,
+                     Want want) {
+    std::string error;
+    Out o;
+    if (!ctl.show(h.current(), error) || !ctl.settle(2.0)) {
+        std::fprintf(stderr, "  %s: not shown: %s\n", what, error.c_str());
+        return false;
+    }
+    if (!ctl.locate(0, error)) {
+        std::fprintf(stderr, "  %s: locate refused: %s\n", what, error.c_str());
+        return false;
+    }
+    // Stopped, the callback still runs: that is where the locate lands.
+    for (int i = 0; i < 10 && (ctl.locating() || s.transport().playhead() != 0); ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        run_block(s, o);
+    }
+    if (ctl.locating() || s.transport().playhead() != 0) {
+        std::fprintf(stderr, "  %s: the locate to 0 did not land\n", what);
+        return false;
+    }
+    ctl.play();
+    if (!ctl.settle(2.0)) {
+        std::fprintf(stderr, "  %s: play did not settle\n", what);
+        return false;
+    }
+    for (int blk = 0; blk < 150; ++blk) {
+        const auto at = static_cast<int64_t>(s.transport().playhead());
+        run_block(s, o);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float w = want(at + i);
+            if (o.l[i] != w) {
+                std::fprintf(stderr, "  %s, frame %lld: %f, want %f\n", what,
+                             static_cast<long long>(at + i), o.l[i], w);
+                return false;
+            }
+        }
+        s.reader().run_pass();
+        ctl.pump();
+    }
+    ctl.stop();
+    run_block(s, o);
+    if (s.transport().state() == TransportState::Rolling) {
+        std::fprintf(stderr, "  %s: still rolling after stop (state %d)\n", what,
+                     static_cast<int>(s.transport().state()));
+        return false;
+    }
+    return true;
+}
+
+// engine.timeline.region_ops: a move, a trim and a split reach the audio,
+// where the edited document has the region.
 int test_region_edits_are_heard() {
     auto session = make_session(1);
     Session& s = *session;
@@ -1207,73 +1260,60 @@ int test_region_edits_are_heard() {
     Out o;
     run_block(s, o);  // ramps settle
 
-    // Rolls [0, 9600) and compares the left output with `want(t)`.
-    const auto heard = [&](const char* what, auto want) {
-        if (!ctl.show(h.current(), error) || !ctl.settle(2.0)) {
-            std::fprintf(stderr, "  %s: not shown: %s\n", what, error.c_str());
-            return false;
-        }
-        if (!ctl.locate(0, error)) {
-            std::fprintf(stderr, "  %s: locate refused: %s\n", what, error.c_str());
-            return false;
-        }
-        // Stopped, the callback still runs: that is where the locate lands.
-        for (int i = 0; i < 10 && (ctl.locating() || s.transport().playhead() != 0); ++i) {
-            s.reader().run_pass();
-            ctl.pump();
-            run_block(s, o);
-        }
-        if (ctl.locating() || s.transport().playhead() != 0) {
-            std::fprintf(stderr, "  %s: the locate to 0 did not land\n", what);
-            return false;
-        }
-        ctl.play();
-        if (!ctl.settle(2.0)) {
-            std::fprintf(stderr, "  %s: play did not settle\n", what);
-            return false;
-        }
-        for (int blk = 0; blk < 150; ++blk) {
-            const auto at = static_cast<int64_t>(s.transport().playhead());
-            run_block(s, o);
-            for (uint32_t i = 0; i < kBlock; ++i) {
-                const float w = want(at + i);
-                if (o.l[i] != w) {
-                    std::fprintf(stderr, "  %s, frame %lld: %f, want %f\n", what,
-                                 static_cast<long long>(at + i), o.l[i], w);
-                    return false;
-                }
-            }
-            s.reader().run_pass();
-            ctl.pump();
-        }
-        ctl.stop();
-        run_block(s, o);
-        if (s.transport().state() == TransportState::Rolling) {
-            std::fprintf(stderr, "  %s: still rolling after stop (state %d)\n", what,
-                         static_cast<int>(s.transport().state()));
-            return false;
-        }
-        return true;
-    };
-
     CHECK_APPLY(h, (MoveRegion{101, 210, 1000, 0}));
-    CHECK(heard("moved to 1000", [](int64_t t) {
+    CHECK(heard_from_zero(s, ctl, h, "moved to 1000", [](int64_t t) {
         return t >= 1000 && t < 9000 ? value(1, t - 1000) : 0.0f;
     }));
     CHECK_APPLY(h, (TrimRegion{101, 210, Edge::End, 5000}));
-    CHECK(heard("end trimmed to 5000", [](int64_t t) {
+    CHECK(heard_from_zero(s, ctl, h, "end trimmed to 5000", [](int64_t t) {
         return t >= 1000 && t < 5000 ? value(1, t - 1000) : 0.0f;
     }));
     CHECK_APPLY(h, (TrimRegion{101, 210, Edge::Start, 1500}));
-    CHECK(heard("start trimmed to 1500", [](int64_t t) {
+    CHECK(heard_from_zero(s, ctl, h, "start trimmed to 1500", [](int64_t t) {
         return t >= 1500 && t < 5000 ? value(1, t - 1000) : 0.0f;
     }));
     // The right part, moved away, plays its own half of the source.
     CHECK_APPLY(h, (SplitRegion{101, 210, 3000, 211}));
     CHECK_APPLY(h, (MoveRegion{101, 211, 6000, 0}));
-    CHECK(heard("split at 3000, right part moved to 6000", [](int64_t t) {
+    CHECK(heard_from_zero(s, ctl, h, "split at 3000, right part moved to 6000", [](int64_t t) {
         if (t >= 1500 && t < 3000) return value(1, t - 1000);
         if (t >= 6000 && t < 8000) return value(1, t - 6000 + 2000);
+        return 0.0f;
+    }));
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
+// engine.timeline.region_ops: a duplicate is a second PlaceRegion of the
+// same source. Both copies play, each from the source's start, and a third
+// copy with an offset plays its own part: the reader serves one source to
+// several regions at once.
+int test_duplicated_region_is_heard_twice() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 3000, 0), 0}));
+    PlaybackController ctl(s);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    run_block(s, o);  // ramps settle
+
+    CHECK_APPLY(h, (PlaceRegion{101, region(211, 1, 5000, 3000, 0), 0}));
+    CHECK(heard_from_zero(s, ctl, h, "duplicated at 5000", [](int64_t t) {
+        if (t < 3000) return value(1, t);
+        if (t >= 5000 && t < 8000) return value(1, t - 5000);
+        return 0.0f;
+    }));
+    CHECK_APPLY(h, (PlaceRegion{101, region(212, 1, 8500, 1000, 700), 0}));
+    CHECK(heard_from_zero(s, ctl, h, "third copy at 8500, offset 700", [](int64_t t) {
+        if (t < 3000) return value(1, t);
+        if (t >= 5000 && t < 8000) return value(1, t - 5000);
+        if (t >= 8500 && t < 9500) return value(1, t - 8500 + 700);
         return 0.0f;
     }));
     CHECK(s.playback_misses() == 0);
@@ -2104,6 +2144,7 @@ int main() {
     if (test_no_input_monitoring_persists()) return 1;
     if (test_show_leaves_the_faders_alone()) return 1;
     if (test_region_edits_are_heard()) return 1;
+    if (test_duplicated_region_is_heard_twice()) return 1;
     if (test_tracks_know_their_document_ids()) return 1;
     if (test_takes_name_the_document_session()) return 1;
     if (test_undone_track_leaves_no_solo()) return 1;

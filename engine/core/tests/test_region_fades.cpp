@@ -305,12 +305,67 @@ int test_loop_wrap_inside_fades() {
     return 0;
 }
 
+// expected() is built on fade_in_gain, the function the engine plays, so a
+// wrong law would pass every test above. These gains are typed in, worked by
+// hand at x = i / 4 of a four-frame fade: linear x, equal power
+// sin(pi/2 * x), s-curve (1 - cos(pi * x)) / 2. A fade out's frame i is at
+// x = 1 - i / 4.
+int test_fade_gains_by_hand() {
+    struct Literal {
+        FadeCurve shape;
+        float at_quarter;
+        float at_half;
+        float at_three_quarters;
+    };
+    const Literal table[] = {
+        {FadeCurve::Linear, 0.25f, 0.5f, 0.75f},
+        {FadeCurve::EqualPower, 0.38268343f, 0.70710678f, 0.92387953f},
+        {FadeCurve::SCurve, 0.14644661f, 0.5f, 0.85355339f},
+    };
+    constexpr int64_t kStart = 200;
+    constexpr int64_t kEnd = 300;
+    for (const Literal& lit : table) {
+        Rig rig("literal", 512);
+        CHECK(rig.load(faded_region(kStart, kEnd, 4, 4, lit.shape, lit.shape)));
+        CHECK(rig.locate(0));
+        rig.session->play();
+        std::vector<float> got;
+        rig.roll(512, {512}, got);
+        rig.session->stop_playback();
+        const struct {
+            int64_t t;
+            float gain;
+        } samples[] = {
+            {kStart, 0.0f},                       // fade in, x = 0
+            {kStart + 2, lit.at_half},            // fade in, x = 2/4
+            {kStart + 3, lit.at_three_quarters},  // fade in's last frame, x = 3/4
+            {kEnd - 4, 1.0f},                     // fade out's first frame, x = 1
+            {kEnd - 2, lit.at_half},              // fade out, x = 2/4
+            {kEnd - 1, lit.at_quarter},           // region's last frame, x = 1/4
+        };
+        for (const auto& sm : samples) {
+            // Region gain 0.5 on the source frame under t.
+            const float want = source_value(kSource, 0, 37 + (sm.t - kStart)) * 0.5f * sm.gain;
+            const float g = got[static_cast<std::size_t>(sm.t)];
+            // Looser than near(): the literals carry eight digits.
+            if (std::fabs(g - want) > 1e-5f * std::fabs(want) + 1e-6f) {
+                std::fprintf(stderr, "  shape %d, frame %lld: %.7f, want %.7f\n",
+                             static_cast<int>(lit.shape), static_cast<long long>(sm.t),
+                             static_cast<double>(g), static_cast<double>(want));
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_block_split_invariance()) return 1;
     if (test_locate_inside_a_fade()) return 1;
     if (test_loop_wrap_inside_fades()) return 1;
+    if (test_fade_gains_by_hand()) return 1;
     std::printf("region_fades: ok (heap counter: %s)\n", heap_counter_scope());
     return 0;
 }
