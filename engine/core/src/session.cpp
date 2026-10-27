@@ -331,6 +331,7 @@ Session::Session(SessionConfig cfg)
     send_gain_.reset(new float[2 * static_cast<std::size_t>(send_states_) + 2]());
     send_target_.reset(new float[2 * static_cast<std::size_t>(send_states_) + 2]());
     send_stamp_.reset(new uint64_t[send_states_ + 1]());
+    send_dest_.reset(new uint32_t[send_states_ + 1]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_target_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_stamp_.reset(new uint64_t[max_buses_ + 1]());
@@ -1819,7 +1820,10 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
     for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
         const PlanEdge& edge = plan.edges[ei];
         if (edge.send == kNoSend) continue;
-        if (edge.send >= send_states_ || edge.from_node >= plan.node_count) return false;
+        if (edge.send >= send_states_ || edge.from_node >= plan.node_count ||
+            edge.to_node >= plan.node_count) {
+            return false;
+        }
         const NodeKind from = plan.nodes[edge.from_node].kind;
         if (from != NodeKind::TrackSource && from != NodeKind::InsertChain &&
             from != NodeKind::AuxSum) {
@@ -1920,6 +1924,7 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
     for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
         const uint32_t k = plan.edges[ei].send;
         if (k == kNoSend) continue;
+        const uint32_t dest = plan.nodes[plan.edges[ei].to_node].stable_id;
         const uint32_t strip = k / kStripSendSlots;
         const SendState& s = sends_[k];
         const float level = s.level.load(std::memory_order_relaxed);
@@ -1950,11 +1955,12 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         pan_gains(follow ? strip_pan : own_pan, stereo, plan.pan_exponent, l, r);
         send_target_[2 * k] = g * l;
         send_target_[2 * k + 1] = g * r;
-        if (send_stamp_[k] + 1 < callbacks_) {
+        if (send_stamp_[k] + 1 < callbacks_ || send_dest_[k] != dest) {
             send_gain_[2 * k] = 0.0f;
             send_gain_[2 * k + 1] = 0.0f;
         }
         send_stamp_[k] = callbacks_;
+        send_dest_[k] = dest;
     }
 }
 

@@ -44,7 +44,12 @@ struct PlaybackConfig {
     // Plugin delay compensation (ADR-0012 §7.3): the most one edge is
     // delayed, and the most edges one plan delays (auditor L3). 0 frames
     // allocates no delay line. The pool is never larger than the most edges
-    // a plan of this graph can delay, one per track into the bus.
+    // a plan of this graph can delay: one per track and per bus return into
+    // the bus, and one per send. Not sized for every send: at 16384 frames a
+    // line is 128 KiB, and 18 tracks with 32 buses could ask for 550. The
+    // bus's own edges are served first (compensate()), and 18 + 32 fit in
+    // 128 with lines to spare for the sends; a send left without one plays
+    // early and is counted in undelayed_edges (test_sends).
     uint32_t max_delay_frames = 16384;
     uint32_t max_delayed_edges = 128;
     // Aux buses a plan may carry (ADR-0022 §8). Sizes the scratch buffers
@@ -847,6 +852,9 @@ private:
     std::unique_ptr<float[]> send_gain_;     // per send, L and R, end of last block
     std::unique_ptr<float[]> send_target_;
     std::unique_ptr<uint64_t[]> send_stamp_; // the callback that last played it
+    // The AuxSum's stable id it last fed: Assign Send keeps the slot and
+    // changes the bus, and the new bus must hear it ramp in from silence.
+    std::unique_ptr<uint32_t[]> send_dest_;
     std::unique_ptr<float[]> aux_gain_;      // per bus, L and R, end of last block
     std::unique_ptr<float[]> aux_target_;
     std::unique_ptr<uint64_t[]> aux_stamp_;

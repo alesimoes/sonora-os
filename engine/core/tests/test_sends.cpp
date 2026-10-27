@@ -5,7 +5,9 @@
 // own, mutes, a bus feeding a bus, a fixed summing order, the same output
 // whatever the block split, a new send ramped in from silence, PDC over the
 // wet paths, a plan with a send index out of range refused, and no heap
-// touched on the audio thread through any of it.
+// touched on the audio thread through any of it. Then #163's review: a send
+// reassigned to another bus ramps in, a first send keeps the dry path's
+// delay line, a kept send survives a swap, and the PDC line budget.
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -75,7 +77,8 @@ struct Rig {
     float* out_ptrs[2];
     int64_t frame = 0;
 
-    explicit Rig(int tracks, uint32_t max_block = 256, uint32_t max_buses = 4) {
+    explicit Rig(int tracks, uint32_t max_block = 256, uint32_t max_buses = 4,
+                 uint32_t max_delayed_edges = 128) {
         sonora::SessionConfig cfg;
         cfg.dir = "test_sends_unused";
         cfg.track_count = tracks;
@@ -86,6 +89,7 @@ struct Rig {
         cfg.playback.max_block_frames = max_block;
         cfg.playback.max_delay_frames = 4096;
         cfg.playback.max_buses = max_buses;
+        cfg.playback.max_delayed_edges = max_delayed_edges;
         session = std::make_unique<Session>(cfg);
         in.assign(tracks, std::vector<float>(kMaxCallback, 0.0f));
         for (auto& v : in) in_ptrs.push_back(v.data());
@@ -290,13 +294,18 @@ int test_block_split_invariance() {
         s.set_send(0, 0, 0.7f, 0.0f, true, false, false);
         s.set_send(1, 2, 0.4f, -0.5f, false, false, true);
         s.set_aux(0, 0.9f, 0.2f, false);
+        s.set_aux(1, 0.6f, -0.7f, false);
         DelayLinePool pool(s.delay_lines());
-        const std::vector<uint32_t> order{0};
-        CHECK(rig.publish(rig.plan({}, {{0, 0, 0}, {1, 2, 0}}, 1, order, pool)));
+        const std::vector<uint32_t> order{0, 1};
+        CHECK(rig.publish(rig.plan({}, {{0, 0, 0}, {1, 2, 0}}, 2, order, pool)));
         reset_heap_counts();
         for (int blk = 0; blk < 8; ++blk) {
             // Rides mid-run, so ramps are in what is compared.
             if (blk == 3) s.set_send(0, 0, 0.1f, 0.0f, true, false, false);
+            // Assign Send: the same slot to the other bus, ramped in.
+            if (blk == 4) {
+                CHECK(rig.publish(rig.plan({}, {{0, 0, 1}, {1, 2, 0}}, 2, order, pool)));
+            }
             if (blk == 5) s.set_aux(0, 0.3f, -0.4f, false);
             if (blk == 6) s.set_send(1, 2, 0.4f, -0.5f, false, true, true);
             rig.block(256);
@@ -402,6 +411,231 @@ int test_sends_are_compensated() {
     return 0;
 }
 
+ChainBinding latent_chain(uint32_t slot, uint32_t latency) {
+    ChainBinding c;
+    c.active = true;
+    c.chain_id = 100 + slot;
+    c.channel_slot = slot;
+    c.param_store = 7;
+    c.node_state = 0;
+    c.latency_frames = latency;
+    return c;
+}
+
+// #163 review, finding 1: Assign Send is RemoveSend + AddSend in the same
+// slot, so the send index is in both plans. The new bus must hear it ramp
+// in from silence (ADR-0022 §6), not at the old bus's level.
+int test_reassigned_send_ramps_in() {
+    Rig rig(1);
+    Session& s = *rig.session;
+    s.tracks()[0]->set_gain(0.0f);   // dry silent; the send is pre-fader
+    s.set_send(0, 0, 1.0f, 0.0f, false, false, true);
+    s.set_aux(0, 1.0f, -1.0f, false);   // bus 0 heard on the left only
+    s.set_aux(1, 1.0f, 1.0f, false);    // bus 1 on the right only
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0, 1};
+    CHECK(rig.publish(rig.plan({}, {{0, 0, 0}}, 2, order, pool, 0.0f)));
+    reset_heap_counts();
+    for (int i = 0; i < 3; ++i) rig.block();
+    CHECK(rig.out[0][kBlock - 1] == signal(rig.frame - 1));
+    CHECK(rig.out[1][kBlock - 1] == 0.0f);
+
+    CHECK(rig.publish(rig.plan({}, {{0, 0, 1}}, 2, order, pool, 0.0f)));
+    const int64_t at = rig.frame;
+    rig.block();
+    CHECK(rig.out[1][0] < 0.05f * signal(at));
+    CHECK(rig.out[1][kBlock - 1] == signal(at + kBlock - 1));
+    for (uint32_t i = 1; i < kBlock; ++i) {
+        const float step = rig.out[1][i] - rig.out[1][i - 1];
+        CHECK(step < 0.1f && step > -0.1f);
+    }
+    // Back to bus 0: it too comes in from silence.
+    CHECK(rig.publish(rig.plan({}, {{0, 0, 0}}, 2, order, pool, 0.0f)));
+    const int64_t back = rig.frame;
+    rig.block();
+    CHECK(rig.out[0][0] < 0.05f * signal(back));
+    CHECK(rig.out[0][kBlock - 1] == signal(back + kBlock - 1));
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// #163 review, finding 2: a track's first send splits its TrackOut into
+// TrackSource -> TrackFader, and removing its last joins it again. With a
+// latent insert elsewhere the dry track's edge into the bus is delayed;
+// the split must keep that delay line, or the dry path drops out for the
+// length of the compensation.
+int test_first_send_keeps_the_dry_delay_line() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    DelayRunner runner(1, 4096);
+    s.set_insert_chains(&runner);
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_gain(0.0f);   // only there for its latency
+    s.set_send(0, 0, 1.0f, 0.0f, false, false, true);
+    s.set_aux(0, 1.0f, 0.0f, true);   // the wet is not under test
+    const ChainBinding none;
+    const ChainBinding c = latent_chain(0, 100);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    const auto dry = [&] { return rig.plan({none, c}, {}, 1, order, pool); };
+    const auto sent = [&] { return rig.plan({none, c}, {{0, 0, 0}}, 1, order, pool); };
+    CHECK(rig.publish(dry()));
+    reset_heap_counts();
+    for (int i = 0; i < 4; ++i) rig.block();
+    long checked = 0;
+    const auto steady = [&](int blocks) {
+        for (int b = 0; b < blocks; ++b) {
+            const int64_t at = rig.frame;
+            rig.block();
+            for (uint32_t i = 0; i < kBlock; ++i) {
+                if (rig.out[0][i] != signal(at + i - 100) || rig.out[1][i] != 0.0f) {
+                    std::fprintf(stderr, "  frame %lld: L %g want %g\n",
+                                 static_cast<long long>(at + i), rig.out[0][i],
+                                 signal(at + i - 100));
+                    return false;
+                }
+                ++checked;
+            }
+        }
+        return true;
+    };
+    CHECK(steady(1));
+    CHECK(rig.publish(sent()));
+    CHECK(steady(4));
+    CHECK(rig.publish(dry()));
+    CHECK(steady(4));
+    CHECK(checked == 9 * kBlock);
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// #163 review, finding 4: a send kept across a plan swap, the plan
+// republished by an edit elsewhere (a new, empty bus), goes on as if no
+// swap happened: its ramp, mid-ride on the swap's callback, and its delay
+// line, behind a 100-frame chain on the other track.
+int test_kept_send_survives_a_swap() {
+    std::vector<float> runs[2][2];
+    for (int r = 0; r < 2; ++r) {
+        Rig rig(2);
+        Session& s = *rig.session;
+        DelayRunner runner(1, 4096);
+        s.set_insert_chains(&runner);
+        s.tracks()[0]->set_pan(-0.5f);
+        s.tracks()[1]->set_pan(0.25f);
+        s.set_send(0, 0, 0.5f, 0.0f, false, false, true);
+        s.set_send(1, 3, 0.75f, -0.25f, false, false, false);
+        s.set_aux(0, 0.8f, 0.1f, false);
+        const ChainBinding c = latent_chain(0, 100);
+        DelayLinePool pool(s.delay_lines());
+        const std::vector<uint32_t> one{0};
+        const std::vector<uint32_t> two{0, 1};
+        const std::vector<SendBinding> sends{{0, 0, 0}, {1, 3, 0}};
+        PlaybackPlan* p = rig.plan({c}, sends, 1, one, pool);
+        // The dry track's send is delayed to meet the chained one's.
+        bool send_delayed = false;
+        for (uint32_t e = 0; e < p->edge_count; ++e) {
+            if (p->edges[e].send == 1 * sonora::kStripSendSlots + 3) {
+                send_delayed = p->edges[e].delay_frames == 100 &&
+                               p->edges[e].delay_line != sonora::kNoDelayLine;
+            }
+        }
+        CHECK(send_delayed);
+        CHECK(rig.publish(p));
+        reset_heap_counts();
+        for (int blk = 0; blk < 10; ++blk) {
+            if (blk == 5) {
+                s.set_send(0, 0, 0.125f, 0.0f, false, false, true);
+                s.set_send(1, 3, 0.25f, 0.5f, false, false, false);
+                if (r == 1) CHECK(rig.publish(rig.plan({c}, sends, 2, two, pool)));
+            }
+            rig.block();
+            for (int o = 0; o < 2; ++o) {
+                runs[r][o].insert(runs[r][o].end(), rig.out[o].begin(),
+                                  rig.out[o].begin() + kBlock);
+            }
+        }
+        CHECK(heap_untouched());
+    }
+    CHECK(runs[0][0] == runs[1][0]);
+    CHECK(runs[0][1] == runs[1][1]);
+    return 0;
+}
+
+// #163 review, finding 6: the PDC line budget with sends. Dry edges into
+// the bus are served before send edges, and a return with no send into it
+// carries silence, which needs no line. Two lines, three tracks: track 0
+// behind a chain, tracks 1 and 2 dry, all three sending to bus 0; bus 1
+// empty. Four edges need a delay (two dry, two sends) and the empty return
+// would be a fifth: the dry ones get the lines.
+int test_dry_edges_come_first_for_lines() {
+    Rig rig(3, 256, 4, 2);
+    Session& s = *rig.session;
+    CHECK(s.delay_lines() == 2);
+    const ChainBinding c = latent_chain(0, 100);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0, 1};
+    PlaybackPlan* p = rig.plan({c}, {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}}, 2, order, pool);
+    uint32_t bus = sonora::kNoNode;
+    for (uint32_t n = 0; n < p->node_count; ++n) {
+        if (p->nodes[n].kind == NodeKind::BusSum) bus = n;
+    }
+    CHECK(bus != sonora::kNoNode);
+    const PlanNode& sum = p->nodes[bus];
+    for (uint32_t k = 0; k < sum.input_edge_count; ++k) {
+        const sonora::PlanEdge& e = p->edges[sum.first_input_edge + k];
+        const PlanNode& from = p->nodes[e.from_node];
+        if (from.kind == NodeKind::TrackFader && (from.track == 1 || from.track == 2)) {
+            CHECK(e.delay_frames == 100 && e.delay_line != sonora::kNoDelayLine);
+        }
+        if (from.kind == NodeKind::AuxFader && from.track == 1) {
+            CHECK(e.delay_frames == 0 && e.delay_line == sonora::kNoDelayLine);
+        }
+    }
+    CHECK(p->undelayed_edges == 2);
+    sonora::destroy_plan(p);
+    return 0;
+}
+
+// Measured for the same finding: at the default sizes the dry mix always
+// fits. 18 tracks (the UMC1820's inputs) and 32 buses are 50 edges into the
+// bus, under the 128 lines, however many sends there are. Every track sends
+// in all ten slots here, so the sends ask for more lines than are left.
+int test_dry_mix_fits_at_default_sizes() {
+    Rig big(18, 256, 32);
+    CHECK(big.session->delay_lines() == 128);
+    DelayLinePool big_pool(big.session->delay_lines());
+    std::vector<uint32_t> all(32);
+    for (uint32_t b = 0; b < 32; ++b) all[b] = b;
+    std::vector<SendBinding> many;
+    for (uint32_t t = 0; t < 18; ++t) {
+        for (uint32_t slot = 0; slot < sonora::kStripSendSlots; ++slot) {
+            many.push_back({t, slot, (t * 3 + slot) % 32});
+        }
+    }
+    std::vector<ChainBinding> chains(18);
+    for (uint32_t t = 0; t < 18; t += 2) chains[t] = latent_chain(t, 10 * (t + 1));
+    PlaybackPlan* q = big.plan(chains, many, 32, all, big_pool);
+    CHECK(q->undelayed_edges > 0);   // sends played early, and reported
+    CHECK(q->compensation_shortfall_frames > 0);
+    // The same plan with lines to spare says what each dry edge needs.
+    DelayLinePool spare(1024);
+    PlaybackPlan* full = big.plan(chains, many, 32, all, spare);
+    CHECK(full->undelayed_edges == 0);
+    uint32_t delayed = 0;
+    for (uint32_t n = 0; n < q->node_count; ++n) {
+        if (q->nodes[n].kind != NodeKind::BusSum) continue;
+        for (uint32_t k = 0; k < q->nodes[n].input_edge_count; ++k) {
+            const uint32_t e = q->nodes[n].first_input_edge + k;
+            CHECK(q->edges[e].delay_frames == full->edges[e].delay_frames);
+            if (q->edges[e].delay_frames > 0) ++delayed;
+        }
+    }
+    CHECK(delayed > 0);
+    sonora::destroy_plan(q);
+    sonora::destroy_plan(full);
+    return 0;
+}
+
 // A plan naming a send state past the session's is refused when adopted:
 // silence, counted, never an index followed.
 int test_send_out_of_range_is_refused() {
@@ -443,6 +677,11 @@ int main() {
     t(test_new_send_ramps_in);
     t(test_sends_are_compensated);
     t(test_send_out_of_range_is_refused);
+    t(test_reassigned_send_ramps_in);
+    t(test_first_send_keeps_the_dry_delay_line);
+    t(test_kept_send_survives_a_swap);
+    t(test_dry_edges_come_first_for_lines);
+    t(test_dry_mix_fits_at_default_sizes);
     if (failed != 0) {
         std::fprintf(stderr, "sends: %d of %d failed\n", failed, run);
         return 1;

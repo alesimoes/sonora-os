@@ -1506,6 +1506,27 @@ int check_sends(Rig& rig) {
             EXPECT(after.mix.find_send(send.send) != nullptr &&
                        after.mix.find_send(send.send)->pre,
                    "undo moved a send's values, which are not an undo step");
+
+            // More buses than the engine was started with room for (its
+            // max_buses, 32 by default; the model allows 256): refused
+            // whole, with the limit named, and nothing changed.
+            model::Compound many;
+            model::Id id = after.next_id;
+            for (int b = 0; b < 64; ++b) {
+                many.ops.push_back(model::AddBus{id++, "Bus", model::BusMix{}});
+            }
+            ModelRequest add;
+            add.action = ModelAction::Apply;
+            std::string error;
+            EXPECT(model::encode_operation(model::Operation{many}, add.op, error), error);
+            const std::size_t seen = s.inbox.model.size();
+            EXPECT(s.await(rig_, s.engine->submit(add), r) && r.result == DispatchResult::Failed,
+                   "64 more aux buses were accepted");
+            EXPECT(mentions(r.message, "(limit: max_buses)"),
+                   "the refusal does not name max_buses: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(s.inbox.model.size() == seen, "a refused AddBus sent an update");
+            EXPECT(s.replica.current() == after, "a refused AddBus changed the replica");
             return ok();
         }
 

@@ -43,7 +43,8 @@ inline uint32_t graph_edges(uint32_t tracks, uint32_t chains) { return tracks + 
 // tag. Keys stay below the tags. A track that gains its first insert feeds
 // the bus through a new pair, (TrackFader, BusSum), whose delay line starts
 // from silence: the one silent block ADR-0012's Consequences accept for a
-// chain edit.
+// chain edit. A track split for its sends alone has no chain edit to
+// excuse that, so its TrackFader keeps the TrackOut's id, untagged.
 constexpr uint32_t kMaxTrackKey = 0x007FFFFFu;
 // An engine track with no model track behind it.
 constexpr uint32_t kSpareTrackKeyTag = 0x00800000u;
@@ -141,7 +142,9 @@ struct Compensation {
 // L(n) = max over inputs of L(from) + d(edge), plus n's latency_frames;
 // d(edge) = max_in - L(from). An edge needing more than `max_delay_frames`
 // is clamped to it, and one for which the pool has no line is left
-// undelayed; both are reported as shortfall, never refused. Writes every
+// undelayed; both are reported as shortfall, never refused. Lines go to the
+// edges into BusSum before the sends, and an edge out of an aux bus that no
+// send reaches carries silence and takes none. Writes every
 // edge's delay_frames and delay_line and the plan's compensation fields.
 // `track_shortfall`, if not null, has plan.track_count entries and gets the
 // shortfall of each track's edge into the bus.
