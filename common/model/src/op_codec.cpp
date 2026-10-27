@@ -311,6 +311,43 @@ Value insert_mix_value(const InsertMix& m) {
     return v;
 }
 
+Value send_value(const Send& sd) {
+    Value v = Value::object();
+    v.set("id", id_value(sd.id));
+    v.set("slot", integer(sd.slot));
+    v.set("bus", id_value(sd.bus));
+    return v;
+}
+
+Value send_mix_value(const SendMix& m) {
+    Value v = Value::object();
+    v.set("send", id_value(m.send));
+    v.set("level_db", Value::number_float(m.level_db));
+    v.set("pan", Value::number_float(m.pan));
+    v.set("follow_pan", Value::boolean(m.follow_pan));
+    v.set("mute", Value::boolean(m.mute));
+    v.set("pre", Value::boolean(m.pre));
+    return v;
+}
+
+Value bus_mix_value(const BusMix& m) {
+    Value v = Value::object();
+    v.set("bus", id_value(m.bus));
+    v.set("gain_db", Value::number_float(m.gain_db));
+    v.set("pan", Value::number_float(m.pan));
+    v.set("mute", Value::boolean(m.mute));
+    return v;
+}
+
+Value aux_bus_value(const Bus& b) {
+    Value v = Value::object();
+    v.set("id", id_value(b.id));
+    v.set("name", Value::string(b.name));
+    Value& sends = v.set("sends", Value::array());
+    for (const Send& sd : b.sends) sends.push(send_value(sd));
+    return v;
+}
+
 Value with_kind(const char* kind) {
     Value v = Value::object();
     v.set("op", Value::string(kind));
@@ -570,6 +607,42 @@ struct Encoder {
         v.set("track", id_value(o.track));
         v.set("midi_input", port_value(o.routing.in_port, o.routing.in_channel));
         v.set("midi_output", port_value(o.routing.out_port, o.routing.out_channel));
+        return v;
+    }
+    Value operator()(const AddBus& o) const {
+        Value v = with_kind("AddBus");
+        v.set("bus", id_value(o.bus));
+        v.set("name", Value::string(o.name));
+        v.set("mix", bus_mix_value(o.mix));
+        return v;
+    }
+    Value operator()(const RemoveBus& o) const {
+        Value v = with_kind("RemoveBus");
+        v.set("bus", id_value(o.bus));
+        return v;
+    }
+    Value operator()(const AddSend& o) const {
+        Value v = with_kind("AddSend");
+        v.set("strip", id_value(o.strip));
+        v.set("send", id_value(o.send));
+        v.set("slot", integer(o.slot));
+        v.set("bus", id_value(o.bus));
+        v.set("mix", send_mix_value(o.mix));
+        return v;
+    }
+    Value operator()(const RemoveSend& o) const {
+        Value v = with_kind("RemoveSend");
+        v.set("send", id_value(o.send));
+        return v;
+    }
+    Value operator()(const SetSendMix& o) const {
+        Value v = with_kind("SetSendMix");
+        v.set("mix", send_mix_value(o.mix));
+        return v;
+    }
+    Value operator()(const SetBusMix& o) const {
+        Value v = with_kind("SetBusMix");
+        v.set("mix", bus_mix_value(o.mix));
         return v;
     }
     // Each member exactly as it would be alone; no label key when there is
@@ -1032,6 +1105,38 @@ bool read_insert_mix_value(Reader& rd, const Value& v, const std::string& p, Ins
            read_params(rd, v, p, m.params) && read_state(rd, v, p, m.state);
 }
 
+bool read_send_value(Reader& rd, const Value& v, const std::string& p, Send& sd) {
+    return rd.keys(v, p, {"id", "slot", "bus"}) && rd.id(v, p, "id", sd.id) &&
+           rd.small(v, p, "slot", sd.slot) && rd.id(v, p, "bus", sd.bus);
+}
+
+bool read_send_mix_value(Reader& rd, const Value& v, const std::string& p, SendMix& m) {
+    return rd.keys(v, p, {"send", "level_db", "pan", "follow_pan", "mute", "pre"}) &&
+           rd.id(v, p, "send", m.send) && rd.real(v, p, "level_db", m.level_db) &&
+           rd.real(v, p, "pan", m.pan) && rd.flag(v, p, "follow_pan", m.follow_pan) &&
+           rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "pre", m.pre);
+}
+
+bool read_bus_mix_value(Reader& rd, const Value& v, const std::string& p, BusMix& m) {
+    return rd.keys(v, p, {"bus", "gain_db", "pan", "mute"}) && rd.id(v, p, "bus", m.bus) &&
+           rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
+           rd.flag(v, p, "mute", m.mute);
+}
+
+bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b) {
+    const Value* sends = nullptr;
+    if (!rd.keys(v, p, {"id", "name", "sends"}) || !rd.id(v, p, "id", b.id) ||
+        !rd.text(v, p, "name", b.name) || !rd.array(v, p, "sends", sends)) {
+        return false;
+    }
+    for (const Value& e : sends->items()) {
+        Send sd;
+        if (!read_send_value(rd, e, Reader::at(p, "sends"), sd)) return false;
+        b.sends.push_back(sd);
+    }
+    return true;
+}
+
 bool decode_compound(Reader& rd, const Value& v, Operation& out);
 
 bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation& out) {
@@ -1336,6 +1441,45 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "AddBus") {
+        AddBus o;
+        if (!rd.keys(v, "", {"op", "bus", "name", "mix"}) || !rd.id(v, "", "bus", o.bus) ||
+            !rd.text(v, "", "name", o.name) ||
+            !read_bus_mix_value(rd, *v.find("mix"), "mix", o.mix)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "RemoveBus") {
+        RemoveBus o;
+        if (!rd.keys(v, "", {"op", "bus"}) || !rd.id(v, "", "bus", o.bus)) return false;
+        out = o;
+    } else if (kind == "AddSend") {
+        AddSend o;
+        if (!rd.keys(v, "", {"op", "strip", "send", "slot", "bus", "mix"}) ||
+            !rd.id(v, "", "strip", o.strip) || !rd.id(v, "", "send", o.send) ||
+            !rd.small(v, "", "slot", o.slot) || !rd.id(v, "", "bus", o.bus) ||
+            !read_send_mix_value(rd, *v.find("mix"), "mix", o.mix)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "RemoveSend") {
+        RemoveSend o;
+        if (!rd.keys(v, "", {"op", "send"}) || !rd.id(v, "", "send", o.send)) return false;
+        out = o;
+    } else if (kind == "SetSendMix") {
+        SetSendMix o;
+        if (!rd.keys(v, "", {"op", "mix"}) ||
+            !read_send_mix_value(rd, *v.find("mix"), "mix", o.mix)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "SetBusMix") {
+        SetBusMix o;
+        if (!rd.keys(v, "", {"op", "mix"}) ||
+            !read_bus_mix_value(rd, *v.find("mix"), "mix", o.mix)) {
+            return false;
+        }
+        out = o;
     } else if (kind == "Compound") {
         return decode_compound(rd, v, out);
     } else {
@@ -1400,7 +1544,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    apart, in parts, as a chunk table; the window holds the table's size,
 //    a table of spine leaves listing chunks by table index, and sequences
 //    listing leaves.
-constexpr std::int64_t kWindowFormat = 7;
+// 8: sends on each edit track, aux buses on each edit state, and the mix's
+//    bus_mix and send_mix (ADR-0022).
+constexpr std::int64_t kWindowFormat = 8;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1452,6 +1598,8 @@ public:
         } else {
             ev.set("markers", Value::null());
         }
+        Value& bs = ev.set("buses", Value::array());
+        for (const Bus& b : e.buses) bs.push(aux_bus_value(b));
         edits_.push(std::move(ev));
         return ix;
     }
@@ -1479,6 +1627,8 @@ private:
         tv.set("active_playlist", id_value(t.active_playlist));
         Value& ins = tv.set("inserts", Value::array());
         for (const Insert& in : t.inserts) ins.push(insert_value(in));
+        Value& sends = tv.set("sends", Value::array());
+        for (const Send& sd : t.sends) sends.push(send_value(sd));
         Value& ps = tv.set("playlists", Value::array());
         for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
         Value& ms = tv.set("midi_playlists", Value::array());
@@ -1589,6 +1739,10 @@ bool window_value(const History& h, WindowWriter& w, Value& root, std::string& e
     for (const TrackMix& m : cur.mix.tracks) mix.push(mix_value(m));
     Value& insert_mix = root.set("insert_mix", Value::array());
     for (const InsertMix& m : cur.mix.inserts) insert_mix.push(insert_mix_value(m));
+    Value& bus_mix = root.set("bus_mix", Value::array());
+    for (const BusMix& m : cur.mix.buses) bus_mix.push(bus_mix_value(m));
+    Value& send_mix = root.set("send_mix", Value::array());
+    for (const SendMix& m : cur.mix.sends) send_mix.push(send_mix_value(m));
     Value& sources = root.set("sources", Value::array());
     if (cur.sources) {
         for (const Source& src : cur.sources->sources) sources.push(source_value(src));
@@ -1774,15 +1928,17 @@ bool read_tracks(Reader& rd, const Value& root,
         const Value* ps = nullptr;
         const Value* ms = nullptr;
         const Value* ins = nullptr;
+        const Value* sends = nullptr;
         if (!rd.keys(e, "tracks",
-                     {"id", "kind", "name", "channels", "active_playlist", "inserts", "playlists",
-                      "midi_playlists"}) ||
+                     {"id", "kind", "name", "channels", "active_playlist", "inserts", "sends",
+                      "playlists", "midi_playlists"}) ||
             !rd.id(e, "tracks", "id", t->id) ||
             !rd.choice(e, "tracks", "kind", kTrackKinds, t->kind) ||
             !rd.text(e, "tracks", "name", t->name) ||
             !rd.small(e, "tracks", "channels", t->channels) ||
             !rd.id(e, "tracks", "active_playlist", t->active_playlist) ||
-            !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "playlists", ps) ||
+            !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "sends", sends) ||
+            !rd.array(e, "tracks", "playlists", ps) ||
             !rd.array(e, "tracks", "midi_playlists", ms)) {
             return false;
         }
@@ -1797,6 +1953,11 @@ bool read_tracks(Reader& rd, const Value& root,
             Insert in;
             if (!read_insert_value(rd, i, "tracks.inserts", in)) return false;
             t->inserts.push_back(std::move(in));
+        }
+        for (const Value& i : sends->items()) {
+            Send sd;
+            if (!read_send_value(rd, i, "tracks.sends", sd)) return false;
+            t->sends.push_back(sd);
         }
         for (const Value& i : ps->items()) {
             std::size_t ix = 0;
@@ -1834,8 +1995,15 @@ bool read_edits(Reader& rd, const Value& root,
     for (const Value& e : list->items()) {
         auto es = std::make_shared<EditState>();
         const Value* ts = nullptr;
-        if (!rd.keys(e, "edits", {"tracks", "markers"}) || !rd.array(e, "edits", "tracks", ts)) {
+        const Value* bs = nullptr;
+        if (!rd.keys(e, "edits", {"tracks", "markers", "buses"}) ||
+            !rd.array(e, "edits", "tracks", ts) || !rd.array(e, "edits", "buses", bs)) {
             return false;
+        }
+        for (const Value& b : bs->items()) {
+            Bus bus;
+            if (!read_aux_bus_value(rd, b, "edits.buses", bus)) return false;
+            es->buses.push_back(std::move(bus));
         }
         for (const Value& i : ts->items()) {
             std::size_t ix = 0;
@@ -1868,7 +2036,8 @@ bool read_window(Reader& rd, const Value& root,
                                             std::to_string(kWindowFormat));
     }
     if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
-                            "bus", "mix", "insert_mix", "sources", "midi_sources", "playlists",
+                            "bus", "mix", "insert_mix", "bus_mix", "send_mix", "sources",
+                            "midi_sources", "playlists",
                             "chunks", "leaves", "sequences", "midi_playlists", "tracks",
                             "markers", "edits", "steps"})) {
         return false;
@@ -1901,6 +2070,18 @@ bool read_window(Reader& rd, const Value& root,
         InsertMix m;
         if (!read_insert_mix_value(rd, e, "insert_mix", m)) return false;
         cur.mix.inserts.push_back(std::move(m));
+    }
+    if (!rd.array(root, "", "bus_mix", list)) return false;
+    for (const Value& e : list->items()) {
+        BusMix m;
+        if (!read_bus_mix_value(rd, e, "bus_mix", m)) return false;
+        cur.mix.buses.push_back(m);
+    }
+    if (!rd.array(root, "", "send_mix", list)) return false;
+    for (const Value& e : list->items()) {
+        SendMix m;
+        if (!read_send_mix_value(rd, e, "send_mix", m)) return false;
+        cur.mix.sends.push_back(m);
     }
     auto pool = std::make_shared<SourcePool>();
     if (!rd.array(root, "", "sources", list)) return false;
@@ -2106,7 +2287,8 @@ const char* const kNames[] = {
     "ReorderTracks", "AddInsert",   "RemoveInsert",    "MoveInsert",
     "SetInsertActive", "ReplaceInsert", "SetInsertBypass", "SetInsertParams",
     "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
-    "SetMidiRouting", "RecordLoopTake", "Compound"};
+    "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
+    "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

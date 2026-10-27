@@ -789,6 +789,175 @@ public:
         });
     }
 
+    // --- sends and aux buses (ADR-0022): structure undoable, values not ---
+
+    bool operator()(const AddBus& op) {
+        if (!detail::valid_text(op.name)) return fail("the bus name is not valid UTF-8");
+        if (!fresh(op.bus)) return false;
+        if (before_.edit->buses.size() >= kMaxBuses) {
+            return fail("a session holds at most " + str(static_cast<std::uint64_t>(kMaxBuses)) +
+                        " aux buses");
+        }
+        BusMix mix = op.mix;
+        mix.bus = op.bus;
+        std::string where;
+        const std::string why = detail::bus_mix_problem(mix, where);
+        if (!why.empty()) return fail("mix." + where + ": " + why);
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->buses.push_back(Bus{op.bus, op.name, {}});
+        after_ = before_;
+        after_.edit = std::move(edit);
+        set_bus_mix(after_.mix, mix);
+        after_.next_id = op.bus + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveBus& op) {
+        const std::size_t b = bus_index(op.bus);
+        if (b == kNone) return fail("bus " + str(op.bus) + " is not an aux bus");
+        const auto feeds = [&](const std::vector<Send>& sends) {
+            for (const Send& sd : sends) {
+                if (sd.bus == op.bus) return true;
+            }
+            return false;
+        };
+        const std::string& name = before_.edit->buses[b].name;
+        for (const auto& t : before_.edit->tracks) {
+            if (feeds(t->sends)) {
+                return fail("bus \"" + name + "\" is fed by a send on track \"" + t->name +
+                            "\"; remove the send first");
+            }
+        }
+        for (const Bus& other : before_.edit->buses) {
+            if (feeds(other.sends)) {
+                return fail("bus \"" + name + "\" is fed by a send on bus \"" + other.name +
+                            "\"; remove the send first");
+            }
+        }
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->buses.erase(edit->buses.begin() + static_cast<std::ptrdiff_t>(b));
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    bool operator()(const AddSend& op) {
+        SendMix values = op.mix;
+        values.send = op.send;
+        std::string where;
+        const std::string why = detail::send_mix_problem(values, where);
+        if (!why.empty()) return fail("mix." + where + ": " + why);
+        if (!fresh(op.send)) return false;
+        if (op.slot >= kSendSlots) {
+            return fail("slot " + str(static_cast<std::uint64_t>(op.slot)) + " is not one of the " +
+                        str(static_cast<std::uint64_t>(kSendSlots)) + " send slots (A to J)");
+        }
+        const std::size_t dest = bus_index(op.bus);
+        if (dest == kNone) return fail("bus " + str(op.bus) + " is not an aux bus");
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        std::vector<Send>* sends = nullptr;
+        std::shared_ptr<TrackEdit> track;
+        const std::size_t t = locate_track(*before_.edit, op.strip);
+        if (t != kNone) {
+            if (before_.edit->tracks[t]->kind == TrackKind::Midi) {
+                return fail("track " + str(op.strip) + " is a MIDI track; it has no audio to send");
+            }
+            track = std::make_shared<TrackEdit>(*before_.edit->tracks[t]);
+            sends = &track->sends;
+        } else {
+            const std::size_t b = bus_index(op.strip);
+            if (b == kNone) {
+                return fail("strip " + str(op.strip) + " is neither a track nor an aux bus");
+            }
+            if (op.strip == op.bus) return fail("a bus cannot send to itself");
+            // The new send closes a loop if its destination already reaches
+            // its strip (ADR-0022 §4).
+            const std::vector<Id> path = detail::bus_path(*before_.edit, op.bus, op.strip);
+            if (!path.empty()) {
+                std::string chain;
+                for (const Id id : path) {
+                    chain += (chain.empty() ? "" : " -> ") + bus_name(id);
+                }
+                return fail("a send from bus " + bus_name(op.strip) + " to bus " +
+                            bus_name(op.bus) + " would make a feedback loop: " + chain +
+                            " already");
+            }
+            sends = &edit->buses[b].sends;
+        }
+        for (const Send& sd : *sends) {
+            if (sd.slot == op.slot) {
+                return fail("send slot " + std::string(1, static_cast<char>('A' + op.slot)) +
+                            " on strip " + str(op.strip) + " already holds send " + str(sd.id));
+            }
+            if (sd.bus == op.bus) {
+                return fail("strip " + str(op.strip) + " already sends to bus " +
+                            bus_name(op.bus) + " (slot " +
+                            std::string(1, static_cast<char>('A' + sd.slot)) + ")");
+            }
+        }
+        const auto at = std::lower_bound(
+            sends->begin(), sends->end(), op.slot,
+            [](const Send& a, std::uint8_t slot) { return a.slot < slot; });
+        sends->insert(at, Send{op.send, op.slot, op.bus});
+        if (track) edit->tracks[t] = std::move(track);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        set_send_mix(after_.mix, values);
+        after_.next_id = op.send + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveSend& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const auto erase = [&](std::vector<Send>& sends) {
+            for (auto it = sends.begin(); it != sends.end(); ++it) {
+                if (it->id == op.send) {
+                    sends.erase(it);
+                    return true;
+                }
+            }
+            return false;
+        };
+        bool found = false;
+        for (std::size_t t = 0; t < edit->tracks.size() && !found; ++t) {
+            if (!has_send(edit->tracks[t]->sends, op.send)) continue;
+            auto track = std::make_shared<TrackEdit>(*edit->tracks[t]);
+            found = erase(track->sends);
+            edit->tracks[t] = std::move(track);
+        }
+        for (std::size_t b = 0; b < edit->buses.size() && !found; ++b) {
+            found = erase(edit->buses[b].sends);
+        }
+        if (!found) return no_send(op.send);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    // Only a send that is on a strip: values left by a removal are kept for
+    // undo, not edited.
+    bool operator()(const SetSendMix& op) {
+        if (!send_exists(op.mix.send)) return no_send(op.mix.send);
+        std::string where;
+        const std::string why = detail::send_mix_problem(op.mix, where);
+        if (!why.empty()) return fail("send " + str(op.mix.send) + "." + where + ": " + why);
+        after_ = before_;
+        set_send_mix(after_.mix, op.mix);
+        return true;
+    }
+
+    bool operator()(const SetBusMix& op) {
+        if (bus_index(op.mix.bus) == kNone) {
+            return fail("bus " + str(op.mix.bus) + " is not an aux bus");
+        }
+        std::string where;
+        const std::string why = detail::bus_mix_problem(op.mix, where);
+        if (!why.empty()) return fail("bus " + str(op.mix.bus) + "." + where + ": " + why);
+        after_ = before_;
+        set_bus_mix(after_.mix, op.mix);
+        return true;
+    }
+
     // --- MIDI (midi.md §3.1) ---
 
     bool operator()(const AddMidiSource& op) {
@@ -1228,6 +1397,60 @@ private:
 
     bool no_insert(Id insert) {
         return fail("insert " + str(insert) + " is not on any track");
+    }
+
+    std::size_t bus_index(Id bus) const {
+        const auto& buses = before_.edit->buses;
+        for (std::size_t b = 0; b < buses.size(); ++b) {
+            if (buses[b].id == bus) return b;
+        }
+        return kNone;
+    }
+
+    std::string bus_name(Id bus) const {
+        const std::size_t b = bus_index(bus);
+        return b == kNone ? str(bus) : "\"" + before_.edit->buses[b].name + "\"";
+    }
+
+    static bool has_send(const std::vector<Send>& sends, Id send) {
+        for (const Send& sd : sends) {
+            if (sd.id == send) return true;
+        }
+        return false;
+    }
+
+    bool send_exists(Id send) const {
+        for (const auto& t : before_.edit->tracks) {
+            if (has_send(t->sends, send)) return true;
+        }
+        for (const Bus& b : before_.edit->buses) {
+            if (has_send(b.sends, send)) return true;
+        }
+        return false;
+    }
+
+    bool no_send(Id send) {
+        return fail("send " + str(send) + " is not on any track or aux bus");
+    }
+
+    static void set_send_mix(MixState& mix, const SendMix& m) {
+        for (SendMix& existing : mix.sends) {
+            if (existing.send == m.send) {
+                existing = m;
+                return;
+            }
+        }
+        mix.sends.push_back(m);
+    }
+
+    static void set_bus_mix(MixState& mix, const BusMix& m) {
+        for (BusMix& existing : mix.buses) {
+            if (existing.bus == m.bus) {
+                existing = m;
+                return;
+            }
+        }
+        mix.buses.push_back(m);
     }
 
     // `slot` on `t` holds nothing, or only the insert `moving` itself.
@@ -1679,7 +1902,8 @@ bool leaf_is_undoable(MemberRef m) {
     return !(m.holds<AddSource>() || m.holds<SetMix>() || m.holds<SetMonitorBus>() ||
              m.holds<SetSettings>() || m.holds<SetInsertBypass>() ||
              m.holds<SetInsertParams>() || m.holds<SetInsertState>() ||
-             m.holds<AddMidiSource>() || m.holds<SetMidiRouting>());
+             m.holds<AddMidiSource>() || m.holds<SetMidiRouting>() ||
+             m.holds<SetSendMix>() || m.holds<SetBusMix>());
 }
 
 }  // namespace

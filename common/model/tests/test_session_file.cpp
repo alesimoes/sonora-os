@@ -176,14 +176,37 @@ std::string as_v10(const std::string& v9) {
     return s;
 }
 
+// What v10 -> v11 makes of a file: the version, "sends": [] on every
+// track with audio, and "buses": [] after the tracks (ADR-0022).
+std::string as_v11(const std::string& v10) {
+    std::string s = edit(v10, "\"sonora_session\": 10,", "\"sonora_session\": 11,");
+    const std::string playlists = "\n      \"playlists\": [";
+    const std::string kind = "\n      \"kind\": \"";
+    for (std::size_t at = s.find(playlists); at != std::string::npos;
+         at = s.find(playlists, at + playlists.size())) {
+        const std::size_t k = s.rfind(kind, at);
+        if (k == std::string::npos) return "<bad edit>";
+        if (s.compare(k + kind.size(), 5, "midi\"") == 0) continue;
+        s.insert(at, "\n      \"sends\": [],");
+        at += 20;
+    }
+    const std::string markers = "\n  ],\n  \"markers\": [";
+    const std::size_t m = s.find(markers);
+    if (m == std::string::npos) return "<bad edit>";
+    s.insert(m + 5, "\n  \"buses\": [],");
+    return s;
+}
+
 // A version 4 file with no MIDI region, as this build saves it.
 std::string as_current(const std::string& v4) {
-    return as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4))))));
+    return as_v11(as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4)))))));
 }
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v10-loop-record.sonora";
+constexpr const char* kCurrent = "v11-sends.sonora";
+// The version 10 fixture: the same session before sends and aux buses.
+constexpr const char* kNoSends = "v10-loop-record.sonora";
 // The version 9 fixture: the same session before loop record's mode.
 constexpr const char* kNoLoopRecord = "v9-loop-playback.sonora";
 // The version 8 fixture: the same session before loop playback's switch.
@@ -206,7 +229,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 10);
+    CHECK(l.file_version == 11);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.
@@ -217,8 +240,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v10-loop-record.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v10-loop-record.out.sonora\n");
+        std::ofstream("v11-sends.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v11-sends.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -418,7 +441,7 @@ int test_v5_migrates() {
     CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
     CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
     Loaded current;
-    const std::string v10 = as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId)))));
+    const std::string v10 = as_v11(as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId))))));
     CHECK(load(v10, current, e));
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
@@ -431,7 +454,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 10);
+    CHECK(file_format_version(out, version) && version == 11);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -816,22 +839,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 11,"),
-                  "format version 11, newer than this program, which reads up to version 10",
+    CHECK(refused(edit(text, "\"sonora_session\": 11,", "\"sonora_session\": 12,"),
+                  "format version 12, newer than this program, which reads up to version 11",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 11,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 11,", "\"sonora_session\": 12,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 10,",
+    CHECK(refused(edit(text, "\"sonora_session\": 11,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 11,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 10,", "\"sonora_session\": 10.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 11,", "\"sonora_session\": 11.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -844,8 +867,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 10,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 10,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 11,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 11,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -1118,7 +1141,7 @@ int test_v6_migrates_and_session_id() {
     CHECK(l.snapshot.settings.session_id.empty() && l.snapshot.settings.left_takes.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v10(as_v9(as_v8(as_v7(v6)))));
+    CHECK(out == as_v11(as_v10(as_v9(as_v8(as_v7(v6))))));
     const std::string last = "\n  ]\n}\n";
     CHECK(refused(v6.substr(0, v6.size() - last.size()) + "\n  ],\n  \"session_id\": \"\"\n}\n",
                   "migrating from format version 6: the file has \"session_id\"", nullptr));
@@ -1169,7 +1192,7 @@ int test_v7_migrates_and_count_off() {
     CHECK(l.snapshot.settings.transport.count_off_bars == 2);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v10(as_v9(as_v8(v7))));
+    CHECK(out == as_v11(as_v10(as_v9(as_v8(v7)))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v7, "\"punch_crossfade\": 240", "\"punch_crossfade\": 240,\n    \"count_off_bars\": 2"),
                   "migrating from format version 7: the file has \"transport.count_off_bars\"",
@@ -1204,7 +1227,7 @@ int test_v8_migrates_and_loop_playback() {
     CHECK(!l.snapshot.settings.transport.loop_playback);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v10(as_v9(v8)));
+    CHECK(out == as_v11(as_v10(as_v9(v8))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string ranged = edit(v8, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]");
@@ -1252,7 +1275,7 @@ int test_v9_migrates_and_loop_record() {
     CHECK(!l.snapshot.settings.transport.loop_record);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v10(v9));
+    CHECK(out == as_v11(as_v10(v9)));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string on9 = edit(edit(v9, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]"),
@@ -1285,6 +1308,64 @@ int test_v9_migrates_and_loop_record() {
     return 0;
 }
 
+// Version 11 (ADR-0022): aux buses and sends. A version 10 file opens with
+// none, every track with audio gaining an empty send list; a version 10
+// file cannot carry either key; a send outside its slot range, or naming
+// no bus, is refused by key path.
+int test_v10_migrates_and_sends() {
+    const std::string v10 = read_fixture(kNoSends);
+    CHECK(!v10.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v10, l, e));
+    CHECK(l.file_version == 10 && l.repairs.empty());
+    CHECK(l.snapshot.edit->buses.empty());
+    for (const auto& t : l.snapshot.edit->tracks) CHECK(t->sends.empty());
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == as_v11(v10));
+    CHECK(out == read_fixture(kCurrent));
+    CHECK(refused(edit(v10, "\"markers\": [", "\"buses\": [],\n  \"markers\": ["),
+                  "migrating from format version 10: the file has \"buses\"", nullptr));
+    CHECK(refused(edit(v10, "      ],\n      \"playlists\": [",
+                       "      ],\n      \"sends\": [],\n      \"playlists\": ["),
+                  "which version 10 does not define", nullptr));
+
+    const std::string text = read_fixture(kCurrent);
+    const std::string no_buses = "\"buses\": [],";
+    const std::string one_bus =
+        "\"buses\": [\n    {\n      \"id\": 60,\n      \"name\": \"Verb\",\n"
+        "      \"gain_db\": -3.0,\n      \"pan\": 0.0,\n      \"mute\": false,\n"
+        "      \"sends\": []\n    }\n  ],";
+    Loaded bus;
+    CHECK(load(edit(text, no_buses, one_bus), bus, e));
+    CHECK(bus.snapshot.edit->buses.size() == 1);
+    CHECK(bus.snapshot.mix.find_bus(60)->gain_db == -3.0f);
+    CHECK(bus.snapshot.next_id == 61);
+    const std::string send =
+        "\"sends\": [\n        {\n          \"id\": 61,\n          \"slot\": 0,\n"
+        "          \"bus\": 60,\n          \"level_db\": -6.0,\n          \"pan\": 0.0,\n"
+        "          \"follow_pan\": true,\n          \"mute\": false,\n"
+        "          \"pre\": true\n        }\n      ],";
+    // The first track's: the one whose inserts are not empty.
+    const std::string with_send = edit(edit(text, no_buses, one_bus),
+                                       "      ],\n      \"sends\": [],", "      ],\n      " + send);
+    Loaded sent;
+    CHECK(load(with_send, sent, e));
+    const TrackEdit& first = *sent.snapshot.edit->tracks[0];
+    CHECK(first.sends.size() == 1 && first.sends[0].bus == 60);
+    CHECK(sent.snapshot.mix.find_send(61)->pre);
+    CHECK(save(sent, out));
+    CHECK(out == with_send);
+    CHECK(refused(edit(with_send, "\"slot\": 0,\n          \"bus\"", "\"slot\": 10,\n          \"bus\""),
+                  "must be an integer from 0 to 9", nullptr));
+    CHECK(refused(edit(with_send, "\"bus\": 60,", "\"bus\": 3,"), "is not an aux bus",
+                  nullptr));
+    CHECK(refused(edit(with_send, "\"level_db\": -6.0", "\"level_db\": 60.0"), "level_db",
+                  nullptr));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1295,6 +1376,7 @@ int main() {
         failed += f();
     };
     t(test_fixture_is_canonical);
+    t(test_v10_migrates_and_sends);
     t(test_v1_migrates);
     t(test_v2_migrates);
     t(test_v3_migrates);

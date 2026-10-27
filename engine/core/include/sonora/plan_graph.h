@@ -51,6 +51,48 @@ constexpr uint32_t kTrackSourceIdTag = 0x01000000u;
 constexpr uint32_t kInsertChainIdTag = 0x02000000u;
 constexpr uint32_t kTrackFaderIdTag = 0x03000000u;
 
+// Sends and aux buses (ADR-0022 §5). A send from engine track `strip`, or
+// from engine bus `strip - tracks`, in `slot`, into engine bus `bus`.
+struct SendBinding {
+    uint32_t strip = 0;
+    uint32_t slot = 0;
+    uint32_t bus = 0;
+};
+
+struct MixLayout {
+    // Engine buses, `bus_count` of them: each one's stable key, and their
+    // order in the plan, which must be topological over the sends (a bus
+    // after every bus that sends to it). Both bus_count entries.
+    uint32_t bus_count = 0;
+    const uint32_t* bus_keys = nullptr;
+    const uint32_t* bus_order = nullptr;
+    // Any order; the layout sums them in strip order, then slot order.
+    const SendBinding* sends = nullptr;
+    uint32_t send_count = 0;
+};
+
+struct GraphSize {
+    uint32_t nodes = 0;
+    uint32_t edges = 0;
+};
+
+// What layout_mix_graph() needs for `tracks` tracks: a track with an active
+// chain or a send is split, three nodes with a chain and two without.
+GraphSize mix_graph_size(uint32_t tracks, const ChainBinding* chains, const MixLayout& mix);
+
+// Stable id tags of an aux bus's nodes, over its key.
+constexpr uint32_t kAuxSumIdTag = 0x04000000u;
+constexpr uint32_t kAuxFaderIdTag = 0x05000000u;
+
+// layout_track_graph() with sends and aux buses. A track with a send and no
+// active chain is TrackSource -> TrackFader; its sends leave from the last
+// node before TrackFader, the pre-fader point. Each bus, in mix.bus_order,
+// is AuxSum -> AuxFader, its sends leaving from AuxSum. BusSum sums the
+// tracks in order, then the buses in plan order. Needs nodes and edges
+// sized by mix_graph_size(). A send naming a strip or a bus out of range is
+// left out; mix_graph_size() leaves it out too.
+void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixLayout& mix);
+
 // layout_monitor_graph() with chains: track t is a TrackOut, or, when
 // chains[t].active, TrackSource -> InsertChain -> TrackFader; then BusSum
 // and HardwareOut. Edges grouped by to_node, every delay 0 and no delay

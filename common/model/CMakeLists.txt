@@ -58,6 +58,10 @@ add_executable(test_model_inserts tests/test_inserts.cpp)
 target_link_libraries(test_model_inserts PRIVATE sonora_model_audited)
 add_test(NAME model_inserts COMMAND test_model_inserts)
 
+add_executable(test_model_sends tests/test_sends.cpp)
+target_link_libraries(test_model_sends PRIVATE sonora_model_audited)
+add_test(NAME model_sends COMMAND test_model_sends)
+
 add_executable(test_model_random_edits tests/test_random_edits.cpp)
 target_link_libraries(test_model_random_edits PRIVATE sonora_model_audited)
 add_test(NAME model_random_edits COMMAND test_model_random_edits)

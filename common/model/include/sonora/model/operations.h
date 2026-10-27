@@ -359,6 +359,49 @@ struct SetMidiRouting {
     MidiRouting routing;
 };
 
+// --- sends and aux buses (ADR-0022) ----------------------------------------
+//
+// Structure (a bus, a send, its slot and its bus) is undoable; values
+// (BusMix, SendMix) are mix state, saved and never undone, as a fader is.
+
+// A new aux bus at the end of the display order, with its return's values.
+struct AddBus {
+    Id bus = 0;
+    std::string name;
+    BusMix mix;   // mix.bus is ignored; the new bus's id is used
+};
+
+// Refused while a send feeds the bus. Its own sends go with it; their
+// values, and the bus's, outlive it, so undo brings it back as it was.
+struct RemoveBus {
+    Id bus = 0;
+};
+
+// A send from `strip`, a track or an aux bus, in a free slot, to `bus`.
+// Refused if it would close a loop through the buses, or if the strip
+// already sends to that bus. Another destination is RemoveSend then
+// AddSend in one compound.
+struct AddSend {
+    Id strip = 0;
+    Id send = 0;
+    std::uint8_t slot = 0;
+    Id bus = 0;
+    SendMix mix;   // mix.send is ignored; the new send's id is used
+};
+
+struct RemoveSend {
+    Id send = 0;
+};
+
+// Not undoable.
+struct SetSendMix {
+    SendMix mix;   // replaces the values of mix.send
+};
+
+struct SetBusMix {
+    BusMix mix;    // replaces the values of mix.bus
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -369,7 +412,8 @@ using Member =
                  RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
-                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake>;
+                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
+                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -401,7 +445,8 @@ using Operation =
                  RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
                  RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
-                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, Compound>;
+                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
+                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

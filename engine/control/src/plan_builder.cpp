@@ -129,6 +129,12 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 str(limits.engine_tracks) + " (limit: tracks)";
         return false;
     }
+    const auto& buses = snapshot.edit->buses;
+    if (buses.size() > limits.max_buses) {
+        error = "the session has " + str(buses.size()) + " aux buses; the engine was created with " +
+                str(limits.max_buses) + " (limit: max_buses)";
+        return false;
+    }
 
     // Per engine track, flattened, in timeline order.
     std::vector<std::vector<PlanSegment>> per_track(limits.engine_tracks);
@@ -274,7 +280,6 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     for (uint32_t ti = 0; ti < limits.engine_tracks; ++ti) {
         bindings[ti].stable_key = kSpareTrackKeyTag | (ti + 1);
     }
-    uint32_t active_chains = 0;
     for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
         const model::TrackEdit& t = *tracks[ti];
         ChainBinding& b = bindings[ti];
@@ -297,14 +302,74 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         // one nor the track's key.
         b.active = true;
         b.stable_key = key->second;
-        ++active_chains;
     }
+
+    // Sends and aux buses (ADR-0022 §5). Engine bus b is the document's bus
+    // b in display order.
+    const auto bus_count = static_cast<uint32_t>(buses.size());
+    std::unordered_map<model::Id, uint32_t> bus_index;
+    std::vector<uint32_t> bus_keys(bus_count);
+    for (uint32_t b = 0; b < bus_count; ++b) {
+        bus_index.emplace(buses[b].id, b);
+        auto key = continuity.bus_keys.find(buses[b].id);
+        if (key == continuity.bus_keys.end()) {
+            if (continuity.next_bus_key > kMaxTrackKey) {
+                error = "the session has seen more than " + str(kMaxTrackKey) +
+                        " aux buses; save and reopen it (limit: bus keys)";
+                return false;
+            }
+            key = continuity.bus_keys.emplace(buses[b].id, continuity.next_bus_key++).first;
+        }
+        bus_keys[b] = key->second;
+    }
+    std::vector<SendBinding> sends;
+    const auto bind_sends = [&](const std::vector<model::Send>& from, uint32_t strip) {
+        for (const model::Send& sd : from) {
+            const auto it = bus_index.find(sd.bus);
+            if (it == bus_index.end()) continue;   // check_invariants refuses it
+            sends.push_back(SendBinding{strip, sd.slot, it->second});
+        }
+    };
+    for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
+        bind_sends(tracks[ti]->sends, static_cast<uint32_t>(ti));
+    }
+    for (uint32_t b = 0; b < bus_count; ++b) bind_sends(buses[b].sends, limits.engine_tracks + b);
+    // Topological, ties in display order: the lowest-numbered bus no
+    // remaining bus sends to goes next. Quadratic in buses, which are few.
+    std::vector<uint32_t> inputs(bus_count, 0);
+    for (const SendBinding& s : sends) {
+        if (s.strip >= limits.engine_tracks) ++inputs[s.bus];
+    }
+    std::vector<uint32_t> bus_order;
+    std::vector<uint8_t> placed(bus_count, 0);
+    while (bus_order.size() < bus_count) {
+        uint32_t next = bus_count;
+        for (uint32_t b = 0; b < bus_count && next == bus_count; ++b) {
+            if (!placed[b] && inputs[b] == 0) next = b;
+        }
+        if (next == bus_count) {
+            error = "the aux buses' sends make a feedback loop; the plan is not built";
+            return false;
+        }
+        placed[next] = 1;
+        bus_order.push_back(next);
+        for (const SendBinding& s : sends) {
+            if (s.strip == limits.engine_tracks + next) --inputs[s.bus];
+        }
+    }
+    MixLayout mix;
+    mix.bus_count = bus_count;
+    mix.bus_keys = bus_keys.data();
+    mix.bus_order = bus_order.data();
+    mix.sends = sends.data();
+    mix.send_count = static_cast<uint32_t>(sends.size());
+    const GraphSize graph = mix_graph_size(limits.engine_tracks, bindings.data(), mix);
 
     PlanSizes sizes;
     sizes.tracks = limits.engine_tracks;
     sizes.segments = static_cast<uint32_t>(segment_total);
-    sizes.nodes = graph_nodes(limits.engine_tracks, active_chains);
-    sizes.edges = graph_edges(limits.engine_tracks, active_chains);
+    sizes.nodes = graph.nodes;
+    sizes.edges = graph.edges;
     sizes.chunk_slots = static_cast<uint32_t>(slot_total);
     const std::vector<ClickSegment> click = click_segments(snapshot.settings);
     sizes.click_segments = static_cast<uint32_t>(click.size());
@@ -333,7 +398,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         pt.segment_count = static_cast<uint32_t>(per_track[t].size());
         for (const PlanSegment& s : per_track[t]) plan->segments[at++] = s;
     }
-    layout_track_graph(*plan, bindings.data());
+    layout_mix_graph(*plan, bindings.data(), mix);
     report.track_shortfall.assign(limits.engine_tracks, 0);
     const Compensation comp =
         compensate(*plan, limits.max_delay_frames, continuity.pool, report.track_shortfall.data());

@@ -122,6 +122,7 @@ writes, does not matter at this size (see "Size").
   "sources": [ ... ],
   "midi_sources": [ ... ],
   "tracks": [ ... ],
+  "buses": [ ... ],
   "markers": [ ... ],
   "session_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
   "left_takes": ["Audio Files/Audio 1_07.wav"]
@@ -802,6 +803,41 @@ lie:
    count, never opened half-loaded.
 6. Orphan scan of `Audio Files/` (crash recovery above).
 
+### Sends and aux buses
+
+Version 11, [ADR-0022](../decisions/ADR-0022-sends-and-aux-buses.md).
+Every track with audio has `"sends"`, ordered by `slot`, empty when there
+is none, never absent; a MIDI track has none. The top level's `"buses"`
+holds the aux buses in display order: each a stereo bus and its return
+strip, returned to `monitor_bus`.
+
+```json
+"buses": [
+  {
+    "id": 60, "name": "Verb", "gain_db": -3.0, "pan": 0.0, "mute": false,
+    "sends": []
+  }
+],
+"sends": [
+  {
+    "id": 61, "slot": 0, "bus": 60, "level_db": -6.0, "pan": 0.0,
+    "follow_pan": true, "mute": false, "pre": false
+  }
+]
+```
+
+| Key | Meaning |
+|---|---|
+| bus `id`, `name` | Session-unique id; any UTF-8 name. At most 256 buses. |
+| bus `gain_db`, `pan`, `mute` | The return strip: gain in the model's range, balance from -1 to 1. Mix state. |
+| bus `sends` | The bus's own sends, to other buses. The buses' sends never form a loop; a file with one is refused. A bus never sends to itself. |
+| send `id` | Session-unique. |
+| send `slot` | 0 to 9, Pro Tools' A to J. Unique on the strip; gaps are allowed. Structure, so undoable. |
+| send `bus` | An aux bus of this session. A strip sends to a bus at most once. Structure. |
+| send `level_db` | In the model's gain range; `-144` is Pro Tools' -INF. Mix state. |
+| send `pan`, `follow_pan` | The send's own pan, -1 to 1, used when `follow_pan` is false; with it true (Pro Tools' FMP) the send pans as its strip does. Mix state. |
+| send `mute`, `pre` | `pre`: pre-fader, post-insert, before the strip's fader and pan; still silenced by the strip's mute. Mix state. |
+
 ## Versioning
 
 `sonora_session` is one integer that goes up by one for **any** change to
@@ -888,6 +924,12 @@ loads through it and saves as `v9-loop-playback.sonora`, byte for byte.
 loop playback was on. Nothing else changes. A version 9 file cannot carry the
 key. The frozen v9 fixture loads through it and saves as
 `v10-loop-record.sonora`, byte for byte.
+
+**v10→v11 (sends and aux buses, ADR-0022):** every track with audio gains
+`"sends": []`, after `inserts`, and the top level `"buses": []`, after
+`tracks`. Nothing else changes. A version 10 file cannot carry either key.
+The frozen v10 fixture loads through it and saves as `v11-sends.sonora`,
+byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

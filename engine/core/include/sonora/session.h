@@ -47,6 +47,9 @@ struct PlaybackConfig {
     // a plan of this graph can delay, one per track into the bus.
     uint32_t max_delay_frames = 16384;
     uint32_t max_delayed_edges = 128;
+    // Aux buses a plan may carry (ADR-0022 §8). Sizes the scratch buffers
+    // and the send and return state; a plan with more is refused.
+    uint32_t max_buses = 32;
     uint32_t command_capacity = 64;
     // Plugin parameter changes queued for the audio thread (ADR-0012 §5.1),
     // in a ring of their own so a knob drag never holds a locate back. The
@@ -426,6 +429,16 @@ public:
         return params_dropped_.load(std::memory_order_relaxed);
     }
 
+    // Sends and aux returns (ADR-0022 §6): mix state, read once per block
+    // and ramped across it like a fader. A send's state is at strip *
+    // kStripSendSlots + slot: strip t is engine track t, strip tracks + b
+    // is engine bus b. Linear gains; pan -1 to 1. Out of range is ignored.
+    // Control thread.
+    void set_send(uint32_t strip, uint32_t slot, float level, float pan, bool follow_pan,
+                  bool mute, bool pre);
+    void set_aux(uint32_t bus, float gain, float pan, bool mute);
+    uint32_t max_buses() const { return max_buses_; }
+
     // Monitor bus gain, linear. Mix state, ramped per block.
     void set_bus_gain(float g) { bus_gain_.store(g, std::memory_order_relaxed); }
     float bus_gain() const { return bus_gain_.load(std::memory_order_relaxed); }
@@ -634,6 +647,14 @@ private:
     // Adds `in` to `out`, `edge.delay_frames` late through its line.
     void sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
                   float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // A send edge: `in` scaled by the send's ramped coefficient, then
+    // sum_edge(). `mono`: the source's side 0 feeds both sides.
+    void sum_send(const PlaybackPlan& plan, const PlanEdge& edge, bool mono,
+                  const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // This block's send and return targets, from the mix state (ADR-0022
+    // §6). A send or return the last callback did not play starts from
+    // silence.
+    void send_targets(const PlaybackPlan& plan) noexcept SONORA_RT;
     float* scratch(uint32_t buffer, uint32_t side) noexcept SONORA_RT {
         return scratch_.get() + (static_cast<std::size_t>(buffer) * 2 + side) * max_block_;
     }
@@ -799,6 +820,39 @@ private:
     std::unique_ptr<uint64_t[]> cursor_frame_;
     std::unique_ptr<float[]> track_gain_;    // per engine track, L and R, end of last block
     std::unique_ptr<float[]> track_target_;  // this block's targets
+    // Per engine track this block: 0 when muted or solo-muted, else 1; the
+    // fader's linear gain; the pan. What its sends' coefficients read.
+    std::unique_ptr<float[]> track_open_;
+    std::unique_ptr<float[]> track_level_;
+    std::unique_ptr<float[]> track_pan_;
+
+    // Sends and aux returns (ADR-0022). The atomics are the control
+    // thread's to write; the rest the audio thread's.
+    struct SendState {
+        std::atomic<float> level{0.0f};
+        std::atomic<float> pan{0.0f};
+        std::atomic<bool> follow_pan{true};
+        std::atomic<bool> mute{false};
+        std::atomic<bool> pre{false};
+    };
+    struct AuxState {
+        std::atomic<float> gain{1.0f};
+        std::atomic<float> pan{0.0f};
+        std::atomic<bool> mute{false};
+    };
+    uint32_t max_buses_ = 0;
+    uint32_t send_states_ = 0;               // (tracks + max_buses) x kStripSendSlots
+    std::unique_ptr<SendState[]> sends_;
+    std::unique_ptr<AuxState[]> aux_;
+    std::unique_ptr<float[]> send_gain_;     // per send, L and R, end of last block
+    std::unique_ptr<float[]> send_target_;
+    std::unique_ptr<uint64_t[]> send_stamp_; // the callback that last played it
+    std::unique_ptr<float[]> aux_gain_;      // per bus, L and R, end of last block
+    std::unique_ptr<float[]> aux_target_;
+    std::unique_ptr<uint64_t[]> aux_stamp_;
+    std::unique_ptr<float[]> aux_open_;      // per bus this block, as track_open_
+    std::unique_ptr<float[]> aux_level_;
+    std::unique_ptr<float[]> aux_pan_;
     float bus_applied_ = 1.0f;
     float bus_target_ = 1.0f;
     uint64_t seen_epoch_ = 0;

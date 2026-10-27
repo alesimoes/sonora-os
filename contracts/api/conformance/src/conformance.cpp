@@ -1422,6 +1422,103 @@ int check_compound(Rig& rig) {
     return C(rig, "compound operations").go();
 }
 
+// Sends and aux buses (ADR-0022, protocol 27): a bus and a send cross as
+// operations and every replica holds them; a send that would close a loop
+// through the buses is refused, saying so, and changes nothing; a send's
+// values are not an undo step, and undo takes the last send away.
+int check_sends(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            const model::Id track = before.edit->tracks.at(0)->id;
+            model::Id next = before.next_id;
+            const model::Id verb = next++;
+            const model::Id room = next++;
+            CommandReply r;
+            EXPECT(apply(s, model::AddBus{verb, "Verb", model::BusMix{}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "AddBus was refused: " + r.message);
+            EXPECT(apply(s, model::AddBus{room, "Room", model::BusMix{}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "a second AddBus was refused: " + r.message);
+            model::AddSend send;
+            send.strip = track;
+            send.send = next++;
+            send.slot = 0;
+            send.bus = verb;
+            send.mix.level_db = -6.0f;
+            EXPECT(apply(s, send, r) && r.result == DispatchResult::Ok,
+                   "AddSend from a track was refused: " + r.message);
+            model::AddSend chain;
+            chain.strip = verb;
+            chain.send = next++;
+            chain.slot = 0;
+            chain.bus = room;
+            EXPECT(apply(s, chain, r) && r.result == DispatchResult::Ok,
+                   "AddSend from a bus was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == before.revision + 4; }),
+                   "no update for the sends: " + s.replica_error);
+            EXPECT(s.replica.current().edit->buses.size() == before.edit->buses.size() + 2,
+                   "the replica does not hold the buses");
+            EXPECT(s.replica.current().edit->tracks[0]->sends.size() == 1,
+                   "the replica does not hold the track's send");
+
+            const model::Snapshot here = s.replica.current();
+            const std::size_t updates = s.inbox.model.size();
+            model::AddSend loop;
+            loop.strip = room;
+            loop.send = next++;
+            loop.slot = 0;
+            loop.bus = verb;
+            EXPECT(apply(s, loop, r) && r.result == DispatchResult::Failed,
+                   "a send that closes a loop was accepted");
+            EXPECT(mentions(r.message, "feedback loop"), "the refusal does not say it is a loop");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(s.inbox.model.size() == updates, "a refused send sent an update");
+            EXPECT(s.replica.current() == here, "a refused send changed the replica");
+
+            model::SendMix pre = *here.mix.find_send(send.send);
+            pre.pre = true;
+            EXPECT(apply(s, model::SetSendMix{pre}, r) && r.result == DispatchResult::Ok,
+                   "SetSendMix was refused: " + r.message);
+            ModelRequest undo;
+            undo.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                   "undo failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() == updates + 2; }),
+                   "no update for the undo");
+            const model::Snapshot after = s.replica.current();
+            EXPECT(find_bus_sends(after, verb) == 0, "undo did not take the bus's send away");
+            EXPECT(after.mix.find_send(send.send) != nullptr &&
+                       after.mix.find_send(send.send)->pre,
+                   "undo moved a send's values, which are not an undo step");
+            return ok();
+        }
+
+        static std::size_t find_bus_sends(const model::Snapshot& s, model::Id bus) {
+            for (const model::Bus& b : s.edit->buses) {
+                if (b.id == bus) return b.sends.size();
+            }
+            return 0;
+        }
+    };
+    return C(rig, "sends and aux buses").go();
+}
+
 int check_model(Rig& rig) {
     struct C : Check {
         using Check::Check;
@@ -2677,6 +2774,7 @@ int run(Rig& rig) {
     failures += check_input_monitor(rig);
     failures += check_model(rig);
     failures += check_compound(rig);
+    failures += check_sends(rig);
     failures += check_load(rig);
     failures += check_load_in_parts(rig);
     failures += check_inserts(rig);

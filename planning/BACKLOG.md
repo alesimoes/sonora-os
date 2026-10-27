@@ -392,6 +392,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
 - [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
 - [ ] Memory Locations length column uses the main counter format, not always min:sec.
+- [ ] `ui.mixer.sends` follow-ups (ADR-0022):
+  - [ ] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
+  - [ ] Aux return meters, post-fader, in the state block (state layout bump); the aux strip shows none yet.
+  - [ ] A send removed by a plan swap stops on the swap's block; fade it out over one block, as a chain's miss is faded.
+  - [ ] Pro Tools' expanded send view (a send's fader on the strip) and Alt-click "assign to all selected tracks"; a key binding for the A-E / F-J bank, `"verified": false` until checked.
+  - [ ] Two sends of one strip to one bus, which Pro Tools allows (ADR-0022 open question): key the delay-line pair on the send.
+  - Aux inserts, output assignment, solo and I/O-setup bus paths are `ui.mixer.io`.
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;

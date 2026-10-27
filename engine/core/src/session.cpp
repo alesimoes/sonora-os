@@ -286,8 +286,10 @@ Session::Session(SessionConfig cfg)
     params_.reset(new RtCommand[param_commands_->capacity()]());
     node_params_.reset(new ChainParamEvent[param_commands_->capacity()]());
 
-    // Every track with a chain: the largest graph a plan can have.
-    scratch_buffers_ = graph_nodes(tracks, tracks);
+    // Every track with a chain, and every bus: the largest graph a plan can
+    // have.
+    max_buses_ = pb.max_buses;
+    scratch_buffers_ = graph_nodes(tracks, tracks) + 2 * max_buses_;
     // The store-to-node index (#68 RT audit N1). A plan has at most one
     // InsertChain node per track.
     max_param_stores_ = pb.max_param_stores;
@@ -303,7 +305,11 @@ Session::Session(SessionConfig cfg)
     scratch_.reset(new float[static_cast<std::size_t>(scratch_buffers_) * 2 * max_block_]());
     track_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
     delay_len_ = pb.max_delay_frames ? pb.max_delay_frames + 1 : 0;
-    delay_lines_ = delay_len_ ? std::min(pb.max_delayed_edges, tracks) : 0;
+    // One edge per track into the bus, and with buses one per return and
+    // per send.
+    const uint32_t delayable =
+        tracks + (max_buses_ ? max_buses_ + (tracks + max_buses_) * kStripSendSlots : 0);
+    delay_lines_ = delay_len_ ? std::min(pb.max_delayed_edges, delayable) : 0;
     // Value-initialised, so every page is touched here, not on the audio
     // thread.
     delay_.reset(new float[static_cast<std::size_t>(delay_lines_) * 2 * delay_len_ + 1]());
@@ -316,6 +322,21 @@ Session::Session(SessionConfig cfg)
     for (uint32_t t = 0; t <= tracks; ++t) cursor_frame_[t] = ~uint64_t{0};
     track_gain_.reset(new float[2 * static_cast<std::size_t>(tracks) + 2]());
     track_target_.reset(new float[2 * static_cast<std::size_t>(tracks) + 2]());
+    track_open_.reset(new float[tracks + 1]());
+    track_level_.reset(new float[tracks + 1]());
+    track_pan_.reset(new float[tracks + 1]());
+    send_states_ = (tracks + max_buses_) * kStripSendSlots;
+    sends_.reset(new SendState[send_states_ + 1]);
+    aux_.reset(new AuxState[max_buses_ + 1]);
+    send_gain_.reset(new float[2 * static_cast<std::size_t>(send_states_) + 2]());
+    send_target_.reset(new float[2 * static_cast<std::size_t>(send_states_) + 2]());
+    send_stamp_.reset(new uint64_t[send_states_ + 1]());
+    aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
+    aux_target_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
+    aux_stamp_.reset(new uint64_t[max_buses_ + 1]());
+    aux_open_.reset(new float[max_buses_ + 1]());
+    aux_level_.reset(new float[max_buses_ + 1]());
+    aux_pan_.reset(new float[max_buses_ + 1]());
 
     // Until engine/control publishes one: every track into the bus, no
     // region. Published before any backend can call process().
@@ -340,6 +361,27 @@ Session::Session(SessionConfig cfg)
 Session::~Session() {
     stop();
     reader_->stop();
+}
+
+void Session::set_send(uint32_t strip, uint32_t slot, float level, float pan, bool follow_pan,
+                       bool mute, bool pre) {
+    if (slot >= kStripSendSlots) return;
+    const uint64_t k = static_cast<uint64_t>(strip) * kStripSendSlots + slot;
+    if (k >= send_states_) return;
+    SendState& s = sends_[k];
+    s.level.store(level, std::memory_order_relaxed);
+    s.pan.store(pan, std::memory_order_relaxed);
+    s.follow_pan.store(follow_pan, std::memory_order_relaxed);
+    s.mute.store(mute, std::memory_order_relaxed);
+    s.pre.store(pre, std::memory_order_relaxed);
+}
+
+void Session::set_aux(uint32_t bus, float gain, float pan, bool mute) {
+    if (bus >= max_buses_) return;
+    AuxState& a = aux_[bus];
+    a.gain.store(gain, std::memory_order_relaxed);
+    a.pan.store(pan, std::memory_order_relaxed);
+    a.mute.store(mute, std::memory_order_relaxed);
 }
 
 void Session::play() {
@@ -1182,15 +1224,22 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (const auto& t : tracks_) any_solo = any_solo || t->soloed();
     for (std::size_t e = 0; e < tracks_.size(); ++e) {
         const Track& t = *tracks_[e];
-        float g = t.gain();
-        if (t.muted() || (any_solo && !t.soloed() && !t.solo_safe())) g = 0.0f;
+        const float level = t.gain();
+        const bool open = !(t.muted() || (any_solo && !t.soloed() && !t.solo_safe()));
+        const float g = open ? level : 0.0f;
+        const float pan = t.pan();
         float l = 0.0f;
         float r = 0.0f;
-        pan_gains(t.pan(), t.channels() >= 2, plan->pan_exponent, l, r);
+        pan_gains(pan, t.channels() >= 2, plan->pan_exponent, l, r);
         track_target_[2 * e] = g * l;
         track_target_[2 * e + 1] = g * r;
+        track_open_[e] = open ? 1.0f : 0.0f;
+        track_level_[e] = level;
+        track_pan_[e] = pan;
     }
     bus_target_ = bus_gain_.load(std::memory_order_relaxed);
+    // Indices from a plan that is not in bounds are never followed.
+    if (plan_valid_) send_targets(*plan);
 
     if (playhead != expected_playhead_) reseek_ = true;
     block_frames_ = nframes;
@@ -1209,6 +1258,15 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     bus_applied_ = bus_target_;
+    if (plan_valid_) {
+        for (uint32_t ei = 0; ei < plan->edge_count; ++ei) {
+            const uint32_t k = plan->edges[ei].send;
+            if (k == kNoSend) continue;
+            send_gain_[2 * k] = send_target_[2 * k];
+            send_gain_[2 * k + 1] = send_target_[2 * k + 1];
+        }
+    }
+    for (uint32_t i = 0; i < 2 * max_buses_; ++i) aux_gain_[i] = aux_target_[i];
 
     if (plan_valid_) {
         click_->render(*plan, block, rolling, playhead, play_until_, loop_from_, loop_to_);
@@ -1496,6 +1554,42 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 apply_fader(pt.engine_track, pt.channels >= 2, in, out, n);
                 continue;
             }
+            case NodeKind::AuxSum: {
+                // Every input is a send (ADR-0022 §5), in the builder's
+                // order, which is the summing order.
+                std::memset(L, 0, n * sizeof(float));
+                std::memset(R, 0, n * sizeof(float));
+                for (uint32_t k = 0; k < node.input_edge_count; ++k) {
+                    const PlanEdge& edge = plan.edges[node.first_input_edge + k];
+                    const PlanNode& from = plan.nodes[edge.from_node];
+                    const float* const in[2] = {scratch(from.scratch_buffer, 0),
+                                                scratch(from.scratch_buffer, 1)};
+                    if (edge.send == kNoSend) {
+                        sum_edge(plan, edge, in, out, n);
+                        continue;
+                    }
+                    const bool mono = from.kind != NodeKind::AuxSum &&
+                                      plan.tracks[from.track].channels < 2;
+                    sum_send(plan, edge, mono, in, out, n);
+                }
+                continue;
+            }
+            case NodeKind::AuxFader: {
+                const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
+                const float* const in0 = scratch(src, 0);
+                const float* const in1 = scratch(src, 1);
+                const uint32_t b = node.track;
+                const float l0 = aux_gain_[2 * b];
+                const float r0 = aux_gain_[2 * b + 1];
+                const float dl = aux_target_[2 * b] - l0;
+                const float dr = aux_target_[2 * b + 1] - r0;
+                for (uint32_t i = 0; i < n; ++i) {
+                    const float a = static_cast<float>(block_done_ + i + 1) * inv_block;
+                    L[i] = in0[i] * (l0 + dl * a);
+                    R[i] = in1[i] * (r0 + dr * a);
+                }
+                continue;
+            }
             case NodeKind::BusSum:
             case NodeKind::HardwareOut:
                 break;
@@ -1700,6 +1794,14 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
                 break;
             case NodeKind::InsertChain:
                 if (node.input_edge_count != 1) return false;
+                if (node.track >= plan.track_count) return false;
+                break;
+            case NodeKind::AuxSum:
+                if (node.track >= max_buses_) return false;
+                break;
+            case NodeKind::AuxFader:
+                if (node.track >= max_buses_) return false;
+                if (node.input_edge_count != 1) return false;
                 break;
             case NodeKind::BusSum:
             case NodeKind::HardwareOut:
@@ -1710,6 +1812,18 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
             const PlanEdge& edge = plan.edges[node.first_input_edge + k];
             if (edge.from_node >= plan.node_count || edge.to_node >= plan.node_count) return false;
+        }
+    }
+    // Every edge, not only those some node lists: send_targets() walks them
+    // all. A send leaves a pre-fader node, whose track says mono or stereo.
+    for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
+        const PlanEdge& edge = plan.edges[ei];
+        if (edge.send == kNoSend) continue;
+        if (edge.send >= send_states_ || edge.from_node >= plan.node_count) return false;
+        const NodeKind from = plan.nodes[edge.from_node].kind;
+        if (from != NodeKind::TrackSource && from != NodeKind::InsertChain &&
+            from != NodeKind::AuxSum) {
+            return false;
         }
     }
     return true;
@@ -1755,6 +1869,93 @@ void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const flo
     }
     delay_pos_[line] = pos;
     line_filled_[line] = filled;
+}
+
+void Session::sum_send(const PlaybackPlan& plan, const PlanEdge& edge, bool mono,
+                       const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT {
+    const uint32_t k = edge.send;
+    const float inv_block = 1.0f / static_cast<float>(block_frames_);
+    const float l0 = send_gain_[2 * k];
+    const float r0 = send_gain_[2 * k + 1];
+    const float dl = send_target_[2 * k] - l0;
+    const float dr = send_target_[2 * k + 1] - r0;
+    const float* right_in = mono ? in[0] : in[1];
+    // track_buf_ is free here: only a TrackOut uses it, within its own node.
+    float* const tb[2] = {track_buf_.get(), track_buf_.get() + max_block_};
+    for (uint32_t i = 0; i < n; ++i) {
+        const float a = static_cast<float>(block_done_ + i + 1) * inv_block;
+        tb[0][i] = in[0][i] * (l0 + dl * a);
+        tb[1][i] = right_in[i] * (r0 + dr * a);
+    }
+    const float* const scaled[2] = {tb[0], tb[1]};
+    sum_edge(plan, edge, scaled, out, n);
+}
+
+void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
+    const auto tracks_n = static_cast<uint32_t>(tracks_.size());
+    for (uint32_t b = 0; b < max_buses_; ++b) {
+        const AuxState& a = aux_[b];
+        const float gain = a.gain.load(std::memory_order_relaxed);
+        const float pan = a.pan.load(std::memory_order_relaxed);
+        const bool open = !a.mute.load(std::memory_order_relaxed);
+        float l = 0.0f;
+        float r = 0.0f;
+        pan_gains(pan, true, plan.pan_exponent, l, r);
+        aux_open_[b] = open ? 1.0f : 0.0f;
+        aux_level_[b] = gain;
+        aux_pan_[b] = pan;
+        aux_target_[2 * b] = open ? gain * l : 0.0f;
+        aux_target_[2 * b + 1] = open ? gain * r : 0.0f;
+    }
+    for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
+        const PlanNode& node = plan.nodes[ni];
+        if (node.kind != NodeKind::AuxFader) continue;
+        const uint32_t b = node.track;
+        if (aux_stamp_[b] + 1 < callbacks_) {
+            aux_gain_[2 * b] = 0.0f;
+            aux_gain_[2 * b + 1] = 0.0f;
+        }
+        aux_stamp_[b] = callbacks_;
+    }
+    for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
+        const uint32_t k = plan.edges[ei].send;
+        if (k == kNoSend) continue;
+        const uint32_t strip = k / kStripSendSlots;
+        const SendState& s = sends_[k];
+        const float level = s.level.load(std::memory_order_relaxed);
+        const float own_pan = s.pan.load(std::memory_order_relaxed);
+        const bool follow = s.follow_pan.load(std::memory_order_relaxed);
+        const bool mute = s.mute.load(std::memory_order_relaxed);
+        const bool pre = s.pre.load(std::memory_order_relaxed);
+        float open = 0.0f;
+        float fader = 0.0f;
+        float strip_pan = 0.0f;
+        bool stereo = true;
+        if (strip < tracks_n) {
+            open = track_open_[strip];
+            fader = track_level_[strip];
+            strip_pan = track_pan_[strip];
+            stereo = tracks_[strip]->channels() >= 2;
+        } else {
+            const uint32_t b = strip - tracks_n;
+            open = aux_open_[b];
+            fader = aux_level_[b];
+            strip_pan = aux_pan_[b];
+        }
+        // Pre-fader is post-insert and pre-pan, and still silenced by its
+        // strip's mute, as Pro Tools' default (ADR-0022 §6).
+        const float g = mute ? 0.0f : level * open * (pre ? 1.0f : fader);
+        float l = 0.0f;
+        float r = 0.0f;
+        pan_gains(follow ? strip_pan : own_pan, stereo, plan.pan_exponent, l, r);
+        send_target_[2 * k] = g * l;
+        send_target_[2 * k + 1] = g * r;
+        if (send_stamp_[k] + 1 < callbacks_) {
+            send_gain_[2 * k] = 0.0f;
+            send_gain_[2 * k + 1] = 0.0f;
+        }
+        send_stamp_[k] = callbacks_;
+    }
 }
 
 // The segments under [from, from + n), found from a cursor that only moves

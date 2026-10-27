@@ -16,6 +16,8 @@ Rectangle {
     required property SessionModel session
     // The Mix window's insert slots; null where they are not wired.
     property InsertModel inserts: null
+    // The Mix window's sends and aux buses; null where they are not wired.
+    property SendModel sends: null
     // Fader rides, typed values and modifier clicks; null where not wired.
     property MixModel mixer: null
 
@@ -99,6 +101,7 @@ Rectangle {
             shell: root.shell
             session: root.session
             inserts: root.inserts
+            sends: root.sends
             mixer: root.mixer
         }
 

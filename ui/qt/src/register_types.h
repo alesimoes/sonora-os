@@ -7,6 +7,7 @@
 #include "meter_item.h"
 #include "mix_model.h"
 #include "scene_item.h"
+#include "send_model.h"
 #include "session_model.h"
 #include "shell_model.h"
 #include "theme_object.h"
@@ -33,6 +34,8 @@ inline void register_types() {
                                             QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<MixModel>("Sonora", 1, 0, "MixModel",
                                          QStringLiteral("made once, in main()"));
+    qmlRegisterUncreatableType<SendModel>("Sonora", 1, 0, "SendModel",
+                                          QStringLiteral("made once, in main()"));
     qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
                                           [](QQmlEngine*, QJSEngine*) -> QObject* {
                                               return new ThemeObject;
