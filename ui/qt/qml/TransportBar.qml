@@ -194,27 +194,53 @@ Rectangle {
             }
         }
 
-        // --- loop, punch, tempo: state only ---
+        // --- loop, loop record, punch, tempo ---
+        // Each chip sends what its key sends, through the router. Loop
+        // Record is shown apart from Loop in every profile: it alone makes
+        // Record a loop take (ADR-0016, update "loop record as a record
+        // mode"), and a take must never be armed as one invisibly. Cycle
+        // profiles still see it, since a session saved in another profile
+        // can hold the two apart.
+        // In the two old chips' width, so the bar still fits 1280 px: the
+        // loop modes on one row, the punch under them.
         Column {
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.space1
+            spacing: 2
             Row {
-                spacing: Theme.space1
-                Repeater {
-                    model: [["LOOP", bar.session.loopOn], ["PUNCH", bar.session.punchOn]]
-                    Rectangle {
-                        required property var modelData
-                        width: 52; height: 18; radius: Theme.radiusSmall
-                        color: modelData[1] ? Theme.accent : Theme.raised
-                        border.color: Theme.borderSubtle
-                        Text {
-                            anchors.centerIn: parent
-                            text: modelData[0]
-                            color: modelData[1] ? Theme.textOnAccent : Theme.textSecondary
-                            font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold; letterSpacing: 0.6 }
-                        }
-                    }
+                spacing: 2
+                SButton {
+                    objectName: "barLoop"
+                    text: bar.shell.cycleMode ? "CYCLE" : "LOOP"
+                    implicitWidth: 44; implicitHeight: 16; fontPx: Theme.textCaption
+                    readonly property string command:
+                        bar.shell.cycleMode ? "transport.toggle_cycle" : "transport.toggle_loop"
+                    available: bar.shell.implemented(command)
+                    active: bar.session.loopOn
+                    onClicked: bar.shell.invoke(command, -1)
                 }
+                SButton {
+                    objectName: "barLoopRecord"
+                    text: "LOOP REC"
+                    implicitWidth: 62; implicitHeight: 16; fontPx: Theme.textCaption
+                    available: bar.shell.implemented("transport.toggle_loop_record")
+                    active: bar.session.loopRecordOn
+                    activeColour: Theme.record
+                    onClicked: bar.shell.invoke("transport.toggle_loop_record", -1)
+                }
+            }
+            // Lit while the session has a punch range: Record then punches
+            // over it. Unlit, a press makes the Edit selection the range;
+            // lit, it clears it.
+            SButton {
+                objectName: "barPunch"
+                text: "PUNCH"
+                implicitWidth: 108; implicitHeight: 16; fontPx: Theme.textCaption
+                readonly property string command:
+                    bar.session.punchOn ? "transport.clear_punch" : "transport.punch_selection"
+                available: bar.shell.implemented(command)
+                active: bar.session.punchOn
+                activeColour: Theme.record
+                onClicked: bar.shell.invoke(command, -1)
             }
             Text {
                 objectName: "barTempo"

@@ -545,7 +545,42 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              Transport window disagree (#62 merge gate): `SessionModel`
              keeps the last state on a stale read, as `TransportModel`
              does (ui_transport test_window).
-       - [ ] ui.transport: the TransportBar LOOP indicator reads loop_playback only; show loop record (e.g. "LOOP REC") so a loop take is never armed invisibly (ADR-0016, update "loop record as a record mode").
+       - [x] ui.transport: the TransportBar LOOP indicator reads loop_playback only; show loop record (e.g. "LOOP REC") so a loop take is never armed invisibly (ADR-0016, update "loop record as a record mode"). `t3-punch-loop-ui`: LOOP (CYCLE in a cycle profile), LOOP REC and PUNCH chips on the bar, each sending its key's command; LOOP REC shown in every profile (ui_transport test_bar_loop_record).
+       - [x] ui.record.punch_loop, UI side (`t3-punch-loop-ui`): the punch
+             range from the Edit selection and cleared
+             (`transport.punch_selection`, `transport.clear_punch`, in the
+             catalogue, Engine domain, run by the Qt stand-in through the
+             replica as mute is), refused with no selection, with loop
+             record on (C3) and during a take; the bar's PUNCH chip and the
+             Transport window's Set/Clear; pre/post-roll typed in seconds
+             (0-60) in the Transport window, no longer dimmed as unused,
+             with the line saying where they apply (ui_transport
+             test_punch_from_the_ui, test_punch_refused_with_loop_record).
+             No wire change. Still open:
+       - [ ] ui.record.punch_loop: Pro Tools' Auto Input / Input Only
+             Monitoring switch (Option+K): a session-wide monitor mode
+             beside the per-track Auto/Input the engine has (TrackMix::monitor,
+             the I button); needs a session setting and the engine following
+             it in `PlaybackController::apply_monitoring`.
+       - [ ] ui.record.punch_loop: TrackPunch, per-track punch enable (Pro
+             Tools Ultimate/Studio; Shift+Ctrl+T): the engine's punch is
+             per take over every armed track, so this needs a per-track
+             punch flag in the document and `start_punch` honouring it.
+       - [ ] ui.record.punch_loop: QuickPunch as a record mode
+             (`transport.toggle_quickpunch`, Ctrl+Shift+P), so Pro Tools'
+             Record while rolling punches as `transport.punch` does; and
+             Pro Tools' record of a timeline selection as a punch over it.
+       - [ ] ui.record.punch_loop: pre/post-roll on and off (Pro Tools'
+             Ctrl+K) without losing the amounts: a `transport.rolls_on`
+             session setting (session format bump); and Option-drag in the
+             ruler to set them.
+       - [ ] ui.record.punch_loop: the loop and punch ranges drawn on the
+             ruler (Pro Tools' timeline markers), punch in the record colour.
+       - [ ] ui.record.punch_loop: engine handlers for
+             `transport.punch_selection`/`clear_punch`, refusing a punch range
+             change while a punched take runs at the authority (today the Qt
+             stand-in refuses it); and a Logic key for Set Autopunch
+             Locators by Selection once quoted from Apple's guide.
 4. [x] Key maps driving M4 commands, profile switch, Commands Keyboard
        Focus; fix the `keymaps/default.json` comment and its embedded copy
        (`feature/ui-keymaps`): routing by `CommandSpec::domain`, the engine

@@ -397,8 +397,29 @@ void test_model() {
     insertion = kBeat120;
     t.onTransport(TransportSnapshot{}, true);
 
-    // What the engine does not run is said, never offered.
-    OK(!TransportModel::rollsAvailable());
+    // The engine runs pre- and post-roll around a punch, a loop take and a
+    // played selection (engine.transport.preroll), so the window no longer
+    // dims them as unused; the line under them says where they apply.
+    OK(TransportModel::rollsAvailable());
+    OK(!TransportModel::rollsWhy().contains(QStringLiteral("does not run")));
+    OK(TransportModel::rollsWhy().contains(QStringLiteral("plain take")));
+
+    // A typed roll is seconds; anything else is refused with the reason.
+    {
+        Frames f = -1;
+        std::string why;
+        OK(parse_roll_text("2", kRate, f, why) && f == 2 * kRate);
+        OK(parse_roll_text("0.5 s", kRate, f, why) && f == kRate / 2);
+        OK(parse_roll_text("1.25S", kRate, f, why) && f == 60000);
+        OK(parse_roll_text("0", kRate, f, why) && f == 0);
+        OK(parse_roll_text("60", kRate, f, why) && f == 60 * kRate);
+        f = 7;
+        for (const char* bad : {"", "s", ".", "-1", "1.2.3", "two", "1:00", "61", "200"}) {
+            why.clear();
+            OK(!parse_roll_text(bad, kRate, f, why) && !why.empty() && f == 7);
+        }
+        OK(!parse_roll_text("2", 0, f, why));
+    }
     // The click and count-off switches are the state block's, off with no
     // engine.
     TransportSnapshot lit;
@@ -894,6 +915,213 @@ void test_conductor_ruler() {
     OK(tempo.labels.size() == 2);
 }
 
+// --- loop, loop record and punch from the bar ----------------------------------
+
+// The bar and the Transport window over one document, in the real QML, as
+// main.cpp wires them.
+struct BarRig {
+    test::RecordingAdapter engine{18, api::testing::FakeEngine::engine_commands()};
+    KeyMap map;
+    ModelDocument document;
+    SyntheticPeakSource peaks{kRate, 120.0};
+    SessionModel session{document, peaks, true};
+    KeyRouter router;
+    TransportModel transport{
+        [this]() -> const SessionSettings& { return session.controller().snapshot().settings; },
+        [this]() { return session.controller().selection().insertion; }};
+    ShellModel model;
+    QQuickView view;
+    QQuickItem* root = nullptr;
+
+    static KeyMap load(const char* file) {
+        KeyMap m;
+        std::string err;
+        OK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/" + file, m, err));
+        return m;
+    }
+    BarRig(const char* profile, model::Snapshot demo)
+        : map(load(profile)),
+          document(std::move(demo)),
+          router(map, engine.info().implemented_commands,
+                 [this](const std::string& c, const CommandContext& ctx) {
+                     return engine.send(c, ctx);
+                 }),
+          model(engine, router) {
+        session.installCommands(router.local());
+        transport.installCommands(router.local());
+        router.prepare(qt_device_chords(true));
+        link_transport(model, session, transport);
+        view.resize(1280, 720);
+        view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
+                                   {QStringLiteral("session"), QVariant::fromValue(&session)}});
+        view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
+        for (const auto& e : view.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));
+        OK(view.status() == QQuickView::Ready);
+        if (view.status() != QQuickView::Ready) return;
+        root = view.rootObject();
+        root->setProperty("transport", QVariant::fromValue(&transport));
+        view.show();
+        model.tick();
+    }
+    QQuickItem* item(const char* name) const {
+        return root ? named(root, QString::fromLatin1(name)) : nullptr;
+    }
+    bool active(const char* name) const {
+        QQuickItem* i = item(name);
+        return i != nullptr && i->isVisible() && i->property("active").toBool();
+    }
+    const model::Transport& tr() { return session.controller().snapshot().settings.transport; }
+    std::vector<std::string> sent() const {
+        std::vector<std::string> out;
+        for (const auto& s : engine.sent) out.push_back(s.command);
+        return out;
+    }
+};
+
+// BACKLOG ui.transport (ADR-0016, update "loop record as a record mode"):
+// the bar's LOOP indicator read loop_playback alone, so Loop Record on with
+// Loop Playback off armed a loop take with nothing on the bar to say so.
+// The bar now has LOOP and LOOP REC apart, in every profile, each sending
+// its key's command.
+void test_bar_loop_record() {
+    for (const char* profile : {"protools.json", "logic.json"}) {
+        model::Snapshot demo = make_demo_session(4, kRate);
+        demo.settings.transport.loop = {{kRate, 3 * kRate}};
+        demo.settings.transport.loop_record = true;
+        demo.settings.transport.loop_playback = false;
+        BarRig r(profile, std::move(demo));
+        if (r.root == nullptr) return;
+        const bool cycle = std::string(profile) == "logic.json";
+        QQuickItem* loop = r.item("barLoop");
+        QQuickItem* rec = r.item("barLoopRecord");
+        OK(loop != nullptr && rec != nullptr);
+        if (loop == nullptr || rec == nullptr) return;
+        OK(rec->isVisible());
+        OK(r.active("barLoopRecord"));
+        OK(!r.active("barLoop"));
+        OK(rec->property("text").toString() == QStringLiteral("LOOP REC"));
+        OK(loop->property("text").toString() ==
+           (cycle ? QStringLiteral("CYCLE") : QStringLiteral("LOOP")));
+        // Each chip sends what its key sends.
+        click(r.view, loop);
+        click(r.view, rec);
+        const auto s = r.sent();
+        OK(s.size() == 2);
+        if (s.size() == 2) {
+            OK(s[0] == (cycle ? "transport.toggle_cycle" : "transport.toggle_loop"));
+            OK(s[1] == "transport.toggle_loop_record");
+        }
+    }
+}
+
+// The punch range from the bar's PUNCH chip and the Transport window: set
+// from the Edit selection, shown, cleared; refused with no selection, with
+// loop record on, and while a take records. Pre- and post-roll typed into
+// the window's fields.
+void test_punch_from_the_ui() {
+    model::Snapshot demo = make_demo_session(4, kRate);
+    demo.settings.transport.punch = {{0, 0}};
+    BarRig r("protools.json", std::move(demo));
+    if (r.root == nullptr) return;
+    QQuickItem* punch = r.item("barPunch");
+    OK(punch != nullptr);
+    if (punch == nullptr) return;
+    OK(r.model.implemented(QStringLiteral("transport.punch_selection")));
+    OK(r.model.implemented(QStringLiteral("transport.clear_punch")));
+    OK(!r.active("barPunch"));
+
+    // No selection: refused, said, and nothing set.
+    r.session.controller().select_range(0, 2 * kRate, 2 * kRate);
+    click(r.view, punch);
+    OK(r.tr().punch[1] <= r.tr().punch[0]);
+    OK(r.model.statusText().contains(QStringLiteral("no selection")));
+    OK(!r.active("barPunch"));
+
+    // A selection becomes the punch range; the chip lights, the window
+    // shows the range, and nothing went to the engine as a command.
+    r.session.controller().select_range(0, 2 * kRate, 5 * kRate);
+    click(r.view, punch);
+    OK(r.tr().punch[0] == 2 * kRate && r.tr().punch[1] == 5 * kRate);
+    r.model.tick();
+    OK(r.active("barPunch"));
+    OK(r.session.punchOn());
+    OK(r.transport.punchSet());
+    QQuickItem* shown = r.item("transportPunch");
+    OK(shown != nullptr && shown->property("text").toString() != QStringLiteral("not set"));
+    OK(r.sent().empty());
+
+    // Lit, the chip clears it; clearing nothing is refused.
+    click(r.view, punch);
+    OK(r.tr().punch[0] == 0 && r.tr().punch[1] == 0);
+    r.model.tick();
+    OK(!r.active("barPunch"));
+    r.model.invoke(QStringLiteral("transport.clear_punch"), -1);
+    OK(r.model.statusText().contains(QStringLiteral("no punch range")));
+
+    // The Transport window's Set and Clear send the same commands.
+    r.transport.setOpen(true);
+    QQuickItem* set = r.item("transportPunchSet");
+    QQuickItem* clear = r.item("transportPunchClear");
+    OK(set != nullptr && clear != nullptr && set->isVisible());
+    if (set && clear) {
+        click(r.view, set);
+        OK(r.tr().punch[0] == 2 * kRate && r.tr().punch[1] == 5 * kRate);
+        click(r.view, clear);
+        OK(r.tr().punch[1] <= r.tr().punch[0]);
+    }
+
+    // Pre- and post-roll, typed in seconds.
+    OK(r.session.setPreRollText(QStringLiteral("1.5")));
+    OK(r.tr().pre_roll == 72000);
+    r.model.tick();   // the window reads the settings on the tick
+    OK(r.transport.preRollText() == QStringLiteral("1.500 s"));
+    OK(r.session.setPostRollText(QStringLiteral("0")));
+    OK(r.tr().post_roll == 0);
+    OK(!r.session.setPreRollText(QStringLiteral("-2")));
+    OK(r.tr().pre_roll == 72000);
+    // Through the field itself: click, type, Return.
+    QQuickItem* field = r.item("transportPreRoll");
+    QQuickItem* input = r.item("transportPreRollInput");
+    OK(field != nullptr && input != nullptr);
+    if (field && input) {
+        click(r.view, field);
+        OK(input->isVisible());
+        type(r.view, "3");
+        key(r.view, Qt::Key_Return, Qt::NoModifier);
+        OK(r.tr().pre_roll == 3 * kRate);
+        OK(!input->isVisible());
+    }
+
+    // While a take records, the punch range and the rolls stay as the take
+    // started them.
+    r.session.controller().select_range(0, 2 * kRate, 5 * kRate);
+    r.engine.snapshot.state = TransportMode::Recording;
+    for (int i = 0; i < 4; ++i) r.model.tick();
+    OK(r.model.recording());
+    r.model.invoke(QStringLiteral("transport.punch_selection"), -1);
+    OK(r.tr().punch[1] <= r.tr().punch[0]);
+    OK(r.model.statusText().contains(QStringLiteral("a take is recording")));
+    OK(!r.session.setPostRollText(QStringLiteral("2")));
+    OK(r.tr().post_roll == 0);
+    r.engine.snapshot.state = TransportMode::Stopped;
+    for (int i = 0; i < 4; ++i) r.model.tick();
+}
+
+// Loop record on: a take cannot both loop and punch (ADR-0016 section 1,
+// C3), so setting a punch range is refused now, with the reason, rather than
+// at R.
+void test_punch_refused_with_loop_record() {
+    model::Snapshot demo = make_demo_session(4, kRate);
+    demo.settings.transport.loop = {{kRate, 3 * kRate}};
+    demo.settings.transport.loop_record = true;
+    BarRig r("protools.json", std::move(demo));
+    if (r.root == nullptr) return;
+    r.session.controller().select_range(0, 2 * kRate, 5 * kRate);
+    r.model.invoke(QStringLiteral("transport.punch_selection"), -1);
+    OK(r.tr().punch[1] <= r.tr().punch[0]);
+    OK(r.model.statusText().contains(QStringLiteral("loop record is on")));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -906,6 +1134,9 @@ int main(int argc, char** argv) {
     test_counter_parse();
     test_conductor_ruler();
     test_window();
+    test_bar_loop_record();
+    test_punch_from_the_ui();
+    test_punch_refused_with_loop_record();
     if (failures != 0) {
         std::fprintf(stderr, "test_ui_transport: %d failure(s)\n", failures);
         return 1;

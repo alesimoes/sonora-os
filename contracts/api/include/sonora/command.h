@@ -103,6 +103,13 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // selection, required, becomes the range and both modes turn on.
         {"transport.cycle_selection", CommandTarget::None,
          "Set the cycle area from the selection and turn cycle on", true},
+        // The session's punch range (transport.punch), Pro Tools' punch
+        // points and Logic's autopunch locators. Saved state, so Engine; the
+        // Qt window runs a stand-in through the replica, as it does mute,
+        // until an engine announces them.
+        {"transport.punch_selection", CommandTarget::None,
+         "Set the punch range from the selection"},
+        {"transport.clear_punch", CommandTarget::None, "Clear the punch range"},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},

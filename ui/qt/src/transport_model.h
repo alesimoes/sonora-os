@@ -12,9 +12,9 @@
 // only when it changes, and at most at the counters' rate while rolling.
 //
 // What it must not do is show a control the engine does not run as if it
-// ran. Pre- and post-roll are saved in the session and the engine does not
-// use them yet (progress.json engine.transport.preroll), so they are drawn
-// as such, with the reason, never as a live toggle that does nothing.
+// ran. Pre- and post-roll are the engine's for a punch, a loop take and a
+// played selection, not for a plain take started at the playhead (progress
+// engine.transport.preroll), and the window says exactly that beside them.
 #pragma once
 
 #include <QObject>
@@ -45,6 +45,16 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
 // the shell as a key would send it, so a refusal (a take running) reaches
 // the status line.
 void link_marker_locate(ShellModel& shell, SessionModel& session);
+
+// The upper bound of a typed pre- or post-roll: a typo of 200 for 2.00
+// would locate minutes before the punch, so it is refused instead.
+inline constexpr int kMaxRollSeconds = 60;
+
+// A pre- or post-roll typed in seconds, "2", "1.5", "0.25 s": `frames` at
+// `rate`, rounded to the nearest frame. False, with `why` for the status
+// line, for anything else, a negative length or one past kMaxRollSeconds.
+bool parse_roll_text(const std::string& text, uint32_t rate, model::Frames& frames,
+                     std::string& why);
 
 class TransportModel : public QObject {
     Q_OBJECT
@@ -125,7 +135,7 @@ public:
     bool clickOn() const { return click_; }
     bool countOffOn() const { return count_off_; }
     bool countingOff() const { return counting_off_; }
-    static bool rollsAvailable() { return false; }
+    static bool rollsAvailable() { return true; }
     static QString rollsWhy();
 
     // `frames` in the named format ("Bars|Beats", "Timecode", "Min:Secs",
