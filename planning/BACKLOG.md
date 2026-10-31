@@ -506,6 +506,9 @@ playback can follow edits; it is in flight.
   - [ ] Mute, send level and send pan as `AutomationParam` values, and
         lanes on aux returns and the Master (strip-keyed, with ADR-0024's
         strips); a session format bump.
+- [ ] automation (ADR-0027) follow-ups, after #174 merges:
+  - [ ] `model.cpp` `automation_points_problem` refuses a point at `kMaxInteger`, or lets `EditAutomation`'s range reach it, so the whole-lane `EditAutomation` over `[0, kMaxInteger)` can always remove every point; today a lane loaded with a point at 2^53-1 can never be emptied (#174 review).
+  - [ ] `plan_builder.cpp` `gain_of_db()` calls core's `auto_gain_of_db()` (exposed in `playback_plan.h`) instead of duplicating it; `session.cpp` hard-codes -144 and 24, so a lane and a fader at one dB cannot drift apart (#174 review).
 
 ### Track 3: UI (ui-engineer)
 
@@ -535,6 +538,10 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
   - [ ] A rerouted strip's edge starts a fresh delay line, a cut at the swap: ramp it (ADR-0024 section 6).
   - [ ] Session::process() loads every aux solo flag once for aux_solo and again in feeds_solo(); a solo cleared between the two loads mutes every unsoloed track for one block. Load the flags once per callback (#168 review)
   - [ ] test_routing: add a PDC case for a latent insert on an intermediate bus (track -> bus A -> bus B -> Master against a dry track) (#168 review)
+- [ ] `ui.mixer.views` follow-ups (D2, after #175 merges):
+  - [ ] Emit `sessionOpened` also on the "Opened the unsaved recording" recovery path (`session_model.cpp` ~1545), with a test (#175 review).
+  - [ ] `test_mix_layout` resets views by emitting `sessionOpened` by hand; add a check that a real `openSessionFile` emits it and a refused Open does not (#175 review).
+  - [ ] Label the insert bank toggle "Ins F-J": two bare "F-J" buttons sit side by side in the header (#175 review).
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
