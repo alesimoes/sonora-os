@@ -150,6 +150,11 @@ public:
     // Edit window's playhead. A C++ call, never a signal (ADR-0006).
     using TransportSink = std::function<void(const TransportSnapshot&, bool alive)>;
     void setTransportSink(TransportSink s) { transport_sink_ = std::move(s); }
+    // One read of the engine's transport now, between ticks: a command that
+    // stamps the playhead (marker.add while rolling) takes it from here, as
+    // the last tick's reading is up to a tick and a period behind. False when
+    // the engine is not alive or the read is stale; `out` then says nothing.
+    bool readTransport(TransportSnapshot& out);
 
     // The insert slots' view of the engine (ADR-0012 §8), each a C++ call
     // from the tick: a new plugin catalog when one arrives; a PluginFault,
@@ -310,6 +315,9 @@ private:
     std::vector<CommandOutcome> replies_;
     std::vector<EngineEvent> events_;
     EngineFrame frame_;
+    // readTransport()'s own, so a read between ticks never changes the
+    // frame refreshState() draws.
+    EngineFrame now_frame_;
     TickStats* stats_ = nullptr;
     Clock now_ns_;
     bool xkb_scan_codes_ = false;
