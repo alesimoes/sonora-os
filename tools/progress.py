@@ -321,6 +321,7 @@ def tally(data):
     """Returns (overall, fronts, phases): fronts is a list of
     (front, tally, [(module, tally)]), phases maps phase key -> tally."""
     sizes = data["sizes"]
+    post_launch = set(data.get("post_launch_phases", []))
     overall = Tally()
     phases = {key: Tally() for key in data["phases"]}
     fronts = []
@@ -331,8 +332,11 @@ def tally(data):
             module_tally = Tally()
             for item in module["items"]:
                 points = sizes[item["size"]]
-                module_tally.add(points, item["status"])
                 phases[str(item["phase"])].add(points, item["status"])
+                # Optional post-launch work (ADR-0025) has its own phase row
+                # but must not dilute the launch percentages.
+                if str(item["phase"]) not in post_launch:
+                    module_tally.add(points, item["status"])
             front_tally.merge(module_tally)
             modules.append((module, module_tally))
         overall.merge(front_tally)
