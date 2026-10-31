@@ -904,6 +904,7 @@ void EngineControlServer::follow_automation() {
         if (n == 0) break;
         for (std::size_t i = 0; i < n; ++i) {
             const AutomationWrite& w = pass_drain_[i];
+            if (w.pass <= pass_dropped_) continue;
             if (w.pass != pass_open_) {
                 if (pass_open_ != 0) finish_pass();
                 pass_open_ = w.pass;
@@ -1008,10 +1009,15 @@ void EngineControlServer::drop_pass() {
     while (session_.take_automation_writes(pass_drain_.data(), pass_drain_.size()) != 0) {
     }
     pass_writes_.clear();
+    pass_open_ = 0;
+    // Playback goes on through a Load: the rest of this roll is stamped with
+    // the same pass, against tracks the new document numbers otherwise.
+    pass_dropped_ = session_.automation_pass();
     for (const auto& t : session_.tracks()) {
         t->set_touched(kAutoVolume, false);
         t->set_touched(kAutoPan, false);
     }
+    session_.forget_latches();
 }
 
 void EngineControlServer::resolve_records() {

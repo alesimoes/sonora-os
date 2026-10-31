@@ -501,6 +501,12 @@ public:
     uint64_t automation_passes_ended() const {
         return auto_passes_ended_.load(std::memory_order_acquire);
     }
+    // The pass of the roll now playing, or of the last one; 0 before any.
+    uint64_t automation_pass() const { return auto_pass_now_.load(std::memory_order_acquire); }
+    // A Load while rolling: from the next callback no track plays a Latch
+    // touched before it. Clear the touched flags first, or one still held
+    // latches again.
+    void forget_latches() { auto_unlatch_.fetch_add(1, std::memory_order_release); }
     // Writes the audio thread dropped on a full ring: a gap in a pass.
     uint64_t automation_write_overruns() const {
         return auto_write_overruns_.load(std::memory_order_relaxed);
@@ -941,6 +947,9 @@ private:
     std::unique_ptr<RingBuffer<AutomationWrite>> auto_writes_;
     std::atomic<uint64_t> auto_write_overruns_{0};
     std::atomic<uint64_t> auto_passes_ended_{0};
+    std::atomic<uint64_t> auto_pass_now_{0};
+    std::atomic<uint32_t> auto_unlatch_{0};
+    uint32_t auto_unlatch_seen_ = 0;
     uint64_t auto_pass_ = 0;
     bool pass_rolling_ = false;
 
