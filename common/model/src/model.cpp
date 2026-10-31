@@ -1136,7 +1136,9 @@ std::string automation_points_problem(const std::vector<AutomationPoint>& points
     for (std::size_t i = 0; i < points.size(); ++i) {
         const AutomationPoint& p = points[i];
         where = "points[" + str(static_cast<std::int64_t>(i)) + "]";
-        if (p.at < 0 || p.at > kMaxInteger) return "must be at a frame from 0 to 2^53 - 1";
+        // Below kMaxInteger, the furthest an EditAutomation range reaches,
+        // so the whole-lane edit [0, kMaxInteger) can always empty a lane.
+        if (p.at < 0 || p.at >= kMaxInteger) return "must be at a frame from 0 to 2^53 - 2";
         if (i > 0 && p.at < points[i - 1].at) return "points are not sorted by frame";
         if (i > 1 && p.at == points[i - 2].at) return "at most two points share a frame";
         if (param == AutomationParam::Volume && !gain_in_range(p.value)) return gain_range();

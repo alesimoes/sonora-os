@@ -1526,6 +1526,10 @@ int test_v12_migrates_and_automation() {
                   "at most two points share a frame", nullptr));
     CHECK(refused(edit(with_lane, "[0, -6.0]", "[0, 99.0]"), "tracks[0].automation[0]",
                   nullptr));
+    // A point at 2^53 - 1 is past every EditAutomation range: its lane
+    // could never be emptied, so no file brings one in.
+    CHECK(refused(edit(with_lane, "[48000, -3.0]", "[9007199254740991, -3.0]"), "2^53 - 2",
+                  nullptr));
     CHECK(refused(edit(with_lane, points, "\"points\": []"), "a lane needs at least one point",
                   nullptr));
     CHECK(refused(edit(with_lane, "\"automation_mode\": \"off\"", "\"automation_mode\": \"trim\""),
