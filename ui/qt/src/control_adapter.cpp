@@ -169,14 +169,17 @@ void ControlAdapter::frame(EngineFrame& out) const {
     }
 }
 
-uint64_t ControlAdapter::send_track_gain(uint32_t track, float linear) {
+uint64_t ControlAdapter::send_track_param(uint32_t track, api::ParamId param, float value,
+                                          api::Gesture gesture) {
     api::ParameterChange c;
     c.track = track;
-    c.param = api::ParamId::Gain;
-    c.value = linear;
+    c.param = param;
+    c.value = value;
+    c.gesture = gesture;
     const uint64_t seq = engine_.send(c);
-    // Named for the status line, so a refusal says which fader.
-    await(seq, "the fader of track " + std::to_string(track + 1), true);
+    // Named for the status line, so a refusal says which control.
+    await(seq, std::string(param == api::ParamId::Pan ? "the pan of track " : "the fader of track ") +
+                   std::to_string(track + 1), true);
     return seq;
 }
 

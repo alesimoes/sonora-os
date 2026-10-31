@@ -205,11 +205,14 @@ public:
     // to lose).
     virtual std::string link_error() const { return {}; }
 
-    // A fader being ridden: engine track `track`'s gain, linear 0 .. 4
-    // (api::ParamId::Gain). Heard at once and not saved; the end of the
-    // ride is saved with the model's SetMix (mix_model.h). Never blocks; a
+    // A fader or pan being ridden: engine track `track`'s gain (linear
+    // 0 .. 4) or pan (-1 .. 1). Heard at once and not saved; the end of the
+    // ride is saved with the model's SetMix (mix_model.h). `gesture` is the
+    // touch, a move or the release of the hand (ADR-0027 section 3): the
+    // engine's Touch, Latch and Write modes follow it. Never blocks; a
     // refusal comes back through poll() as a command's does.
-    virtual uint64_t send_track_gain(uint32_t track, float linear) = 0;
+    virtual uint64_t send_track_param(uint32_t track, api::ParamId param, float value,
+                                      api::Gesture gesture) = 0;
 
     // A plugin parameter moving (ADR-0012 §8): a drag in the generic
     // parameter panel, by insert id and stable key. Never blocks; a refusal

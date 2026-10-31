@@ -120,6 +120,8 @@ Rectangle {
 
     Column {
         id: top
+        // The selector's list drops over the inserts below.
+        z: autoMode.open ? 100 : 0
         anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: Theme.space2 }
         spacing: Theme.space2
 
@@ -173,8 +175,20 @@ Rectangle {
                 property real lastX: 0
                 onPressed: (m) => {
                     lastX = m.x
-                    if (m.modifiers & Qt.AltModifier) strip.session.resetPan(strip.track)
+                    if (m.modifiers & Qt.AltModifier) {
+                        strip.session.resetPan(strip.track)
+                    } else if (strip.mixer !== null) {
+                        holding = true
+                        strip.mixer.beginPan(strip.track)
+                    }
                 }
+                property bool holding: false
+                function finish() {
+                    if (holding) strip.mixer.endPan(strip.track)
+                    holding = false
+                }
+                onReleased: finish()
+                onCanceled: finish()
                 onPositionChanged: (m) => {
                     if (!pressed || (m.modifiers & Qt.AltModifier)) return
                     if (strip.mixer !== null) {
@@ -230,6 +244,20 @@ Rectangle {
             }
         }
         Item { visible: strip.isBus; width: 1; height: 18 }
+        // The bus keeps its fader level with the tracks'.
+        Item { visible: strip.isBus; width: 1; height: 16 }
+        // Off, Read, Touch, Latch, Write: the mode the lanes play or write.
+        AutomationModeButton {
+            id: autoMode
+            objectName: strip.isBus ? "" : "autoMode" + strip.track
+            visible: !strip.isBus && strip.mixer !== null
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 2 * Theme.space2
+            mixer: strip.mixer
+            track: strip.track
+            mode: strip.isBus || strip.track >= strip.session.automationModes.length
+                  ? "Read" : strip.session.automationModes[strip.track]
+        }
     }
 
     // --- inserts A to J, and the chain's delay ---

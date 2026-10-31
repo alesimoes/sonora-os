@@ -516,7 +516,10 @@ int main(int argc, char** argv) {
     // The fake engine plays nothing, and the Mix window says so.
     MixModel mixer(
         session,
-        [&engine](uint32_t track, float linear) { engine.send_track_gain(track, linear); },
+        [&engine](uint32_t track, sonora::api::ParamId param, float value,
+                  sonora::api::Gesture gesture) {
+            engine.send_track_param(track, param, value, gesture);
+        },
         [&engine]() { return engine.info().track_count; }, fake == nullptr);
     InsertModel inserts(document, session);
     SendModel sends(document, session);

@@ -813,6 +813,17 @@ QList<bool> SessionModel::soloSafes() const {
     return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.solo_safe; });
 }
 
+QStringList SessionModel::automationModes() const {
+    static const char* const names[] = {"Off", "Read", "Touch", "Latch", "Write", "Trim"};
+    QStringList out;
+    for (const QString& n : per_strip<QString>(ctl_.snapshot(), [](const model::TrackMix& m) {
+             return QString::fromLatin1(names[static_cast<int>(m.automation)]);
+         })) {
+        out << n;
+    }
+    return out;
+}
+
 QList<bool> SessionModel::inputMonitors() const {
     return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) {
         return m.monitor == model::MonitorMode::Input;

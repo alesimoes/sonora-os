@@ -961,9 +961,15 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       that follows the vertical zoom, and key bindings `"verified": false`
       until checked (none were added: `tool.pencil` was already F10).
 - [ ] `ui.mixer.automation` UI: the automation mode selector on each strip
-      and track header (Off, Read now; Touch, Latch, Write, Trim once Track
-      1's write slice lands), sent with `SetMix`; the fader and pan knob
-      follow the lane while playing in Read.
+      and track header, sent with `SetMix`; the fader and pan knob follow the
+      lane while playing in Read. Done: the selector on each Mix strip (Off,
+      Read, Touch, Latch, Write; Trim listed and refused until the engine has
+      it), the fader and the pan sending Touch on press, Move per step and
+      Release on let go, the lane header's label following the mode.
+      Left: the selector on the Edit window's track header, the fader and pan
+      following the lane while playing in Read (needs the engine to publish
+      the played value), and a key binding to step a strip's mode (no
+      command exists for it).
 - [ ] `session.cpp:1916`: while `from` is less than the chain latency and not
       looping, `t` clamps to 0 and then advances, so a lane changing in the
       first frames saws. Hold at frame 0 until `from + i` reaches the latency.

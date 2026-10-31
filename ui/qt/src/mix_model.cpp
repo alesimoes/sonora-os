@@ -59,16 +59,18 @@ bool MixModel::rideStillHolds() {
 void MixModel::dropRide(const std::string& why) {
     const int index = ride_track_;
     const bool sent = ride_sent_live_;
+    const bool touched = ride_touched_;
     ride_track_ = kNoRide;
     ride_id_ = 0;
     ride_sent_live_ = false;
+    ride_touched_ = false;
     // The steps went to an engine gain atomic by index, and one that
     // crossed another interface's edit may sit on whichever track is there
     // now (the header says why the engine cannot see it). Past the
     // document's tracks nothing is sent: the engine keeps that fader until
     // the plan stops rendering it.
-    if (sent && live(index) && index < session_.trackCount()) {
-        sender_(static_cast<uint32_t>(index), fader_linear_gain(session_.stripGain(index)));
+    if ((sent || touched) && live(index) && index < session_.trackCount()) {
+        sendLive(index, session_.stripGain(index), api::Gesture::Release);
     }
     session_.reportEdit(false, why);
     emit rideChanged();
@@ -96,9 +98,9 @@ bool MixModel::live(int track) const {
            static_cast<uint32_t>(track) < engine_tracks_();
 }
 
-void MixModel::sendLive(int track, float db) {
-    sender_(static_cast<uint32_t>(track), fader_linear_gain(db));
-    ++live_steps_;
+void MixModel::sendLive(int track, float db, api::Gesture gesture) {
+    sender_(static_cast<uint32_t>(track), api::ParamId::Gain, fader_linear_gain(db), gesture);
+    if (gesture == api::Gesture::Move) ++live_steps_;
 }
 
 void MixModel::beginRide(int track) {
@@ -108,6 +110,13 @@ void MixModel::beginRide(int track) {
     ride_generation_ = session_.sessionGeneration();
     ride_from_db_ = ride_db_ = session_.stripGain(track);
     ride_sent_live_ = false;
+    ride_touched_ = false;
+    // The hand is on the fader from the press, before it moves: Touch and
+    // Latch take over at this value, so nothing jumps.
+    if (live(track)) {
+        sendLive(track, ride_db_, api::Gesture::Touch);
+        ride_touched_ = true;
+    }
     emit rideChanged();
 }
 
@@ -129,9 +138,12 @@ void MixModel::endRide(int track) {
     if (track != ride_track_ || track == kNoRide || !rideStillHolds()) return;
     const float db = ride_db_;
     const bool sent = ride_sent_live_;
+    const bool touched = ride_touched_;
     ride_track_ = kNoRide;
     ride_id_ = 0;
     ride_sent_live_ = false;
+    ride_touched_ = false;
+    if (touched) sendLive(track, db, api::Gesture::Release);
     if (sent) {
         std::string why;
         const bool ok = session_.controller().set_gain(track, db, why);
@@ -139,7 +151,7 @@ void MixModel::endRide(int track) {
         // The engine is where the ride left it; the document refused that,
         // so the engine goes back to what the document holds, which is what
         // the cap now shows.
-        if (!ok && live(track)) sendLive(track, session_.stripGain(track));
+        if (!ok && live(track)) sendLive(track, session_.stripGain(track), api::Gesture::Release);
     }
     emit rideChanged();
 }
@@ -160,8 +172,45 @@ bool MixModel::setPanText(int track, const QString& text) {
     return session_.reportEdit(session_.controller().set_pan(track, pan, why), why);
 }
 
+void MixModel::beginPan(int track) {
+    if (!live(track) || track >= session_.trackCount()) return;
+    pan_track_ = track;
+    sender_(static_cast<uint32_t>(track), api::ParamId::Pan, session_.stripPan(track),
+            api::Gesture::Touch);
+}
+
+void MixModel::endPan(int track) {
+    if (pan_track_ == kNoRide || track != pan_track_) return;
+    pan_track_ = kNoRide;
+    if (!live(track) || track >= session_.trackCount()) return;
+    sender_(static_cast<uint32_t>(track), api::ParamId::Pan, session_.stripPan(track),
+            api::Gesture::Release);
+}
+
 void MixModel::panDrag(int track, qreal dx, qreal width, bool fine) {
-    session_.panDrag(track, dx, fine ? width * 10.0 : width);
+    const qreal w = fine ? width * 10.0 : width;
+    // The step the document will take, told to the engine as a Move so a
+    // lane in Write or Touch records it; the SetMix below saves it.
+    if (track == pan_track_ && pan_track_ != kNoRide && w > 0 && live(track)) {
+        const float next = std::clamp(session_.stripPan(track) + static_cast<float>(2.0 * dx / w),
+                                      -1.0f, 1.0f);
+        sender_(static_cast<uint32_t>(track), api::ParamId::Pan, next, api::Gesture::Move);
+    }
+    session_.panDrag(track, dx, w);
+}
+
+bool MixModel::setAutomationMode(int track, const QString& mode) {
+    static const std::pair<const char*, model::AutomationMode> modes[] = {
+        {"Off", model::AutomationMode::Off},     {"Read", model::AutomationMode::Read},
+        {"Touch", model::AutomationMode::Touch}, {"Latch", model::AutomationMode::Latch},
+        {"Write", model::AutomationMode::Write}, {"Trim", model::AutomationMode::Trim}};
+    for (const auto& m : modes) {
+        if (mode != QLatin1String(m.first)) continue;
+        std::string why;
+        return session_.reportEdit(session_.controller().set_automation_mode(track, m.second, why),
+                                   why);
+    }
+    return session_.reportEdit(false, "there is no automation mode " + mode.toStdString());
 }
 
 void MixModel::setAll(bool solo, bool on) {

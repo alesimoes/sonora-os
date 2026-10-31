@@ -88,6 +88,12 @@ struct Rig {
     bool link = true;
     // ParameterChanges that reached the engine, rides' steps or not.
     int gain_sends = 0;
+    struct Sent {
+        uint32_t track;
+        api::ParamId param;
+        api::Gesture gesture;
+    };
+    std::vector<Sent> sent;
     // The engine's track count as the latest Hello says it.
     uint32_t engine_tracks = 4;
 
@@ -102,9 +108,10 @@ struct Rig {
     explicit Rig(int live_tracks = 4)
         : mixer(session,
                 live_tracks < 0 ? MixModel::GainSender()
-                                : [this](uint32_t t, float g) {
+                                : [this](uint32_t t, api::ParamId p, float g, api::Gesture ge) {
                                       if (!link) return;
-                                      engine.send_track_gain(t, g);
+                                      engine.send_track_param(t, p, g, ge);
+                                      sent.push_back({t, p, ge});
                                       ++gain_sends;
                                   },
                 [this]() { return engine_tracks; }, true),
@@ -858,6 +865,90 @@ int qml() {
     return 0;
 }
 
+// --- automation: the hand's gesture and the mode selector --------------------
+
+int automation_gestures() {
+    using api::Gesture;
+    using api::ParamId;
+    Rig r;
+    CHECK(r.connect());
+    // Press, moves, release: Touch before the first move, Release after the
+    // last, so Touch and Latch know when the hand is on the fader.
+    r.mixer.beginRide(1);
+    CHECK(r.sent.size() == 1 && r.sent[0].gesture == Gesture::Touch &&
+          r.sent[0].param == ParamId::Gain && r.sent[0].track == 1);
+    r.mixer.ride(1, -20, 200, false);
+    r.mixer.ride(1, -20, 200, false);
+    CHECK(r.sent.size() == 3 && r.sent[1].gesture == Gesture::Move &&
+          r.sent[2].gesture == Gesture::Move);
+    r.mixer.endRide(1);
+    r.settle();
+    CHECK(r.sent.size() == 4 && r.sent[3].gesture == Gesture::Release && r.sent[3].track == 1);
+    CHECK(r.refused.empty());
+    // A press with no motion is still a touch and a release: Touch mode
+    // holds the value under the hand even when it does not move.
+    r.sent.clear();
+    r.mixer.beginRide(2);
+    r.mixer.endRide(2);
+    CHECK(r.sent.size() == 2 && r.sent[0].gesture == Gesture::Touch &&
+          r.sent[1].gesture == Gesture::Release);
+    // A strip the engine does not have has no live path, so no gesture.
+    r.sent.clear();
+    r.engine_tracks = 2;
+    r.mixer.beginRide(3);
+    r.mixer.endRide(3);
+    CHECK(r.sent.empty());
+    r.engine_tracks = 4;
+    // The pan: Touch, a Move per step on the Pan parameter, Release.
+    r.mixer.beginPan(0);
+    r.mixer.panDrag(0, 10, 100, false);
+    r.mixer.endPan(0);
+    CHECK(r.sent.size() == 3 && r.sent[0].gesture == Gesture::Touch &&
+          r.sent[1].gesture == Gesture::Move && r.sent[2].gesture == Gesture::Release);
+    for (const auto& x : r.sent) CHECK(x.param == ParamId::Pan && x.track == 0);
+    // A drag the hand never began (a keyboard or surface nudge) is no gesture.
+    r.sent.clear();
+    r.mixer.panDrag(0, 10, 100, false);
+    r.mixer.endPan(0);
+    CHECK(r.sent.empty());
+    std::printf("  automation gestures: ok\n");
+    return 0;
+}
+
+int automation_mode_selector() {
+    Rig r;
+    CHECK(r.connect());
+    CHECK(r.session.automationModes() == QStringList({"Read", "Read", "Read", "Read"}));
+    const uint64_t rev = r.doc.revision();
+    CHECK(r.mixer.setAutomationMode(1, "Touch"));
+    r.settle();
+    CHECK(r.doc.revision() == rev + 1 && r.refused.empty());
+    CHECK(r.session.automationModes() == QStringList({"Read", "Touch", "Read", "Read"}));
+    for (const char* m : {"Latch", "Write", "Off", "Read"}) {
+        CHECK(r.mixer.setAutomationMode(1, m));
+        r.settle();
+        CHECK(r.session.automationModes()[1] == m);
+    }
+    // The mode already set is no edit, no undo step.
+    const uint64_t same = r.doc.revision();
+    CHECK(r.mixer.setAutomationMode(1, "Read"));
+    r.settle();
+    CHECK(r.doc.revision() == same);
+    // Trim is refused by name and nothing is sent.
+    CHECK(!r.mixer.setAutomationMode(1, "Trim"));
+    CHECK(!r.refused.empty() && r.refused.back().find("Trim") != std::string::npos);
+    r.settle();
+    CHECK(r.doc.revision() == same);
+    CHECK(!r.mixer.setAutomationMode(9, "Write"));
+    CHECK(!r.mixer.setAutomationMode(1, "Banana"));
+    // The lane header's label follows the strip.
+    CHECK(r.mixer.setAutomationMode(2, "Write"));
+    r.settle();
+    CHECK(r.session.automationModes()[2] == "Write");
+    std::printf("  automation mode selector: ok\n");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -873,6 +964,8 @@ int main(int argc, char** argv) {
     if (no_gain_sent_without_a_ride() != 0) return 1;
     if (ride_step_crossing_another_edit() != 0) return 1;
     if (live_path_follows_the_engine() != 0) return 1;
+    if (automation_gestures() != 0) return 1;
+    if (automation_mode_selector() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (implicit_mutes() != 0) return 1;
