@@ -1353,10 +1353,12 @@ void FakeEngine::handle(const std::string& bytes) {
         if (c.track >= cfg_.tracks) {
             reply(c.seq, DispatchResult::Failed,
                   "there is no track " + std::to_string(c.track + 1));
-        } else if (!(c.value >= 0.0f && c.value <= 4.0f)) {
+        } else if (c.param == ParamId::Pan && !(c.value >= -1.0f && c.value <= 1.0f)) {
+            reply(c.seq, DispatchResult::Failed, "pan must be from -1 to 1");
+        } else if (c.param == ParamId::Gain && !(c.value >= 0.0f && c.value <= 4.0f)) {
             reply(c.seq, DispatchResult::Failed, "gain must be from 0 to 4 (linear)");
         } else {
-            gain_[c.track] = c.value;
+            if (c.param == ParamId::Gain) gain_[c.track] = c.value;
             reply(c.seq, DispatchResult::Ok, "");
         }
     } else if (type == wire::Type::PluginParameterChange) {

@@ -75,6 +75,8 @@
 #include "sonora/api/messages.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/wire.h"
+#include "sonora/automation_write.h"
+#include "sonora/automation_writer.h"
 #include "sonora/command.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
@@ -447,6 +449,13 @@ private:
     // Every take the disk thread has closed joins the document: at a stop,
     // a punch-out, or a take started over another.
     void follow_transport();
+    // Live automation writes (ADR-0027 §3): drained into the open pass
+    // every turn; a pass whose roll has ended becomes one "Automation
+    // Write" step, and its Write tracks fall back to Latch.
+    void follow_automation();
+    void finish_pass();
+    // A Load: the open pass was written against the old document.
+    void drop_pass();
     // Held record replies, once the controller no longer waits to start.
     void resolve_records();
     void pump_playback();
@@ -540,6 +549,12 @@ private:
     // since the document's faders were last applied: a rider that leaves
     // has that track's gain put back, and no other client's ride moves.
     std::map<uint32_t, ClientId> riders_;
+    // The pass being collected (0: none) and what it holds so far, reserved
+    // when it opens; the drain buffer, sized once.
+    uint64_t pass_open_ = 0;
+    PassWrites pass_writes_;
+    std::vector<AutomationWrite> pass_drain_;
+    uint64_t write_overruns_said_ = 0;
     // Events that still stand, encoded, for a client that attaches later:
     // what a restarted interface must find on screen.
     std::vector<std::string> notices_;

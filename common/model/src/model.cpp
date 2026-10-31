@@ -1112,11 +1112,11 @@ std::string mix_problem(const TrackMix& m, TrackKind kind, std::uint16_t track_c
         where = "pan";
         return "must be from -1 to 1";
     }
-    if (m.automation != AutomationMode::Off && m.automation != AutomationMode::Read) {
+    if (m.automation >= AutomationMode::Trim) {
         where = "automation";
         if (m.automation > AutomationMode::Trim) return "is not an automation mode";
-        // ADR-0027 §3: the write slice brings them.
-        return "touch, latch, write and trim are not available yet; use off or read";
+        // Its relative lane, summed with Volume in dB, is not built yet.
+        return "trim is not available yet; use off, read, touch, latch or write";
     }
     if (kind == TrackKind::Midi && m.automation != AutomationMode::Read) {
         where = "automation";

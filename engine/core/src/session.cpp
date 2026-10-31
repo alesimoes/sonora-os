@@ -331,6 +331,19 @@ Session::Session(SessionConfig cfg)
     track_open_last_.reset(new float[tracks + 1]());
     auto_level_.reset(new float[tracks + 1]());
     auto_pan_.reset(new float[tracks + 1]());
+    auto_live_.reset(new uint8_t[tracks + 1]());
+    auto_live_last_.reset(new uint8_t[tracks + 1]());
+    auto_latched_.reset(new uint8_t[tracks + 1]());
+    return_at_.reset(new int64_t[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]);
+    for (std::size_t i = 0; i < kAutoParams * (static_cast<std::size_t>(tracks) + 1); ++i) {
+        return_at_[i] = kNoReturn;
+    }
+    return_from_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
+    touch_return_frames_ = std::max<uint32_t>(1, cfg_.sample_rate / 4);
+    // The control thread drains every 50 ms at the longest; 512 writes a
+    // lane is a third of a second of 32-frame blocks, each wrapping.
+    auto_writes_ = std::make_unique<RingBuffer<AutomationWrite>>(
+        static_cast<std::size_t>(kAutoParams) * 512 * (static_cast<std::size_t>(tracks) + 1));
     send_states_ = (tracks + max_buses_) * kStripSendSlots;
     sends_.reset(new SendState[send_states_ + 1]);
     aux_.reset(new AuxState[max_buses_ + 1]);
@@ -980,6 +993,13 @@ float auto_gain_of_db(float db) noexcept SONORA_RT {
     return std::pow(10.0f, db / 20.0f);
 }
 
+// Its inverse, clamped the same way: silence is the lane's floor.
+float auto_db_of_gain(float g) noexcept SONORA_RT {
+    if (!(g > 0.0f)) return -144.0f;
+    const float db = 20.0f * std::log10(g);
+    return db < -144.0f ? -144.0f : (db > 24.0f ? 24.0f : db);
+}
+
 // Region gain times its fades at timeline frame t. Frame i of an L-frame
 // fade in is at i / L, of a fade out at 1 - i / L, so the two sides of a
 // crossfade sum to one (linear, s-curve) or in power (equal power).
@@ -1299,6 +1319,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     // Before the sends: they follow a lane's value at the callback's start
     // (ADR-0027 §2).
+    // A pass is one roll, and becomes one undo step (ADR-0027 §3). Its end
+    // is published after every write it holds.
+    if (rolling && !pass_rolling_) ++auto_pass_;
+    if (!rolling && pass_rolling_) auto_passes_ended_.store(auto_pass_, std::memory_order_release);
+    pass_rolling_ = rolling;
     if (plan_valid_) {
         automation_targets(*plan, rolling, playhead);
     } else {
@@ -1841,16 +1866,65 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
     auto_start_ = start;
     auto_rolling_ = rolling;
     std::memset(track_auto_.get(), 0, tracks_.size());
+    constexpr uint8_t kAllParams = (1u << kAutoVolume) | (1u << kAutoPan);
+    // Every engine track, not only those with audio in the plan: a pass
+    // writes an empty track's lanes as well.
+    for (uint32_t e = 0; e < tracks_.size(); ++e) {
+        auto_live_last_[e] = auto_live_[e];
+        const Track::Automation mode = mix_view(plan, e).automation;
+        // What plays its live value instead of its lane (ADR-0027 §3):
+        // Touch while held, Latch from a touch until the roll stops, Write
+        // always. Stopped, a Latch touch holds only while held.
+        const auto held = static_cast<uint8_t>(tracks_[e]->touched() & kAllParams);
+        uint8_t live = 0;
+        if (mode == Track::Automation::Latch && rolling) {
+            auto_latched_[e] = static_cast<uint8_t>(auto_latched_[e] | held);
+        } else {
+            auto_latched_[e] = 0;
+        }
+        if (mode == Track::Automation::Touch) live = held;
+        if (mode == Track::Automation::Latch) live = static_cast<uint8_t>(held | auto_latched_[e]);
+        if (mode == Track::Automation::Write) live = kAllParams;
+        auto_live_[e] = live;
+        // Stamped before a lane overwrites track_level_ and track_pan_,
+        // which still hold the static, live values.
+        if (rolling && live != 0) stamp_writes(e, live, start);
+        for (uint32_t p = 0; p < kAutoParams; ++p) {
+            const uint8_t bit = static_cast<uint8_t>(1u << p);
+            int64_t& at = return_at_[e * kAutoParams + p];
+            const auto s = static_cast<int64_t>(start);
+            if (!rolling || (live & bit) != 0 || jumped ||
+                (at != kNoReturn && (s < at || s >= at + touch_return_frames_))) {
+                at = kNoReturn;
+            }
+            const bool released = rolling && mode == Track::Automation::Touch &&
+                                  (auto_live_last_[e] & bit) != 0 && (live & bit) == 0;
+            if (!released) continue;
+            const float from = p == kAutoVolume ? auto_db_of_gain(track_level_[e]) : track_pan_[e];
+            // The write marks the release whether or not a lane plays it
+            // back: the pass then knows the run ended there by a release.
+            AutomationWrite w{};
+            w.pass = auto_pass_;
+            w.frame = start;
+            w.track = e;
+            w.param = static_cast<uint8_t>(p);
+            w.value = p == kAutoVolume ? track_level_[e] : track_pan_[e];
+            push_write(w);
+            // Heard only where a lane plays: lane_param() is its one reader.
+            at = s;
+            return_from_[e * kAutoParams + p] = from;
+        }
+    }
     for (uint32_t pi = 0; pi < plan.track_count; ++pi) {
         const PlanTrack& pt = plan.tracks[pi];
         const uint32_t e = pt.engine_track;
         if (e >= tracks_.size()) continue;
-        // Write plays the live value, never the lane: the write slice's.
-        const Track::Automation mode = mix_view(plan, e).automation;
-        if (mode == Track::Automation::Off || mode == Track::Automation::Write) continue;
+        const uint8_t live = auto_live_[e];
+        if (mix_view(plan, e).automation == Track::Automation::Off) continue;
         uint8_t flags = 0;
         if (pt.auto_count[kAutoVolume] != 0) flags |= 1u << kAutoVolume;
         if (pt.auto_count[kAutoPan] != 0) flags |= 1u << kAutoPan;
+        flags = static_cast<uint8_t>(flags & ~live);
         if (flags == 0) continue;
         track_auto_[e] = flags;
         // Only the parameter the lane leaves static: the fader moving under a
@@ -1868,12 +1942,55 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
                                         track_open_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
         if ((flags & (1u << kAutoVolume)) != 0) {
-            track_level_[e] = auto_gain_of_db(auto_lane_value(
-                plan.auto_points + pt.auto_first[kAutoVolume], pt.auto_count[kAutoVolume], t));
+            track_level_[e] = auto_gain_of_db(lane_param(plan, pt, e, kAutoVolume, t));
         }
-        if ((flags & (1u << kAutoPan)) != 0) {
-            track_pan_[e] = auto_lane_value(plan.auto_points + pt.auto_first[kAutoPan],
-                                            pt.auto_count[kAutoPan], t);
+        if ((flags & (1u << kAutoPan)) != 0) track_pan_[e] = lane_param(plan, pt, e, kAutoPan, t);
+    }
+}
+
+float Session::lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, uint32_t p,
+                          int64_t t) const noexcept SONORA_RT {
+    const float lane = auto_lane_value(plan.auto_points + pt.auto_first[p], pt.auto_count[p], t);
+    const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
+    const int64_t at = return_at_[k];
+    if (at == kNoReturn || t < at - kAutoGridFrames || t >= at + touch_return_frames_) return lane;
+    // The grid point before the release: the frames between it and the
+    // next interpolate from the value released, not from the lane.
+    if (t < at) return return_from_[k];
+    // A function of t alone, as the lane is, so the grid and the block cuts
+    // play it as they play the lane.
+    const float x = static_cast<float>(t - at) / static_cast<float>(touch_return_frames_);
+    return return_from_[k] + (lane - return_from_[k]) * x;
+}
+
+void Session::push_write(const AutomationWrite& w) noexcept SONORA_RT {
+    if (auto_writes_->write(&w, 1) != 1) {
+        auto_write_overruns_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void Session::stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SONORA_RT {
+    const bool looping = loop_to_ > loop_from_;
+    for (uint32_t p = 0; p < kAutoParams; ++p) {
+        if ((bits & (1u << p)) == 0) continue;
+        AutomationWrite w{};
+        w.pass = auto_pass_;
+        w.track = e;
+        w.param = static_cast<uint8_t>(p);
+        w.value = p == kAutoVolume ? track_level_[e] : track_pan_[e];
+        uint64_t at = start;
+        uint32_t left = play_until_;
+        // A loop shorter than the block would wrap many times over the same
+        // frames; the first wraps already say all of it.
+        for (int span_no = 0; left > 0 && span_no < 4; ++span_no) {
+            uint32_t span = left;
+            const bool wraps = looping && at < loop_to_ && at + span > loop_to_;
+            if (wraps) span = static_cast<uint32_t>(loop_to_ - at);
+            w.frame = at;
+            w.frames = span;
+            push_write(w);
+            left -= span;
+            at = wraps ? loop_from_ : at + span;
         }
     }
 }
@@ -1884,13 +2001,9 @@ void Session::auto_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t
     float level = auto_level_[e];
     float pan = auto_pan_[e];
     if ((flags & (1u << kAutoVolume)) != 0) {
-        level = auto_gain_of_db(auto_lane_value(plan.auto_points + pt.auto_first[kAutoVolume],
-                                                pt.auto_count[kAutoVolume], t));
+        level = auto_gain_of_db(lane_param(plan, pt, e, kAutoVolume, t));
     }
-    if ((flags & (1u << kAutoPan)) != 0) {
-        pan = auto_lane_value(plan.auto_points + pt.auto_first[kAutoPan], pt.auto_count[kAutoPan],
-                              t);
-    }
+    if ((flags & (1u << kAutoPan)) != 0) pan = lane_param(plan, pt, e, kAutoPan, t);
     // The pan law as the static fader takes it, so a flat lane plays what
     // the same fader would.
     pan_gains(pan, tracks_[e]->channels() >= 2, plan.pan_exponent, l, r);

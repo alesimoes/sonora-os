@@ -199,7 +199,9 @@ void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t
     const auto& tracks = snapshot.edit->tracks;
     if (track >= tracks.size() || track >= session_.tracks().size()) return;
     const model::TrackMix* m = snapshot.mix.find(tracks[track]->id);
-    if (m) session_.tracks()[track]->set_gain(gain_of_db(m->gain_db));
+    if (!m) return;
+    session_.tracks()[track]->set_gain(gain_of_db(m->gain_db));
+    session_.tracks()[track]->set_pan(m->pan);
 }
 
 void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {

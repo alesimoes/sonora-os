@@ -2,6 +2,7 @@
 # model meets the engine: the plan builder and its publisher (ADR-0007 §2,
 # ADR-0009 §4).
 add_library(sonora_control STATIC
+  src/automation_writer.cpp
   src/session_commands.cpp
   src/state_publisher.cpp
   src/engine_control_server.cpp
@@ -192,3 +193,10 @@ target_link_libraries(measure_playback PRIVATE sonora_control sonora_backend_fak
 add_executable(test_orphan_offer tests/test_orphan_offer.cpp)
 target_link_libraries(test_orphan_offer PRIVATE sonora_control)
 add_test(NAME orphan_offer COMMAND test_orphan_offer)
+
+# A pass of live automation into the document (ADR-0027 §3): thinned, the
+# lane kept outside what was written, one "Automation Write" step.
+add_executable(test_automation_writer tests/test_automation_writer.cpp)
+target_include_directories(test_automation_writer PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+target_link_libraries(test_automation_writer PRIVATE sonora_control)
+add_test(NAME automation_writer COMMAND test_automation_writer)

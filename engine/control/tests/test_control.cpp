@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -1065,6 +1066,108 @@ void no_take_while_a_save_as_copies() {
 }
 
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m);
+
+// ADR-0027 §3 end to end: a track in Write, its fader touched through a
+// ParameterChange, rolled and stopped. The pass reaches the replica as one
+// "Automation Write" step with the fader's level on a volume lane and the
+// static pan on a pan lane; the track falls back to Latch, which an undo of
+// the pass leaves alone.
+void automation_write_on_the_real_engine() {
+    RealEngine real(fresh_dir("automation_write"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    const model::Id track = replica.current().edit->tracks[0]->id;
+    model::TrackMix mix = *replica.current().mix.find(track);
+    mix.automation = model::AutomationMode::Write;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().tracks()[0]->automation() == Track::Automation::Write;
+    }));
+
+    api::ParameterChange touch;
+    touch.track = 0;
+    touch.value = 0.5f;
+    touch.gesture = api::Gesture::Touch;
+    CHECK(reply_to(real.send(touch), r) && r.result == DispatchResult::Ok);
+    CHECK(real.session().tracks()[0]->touched() == 1u << kAutoVolume);
+    // A pan out of range is refused by name.
+    api::ParameterChange wild;
+    wild.track = 0;
+    wild.param = api::ParamId::Pan;
+    wild.value = 2.0f;
+    CHECK(reply_to(real.send(wild), r) && r.result == DispatchResult::Failed);
+    CHECK(r.message == "pan must be from -1 to 1");
+
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= 4800; }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        feed();
+        const model::TrackEdit& t = *replica.current().edit->tracks[0];
+        return t.lane(model::AutomationParam::Volume) != nullptr &&
+               replica.current().mix.find(track)->automation == model::AutomationMode::Latch;
+    }));
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    const model::AutomationLane* vol = t.lane(model::AutomationParam::Volume);
+    const model::AutomationLane* pan = t.lane(model::AutomationParam::Pan);
+    CHECK(vol != nullptr && pan != nullptr);
+    if (vol == nullptr || pan == nullptr) return;
+    // In at the static 0 dB, held at the touched -6.02 dB, out at 0 dB.
+    bool half = false;
+    for (const model::AutomationPoint& p : vol->points) {
+        half = half || std::fabs(p.value - 20.0f * std::log10(0.5f)) < 1e-3f;
+    }
+    CHECK(half);
+    CHECK(vol->points.front().value == 0.0f && vol->points.back().value == 0.0f);
+    CHECK(vol->points.size() <= 6);
+    for (const model::AutomationPoint& p : pan->points) CHECK(p.value == 0.0f);
+    CHECK(real.session().automation_write_overruns() == 0);
+
+    api::ModelRequest undo;
+    undo.action = api::ModelAction::Undo;
+    CHECK(reply_to(real.submit(undo), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        feed();
+        return replica.current().edit->tracks[0]->lane(model::AutomationParam::Volume) == nullptr;
+    }));
+    CHECK(!in.model.empty() && in.model.back().label == "Automation Write");
+    CHECK(replica.current().edit->tracks[0]->lane(model::AutomationParam::Pan) == nullptr);
+    CHECK(replica.current().mix.find(track)->automation == model::AutomationMode::Latch);
+}
 
 // ADR-0016 end to end: with the document's loop range set, transport.record
 // starts a loop take; while it records, a SetSettings that moves the loop
@@ -2564,6 +2667,7 @@ int main() {
     a_reopened_session_keeps_the_crash_autosave();
     a_failed_autosave_is_tried_again();
     no_take_while_a_save_as_copies();
+    automation_write_on_the_real_engine();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

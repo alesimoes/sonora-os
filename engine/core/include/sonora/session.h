@@ -2,12 +2,14 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "sonora/automation_write.h"
 #include "sonora/click.h"
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
@@ -479,6 +481,26 @@ public:
     // Punched takes the audio thread held no range for, which recorded
     // nothing. Zero by construction; counted so a broken bound is seen.
     uint64_t punches_lost() const { return punches_lost_.load(std::memory_order_relaxed); }
+
+    // Live automation writes (ADR-0027 §3): each block a written parameter
+    // plays its live value while rolling, the audio thread stamps what it
+    // applied. Control thread: up to `max` writes, oldest first.
+    std::size_t take_automation_writes(AutomationWrite* out, std::size_t max) {
+        return auto_writes_->read(out, max);
+    }
+    // The last pass whose roll has ended: once this reaches a pass and the
+    // writes are drained after reading it, the pass has every write it had.
+    uint64_t automation_passes_ended() const {
+        return auto_passes_ended_.load(std::memory_order_acquire);
+    }
+    // Writes the audio thread dropped on a full ring: a gap in a pass.
+    uint64_t automation_write_overruns() const {
+        return auto_write_overruns_.load(std::memory_order_relaxed);
+    }
+    // How long a released Touch parameter takes to return to its lane: Pro
+    // Tools' AutoMatch default, 250 ms, until the session carries its own.
+    uint32_t touch_return_frames() const { return touch_return_frames_; }
+
     // Recorded samples no file took (DiskThread::dropped_samples()): above
     // all, a callback that outlasted stop()'s 1 s bound.
     uint64_t dropped_samples() const { return disk_->dropped_samples(); }
@@ -680,6 +702,15 @@ private:
     // its fader crossfades from what it last applied (ADR-0027 §4).
     void automation_targets(const PlaybackPlan& plan, bool rolling,
                             uint64_t playhead) noexcept SONORA_RT;
+    // Parameter p's lane on engine track e at frame t, in the lane's unit,
+    // leaning toward the value a released Touch parameter left while it
+    // returns (ADR-0027 §3).
+    float lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, uint32_t p,
+                     int64_t t) const noexcept SONORA_RT;
+    // Stamps the live value of each parameter in `bits` over the frames this
+    // callback plays from `start`, one write per span between wraps.
+    void stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SONORA_RT;
+    void push_write(const AutomationWrite& w) noexcept SONORA_RT;
     // Whether every index the audio thread follows in `plan` is in bounds:
     // nodes, edges, tracks, segments, scratch buffers. Run once per plan,
     // when the audio thread adopts it.
@@ -887,6 +918,23 @@ private:
     uint64_t auto_start_ = 0;
     bool auto_rolling_ = false;
     bool auto_new_plan_ = true;
+    // Live writes (ADR-0027 §3), per engine track, a bit per parameter:
+    // what plays its live value instead of its lane this callback and last;
+    // what a Latch touch has held since the roll began. Per track and
+    // parameter, where a released Touch parameter's return began (kNoReturn:
+    // none) and the value, in the lane's unit, it returns from.
+    std::unique_ptr<uint8_t[]> auto_live_;
+    std::unique_ptr<uint8_t[]> auto_live_last_;
+    std::unique_ptr<uint8_t[]> auto_latched_;
+    static constexpr int64_t kNoReturn = INT64_MIN;
+    std::unique_ptr<int64_t[]> return_at_;
+    std::unique_ptr<float[]> return_from_;
+    uint32_t touch_return_frames_ = 0;
+    std::unique_ptr<RingBuffer<AutomationWrite>> auto_writes_;
+    std::atomic<uint64_t> auto_write_overruns_{0};
+    std::atomic<uint64_t> auto_passes_ended_{0};
+    uint64_t auto_pass_ = 0;
+    bool pass_rolling_ = false;
 
     // Sends and aux returns (ADR-0022). The atomics are the control
     // thread's to write; the rest the audio thread's.

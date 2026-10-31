@@ -52,9 +52,9 @@ public:
     // `tracks` false: the aux returns and the buses' own sends only, which
     // no change of track order moves (ADR-0023 §4).
     void apply_sends(const model::Snapshot& snapshot, bool tracks = true);
-    // Engine track `track`'s gain alone, from the document's track there:
-    // a ride whose rider left ends without the other faders moving. Nothing
-    // for a track past the document's end.
+    // Engine track `track`'s gain and pan alone, from the document's track
+    // there: a ride whose rider left ends without the other faders moving.
+    // Nothing for a track past the document's end.
     void apply_gain(const model::Snapshot& snapshot, std::size_t track);
     // Each track's monitor mode alone, for when arming changed: an armed
     // track under --no-input-monitoring must stop sending its input at

@@ -894,6 +894,126 @@ void EngineControlServer::follow_transport() {
     }
 }
 
+void EngineControlServer::follow_automation() {
+    if (pass_drain_.empty()) pass_drain_.resize(1024);
+    // Read before the drain: a pass counted as ended then has every write
+    // it holds in the ring already.
+    const uint64_t ended = session_.automation_passes_ended();
+    for (;;) {
+        const std::size_t n = session_.take_automation_writes(pass_drain_.data(), pass_drain_.size());
+        if (n == 0) break;
+        for (std::size_t i = 0; i < n; ++i) {
+            const AutomationWrite& w = pass_drain_[i];
+            if (w.pass != pass_open_) {
+                if (pass_open_ != 0) finish_pass();
+                pass_open_ = w.pass;
+                pass_writes_.clear();
+                // A minute of 256-frame blocks on one lane: what most passes
+                // hold without the vector growing.
+                pass_writes_.reserve(16384);
+            }
+            // Engine track i plays the document's track i in display order;
+            // fetched per write, as a finished pass replaces the document.
+            const auto& tracks = document_->current().edit->tracks;
+            if (w.track >= tracks.size() || w.param >= kAutoParams) continue;
+            PassWrite p;
+            p.track = tracks[w.track]->id;
+            p.param = w.param == kAutoVolume ? model::AutomationParam::Volume
+                                             : model::AutomationParam::Pan;
+            p.frame = static_cast<model::Frames>(w.frame);
+            p.frames = w.frames;
+            if (w.param == kAutoVolume) {
+                const double db = w.value > 0.0f ? 20.0 * std::log10(static_cast<double>(w.value))
+                                                 : static_cast<double>(model::kMinGainDb);
+                p.value = static_cast<float>(
+                    std::clamp(db, static_cast<double>(model::kMinGainDb),
+                               static_cast<double>(model::kMaxGainDb)));
+            } else {
+                p.value = std::clamp(w.value, -1.0f, 1.0f);
+            }
+            pass_writes_.add(p);
+        }
+    }
+    if (pass_open_ != 0 && ended >= pass_open_) {
+        finish_pass();
+        pass_open_ = 0;
+    }
+    const uint64_t overruns = session_.automation_write_overruns();
+    if (overruns != write_overruns_said_) {
+        write_overruns_said_ = overruns;
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "automation: the engine dropped " + std::to_string(overruns) +
+                 " live automation writes; a written pass may have gaps";
+        post_event(e);
+    }
+}
+
+void EngineControlServer::finish_pass() {
+    std::vector<model::EditAutomation> edits = automation_pass_edits(
+        document_->current(), pass_writes_.writes(), session_.touch_return_frames());
+    std::vector<model::Id> written;
+    for (const PassWrite& w : pass_writes_.writes()) {
+        if (std::find(written.begin(), written.end(), w.track) == written.end()) {
+            written.push_back(w.track);
+        }
+    }
+    pass_writes_.clear();
+    if (edits.empty()) return;
+    bool changed = false;
+    if (edits.size() > model::kMaxCompoundMembers) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "automation: a pass wrote " + std::to_string(edits.size()) +
+                 " lanes; only the first " + std::to_string(model::kMaxCompoundMembers) +
+                 " were kept";
+        post_event(e);
+        edits.resize(model::kMaxCompoundMembers);
+    }
+    model::Compound pass;
+    pass.label = kAutomationWriteLabel;
+    for (model::EditAutomation& edit : edits) pass.ops.emplace_back(std::move(edit));
+    model::ReplicationUpdate u;
+    std::string why;
+    if (document_->apply(pass, u, why)) {
+        send_update(u);
+        changed = true;
+    } else {
+        // Held, not the status line: the operator has to know that the
+        // pass just ridden was not kept.
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "automation: the pass could not be written: " + why;
+        post_event(e);
+    }
+    // Write falls back to Latch after a pass, as Pro Tools' does.
+    bool mix_changed = false;
+    for (const model::Id id : written) {
+        const model::TrackMix* m = document_->current().mix.find(id);
+        if (m == nullptr || m->automation != model::AutomationMode::Write) continue;
+        model::TrackMix latch = *m;
+        latch.automation = model::AutomationMode::Latch;
+        model::ReplicationUpdate mu;
+        std::string mwhy;
+        if (document_->apply(model::SetMix{latch}, mu, mwhy)) {
+            send_update(mu);
+            mix_changed = true;
+        }
+    }
+    if (changed || mix_changed) show_document(mix_changed);
+}
+
+void EngineControlServer::drop_pass() {
+    if (pass_drain_.empty()) pass_drain_.resize(1024);
+    while (session_.take_automation_writes(pass_drain_.data(), pass_drain_.size()) != 0) {
+    }
+    pass_writes_.clear();
+    for (const auto& t : session_.tracks()) {
+        t->set_touched(kAutoVolume, false);
+        t->set_touched(kAutoPan, false);
+    }
+}
+
 void EngineControlServer::resolve_records() {
     if (held_records_.empty() || playback_->record_requested()) return;
     DispatchResult result = DispatchResult::Ok;
@@ -928,6 +1048,7 @@ void EngineControlServer::pump_playback() {
     // A take asked for behind the gate starts inside pump().
     publisher_->set_take(take_);
     follow_transport();
+    follow_automation();
     resolve_records();
     // After the replies: a take whose range was already behind its first
     // block ends here, and resolve_records() would call that a cancel.
@@ -1242,6 +1363,7 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
         entered = true;
     }
     *document_ = std::move(next);
+    drop_pass();
     // What the autosave is named after and compared with; a folder or a new
     // session has no file until its first Save.
     session_file_ = opened_file;
@@ -1953,6 +2075,12 @@ void EngineControlServer::forget(ClientId id) {
     for (auto it = riders_.begin(); it != riders_.end();) {
         if (it->second == id) {
             playback_->apply_gain(document_->current(), it->first);
+            // Nor a touch it never released, which would hold the track off
+            // its lanes for good.
+            if (it->first < session_.tracks().size()) {
+                session_.tracks()[it->first]->set_touched(kAutoVolume, false);
+                session_.tracks()[it->first]->set_touched(kAutoPan, false);
+            }
             it = riders_.erase(it);
         } else {
             ++it;
@@ -2271,14 +2399,31 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         }
         // Written as an atomic the audio thread already reads; a NaN would
         // reach every sample of the track, so it is refused here.
-        if (!(c.value >= 0.0f && c.value <= 4.0f)) {
+        const bool pan = c.param == api::ParamId::Pan;
+        if (pan && !(c.value >= -1.0f && c.value <= 1.0f)) {
+            reply(from, c.seq, DispatchResult::Failed, "pan must be from -1 to 1");
+            return;
+        }
+        if (!pan && !(c.value >= 0.0f && c.value <= 4.0f)) {
             reply(from, c.seq, DispatchResult::Failed, "gain must be from 0 to 4 (linear)");
             return;
         }
         // The track at that row is on another engine track until the plan
         // that moves them plays (ADR-0023 §4): the step is dropped, and the
         // next one, a few milliseconds on, lands where it should.
-        if (!playback_->tracks_moving()) session_.tracks()[c.track]->set_gain(c.value);
+        if (!playback_->tracks_moving()) {
+            Track& t = *session_.tracks()[c.track];
+            if (pan) {
+                t.set_pan(c.value);
+            } else {
+                t.set_gain(c.value);
+            }
+            // A touch holds the parameter off its lane in Touch, Latch and
+            // Write until its release (ADR-0027 §3).
+            const uint8_t param = pan ? kAutoPan : kAutoVolume;
+            if (c.gesture == api::Gesture::Touch) t.set_touched(param, true);
+            if (c.gesture == api::Gesture::Release) t.set_touched(param, false);
+        }
         riders_[c.track] = from;
         reply(from, c.seq, DispatchResult::Ok, "");
         return;
