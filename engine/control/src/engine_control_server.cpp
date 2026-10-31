@@ -931,7 +931,7 @@ void EngineControlServer::follow_automation() {
             } else {
                 p.value = std::clamp(w.value, -1.0f, 1.0f);
             }
-            pass_writes_.push_back(p);
+            pass_writes_.add(p);
         }
     }
     if (pass_open_ != 0 && ended >= pass_open_) {
@@ -950,10 +950,10 @@ void EngineControlServer::follow_automation() {
 }
 
 void EngineControlServer::finish_pass() {
-    std::vector<model::EditAutomation> edits =
-        automation_pass_edits(document_->current(), pass_writes_, session_.touch_return_frames());
+    std::vector<model::EditAutomation> edits = automation_pass_edits(
+        document_->current(), pass_writes_.writes(), session_.touch_return_frames());
     std::vector<model::Id> written;
-    for (const PassWrite& w : pass_writes_) {
+    for (const PassWrite& w : pass_writes_.writes()) {
         if (std::find(written.begin(), written.end(), w.track) == written.end()) {
             written.push_back(w.track);
         }

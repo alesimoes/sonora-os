@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -12,13 +13,47 @@ namespace sonora {
 // What one pass of Touch, Latch or Write left on one parameter (ADR-0027
 // §3), in the lane's unit: a span of `frames` frames played at `value`
 // from `frame`, or with `frames` 0 the frame a released Touch parameter
-// began its return to the lane from `value`.
+// began its return to the lane from `value`. With `line` set the span is
+// a line from `value` to `to` at `frame + frames`, what PassWrites leaves
+// of thinned-out writes.
 struct PassWrite {
     model::Id track = 0;
     model::AutomationParam param = model::AutomationParam::Volume;
     model::Frames frame = 0;
     uint32_t frames = 0;
     float value = 0.0f;
+    float to = 0.0f;
+    bool line = false;
+};
+
+// A pass's writes as they are drained. A write that continues its lane's
+// run is merged into it while the run stays within half the lane's
+// tolerance of a line (the stop thins again, so the two stay within 1.5
+// times it), which keeps a held or smoothly ridden lane at a few entries
+// however long the roll.
+class PassWrites {
+public:
+    void add(const PassWrite& w);
+    void clear();
+    void reserve(std::size_t n) { writes_.reserve(n); }
+    const std::vector<PassWrite>& writes() const { return writes_; }
+
+private:
+    static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    struct Lane {
+        model::Id track = 0;
+        model::AutomationParam param = model::AutomationParam::Volume;
+        // The run's last kept span, which merged writes extend, and the
+        // newest write after it.
+        std::size_t anchor = kNone;
+        std::size_t last = kNone;
+        // The slopes from the anchor's start that pass within tolerance of
+        // every point merged into it.
+        double lo = 0.0;
+        double hi = 0.0;
+    };
+    std::vector<PassWrite> writes_;
+    std::vector<Lane> lanes_;
 };
 
 // The label of a pass's one undo step.

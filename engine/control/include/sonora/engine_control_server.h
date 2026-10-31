@@ -552,7 +552,7 @@ private:
     // The pass being collected (0: none) and what it holds so far, reserved
     // when it opens; the drain buffer, sized once.
     uint64_t pass_open_ = 0;
-    std::vector<PassWrite> pass_writes_;
+    PassWrites pass_writes_;
     std::vector<AutomationWrite> pass_drain_;
     uint64_t write_overruns_said_ = 0;
     // Events that still stand, encoded, for a client that attaches later:

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <map>
 
 namespace sonora {
@@ -15,9 +16,9 @@ using model::AutomationParam;
 using model::AutomationPoint;
 using model::Frames;
 
-// A span of the pass: a value held, or a release's return, a line from
-// `value` at `origin` to `to` at `origin + len`. A return cut by a later
-// write keeps its line.
+// A span of the pass: a value held, or a line from `value` at `origin` to
+// `to` at `origin + len` (a release's return, or merged writes). A line cut
+// by a later write keeps its slope.
 struct Painted {
     Frames end = 0;
     bool ret = false;
@@ -94,6 +95,56 @@ float tolerance_of(AutomationParam p) { return p == AutomationParam::Volume ? 0.
 
 }  // namespace
 
+void PassWrites::add(const PassWrite& w) {
+    Lane* lane = nullptr;
+    for (Lane& l : lanes_) {
+        if (l.track == w.track && l.param == w.param) lane = &l;
+    }
+    if (lane == nullptr) {
+        lanes_.push_back({w.track, w.param});
+        lane = &lanes_.back();
+    }
+    const auto start_run = [&]() {
+        lane->anchor = kNone;
+        lane->last = w.frames > 0 ? writes_.size() : kNone;
+        writes_.push_back(w);
+    };
+    if (w.frames == 0 || lane->last == kNone) return start_run();
+    PassWrite& prev = writes_[lane->last];
+    if (w.frame != prev.frame + static_cast<Frames>(prev.frames)) return start_run();
+    if (lane->anchor != kNone) {
+        PassWrite& a = writes_[lane->anchor];
+        const double tol = 0.5 * static_cast<double>(tolerance_of(w.param));
+        const double dt = static_cast<double>(prev.frame - a.frame);
+        const double lo = std::max(lane->lo, (prev.value - tol - a.value) / dt);
+        const double hi = std::min(lane->hi, (prev.value + tol - a.value) / dt);
+        const double slope = (static_cast<double>(w.value) - a.value) /
+                             static_cast<double>(w.frame - a.frame);
+        const uint64_t frames = static_cast<uint64_t>(a.frames) + prev.frames;
+        if (slope >= lo && slope <= hi && frames <= UINT32_MAX) {
+            // prev's point lies on the line from a to w: a takes its frames
+            // and prev's entry becomes w.
+            a.frames = static_cast<uint32_t>(frames);
+            a.to = w.value;
+            a.line = true;
+            lane->lo = lo;
+            lane->hi = hi;
+            prev = w;
+            return;
+        }
+    }
+    lane->anchor = lane->last;
+    lane->lo = -std::numeric_limits<double>::infinity();
+    lane->hi = std::numeric_limits<double>::infinity();
+    lane->last = writes_.size();
+    writes_.push_back(w);
+}
+
+void PassWrites::clear() {
+    writes_.clear();
+    lanes_.clear();
+}
+
 void thin_automation(std::vector<AutomationPoint>& points, float tolerance) {
     const std::size_t n = points.size();
     if (n <= 2) return;
@@ -154,6 +205,12 @@ std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& 
         p.value = w.value;
         if (w.frames > 0) {
             p.end = w.frame + static_cast<Frames>(w.frames);
+            if (w.line) {
+                p.ret = true;
+                p.origin = w.frame;
+                p.len = static_cast<Frames>(w.frames);
+                p.to = w.to;
+            }
         } else {
             if (return_frames <= 0) continue;
             bool found = false;
@@ -187,7 +244,11 @@ std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& 
             run.clear();
         };
         bool first = true;
+        bool sloped = false;
         for (const auto& [start, p] : l.paint) {
+            // A line cut short by a later turn ends where it was cut, not
+            // on the next span's value.
+            if (!first && start == run_end && sloped) put(run, run_end, last);
             if (!first && start != run_end) {
                 close_run();
                 // The gap keeps the points it had.
@@ -202,6 +263,7 @@ std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& 
             put(run, start, p.at(start));
             run_end = p.end;
             last = p.at(p.end);
+            sloped = p.ret;
         }
         close_run();
         e.to = run_end + 1;

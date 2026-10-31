@@ -5,6 +5,8 @@
 // (its old points in a gap, its old value on a run's edges, the static
 // fader where it had none), a release ramped back to it, a loop's later
 // turn over an earlier one, and the pass as one "Automation Write" step.
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -19,6 +21,7 @@ using namespace model_test;
 using sonora::automation_pass_edits;
 using sonora::kAutomationWriteLabel;
 using sonora::PassWrite;
+using sonora::PassWrites;
 using sonora::thin_automation;
 
 // A held fader: one write per 100-frame block from `from` to `to`.
@@ -141,6 +144,94 @@ int test_release_returns_and_later_turns_win() {
     return 0;
 }
 
+// The lane as played: linear between points, held at the ends, a step's
+// second point from its frame.
+float value_at(const std::vector<AutomationPoint>& p, Frames t) {
+    if (t < p.front().at) return p.front().value;
+    if (t >= p.back().at) return p.back().value;
+    std::size_t i = 1;
+    while (p[i].at <= t) ++i;
+    const AutomationPoint& a = p[i - 1];
+    const AutomationPoint& b = p[i];
+    return a.value + static_cast<float>(static_cast<double>(t - a.at) /
+                                        static_cast<double>(b.at - a.at) * (b.value - a.value));
+}
+
+// PR #178 review B1: a Write pass sends one write per parameter per block,
+// held or not; an hour of it must not hold one entry per block.
+int test_a_held_pass_stays_small() {
+    PassWrites w;
+    constexpr Frames kBlock = 64;
+    for (Frames f = 0; f < 200000 * kBlock; f += kBlock) {
+        for (Id t = 1; t <= 8; ++t) {
+            w.add({t, AutomationParam::Volume, f, kBlock, -6.0f});
+            w.add({t, AutomationParam::Pan, f, kBlock, 0.25f});
+        }
+    }
+    CHECK(w.writes().size() <= 2 * 16);
+    w.clear();
+    CHECK(w.writes().empty());
+    return 0;
+}
+
+int test_a_moving_ride_stays_small_and_close() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    constexpr Frames kBlock = 64;
+    constexpr int kBlocks = 100000;
+    const auto ride_at = [](Frames f) {
+        return -10.0f + 6.0f * static_cast<float>(std::sin(f * 2.0 * 3.141592653589793 / 192000.0));
+    };
+    PassWrites w;
+    for (int b = 0; b < kBlocks; ++b) {
+        const Frames f = b * kBlock;
+        w.add({vox.track, AutomationParam::Volume, f, kBlock, ride_at(f)});
+    }
+    CHECK(w.writes().size() < kBlocks / 20);
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w.writes(), 0);
+    CHECK(edits.size() == 1);
+    const std::vector<AutomationPoint>& p = edits[0].points;
+    float worst = 0.0f;
+    for (int b = 0; b < kBlocks; ++b) {
+        const Frames f = b * kBlock;
+        worst = std::max(worst, std::fabs(value_at(p, f) - ride_at(f)));
+    }
+    CHECK(worst <= 0.15f + 1e-3f);
+    return 0;
+}
+
+// A loop's second turn over part of a merged first turn still wins, and the
+// first turn's remainder keeps its slope.
+int test_a_later_turn_over_a_merged_run() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    PassWrites w;
+    for (Frames f = 0; f < 64000; f += 64) {
+        w.add({vox.track, AutomationParam::Volume, f, 64, -20.0f + 20.0f * f / 64000});
+    }
+    for (Frames f = 32000; f < 48000; f += 64) {
+        w.add({vox.track, AutomationParam::Volume, f, 64, 3.0f});
+    }
+    CHECK(w.writes().size() <= 6);
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w.writes(), 0);
+    CHECK(edits.size() == 1);
+    const std::vector<AutomationPoint>& p = edits[0].points;
+    CHECK(std::fabs(value_at(p, 16000) - -15.0f) < 0.15f);
+    CHECK(std::fabs(value_at(p, 31999) - -10.0f) < 0.15f);
+    CHECK(value_at(p, 40000) == 3.0f);
+    CHECK(std::fabs(value_at(p, 56000) - -2.5f) < 0.15f);
+    // A release ends the run; the next write starts a new one.
+    w.add({vox.track, AutomationParam::Volume, 64000, 0, 0.0f});
+    w.add({vox.track, AutomationParam::Volume, 64000, 64, 0.0f});
+    CHECK(w.writes().back().frame == 64000 && w.writes().back().frames == 64);
+    CHECK(w.writes()[w.writes().size() - 2].frames == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -149,6 +240,9 @@ int main() {
     failed += test_a_run_over_a_lane();
     failed += test_no_lane_keeps_the_static_fader();
     failed += test_release_returns_and_later_turns_win();
+    failed += test_a_held_pass_stays_small();
+    failed += test_a_moving_ride_stays_small_and_close();
+    failed += test_a_later_turn_over_a_merged_run();
     if (failed != 0) {
         std::fprintf(stderr, "automation_writer: %d failed\n", failed);
         return 1;
