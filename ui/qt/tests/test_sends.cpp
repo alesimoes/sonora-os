@@ -483,6 +483,81 @@ int rides_are_live_and_saved_once() {
     return 0;
 }
 
+int ride_ends_are_never_lost() {
+    Rig r;
+    CHECK(r.connect());
+    r.sends.setLiveSender([&r](bool aux, model::Id id, float linear) {
+        if (aux) r.engine.send_aux_gain(id, linear);
+        else r.engine.send_send_level(id, linear);
+    });
+    r.sends.newBus();
+    r.settle();
+    r.sends.openChooser(1, 0);
+    CHECK(r.sends.choose(0));
+    r.settle();
+    r.sends.openWindow(1, 0);
+    CHECK(r.sends.setLevelText(QStringLiteral("-6")));
+    r.settle();
+
+    // Window closed mid-ride: saved once.
+    uint64_t rev = r.doc.revision();
+    r.sends.beginLevelRide();
+    r.sends.levelDrag(-10.0, 200.0, false);
+    r.sends.closeWindow();
+    r.settle();
+    CHECK(r.doc.revision() == rev + 1);
+    CHECK(r.ctl().slot(1, 0).level_db > -6.0f);
+    r.sends.endLevelRide();   // the late release is a no-op
+    CHECK(r.doc.revision() == rev + 1);
+
+    // Second press: the held send ride is saved before the aux ride starts.
+    r.sends.openWindow(1, 0);
+    const float before = r.ctl().slot(1, 0).level_db;
+    rev = r.doc.revision();
+    r.sends.beginLevelRide();
+    r.sends.levelDrag(-10.0, 200.0, false);
+    r.sends.beginAuxRide(0);
+    r.settle();
+    CHECK(r.doc.revision() == rev + 1);
+    CHECK(r.ctl().slot(1, 0).level_db > before);
+    r.sends.auxFaderDrag(0, -10.0, 200.0, false);
+    r.sends.beginLevelRide();   // and the aux ride is saved by a new send press
+    r.settle();
+    CHECK(r.doc.revision() == rev + 2);
+    CHECK(r.ctl().aux(0).gain_db > 0.0f);
+    r.sends.endLevelRide();
+
+    // Aux strip removed mid-ride: saved, then removed; no stale ride.
+    r.sends.beginAuxRide(0);
+    r.sends.auxFaderDrag(0, -10.0, 200.0, false);
+    rev = r.doc.revision();
+    r.sends.removeBus(0);
+    r.settle();
+    CHECK(r.doc.revision() >= rev + 1);
+    CHECK(r.ctl().bus_count() == 0);
+    const int steps = r.sends.liveSteps();
+    r.sends.auxFaderDrag(0, -10.0, 200.0, false);
+    CHECK(r.sends.liveSteps() == steps);
+
+    // Dragged out and back to the start: ends cleanly, one save at most.
+    r.sends.newBus();
+    r.settle();
+    r.sends.openChooser(1, 0);
+    CHECK(r.sends.choose(0));
+    r.settle();
+    r.sends.openWindow(1, 0);
+    rev = r.doc.revision();
+    const float start = r.ctl().slot(1, 0).level_db;
+    r.sends.beginLevelRide();
+    r.sends.levelDrag(-10.0, 200.0, false);
+    r.sends.levelDrag(10.0, 200.0, false);
+    r.sends.endLevelRide();
+    r.settle();
+    CHECK(r.doc.revision() <= rev + 1);
+    CHECK(std::fabs(r.ctl().slot(1, 0).level_db - start) < 1e-2f);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
@@ -490,6 +565,7 @@ int main(int argc, char** argv) {
     if (reassign_loop_and_remove_bus() != 0) return 1;
     if (outputs_and_aux_solo() != 0) return 1;
     if (rides_are_live_and_saved_once() != 0) return 1;
+    if (ride_ends_are_never_lost() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui sends: all checks passed\n");
     return 0;

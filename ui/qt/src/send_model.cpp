@@ -109,6 +109,8 @@ void SendModel::refresh() {
         m.insert(QStringLiteral("output"), q(ctl_.output_name(ctl_.track_count() + b)));
         auxes_.append(m);
     }
+    // The bus under an aux ride went (undo, another client): nothing to save or revert.
+    if (ride_ == Ride::Aux && strip_of(ctl_.snapshot(), ride_id_) < 0) dropRide();
     overlayRide();
     // A chooser over a strip that has gone is closed, not left on another.
     if (chooser_strip_ >= ctl_.strip_count()) {
@@ -240,6 +242,8 @@ void SendModel::openWindow(int strip, int slot) {
 
 void SendModel::closeWindow() {
     if (window_strip_id_ == kNoId) return;
+    // A destroyed fader gets no release: the ride ends here, saved or reverted.
+    if (ride_ == Ride::Send) finishRide(true);
     window_strip_id_ = kNoId;
     window_strip_ = window_slot_ = -1;
     window_.clear();
@@ -284,6 +288,7 @@ void SendModel::dropRide() {
 
 void SendModel::beginLevelRide() {
     if (!windowOpen() || !sender_) return;
+    if (ride_ != Ride::None) finishRide(true);
     const SendSlotView v = ctl_.slot(window_strip_, window_slot_);
     if (!v.present) return;
     ride_ = Ride::Send;
@@ -296,6 +301,7 @@ void SendModel::beginLevelRide() {
 
 void SendModel::beginAuxRide(int bus) {
     if (!sender_ || bus < 0 || bus >= ctl_.bus_count()) return;
+    if (ride_ != Ride::None) finishRide(true);
     ride_ = Ride::Aux;
     ride_id_ = ctl_.aux(bus).id;
     ride_db_ = ctl_.aux(bus).gain_db;
@@ -430,6 +436,9 @@ void SendModel::newBus() {
 }
 
 void SendModel::removeBus(int bus) {
+    if (ride_ == Ride::Aux && bus >= 0 && bus < ctl_.bus_count() && ctl_.aux(bus).id == ride_id_) {
+        finishRide(true);
+    }
     std::string why;
     report(ctl_.remove_bus(bus, why), why);
 }

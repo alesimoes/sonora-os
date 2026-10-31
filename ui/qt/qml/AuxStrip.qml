@@ -217,6 +217,7 @@ Rectangle {
             }
             onReleased: aux.sends.endAuxRide(aux.bus)
             onCanceled: aux.sends.endAuxRide(aux.bus)
+            Component.onDestruction: aux.sends.endAuxRide(aux.bus)
             onPositionChanged: (m) => {
                 if (!pressed || (m.modifiers & Qt.AltModifier)) return
                 aux.sends.auxFaderDrag(aux.bus, m.y - lastY, faderArea.travel,
