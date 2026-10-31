@@ -427,6 +427,33 @@ int test_returning_to_a_path_does_not_trust_a_foreign_autosave() {
     return 0;
 }
 
+// #172 re-review: an autosave the saver cannot read (here over the size it
+// reads) is foreign too; it is kept as a recovered file, not renamed over.
+int test_unreadable_autosave_is_set_aside() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    const fs::path file = folder / "Mix.sonora";
+    const fs::path autosave = sf::autosave_file_of(file.string());
+    const fs::path backups = folder / "Session File Backups";
+    std::string why, caution;
+    Audio a;
+    SessionFolder f;
+    f.set_clock(fake_clock);
+    CHECK(f.save(file.string(), a.bytes(7), a.h.current(), why, caution));
+    fs::create_directories(backups);
+    write(autosave, "x");
+    fs::resize_file(autosave, (std::uintmax_t{256} << 20) + 1);   // sparse
+    a.rename("Edited");
+    CHECK(f.autosave(file.string(), a.h.current(), "sonora-engine", folder.string(), why, caution));
+    CHECK(read(autosave).find("\"Edited\"") != std::string::npos);
+    bool kept = false;
+    for (const std::string& n : names(backups)) {
+        if (n.find("recovered") != std::string::npos && fs::file_size(backups / n) > (std::uintmax_t{256} << 20)) kept = true;
+    }
+    CHECK(kept);
+    return 0;
+}
+
 // #164 review B1: two session files in one folder (Pro Tools' habit of
 // "Song" and "Song alt") each have their own autosave.
 int test_each_session_file_has_its_own_autosave() {
@@ -761,6 +788,7 @@ int main() {
     t(test_autosave);
     t(test_reopen_keeps_the_crash_autosave);
     t(test_returning_to_a_path_does_not_trust_a_foreign_autosave);
+    t(test_unreadable_autosave_is_set_aside);
     t(test_each_session_file_has_its_own_autosave);
     t(test_no_save_into_a_rotated_backup);
     t(test_save_as_links_media_and_leaves_the_source);

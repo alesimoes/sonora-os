@@ -711,12 +711,16 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
     set_aside_.clear();
     std::string there;
     const bool had = read_file(target, kMaxSessionBytes, there);
+    // A file that exists but cannot be read (too large, I/O error) is foreign
+    // too: it must be moved aside, not renamed over.
+    std::error_code present_ec;
+    const bool present = fs::exists(fs::symlink_status(target, present_ec));
     if (had && there == bytes) {
         autosaves_written_[target.string()] = std::hash<std::string>{}(bytes);
         return true;
     }
     const auto mine = autosaves_written_.find(target.string());
-    if (had && (mine == autosaves_written_.end() || mine->second != std::hash<std::string>{}(there))) {
+    if (present && (!had || mine == autosaves_written_.end() || mine->second != std::hash<std::string>{}(there))) {
         const std::string stem = target.filename().string().substr(
             0, target.filename().string().size() - std::string(".sonora").size());
         const std::string stamp = utc_stamp(clock_ != nullptr ? clock_() : now_seconds());
