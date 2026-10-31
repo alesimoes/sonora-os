@@ -1064,7 +1064,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              (`failed_edit`); the old host alive while a plan names it
              (`edit_keeps_old`, residency held); teardown asks every host
              first and waits once (2 s for the set).
-       - [ ] pidfd instead of polling the host processes.
+       - [x] pidfd instead of polling the host processes:
+             `ChildProcess::exit_handle()` (a Linux pidfd, close-on-exec,
+             -1 elsewhere) and `HostProcess::exit_handle()`; every bounded
+             `wait()` (host stop, replace, scanner) sleeps on it instead of
+             a 5 ms waitpid loop. ctest `platform_child_exit`. The control
+             server has no poll set yet: putting `exit_handle()` there,
+             beside `socket_handle()`, is M3's.
        - [x] Scan worker and catalog cache (ADR-0012 amendment of
              2026-10-19, items 1-7, Q1-Q3; Q4 landed with #87):
              `contracts/plugin`
@@ -1304,6 +1310,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] M3, the control server's side: poll each host's socket for
              POLLOUT while `wants_write()` (the 50 ms loop moves a Load near
              64 MiB slowly; the Ready bound now starts once it is sent).
+             The same poll set takes each host's `exit_handle()`, so an exit
+             wakes the loop instead of waiting for its next turn.
        - [ ] L6 on #78: the Hello pid check assumes no PID namespace; a
              sandboxed host (bwrap, unshare) needs the pid as the engine sees
              it compared another way.

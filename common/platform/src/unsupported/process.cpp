@@ -22,6 +22,7 @@ ChildProcess::ChildProcess(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) 
 ChildProcess::~ChildProcess() = default;
 bool ChildProcess::running() { return false; }
 int64_t ChildProcess::pid() const { return -1; }
+int ChildProcess::exit_handle() const { return -1; }
 bool ChildProcess::wait(int) { return true; }
 void ChildProcess::terminate() {}
 void ChildProcess::kill() {}

@@ -90,7 +90,13 @@ public:
     bool running();
     // Its process id, as it would say in a Hello (host_control.h).
     int64_t pid() const;
+    // For a poll set, never for I/O: readable (POLLIN) once it has exited,
+    // so an owner can sleep until a child dies instead of polling running()
+    // (ADR-0012 §4). A Linux pidfd, close-on-exec, valid for this object's
+    // life; -1 where the OS has none, and then only running() tells.
+    int exit_handle() const;
     // True once it has exited, waiting up to `timeout_ms` (-1: for ever).
+    // Sleeps on exit_handle() when there is one; otherwise polls.
     bool wait(int timeout_ms);
     // Asks it to leave (SIGTERM).
     void terminate();

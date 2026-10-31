@@ -18,8 +18,10 @@
 // the text. Every socket operation is non-blocking (HostProcess::pump).
 //
 // Still open:
-//   - the host is watched by polling (ChildProcess, waitpid WNOHANG) from
-//     poll(); TODO(pidfd): a pidfd in the control server's poll set.
+//   - a host's exit is a pidfd (exit_handle()), and every wait for one
+//     sleeps on it; the control server, which has no poll set yet, still
+//     finds an exit from poll() (waitpid WNOHANG each turn) until M3 puts
+//     exit_handle() beside socket_handle() in one.
 //   - GetState for the instances that carry over an edit is the control
 //     server's; a restart starts from the store and the last state the
 //     server gave (spec.states, then set_state after a FlushPluginState).
@@ -178,6 +180,9 @@ public:
     // For a poll set (M3 on #78): the engine's end of the socket, and
     // whether frames wait to be sent (poll it for POLLOUT then).
     int socket_handle() const;
+    // Readable once the host has exited (ChildProcess::exit_handle()); -1
+    // with no host or no pidfd, and then only running() tells.
+    int exit_handle() const;
     bool wants_write() const { return link_.wants_write(); }
     // GestureEnds a burst coalesced (M2): counted, never a kill.
     uint64_t gesture_ends_coalesced() const { return gesture_ends_coalesced_; }

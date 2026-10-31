@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <spawn.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -32,6 +33,11 @@ struct ChildProcess::Impl {
     // it forked goes with it (a VST3 --list child's per-bundle children,
     // which carry no death signal; code-reviewer B on #95).
     bool group = false;
+    // Readable once the child has exited (Linux 5.3 and later): wait()
+    // sleeps on it instead of polling waitpid, and an owner with a poll set
+    // puts it there (ADR-0012 §4). -1 where the kernel has none; wait()
+    // then falls back to polling.
+    int exit_fd = -1;
 
     void signal(int sig) const { ::kill(group ? -pid : pid, sig); }
 
@@ -52,7 +58,47 @@ struct ChildProcess::Impl {
         }
         return reaped;
     }
+
+    // True when exit_fd turned readable within `timeout_ms`; false on a
+    // timeout or with no exit_fd.
+    bool exit_fd_readable(int timeout_ms) const {
+        if (exit_fd < 0) return false;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        for (;;) {
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                end - std::chrono::steady_clock::now());
+            pollfd p{exit_fd, POLLIN, 0};
+            const int r = ::poll(&p, 1, static_cast<int>(std::max<int64_t>(0, left.count())));
+            if (r > 0) return true;
+            if (r == 0 || errno != EINTR) return false;
+        }
+    }
 };
+
+namespace {
+
+#ifdef __linux__
+#ifndef SYS_pidfd_open
+// The same number on every architecture (new syscalls share one table);
+// older libc headers lack it.
+#define SYS_pidfd_open 434
+#endif
+#endif
+
+// Close-on-exec by the kernel's own rule, so no other child inherits it.
+// The child is ours and unreaped, so its pid cannot have been reused, even
+// if it has already exited (a zombie has a pidfd too).
+int open_exit_fd(pid_t pid) {
+#ifdef __linux__
+    const long fd = ::syscall(SYS_pidfd_open, pid, 0);
+    return fd < 0 ? -1 : static_cast<int>(fd);
+#else
+    (void)pid;
+    return -1;
+#endif
+}
+
+}  // namespace
 
 std::string executable_dir() {
     char buf[4096];
@@ -248,6 +294,7 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const std::vector<std::string>
         std::string ignored;
         lower(impl->pid, options.nice, options.idle_io, ignored);
     }
+    impl->exit_fd = open_exit_fd(impl->pid);
     return std::make_unique<ChildProcess>(std::move(impl));
 }
 
@@ -258,14 +305,22 @@ ChildProcess::~ChildProcess() {
         impl_->signal(SIGKILL);
         impl_->reap(true);
     }
+    if (impl_->exit_fd >= 0) ::close(impl_->exit_fd);
 }
 
 bool ChildProcess::running() { return !impl_->reap(false); }
 
 int64_t ChildProcess::pid() const { return static_cast<int64_t>(impl_->pid); }
 
+int ChildProcess::exit_handle() const { return impl_->exit_fd; }
+
 bool ChildProcess::wait(int timeout_ms) {
     if (timeout_ms < 0) return impl_->reap(true);
+    if (impl_->exit_fd >= 0) {
+        if (impl_->reap(false)) return true;
+        // Readable means a zombie waits, so this reap does not block.
+        return impl_->exit_fd_readable(timeout_ms) && impl_->reap(true);
+    }
     const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     for (;;) {
         if (impl_->reap(false)) return true;

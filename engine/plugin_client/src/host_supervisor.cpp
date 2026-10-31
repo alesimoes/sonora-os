@@ -605,6 +605,8 @@ bool HostProcess::send(const std::string& encoded, std::string& error) {
 
 int HostProcess::socket_handle() const { return ctl_ ? ctl_->native_handle() : -1; }
 
+int HostProcess::exit_handle() const { return child_ ? child_->exit_handle() : -1; }
+
 std::string HostProcess::exit_text() {
     if (!child_) return "never started";
     if (child_->running()) return "still running";
