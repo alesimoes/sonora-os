@@ -520,6 +520,10 @@ int main(int argc, char** argv) {
         [&engine]() { return engine.info().track_count; }, fake == nullptr);
     InsertModel inserts(document, session);
     SendModel sends(document, session);
+    sends.setLiveSender([&engine](bool aux, model::Id id, float linear) {
+        if (aux) engine.send_aux_gain(id, linear);
+        else engine.send_send_level(id, linear);
+    });
     inserts.controller().set_param_sender(
         [&engine](sonora::model::Id insert, const std::string& key, float value) {
             engine.send_plugin_parameter(insert, key, value);

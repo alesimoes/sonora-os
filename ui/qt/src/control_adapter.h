@@ -44,6 +44,8 @@ public:
     float take_peak(uint32_t index) override;
     bool engine_alive(uint64_t now_ns) const override;
     uint64_t send_track_gain(uint32_t track, float linear) override;
+    uint64_t send_send_level(uint64_t send, float linear) override;
+    uint64_t send_aux_gain(uint64_t bus, float linear) override;
     uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override;
     bool take_catalog(api::PluginCatalog& out) override;
 
