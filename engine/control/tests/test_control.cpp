@@ -1170,6 +1170,89 @@ void automation_write_on_the_real_engine() {
     CHECK(replica.current().mix.find(track)->automation == model::AutomationMode::Latch);
 }
 
+// #178 review: a Load while rolling does not stop playback, and the new
+// session's tracks share engine indices with the old one's. What the rest of
+// the roll stamps belongs to a pass begun on the old document, so none of it
+// is written into the new one: its Write track gets no lane and stays in
+// Write, with no "Automation Write" step.
+void a_load_while_rolling_writes_nothing() {
+    RealEngine real(fresh_dir("automation_load"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    const model::Id track = replica.current().edit->tracks[0]->id;
+    model::TrackMix mix = *replica.current().mix.find(track);
+    mix.automation = model::AutomationMode::Write;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().tracks()[0]->automation() == Track::Automation::Write;
+    }));
+    std::string bytes;
+    CHECK(model::serialize(replica.current(), model::WriteInfo{"test", 1}, bytes, error));
+
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= 4800; }));
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load("", bytes);
+    CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Ok);
+    CHECK(real.session().transport().state() == sonora::TransportState::Rolling);
+    const uint64_t loaded_at = real.state().transport().playhead;
+    // The new plan in place and writing for a while.
+    CHECK(until(real, in, [&]() {
+        return real.state().transport().playhead >= loaded_at + 9600 &&
+               real.session().tracks()[0]->automation() == Track::Automation::Write;
+    }));
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= loaded_at + 19200; }));
+    const std::size_t updates = in.model.size();
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.session().automation_passes_ended() >= 1; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    real.poll(in);
+    feed();
+    for (std::size_t i = updates; i < in.model.size(); ++i) {
+        CHECK(in.model[i].label != "Automation Write");
+    }
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    CHECK(t.lane(model::AutomationParam::Volume) == nullptr);
+    CHECK(t.lane(model::AutomationParam::Pan) == nullptr);
+    CHECK(replica.current().mix.find(track)->automation == model::AutomationMode::Write);
+    CHECK(real.session().automation_write_overruns() == 0);
+}
+
 // ADR-0016 end to end: with the document's loop range set, transport.record
 // starts a loop take; while it records, a SetSettings that moves the loop
 // range or clears it is refused by name, as is opening a session, and any
@@ -2822,6 +2905,7 @@ int main() {
     a_failed_autosave_is_tried_again();
     no_take_while_a_save_as_copies();
     automation_write_on_the_real_engine();
+    a_load_while_rolling_writes_nothing();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

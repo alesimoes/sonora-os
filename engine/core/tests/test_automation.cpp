@@ -550,6 +550,51 @@ int test_latch_holds_until_stop() {
     return 0;
 }
 
+// #178 review: a Load while rolling keeps the roll going on the new
+// session's plan, whose tracks share engine indices with the old one's. A
+// Latch held from the old session must not carry over: the track plays its
+// lane again at once and stops writing, while the pass number stays the
+// roll's.
+int test_forgotten_latches_play_the_lane() {
+    Rig rig("forget");
+    CHECK(rig.load({{0, -40.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_automation(Track::Automation::Latch);
+    track.set_gain(0.5f);
+    CHECK(s.automation_pass() == 0);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    track.set_touched(kAutoVolume, true);
+    rig.block();
+    track.set_touched(kAutoVolume, false);
+    rig.block();
+    CHECK(s.automation_pass() == 1);
+    CHECK(drained(s).size() == 2);
+
+    s.forget_latches();
+    int64_t t = 2000 + 3 * kBlock;
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    const float lane = gain_of_db(-40.0f);
+    CHECK(ramps(applied(rig, 0, t), 0.5f, lane, "unlatched"));
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), lane, "the lane"));
+    CHECK(drained(s).empty());
+    CHECK(s.automation_pass() == 1);
+
+    s.stop_playback();
+    rig.block();
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    CHECK(s.automation_pass() == 2);
+    return 0;
+}
+
 int test_write_writes_every_parameter_and_splits_at_the_wrap() {
     Rig rig("write");
     CHECK(rig.load({{0, -40.0f}}));
@@ -617,6 +662,7 @@ int main() {
     t(test_pan_change_on_a_volume_lane_ramps, "test_pan_change_on_a_volume_lane_ramps");
     t(test_touch_plays_and_writes_the_fader, "test_touch_plays_and_writes_the_fader");
     t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
+    t(test_forgotten_latches_play_the_lane, "test_forgotten_latches_play_the_lane");
     t(test_write_writes_every_parameter_and_splits_at_the_wrap,
       "test_write_writes_every_parameter_and_splits_at_the_wrap");
     t(test_a_full_ring_is_counted, "test_a_full_ring_is_counted");
