@@ -49,6 +49,7 @@ if [[ "$MODE" == screenshot ]]; then
   # gives sonora-ui-mix.png and sonora-ui-mix-browser.png.
   base="${SHOT%.png}"
   stem="${base%-edit}"
+  # shellcheck disable=SC2329  # called through with_screen "$@"
   shoot() {  # file, WxH, scale, then sonora-ui arguments; one try, 90 s at most
     local file="$1" size="$2" scale="$3"
     shift 3
@@ -70,6 +71,7 @@ if [[ "$MODE" == screenshot ]]; then
   }
   scenes=$("$UI" --list-scenes)
   [[ -n "$scenes" ]] || { echo "error: sonora-ui lists no scenes" >&2; exit 1; }
+  # shellcheck disable=SC2329  # called through with_screen "$@"
   all_scenes() {
     # with_screen runs this inside an || list, where set -e is off: every
     # failed picture is counted here, so none is swallowed.
@@ -88,6 +90,7 @@ if [[ "$MODE" == screenshot ]]; then
   with_screen 1920x1080 all_scenes
   # Mix and Edit again at 2560x1440 and scale 1.25, and at the minimum
   # width, 1280x720, where nothing may clip.
+  # shellcheck disable=SC2329  # called through with_screen "$@"
   extra_sizes() {
     local failed=0
     shoot "$stem-mix-2560x1440.png" 2560x1440 1.25 --scene mix || failed=1
@@ -95,6 +98,7 @@ if [[ "$MODE" == screenshot ]]; then
     return "$failed"
   }
   with_screen 2560x1440 extra_sizes
+  # shellcheck disable=SC2329  # called through with_screen "$@"
   min_width() {
     local failed=0
     shoot "$stem-mix-1280x720.png" 1280x720 1 --scene mix || failed=1
