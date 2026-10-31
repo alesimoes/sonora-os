@@ -767,6 +767,75 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          a_version_refusal_stops_reconnecting).
        Still open: the tty interface (`sonora-tui`) prints the refusal and
        exits; it has no page.
+7. [ ] Design audit 2026-10 (`brain/research/ui-design-audit-2026-10.md`;
+       spec `ui-design.md`, "Update, 2026-10-31"). One PR per line, each
+       under ~150k context, in this order. Every one carries before-and-after
+       screenshots and is reviewed under the spec's "Review of UI PRs".
+       Findings are referred to as F1 to F37.
+       - [ ] D1 `ui.design.strip_layout`: fixed strip widths (Narrow 64,
+         Regular 96, Wide 128) with sideways scroll instead of
+         `window / count`; the master pinned right; the fader zone takes
+         "the rest", with the ≥ 55 % and ≥ 35 % budgets checked by a layout
+         test at 1920×1080 for 18 and 48 tracks (F1, F2). Tokens in
+         `theme.h`.
+       - [ ] D2 `ui.mixer.views` (existing item): collapsible views for I/O,
+         Inserts A–E and F–J, and Sends A–E and F–J, with A–E shown by
+         default, kept with the session; "+N" chip on a collapsed bank in
+         use; a section that would break the budget scrolls inside itself
+         (F1). The width presets from D1 go in its View menu.
+       - [ ] D3 `ui.design.names`: one Qt-free `abbreviate()` with tests (the
+         spec's rules 1 to 6), used by name plates, insert and send slots,
+         the Edit header and the choosers; full names in tooltips; reasons
+         wrap (F7, F14). Empty slots become blank wells (F6).
+       - [ ] D4 `ui.design.strip_controls`: `Knob.qml` (spec "Knobs, faders
+         and sliders"); pan as a knob, two for a stereo track; R/I/S/M at
+         ≥ 20 × 20 px, 2 × 2 at Narrow; `insertSlotHeight` 18 (F3, F9).
+       - [ ] D5 `ui.design.strip_kinds`: kind band (input, AUX, MASTER);
+         master Wide on `raised` behind a rule, one name everywhere; aux
+         remove into a context menu; aux and master meter wells drawing the
+         no-data face rather than nothing; selected strip's 2 px `accent`
+         name-plate edge (F5, F8, F11, F33 aux part).
+       - [ ] D6 `ui.design.strip_meters`: meter widths, an 8 px over
+         indicator, scale in `textCaption` left of the slot and never under
+         the cap, `meterMark` raised to ≥ 3:1 (F10). The feeds for aux and
+         master stay with `ui.mixer.metering` (existing, engine-side state
+         layout 3) (F4).
+       - [ ] D7 `ui.design.top_bar`: priority layout; the health line never
+         dropped (it moves to the banner row); nothing clipped at 1280 px;
+         "Open" only in File; tab and menu labels told apart; Transport
+         leaves the tab row for a Window menu; status chips drawn flat
+         (F15, F17, F18, F19). P1 for the health line: it can go first.
+       - [ ] D8 `ui.design.type_scale`: the glance set (counter ≥ 40 px,
+         names and readouts 13 px) and the UI scale preference (1.0, 1.25,
+         1.5, 2.0; default from the screen's physical size) (F16).
+       - [ ] D9 `ui.design.capture_rig`: 1920×1080 reference, plus
+         2560×1440 for Mix and Edit, plus one 1280×720 minimum-width scene
+         per window; capture mode suppresses the software-rendering banner
+         (one scene keeps it); a 48-track scene; regenerate every PNG and
+         delete the stale ones (F34 to F37). Touches `main.cpp` and the
+         entrypoint, so it is its own PR. It has no dependency on D1 to D8
+         and can run in parallel with them; it is recommended early, so the
+         D-slices' screenshots are taken at the reference size.
+       - [ ] D10 `ui.design.plugin_chrome`: shared plugin-window header (spec
+         "Plugin window chrome") for the generic editor: parameters in
+         their units; Remove and Make inactive into the ▾ menu; pin and
+         reuse; placement beside the strip; scenes for the generic editor
+         and a native-editor placeholder (F12, F13). The native editor
+         inside it is `plugins.host.editors`.
+       - [ ] D11 `ui.editing.names_colours` (existing item), first slice:
+         colour stored per track, never recomputed from the display index
+         (F21).
+       - [ ] D12 `ui.design.edit_density`: header meter ≥ 6 px; track-height
+         presets for 16 to 48 tracks, unless `ui.editing.zoom` already
+         carries them (F22, F23).
+       - [ ] D13 `ui.design.colour_meaning`: separate solo, marker, caution
+         and amber; separate input from meter green; punch in `record`;
+         latency OK in `text`; NO DATA moved into the meter wells (F24 to
+         F29). Each new value is checked against the contrast targets.
+       - [ ] D14 `ui.design.dialogs`: `×` and Esc on every window, a scrim
+         behind modals, the primary-button rule, left-aligned menus with
+         key equivalents from the active map, destructive actions labelled
+         (F30 to F33).
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
