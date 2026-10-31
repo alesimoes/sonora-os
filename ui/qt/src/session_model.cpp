@@ -265,10 +265,19 @@ void SessionModel::installCommands(CommandRegistry& local) {
     });
     // Pro Tools' New Memory Location: stopped, the window asks for the name
     // and sends it back as the argument; rolling, the marker is named and
-    // dropped at the playhead at once, as Pro Tools does when playing.
+    // dropped at the playhead at once, as Pro Tools does when playing. The
+    // playhead is the engine's as the command runs: the last tick's is tens
+    // of milliseconds behind a rolling transport.
     simple("marker.add", [this](const CommandContext& ctx, Why& why) {
-        const auto at = ctl_.marker_place(overlay_.rolling, overlay_.playhead);
-        if (ctx.argument.empty() && !overlay_.rolling) {
+        bool rolling = overlay_.rolling;
+        Frames playhead = overlay_.playhead;
+        TransportSnapshot now;
+        if (read_transport_ && read_transport_(now)) {
+            rolling = now.state != TransportMode::Stopped;
+            playhead = static_cast<Frames>(now.playhead_frames);
+        }
+        const auto at = ctl_.marker_place(rolling, playhead);
+        if (ctx.argument.empty() && !rolling) {
             const auto& settings = ctl_.snapshot().settings;
             const QString what =
                 at.length > 0

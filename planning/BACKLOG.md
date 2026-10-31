@@ -515,7 +515,8 @@ playback can follow edits; it is in flight.
 Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
 - [ ] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
-- [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
+- [x] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
+      Done: marker.add reads the state block when it runs (`ShellModel::readTransport`); a stale read or a dead engine falls back to the last tick; no protocol change.
 - [x] Memory Locations length column uses the main counter format, not always min:sec. (format_length() in time_format; columns narrowed to fit timecode; scene edit-markers-timecode.)
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [ ] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.

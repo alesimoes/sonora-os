@@ -244,6 +244,61 @@ int test_command() {
     return 0;
 }
 
+// A marker dropped while rolling takes the engine's playhead as it stands
+// when the command runs, not the last tick's: between two ticks the playhead
+// has moved on by up to a tick and a period, tens of milliseconds.
+int test_engine_playhead() {
+    test::RecordingAdapter engine(2, api::testing::FakeEngine::engine_commands());
+    ModelDocument doc(make_empty_session(2, kRate));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    SessionModel session(doc, peaks, true);
+    KeyMap map;
+    KeyRouter router(map, engine.info().implemented_commands,
+                     [&engine](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    session.installCommands(router.local());
+    ShellModel model(engine, router);
+    link_marker_locate(model, session);   // as main.cpp wires them
+
+    engine.snapshot.state = TransportMode::Rolling;
+    engine.snapshot.playhead_frames = 480000;
+    session.onTransport(engine.snapshot, true);   // the last tick
+    engine.snapshot.playhead_frames = 480000 + 2400;   // 50 ms on
+    CommandContext ctx;
+    CHECK(router.local().dispatch("marker.add", ctx) == DispatchResult::Ok);
+    const Marker* m = named_marker(doc, "Marker 1");
+    CHECK(m != nullptr && m->position == 482400);
+
+    // A torn read says nothing about the playhead: the last tick's stands.
+    engine.snapshot.playhead_frames = 960000;
+    session.onTransport(engine.snapshot, true);
+    engine.snapshot.playhead_frames = 962400;
+    engine.snapshot.stale = true;
+    CHECK(router.local().dispatch("marker.add", ctx) == DispatchResult::Ok);
+    m = named_marker(doc, "Marker 2");
+    CHECK(m != nullptr && m->position == 960000);
+    engine.snapshot.stale = false;
+
+    // The engine stopped since the last tick: the dialog is asked for, as
+    // for a key pressed after the stop.
+    QSignalSpy asked(&session, &SessionModel::markerRequested);
+    engine.snapshot.state = TransportMode::Stopped;
+    CHECK(router.local().dispatch("marker.add", ctx) == DispatchResult::Ok);
+    CHECK(asked.size() == 1 && markers(doc).markers.size() == 2);
+
+    // No engine: the last tick's reading is all there is.
+    engine.alive = false;
+    engine.snapshot.state = TransportMode::Rolling;
+    engine.snapshot.playhead_frames = 1440000;
+    session.onTransport(engine.snapshot, true);
+    engine.snapshot.playhead_frames = 1442400;
+    CHECK(router.local().dispatch("marker.add", ctx) == DispatchResult::Ok);
+    m = named_marker(doc, "Marker 3");
+    CHECK(m != nullptr && m->position == 1440000);
+    return 0;
+}
+
 // --- the real QML -------------------------------------------------------------
 
 void key(QQuickView& view, int k, Qt::KeyboardModifiers m) {
@@ -398,7 +453,8 @@ int test_window() {
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_add_recall_clear() || test_ruler() || test_command() || test_window()) return 1;
+    if (test_add_recall_clear() || test_ruler() || test_command() || test_engine_playhead() ||
+        test_window()) return 1;
     std::printf("ui markers: ok\n");
     return 0;
 }

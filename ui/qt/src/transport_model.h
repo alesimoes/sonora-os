@@ -43,7 +43,8 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
 
 // Marker recall locates the engine's playhead with transport.locate, through
 // the shell as a key would send it, so a refusal (a take running) reaches
-// the status line.
+// the status line. A marker added while rolling reads the engine's playhead
+// through the shell when the command runs, not at the last tick.
 void link_marker_locate(ShellModel& shell, SessionModel& session);
 
 // The engine refuses past the same bound; the field says so before sending.

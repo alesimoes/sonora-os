@@ -183,6 +183,8 @@ void link_marker_locate(ShellModel& shell, SessionModel& session) {
     session.controller().set_locator([&shell](model::Frames frame) {
         shell.invokeWith(QStringLiteral("transport.locate"), -1, QString::number(frame));
     });
+    session.setTransportReader(
+        [&shell](TransportSnapshot& out) { return shell.readTransport(out); });
 }
 
 QString TransportModel::positionSource() const {

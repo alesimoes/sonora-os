@@ -371,6 +371,11 @@ public:
     // invokeWith(), set by link_transport().
     using SendCommand = std::function<void(const QString& command, const QString& argument)>;
     void setCommandSender(SendCommand send) { send_command_ = std::move(send); }
+    // The engine's transport read when a command runs, the shell's
+    // readTransport(), set by link_marker_locate(). None, or false from it,
+    // and marker.add takes the last tick's onTransport() reading.
+    using ReadTransport = std::function<bool(TransportSnapshot& out)>;
+    void setTransportReader(ReadTransport read) { read_transport_ = std::move(read); }
     Q_INVOKABLE void setWindow(const QString& w);
 
     // --- File ---
@@ -558,6 +563,7 @@ private:
     };
     BeforeOpen before_open_;
     SendCommand send_command_;
+    ReadTransport read_transport_;
 
     TransportOverlay overlay_;
     std::function<std::vector<bool>()> engine_armed_;

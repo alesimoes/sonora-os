@@ -372,6 +372,14 @@ void ShellModel::say(const QString& message) {
     emit statusChanged();
 }
 
+bool ShellModel::readTransport(TransportSnapshot& out) {
+    if (!engine_.engine_alive(now_ns_())) return false;
+    engine_.frame(now_frame_);
+    if (now_frame_.transport.stale) return false;
+    out = now_frame_.transport;
+    return true;
+}
+
 void ShellModel::tick() {
     const int64_t t0 = clock_.nsecsElapsed();
     const float dt = last_tick_ns_ < 0 ? 0.0f
