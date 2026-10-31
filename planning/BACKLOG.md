@@ -110,6 +110,12 @@ playback can follow edits; it is in flight.
          holds those wraps' places as WrapSidecar::kBeforeFile (wrap list
          version 2, version 1 reads as 2), never placed by loop length
          (`t1-late-open-wraps`).
+       - [ ] Loop record: a late open past `loop_pass_cap` labels its tail
+         pass P(cap+1); drop passes past the cap using `wraps_past_cap`
+         (`disk_thread.cpp:204` with `closed_take.cpp:389`); practically
+         unreachable.
+       - [ ] `session-format.md`: note that engines before wrap list v2
+         refuse it, and place a loop take's passes by loop length.
        - [ ] Loop stall test: hold the drain for the full
          `disk_stall_seconds` (0.5 s), not 300 ms.
        - [ ] Optional: reserve the extra reader window only during loop
@@ -270,6 +276,9 @@ playback can follow edits; it is in flight.
   - [ ] Touch on a track with no lane: make a release's audio and its written return agree. Return the live fader to the static value, or write no return; today the writer writes a 250 ms return to the static fader but the audio keeps the ridden value (on PR #178, #178 review).
   - [ ] A pass whose lane overflows `kMaxAutomationPoints` must keep the other lanes: thin harder or drop only that edit. Today one lane past the limit fails the whole Compound and every lane of the pass is lost (on PR #178, #178 review).
   - [ ] Tests for automation: a Load or a client leaving clears the touched flags; long-pass growth (on PR #178, #178 review).
+  - [ ] A merged line's end value `p.at(end)` can differ from the next span's start by one float ulp, which `thin_automation` keeps as a same-frame step pair: snap a line's end to `to` when the line is not cut (suspected; #178 re-review).
+  - [ ] `PassWrites::add` finds the lane by a linear scan per write: index by (track, param) if tracks pass ~64 (#178 re-review).
+  - [ ] `follow_automation` clamps NaN pan, since `std::clamp` passes NaN through (#178 re-review).
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -516,7 +525,7 @@ playback can follow edits; it is in flight.
   - [ ] Automation follows edits: moving, cutting, pasting or deleting
         regions moves the automation under them, as Pro Tools' "Automation
         Follows Edit" option, one `Compound` with the region edit.
-  - [ ] Owner question, default taken: automation per track (Logic) rather
+  - [x] Owner question, default taken: automation per track (Logic) rather
         than per edit playlist (Pro Tools); revisit if the comping workflow
         wants Pro Tools' behaviour (ADR-0027, alternatives).
   - [ ] Mute, send level and send pan as `AutomationParam` values, and
@@ -525,6 +534,7 @@ playback can follow edits; it is in flight.
 - [ ] automation (ADR-0027) follow-ups, after #174 merges:
   - [ ] `model.cpp` `automation_points_problem` refuses a point at `kMaxInteger`, or lets `EditAutomation`'s range reach it, so the whole-lane `EditAutomation` over `[0, kMaxInteger)` can always remove every point; today a lane loaded with a point at 2^53-1 can never be emptied (#174 review).
   - [ ] `plan_builder.cpp` `gain_of_db()` calls core's `auto_gain_of_db()` (exposed in `playback_plan.h`) instead of duplicating it; `session.cpp` hard-codes -144 and 24, so a lane and a fader at one dB cannot drift apart (#174 review).
+  - [ ] `brain/specs/session-format.md` automation: the 2^53 - 2 point limit tightens v13 without a version bump, because no writer (`EditAutomation`, the UI clamp) could ever store a point at 2^53 - 1, as the crossfade note does for v2 (#190 review).
 
 ### Track 3: UI (ui-engineer)
 
@@ -533,7 +543,6 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [x] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
       Done: marker.add reads the state block when it runs (`ShellModel::readTransport`); a stale read or a dead engine falls back to the last tick; no protocol change.
 - [x] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
-- [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
 - [x] Memory Locations length column uses the main counter format, not always min:sec. (format_length() in time_format; columns narrowed to fit timecode; scene edit-markers-timecode.)
 - [ ] `ui.editing.markers` format_length Bars|Beats: borrow the beat count from the meter at the span end, not the start (the `beats < 0` branch uses tempo_at(position)); add tests for a tempo or meter change inside the span and for a marker past the last tempo point (PR #179 review).
 - [ ] Regenerate docs/images/sonora-ui-edit-markers.png with the narrowed Memory Locations columns; it still shows the old layout (PR #179 review).
@@ -541,6 +550,10 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [ ] Screenshot scenes edit-markers, edit-nudge and edit-repeat fail with "session is still opening" because they send commands before the engine answers Load: give ShotContext a shared wait-for-open helper instead of per-scene retries (PR #179 review).
 - [x] Capture scenes edit-markers, edit-nudge, edit-repeat failed with "session is still opening": ShotContext got a shared when_open() (screenshot_scene.h), used by them and by edit-tracks and edit-markers-timecode in place of the per-scene retries; edit-markers picture regenerated.
 - [ ] Same "still opening" refusal remains in the edit-undo-history scene (edit.repeat) and mix-solo-safe (solo safe); wrap their apply in when_open().
+- [ ] Capture rig `when_open()` (`screenshot_scene.h`) follow-ups (PR #184 review):
+  - [ ] Print a stderr line when `when_open()` gives up after 30 tries, so a missing open is not silent.
+  - [ ] `when_open()` probes with Undo, which is unsafe with a non-empty history: probe with a read-only is-opening query, or document the empty-history precondition.
+  - [ ] A helper that wraps `apply` to remove the awkward nested-lambda form in the scenes.
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [x] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
         Done (engine side, protocol 34, ADR-0022 update of 2026-10-31): `ParamId::SendLevel` and `AuxGain`, addressed by `ParameterChange::id`.
@@ -568,6 +581,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
   - [ ] Emit `sessionOpened` also on the "Opened the unsaved recording" recovery path (`session_model.cpp` ~1545), with a test (#175 review).
   - [ ] `test_mix_layout` resets views by emitting `sessionOpened` by hand; add a check that a real `openSessionFile` emits it and a refused Open does not (#175 review).
   - [x] Label the insert bank toggle "Ins F-J": two bare "F-J" buttons sit side by side in the header (#175 review).
+  - [ ] `test_mix_layout` asserts only that `sendBankFJ`'s text differs from "Ins F-J"; pin it to "Sends F-J" (PR #182 review).
+  - [ ] At 1280 px the grown F-J header buttons sit over the tail of the elided `mixNote`: bound the note's right edge to `viewControls.left` and check at 1280x720 (PR #182 review).
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
@@ -968,6 +983,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       the lane selector for plugin parameters (ADR-0027 §5), a lane height
       that follows the vertical zoom, and key bindings `"verified": false`
       until checked (none were added: `tool.pencil` was already F10).
+- [ ] `automation.lanes` UI follow-ups from the #181 review:
+  - [ ] `EditController::undo` and `redo` leave `sel_.point` stale: an undo or redo resets the selected breakpoint, otherwise Clear deletes whichever point now has that index.
+  - [ ] `tool.next` cycles `% 4`, so Pencil is never reached: decide whether Pencil joins the cycle, and document the choice in the keymap notes.
+  - [ ] ui CMake: move the `ui_automation` block below `ui_edit`'s `set_tests_properties`.
+  - [ ] `test_lane_height_follows_zoom`: replace the literal `2` with `kLaneCount` and wrap the over-long `test_*` call line in `main()` (#192 review).
+  - [ ] Vertical zoom keeps `scroll_y` but not the row under the cursor or the selection: anchor `scroll_y` on the selected track when lanes are open, so the focused lane does not drift off screen (#192 review).
 - [ ] `ui.mixer.automation` UI: the automation mode selector on each strip
       and track header, sent with `SetMix`; the fader and pan knob follow the
       lane while playing in Read. Done: the selector on each Mix strip (Off,
@@ -978,6 +999,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       following the lane while playing in Read (needs the engine to publish
       the played value), and a key binding to step a strip's mode (no
       command exists for it).
+- [ ] `ui.mixer.automation` follow-ups from the #187 reviews:
+  - [ ] The `engine_adapter.h` header table (about line 18) still names `send_track_gain`; rename it to `send_track_param`.
+  - [ ] The automation selector list closes only on a click of an item or the button; close it on click-away and on Escape.
+  - [ ] `panDrag` sends a Move even when the clamped pan equals the current one: skip it, and have one function give both the Move value and `SessionModel::panDrag`'s formula.
+  - [ ] `scenes/mix_automation_selector.cpp` includes `<QCoreApplication>`, `<QEventLoop>` and `<QThread>` twice.
+  - [ ] `dropRide` sends no Release when the ridden index is past the document's tracks, but `dropPan` does: make them agree, and say which is right in the header.
+  - [ ] After a track removal, a dropped hold's Release lands on whichever engine track now has that index and can end another interface's Touch: send it by track id once the protocol carries one (suspected).
+  - [ ] No test covers `Component.onDestruction` -> `finish()`: a QQmlComponent test loading `ChannelStrip.qml` with a MixModel is feasible but needs a small QML test rig.
 - [ ] `session.cpp:1916`: while `from` is less than the chain latency and not
       looping, `t` clamps to 0 and then advances, so a lane changing in the
       first frames saws. Hold at frame 0 until `from + i` reaches the latency.
@@ -1085,6 +1114,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              a 5 ms waitpid loop. ctest `platform_child_exit`. The control
              server has no poll set yet: putting `exit_handle()` there,
              beside `socket_handle()`, is M3's.
+       - [ ] `ChildProcess::wait` and `exit_fd_readable`: treat poll revents
+             other than POLLIN (POLLNVAL, POLLERR) as "fall back to polling",
+             not as exit (#183 review).
+       - [ ] `platform_child_exit`: skip (exit 77) when `exit_handle()` is -1
+             (pidfd_open ENOSYS/EPERM) instead of failing (#183 review).
        - [x] Scan worker and catalog cache (ADR-0012 amendment of
              2026-10-19, items 1-7, Q1-Q3; Q4 landed with #87):
              `contracts/plugin`
@@ -1154,6 +1188,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              `SupervisedChain::replace` waits for the SIGKILLed host it
              replaces; every path PluginHosting takes asks first and reaps
              from poll (`request_stop`, `stopped`, `signal_kill`).
+       - [ ] `SupervisedChain::poll_starting` (`engine/plugin_client/src/host_supervisor.cpp` ~1041): a Ready host that `bind()` refuses (no free slot) dies in `~HostProcess::stop()` on the control thread (2 s deaf, unbounded in D state); `let_go(kill)` it instead. `~HostProcess` still calls the blocking `stop()` (`wait(2000)`, then `wait(-1)`): give teardown one bounded SIGKILL+reap and leave a D-state host to init (`~HostSupervisor` adds a second 2.5 s grace on top) (#191 review).
        - [ ] Gestures from an editor still open on a host being retired
              are not taken (#78 note 3 on #80; short-lived).
        Carried from the PR #59 reviews (RT audit, rt-engineer co-review),
