@@ -71,7 +71,9 @@ if [[ "$MODE" == screenshot ]]; then
   scenes=$("$UI" --list-scenes)
   [[ -n "$scenes" ]] || { echo "error: sonora-ui lists no scenes" >&2; exit 1; }
   all_scenes() {
-    local words name file
+    # with_screen runs this inside an || list, where set -e is off: every
+    # failed picture is counted here, so none is swallowed.
+    local words name file failed=0
     while read -r -a words <&3; do
       name="${words[0]}"
       case "$name" in
@@ -79,20 +81,25 @@ if [[ "$MODE" == screenshot ]]; then
         edit-*) file="$base-${name#edit-}.png" ;;
         *) file="$stem-$name.png" ;;
       esac
-      shoot "$file" 1920x1080 1 --scene "$name" "${words[@]:1}"
+      shoot "$file" 1920x1080 1 --scene "$name" "${words[@]:1}" || failed=1
     done 3<<<"$scenes"
+    return "$failed"
   }
   with_screen 1920x1080 all_scenes
   # Mix and Edit again at 2560x1440 and scale 1.25, and at the minimum
   # width, 1280x720, where nothing may clip.
   extra_sizes() {
-    shoot "$stem-mix-2560x1440.png" 2560x1440 1.25 --scene mix
-    shoot "$base-2560x1440.png" 2560x1440 1.25 --scene edit
+    local failed=0
+    shoot "$stem-mix-2560x1440.png" 2560x1440 1.25 --scene mix || failed=1
+    shoot "$base-2560x1440.png" 2560x1440 1.25 --scene edit || failed=1
+    return "$failed"
   }
   with_screen 2560x1440 extra_sizes
   min_width() {
-    shoot "$stem-mix-1280x720.png" 1280x720 1 --scene mix
-    shoot "$base-1280x720.png" 1280x720 1 --scene edit
+    local failed=0
+    shoot "$stem-mix-1280x720.png" 1280x720 1 --scene mix || failed=1
+    shoot "$base-1280x720.png" 1280x720 1 --scene edit || failed=1
+    return "$failed"
   }
   with_screen 1280x720 min_width
 
