@@ -190,6 +190,9 @@ std::vector<Operation> one_of_each() {
             RemoveTrack{9},
             DuplicateTrack{2, 50, "Kick.dup1", true, false},
             SetOutput{2, 60},
+            DuplicatePlaylist{2, 3, 70, "Kick.02"},
+            SetPlaylistName{2, 3, "Kick lead"},
+            RemovePlaylist{2, 3},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

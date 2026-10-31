@@ -69,6 +69,10 @@ add_test(NAME model_routing COMMAND test_model_routing)
 add_executable(test_model_tracks tests/test_tracks.cpp)
 target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)
 add_test(NAME model_tracks COMMAND test_model_tracks)
+# Playlists per track: new, duplicate, choose, rename, delete unused (ADR-0026).
+add_executable(test_model_playlists tests/test_playlists.cpp)
+target_link_libraries(test_model_playlists PRIVATE sonora_model_audited)
+add_test(NAME model_playlists COMMAND test_model_playlists)
 
 add_executable(test_model_random_edits tests/test_random_edits.cpp)
 target_link_libraries(test_model_random_edits PRIVATE sonora_model_audited)

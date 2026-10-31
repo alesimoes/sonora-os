@@ -114,7 +114,10 @@ namespace sonora::api {
 //   BusMix carries its solo, and a Snapshot's undo window is window format
 //   9, with each track's and bus's output (session format 12). A version-28
 //   peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 30;
+// 31 (ADR-0026 playlists; follows 30): new operation kinds DuplicatePlaylist,
+//   SetPlaylistName and RemovePlaylist, which a version-28 peer's decoder
+//   refuses.
+constexpr uint32_t kProtocolVersion = 31;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

@@ -533,6 +533,15 @@ std::string FakeEngine::structure_refusal(const model::Snapshot& at,
     return model::pinned_track_refusal(*at.edit, after, armed_, "is recording", "stop recording");
 }
 
+std::string FakeEngine::playlist_refusal(const model::EditState& now,
+                                         const std::vector<model::Id>& changed) const {
+    if (changed.empty()) return {};
+    if (record_requested_) return model::take_starting_playlist_refusal();
+    if (closing_take_ != 0) return model::take_closing_playlist_refusal(closing_take_);
+    if (mode_ != TransportState::Recording) return {};
+    return model::pinned_playlist_refusal(now, changed, armed_);
+}
+
 std::string FakeEngine::structure_lock() const {
     if (record_requested_) return model::take_starting_track_refusal();
     if (closing_take_ != 0) return model::take_closing_track_refusal(closing_take_);
@@ -554,6 +563,10 @@ std::string FakeEngine::step_refusal(bool undo) const {
     if (undo ? !h.can_undo() : !h.can_redo()) return {};
     const auto& target = h.step_edit(undo ? h.undo_depth() - 1 : h.undo_depth() + 1);
     const model::EditState& now = *document_->current().edit;
+    if (std::string refused = playlist_refusal(now, model::active_playlist_changes(now, *target));
+        !refused.empty()) {
+        return refused;
+    }
     const std::vector<model::Id> after = model::track_order(*target);
     if (after == model::track_order(now)) return {};
     if (std::string locked = structure_lock(); !locked.empty()) return locked;
@@ -1389,6 +1402,11 @@ void FakeEngine::handle(const std::string& bytes) {
                         if (!refusal.empty()) return refusal;
                     }
                     if (std::string refusal = structure_refusal(at, member); !refusal.empty()) {
+                        return refusal;
+                    }
+                    if (std::string refusal =
+                            playlist_refusal(*at.edit, model::active_playlist_changes(at, member));
+                        !refusal.empty()) {
                         return refusal;
                     }
                     return insert_refusal(at, cfg_.plugins, member);

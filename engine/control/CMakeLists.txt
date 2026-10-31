@@ -131,6 +131,13 @@ target_link_libraries(test_track_structure PRIVATE sonora_control)
 target_include_directories(test_track_structure PRIVATE ${CMAKE_SOURCE_DIR}/engine/core/tests)
 add_test(NAME track_structure COMMAND test_track_structure)
 
+# Choosing another playlist while rolling (ADR-0026 §3): heard exactly at
+# the swap whatever the block sizes, nothing allocated in process().
+add_executable(test_playlist_switch tests/test_playlist_switch.cpp)
+target_link_libraries(test_playlist_switch PRIVATE sonora_control)
+target_include_directories(test_playlist_switch PRIVATE ${CMAKE_SOURCE_DIR}/engine/core/tests)
+add_test(NAME playlist_switch COMMAND test_playlist_switch)
+
 # The click against model::MusicalMap through the plan builder and the
 # controller (ADR-0020 §1), the document's count-off bars, the toggles.
 add_executable(test_click_control tests/test_click.cpp)

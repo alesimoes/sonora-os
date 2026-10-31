@@ -98,6 +98,7 @@ Rectangle {
             session: root.session
             mixer: root.mixer
             onTrackMenuRequested: (x, y) => trackMenu.show(x, y)
+            onPlaylistMenuRequested: (track, x, y) => playlistMenu.show(track, x, y)
         }
         MixWindow {
             objectName: "mixWindow"
@@ -1015,6 +1016,178 @@ Rectangle {
         }
     }
 
+    // --- the playlist menu --------------------------------------------------------
+    // Pro Tools' playlist selector (ADR-0026), from a track header: New,
+    // Duplicate, Rename and Delete Unused, then the track's playlists, the
+    // active one ticked. Each item sends the command its key sends.
+    MouseArea {
+        anchors.fill: parent
+        visible: playlistMenu.visible
+        z: 9
+        onClicked: playlistMenu.visible = false
+    }
+    Rectangle {
+        id: playlistMenu
+        objectName: "playlistMenu"
+        visible: false
+        z: 10
+        property int track: -1
+        property var names: []
+        function show(t, px, py) {
+            track = t
+            names = root.session.trackPlaylists(t)
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = Math.min(py + Theme.space1, root.height - height - Theme.space2)
+            visible = true
+        }
+        width: 240
+        height: playlistColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        Column {
+            id: playlistColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            Repeater {
+                model: {
+                    const active = root.session.playlistNames[playlistMenu.track] || ""
+                    const items = [
+                        { name: "playlistNew", label: "New", command: "track.playlist_new", argument: "", on: true },
+                        { name: "playlistDuplicate", label: "Duplicate", command: "track.playlist_duplicate", argument: "", on: true },
+                        { name: "playlistRename", label: "Rename…", command: "track.playlist_rename", argument: "", on: true },
+                        { name: "playlistDeleteUnused", label: "Delete Unused", command: "track.playlist_delete_unused", argument: "", on: playlistMenu.names.length > 1 },
+                        { name: "", label: "", command: "", argument: "", on: false }
+                    ]
+                    for (let i = 0; i < playlistMenu.names.length; ++i) {
+                        const n = playlistMenu.names[i]
+                        items.push({ name: "playlistChoose" + i, label: (n === active ? "\u2713  " : "     ") + n,
+                                     command: "track.playlist_choose", argument: n, on: true })
+                    }
+                    return items
+                }
+                Item {
+                    required property var modelData
+                    width: playlistColumn.width
+                    height: modelData.command.length > 0 ? 26 : 7
+                    Rectangle {
+                        visible: modelData.command.length === 0
+                        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                        height: 1
+                        color: Theme.borderSubtle
+                    }
+                    SButton {
+                        objectName: modelData.name
+                        visible: modelData.command.length > 0
+                        anchors.fill: parent
+                        bold: false
+                        fontPx: Theme.textBody
+                        available: modelData.on
+                        alignLeft: true
+                        text: modelData.label
+                        onClicked: {
+                            playlistMenu.visible = false
+                            root.shell.invokeWith(modelData.command, playlistMenu.track, modelData.argument)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Rename Playlist -----------------------------------------------------------
+    // Asked for by track.playlist_rename with no name: the active playlist's
+    // name, selected. Rename and Return send the command with the new name;
+    // a refusal (empty, or another playlist's name) keeps the dialog open.
+    MouseArea {
+        anchors.fill: parent
+        visible: playlistRenamePanel.visible
+        z: 9
+        onClicked: playlistRenamePanel.close()
+    }
+    Rectangle {
+        id: playlistRenamePanel
+        objectName: "playlistRenamePanel"
+        visible: false
+        z: 10
+        property int track: -1
+        anchors.centerIn: parent
+        width: 360
+        height: playlistRenameColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(t, current) {
+            track = t
+            playlistRenameInput.text = current
+            visible = true
+            playlistRenameInput.forceActiveFocus()
+            playlistRenameInput.selectAll()
+        }
+        function close() {
+            visible = false
+            playlistRenameInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith("track.playlist_rename", track, playlistRenameInput.text)) close()
+        }
+
+        Column {
+            id: playlistRenameColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Rename Playlist"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Rectangle {
+                width: parent.width
+                height: 26
+                radius: Theme.radiusSmall
+                color: Theme.window
+                border.color: playlistRenameInput.activeFocus ? Theme.accent : Theme.borderStrong
+                TextInput {
+                    id: playlistRenameInput
+                    objectName: "playlistRenameInput"
+                    anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: Theme.text
+                    selectionColor: Theme.selectionFill
+                    selectedTextColor: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                    onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                    Keys.onEscapePressed: playlistRenamePanel.close()
+                    Keys.onReturnPressed: playlistRenamePanel.accept()
+                    Keys.onEnterPressed: playlistRenamePanel.accept()
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "playlistRenameCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: playlistRenamePanel.close()
+                }
+                SButton {
+                    objectName: "playlistRenameOk"
+                    text: "Rename"
+                    implicitHeight: 24
+                    onClicked: playlistRenamePanel.accept()
+                }
+            }
+        }
+    }
+
     // --- the Setup menu ----------------------------------------------------------
     MouseArea {
         anchors.fill: parent
@@ -1374,6 +1547,7 @@ Rectangle {
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
         function onNewTracksRequested() { newTracksPanel.show() }
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
+        function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

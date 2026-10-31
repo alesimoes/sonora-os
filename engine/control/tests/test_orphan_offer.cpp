@@ -17,6 +17,7 @@
 
 #include "sonora/closed_take.h"
 #include "sonora/model/replication.h"
+#include "sonora/model/session_file.h"
 #include "sonora/orphan_offer.h"
 #include "sonora/session.h"
 #include "sonora/wav_writer.h"
@@ -372,6 +373,43 @@ int test_an_offer_from_another_folder_places_nothing() {
 
 }  // namespace
 
+// A take that only an inactive playlist holds, or one that Delete Unused
+// Playlists took off its track, is still the session's (ADR-0026 §5): it
+// is never offered as an orphan, before or after a save and a reload.
+// Offering it would place it twice; dropping its source would lose it.
+int test_inactive_playlist_media_is_not_orphaned() {
+    Rig rig("sonora_test_orphan_inactive_playlist");
+    const uint64_t t1 = rig.track_id(0);
+    CHECK(rig.write("Audio 1_01.wav", rig.whole(1, t1), 0, 4800));
+    const OrphansPlaced placed = place_orphan_takes(
+        *rig.doc, *rig.session, find_orphan_takes(rig.doc->current(), rig.dir.string()));
+    CHECK(placed.placed == 1);
+    const model::Id first = rig.doc->current().edit->tracks[0]->active_playlist;
+    const model::Id fresh = rig.doc->current().next_id;
+    model::ReplicationUpdate u;
+    std::string why;
+    CHECK(rig.doc->apply(model::Operation{model::Compound{
+                             {model::AddPlaylist{t1, fresh, "Audio 1.02"},
+                              model::SetActivePlaylist{t1, fresh}},
+                             "New Playlist"}},
+                         u, why));
+    CHECK(rig.active(0)->regions.empty());
+    CHECK(find_orphan_takes(rig.doc->current(), rig.dir.string()).takes.empty());
+
+    CHECK(rig.doc->apply(model::Operation{model::RemovePlaylist{t1, first}}, u, why));
+    CHECK(rig.source("Audio Files/Audio 1_01.wav") != nullptr);
+    CHECK(find_orphan_takes(rig.doc->current(), rig.dir.string()).takes.empty());
+
+    std::string bytes, error;
+    CHECK(model::serialize(rig.doc->current(), model::WriteInfo{"test", 1}, bytes, error));
+    model::Loaded loaded;
+    model::LoadError le;
+    CHECK(model::deserialize(bytes, loaded, le));
+    CHECK(find_orphan_takes(loaded.snapshot, rig.dir.string()).takes.empty());
+    CHECK(fs::exists(rig.dir / "Audio Files" / "Audio 1_01.wav"));
+    return 0;
+}
+
 int main(int argc, char** argv) {
     struct Test {
         const char* name;
@@ -386,6 +424,7 @@ int main(int argc, char** argv) {
         {"left_takes_are_not_offered", test_left_takes_are_not_offered},
         {"recovered_take_keeps_its_latency", test_recovered_take_keeps_its_latency},
         {"an_offer_from_another_folder_places_nothing", test_an_offer_from_another_folder_places_nothing},
+        {"inactive_playlist_media_is_not_orphaned", test_inactive_playlist_media_is_not_orphaned},
     };
     for (const Test& t : tests) {
         if (argc > 1 && std::string(argv[1]) != t.name) continue;

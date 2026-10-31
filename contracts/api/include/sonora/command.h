@@ -144,6 +144,17 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.delete", CommandTarget::Track, "Delete a track"},
         {"track.move_up", CommandTarget::Track, "Move a track up one row"},
         {"track.move_down", CommandTarget::Track, "Move a track down one row"},
+        // The track's playlist selector (ADR-0026), on the track given or the
+        // selected one. Choose takes the playlist's name; Rename the new name,
+        // and asks for it without one.
+        {"track.playlist_new", CommandTarget::Track, "New empty playlist on a track, made active"},
+        {"track.playlist_duplicate", CommandTarget::Track,
+         "Duplicate a track's active playlist, the copy made active"},
+        {"track.playlist_choose", CommandTarget::Track, "Make a track's named playlist active",
+         true},
+        {"track.playlist_rename", CommandTarget::Track, "Rename a track's active playlist", true},
+        {"track.playlist_delete_unused", CommandTarget::Track,
+         "Delete a track's playlists other than the active one"},
 
         // --- edit modes (ADR-0004: workflow, reproduced deliberately) ---
         {"edit.mode.shuffle", CommandTarget::None, "Shuffle edit mode",

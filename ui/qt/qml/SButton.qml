@@ -21,6 +21,8 @@ Rectangle {
     property color activeColour: Theme.accent
     property int fontPx: Theme.textSmall
     property bool bold: true
+    // A menu row or a selector: the label from the left edge, elided.
+    property bool alignLeft: false
     signal clicked(var mouse)
 
     implicitWidth: Math.max(implicitHeight, label.implicitWidth + 2 * Theme.space2)
@@ -44,8 +46,12 @@ Rectangle {
 
     Text {
         id: label
-        anchors.centerIn: parent
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.horizontalCenter: b.alignLeft ? undefined : parent.horizontalCenter
         anchors.horizontalCenterOffset: b.labelOffset
+        x: b.alignLeft ? Theme.space2 : 0
+        width: b.alignLeft ? Math.min(implicitWidth, b.width - 2 * Theme.space2) : implicitWidth
+        elide: b.alignLeft ? Text.ElideRight : Text.ElideNone
         text: b.text
         color: b.active ? Theme.textOnAccent : b.recessed ? Theme.textTertiary : Theme.text
         font { family: Theme.fontFamily; pixelSize: b.fontPx; weight: b.bold ? Font.DemiBold : Font.Normal }

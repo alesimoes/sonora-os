@@ -48,6 +48,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString sessionFile READ sessionFile NOTIFY sessionChanged)
     Q_PROPERTY(int trackCount READ trackCount NOTIFY contentChanged)
     Q_PROPERTY(QStringList trackNames READ trackNames NOTIFY contentChanged)
+    // Each track's active playlist, by row: what its selector shows.
+    Q_PROPERTY(QStringList playlistNames READ playlistNames NOTIFY contentChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY contentChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY contentChanged)
     // The Edit menu's first two items, as Pro Tools words them: "Undo
@@ -254,6 +256,9 @@ public:
     QString sessionFile() const { return file_; }
     int trackCount() const;
     QStringList trackNames() const;
+    QStringList playlistNames() const;
+    // The track's playlists in their order, for its selector's menu.
+    Q_INVOKABLE QStringList trackPlaylists(int track) const;
     bool canUndo() const { return doc_.can_undo(); }
     bool canRedo() const { return doc_.can_redo(); }
     QString undoText() const;
@@ -433,6 +438,9 @@ signals:
     void repeatRequested(int count, const QString& what);
     // track.new without a count: the window asks how many, offering 1.
     void newTracksRequested();
+    // track.playlist_rename without a name: the window asks, offering the
+    // active playlist's.
+    void playlistRenameRequested(int track, const QString& current);
     void trackRefusalChanged();
     // app.save_as or app.save_copy_in without a name: the window asks for
     // one, offering `name` (the first free one), and says where it goes.
@@ -453,6 +461,11 @@ private:
                       const std::vector<model::Id>& after, std::string& why);
     void setTrackRefusal(const QString& why);
     void setRoutingRefusal(const QString& why);
+    // A playlist command on row `track` through the controller. One that
+    // would choose another playlist for a track a take records is refused
+    // here first, and held (ADR-0026 §4).
+    bool playlistCommand(int track, bool chooses, const std::function<bool(std::string&)>& run_op,
+                         std::string& why);
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);

@@ -300,6 +300,22 @@ public:
     // One row up (delta -1) or down (+1); the selection goes with it.
     bool move_track(int track, int delta, std::string& why);
 
+    // --- playlists: the track's playlist selector (ADR-0026) ---
+    // Each one undo step. New and Duplicate name the playlist
+    // "<track>.<nn>" (next_playlist_name()) and make it the active one.
+    // The names of a track's playlists in their order, and its active one.
+    std::vector<std::string> playlist_names(int track) const;
+    std::string active_playlist_name(int track) const;
+    bool new_playlist(int track, std::string& why);
+    bool duplicate_playlist(int track, std::string& why);
+    bool choose_playlist(int track, const std::string& name, std::string& why);
+    // The active playlist renamed; refused empty, or as another playlist of
+    // the session is named.
+    bool rename_playlist(int track, const std::string& name, std::string& why);
+    // Every playlist but the active one off the track; their audio stays in
+    // the pool, and undo brings them back.
+    bool delete_unused_playlists(int track, std::string& why);
+
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
     bool set_pan(int track, float pan, std::string& why);

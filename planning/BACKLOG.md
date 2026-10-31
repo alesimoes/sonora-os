@@ -759,6 +759,27 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              sized from the first Hello: the synthetic waveforms' rate
              (`SyntheticPeakSource`), which only shapes made-up peaks.
 5. [ ] Playlists and comping (DAW 3), full mixer and automation UI (DAW 4).
+       - [x] `ui.comping.playlists` (ADR-0026, protocol 31, format 11
+             unchanged): New, Duplicate, choose, Rename and Delete Unused per
+             track, each one undo step; a switch is a plan swap, exact at a
+             block edge; no switch while a take starts or closes, nor on a
+             recording track; media of inactive or removed playlists stays
+             in the pool. Left, each its own line:
+       - [ ] Pro Tools' New and Duplicate Playlist dialogs (name the
+             playlist first) and the Delete Unused Playlists dialog (pick
+             which go); the UI uses the default names and deletes them all.
+       - [ ] A refused switch the engine answers (a take starting or
+             closing) reaches the status line only; hold it as the local
+             recording refusal is held (`trackRefusal`), for track commands
+             too.
+       - [ ] Playlist selector in the Mix window's strips and a
+             previous/next playlist command; Logic's take folders map onto
+             `ui.comping.lanes`.
+       - [ ] Pro Tools' playlist keys (`cmd+backslash`,
+             `cmd+alt+backslash`) are `"verified": false` until checked
+             against Avid's Shortcuts Guide.
+       - [ ] A declicked switch (a short crossfade at the swap) would need
+             a second voice per track in the plan (ADR-0026 §3).
 6. [x] The version refusal reaches the operator (PR #75 ui-engineer review,
        item 3; PR #90). `version_mismatch()`'s text
        went to stderr and exit 1, which on the appliance is a black screen

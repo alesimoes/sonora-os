@@ -677,6 +677,8 @@ int test_profile_corrections() {
         {"protools.json", "alt+a", "zoom.fit_session"},
         {"protools.json", "ctrl+space", "transport.record"},
         {"protools.json", "alt+shift+d", "track.duplicate"},  // Duplicate Tracks (ADR-0023)
+        {"protools.json", "cmd+backslash", "track.playlist_new"},  // ADR-0026, unverified
+        {"protools.json", "cmd+alt+\\", "track.playlist_duplicate"},
         {"protools.json", "shift+r", "track.toggle_arm"},
         {"protools.json", "shift+s", "track.toggle_solo"},
         {"protools.json", "shift+m", "track.toggle_mute"},

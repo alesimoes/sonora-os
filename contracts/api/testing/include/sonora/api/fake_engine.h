@@ -68,6 +68,7 @@ namespace sonora::model {
 class Document;
 class LoadParts;
 struct ReplicationUpdate;
+struct EditState;
 struct Snapshot;
 class MemberRef;
 using Id = std::uint64_t;
@@ -312,6 +313,10 @@ private:
     // and an undo or redo that would do the second. Empty otherwise.
     std::string structure_refusal(const model::Snapshot& at, const model::MemberRef& member) const;
     std::string step_refusal(bool undo) const;
+    // As engine/control (ADR-0026 §4): no track chooses another playlist
+    // while a take starts or closes, nor an armed one while it records.
+    std::string playlist_refusal(const model::EditState& now,
+                                 const std::vector<model::Id>& changed) const;
     // A take about to start or held closing: every structure change waits.
     std::string structure_lock() const;
     // Outside a take, each arm stays with its document track (§4).

@@ -1790,6 +1790,12 @@ int check_track_structure_while_closing(Rig& rig) {
             StateView& v = s.engine->state();
             const std::vector<model::Id> rows = model::track_order(*s.replica.current().edit);
             CommandReply r;
+            // A second playlist for track 1, which the closing take must
+            // not be moved onto (ADR-0026 §4).
+            const model::Id alt = s.replica.current().next_id;
+            EXPECT(s.await(rig_, submit_op(s, model::AddPlaylist{rows[0], alt, "Closing alt"}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "adding a playlist failed: " + r.message);
             EXPECT(arm_first_track(rig_, s), "track 1 could not be armed");
             EXPECT(s.await(rig_, s.command("transport.record"), r) && r.result == DispatchResult::Ok,
                    "record failed: " + r.message);
@@ -1822,6 +1828,10 @@ int check_track_structure_while_closing(Rig& rig) {
             EXPECT(r.result == DispatchResult::Failed && mentions(r.message, closing.c_str()),
                    "tracks were reordered while a take closed");
             EXPECT(model::track_order(*s.replica.current().edit) == rows, "a refusal moved a track");
+            EXPECT(s.await(rig_, submit_op(s, model::SetActivePlaylist{rows[0], alt}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, closing.c_str()) &&
+                       mentions(r.message, "choose another playlist"),
+                   "the punched take's track chose another playlist while it closed");
 
             EXPECT(rig_.hold_takes_closing(*s.engine, false), "the rig cannot let the take close");
             EXPECT(s.until(rig_,
@@ -1851,6 +1861,10 @@ int check_track_structure_while_starting(Rig& rig) {
             StateView& v = s.engine->state();
             const std::vector<model::Id> rows = model::track_order(*s.replica.current().edit);
             CommandReply r;
+            const model::Id alt = s.replica.current().next_id;
+            EXPECT(s.await(rig_, submit_op(s, model::AddPlaylist{rows.back(), alt, "Starting alt"}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "adding a playlist failed: " + r.message);
             EXPECT(arm_first_track(rig_, s), "track 1 could not be armed");
             if (!rig_.hold_record_start(*s.engine, true)) return skip("this rig cannot hold a take back");
             // Answered when the take starts or is withdrawn, not awaited.
@@ -1858,6 +1872,11 @@ int check_track_structure_while_starting(Rig& rig) {
             EXPECT(s.await(rig_, submit_op(s, model::RemoveTrack{rows.back()}), r), "no reply");
             EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "about to start"),
                    "a track was deleted while a take was about to start");
+            EXPECT(s.await(rig_, submit_op(s, model::SetActivePlaylist{rows.back(), alt}), r),
+                   "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "about to start") &&
+                       mentions(r.message, "choose another playlist"),
+                   "a track chose another playlist while a take was about to start");
             EXPECT(s.next_publish(rig_), "nothing published after the refusal");
             EXPECT(v.transport().state != TransportState::Recording, "the held take started");
             EXPECT(s.await(rig_, s.command("transport.stop"), r) && r.result == DispatchResult::Ok,
@@ -1875,6 +1894,112 @@ int check_track_structure_while_starting(Rig& rig) {
         }
     };
     return C(rig, "track structure while a take starts").go();
+}
+
+// Playlists during a take (ADR-0026 §4): the armed track keeps the
+// playlist it records onto, by an operation, a compound, an undo or a
+// redo; a track that is not recording may choose another. The closed take
+// lands on the playlist that was active when Record was pressed.
+int check_playlists_during_take(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        model::Id active(Session& s, model::Id track) {
+            for (const auto& t : s.replica.current().edit->tracks)
+                if (t->id == track) return t->active_playlist;
+            return 0;
+        }
+        std::size_t regions(Session& s, model::Id playlist) {
+            for (const auto& t : s.replica.current().edit->tracks)
+                for (const auto& p : t->playlists)
+                    if (p->id == playlist) return p->regions.size();
+            return 0;
+        }
+        uint64_t step(Session& s, ModelAction a) {
+            ModelRequest m;
+            m.action = a;
+            return s.engine->submit(m);
+        }
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            StateView& v = s.engine->state();
+            const std::vector<model::Id> rows = model::track_order(*s.replica.current().edit);
+            EXPECT(rows.size() >= 2, "the suite needs two tracks");
+            const model::Id t0 = rows[0], t1 = rows[1];
+            const model::Id first = active(s, t0);
+            const model::Id alt0 = s.replica.current().next_id, alt1 = alt0 + 1;
+            CommandReply r;
+            EXPECT(s.await(rig_,
+                           submit_op(s, model::Compound{{model::AddPlaylist{t0, alt0, "Take alt A"},
+                                                         model::AddPlaylist{t1, alt1, "Take alt B"}},
+                                                        "New Playlists"}),
+                           r) &&
+                       r.result == DispatchResult::Ok,
+                   "adding playlists failed: " + r.message);
+            // Two steps: undoing the second would choose alt0 on track 1.
+            EXPECT(s.await(rig_, submit_op(s, model::SetActivePlaylist{t0, alt0}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "choosing a playlist failed: " + r.message);
+            EXPECT(s.await(rig_, submit_op(s, model::SetActivePlaylist{t0, first}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "choosing the first playlist again failed: " + r.message);
+            const std::size_t before = regions(s, first);
+            EXPECT(arm_first_track(rig_, s), "track 1 could not be armed");
+            EXPECT(s.await(rig_, s.command("transport.record"), r) && r.result == DispatchResult::Ok,
+                   "record failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() {
+                       return v.transport().state == TransportState::Recording &&
+                              v.transport().playhead > 0;
+                   }),
+                   "no take");
+
+            EXPECT(s.await(rig_, submit_op(s, model::SetActivePlaylist{t0, alt0}), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "is recording") &&
+                       mentions(r.message, "before choosing another playlist"),
+                   "the recording track chose another playlist during its take");
+            EXPECT(s.await(rig_,
+                           submit_op(s, model::Compound{{model::SetActivePlaylist{t1, alt1},
+                                                         model::SetActivePlaylist{t0, alt0}},
+                                                        "Both"}),
+                           r),
+                   "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "is recording"),
+                   "a compound chose another playlist for the recording track");
+            EXPECT(active(s, t1) != alt1, "a refused compound's first member stayed");
+            EXPECT(s.await(rig_, step(s, ModelAction::Undo), r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "is recording"),
+                   "an undo chose another playlist for the recording track");
+            EXPECT(s.await(rig_, submit_op(s, model::SetActivePlaylist{t1, alt1}), r) &&
+                       r.result == DispatchResult::Ok,
+                   "a track that is not recording could not choose a playlist: " + r.message);
+            EXPECT(s.await(rig_, step(s, ModelAction::Undo), r) && r.result == DispatchResult::Ok,
+                   "undoing the other track's choice failed: " + r.message);
+            EXPECT(s.await(rig_, step(s, ModelAction::Redo), r) && r.result == DispatchResult::Ok,
+                   "redoing the other track's choice failed: " + r.message);
+            EXPECT(active(s, t0) == first, "a refusal changed the recording track's playlist");
+
+            EXPECT(s.await(rig_, s.command("transport.stop"), r) && r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            // Accepted once the take is in: it closed before the switch.
+            EXPECT(s.until(rig_,
+                           [&]() {
+                               CommandReply d;
+                               return s.await(rig_, submit_op(s, model::SetActivePlaylist{t0, alt0}),
+                                              d) &&
+                                      d.result == DispatchResult::Ok;
+                           }),
+                   "the playlist could not be chosen once the take was in");
+            EXPECT(regions(s, alt0) == 0, "the take landed on another playlist");
+            if (rig_.places_closed_takes()) {
+                EXPECT(regions(s, first) > before,
+                       "the take did not land on the playlist active at Record");
+            }
+            return ok();
+        }
+    };
+    return C(rig, "playlists during a take").go();
 }
 
 int check_model(Rig& rig) {
@@ -3282,6 +3407,7 @@ int run(Rig& rig) {
     failures += check_track_structure(rig);
     failures += check_track_structure_while_closing(rig);
     failures += check_track_structure_while_starting(rig);
+    failures += check_playlists_during_take(rig);
     failures += check_load(rig);
     failures += check_load_in_parts(rig);
     failures += check_inserts(rig);

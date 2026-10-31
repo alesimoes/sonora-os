@@ -159,6 +159,15 @@ target_compile_definitions(test_ui_tracks PRIVATE
 add_test(NAME ui_tracks COMMAND test_ui_tracks)
 set_tests_properties(ui_tracks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The playlist selector (ADR-0026): new, duplicate, choose, rename, delete
+# unused, a take's armed track refused a switch, then the real QML.
+add_executable(test_ui_playlists tests/test_playlists.cpp)
+target_link_libraries(test_ui_playlists PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_playlists PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_playlists COMMAND test_ui_playlists)
+set_tests_properties(ui_playlists PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.
 add_executable(test_ui_latency tests/test_latency.cpp)

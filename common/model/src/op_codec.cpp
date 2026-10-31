@@ -533,6 +533,27 @@ struct Encoder {
         v.set("sends", Value::boolean(o.sends));
         return v;
     }
+    Value operator()(const DuplicatePlaylist& o) const {
+        Value v = with_kind("DuplicatePlaylist");
+        v.set("track", id_value(o.track));
+        v.set("source", id_value(o.source));
+        v.set("playlist", id_value(o.playlist));
+        v.set("name", Value::string(o.name));
+        return v;
+    }
+    Value operator()(const SetPlaylistName& o) const {
+        Value v = with_kind("SetPlaylistName");
+        v.set("track", id_value(o.track));
+        v.set("playlist", id_value(o.playlist));
+        v.set("name", Value::string(o.name));
+        return v;
+    }
+    Value operator()(const RemovePlaylist& o) const {
+        Value v = with_kind("RemovePlaylist");
+        v.set("track", id_value(o.track));
+        v.set("playlist", id_value(o.playlist));
+        return v;
+    }
     Value operator()(const AddInsert& o) const {
         Value v = with_kind("AddInsert");
         v.set("track", id_value(o.track));
@@ -1382,6 +1403,29 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "DuplicatePlaylist") {
+        DuplicatePlaylist o;
+        if (!rd.keys(v, "", {"op", "track", "source", "playlist", "name"}) ||
+            !rd.id(v, "", "track", o.track) || !rd.id(v, "", "source", o.source) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.text(v, "", "name", o.name)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "SetPlaylistName") {
+        SetPlaylistName o;
+        if (!rd.keys(v, "", {"op", "track", "playlist", "name"}) ||
+            !rd.id(v, "", "track", o.track) || !rd.id(v, "", "playlist", o.playlist) ||
+            !rd.text(v, "", "name", o.name)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "RemovePlaylist") {
+        RemovePlaylist o;
+        if (!rd.keys(v, "", {"op", "track", "playlist"}) || !rd.id(v, "", "track", o.track) ||
+            !rd.id(v, "", "playlist", o.playlist)) {
+            return false;
+        }
+        out = o;
     } else if (kind == "AddInsert") {
         AddInsert o;
         if (!rd.keys(v, "", {"op", "track", "insert", "slot", "plugin", "params", "state"}) ||
@@ -2339,7 +2383,7 @@ const char* const kNames[] = {
     "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
-    "SetOutput", "Compound"};
+    "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 
