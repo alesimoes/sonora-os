@@ -105,6 +105,37 @@ int test_not_a_wrap_list() {
     return 0;
 }
 
+// Version 2 adds kBeforeFile, a late track's wraps before its file. A
+// version 1 list, which never held one, reads as before; a later version
+// is refused.
+int test_versions() {
+    const std::string path = scratch("v1.wraps").string();
+    WrapSidecar w;
+    CHECK(w.open(path, 0, 4800, 0));
+    CHECK(w.append(WrapSidecar::kBeforeFile));
+    CHECK(w.append(4000));
+    CHECK(w.close());
+    WrapList list;
+    std::string error;
+    CHECK(read_wrap_sidecar(path, list, error));
+    CHECK((list.wraps == std::vector<uint64_t>{WrapSidecar::kBeforeFile, 4000}));
+    const auto set_version = [&](unsigned char v) {
+        std::FILE* f = std::fopen(path.c_str(), "r+b");
+        if (f == nullptr) return false;
+        const unsigned char le[4] = {v, 0, 0, 0};
+        const bool ok = std::fseek(f, 4, SEEK_SET) == 0 && std::fwrite(le, 1, 4, f) == 4;
+        std::fclose(f);
+        return ok;
+    };
+    CHECK(set_version(1));
+    CHECK(read_wrap_sidecar(path, list, error));
+    CHECK(list.wraps.size() == 2);
+    CHECK(set_version(3));
+    CHECK(!read_wrap_sidecar(path, list, error));
+    CHECK(error.find("version 3") != std::string::npos);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -112,6 +143,7 @@ int main() {
     if (test_torn_record_is_dropped()) return 1;
     if (test_never_over_a_file()) return 1;
     if (test_not_a_wrap_list()) return 1;
+    if (test_versions()) return 1;
     std::error_code ec;
     fs::remove_all(fs::temp_directory_path() / "sonora_test_wrap_sidecar", ec);
     std::printf("wrap_sidecar: ok\n");

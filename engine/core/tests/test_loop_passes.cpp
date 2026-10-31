@@ -33,6 +33,7 @@ namespace fs = std::filesystem;
 using sonora::LoopPass;
 using sonora::WrapSidecar;
 constexpr uint64_t kLost = WrapSidecar::kLostWrap;
+constexpr uint64_t kBefore = WrapSidecar::kBeforeFile;
 
 // A = 1000, B = 1300, the take from 900 (pre-roll 100), L = 0: wraps at
 // 400, 700, 1000, ...
@@ -112,7 +113,43 @@ int test_passes() {
     return 0;
 }
 
-std::string write_take(const fs::path& dir, const char* name, uint64_t frames, bool loop) {
+// A track whose window opened late, in pass 3 at A + 48: its list leads
+// with the take's two wraps before it. Its passes keep the take's numbers,
+// and those two are never placed by loop length.
+int test_a_late_file_keeps_the_take_numbers() {
+    bool derived = false;
+    std::vector<uint64_t> w =
+        sonora::complete_wraps({kBefore, kBefore}, 3, 600, kA, kB, 1048, 0, derived);
+    CHECK((w == std::vector<uint64_t>{kBefore, kBefore, 252}));
+    CHECK(derived);
+    std::vector<LoopPass> p = sonora::loop_passes(w, 600, kA, kB, 1048, 0);
+    CHECK(p.size() == 2);
+    CHECK(p[0].pass == 3 && p[0].offset == 0 && p[0].at == 48 && p[0].length == 252);
+    CHECK(p[1].pass == 4 && p[1].offset == 252 && p[1].length == 300 && !p[1].complete);
+    // Stopped before its first wrap: one pass, the take's third.
+    p = sonora::loop_passes({kBefore, kBefore}, 200, kA, kB, 1048, 0);
+    CHECK(p.size() == 1);
+    CHECK(p[0].pass == 3 && p[0].offset == 0 && p[0].at == 48 && p[0].length == 200);
+    // A later wrap that did reach the list: nothing before it is derived.
+    derived = true;
+    w = sonora::complete_wraps({kBefore, kBefore, 252}, 3, 600, kA, kB, 1048, 0, derived);
+    CHECK((w == std::vector<uint64_t>{kBefore, kBefore, 252}));
+    CHECK(!derived);
+    // L = 37 and the window opened 27 frames after B: the second wrap's
+    // sample arrived after the open, so it is in the file, and the file's
+    // first 27 frames end pass 2.
+    w = sonora::complete_wraps({kBefore, kBefore}, 2, 600, kA, kB, 1010, 37, derived);
+    CHECK((w == std::vector<uint64_t>{kBefore, 27}));
+    CHECK(!derived);
+    p = sonora::loop_passes(w, 600, kA, kB, 1010, 37);
+    CHECK(p.size() == 2);
+    CHECK(p[0].pass == 2 && p[0].offset == 0 && p[0].at == 273 && p[0].length == 27);
+    CHECK(p[1].pass == 3 && p[1].offset == 27 && p[1].length == 300);
+    return 0;
+}
+
+std::string write_take(const fs::path& dir, const char* name, uint64_t frames, bool loop,
+                       uint64_t time_reference = kStart) {
     const std::string path = (dir / name).string();
     fs::remove(path);
     fs::remove(WrapSidecar::path_for(path));
@@ -121,7 +158,7 @@ std::string write_take(const fs::path& dir, const char* name, uint64_t frames, b
     l.from = kA;
     l.to = kB;
     w.set_description(sonora::take_description(4, 9, "Demo", nullptr, loop ? &l : nullptr));
-    if (!w.open(path, 48000, 1, sonora::WavWriter::Format::Float32, kStart)) return {};
+    if (!w.open(path, 48000, 1, sonora::WavWriter::Format::Float32, time_reference)) return {};
     std::vector<float> s(frames, 0.0f);
     w.write(s.data(), frames);
     w.close();
@@ -176,6 +213,22 @@ int test_recovery_reads_the_take() {
     CHECK((r.wraps == std::vector<uint64_t>{450, 750, 1050}));
     CHECK(r.by_length);
 
+    // A late track's list, killed before its first wrap: the wraps go on
+    // from the one after the take's two before the file.
+    const std::string late_open = write_take(dir, "Audio 1_07.wav", 600, true, 1048);
+    CHECK(!late_open.empty());
+    {
+        WrapSidecar side;
+        CHECK(side.open(WrapSidecar::path_for(late_open), kA, kB, 0));
+        CHECK(side.append(kBefore));
+        CHECK(side.append(kBefore));
+        CHECK(side.close());
+    }
+    CHECK(sonora::recover_loop_wraps(late_open, r));
+    CHECK((r.wraps == std::vector<uint64_t>{kBefore, kBefore, 252, 552}));
+    const std::vector<LoopPass> p = sonora::loop_passes(r.wraps, r.frames, kA, kB, 1048, 0);
+    CHECK(p.size() == 3 && p[0].pass == 3 && p[2].pass == 5);
+
     // Not a loop take: nothing to place by pass.
     const std::string plain = write_take(dir, "Audio 1_05.wav", 1000, false);
     CHECK(!sonora::recover_loop_wraps(plain, r));
@@ -191,6 +244,7 @@ int main() {
     if (test_lost_wraps_are_derived()) return 1;
     if (test_until_the_file_ends()) return 1;
     if (test_passes()) return 1;
+    if (test_a_late_file_keeps_the_take_numbers()) return 1;
     if (test_recovery_reads_the_take()) return 1;
     std::printf("loop_passes: ok\n");
     return 0;

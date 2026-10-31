@@ -93,10 +93,12 @@ bool read_wrap_sidecar(const std::string& path, WrapList& out, std::string& erro
         return false;
     }
     const uint64_t version = get_le(h + 4, 4);
-    if (version != WrapSidecar::kVersion) {
+    // Version 1 is version 2 without kBeforeFile, which it never wrote: it
+    // reads the same.
+    if (version < 1 || version > WrapSidecar::kVersion) {
         std::fclose(f);
-        error = path + ": wrap list version " + std::to_string(version) + ", this engine reads " +
-                std::to_string(WrapSidecar::kVersion);
+        error = path + ": wrap list version " + std::to_string(version) +
+                ", this engine reads 1 to " + std::to_string(WrapSidecar::kVersion);
         return false;
     }
     WrapList list;

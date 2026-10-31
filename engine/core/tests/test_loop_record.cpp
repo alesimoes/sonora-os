@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "sonora/loop_take.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
 #include "sonora/wrap_sidecar.h"
@@ -479,6 +480,63 @@ int test_a_stalled_disk_thread_loses_no_wrap() {
     return 0;
 }
 
+// The passes engine/control places for one file of a closed loop take.
+std::vector<sonora::LoopPass> passes_of(const Session::ClosedTake& c,
+                                        const sonora::DiskThread::ClosedFile& f) {
+    sonora::WavReader r;
+    std::string error;
+    if (!r.open(f.path, error)) return {};
+    bool derived = false;
+    const std::vector<uint64_t> wraps =
+        sonora::complete_wraps(f.wraps, c.loop_wraps, f.frames, c.loop.from, c.loop.to,
+                               r.time_reference(), c.loop.latency, derived);
+    return sonora::loop_passes(wraps, f.frames, c.loop.from, c.loop.to, r.time_reference(),
+                               c.loop.latency);
+}
+
+// BACKLOG Track 1, loop record: a track whose window opens late, after the
+// take's first wrap, and records no later wrap still has its pass numbered
+// as the take's second, as every other track numbers it. The Open record
+// says how many wraps the take had made.
+int test_a_late_track_numbers_its_passes_from_the_take() {
+    // The ring holds one record: track 1's open finds no room until it is
+    // drained, after the first wrap (block 6: start 900, B 1300).
+    Rig rig("late_open", 2, 2);
+    Session& s = *rig.session;
+    const LoopRange l = loop_of(1000, 1300, 100);
+    std::string error;
+    const int take = s.next_free_take();
+    CHECK(s.start_loop(take, l, &error));
+    for (int b = 0; b < 7; ++b) rig.block();
+    for (int b = 7; b < 10; ++b) {
+        s.disk().drain_once();
+        rig.block();
+    }
+    CHECK(s.stop(&error));
+    const Session::ClosedTake c = only_take(s);
+    CHECK(c.loop_wraps == 1);
+    CHECK(c.files.size() == 2);
+    const sonora::DiskThread::ClosedFile* late = nullptr;
+    for (const auto& f : c.files) {
+        if (f.track == 1) late = &f;
+    }
+    CHECK(late != nullptr);
+    CHECK(late->frames == 3 * kBlock);
+    // Its first sample was played at A + 48, in the second pass.
+    CHECK(file_is_counted(late->path, 3 * kBlock, 1048, "loop=1000-1300", 7 * kBlock));
+    // The take's wrap before the file holds its place, in memory and on
+    // disk, so recovery numbers the pass the same.
+    CHECK((late->wraps == std::vector<uint64_t>{WrapSidecar::kBeforeFile}));
+    sonora::WrapList list;
+    CHECK(sonora::read_wrap_sidecar(WrapSidecar::path_for(late->path), list, error));
+    CHECK(list.wraps == late->wraps);
+    const std::vector<sonora::LoopPass> p = passes_of(c, *late);
+    CHECK(p.size() == 1);
+    CHECK(p[0].pass == 2);
+    CHECK(p[0].offset == 0 && p[0].at == 48 && p[0].length == 3 * kBlock && !p[0].complete);
+    return 0;
+}
+
 // Holds the callback it is called from, right after the transport is
 // loaded, while armed.
 struct Hold {
@@ -572,6 +630,8 @@ int main(int argc, char** argv) {
         {"a_stalled_disk_thread_loses_no_wrap", test_a_stalled_disk_thread_loses_no_wrap},
         {"a_callback_in_flight_keeps_pass_one_whole",
          test_a_callback_in_flight_keeps_pass_one_whole},
+        {"a_late_track_numbers_its_passes_from_the_take",
+         test_a_late_track_numbers_its_passes_from_the_take},
         {"description_says_loop", test_description_says_loop},
     };
     for (const Test& t : tests) {

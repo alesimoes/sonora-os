@@ -1433,6 +1433,10 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
             b.start = start;
             b.at = captured_[i];
             b.timeline = from - take_latency_;
+            // A late open, after a loop take's first wraps, numbers its file's
+            // passes from the take's count, not from 1. This block's own
+            // wraps follow the open.
+            b.ordinal = loop_wrap_count_;
             if (boundaries_->write(&b, 1) == 1) {
                 window = take;
                 window_start_[i] = start;

@@ -27,7 +27,10 @@ constexpr std::size_t kWrapsUntilEnd = ~std::size_t{0};
 // latency. One the arithmetic puts before the file stays lost. `derived`
 // says whether any was. Exact only if no capture overrun shifted the
 // samples after it (session.cpp drops samples on a short capture-ring
-// write).
+// write). A late file's leading WrapSidecar::kBeforeFile wraps are the
+// take's before it opened: first wrap counts from after them, and one of
+// them stays kBeforeFile unless the input latency put it inside the file,
+// which is not derived.
 std::vector<uint64_t> complete_wraps(const std::vector<uint64_t>& known, std::size_t count,
                                      uint64_t frames, uint64_t loop_from, uint64_t loop_to,
                                      uint64_t time_reference, uint32_t latency, bool& derived);
@@ -49,7 +52,8 @@ struct LoopPass {
 // Pass k ends at wrap k; the pass after the last wrap, if the file goes on
 // past it, is cut short by the stop. A take stopped before its first wrap
 // has that one pass, from A; one stopped in its pre-roll has none. A pass
-// whose wrap is lost is left out: complete_wraps() first.
+// whose wrap is lost, or before the file, is left out: complete_wraps()
+// first.
 std::vector<LoopPass> loop_passes(const std::vector<uint64_t>& wraps, uint64_t frames,
                                   uint64_t loop_from, uint64_t loop_to, uint64_t time_reference,
                                   uint32_t latency);

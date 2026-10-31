@@ -4,7 +4,7 @@
 // to the take, so a take killed mid-loop still says where each pass ended.
 //
 //   offset 0   "SNWR"            magic
-//          4   u32 LE            version, 1
+//          4   u32 LE            version, 2 (1: no kBeforeFile, read as 2)
 //          8   u64 LE            A, the loop start, a timeline frame
 //         16   u64 LE            B, the loop end
 //         24   u32 LE            L, the input latency every wrap below carries
@@ -12,7 +12,9 @@
 //         28   u32               zero
 //         32   u64 LE, repeated  the file frame of each wrap, in wrap order;
 //                                kLostWrap for one whose boundary record the
-//                                audio thread could not push
+//                                audio thread could not push; kBeforeFile
+//                                for one the take made before this track's
+//                                file opened
 //
 // Append-only. A record cut short by a crash is not a wrap.
 //
@@ -31,7 +33,12 @@ public:
     // A wrap the list holds no frame for: its record was lost to a full
     // boundary ring. Its place is kept so the wraps after it keep theirs.
     static constexpr uint64_t kLostWrap = ~uint64_t{0};
-    static constexpr uint32_t kVersion = 1;
+    // A wrap the take made before this track's window opened (a late open:
+    // its Open record waited for room in the boundary ring). It holds the
+    // place so the file's passes are numbered as the take's, and is never
+    // placed by loop length.
+    static constexpr uint64_t kBeforeFile = ~uint64_t{0} - 1;
+    static constexpr uint32_t kVersion = 2;
     static constexpr std::size_t kHeaderBytes = 32;
 
     static std::string path_for(const std::string& take_path) { return take_path + ".wraps"; }
@@ -69,7 +76,8 @@ struct WrapList {
     uint64_t loop_from = 0;
     uint64_t loop_to = 0;
     uint32_t latency = 0;
-    std::vector<uint64_t> wraps;   // kLostWrap where a record was lost
+    // kLostWrap where a record was lost, kBeforeFile before the file opened
+    std::vector<uint64_t> wraps;
 };
 
 // False, with `error`, if the file is missing, not a wrap list, or of
