@@ -18,19 +18,30 @@ Rectangle {
     required property ShellModel shell
     required property SessionModel session
     required property SendModel sends
+    // The Mix window's views; null where none is wired.
+    property MixModel mixer: null
     property int bus: 0
     property var info: ({ name: "", gainDb: 0, gainText: "0.0", pan: 0, panText: "C", mute: false })
     readonly property int strip: sends.trackCount + bus
     readonly property var stripInfo: strip < sends.strips.length ? sends.strips[strip] : null
 
     // The same height budget as ChannelStrip's, so every fader starts level.
-    readonly property real faderFloor: Math.ceil(height * Theme.faderSharePercent / 100)
+    readonly property bool viewIO: mixer === null || mixer.showIO
+    readonly property bool viewInsertsAE: mixer === null || mixer.showInsertsAE
+    readonly property bool viewInsertsFJ: mixer !== null && mixer.showInsertsFJ
+    readonly property bool viewSends: mixer === null || mixer.showSends
+    readonly property int insertCount: (viewInsertsAE ? 5 : 0) + (viewInsertsFJ ? 5 : 0)
+    readonly property bool expanded: viewInsertsFJ || (viewSends && sends.bank === 5)
+    readonly property real faderFloor: Math.ceil(height * (expanded ? Theme.faderShareExpandedPercent
+                                                                    : Theme.faderSharePercent) / 100)
     readonly property real room: height - (Theme.space2 + top.height) - 2 * Theme.space2
                                  - faderFloor - (Theme.space3 + Theme.space2)
-                                 - (16 + Theme.space2) - (18 + Theme.space2 + 22 + Theme.space1)
-    readonly property real sendsHeight: 5 * Theme.insertSlotHeight + 4
-    readonly property real insertsHeight: Math.min(10 * Theme.insertSlotHeight + 9 + 2 + 12,
-        Math.max(Theme.stripMinSlots * Theme.insertSlotHeight + 2 + 12, room - sendsHeight))
+                                 - (viewIO ? 16 + Theme.space2 : 0) - (18 + Theme.space2 + 22 + Theme.space1)
+    readonly property real sendsHeight: viewSends ? 5 * Theme.insertSlotHeight + 4 : 0
+    readonly property real insertsHeight: insertCount === 0 ? 0
+        : Math.min(insertCount * Theme.insertSlotHeight + (insertCount - 1) + 2 + 12,
+                   Math.max(Math.min(insertCount, Theme.stripMinSlots) * Theme.insertSlotHeight + 2 + 12,
+                            room - sendsHeight))
 
     objectName: "aux" + bus
     color: Theme.panel
@@ -130,6 +141,7 @@ Rectangle {
         anchors { left: parent.left; right: parent.right; top: insertArea.bottom; topMargin: Theme.space2
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
         height: aux.sendsHeight
+        visible: aux.viewSends
         ScrollFrame {
             anchors.fill: parent
             contentHeight: 5 * Theme.insertSlotHeight + 4
@@ -156,8 +168,9 @@ Rectangle {
         id: outputButton
         objectName: "auxOutput" + aux.bus
         anchors { left: parent.left; right: parent.right; top: sendArea.bottom
-                  topMargin: Theme.space2; leftMargin: Theme.space1; rightMargin: Theme.space1 }
-        implicitHeight: 16
+                  topMargin: aux.viewIO ? Theme.space2 : 0; leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        implicitHeight: aux.viewIO ? 16 : 0
+        visible: aux.viewIO
         bold: false
         fontPx: Theme.textCaption
         text: aux.info.output !== undefined ? aux.info.output : "Master"

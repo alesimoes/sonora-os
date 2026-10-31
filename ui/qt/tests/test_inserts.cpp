@@ -30,6 +30,7 @@
 #include "control_adapter.h"
 #include "insert_controller.h"
 #include "insert_model.h"
+#include "mix_model.h"
 #include "key_router.h"
 #include "peak_source.h"
 #include "register_types.h"
@@ -72,6 +73,7 @@ struct Rig {
                      }};
     ShellModel shell{engine, router};
     InsertModel inserts{doc, session};
+    MixModel mixer{session, MixModel::GainSender(), []() { return 0u; }, true};
     std::vector<std::string> refused;
     std::vector<std::string> notices;
     QTemporaryDir dir;
@@ -540,7 +542,8 @@ int qml() {
     view.resize(1280, 720);
     view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&r.shell)},
                                {QStringLiteral("session"), QVariant::fromValue(&r.session)},
-                               {QStringLiteral("inserts"), QVariant::fromValue(&r.inserts)}});
+                               {QStringLiteral("inserts"), QVariant::fromValue(&r.inserts)},
+                               {QStringLiteral("mixer"), QVariant::fromValue(&r.mixer)}});
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
     for (const auto& e : view.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));
     CHECK(view.status() == QQuickView::Ready);
@@ -552,7 +555,12 @@ int qml() {
     CHECK(QTest::qWaitForWindowActive(&view));
     QQuickItem* root = view.rootObject();
 
-    // Ten slots a strip; A on track 1 holds the compressor.
+    // Five slots a strip by default (A to E), ten with the F-J bank expanded;
+    // A on track 1 holds the compressor.
+    for (int s = 0; s < 5; ++s) CHECK(named(root, QStringLiteral("insert_3_%1").arg(s)) != nullptr);
+    CHECK(named(root, QStringLiteral("insert_3_5")) == nullptr);
+    r.mixer.setShowInsertsFJ(true);
+    QTest::qWait(30);
     for (int s = 0; s < 10; ++s) CHECK(named(root, QStringLiteral("insert_3_%1").arg(s)) != nullptr);
     QQuickItem* a = named(root, QStringLiteral("insert_0_0"));
     CHECK(a != nullptr && a->property("present").toBool());

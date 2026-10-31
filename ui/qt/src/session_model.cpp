@@ -1345,6 +1345,7 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     updateCounters(true);
     sync();
     emit sessionChanged();
+    emit sessionOpened();
     QVariantList repairs;
     for (const model::Repair& r : loaded.repairs) {
         QVariantMap m;

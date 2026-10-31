@@ -51,6 +51,8 @@ SendModel::SendModel(TimelineDocument& doc, SessionModel& session, QObject* pare
         refresh();
         refreshWindow();
     });
+    // Which five sends a strip shows is the window's view of one session.
+    connect(&session_, &SessionModel::sessionOpened, this, [this]() { setBank(0); });
     refresh();
 }
 

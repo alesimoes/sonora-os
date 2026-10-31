@@ -76,6 +76,15 @@ class MixModel : public QObject {
     Q_PROPERTY(QString trackMeterCaption READ trackMeterCaption CONSTANT)
     Q_PROPERTY(QString busMeterCaption READ busMeterCaption CONSTANT)
     Q_PROPERTY(QString note READ note CONSTANT)
+    // The Mix window's views (ui-design.md, "Mixer strip anatomy"): which
+    // sections of a strip are shown. Interface state, outside the session
+    // file (session-format.md, ADR-0007 5); it goes back to the defaults
+    // when another session opens. Inserts F-J are hidden by default; the
+    // sends' F-J is SendModel::bank.
+    Q_PROPERTY(bool showIO READ showIO WRITE setShowIO NOTIFY viewsChanged)
+    Q_PROPERTY(bool showInsertsAE READ showInsertsAE WRITE setShowInsertsAE NOTIFY viewsChanged)
+    Q_PROPERTY(bool showInsertsFJ READ showInsertsFJ WRITE setShowInsertsFJ NOTIFY viewsChanged)
+    Q_PROPERTY(bool showSends READ showSends WRITE setShowSends NOTIFY viewsChanged)
 
 public:
     static constexpr int kNoRide = -2;
@@ -97,6 +106,14 @@ public:
     QString trackMeterCaption() const;
     QString busMeterCaption() const;
     QString note() const;
+    bool showIO() const { return show_io_; }
+    bool showInsertsAE() const { return show_inserts_ae_; }
+    bool showInsertsFJ() const { return show_inserts_fj_; }
+    bool showSends() const { return show_sends_; }
+    void setShowIO(bool on) { setView(show_io_, on); }
+    void setShowInsertsAE(bool on) { setView(show_inserts_ae_, on); }
+    void setShowInsertsFJ(bool on) { setView(show_inserts_fj_, on); }
+    void setShowSends(bool on) { setView(show_sends_, on); }
     // ParameterChanges sent by rides, for the tests.
     uint64_t liveSteps() const { return live_steps_; }
 
@@ -121,8 +138,15 @@ public:
 
 signals:
     void rideChanged();
+    void viewsChanged();
 
 private:
+    void setView(bool& field, bool on) {
+        if (field == on) return;
+        field = on;
+        emit viewsChanged();
+    }
+    void resetViews();
     bool live(int track) const;
     void sendLive(int track, float db);
     // Every track's solo (or mute) to `on`, one SetMix per track that differs.
@@ -148,6 +172,10 @@ private:
     float ride_from_db_ = 0.0f;
     bool ride_sent_live_ = false;
     uint64_t live_steps_ = 0;
+    bool show_io_ = true;
+    bool show_inserts_ae_ = true;
+    bool show_inserts_fj_ = false;
+    bool show_sends_ = true;
 };
 
 }  // namespace sonora::ui

@@ -27,8 +27,11 @@ Rectangle {
 
     Text {
         id: busName
-        anchors { left: parent.left; right: level.left; top: parent.top; bottom: parent.bottom
-                  leftMargin: Theme.space1 }
+        // Not anchored to `level`: its width would be bound to its own
+        // visibility (a binding loop); the margin is the level's room.
+        anchors { left: parent.left; right: parent.right; top: parent.top; bottom: parent.bottom
+                  leftMargin: Theme.space1
+                  rightMargin: level.visible ? level.implicitWidth + 2 * Theme.space1 : 0 }
         verticalAlignment: Text.AlignVCenter
         horizontalAlignment: s.present ? Text.AlignLeft : Text.AlignHCenter
         elide: Text.ElideRight
@@ -41,7 +44,6 @@ Rectangle {
         id: level
         anchors { right: parent.right; rightMargin: Theme.space1; verticalCenter: parent.verticalCenter }
         visible: s.present && s.width >= 56
-        width: visible ? implicitWidth : 0
         text: s.present ? s.info.levelText : ""
         color: Theme.textSecondary
         font { family: Theme.fontFamily; pixelSize: Theme.textOverline; features: { "tnum": 1 } }

@@ -274,7 +274,8 @@ if(SONORA_XVFB)
   add_test(NAME ui_render
            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/with-xvfb.sh 1280x720x24
                    $<TARGET_FILE:test_ui_render>)
-  set_tests_properties(ui_render PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+  set_tests_properties(ui_render PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb"
+                       FAIL_REGULAR_EXPRESSION "Binding loop")
 else()
   message(STATUS "ui/qt: Xvfb not found; ui_render (a rendered frame) is not run")
 endif()
@@ -284,4 +285,5 @@ endif()
 add_executable(test_ui_mix_layout tests/test_mix_layout.cpp)
 target_link_libraries(test_ui_mix_layout PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix_layout COMMAND test_ui_mix_layout)
-set_tests_properties(ui_mix_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+set_tests_properties(ui_mix_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                     FAIL_REGULAR_EXPRESSION "Binding loop")

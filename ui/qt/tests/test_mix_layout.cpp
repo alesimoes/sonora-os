@@ -7,11 +7,14 @@
 //     window divided by the number of strips (regression: 37 px at 48);
 //   - past what fits the strips scroll sideways, and the master, Wide and
 //     pinned at the right, does not move when they do;
-//   - the fader zone is at least 55 % of the strip's height, with every
-//     insert and send slot in use (they scroll inside their own frames
-//     before the fader gives up the space), and at least 240 px of throw;
-//   - the insert frame keeps slots A to E in view, the sends their five rows, and nothing
-//     overlaps the fader zone.
+//   - the fader zone is at least 55 % of the strip's height with the default
+//     views (inserts and sends A-E), 35 % with every bank expanded (the
+//     banks scroll inside their frames), and takes the height of what is
+//     collapsed; at least 240 px of throw throughout;
+//   - the insert frame keeps slots A to E in view, the sends their five
+//     rows, and nothing overlaps the fader zone;
+//   - another session opening resets the views;
+//   - no QML "Binding loop" warning is raised while it runs.
 #include <QGuiApplication>
 #include <QQuickItem>
 #include <QQuickView>
@@ -165,39 +168,98 @@ int layout(int tracks) {
     flick->setProperty("contentX", 0.0);
 
     // Height budgets, on every strip and the aux return and the master.
-    double worst = 1.0;
-    double worstThrow = 1e9;
-    const auto check_strip = [&](QQuickItem* zone, double& share, double& throw_px) {
-        QQuickItem* strip = zone->parentItem();
-        share = zone->height() / strip->height();
-        throw_px = zone->height() - 26.0;  // the cap's height
-        worst = std::min(worst, share);
-        worstThrow = std::min(worstThrow, throw_px);
-        return share >= 0.55 - 1e-9 && throw_px >= 240.0;
+    // The budgets are the spec's: the default views (inserts and sends A-E)
+    // keep the fader zone at 55 % or more; with every view expanded 35 % and
+    // 240 px of throw, the banks scrolling inside their frames; collapsed
+    // views give their height to the fader.
+    struct Result {
+        double worst = 1.0;
+        double worstThrow = 1e9;
     };
-    double share = 0, tp = 0;
-    for (int t = 0; t < tracks; ++t) {
-        QQuickItem* zone = named(root, QStringLiteral("faderZone%1").arg(t));
-        CHECK(zone != nullptr);
-        CHECK(check_strip(zone, share, tp));
-        QQuickItem* strip = zone->parentItem();
-        QQuickItem* frame = named(strip, QStringLiteral("insertFrame%1").arg(t));
-        QQuickItem* sendFrame = named(strip, QStringLiteral("sendFrame%1").arg(t));
-        CHECK(frame != nullptr && sendFrame != nullptr);
-        const double slot = theme::kInsertSlotHeight;
-        CHECK(frame->height() >= theme::kStripMinSlots * slot);
-        CHECK(sendFrame->height() >= 5 * slot);
-        // Nothing sits over the fader.
-        CHECK(frame->mapToItem(strip, QPointF(0, frame->height())).y() <= zone->y());
-        CHECK(sendFrame->mapToItem(strip, QPointF(0, sendFrame->height())).y() <= zone->y());
-    }
-    QQuickItem* aux = named(root, QStringLiteral("auxFaderZone0"));
-    CHECK(aux != nullptr);
-    CHECK(check_strip(aux, share, tp));
-    CHECK(check_strip(masterZone, share, tp));
-    std::printf("  %d tracks: fader zone %.1f %% of the strip, throw %.0f px (strip %.0f px)\n",
-                tracks, worst * 100.0, worstThrow, first->height());
+    const auto budgets = [&](double minShare, bool frames, Result& out) {
+        out = Result{};
+        const auto check_strip = [&](QQuickItem* zone) {
+            QQuickItem* strip = zone->parentItem();
+            const double share = zone->height() / strip->height();
+            const double throw_px = zone->height() - 26.0;  // the cap's height
+            out.worst = std::min(out.worst, share);
+            out.worstThrow = std::min(out.worstThrow, throw_px);
+            return share >= minShare - 1e-9 && throw_px >= 240.0;
+        };
+        for (int t = 0; t < tracks; ++t) {
+            QQuickItem* zone = named(root, QStringLiteral("faderZone%1").arg(t));
+            if (zone == nullptr || !check_strip(zone)) return false;
+            if (!frames) continue;
+            QQuickItem* strip = zone->parentItem();
+            QQuickItem* frame = named(strip, QStringLiteral("insertFrame%1").arg(t));
+            QQuickItem* sendFrame = named(strip, QStringLiteral("sendFrame%1").arg(t));
+            if (frame == nullptr || sendFrame == nullptr) return false;
+            const double slot = theme::kInsertSlotHeight;
+            if (frame->height() < theme::kStripMinSlots * slot) return false;
+            if (sendFrame->height() < 5 * slot) return false;
+            // Nothing sits over the fader.
+            if (frame->mapToItem(strip, QPointF(0, frame->height())).y() > zone->y()) return false;
+            if (sendFrame->mapToItem(strip, QPointF(0, sendFrame->height())).y() > zone->y())
+                return false;
+        }
+        QQuickItem* aux = named(root, QStringLiteral("auxFaderZone0"));
+        return aux != nullptr && check_strip(aux) && check_strip(masterZone);
+    };
+    const auto settle_views = [&]() {
+        QTest::qWait(30);
+        r.settle();
+    };
+    Result def, expanded, collapsed;
+
+    // Defaults: inserts A-E, sends A-E, I/O.
+    CHECK(r.mixer.showIO() && r.mixer.showInsertsAE() && r.mixer.showSends());
+    CHECK(!r.mixer.showInsertsFJ() && r.sends.bank() == 0);
+    CHECK(budgets(0.55, true, def));
+
+    // Everything expanded: F-J of inserts and sends too.
+    r.mixer.setShowInsertsFJ(true);
+    r.sends.setBank(5);
+    settle_views();
+    CHECK(budgets(0.35, true, expanded));
+    CHECK(expanded.worst < def.worst);
+    CHECK(named(root, QStringLiteral("insertFrame0"))->height() > 5 * theme::kInsertSlotHeight);
+
+    // Collapsed: no inserts, no sends, no I/O. Their height is the fader's.
+    r.mixer.setShowInsertsAE(false);
+    r.mixer.setShowInsertsFJ(false);
+    r.mixer.setShowSends(false);
+    r.mixer.setShowIO(false);
+    r.sends.setBank(0);
+    settle_views();
+    CHECK(budgets(0.55, false, collapsed));
+    CHECK(collapsed.worst > def.worst);
+    CHECK(!named(root, QStringLiteral("insertFrame0"))->isVisible());
+    CHECK(!named(root, QStringLiteral("output0"))->isVisible());
+    std::printf("  %d tracks: fader zone %.1f %% default, %.1f %% expanded, %.1f %% collapsed, "
+                "throw %.0f / %.0f / %.0f px (strip %.0f px)\n",
+                tracks, def.worst * 100.0, expanded.worst * 100.0, collapsed.worst * 100.0,
+                def.worstThrow, expanded.worstThrow, collapsed.worstThrow, first->height());
+
+    // Inserts A-E shown again bring their frame back.
+    r.mixer.setShowInsertsAE(true);
+    settle_views();
+    CHECK(named(root, QStringLiteral("insertFrame0"))->isVisible());
+
+    // Another session opening puts the views back to their defaults.
+    r.mixer.setShowIO(false);
+    r.mixer.setShowInsertsFJ(true);
+    r.sends.setBank(5);
+    emit r.session.sessionOpened();
+    CHECK(r.mixer.showIO() && r.mixer.showInsertsAE() && r.mixer.showSends());
+    CHECK(!r.mixer.showInsertsFJ() && r.sends.bank() == 0);
     return 0;
+}
+
+int g_binding_loops = 0;
+
+void count_binding_loops(QtMsgType, const QMessageLogContext&, const QString& msg) {
+    if (msg.contains(QStringLiteral("Binding loop"))) ++g_binding_loops;
+    std::fprintf(stderr, "%s\n", qPrintable(msg));
 }
 
 }  // namespace
@@ -205,8 +267,14 @@ int layout(int tracks) {
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
+    qInstallMessageHandler(count_binding_loops);
     if (layout(18) != 0) return 1;
     if (layout(48) != 0) return 1;
+    // QML warns, and carries on with a binding that never settles.
+    if (g_binding_loops != 0) {
+        std::fprintf(stderr, "FAIL: %d \"Binding loop\" warnings\n", g_binding_loops);
+        return 1;
+    }
     std::printf("ui mix layout: all checks passed\n");
     return 0;
 }

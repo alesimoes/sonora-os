@@ -64,22 +64,45 @@ Rectangle {
     readonly property int stateButton: Math.max(12, Math.min(18, Math.floor((width - 10) / 4)))
 
     // The fader zone takes the rest, and the strip's height budget starts
-    // from its floor: the five sends keep their rows, and the inserts get
-    // what is left above the fader and scroll inside their frame when they
-    // need more (ui-design.md, "Mixer strip anatomy"). A strip too short to
-    // hold five insert slots keeps those five and the fader gives way, so
-    // slots A to E are never out of reach.
-    readonly property real faderFloor: Math.ceil(height * Theme.faderSharePercent / 100)
-    readonly property real insertsFull: inserts === null ? 0 : 10 * Theme.insertSlotHeight + 9 + 2 + 12
-    readonly property real sendsFull: sends === null ? 0 : 5 * Theme.insertSlotHeight + 4
-    readonly property real minSection: Theme.stripMinSlots * Theme.insertSlotHeight + 2 + 12
+    // from its floor: the sends keep their rows, and the inserts get what is
+    // left above the fader and scroll inside their frame when they need
+    // more (ui-design.md, "Mixer strip anatomy"). A strip too short to hold
+    // five insert slots keeps those five and the fader gives way, so slots
+    // A to E are never out of reach. The Mix window's views (MixModel) say
+    // which sections are there: a collapsed one gives its height to the
+    // fader, and with an F-J bank expanded the floor is the lower one.
+    readonly property bool viewIO: mixer === null || mixer.showIO
+    readonly property bool viewInsertsAE: mixer === null || mixer.showInsertsAE
+    readonly property bool viewInsertsFJ: mixer !== null && mixer.showInsertsFJ
+    readonly property bool viewSends: mixer === null || mixer.showSends
+    readonly property int insertCount: (viewInsertsAE ? 5 : 0) + (viewInsertsFJ ? 5 : 0)
+    readonly property int firstInsert: viewInsertsAE ? 0 : 5
+    readonly property bool expanded: viewInsertsFJ || (viewSends && sends !== null && sends.bank === 5)
+    readonly property real faderFloor: Math.ceil(height * (expanded ? Theme.faderShareExpandedPercent
+                                                                    : Theme.faderSharePercent) / 100)
+    readonly property real insertsFull: inserts === null || insertCount === 0 ? 0
+        : insertCount * Theme.insertSlotHeight + (insertCount - 1) + 2 + 12
+    readonly property real sendsFull: sends === null || !viewSends ? 0 : 5 * Theme.insertSlotHeight + 4
+    readonly property real minSection: insertCount === 0 ? 0
+        : Math.min(insertCount, Theme.stripMinSlots) * Theme.insertSlotHeight + 2 + 12
+    readonly property real outputRow: viewIO ? 16 + Theme.space2 : 0
     readonly property real room: height - (Theme.space2 + top.height) - 2 * Theme.space2
                                  - faderFloor - (Theme.space3 + Theme.space2)
-                                 - (16 + Theme.space2) - (18 + Theme.space2 + 22 + Theme.space1)
+                                 - outputRow - (18 + Theme.space2 + 22 + Theme.space1)
     readonly property real sendsHeight: sendsFull
     readonly property real insertsHeight: inserts === null ? 0
         : Math.min(insertsFull, Math.max(minSection, room - sendsHeight))
     readonly property alias insertFrame: insertFrame
+    // Plugins in a collapsed insert bank, said on the strip ("+N").
+    readonly property int hiddenInserts: {
+        if (insertInfo === null) return 0
+        let n = 0
+        for (let i = 0; i < 10; ++i) {
+            const shown = i < 5 ? viewInsertsAE : viewInsertsFJ
+            if (!shown && insertInfo.slots[i].present) ++n
+        }
+        return n
+    }
 
     color: selected ? Theme.raised : Theme.panel
     radius: Theme.radius
@@ -215,7 +238,7 @@ Rectangle {
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
         // The same on the bus (no inserts), which keeps its fader level with the tracks'.
         height: strip.insertsHeight
-        visible: strip.inserts !== null
+        visible: strip.inserts !== null && strip.insertCount > 0
 
         ScrollFrame {
             id: insertFrame
@@ -228,16 +251,16 @@ Rectangle {
                 spacing: 1
                 visible: !strip.isBus
                 Repeater {
-                    model: strip.isBus || strip.inserts === null ? 0 : 10
+                    model: strip.isBus || strip.inserts === null ? 0 : strip.insertCount
                     InsertSlot {
                         required property int index
                         width: insertColumn.width
                         inserts: strip.inserts
                         dragHost: strip.dragHost
                         track: strip.track
-                        slot: index
-                        info: strip.insertInfo !== null ? strip.insertInfo.slots[index]
-                                                        : ({ present: false, letter: String.fromCharCode(65 + index) })
+                        slot: strip.firstInsert + index
+                        info: strip.insertInfo !== null ? strip.insertInfo.slots[slot]
+                                                        : ({ present: false, letter: String.fromCharCode(65 + slot) })
                     }
                 }
             }
@@ -252,6 +275,17 @@ Rectangle {
             color: strip.insertInfo !== null && strip.insertInfo.latency > 0 ? Theme.textSecondary : Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
         }
+        // A collapsed bank with a plugin in it says so.
+        Text {
+            objectName: strip.isBus ? "" : "insertsMore" + strip.track
+            anchors { right: parent.right; bottom: parent.bottom }
+            height: 12
+            visible: !strip.isBus && strip.hiddenInserts > 0
+            text: "+" + strip.hiddenInserts
+            color: Theme.accent
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold
+                   features: { "tnum": 1 } }
+        }
     }
 
     // --- sends: five of A to J ---
@@ -261,7 +295,7 @@ Rectangle {
         anchors { left: parent.left; right: parent.right; top: insertArea.bottom; topMargin: strip.sends === null ? 0 : Theme.space2
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
         height: strip.sendsHeight
-        visible: strip.sends !== null
+        visible: strip.sends !== null && strip.viewSends
         readonly property var info: strip.sends !== null && !strip.isBus && strip.track < strip.sends.strips.length
                                     ? strip.sends.strips[strip.track] : null
 
@@ -296,9 +330,9 @@ Rectangle {
         readonly property var info: strip.sends !== null && !strip.isBus && strip.track < strip.sends.strips.length
                                     ? strip.sends.strips[strip.track] : null
         anchors { left: parent.left; right: parent.right; top: sendArea.bottom
-                  topMargin: Theme.space2; leftMargin: Theme.space1; rightMargin: Theme.space1 }
-        implicitHeight: 16
-        visible: strip.sends !== null && (strip.isBus || (info !== null && info.sends))
+                  topMargin: strip.viewIO ? Theme.space2 : 0; leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        implicitHeight: strip.viewIO ? 16 : 0
+        visible: strip.viewIO && strip.sends !== null && (strip.isBus || (info !== null && info.sends))
         bold: false
         fontPx: Theme.textCaption
         text: strip.isBus ? "Out" : info !== null ? info.output : ""
