@@ -580,6 +580,14 @@ int fake_host(int argc, char** argv, const std::string& mode) {
     bool misbehaved = false;
     uint64_t next_ms = 0;
     uint32_t sent = 0;
+    // A host that never hears its Shutdown (a plugin's thread holds its main
+    // loop): it beats on until it is killed.
+    if (mode == "deaf") {
+        for (;;) {
+            h.heartbeat.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
     while (h.shutdown.load(std::memory_order_acquire) == 0) {
         h.heartbeat.fetch_add(1, std::memory_order_relaxed);
         const uint64_t t = steady_ns();
@@ -1049,6 +1057,55 @@ int scenario_control_start_paths(const Args&) {
     return 0;
 }
 
+// The destructor of a chain whose owner did not ask first never waits: a
+// host deaf to its Shutdown cost it 2 s in HostProcess::stop(). The host
+// goes to the supervisor, whose reap() kills it past the grace. The owner
+// that asks first (request_stop, stopped) leaves the supervisor nothing.
+int scenario_control_stop_paths(const Args&) {
+    std::printf("control_stop_paths: a deaf host, destroyed bound without a stop, and stopped first\n");
+    ::setenv("SONORA_FAKE_HOST", "deaf", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) return 1;
+    {
+        auto chain = std::make_unique<SupervisedChain>(*rig.sup, fake_spec(), 0, 0);
+        std::string error;
+        check(chain->begin(error), "spawned");
+        check(ControlRig::next_event(*chain, 5000) == SupervisedChain::Event::Swapped, "Ready and bound");
+        const uint64_t t0 = now_ms();
+        chain.reset();
+        const uint64_t took = now_ms() - t0;
+        char line[96];
+        std::snprintf(line, sizeof line, "destroyed bound in %llu ms, its deaf host not waited for",
+                      (unsigned long long)took);
+        check(took < 500, line);
+        check(rig.sup->adopted() == 1, "the supervisor holds the host still running");
+        const uint64_t end = now_ms() + 5000;
+        bool reaped = false;
+        while (!reaped && now_ms() < end) {
+            reaped = rig.sup->reap(now_ms());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        check(reaped && rig.sup->adopted() == 0, "reap() killed it past the grace and reaped it");
+    }
+    {
+        auto chain = std::make_unique<SupervisedChain>(*rig.sup, fake_spec(), 0, 0);
+        std::string error;
+        check(chain->begin(error), "spawned again");
+        check(ControlRig::next_event(*chain, 5000) == SupervisedChain::Event::Swapped, "Ready and bound again");
+        chain->request_stop(now_ms());
+        const uint64_t end = now_ms() + 5000;
+        bool stopped = false;
+        while (!stopped && now_ms() < end) {
+            stopped = chain->stopped(now_ms());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        check(stopped, "asked first: stopped() once the kill past the grace is reaped");
+        chain.reset();
+        check(rig.sup->adopted() == 0, "asked first: nothing left for the supervisor");
+    }
+    return 0;
+}
+
 // M1 on #78: the state caps are checked before anything is copied, encoded
 // or spawned. One state over 16 MiB is that instance's refusal; together
 // over 64 MiB, the chain's; neither starts a host or retries.
@@ -1410,6 +1467,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "control_breaches") r = scenario_control_breaches(a);
     else if (a.scenario == "control_load_cap") r = scenario_control_load_cap(a);
     else if (a.scenario == "control_start_paths") r = scenario_control_start_paths(a);
+    else if (a.scenario == "control_stop_paths") r = scenario_control_stop_paths(a);
     else if (a.scenario == "async_start") r = scenario_async_start(a);
     else if (a.scenario == "ready_timeout") r = scenario_ready_timeout(a);
     else if (a.scenario == "async_refused") r = scenario_async_refused(a);

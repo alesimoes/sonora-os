@@ -109,7 +109,8 @@ public:
     // read through checked_latency. Failed, with `error` naming the plugin
     // and the reason, when it refused, faulted, exited, reported an
     // implausible latency or passed ready_timeout_ms; the host is then
-    // killed and reaped. Ready and Failed are final: later calls repeat them.
+    // sent SIGKILL, not waited for: running() or stopped() reaps it. Ready
+    // and Failed are final: later calls repeat them.
     Startup poll_startup(uint64_t now_ms, std::string& error);
     // Failed in a way a restart cannot change: the region says Refused or
     // Faulted at load or validation, or the latency the host reported at
@@ -122,7 +123,8 @@ public:
     // the control thread and harnesses; never the audio thread's question.
     bool idle();
     // Shutdown on the socket and the shutdown word, a bounded wait, then
-    // SIGKILL; reaps it.
+    // SIGKILL; reaps it. Both BLOCK, so harnesses and the destructor only:
+    // the control thread uses request_stop, stopped and signal_kill.
     void stop();
     void kill();
     // stop() without the wait, for the control thread: Shutdown and the
@@ -321,8 +323,19 @@ public:
     // (refusal, exit code, timeout) when it does not get to Ready.
     std::unique_ptr<HostProcess> start(const ChainSpec& spec, std::string& error);
 
+    // Hosts a SupervisedChain was destroyed with while they still ran (its
+    // owner did not request_stop() and wait for stopped() first): asked to
+    // stop, and kept here so that the destructor waits for nothing. reap()
+    // never waits: it drops those that have exited, signals the kill past
+    // the grace, and is true once none is left. The owner calls it from its
+    // poll; this destructor gives the rest one bounded grace (teardown).
+    void adopt(std::unique_ptr<HostProcess> host);
+    bool reap(uint64_t now_ms);
+    std::size_t adopted() const { return adopted_.size(); }
+
 private:
     SupervisorConfig config_;
+    std::vector<std::unique_ptr<HostProcess>> adopted_;
     PluginClient& client_;
     std::unique_ptr<platform::SharedRegion> clock_region_;
     bool ok_ = false;
@@ -396,8 +409,9 @@ public:
     bool refresh_latency();
     // For a chain being let go, after every plan naming its slots has been
     // retired: every host asked to stop without waiting, and stopped() true
-    // once all have exited (killed past the grace). The destructor then
-    // waits for nothing.
+    // once all have exited (killed past the grace). The destructor never
+    // waits either way: a host still running then goes to the supervisor
+    // (HostSupervisor::adopt), whose reap() finishes it.
     void request_stop(uint64_t now_ms);
     bool stopped(uint64_t now_ms);
     // A replacement is starting while the old host's slot stays bound.
@@ -430,6 +444,13 @@ private:
     // starting_ looked at once.
     Event poll_starting(uint64_t now_ms);
     bool bind(std::unique_ptr<HostProcess> host);
+    // A host no plan names any more (its slot retired, or never bound):
+    // asked to stop, killed now if `kill`, and kept in let_go_ until it has
+    // exited, so no path of the control thread waits for a process.
+    void let_go(std::unique_ptr<HostProcess> host, uint64_t now_ms, bool kill);
+    // let_go_'s exited hosts dropped, their last messages kept; true when
+    // none is left.
+    bool reap_let_go(uint64_t now_ms);
 
     HostSupervisor& sup_;
     ChainSpec spec_;
@@ -441,6 +462,7 @@ private:
     uint32_t generation_ = 0;
     std::unique_ptr<HostProcess> retiring_;
     uint32_t retiring_slot_ = kNoSlot;
+    std::vector<std::unique_ptr<HostProcess>> let_go_;
     std::deque<uint64_t> restart_times_;
     uint64_t streak_samples_[plugin::kMaxInstances] = {};
     int32_t culprit_ = -1;
