@@ -274,20 +274,31 @@ playback can follow edits; it is in flight.
              session file" instead (Pro Tools' recovery prompt).
        - [ ] Save As progress for large copies across volumes: one Notice
              at the start today; per-file progress and a cancel.
-       - [ ] a failed autosave leaves covered_revision_ at the revision it
+       - [x] a failed autosave leaves covered_revision_ at the revision it
              tried, so it is not retried until the next edit; restore it on
-             failure (#164 review)
-       - [ ] sweep_partial_copies deletes every "*.part" in Audio Files/ and
+             failure (#164 review; `t2-session-followups`)
+       - [x] sweep_partial_copies deletes every "*.part" in Audio Files/ and
              MIDI Files/ on every folder enter and misses subfolders; match
-             only "<media name>.part" and recurse like save_as (#164 review)
-       - [ ] a Save As copy is not paced while a take may start; refuse
+             only "<media name>.part" and recurse like save_as (#164 review;
+             `t2-session-followups`)
+       - [x] a Save As copy is not paced while a take may start; refuse
              transport.record during a Save As copy, or pace the copy per
-             checkpoint (exFAT, no hard links) (#164 review)
-       - [ ] a Save As that fails in a pre-existing empty folder leaves its
+             checkpoint (exFAT, no hard links) (#164 review; refused, with
+             toggle_record and punch, in the engine and FakeEngine;
+             `t2-session-followups`)
+       - [x] a Save As that fails in a pre-existing empty folder leaves its
              links/copies there, so a retry is refused "not empty"; remove
-             what this call put in it (#164 review)
-       - [ ] finish_save_as fences the saver before it knows the folder can
-             be entered; check folder_change_refusal() first (#164 review)
+             what this call put in it (#164 review; `t2-session-followups`)
+       - [x] finish_save_as fences the saver before it knows the folder can
+             be entered; check folder_change_refusal() first (#164 review;
+             `t2-session-followups`)
+       - [x] a test of autosave_file_of for rotated backup names, C++
+             rotated_backup_stem against the Qt regex, so the two cannot
+             drift (#164 review; `t2-session-followups`)
+       - [x] SessionFolder::enter cleared autosaves_written_ on a folder
+             switch, so a returning autosave moved the saver's own autosave
+             aside as a crash's; keyed by path, never cleared (#164 review;
+             `t2-session-followups`)
        - [x] #157/#158 review follow-ups (`t2-timeline-followups`):
              region_fades test_fade_gains_by_hand pins each shape's gain at
              hand-computed points, independent of `fade_in_gain`;

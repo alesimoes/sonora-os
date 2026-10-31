@@ -1783,6 +1783,34 @@ bool full_disk(const std::string&, const std::string&, const Snapshot&, std::str
     return false;
 }
 
+// #164 review: the interface finds the autosave the engine writes, so its
+// regex and common/session_files' rotated_backup_stem() must not drift.
+int test_autosave_names_agree() {
+    const char* const files[] = {
+        "/s/Mix/Mix.sonora",
+        "/s/Mix/Song alt.sonora",
+        "/s/Mix/Session File Backups/Mix.20270115-080000.sonora",
+        "/s/Mix/Session File Backups/Song alt.20270115-080000-2.sonora",
+        "/s/Mix/Session File Backups/Mix.20270115-080000-123456.sonora",
+        "/s/Mix/Session File Backups/v1.2.20270115-080000-17.sonora",
+        "/s/Mix/Session File Backups/Mix.20270115-080000-1.sonora",
+        "/s/Mix/Session File Backups/Mix.20270115-080000-02.sonora",
+        "/s/Mix/Session File Backups/Mix.20270115-080000-1234567.sonora",
+        "/s/Mix/Session File Backups/Mix.v3.sonora",
+        "/s/Mix/Session File Backups/Mix.autosave.sonora",
+        "/s/Mix/Session File Backups/Mix.autosave.recovered-20270115-080000.sonora",
+    };
+    for (const char* f : files) {
+        const std::string engine = sonora::session_files::autosave_file_of(f);
+        const std::string ui = sonora::ui::autosave_file_of(QString::fromUtf8(f)).toStdString();
+        if (engine != ui) std::fprintf(stderr, "autosave of %s: engine %s, interface %s\n", f, engine.c_str(), ui.c_str());
+        OK(engine == ui);
+    }
+    OK(sonora::ui::autosave_file_of(QStringLiteral("/s/Mix/Session File Backups/Song alt.20270115-080000-2.sonora")) ==
+       QStringLiteral("/s/Mix/Session File Backups/Song alt.autosave.sonora"));
+    return 0;
+}
+
 int test_save_failures() {
     QTemporaryDir dir;
     CHECK(dir.isValid());
@@ -2231,7 +2259,7 @@ int main(int argc, char** argv) {
         test_time() || test_nudge_tempo_map() ||
         test_scene() || test_routing() || test_files() || test_first_save_beside_its_takes() ||
         test_first_save_keeps_the_sessions_name() ||
-        test_save_failures() ||
+        test_save_failures() || test_autosave_names_agree() ||
         test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_save_as_and_copy()) {
         return 1;

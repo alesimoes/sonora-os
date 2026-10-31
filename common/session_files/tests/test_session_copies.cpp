@@ -397,6 +397,14 @@ int test_each_session_file_has_its_own_autosave() {
     // An autosave opened from the backups folder autosaves onto itself.
     CHECK(sf::autosave_file_of("/s/Mix/Session File Backups/Song.autosave.sonora") ==
           "/s/Mix/Session File Backups/Song.autosave.sonora");
+    // A rotated backup opened has its session's autosave; the interface's
+    // regex gives the same (ui/qt test_edit, test_autosave_names_agree).
+    CHECK(sf::autosave_file_of("/s/Mix/Session File Backups/Song alt.20270115-080000-2.sonora") ==
+          "/s/Mix/Session File Backups/Song alt.autosave.sonora");
+    CHECK(sf::autosave_file_of("/s/Mix/Session File Backups/v1.2.20270115-080000.sonora") ==
+          "/s/Mix/Session File Backups/v1.2.autosave.sonora");
+    CHECK(sf::autosave_file_of("/s/Mix/Session File Backups/Song.v3.sonora") ==
+          "/s/Mix/Session File Backups/Song.v3.autosave.sonora");
     return 0;
 }
 
@@ -555,18 +563,85 @@ int test_failed_save_as_is_taken_back() {
     return 0;
 }
 
+// #164 review: only what an interrupted copy leaves, "<media name>.part"
+// with no file of that name beside it, in subfolders too as save_as copies
+// them; never a symlink, file or directory.
 int test_partial_copies_swept() {
     TempDir tmp;
     const fs::path folder = tmp.path / "S";
     write(folder / "Audio Files" / "a.wav.part", "x");
-    write(folder / "Audio Files" / "a.wav", "keep");
+    write(folder / "Audio Files" / "Imported" / "deep" / "b.wav.part", "x");
     write(folder / "MIDI Files" / "k.mid.part", "x");
-    write(tmp.path / "elsewhere.part", "keep");
-    fs::create_symlink(tmp.path / "elsewhere.part", folder / "Audio Files" / "link.part");
-    CHECK(sf::sweep_partial_copies(folder.string()) == 2);
-    CHECK(read(folder / "Audio Files" / "a.wav") == "keep");
-    CHECK(fs::is_symlink(folder / "Audio Files" / "link.part"));
-    CHECK(read(tmp.path / "elsewhere.part") == "keep");
+    write(folder / "Audio Files" / "c.wav.part", "not a copy's");
+    write(folder / "Audio Files" / "c.wav", "keep");
+    write(folder / "Audio Files" / "notes.part", "the operator's");
+    write(folder / "Audio Files" / "x.wav.part.part", "keep");
+    write(folder / "Audio Files" / "x.wav.tmp.part", "keep");
+    write(tmp.path / "elsewhere.wav.part", "keep");
+    fs::create_symlink(tmp.path / "elsewhere.wav.part", folder / "Audio Files" / "link.wav.part");
+    write(tmp.path / "Outside" / "o.wav.part", "keep");
+    fs::create_directory_symlink(tmp.path / "Outside", folder / "Audio Files" / "Outside");
+    CHECK(sf::sweep_partial_copies(folder.string()) == 3);
+    CHECK(!fs::exists(folder / "Audio Files" / "a.wav.part"));
+    CHECK(!fs::exists(folder / "Audio Files" / "Imported" / "deep" / "b.wav.part"));
+    CHECK(!fs::exists(folder / "MIDI Files" / "k.mid.part"));
+    CHECK(read(folder / "Audio Files" / "c.wav.part") == "not a copy's");
+    CHECK(read(folder / "Audio Files" / "c.wav") == "keep");
+    CHECK(read(folder / "Audio Files" / "notes.part") == "the operator's");
+    CHECK(fs::exists(folder / "Audio Files" / "x.wav.part.part"));
+    CHECK(fs::exists(folder / "Audio Files" / "x.wav.tmp.part"));
+    CHECK(fs::is_symlink(folder / "Audio Files" / "link.wav.part"));
+    CHECK(read(tmp.path / "elsewhere.wav.part") == "keep");
+    CHECK(read(tmp.path / "Outside" / "o.wav.part") == "keep");
+    return 0;
+}
+
+bool sync_fails_in_empty(const std::string& path) {
+    return path.find("/Empty") == std::string::npos || path.find("Audio Files") == std::string::npos;
+}
+
+// #164 review: a Save As that fails in an empty folder made beforehand
+// takes back what it put there and nothing else, so the retry is not
+// refused "not empty".
+int test_failed_save_as_in_an_empty_folder() {
+    TempDir tmp;
+    Source src(tmp.path);
+    const fs::path empty = tmp.path / "Empty";
+    fs::create_directories(empty);
+    const fs::path file = empty / "Empty.sonora";
+    SessionFolder failing(sync_fails_in_empty);
+    std::string why, caution;
+    CHECK(!failing.save_as(file.string(), src.a.bytes(4), src.a.h.current(), src.folder.string(), true, why,
+                           caution));
+    CHECK(mentions(why, "cannot sync"));
+    CHECK(fs::is_directory(empty) && fs::is_empty(empty));
+    SessionFolder f;
+    CHECK(f.save_as(file.string(), src.a.bytes(4), src.a.h.current(), src.folder.string(), true, why,
+                    caution));
+    CHECK(read(file) == src.a.bytes(4));
+    return 0;
+}
+
+// #164 review: the saver's own autosave is still its own after a Save As
+// took the saver to another folder and back; only a crash's is moved aside.
+int test_own_autosave_survives_a_folder_switch() {
+    TempDir tmp;
+    const fs::path file = tmp.path / "Mix" / "Mix.sonora";
+    const fs::path other = tmp.path / "Other" / "Other.sonora";
+    Audio a;
+    SessionFolder f;
+    std::string why, caution;
+    CHECK(f.save(file.string(), a.bytes(1), a.h.current(), why, caution));
+    a.rename("Edited");
+    CHECK(f.autosave(file.string(), a.h.current(), "sonora-engine", file.parent_path().string(), why, caution));
+    CHECK(f.save(other.string(), a.bytes(1), a.h.current(), why, caution));
+    a.rename("Back again");
+    CHECK(f.autosave(file.string(), a.h.current(), "sonora-engine", file.parent_path().string(), why, caution));
+    CHECK(f.set_aside().empty());
+    for (const std::string& n : names(file.parent_path() / "Session File Backups")) {
+        CHECK(n.find("recovered") == std::string::npos);
+    }
+    CHECK(read(sf::autosave_file_of(file.string())).find("\"Back again\"") != std::string::npos);
     return 0;
 }
 
@@ -652,6 +727,8 @@ int main() {
     t(test_save_as_refusals);
     t(test_failed_save_as_is_taken_back);
     t(test_partial_copies_swept);
+    t(test_failed_save_as_in_an_empty_folder);
+    t(test_own_autosave_survives_a_folder_switch);
     t(test_kill_mid_write_leaves_a_whole_file);
     if (failed != 0) {
         std::fprintf(stderr, "session_copies: %d of %d failed\n", failed, run);

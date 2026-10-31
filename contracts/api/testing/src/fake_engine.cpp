@@ -1498,6 +1498,10 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             why = "a latency measurement is running; cancel it or let it finish before recording";
             return false;
         }
+        if (save_as_copying_) {
+            why = "a Save As is still copying the session to its new folder; record once it has finished";
+            return false;
+        }
         if (std::find(armed_.begin(), armed_.end(), true) == armed_.end()) {
             why = "no track is armed";
             return false;
