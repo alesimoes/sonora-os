@@ -1140,11 +1140,19 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              runs is shown as a fault on the edit's inserts, and not
              started again until the document wants another chain
              (`plugin_hosting_failed_edit`).
-       - [ ] `HostProcess::stop()` still blocks from SupervisedChain's
-             destructor when a host was not asked to stop first, and
-             `SupervisedChain::replace` waits for the SIGKILLed host it
-             replaces; every path PluginHosting takes asks first and reaps
-             from poll (`request_stop`, `stopped`, `signal_kill`).
+       - [x] No control-thread path waits for a host process: `replace`,
+             a start that fails and a protocol fault only signal the kill;
+             `retired()` and the destructor let the host go into a list
+             reaped from `poll`/`stopped`; a chain destroyed without
+             asking first hands its running hosts to
+             `HostSupervisor::adopt`, reaped by `reap()` from
+             PluginHosting's poll (one bounded grace at teardown only).
+             With it the two #183 follow-ups: `ChildProcess::wait` takes
+             only POLLIN as an exit (POLLHUP, POLLERR, POLLNVAL fall back
+             to polling waitpid for the rest of the bound), and
+             `platform_child_exit` skips (77) without a pidfd. ctest
+             `plugin_client_host_control_stop_paths`,
+             `platform_child_exit` (hangup_is_not_an_exit).
        - [ ] Gestures from an editor still open on a host being retired
              are not taken (#78 note 3 on #80; short-lived).
        Carried from the PR #59 reviews (RT audit, rt-engineer co-review),

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <fstream>
 #include <random>
+#include <thread>
 
 namespace sonora::plugin_client {
 
@@ -128,7 +129,7 @@ HostProcess::Startup HostProcess::poll_startup(uint64_t now_ms, std::string& err
         return startup_;
     }
     const auto fail = [&](std::string why, bool refused) {
-        kill();
+        signal_kill();
         startup_ = Startup::Failed;
         startup_error_ = std::move(why);
         refused_ = refused;
@@ -206,7 +207,9 @@ plugin::control::Io io_of(platform::IoStatus s) {
 bool HostProcess::fault(std::string why) {
     if (protocol_fault_.empty()) protocol_fault_ = "protocol fault: " + why;
     ctl_closed_ = true;
-    kill();
+    // The signal only: pump() runs on the control thread, and a child in D
+    // state would hold it in waitpid. Its owner reaps it.
+    signal_kill();
     return false;
 }
 
@@ -704,12 +707,30 @@ HostSupervisor::HostSupervisor(const SupervisorConfig& config, PluginClient& cli
 }
 
 HostSupervisor::~HostSupervisor() {
+    // Teardown, so a bounded wait is allowed here: one grace for every host
+    // adopted (stopped() signals the kill past it), then their regions go
+    // before the clock does.
+    const uint64_t t0 = steady_ms();
+    while (!reap(steady_ms()) && steady_ms() - t0 < 2500) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    adopted_.clear();
     // Teardown order (code-reviewer M1, auditor L3 on PR #49): the backend
     // is deactivated first, so no callback runs and this returns at once.
     // If one is still inside, detach_clock waits for it to leave; if it
     // never does, the clock stays mapped (leaked) rather than unmapped
     // under the audio thread.
     if (!client_.detach_clock()) (void)clock_region_.release();
+}
+
+void HostSupervisor::adopt(std::unique_ptr<HostProcess> host) {
+    if (!host) return;
+    host->request_stop(steady_ms());
+    adopted_.push_back(std::move(host));
+}
+
+bool HostSupervisor::reap(uint64_t now_ms) {
+    for (auto it = adopted_.begin(); it != adopted_.end();)
+        it = (*it)->stopped(now_ms) ? adopted_.erase(it) : std::next(it);
+    return adopted_.empty();
 }
 
 std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::string& error,
@@ -872,13 +893,40 @@ SupervisedChain::SupervisedChain(HostSupervisor& supervisor, ChainSpec spec, uin
 SupervisedChain::~SupervisedChain() {
     // The caller has retired every plan naming either slot. Each slot is
     // retired (a new generation) before its region is released.
+    const uint64_t now = steady_ms();
     retired();
     // A host still starting was never bound: no plan names it.
-    if (starting_) starting_->kill();
-    starting_.reset();
+    if (starting_) let_go(std::move(starting_), now, true);
     if (slot_ != kNoSlot) sup_.client().retire(slot_);
-    if (current_) current_->stop();
-    current_.reset();
+    if (current_) let_go(std::move(current_), now, false);
+    // An owner that asked first (request_stop, then stopped()) leaves nothing
+    // running here. One that did not must not wait 2 s for a host that
+    // ignores its Shutdown: the supervisor takes it and reaps it later.
+    for (std::unique_ptr<HostProcess>& h : let_go_)
+        if (!h->stopped(now)) sup_.adopt(std::move(h));
+    let_go_.clear();
+}
+
+void SupervisedChain::let_go(std::unique_ptr<HostProcess> host, uint64_t now_ms, bool kill) {
+    // What it sent is the control server's still (L2 on #78).
+    std::vector<std::string> m = host->take_messages();
+    orphans_.insert(orphans_.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
+    host->request_stop(now_ms);
+    if (kill) host->signal_kill();
+    let_go_.push_back(std::move(host));
+}
+
+bool SupervisedChain::reap_let_go(uint64_t now_ms) {
+    for (auto it = let_go_.begin(); it != let_go_.end();) {
+        if (!(*it)->stopped(now_ms)) {
+            ++it;
+            continue;
+        }
+        std::vector<std::string> m = (*it)->take_messages();
+        orphans_.insert(orphans_.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
+        it = let_go_.erase(it);  // its region is released only now
+    }
+    return let_go_.empty();
 }
 
 void SupervisedChain::set_state(uint32_t instance, std::string blob) {
@@ -932,6 +980,10 @@ std::vector<std::string> SupervisedChain::take_host_messages() {
     // one's.
     std::vector<std::string> out;
     out.swap(orphans_);
+    for (const std::unique_ptr<HostProcess>& h : let_go_) {
+        std::vector<std::string> m = h->take_messages();
+        out.insert(out.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
+    }
     for (HostProcess* h : {retiring_.get(), current_.get()}) {
         if (!h) continue;
         std::vector<std::string> m = h->take_messages();
@@ -950,10 +1002,11 @@ void SupervisedChain::request_stop(uint64_t now_ms) {
     }
     if (current_) current_->request_stop(now_ms);
     if (retiring_) retiring_->request_stop(now_ms);
+    for (const std::unique_ptr<HostProcess>& h : let_go_) h->request_stop(now_ms);
 }
 
 bool SupervisedChain::stopped(uint64_t now_ms) {
-    bool all = true;
+    bool all = reap_let_go(now_ms);
     if (starting_) all = starting_->stopped(now_ms) && all;
     if (current_) all = current_->stopped(now_ms) && all;
     if (retiring_) all = retiring_->stopped(now_ms) && all;
@@ -972,7 +1025,7 @@ SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {
             // change C).
             refused_ = starting_->refused();
             refused_instance_ = starting_->refused_instance();
-            starting_.reset();
+            let_go(std::move(starting_), now_ms, true);
             down_ = true;
             why_ = restart ? join(spec_.plugins, ',') + ": " + why_ + "; the restart failed: " + error : error;
             return Event::Down;
@@ -1025,7 +1078,13 @@ InsertChainRef SupervisedChain::node() const {
 uint32_t SupervisedChain::latency_frames() const { return current_ ? current_->latency_frames() : 0; }
 
 SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
-    if (down_) return Event::None;
+    reap_let_go(now_ms);
+    if (down_) {
+        // A host replace() killed before the chain went down: reaped here
+        // (a WNOHANG waitpid), not left a zombie until the chain goes.
+        if (current_) (void)current_->running();
+        return Event::None;
+    }
     // The bound host's socket, every poll: its messages are taken by the
     // control server, and a broken contract kills it here (crash path).
     const bool contract_kept = !current_ || current_->pump(now_ms);
@@ -1071,8 +1130,10 @@ SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
 
 SupervisedChain::Event SupervisedChain::replace(uint64_t now_ms, const std::string& reason) {
     // §3 and §4: a removed or hung host is killed; its region stays mapped
-    // until the plan naming its slot is retired.
-    current_->kill();
+    // until the plan naming its slot is retired. Signalled, not waited for:
+    // a host stuck in D state would hold the control thread in waitpid.
+    // running() reaps it later, or let_go() once its slot is retired.
+    current_->signal_kill();
     while (!restart_times_.empty() && now_ms - restart_times_.front() > sup_.config().restart_window_ms)
         restart_times_.pop_front();
     if (restart_times_.size() >= sup_.config().max_restarts) {
@@ -1108,11 +1169,9 @@ void SupervisedChain::retired() {
     // order cannot reach the region released below (code-reviewer L5).
     sup_.client().retire(retiring_slot_);
     retiring_slot_ = kNoSlot;
-    retiring_->stop();
-    // What it sent is the control server's still (L2 on #78).
-    std::vector<std::string> m = retiring_->take_messages();
-    orphans_.insert(orphans_.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
-    retiring_.reset();  // the region is released only now (§5.3)
+    // Asked to stop, not waited for; its region is released once it has
+    // exited (§5.3), by reap_let_go.
+    let_go(std::move(retiring_), steady_ms(), false);
 }
 
 }  // namespace sonora::plugin_client

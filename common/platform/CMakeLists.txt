@@ -56,6 +56,7 @@ if(UNIX)
     add_executable(test_platform_child_exit tests/test_child_exit.cpp)
     target_link_libraries(test_platform_child_exit PRIVATE sonora_platform)
     add_test(NAME platform_child_exit COMMAND test_platform_child_exit)
+    set_tests_properties(platform_child_exit PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   # The unsupported stub claims no exclusion; the other holder is a fork.

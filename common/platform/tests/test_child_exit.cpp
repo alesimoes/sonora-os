@@ -111,10 +111,46 @@ int test_closed_with_owner() {
     return 0;
 }
 
+// A handle that polls as something other than POLLIN (here POLLHUP: a pipe
+// whose writer is gone, put in the pidfd's place) is not an exit. wait()
+// with a bound on a live child must time out, not block in waitpid until the
+// child ends; past that, the bound falls back to polling waitpid.
+int test_hangup_is_not_an_exit() {
+    std::string error;
+    auto c = ChildProcess::spawn({"/bin/sleep", "30"}, {}, error);
+    CHECK(c != nullptr);
+    const int fd = c->exit_handle();
+    CHECK(fd >= 3);
+    int p[2];
+    CHECK(::pipe(p) == 0);
+    CHECK(::dup2(p[0], fd) == fd);
+    ::close(p[0]);
+    ::close(p[1]);
+    const auto start = std::chrono::steady_clock::now();
+    CHECK(!c->wait(100));
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
+    CHECK(c->running());
+    c->kill();
+    CHECK(c->wait(5000));
+    CHECK(c->signal_number() == 9);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    // A kernel before 5.3, or a seccomp profile that refuses pidfd_open: the
+    // handle is -1 by contract, and there is nothing here to test.
+    {
+        std::string error;
+        auto probe = ChildProcess::spawn({"/bin/sh", "-c", "exit 0"}, {}, error);
+        if (probe && probe->exit_handle() < 0) {
+            std::printf("platform_child_exit: no pidfd on this kernel, skipped\n");
+            return 77;
+        }
+    }
     int failed = 0;
+    failed += test_hangup_is_not_an_exit();
     failed += test_readable_on_exit();
     failed += test_exit_before_wait();
     failed += test_wait_sleeps_on_handle();
