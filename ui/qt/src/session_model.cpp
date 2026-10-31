@@ -499,7 +499,7 @@ QVariantList SessionModel::markers() const {
         row[QStringLiteral("range")] = m.length > 0;
         row[QStringLiteral("end")] =
             m.length > 0 ? q(format_time(main_fmt_, m.position + m.length, settings)) : QString();
-        row[QStringLiteral("length")] = m.length > 0 ? q(format_min_sec(m.length, settings.sample_rate))
+        row[QStringLiteral("length")] = m.length > 0 ? q(format_length(main_fmt_, m.position, m.length, settings))
                                                      : QString();
         rows.push_back(row);
     }

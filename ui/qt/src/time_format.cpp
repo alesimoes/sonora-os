@@ -320,6 +320,37 @@ std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSet
     return {};
 }
 
+std::string format_length(TimeFormat fmt, model::Frames position, model::Frames length,
+                          const model::SessionSettings& s) {
+    switch (fmt) {
+        case TimeFormat::Timecode: {
+            model::SessionSettings zero = s;
+            zero.timecode.origin = 0;
+            return format_timecode(length, zero);
+        }
+        case TimeFormat::BarsBeats: {
+            if (s.sample_rate == 0) return "-|-|---";
+            const MusicalTime a = musical_time(position, s);
+            const MusicalTime b = musical_time(position + length, s);
+            int64_t bars = b.bar - a.bar;
+            int beats = b.beat - a.beat;
+            int ticks = b.tick - a.tick;
+            if (ticks < 0) {
+                ticks += 960;
+                --beats;
+            }
+            if (beats < 0) {
+                beats += static_cast<int>(tempo_at(position, s).meter[0]);
+                --bars;
+            }
+            return printf_string("%lld|%lld|%03lld", bars, beats, ticks);
+        }
+        case TimeFormat::MinSec: return format_min_sec(length, s.sample_rate);
+        case TimeFormat::Samples: return format_samples(length);
+    }
+    return {};
+}
+
 const char* time_format_name(TimeFormat fmt) {
     switch (fmt) {
         case TimeFormat::Timecode: return "Timecode";

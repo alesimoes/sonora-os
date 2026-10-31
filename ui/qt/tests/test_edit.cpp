@@ -570,6 +570,11 @@ int test_time() {
     OK(format_bars_beats(kBeat, s) == "1|2|000");
     OK(format_bars_beats(kBar, s) == "2|1|000");
     OK(format_bars_beats(kBeat / 2, s) == "1|1|480");
+    OK(format_length(TimeFormat::Timecode, 0, 61 * kRate + kRate / 2, s) == "00:01:01:12");
+    OK(format_length(TimeFormat::BarsBeats, kBeat, kBar + kBeat / 2, s) == "1|0|480");
+    OK(format_length(TimeFormat::BarsBeats, kBeat, 3 * kBeat, s) == "0|3|000");
+    OK(format_length(TimeFormat::Samples, 5, 1234, s) == "1234");
+    OK(format_length(TimeFormat::MinSec, 0, 83 * kRate + kRate / 2, s) == "1:23.500");
     OK(format_min_sec(0, kRate) == "0:00.000");
     OK(format_min_sec(83 * kRate + kRate / 2, kRate) == "1:23.500");
     OK(format_min_sec(3723LL * kRate, kRate) == "1:02:03.000");
