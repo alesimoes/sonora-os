@@ -262,6 +262,11 @@ playback can follow edits; it is in flight.
         folded into the loop; on the loop's first pass the audio of the
         pre-roll is scaled by the lane at the loop's end for `L` frames.
         Track the frames the chain's output came from instead.
+  - [ ] A Load while rolling must ignore the rest of the open pass: `drop_pass()` resets neither `pass_open_` nor `auto_latched_`, and Load does not stop playback, so writes from the old plan can land on the new session's tracks by engine index. `drop_pass` records the pass to skip and the engine clears `auto_latched_`; test it (on PR #178, #178 review).
+  - [ ] Apply a ParameterChange's Release (clear touched) even while tracks are moving: the flag is only set or cleared when `!tracks_moving()`, so a Release during a track move is lost and the track keeps playing its fader and writing until the client disconnects or a Load (on PR #178, #178 review).
+  - [ ] Touch on a track with no lane: make a release's audio and its written return agree. Return the live fader to the static value, or write no return; today the writer writes a 250 ms return to the static fader but the audio keeps the ridden value (on PR #178, #178 review).
+  - [ ] A pass whose lane overflows `kMaxAutomationPoints` must keep the other lanes: thin harder or drop only that edit. Today one lane past the limit fails the whole Compound and every lane of the pass is lost (on PR #178, #178 review).
+  - [ ] Tests for automation: a Load or a client leaving clears the touched flags; long-pass growth (on PR #178, #178 review).
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -526,6 +531,10 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [x] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
       Done: marker.add reads the state block when it runs (`ShellModel::readTransport`); a stale read or a dead engine falls back to the last tick; no protocol change.
 - [x] Memory Locations length column uses the main counter format, not always min:sec. (format_length() in time_format; columns narrowed to fit timecode; scene edit-markers-timecode.)
+- [ ] `ui.editing.markers` format_length Bars|Beats: borrow the beat count from the meter at the span end, not the start (the `beats < 0` branch uses tempo_at(position)); add tests for a tempo or meter change inside the span and for a marker past the last tempo point (PR #179 review).
+- [ ] Regenerate docs/images/sonora-ui-edit-markers.png with the narrowed Memory Locations columns; it still shows the old layout (PR #179 review).
+- [ ] Fold the edit-markers and edit-markers-timecode capture scenes into one scene with a counter-format parameter (PR #179 review).
+- [ ] Screenshot scenes edit-markers, edit-nudge and edit-repeat fail with "session is still opening" because they send commands before the engine answers Load: give ShotContext a shared wait-for-open helper instead of per-scene retries (PR #179 review).
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [ ] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
   - [ ] Aux return meters, post-fader, in the state block (state layout bump); the aux strip shows none yet.
