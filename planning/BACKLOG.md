@@ -921,6 +921,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       and track header (Off, Read now; Touch, Latch, Write, Trim once Track
       1's write slice lands), sent with `SetMix`; the fader and pan knob
       follow the lane while playing in Read.
+- [ ] `session.cpp:1916`: while `from` is less than the chain latency and not
+      looping, `t` clamps to 0 and then advances, so a lane changing in the
+      first frames saws. Hold at frame 0 until `from + i` reaches the latency.
+- [ ] `test_automation.cpp`: add a test that a track behind an insert chain
+      reads its lanes `chain.latency_frames` early; the `lag` path has no test.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 

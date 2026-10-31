@@ -873,7 +873,8 @@ private:
     // Automation (ADR-0027 §2), per engine track. Bit kAutoVolume and bit
     // kAutoPan: the parameter plays its lane this callback, and last
     // callback; 1 when the fader crossfades this callback; the open state
-    // last callback; the static gain and pan an unautomated parameter keeps.
+    // last callback; the static gain and pan an unautomated parameter keeps,
+    // which until automation_targets() rewrites them are last callback's.
     std::unique_ptr<uint8_t[]> track_auto_;
     std::unique_ptr<uint8_t[]> track_auto_last_;
     std::unique_ptr<uint8_t[]> track_ramp_;

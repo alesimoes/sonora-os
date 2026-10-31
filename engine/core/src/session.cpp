@@ -1853,11 +1853,18 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         if (pt.auto_count[kAutoPan] != 0) flags |= 1u << kAutoPan;
         if (flags == 0) continue;
         track_auto_[e] = flags;
+        // Only the parameter the lane leaves static: the fader moving under a
+        // lane changes nothing heard, and a crossfade would bend the lane.
+        // Last callback's values are still here, and a track that was not
+        // automated with these flags then ramps on the flags alone.
+        const bool static_moved =
+            ((flags & (1u << kAutoVolume)) == 0 && track_level_[e] != auto_level_[e]) ||
+            ((flags & (1u << kAutoPan)) == 0 && track_pan_[e] != auto_pan_[e]);
         auto_level_[e] = track_level_[e];
         auto_pan_[e] = track_pan_[e];
         // A moved track starts at its lane, as a static fader starts at its
         // target (ADR-0023 §4).
-        track_ramp_[e] = !snap_mix_ && (jumped || flags != track_auto_last_[e] ||
+        track_ramp_[e] = !snap_mix_ && (jumped || static_moved || flags != track_auto_last_[e] ||
                                         track_open_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
         if ((flags & (1u << kAutoVolume)) != 0) {

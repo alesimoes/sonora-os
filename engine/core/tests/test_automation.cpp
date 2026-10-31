@@ -4,7 +4,8 @@
 // played from the plan on a 32-frame timeline grid, the same output however
 // the callbacks are cut, a locate mid-ramp crossfaded over one callback and
 // exact after it, a loop wrap taking the lane at the loop start with no
-// fade, Off playing the static fader, a pan lane, and no allocation.
+// fade, Off playing the static fader, a pan lane, a static parameter's change
+// ramped on a partly automated track, and no allocation.
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
 
@@ -329,6 +330,93 @@ int test_off_and_pan() {
     return 0;
 }
 
+// The coefficient each output frame of the last block applied, from `start`.
+std::vector<float> applied(const Rig& rig, int side, int64_t start) {
+    std::vector<float> g(kBlock);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        g[i] = rig.out[side][i] / source_value(5, 0, start + i);
+    }
+    return g;
+}
+
+// From `from` to `to` in equal steps across the block, ending on `to` exactly:
+// the ADR-0009 §4.5 ramp, not a step on its first frame.
+bool ramps(const std::vector<float>& g, float from, float to, const char* what) {
+    const float step = (to - from) / static_cast<float>(kBlock);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const float want = from + step * static_cast<float>(i + 1);
+        if (!near(g[i], want, 1e-4f)) {
+            std::fprintf(stderr, "  %s: frame %u applies %.6f, want %.6f\n", what, i,
+                         static_cast<double>(g[i]), static_cast<double>(want));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool holds(const std::vector<float>& g, float value, const char* what) {
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        if (!near(g[i], value, 1e-4f)) {
+            std::fprintf(stderr, "  %s: frame %u applies %.6f, want %.6f\n", what, i,
+                         static_cast<double>(g[i]), static_cast<double>(value));
+            return false;
+        }
+    }
+    return true;
+}
+
+int test_level_change_on_a_pan_lane_ramps() {
+    Rig rig("level_on_pan");
+    // Flat hard left: out[0] is the signal times the static level.
+    CHECK(rig.load({}, {{0, -1.0f}}));
+    Track& track = *rig.session->tracks()[0];
+    const float low = gain_of_db(-40.0f);
+    track.set_gain(low);
+    CHECK(rig.park(2000));
+    rig.session->play();
+    rig.block();
+    int64_t t = 2000 + kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), low, "settled"));
+    t += kBlock;
+
+    track.set_gain(1.0f);
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(ramps(applied(rig, 0, t), low, 1.0f, "up"));
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 1.0f, "after"));
+    return 0;
+}
+
+int test_pan_change_on_a_volume_lane_ramps() {
+    Rig rig("pan_on_level");
+    CHECK(rig.load({{0, 0.0f}}));
+    Track& track = *rig.session->tracks()[0];
+    CHECK(rig.park(2000));
+    rig.session->play();
+    rig.block();
+    int64_t t = 2000 + kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 1.0f, "settled left"));
+    CHECK(holds(applied(rig, 1, t), 0.0f, "settled right"));
+    t += kBlock;
+
+    track.set_pan(1.0f);
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(ramps(applied(rig, 0, t), 1.0f, 0.0f, "left"));
+    CHECK(ramps(applied(rig, 1, t), 0.0f, 1.0f, "right"));
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 0.0f, "after left"));
+    CHECK(holds(applied(rig, 1, t), 1.0f, "after right"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -347,6 +435,8 @@ int main() {
     t(test_locate_mid_ramp, "test_locate_mid_ramp");
     t(test_loop_wrap, "test_loop_wrap");
     t(test_off_and_pan, "test_off_and_pan");
+    t(test_level_change_on_a_pan_lane_ramps, "test_level_change_on_a_pan_lane_ramps");
+    t(test_pan_change_on_a_volume_lane_ramps, "test_pan_change_on_a_volume_lane_ramps");
     if (failed != 0) {
         std::fprintf(stderr, "automation: %d of %d failed (heap counter: %s)\n", failed, run,
                      heap_counter_scope());
