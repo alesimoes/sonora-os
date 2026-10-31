@@ -11,10 +11,14 @@
 // level fader and readout, pan, PRE, mute, FMP and the bus. Every edit goes
 // through the TimelineDocument and reports through SessionModel, so a
 // refused send reaches the status line the way a refused region edit does.
-// A ride of a send or aux fader is a SetSendMix or SetBusMix per step, as
-// the monitor bus rides (mix_model.h); the engine takes them as live
-// ParamId::SendLevel and AuxGain since protocol 34, not used here yet.
+// A ride of a send or aux fader (press, moves, release) is heard through a
+// ParameterChange per step, ParamId::SendLevel or AuxGain, as a track's
+// fader is (mix_model.h), and the document is not touched; the release
+// saves where it stopped with one SetSendMix or SetBusMix. Without a live
+// sender (or outside a ride) every step is a SetSendMix or SetBusMix.
 #pragma once
+
+#include <functional>
 
 #include <QObject>
 #include <QString>
@@ -60,6 +64,13 @@ public:
 
     SendController& controller() { return ctl_; }
 
+    // Sends the live level of a send (`aux` false, its model id) or of an
+    // aux bus (`aux` true, its id), linear 0 .. 4. Empty: no live path.
+    using LiveSender = std::function<void(bool aux, model::Id id, float linear)>;
+    void setLiveSender(LiveSender sender) { sender_ = std::move(sender); }
+    // ParameterChanges sent by rides, for the tests.
+    uint64_t liveSteps() const { return live_steps_; }
+
     QVariantList strips() const { return strips_; }
     QVariantList auxes() const { return auxes_; }
     int trackCount() const { return ctl_.track_count(); }
@@ -91,6 +102,9 @@ public:
     Q_INVOKABLE void closeWindow();
 
     // The send window's controls.
+    // A fader press and release around the levelDrag calls.
+    Q_INVOKABLE void beginLevelRide();
+    Q_INVOKABLE void endLevelRide();
     Q_INVOKABLE void levelDrag(qreal dy, qreal travel, bool fine);
     Q_INVOKABLE bool setLevelText(const QString& text);
     Q_INVOKABLE void resetLevel();
@@ -105,6 +119,8 @@ public:
     // Aux strips.
     Q_INVOKABLE void newBus();
     Q_INVOKABLE void removeBus(int bus);
+    Q_INVOKABLE void beginAuxRide(int bus);
+    Q_INVOKABLE void endAuxRide(int bus);
     Q_INVOKABLE void auxFaderDrag(int bus, qreal dy, qreal travel, bool fine);
     Q_INVOKABLE bool setAuxGainText(int bus, const QString& text);
     Q_INVOKABLE void resetAuxGain(int bus);
@@ -125,7 +141,25 @@ private:
     // An output change: a refusal is held, not flashed (SessionModel).
     bool reportRouting(bool ok, const std::string& why);
 
+    enum class Ride { None, Send, Aux };
+    void sendLive(float db);
+    // The ride's cap and readout follow the live value, not the document.
+    void showRide();
+    void overlayRide();
+    void dropRide();
+    // Ends the ride, saving where it stopped; `ok` false if the engine is to
+    // be put back to the document's value.
+    void finishRide(bool save);
+
     SendController ctl_;
+    LiveSender sender_;
+    uint64_t live_steps_ = 0;
+    Ride ride_ = Ride::None;
+    model::Id ride_id_ = kNoId;       // the send's or the bus's id
+    model::Id ride_strip_id_ = kNoId; // a send's strip
+    int ride_slot_ = -1;
+    float ride_db_ = 0.0f;
+    bool ride_sent_ = false;
     SessionModel& session_;
     QVariantList strips_;
     QVariantList auxes_;

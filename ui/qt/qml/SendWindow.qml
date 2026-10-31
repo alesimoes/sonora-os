@@ -170,7 +170,11 @@ Rectangle {
             onPressed: (m) => {
                 lastY = m.y
                 if (m.modifiers & Qt.AltModifier) w.sends.resetLevel()
+                else w.sends.beginLevelRide()
             }
+            onReleased: w.sends.endLevelRide()
+            onCanceled: w.sends.endLevelRide()
+            Component.onDestruction: w.sends.endLevelRide()
             onPositionChanged: (m) => {
                 if (!pressed || (m.modifiers & Qt.AltModifier)) return
                 w.sends.levelDrag(m.y - lastY, faderArea.travel, (m.modifiers & Qt.ControlModifier) !== 0)
