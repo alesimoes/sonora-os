@@ -6,11 +6,14 @@
 namespace sonora {
 
 SessionSaver::SessionSaver(Checkpoints checkpoints, Ready ready, std::chrono::milliseconds poll,
-                           session_files::SessionFolder::SyncDirectory sync_directory)
+                           session_files::SessionFolder::SyncDirectory sync_directory,
+                           std::size_t backups)
     : checkpoints_(std::move(checkpoints)),
       ready_(std::move(ready)),
       poll_(poll),
-      folder_(sync_directory) {}
+      folder_(sync_directory) {
+    folder_.set_backups(backups);
+}
 
 SessionSaver::~SessionSaver() { stop(); }
 
@@ -51,8 +54,9 @@ void SessionSaver::set_transport_stopped(bool stopped) {
 void SessionSaver::submit(Job job) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        // Counted only when a client waits: take_done() uncounts by seq.
+        if (job.seq != 0) ++in_hand_;
         jobs_.push_back(std::move(job));
-        ++in_hand_;
     }
     wake_.notify_all();
 }
@@ -139,12 +143,28 @@ void SessionSaver::run() {
             const bool defer_clean = take_open_;
             lock.unlock();
             std::string why, caution;
-            d.ok = folder_.save(job.file, job.bytes, job.document, why, caution, job.state_source);
+            d.file = job.file;
+            d.copy = job.copy;
+            switch (job.kind) {
+                case Kind::SaveAs:
+                    d.ok = folder_.save_as(job.file, job.bytes, job.document, job.state_source, job.media,
+                                           why, caution, &d.report);
+                    break;
+                case Kind::Autosave:
+                    d.ok = folder_.autosave(job.file, job.document, "sonora-engine", job.state_source, why,
+                                            caution);
+                    if (d.ok) autosaves_.fetch_add(1, std::memory_order_acq_rel);
+                    d.set_aside = folder_.set_aside();
+                    break;
+                default:
+                    d.ok = folder_.save(job.file, job.bytes, job.document, why, caution, job.state_source);
+                    break;
+            }
             d.message = d.ok ? caution : why;
             // O4, after a durable save only: with the folder unsynced the old
             // session file can come back after a power cut, and its sequence
-            // files must still be there.
-            const bool durable = d.ok && caution.empty();
+            // files must still be there. A new folder has nothing to clean.
+            const bool durable = d.ok && caution.empty() && job.kind != Kind::SaveAs;
             if (durable && !defer_clean) {
                 clean(d);
                 // Said with the save's own reply, as a caution.
@@ -156,7 +176,8 @@ void SessionSaver::run() {
             lock.lock();
             if (durable && defer_clean) clean_pending_ = true;
             // The file on disk may still be the one a deferred cleanup's save
-            // replaced; the next durable save's cleanup covers it.
+            // replaced; the next durable save's cleanup covers it. A Save As
+            // has left that folder: its next save cleans it.
             if (!durable) clean_pending_ = false;
             done_.push_back(std::move(d));
             busy_ = false;

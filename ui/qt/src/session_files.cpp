@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <string>
 
@@ -130,6 +131,53 @@ QString session_folder_of(const QString& file) {
         return QFileInfo(dir).absolutePath();
     }
     return dir;
+}
+
+QString autosave_file_of(const QString& file) {
+    const QString folder = session_folder_of(file);
+    const QFileInfo info(file);
+    const QString suffix = QStringLiteral(".autosave.sonora");
+    const bool in_backups = QFileInfo(info.absolutePath()).fileName() == QLatin1String(kBackupsDir);
+    if (in_backups && info.fileName().endsWith(suffix) && info.fileName().size() > suffix.size()) {
+        return info.absoluteFilePath();
+    }
+    QString stem = info.completeBaseName();
+    if (in_backups) {
+        // "Mix.20270115-080000[-n].sonora" is a rotated backup of "Mix".
+        static const QRegularExpression rotated(QStringLiteral(R"(^(.+)\.\d{8}-\d{6}(-[2-9]\d{0,5}|-1\d{1,5})?$)"));
+        const QRegularExpressionMatch m = rotated.match(stem);
+        if (m.hasMatch()) stem = m.captured(1);
+    }
+    return QDir(folder).filePath(QLatin1String(kBackupsDir) + QLatin1Char('/') + stem + suffix);
+}
+
+// Before per-session-file autosaves: one per folder, named after it.
+static QString legacy_autosave_file_of(const QString& file) {
+    const QString folder = session_folder_of(file);
+    return QDir(folder).filePath(QLatin1String(kBackupsDir) + QLatin1Char('/') +
+                                 QFileInfo(folder).fileName() + QStringLiteral(".autosave.sonora"));
+}
+
+bool newer_autosave(const QString& file, uint64_t generation, QString& autosave) {
+    // The newest of the two names wins; the older is read for compatibility.
+    uint64_t best = generation;
+    bool found = false;
+    for (const QString& candidate : {autosave_file_of(file), legacy_autosave_file_of(file)}) {
+        if (QFileInfo(candidate).absoluteFilePath() == QFileInfo(file).absoluteFilePath()) continue;
+        QFile in(candidate);
+        if (!in.open(QIODevice::ReadOnly)) continue;
+        const QByteArray bytes = in.readAll();
+        uint64_t theirs = 0;
+        if (model::file_save_generation(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())),
+                                        theirs) &&
+            theirs > best) {
+            best = theirs;
+            autosave = candidate;
+            found = true;
+        }
+    }
+    if (!found) autosave = autosave_file_of(file);
+    return found;
 }
 
 bool read_session_file(const QString& file, std::string& bytes, model::Loaded& out,

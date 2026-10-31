@@ -85,6 +85,11 @@
     "ctrl+e": "edit.separate_at_selection",
     "ctrl+h": "edit.heal_separation",
     "ctrl+s": "app.save",
+    "ctrl+shift+s": {
+      "command": "app.save_as",
+      "verified": false,
+      "comment": "File > Save As, Shift+Command+S (Shift+Control+S on Windows). Not yet quoted from Avid's guide in brain/research/protools-logic-key-bindings.md. Save Copy In has no Pro Tools key and none here."
+    },
     "ctrl+equal": {
       "command": "window.toggle_mix_edit",
       "verified": false,

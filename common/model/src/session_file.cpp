@@ -1450,6 +1450,24 @@ bool file_format_version(std::string_view bytes, std::int64_t& version) {
     return v.is_integer_lexeme() && v.to_int64(version);
 }
 
+bool file_save_generation(std::string_view bytes, std::uint64_t& generation) {
+    Value root;
+    json::Error perr;
+    if (!json::parse(bytes, root, perr)) return false;
+    if (!root.is_object() || root.members().empty() ||
+        root.members().front().first != "sonora_session") {
+        return false;
+    }
+    for (const auto& [key, v] : root.members()) {
+        if (key != "save_generation") continue;
+        std::int64_t n = 0;
+        if (!v.is_integer_lexeme() || !v.to_int64(n) || n < 0) return false;
+        generation = static_cast<std::uint64_t>(n);
+        return true;
+    }
+    return false;
+}
+
 bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
                std::string& error, SequenceDigests* digests) {
     SequenceDigests local;

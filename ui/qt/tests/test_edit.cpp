@@ -12,6 +12,7 @@
 #include <QTemporaryDir>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
 
 #include "edit_controller.h"
@@ -1945,7 +1946,9 @@ int test_midi_sequence_files() {
     const auto& now = *doc.snapshot().edit->tracks[1]->midi_playlists[0]->regions[0].data;
     const SequenceFileRef b = sequence_ref(now);
     const QString b_file = seqs.filePath(QString::fromStdString(b.sha256) + QStringLiteral(".msq"));
-    OK(QFileInfo::exists(b_file) && !QFileInfo::exists(a_file));
+    // The first file, now a rotated backup (session-format.md, "Saving" step
+    // 5), still names the first sequence, so cleanup keeps it.
+    OK(QFileInfo::exists(b_file) && QFileInfo::exists(a_file));
 
     // Opened elsewhere: the same notes, from the file.
     ModelDocument other(make_empty_session(1, kRate));
@@ -2138,6 +2141,89 @@ int test_input_monitor() {
     return 0;
 }
 
+// daw.model.session_mgmt in the window: Save As goes on in a new folder
+// under the new name once the engine says it moved there, the old file as
+// it was; a name already taken is refused; Save Copy In writes a copy and
+// stays; an engine that wrote the copy and stayed is a held notice and the
+// window keeps its file; a newer autosave is offered at open, held.
+int test_save_as_and_copy() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    FlatPeaks peaks;
+    std::string why;
+    ModelDocument doc(make_empty_session(1, kRate));
+    doc.set_saver(engine_saver());
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(dir.path());
+    QStringList held, opened;
+    QObject::connect(&session, &SessionModel::heldNotice, [&](const QString& t) { held << t; });
+    QObject::connect(&session, &SessionModel::openNotice, [&](const QString& t) { opened << t; });
+    OK(session.saveSession(why));
+    const QString first = session.sessionFile();
+    session.setEngineFolder(QFileInfo(first).absolutePath());
+    QFile before_file(first);
+    CHECK(before_file.open(QIODevice::ReadOnly));
+    const QByteArray before = before_file.readAll();
+    before_file.close();
+
+    // The engine's part: the same common/session_files Save As, and the
+    // SessionFolder event, before the reply, when it moved.
+    auto folder = std::make_shared<sonora::session_files::SessionFolder>();
+    bool engine_moves = true;
+    doc.set_saver_as([&, folder](const std::string& file, uint32_t flags, const std::string& bytes,
+                                 const Snapshot& document, std::string& w, std::string& caution) {
+        const std::string source = session.engineFolder().toStdString();
+        if (!folder->save_as(file, bytes, document, source, (flags & sonora::api::kSaveAsNoAudio) == 0, w,
+                             caution)) {
+            return false;
+        }
+        if ((flags & sonora::api::kSaveAsCopy) == 0 && engine_moves) {
+            session.setEngineFolder(QFileInfo(QString::fromStdString(file)).absolutePath());
+        } else if ((flags & sonora::api::kSaveAsCopy) == 0) {
+            caution = "the copy is written, but the session stays where it was";
+        }
+        return true;
+    });
+
+    OK(session.saveSessionAs(QStringLiteral("Mix 2"), false, why));
+    const QString moved = QDir(dir.path()).filePath(QStringLiteral("Mix 2/Mix 2.sonora"));
+    OK(session.sessionFile() == moved && QFileInfo::exists(moved));
+    OK(session.sessionName() == QStringLiteral("Mix 2"));
+    OK(!session.dirty());
+    QFile after_file(first);
+    CHECK(after_file.open(QIODevice::ReadOnly));
+    OK(after_file.readAll() == before);
+
+    OK(!session.saveSessionAs(QStringLiteral("Mix 2"), false, why));
+    OK(why.find("already") != std::string::npos);
+    OK(!session.saveSessionAs(QStringLiteral("a/b"), false, why));
+
+    session.setCopyWithAudio(false);
+    OK(session.saveSessionAs(QStringLiteral("Copy"), true, why));
+    OK(session.sessionFile() == moved);
+    OK(QFileInfo::exists(QDir(dir.path()).filePath(QStringLiteral("Copy/Copy.sonora"))));
+
+    engine_moves = false;
+    OK(session.saveSessionAs(QStringLiteral("Stayed"), false, why));
+    OK(session.sessionFile() == moved);
+    OK(!held.isEmpty() && held.back().contains(QStringLiteral("copy only")));
+
+    // An autosave newer than the file is offered at open, held.
+    {
+        Snapshot s = doc.snapshot();
+        std::string bytes, error;
+        CHECK(serialize(s, sonora::model::WriteInfo{"sonora-engine", 99}, bytes, error));
+        const QString autosave = autosave_file_of(moved);
+        CHECK(QDir().mkpath(QFileInfo(autosave).absolutePath()));
+        QFile out(autosave);
+        CHECK(out.open(QIODevice::WriteOnly));
+        out.write(bytes.data(), static_cast<qint64>(bytes.size()));
+    }
+    OK(session.openSessionFile(moved, true, why));
+    OK(!opened.isEmpty() && opened.back().contains(QStringLiteral("autosave")));
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
@@ -2147,7 +2233,7 @@ int main(int argc, char** argv) {
         test_first_save_keeps_the_sessions_name() ||
         test_save_failures() ||
         test_midi_sequence_files() ||
-        test_midi_sequence_cleanup_follow_ups() || test_input_monitor()) {
+        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_save_as_and_copy()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

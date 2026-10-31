@@ -98,6 +98,9 @@ public:
     // engine's reply; a lost link fails it. Refused at once while the link
     // is down.
     void save_session(const std::string& file, std::string bytes, SaveDone done) override;
+    // ModelAction::SaveAs, the same way.
+    void save_session_as(const std::string& file, uint32_t flags, std::string bytes,
+                         SaveDone done) override;
 
     // What the engine sent since the last call, in arrival order. Returns
     // true when what is shown changed.

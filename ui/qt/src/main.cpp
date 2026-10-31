@@ -557,6 +557,7 @@ int main(int argc, char** argv) {
             return std::vector<bool>(armed.begin(), armed.end());
         },
         [&model]() { return model.engineAlive() ? model.trackCount() : 0; });
+    QObject::connect(&session, &SessionModel::heldNotice, &model, &ShellModel::addNotice);
     QObject::connect(&model, &ShellModel::sessionFolder, &session, &SessionModel::setEngineFolder);
     link_transport(model, session, transport);
     link_marker_locate(model, session);

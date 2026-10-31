@@ -108,7 +108,10 @@ struct Rig {
     std::atomic<uint32_t> checkpoints{0};
     std::atomic<int> ready{0};
     SessionSaver saver{[this]() { return checkpoints.load(); }, [this]() { ++ready; },
-                       std::chrono::milliseconds(2), sync_unless_failing};
+                       std::chrono::milliseconds(2), sync_unless_failing,
+                       // No rotated backups: these tests count what cleanup deletes once
+                       // nothing names it, and a backup is a kept file that names it.
+                       0};
     Rig() { saver.start(); }
 
     // The results, once `n` have come or two seconds have passed.

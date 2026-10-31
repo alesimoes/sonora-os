@@ -119,6 +119,7 @@ int test_sequences_before_the_session_file() {
     const fs::path file = folder / "Bass.sonora";
     Midi m(20);
     SessionFolder f;
+    f.set_backups(0);   // a rotated backup would be a kept file naming the first
     std::string why, caution;
     CHECK(f.save(file.string(), m.bytes(), m.h.current(), why, caution));
     CHECK(caution.empty());
@@ -211,6 +212,7 @@ int test_unreadable_kept_file_blocks_cleanup() {
     const fs::path file = folder / "Keys.sonora";
     Midi m(20);
     SessionFolder f;
+    f.set_backups(0);   // a rotated backup would be a kept file naming the first
     std::string why, caution;
     CHECK(f.save(file.string(), m.bytes(), m.h.current(), why, caution));
     const fs::path a = msq(folder, m.sequence());

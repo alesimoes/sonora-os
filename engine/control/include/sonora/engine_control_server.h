@@ -81,6 +81,7 @@
 #include "sonora/orphan_offer.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/session_commands.h"
+#include "sonora/session_saver.h"
 #include "sonora/state_publisher.h"
 
 namespace sonora {
@@ -207,6 +208,17 @@ public:
         // The saver's folder sync (SessionFolder::SyncDirectory), for the
         // tests; null: the platform's.
         bool (*save_sync_directory)(const std::string& path) = nullptr;
+        // The autosave (session-format.md, "Autosave"; ADR-0018 update of
+        // 2026-10-27): the engine writes its own document to "Session File
+        // Backups/<name>.autosave.sonora" this long after the last save or
+        // autosave while there are edits, and soon after each take lands.
+        // Only once the session has a file (a Load or a Save named one). 0:
+        // never, as the tests and --dir runs have it; engine/app's
+        // --autosave-seconds sets it, 60 by default.
+        uint64_t autosave_period_ms = 0;
+        // The rotated backups each save keeps (SessionFolder::set_backups);
+        // engine/app's --backups.
+        std::size_t backups = session_files::kDefaultBackups;
         // The round trip (ADR-0019, update of 2026-10-26): where the
         // session's input_latency() came from at start, which the standing
         // Latency event says (None: the server's figure is read again until
@@ -285,6 +297,8 @@ public:
     // Snapshots asked for, one per client an attach, Resync or Load is for:
     // each has been answered, shared or queued by the time it is counted.
     uint64_t snapshots_asked() const { return snapshots_asked_.load(std::memory_order_acquire); }
+    // Autosaves written (Options::autosave_period_ms), for the tests.
+    uint64_t autosaves() const;
     uint64_t longest_snapshot_copy_us() const {
         return longest_copy_us_.load(std::memory_order_acquire);
     }
@@ -621,6 +635,26 @@ private:
     bool save_ready_ = false;
     // A Save, handed to the saver; false when it was refused at once.
     bool save(ClientId from, const api::ModelRequest& m, std::string& why);
+    // A Save As or Save Copy In, the same way.
+    bool save_as(ClientId from, const api::ModelRequest& m, std::string& why);
+    // The saver's Save As result: the new folder entered unless a copy,
+    // then the reply.
+    void finish_save_as(const SessionSaver::Done& d);
+    // Hands the saver an autosave when one is due.
+    void autosave_when_due();
+    // The session's file as the engine knows it, from the last Load of a
+    // file or Save; empty for a session with none (no autosave then).
+    std::string session_file_;
+    // The document revision the session file or the autosave holds, as far
+    // as the engine knows: no autosave while the document is still at it.
+    uint64_t covered_revision_ = 0;
+    // The revision a Save or Save As handed over held, for when it lands.
+    uint64_t submitted_revision_ = 0;
+    uint64_t next_autosave_ms_ = 0;
+    bool autosave_soon_ = false;        // a take landed
+    bool autosave_in_flight_ = false;   // one at a time
+    bool autosave_failed_said_ = false; // a failure is said once, until one succeeds
+    bool save_as_in_flight_ = false;
     // Results to their clients, and the saver told what the transport does.
     void follow_saver();
     std::atomic<uint64_t> snapshots_encoded_{0};

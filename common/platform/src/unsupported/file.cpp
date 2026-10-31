@@ -46,6 +46,12 @@ bool read_only(const std::string& path) {
 // Standard C++ cannot see which volume a path is on.
 bool same_filesystem(const std::string&, const std::string&) { return false; }
 
+// Windows, later: CreateHardLinkW (ADR-0018 §9). Until then Save As copies.
+bool hard_link(const std::string& existing, const std::string& link, std::string& error) {
+    error = "cannot link " + link + " to " + existing + ": hard links are not built on this platform";
+    return false;
+}
+
 // No durability is claimed (sync_directory), and the check for `to` is not
 // atomic with the rename. Windows, later: MoveFileExW (ADR-0018 §9).
 bool rename_dir_durably(const std::string& from, const std::string& to, std::string& error) {

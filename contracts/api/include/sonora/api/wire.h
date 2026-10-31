@@ -117,6 +117,15 @@ std::string encode_save(std::string_view file, std::string_view session);
 bool decode_save(std::string_view op, std::string& file, std::string& session,
                  std::string& error);
 
+// --- ModelAction::SaveAs's `op` (protocol 29) ----------------------------------
+//
+// As a save's, with the flags between: the path, a NUL, the kSaveAs* flags
+// in decimal, a NUL, then the session file's bytes. Flags outside
+// kSaveAsFlags are refused, so a later flag is never silently ignored.
+std::string encode_save_as(std::string_view file, uint32_t flags, std::string_view session);
+bool decode_save_as(std::string_view op, std::string& file, uint32_t& flags, std::string& session,
+                    std::string& error);
+
 // --- ModelAction::Load's `op` (protocol 16) ------------------------------------
 //
 // As a save's: the session file's path, a NUL byte, then what Load carried

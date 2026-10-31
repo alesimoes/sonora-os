@@ -164,7 +164,7 @@ private:
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
-constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::Save);
+constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::SaveAs);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Latency);
 constexpr uint32_t kEventFlags = kFolderUntitled | kFolderReadOnly;
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
@@ -551,6 +551,44 @@ bool decode_save(std::string_view op, std::string& file, std::string& session,
     }
     file.assign(op.data(), end);
     session.assign(op.data() + end + 1, op.size() - end - 1);
+    return true;
+}
+
+std::string encode_save_as(std::string_view file, uint32_t flags, std::string_view session) {
+    const std::string number = std::to_string(flags);
+    std::string out;
+    out.reserve(file.size() + number.size() + 2 + session.size());
+    out.append(file.data(), file.size());
+    out.push_back('\0');
+    out += number;
+    out.push_back('\0');
+    out.append(session.data(), session.size());
+    return out;
+}
+
+bool decode_save_as(std::string_view op, std::string& file, uint32_t& flags, std::string& session,
+                    std::string& error) {
+    std::string rest;
+    if (!decode_save(op, file, rest, error)) return false;
+    const std::size_t end = rest.find('\0');
+    if (end == std::string::npos || end == 0 || end > 10) {
+        error = "a save as that carries no flags";
+        return false;
+    }
+    uint64_t value = 0;
+    for (std::size_t i = 0; i < end; ++i) {
+        if (rest[i] < '0' || rest[i] > '9') {
+            error = "a save as whose flags are not a number";
+            return false;
+        }
+        value = value * 10 + static_cast<uint64_t>(rest[i] - '0');
+    }
+    if ((value & ~static_cast<uint64_t>(kSaveAsFlags)) != 0) {
+        error = "a save as with flags this engine does not know (" + rest.substr(0, end) + ")";
+        return false;
+    }
+    flags = static_cast<uint32_t>(value);
+    session = rest.substr(end + 1);
     return true;
 }
 

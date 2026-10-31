@@ -281,6 +281,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},
+        // Pro Tools' File > Save As and Save Copy In (ModelAction::SaveAs):
+        // the interface asks for the name, so the argument is the window's.
+        {"app.save_as", CommandTarget::None, "Save the session under a new name and go on in it"},
+        {"app.save_copy_in", CommandTarget::None, "Save a copy of the session; stay in this one"},
         {"app.quit", CommandTarget::None, "Leave the engine",
          false, CommandDomain::Interface},
     };

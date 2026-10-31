@@ -116,6 +116,7 @@ class SessionModel : public QObject {
     // goes through, since the operator may be watching the take, not the
     // status line.
     Q_PROPERTY(QString trackRefusal READ trackRefusal NOTIFY trackRefusalChanged)
+    Q_PROPERTY(bool copyWithAudio READ copyWithAudio WRITE setCopyWithAudio NOTIFY copyWithAudioChanged)
 
 public:
     // `synthetic_peaks`: the waveforms `peaks` draws are not the sources'
@@ -168,6 +169,24 @@ public:
     // have every plugin's state still saves, and the notice names what is
     // not current.
     bool saveSession(std::string& why);
+    // File > Save As (`copy` false) and File > Save Copy In (`copy` true):
+    // a new session folder `name` beside the engine's folder (the sessions
+    // folder when there is none), made by the engine from the session's
+    // media (ModelAction::SaveAs, ADR-0018 §5), after the plugins' state is
+    // collected as for Save. Save As goes on in the new session under its
+    // name: the window names the new file once the engine's SessionFolder
+    // says it moved there. Save Copy In leaves the session as it is, with
+    // the audio when copyWithAudio(). Refused for a name that cannot name a
+    // folder or names one that exists, while a take is open, and while a
+    // save is in hand. A failure the engine reports later is a held notice.
+    bool saveSessionAs(const QString& name, bool copy, std::string& why);
+    // Save Copy In's "All audio files", kept between copies as Pro Tools does.
+    bool copyWithAudio() const { return copy_with_audio_; }
+    void setCopyWithAudio(bool on) {
+        if (on == copy_with_audio_) return;
+        copy_with_audio_ = on;
+        emit copyWithAudioChanged();
+    }
     // Waiting for the plugins' state, or for the engine to write the file.
     bool saveWaiting() const { return save_waiting_ || save_writing_; }
     // How long a save waits for the engine's FlushPluginState reply before
@@ -404,6 +423,14 @@ signals:
     // track.new without a count: the window asks how many, offering 1.
     void newTracksRequested();
     void trackRefusalChanged();
+    // app.save_as or app.save_copy_in without a name: the window asks for
+    // one, offering `name` (the first free one), and says where it goes.
+    void saveAsRequested(bool copy, const QString& name, const QString& where);
+    // What the operator must see and may not be looking at when it happens:
+    // a Save As the engine refused after the dialog closed. Held in the
+    // shell's notice list until dismissed.
+    void heldNotice(const QString& text);
+    void copyWithAudioChanged();
 
 private:
     // A track command through the controller, `run_op`, checked here first
@@ -422,6 +449,17 @@ private:
     // `caution` is said with the result. True when it was done, or handed to
     // the engine, whose answer is then said on its own.
     bool writeSession(std::string& why, std::string caution);
+    // Where a Save As or Save Copy In goes.
+    struct SaveAsTarget {
+        QString file;
+        QString name;
+        bool copy = false;
+        bool audio = true;
+    };
+    // saveSession() and saveSessionAs()'s common part: the plugins' state,
+    // then `write`.
+    bool flushThenWrite(std::string& why, std::function<bool(std::string&, std::string)> write);
+    bool writeSessionAs(const SaveAsTarget& target, std::string& why, std::string caution);
     // What a save the engine has answered leaves behind.
     struct Written {
         QString file;
@@ -454,6 +492,7 @@ private:
     uint64_t save_ticket_ = 0;     // which save a flush answers, so an abandoned one is ignored
     QElapsedTimer save_wait_;
     qint64 flush_patience_ms_ = 10'000;
+    bool copy_with_audio_ = true;
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");

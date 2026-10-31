@@ -127,8 +127,27 @@ void round_trips() {
         CHECK(mentions(error, "names no session file"));
         CHECK(!wire::decode_load(std::string(wire::kMaxSavePath + 1, 'a') + std::string(1, '\0'),
                                  file, load, error));
+        // SaveAs (protocol 29): the path, the flags in decimal, the bytes;
+        // a flag this protocol does not know is refused, never ignored.
+        m.action = ModelAction::SaveAs;
+        m.op = wire::encode_save_as("/home/a/Sessions/Bass 2/Bass 2.sonora", kSaveAsCopy | kSaveAsNoAudio,
+                                    std::string("{\0}", 3));
+        wire::encode(m, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.action == ModelAction::SaveAs);
+        uint32_t flags = 0;
+        CHECK(wire::decode_save_as(back.op, file, flags, session, error));
+        CHECK(file == "/home/a/Sessions/Bass 2/Bass 2.sonora" && session == std::string("{\0}", 3));
+        CHECK(flags == (kSaveAsCopy | kSaveAsNoAudio));
+        CHECK(wire::decode_save_as(wire::encode_save_as("/a/B/B.sonora", 0, "{}"), file, flags, session, error));
+        CHECK(flags == 0 && session == "{}");
+        CHECK(!wire::decode_save_as(wire::encode_save_as("/a/B/B.sonora", 4, "{}"), file, flags, session, error));
+        CHECK(mentions(error, "does not know"));
+        CHECK(!wire::decode_save_as(std::string("/a/B/B.sonora\0x1\0{}", 19), file, flags, session, error));
+        CHECK(!wire::decode_save_as(std::string("/a/B/B.sonora\0{}", 16), file, flags, session, error));
+        CHECK(!wire::decode_save_as(wire::encode_save("/a/B/B.sonora", "{}"), file, flags, session, error));
         // An action past the last this protocol has is refused.
-        m.action = static_cast<ModelAction>(static_cast<uint32_t>(ModelAction::Save) + 1);
+        m.action = static_cast<ModelAction>(static_cast<uint32_t>(ModelAction::SaveAs) + 1);
         wire::encode(m, bytes);
         CHECK(!wire::decode(bytes, back, error));
     }
@@ -340,6 +359,7 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
+    // Save As and Save Copy In (ModelAction::SaveAs) are version 29;
     // RemoveTrack and DuplicateTrack (ADR-0023) are version 28, 26 never
     // used; sends and aux buses (ADR-0022) 27; the punch and roll commands
     // at the engine (ADR-0016, update "transport settings at the authority")
@@ -356,7 +376,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 28);
+    CHECK(kProtocolVersion == 29);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -364,13 +384,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 28 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 29 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 28"));
+                   "speaks version 29"));
 }
 
 void domains() {

@@ -373,7 +373,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                                 }
                                                 wake_.notify_all();
                                             },
-                                            std::chrono::milliseconds(2), opts_.save_sync_directory);
+                                            std::chrono::milliseconds(2), opts_.save_sync_directory,
+                                            opts_.backups);
     // Read as the take starts, which with the residency gate is in pump(),
     // on this thread: the range then is the one the operator last set.
     install_session_commands(registry_, session_, take_, quit_, opts_.may_record,
@@ -859,6 +860,9 @@ void EngineControlServer::follow_transport() {
     for (const Session::ClosedTake& take : session_.closed_takes()) {
         const TakeAdded added = add_closed_take(*document_, session_, take);
         for (const auto& u : added.updates) send_update(u);
+        // The autosave that follows every RecordTake (ADR-0015 §6), paced
+        // behind a checkpoint if another take is still being written.
+        if (!added.updates.empty()) autosave_soon_ = true;
         std::vector<std::string> notices = added.track_notices;
         if (!added.cut_short.empty()) notices.push_back(added.cut_short);
         notices.insert(notices.end(), added.fade_notices.begin(), added.fade_notices.end());
@@ -1159,6 +1163,7 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     }
     namespace fs = std::filesystem;
     std::string folder;
+    std::string opened_file;
     ActiveFolder::Kind kind = ActiveFolder::Kind::Named;
     // A new session in a fresh Untitled folder; one with nothing in it yet
     // is as good as a new one, and is kept.
@@ -1192,6 +1197,7 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
             return false;
         } else {
             folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
+            opened_file = p.lexically_normal().string();
         }
     }
     if (!folder.empty() || new_folder) {
@@ -1234,6 +1240,12 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
         entered = true;
     }
     *document_ = std::move(next);
+    // What the autosave is named after and compared with; a folder or a new
+    // session has no file until its first Save.
+    session_file_ = opened_file;
+    covered_revision_ = document_->current().revision;
+    next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
+    autosave_soon_ = false;
     return true;
 }
 
@@ -2366,6 +2378,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 // Answered by follow_saver() once the saver is done.
                 if (!save(from, m, why)) reply(from, m.seq, DispatchResult::Failed, why);
                 return;
+            case api::ModelAction::SaveAs:
+                // Answered by finish_save_as() once the saver is done.
+                if (!save_as(from, m, why)) reply(from, m.seq, DispatchResult::Failed, why);
+                return;
         }
         reply(from, m.seq, ok ? DispatchResult::Ok : refusal, ok ? "" : why);
         if (ok) {
@@ -2467,9 +2483,128 @@ bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::s
         e.text = "Saving after the next checkpoint";
         post_transient(e);
     }
+    submitted_revision_ = document_->current().revision;
     saver_->submit(std::move(job));
     return true;
 }
+
+bool EngineControlServer::save_as(ClientId from, const api::ModelRequest& m, std::string& why) {
+    SessionSaver::Job job;
+    uint32_t flags = 0;
+    if (!api::wire::decode_save_as(m.op, job.file, flags, job.bytes, why)) return false;
+    job.copy = (flags & api::kSaveAsCopy) != 0;
+    job.media = (flags & api::kSaveAsNoAudio) == 0;
+    if (!job.media && !job.copy) {
+        why = "a session saved as without its audio would point outside its folder; Save Copy In "
+              "can leave the audio out";
+        return false;
+    }
+    // A take belongs to the folder it was started in (ADR-0018 §1), and a
+    // copy of the folder taken while one is written would hold half of it.
+    if (std::string busy = session_.folder_change_refusal(); !busy.empty()) {
+        why = "stop recording before saving the session as another: " + busy;
+        return false;
+    }
+    if (playback_->record_requested()) {
+        why = "stop recording before saving the session as another: a take is about to start";
+        return false;
+    }
+    if (save_as_in_flight_) {
+        why = "a Save As is still being written; wait for it to finish";
+        return false;
+    }
+    if (!std::filesystem::path(job.file).is_absolute()) {
+        why = "a session file is an absolute path ending in \".sonora\", not \"" + job.file + "\"";
+        return false;
+    }
+    std::error_code ec;
+    const std::filesystem::path source = std::filesystem::absolute(*session_.folder(), ec);
+    job.kind = SessionSaver::Kind::SaveAs;
+    job.client = from;
+    job.seq = m.seq;
+    job.document = document_->current();
+    job.state_source = (ec ? std::filesystem::path(*session_.folder()) : source).lexically_normal().string();
+    api::EngineEvent e;
+    e.kind = api::EventKind::Notice;
+    e.text = (job.copy ? "Saving a copy in " : "Saving as ") +
+             std::filesystem::path(job.file).parent_path().string() +
+             (job.media ? ": linking or copying the audio" : "");
+    post_transient(e);
+    submitted_revision_ = document_->current().revision;
+    save_as_in_flight_ = true;
+    saver_->submit(std::move(job));
+    return true;
+}
+
+void EngineControlServer::finish_save_as(const SessionSaver::Done& d) {
+    save_as_in_flight_ = false;
+    if (!d.ok) {
+        reply(d.client, d.seq, DispatchResult::Failed, d.message);
+        return;
+    }
+    std::string message = d.message;
+    const auto add = [&message](const std::string& line) {
+        message = message.empty() ? line : message + "; " + line;
+    };
+    if (!d.copy) {
+        namespace fs = std::filesystem;
+        const std::string target = fs::path(session_files::session_folder_of(d.file)).lexically_normal().string();
+        // Anything still queued writes the folder being left, which is
+        // unlocked once the new one is entered (PR #142 review N3).
+        fence_saver("Finishing the last save before moving the session");
+        std::string why;
+        std::vector<std::string> notices;
+        if (folder_->enter(session_, target, ActiveFolder::Kind::Named, why, notices)) {
+            for (const std::string& line : notices) {
+                api::EngineEvent e;
+                e.kind = api::EventKind::Notice;
+                e.text = line;
+                post_event(e);
+            }
+            take_ = session_.next_free_take();
+            publisher_->set_take(take_);
+            session_file_ = d.file;
+            covered_revision_ = submitted_revision_;
+            next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
+            // The offer names its folder; the new one holds the same takes.
+            withdraw_orphans();
+            offer_orphans();
+        } else {
+            add("the copy is written, but the session stays in " + *session_.folder() + ": " + why);
+        }
+        // Before the reply: the interface takes the new folder from it.
+        announce_folder();
+    }
+    reply(d.client, d.seq, DispatchResult::Ok, message);
+}
+
+void EngineControlServer::autosave_when_due() {
+    if (opts_.autosave_period_ms == 0 || session_file_.empty() || autosave_in_flight_ ||
+        save_as_in_flight_) {
+        return;
+    }
+    const uint64_t revision = document_->current().revision;
+    if (revision == covered_revision_) return;
+    const uint64_t now = steady_ms_now();
+    if (!autosave_soon_ && now < next_autosave_ms_) return;
+    // Only into the folder the session is in: its lock is held.
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path active = fs::absolute(*session_.folder(), ec).lexically_normal();
+    if (fs::path(session_files::session_folder_of(session_file_)).lexically_normal() != active) return;
+    SessionSaver::Job job;
+    job.kind = SessionSaver::Kind::Autosave;
+    job.file = session_file_;
+    job.document = document_->current();
+    job.state_source = active.string();
+    autosave_in_flight_ = true;
+    autosave_soon_ = false;
+    covered_revision_ = revision;
+    next_autosave_ms_ = now + opts_.autosave_period_ms;
+    saver_->submit(std::move(job));
+}
+
+uint64_t EngineControlServer::autosaves() const { return saver_->autosaves(); }
 
 void EngineControlServer::follow_saver() {
     saver_->set_take_open(session_.recording_take() != 0);
@@ -2478,6 +2613,43 @@ void EngineControlServer::follow_saver() {
         if (d.kind == SessionSaver::Kind::States) {
             finish_flush(d.seq, d.ok, d.message);
             continue;
+        }
+        if (d.kind == SessionSaver::Kind::SaveAs) {
+            finish_save_as(d);
+            continue;
+        }
+        if (d.kind == SessionSaver::Kind::Autosave) {
+            autosave_in_flight_ = false;
+            // Held: an autosave that keeps failing is protection the
+            // operator believes they have. Said once until one succeeds.
+            if (!d.ok && !autosave_failed_said_) {
+                autosave_failed_said_ = true;
+                api::EngineEvent e;
+                e.kind = api::EventKind::Notice;
+                e.text = "Autosave failed: " + d.message + ". Save the session to keep the edits";
+                post_event(e);
+            } else if (d.ok) {
+                autosave_failed_said_ = false;
+            }
+            if (d.ok && !d.set_aside.empty()) {
+                // Held: the operator must know where the crash's edits are.
+                api::EngineEvent e;
+                e.kind = api::EventKind::Notice;
+                e.text = "The autosave of an earlier run, which may hold edits the file lacks, was kept as " +
+                         d.set_aside + " in Session File Backups";
+                post_event(e);
+            } else if (d.ok && !d.message.empty()) {
+                api::EngineEvent e;
+                e.kind = api::EventKind::Notice;
+                e.text = "Autosaved, but " + d.message;
+                post_transient(e);
+            }
+            continue;
+        }
+        if (d.kind == SessionSaver::Kind::Save && d.seq != 0 && d.ok) {
+            session_file_ = d.file;
+            covered_revision_ = submitted_revision_;
+            next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
         }
         if (d.seq != 0) {
             reply(d.client, d.seq, d.ok ? DispatchResult::Ok : DispatchResult::Failed, d.message);
@@ -2494,6 +2666,7 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
+    autosave_when_due();
     follow_latency();
     follow_reported_latency();
 

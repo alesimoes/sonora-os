@@ -46,6 +46,11 @@
     "cmd+v": "edit.paste",
     "cmd+a": "edit.select_all",
     "cmd+s": "app.save",
+    "cmd+shift+s": {
+      "command": "app.save_as",
+      "verified": false,
+      "comment": "File > Save As, Shift-Command-S. Not yet checked against the 12.3 guide. Save a Copy As is left unbound."
+    },
     "x": {
       "command": "window.toggle_mix_edit",
       "verified": false,

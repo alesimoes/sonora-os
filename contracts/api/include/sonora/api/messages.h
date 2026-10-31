@@ -107,7 +107,10 @@ namespace sonora::api {
 // 28 (ADR-0023; 26 was never used, numbered while 25 was in flight, and 24
 //   is still held for fades): new operation kinds RemoveTrack and
 //   DuplicateTrack, which a version-27 peer's decoder refuses.
-constexpr uint32_t kProtocolVersion = 28;
+// 29 (daw.model.session_mgmt, ADR-0018 update of 2026-10-27):
+//   ModelAction::SaveAs, Save As and Save Copy In, which a version-28 peer's
+//   decoder refuses as an unknown action.
+constexpr uint32_t kProtocolVersion = 29;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -244,8 +247,38 @@ enum class ModelAction : uint32_t {
     // bytes name that the engine's document does not hold (an edit it
     // refused) fails the save. While a take is open the save waits for the
     // disk thread's next checkpoint, and every client is told so.
+    //
+    // Since 29 each save keeps the bytes it replaced as a rotated backup in
+    // "Session File Backups/", the newest 20 by default, and the engine
+    // autosaves its own document beside them (session-format.md, "Saving"
+    // step 5, "Autosave"); neither changes this request.
     Save = 7,
+    // File > Save As and File > Save Copy In (protocol 29; ADR-0018 §5 and
+    // its update of 2026-10-27): `op` is wire::encode_save_as(), the new
+    // session file's absolute path, the kSaveAs* flags and the bytes, as for
+    // Save. The engine makes the file's folder, which must not exist or be
+    // empty, a self-contained session: every file of the active folder's
+    // "Audio Files/" and "MIDI Files/" linked or copied there, the plugin
+    // states and sequence files the bytes name, and the session file last.
+    // The active folder is only read. Then, unless kSaveAsCopy, the engine
+    // enters the new folder, announcing it in a SessionFolder event before
+    // the reply: takes from then on go there. Ok with a caution when the
+    // copy is written but the session could not move (the reply says why and
+    // the SessionFolder event still names the old folder). Refused while a
+    // take is open, closing or about to start, for a folder inside the
+    // active one or holding it, and for kSaveAsNoAudio without kSaveAsCopy:
+    // a session the operator goes on with never points outside its folder.
+    SaveAs = 8,
 };
+
+// ModelAction::SaveAs's flags.
+// Save Copy In: the session stays in its folder; the copy is left as made.
+inline constexpr uint32_t kSaveAsCopy = 1u << 0;
+// Save Copy In without "All audio files": the session file, plugin states
+// and sequence files only; the copy's audio is offline until it is copied
+// in by hand. Only with kSaveAsCopy.
+inline constexpr uint32_t kSaveAsNoAudio = 1u << 1;
+inline constexpr uint32_t kSaveAsFlags = kSaveAsCopy | kSaveAsNoAudio;
 
 struct ModelRequest {
     uint64_t seq = 0;

@@ -49,6 +49,11 @@ constexpr std::int64_t kFormatVersion = 11;
 // (session-format.md, "Versioning"). False when the bytes are not a session
 // file at all.
 bool file_format_version(std::string_view bytes, std::int64_t& version);
+// The save_generation a session file declares, read the same way: what an
+// autosave needs to be offered over the file it was made after
+// (session-format.md, "Autosave"). False when the bytes are not a session
+// file or carry no such number.
+bool file_save_generation(std::string_view bytes, std::uint64_t& generation);
 
 struct WriteInfo {
     std::string written_by;          // "sonora-engine 0.2.0"; diagnostic only

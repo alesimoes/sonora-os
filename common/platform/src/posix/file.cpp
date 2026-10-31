@@ -80,6 +80,15 @@ std::string parent_of(const std::string& path) {
 
 }  // namespace
 
+bool hard_link(const std::string& existing, const std::string& link, std::string& error) {
+    // No AT_SYMLINK_FOLLOW: a session never gains a name for a file outside it.
+    if (::linkat(AT_FDCWD, existing.c_str(), AT_FDCWD, link.c_str(), 0) != 0) {
+        error = "cannot link " + link + " to " + existing + ": " + std::strerror(errno);
+        return false;
+    }
+    return true;
+}
+
 bool rename_dir_durably(const std::string& from, const std::string& to, std::string& error) {
 #ifdef RENAME_NOREPLACE
     int rc = ::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE);

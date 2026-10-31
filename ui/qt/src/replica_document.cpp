@@ -210,6 +210,21 @@ void ReplicaDocument::save_session(const std::string& file, std::string bytes, S
     flushes_.push_back(std::move(f));
 }
 
+void ReplicaDocument::save_session_as(const std::string& file, uint32_t flags, std::string bytes,
+                                      SaveDone done) {
+    if (offline_) {
+        done(false, kOffline);
+        return;
+    }
+    Flush f;
+    f.seq = send(api::ModelAction::SaveAs, api::wire::encode_save_as(file, flags, bytes));
+    f.done = std::move(done);
+    f.refused = "the engine could not save the session as another";
+    f.lost = "the connection to the engine was lost before the Save As was answered; look in the "
+             "sessions folder for the new one before trying again";
+    flushes_.push_back(std::move(f));
+}
+
 bool ReplicaDocument::set_link(bool up) {
     offline_ = !up;
     // A Resync asked of the old connection will not be answered; the new

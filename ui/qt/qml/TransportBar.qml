@@ -15,6 +15,9 @@ Rectangle {
     property TransportModel transport: null
     // Open lists the sessions folder in a panel the window owns.
     signal openRequested()
+    // The File menu (Save, Save As, Save Copy In, Open), drawn by the window.
+    signal fileMenuRequested(real x, real y)
+    property bool fileMenuOpen: false
     // The Edit menu, drawn by the window under the point given.
     signal editMenuRequested(real x, real y)
     property bool editMenuOpen: false
@@ -69,14 +72,19 @@ Rectangle {
             }
         }
 
-        // --- File: Save sends what Ctrl+S sends ---
+        // --- File: Pro Tools' File menu; Save in it sends what Ctrl+S sends ---
         Row {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 2
             SButton {
-                objectName: "saveButton"
-                text: "Save"; implicitHeight: 28; implicitWidth: 52
-                onClicked: bar.shell.invoke("app.save", -1)
+                id: fileMenuButton
+                objectName: "fileMenuButton"
+                text: "File ▾"; implicitHeight: 28; implicitWidth: 56
+                active: bar.fileMenuOpen
+                onClicked: {
+                    const p = fileMenuButton.mapToItem(null, 0, fileMenuButton.height)
+                    bar.fileMenuRequested(p.x, p.y)
+                }
             }
             SButton {
                 objectName: "openButton"

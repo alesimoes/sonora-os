@@ -14,9 +14,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,6 +36,7 @@
 #include "sonora/model/session_file.h"
 #include "sonora/platform/file.h"
 #include "sonora/session.h"
+#include "sonora/session_files/session_folder.h"
 #include "sonora/state_publisher.h"
 #include "sonora/wav_writer.h"
 
@@ -718,6 +721,220 @@ void a_save_during_a_take_follows_a_checkpoint() {
     CHECK(std::none_of(in.events.begin(), in.events.end(), [](const api::EngineEvent& e) {
         return e.text == "Saving after the next checkpoint";
     }));
+}
+
+}  // namespace
+bool wait_for(const std::function<bool()>& pred);
+namespace {
+
+// session-format.md, "Saving" step 5 and "Autosave", on the real engine:
+// nothing is autosaved while the session has no file; once a Save names
+// one, an edit is autosaved within the period beside the backups, one
+// generation past the file, the file itself untouched, and not again while
+// nothing changes; a second Save keeps the file it replaced as a rotated
+// backup.
+void the_engine_autosaves_a_session_with_a_file() {
+    const fs::path dir = fresh_dir("autosave");
+    EngineControlServer::Options opts;
+    opts.autosave_period_ms = 50;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answer = [&](uint64_t seq) -> const api::CommandReply* {
+        const auto end = Clock::now() + std::chrono::seconds(4);
+        while (Clock::now() < end) {
+            real.poll(in);
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return &r;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return nullptr;
+    };
+    model::SessionSettings settings = start.settings;
+    const auto rename = [&](const std::string& name) {
+        settings.name = name;
+        api::ModelRequest m;
+        m.action = api::ModelAction::Apply;
+        std::string e;
+        model::encode_operation(model::SetSettings{settings}, m.op, e);
+        const api::CommandReply* r = answer(real.submit(m));
+        return r != nullptr && r->result == DispatchResult::Ok;
+    };
+    const fs::path file = fs::absolute(dir) / "Song.sonora";
+    const fs::path autosave = session_files::autosave_file_of(file.string());
+    const auto save = [&](std::uint64_t generation) {
+        model::Snapshot s = start;
+        s.settings = settings;
+        std::string bytes, e;
+        if (!model::serialize(s, model::WriteInfo{"test", generation}, bytes, e)) return std::string();
+        api::ModelRequest m;
+        m.action = api::ModelAction::Save;
+        m.op = api::wire::encode_save(file.string(), bytes);
+        const api::CommandReply* r = answer(real.submit(m));
+        return r != nullptr && r->result == DispatchResult::Ok ? bytes : std::string();
+    };
+
+    CHECK(rename("Unsaved"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(real.engine().server().autosaves() == 0);
+    CHECK(!fs::exists(autosave));
+
+    const std::string first = save(1);
+    CHECK(!first.empty());
+    CHECK(rename("Edited"));
+    CHECK(wait_for([&]() { return real.engine().server().autosaves() == 1 && fs::exists(autosave); }));
+    std::string written;
+    {
+        std::ifstream f(autosave, std::ios::binary);
+        std::stringstream s;
+        s << f.rdbuf();
+        written = s.str();
+    }
+    std::uint64_t generation = 0;
+    CHECK(model::file_save_generation(written, generation) && generation == 2);
+    CHECK(written.find("\"Edited\"") != std::string::npos);
+    {
+        std::ifstream f(file, std::ios::binary);
+        std::stringstream s;
+        s << f.rdbuf();
+        CHECK(s.str() == first);
+    }
+    // Nothing changed: no second autosave.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(real.engine().server().autosaves() == 1);
+
+    // A second save keeps what it replaced.
+    CHECK(!save(2).empty());
+    bool rotated = false;
+    std::error_code ec;
+    for (fs::directory_iterator it(autosave.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
+        rotated = rotated || session_files::rotated_backup_name(it->path().filename().string(), "Song");
+    }
+    CHECK(rotated);
+}
+
+// #164 review B1 on the real engine: a session reopened after a crash, its
+// autosave newer than the file, then edited. The first autosave keeps the
+// crash's autosave under another name and says so in a held Notice.
+void a_reopened_session_keeps_the_crash_autosave() {
+    const fs::path dir = fresh_dir("autosave_reopen");
+    EngineControlServer::Options opts;
+    opts.autosave_period_ms = 50;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answer = [&](uint64_t seq) -> const api::CommandReply* {
+        const auto end = Clock::now() + std::chrono::seconds(4);
+        while (Clock::now() < end) {
+            real.poll(in);
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return &r;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return nullptr;
+    };
+    const fs::path other = fresh_dir("autosave_reopen_song");
+    const fs::path file = other / "Song.sonora";
+    const fs::path autosave = session_files::autosave_file_of(file.string());
+    const auto write = [](const fs::path& p, const std::string& bytes) {
+        std::error_code ec;
+        fs::create_directories(p.parent_path(), ec);
+        std::ofstream out(p, std::ios::binary);
+        out << bytes;
+        return static_cast<bool>(out);
+    };
+    std::string bytes, crash;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 4}, bytes, error));
+    model::Snapshot edited = start;
+    edited.settings.name = "Crash edits";
+    CHECK(model::serialize(edited, model::WriteInfo{"sonora-engine", 5}, crash, error));
+    CHECK(write(file, bytes) && write(autosave, crash));
+
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load(file.string(), bytes);
+    const api::CommandReply* r = answer(real.submit(load));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    model::SessionSettings settings = start.settings;
+    settings.name = "One fader later";
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    model::encode_operation(model::SetSettings{settings}, m.op, error);
+    r = answer(real.submit(m));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    CHECK(wait_for([&]() { return real.engine().server().autosaves() == 1; }));
+
+    bool kept = false;
+    std::error_code ec;
+    for (fs::directory_iterator it(autosave.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->path() == autosave) continue;
+        std::ifstream f(it->path(), std::ios::binary);
+        std::stringstream s;
+        s << f.rdbuf();
+        kept = kept || s.str() == crash;
+    }
+    CHECK(kept);
+    CHECK(wait_for([&]() {
+        real.poll(in);
+        return std::any_of(in.events.begin(), in.events.end(), [](const api::EngineEvent& e) {
+            return e.kind == api::EventKind::Notice && e.text.find("recovered") != std::string::npos;
+        });
+    }));
+    std::error_code rm;
+    fs::remove_all(other, rm);
+}
+
+// Save As on the real engine, beyond the conformance check: the new folder
+// is the active one, a later Save goes there, and the autosave follows it.
+void save_as_moves_the_autosave_with_the_session() {
+    const fs::path dir = fresh_dir("save_as");
+    const fs::path to = fresh_dir("save_as_to") / "Moved";
+    EngineControlServer::Options opts;
+    opts.autosave_period_ms = 50;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answer = [&](uint64_t seq) -> const api::CommandReply* {
+        const auto end = Clock::now() + std::chrono::seconds(4);
+        while (Clock::now() < end) {
+            real.poll(in);
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return &r;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return nullptr;
+    };
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const fs::path file = to / "Moved.sonora";
+    api::ModelRequest as;
+    as.action = api::ModelAction::SaveAs;
+    as.op = api::wire::encode_save_as(file.string(), 0, bytes);
+    const api::CommandReply* r = answer(real.submit(as));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    CHECK(*real.session().folder() == to.lexically_normal().string());
+    CHECK(fs::exists(file));
+    model::SessionSettings settings = start.settings;
+    settings.name = "Moved on";
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    model::encode_operation(model::SetSettings{settings}, m.op, error);
+    r = answer(real.submit(m));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    CHECK(wait_for([&]() { return fs::exists(session_files::autosave_file_of(file.string())); }));
+    CHECK(!fs::exists(dir / "Session File Backups"));
 }
 
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m);
@@ -2209,6 +2426,9 @@ int main() {
     the_round_trip_is_kept_for_the_machine();
     the_backend_figure_follows_a_late_connection();
     a_folder_load_enters_only_a_session_folder();
+    the_engine_autosaves_a_session_with_a_file();
+    save_as_moves_the_autosave_with_the_session();
+    a_reopened_session_keeps_the_crash_autosave();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;
