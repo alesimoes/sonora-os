@@ -221,7 +221,6 @@
           "items": [
             {"id": "ui.mixer.automation", "title": "Automation modes: off, read, touch, latch, write, trim", "size": "L", "phase": 4, "status": "doing", "branch": "t4-automation", "ref": "PT-RG: Automation modes; LP-UG: Automation overview"},
             {"id": "automation.lanes", "title": "Automation lanes: display, pencil, breakpoints, thin, copy and paste", "size": "M", "phase": 4, "status": "doing", "branch": "ui-automation-lanes", "ref": "PT-RG: Editing automation; LP-UG: Adjust automation"},
-            {"id": "automation.engine", "title": "Sample-accurate automation in the engine plan, for faders, pans, sends and plugin parameters", "size": "M", "phase": 4, "status": "todo"},
             {"id": "automation.engine", "title": "Sample-accurate automation in the engine plan, for faders, pans, sends and plugin parameters", "size": "M", "phase": 4, "status": "doing", "branch": "automation-write-slice"},
             {"id": "automation.list", "title": "Automation event list, write to selection, snapshot automation", "size": "S", "phase": 4, "status": "todo", "ref": "PT-RG: Write to All/Selection; LP-UG: Automation Event List"}
           ]
