@@ -271,6 +271,7 @@ PluginHosting::~PluginHosting() {
     for (;;) {
         bool done = true;
         for (SupervisedChain* s : all) done = s->stopped(steady_ms()) && done;
+        if (supervisor_) done = supervisor_->reap(steady_ms()) && done;
         if (done || steady_ms() - t0 >= 2500) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -880,6 +881,9 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
     // Starts let go: reaped once they have exited, never waited for.
     for (auto it = stopping_.begin(); it != stopping_.end();)
         it = (*it)->stopped(now_ms) ? stopping_.erase(it) : std::next(it);
+    // Hosts of a chain destroyed without being asked first; none on the
+    // paths above, which ask, but reaped here rather than at teardown.
+    if (supervisor_) supervisor_->reap(now_ms);
 
     if (reshow || probes_moved) show(doc, false);
     else recompute_faults(doc);

@@ -59,18 +59,21 @@ struct ChildProcess::Impl {
         return reaped;
     }
 
-    // True when exit_fd turned readable within `timeout_ms`; false on a
-    // timeout or with no exit_fd.
-    bool exit_fd_readable(int timeout_ms) const {
-        if (exit_fd < 0) return false;
-        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    enum class ExitFd { Exited, TimedOut, Unusable };
+    // Exited only on POLLIN: that is the one answer that means a zombie
+    // waits, so the blocking reap after it cannot hang. POLLERR, POLLHUP or
+    // POLLNVAL alone say nothing about the child, and a poll that fails
+    // says less; the caller polls waitpid instead (#183 review).
+    ExitFd exit_fd_readable(std::chrono::steady_clock::time_point end) const {
+        if (exit_fd < 0) return ExitFd::Unusable;
         for (;;) {
             const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
                 end - std::chrono::steady_clock::now());
             pollfd p{exit_fd, POLLIN, 0};
             const int r = ::poll(&p, 1, static_cast<int>(std::max<int64_t>(0, left.count())));
-            if (r > 0) return true;
-            if (r == 0 || errno != EINTR) return false;
+            if (r > 0) return (p.revents & POLLIN) ? ExitFd::Exited : ExitFd::Unusable;
+            if (r == 0) return ExitFd::TimedOut;
+            if (errno != EINTR) return ExitFd::Unusable;
         }
     }
 };
@@ -316,12 +319,16 @@ int ChildProcess::exit_handle() const { return impl_->exit_fd; }
 
 bool ChildProcess::wait(int timeout_ms) {
     if (timeout_ms < 0) return impl_->reap(true);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     if (impl_->exit_fd >= 0) {
         if (impl_->reap(false)) return true;
-        // Readable means a zombie waits, so this reap does not block.
-        return impl_->exit_fd_readable(timeout_ms) && impl_->reap(true);
+        switch (impl_->exit_fd_readable(end)) {
+            // A zombie waits, so this reap does not block.
+            case Impl::ExitFd::Exited: return impl_->reap(true);
+            case Impl::ExitFd::TimedOut: return false;
+            case Impl::ExitFd::Unusable: break;  // the rest of the bound, polled
+        }
     }
-    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     for (;;) {
         if (impl_->reap(false)) return true;
         if (std::chrono::steady_clock::now() >= end) return false;
