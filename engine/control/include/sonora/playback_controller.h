@@ -56,6 +56,18 @@ public:
     // there: a ride whose rider left ends without the other faders moving.
     // Nothing for a track past the document's end.
     void apply_gain(const model::Snapshot& snapshot, std::size_t track);
+    // A live ride on a send's level or an aux return's gain (ADR-0022
+    // update of 2026-10-31), the send or bus named by its model id in
+    // `snapshot`, which is the document the atomics follow: the level
+    // alone, linear. Dropped for a track's send while the tracks are being
+    // rearranged, as a track's fader step is; Missing if the document has
+    // no such send or bus, or the engine no strip for it.
+    enum class Ride { Applied, Dropped, Missing };
+    Ride ride_send(const model::Snapshot& snapshot, model::Id send, float level);
+    Ride ride_aux(const model::Snapshot& snapshot, model::Id bus, float gain);
+    // The document's level or gain back on the send or bus `id`, whichever
+    // it names: a ride whose rider left ends without the rest moving.
+    void restore_ride(const model::Snapshot& snapshot, model::Id id);
     // Each track's monitor mode alone, for when arming changed: an armed
     // track under --no-input-monitoring must stop sending its input at
     // once, without the faders being written.

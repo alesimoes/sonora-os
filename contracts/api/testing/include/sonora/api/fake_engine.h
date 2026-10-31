@@ -13,7 +13,8 @@
 // one, and the state block is written by the same StateWriter.
 //
 // What it does: the Engine-domain commands engine/control installs, with
-// the same refusals in the same words; ParamId::Gain; the model path on a
+// the same refusals in the same words; ParamId::Gain, and SendLevel and
+// AuxGain resolved by id in its document; the model path on a
 // real common/model Document, whose faders (gain, mute) it publishes when
 // an update changes them, on a Resync and when it starts (connect), as the
 // real one does; a track past the document's end keeps both.
@@ -268,6 +269,10 @@ public:
     // the state block does not carry (solo, solo safe) against, rather than
     // the interface's replica of it.
     const model::Snapshot& document() const;
+    // A send's level or an aux's gain, linear, ridden by ParameterChange
+    // (SendLevel, AuxGain) since the faders were last applied from the
+    // document; -1 if it was not ridden.
+    float live_level(model::Id id) const;
     // The session folder take `take` was recorded in: the one active when
     // it started. Empty for a take not recorded, or recorded with no
     // folder announced.
@@ -360,6 +365,7 @@ private:
     std::vector<std::string> planned_;
     std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;
+    std::map<model::Id, float> rides_;
     std::vector<bool> muted_;
     // In Input mode: the document's, on an audio track only, as the real
     // engine's PlaybackController::apply_monitoring.

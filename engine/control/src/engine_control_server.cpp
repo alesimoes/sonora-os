@@ -2066,6 +2066,7 @@ EngineControlServer::Room EngineControlServer::wait_for_room(ClientId client, in
 void EngineControlServer::apply_mix() {
     playback_->apply_mix(document_->current());
     riders_.clear();
+    send_riders_.clear();
 }
 
 void EngineControlServer::forget(ClientId id) {
@@ -2082,6 +2083,14 @@ void EngineControlServer::forget(ClientId id) {
                 session_.tracks()[it->first]->set_touched(kAutoPan, false);
             }
             it = riders_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = send_riders_.begin(); it != send_riders_.end();) {
+        if (it->second == id) {
+            playback_->restore_ride(document_->current(), it->first);
+            it = send_riders_.erase(it);
         } else {
             ++it;
         }
@@ -2390,6 +2399,30 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         api::ParameterChange c;
         if (!api::wire::decode(bytes, c, error)) {
             refuse(from, "a parameter change that does not decode: " + error);
+            return;
+        }
+        // A send's level or an aux's gain, by model id (ADR-0022 update of
+        // 2026-10-31): live, as a track's fader, and saved by the
+        // SetSendMix or SetBusMix the release sends. Sends have no lanes
+        // yet, so the gesture changes nothing more.
+        if (c.param == api::ParamId::SendLevel || c.param == api::ParamId::AuxGain) {
+            const bool aux = c.param == api::ParamId::AuxGain;
+            if (!(c.value >= 0.0f && c.value <= 4.0f)) {
+                reply(from, c.seq, DispatchResult::Failed,
+                      aux ? "aux gain must be from 0 to 4 (linear)"
+                          : "send level must be from 0 to 4 (linear)");
+                return;
+            }
+            const model::Snapshot& doc = document_->current();
+            const PlaybackController::Ride ride = aux ? playback_->ride_aux(doc, c.id, c.value)
+                                                      : playback_->ride_send(doc, c.id, c.value);
+            if (ride == PlaybackController::Ride::Missing) {
+                reply(from, c.seq, DispatchResult::Failed,
+                      (aux ? "there is no aux bus " : "there is no send ") + std::to_string(c.id));
+                return;
+            }
+            send_riders_[c.id] = from;
+            reply(from, c.seq, DispatchResult::Ok, "");
             return;
         }
         if (c.track >= session_.tracks().size()) {

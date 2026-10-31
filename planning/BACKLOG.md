@@ -536,7 +536,9 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [ ] Fold the edit-markers and edit-markers-timecode capture scenes into one scene with a counter-format parameter (PR #179 review).
 - [ ] Screenshot scenes edit-markers, edit-nudge and edit-repeat fail with "session is still opening" because they send commands before the engine answers Load: give ShotContext a shared wait-for-open helper instead of per-scene retries (PR #179 review).
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
-  - [ ] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
+  - [x] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
+        Done (engine side, protocol 34, ADR-0022 update of 2026-10-31): `ParamId::SendLevel` and `AuxGain`, addressed by `ParameterChange::id`.
+  - [ ] The Mix window's send and aux faders ride with `ParamId::SendLevel` and `AuxGain` (touch, move, release), one SetSendMix or SetBusMix at release; send_model.h still sends one per step.
   - [ ] Aux return meters, post-fader, in the state block (state layout bump); the aux strip shows none yet.
   - [ ] A send removed by a plan swap stops on the swap's block; fade it out over one block, as a chain's miss is faded.
   - [ ] Pro Tools' expanded send view (a send's fader on the strip) and Alt-click "assign to all selected tracks"; a key binding for the A-E / F-J bank, `"verified": false` until checked.

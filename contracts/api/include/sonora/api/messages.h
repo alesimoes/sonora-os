@@ -124,7 +124,10 @@ namespace sonora::api {
 // 33 (ADR-0027 §3, the write slice; follows 32): ParameterChange carries a
 //   gesture (touch, move, release) and may drive ParamId::Pan; a version-32
 //   peer's decoder refuses both, as left-over bytes or an unknown parameter.
-constexpr uint32_t kProtocolVersion = 33;
+// 34 (ADR-0022 update of 2026-10-31; follows 33): ParamId::SendLevel and
+//   ParamId::AuxGain, and ParameterChange's `id`; a version-33 peer refuses
+//   both, as an unknown parameter or left-over bytes.
+constexpr uint32_t kProtocolVersion = 34;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -148,6 +151,10 @@ struct CommandRequest {
 enum class ParamId : uint32_t {
     Gain = 0,   // linear, 0 .. 4 (+12 dB)
     Pan = 1,    // -1 (left) .. +1 (right)
+    // ADR-0022 update of 2026-10-31: addressed by ParameterChange::id, not
+    // by track. Linear, 0 .. 4, as Gain.
+    SendLevel = 2,
+    AuxGain = 3,
 };
 
 // Where a change sits in the operator's gesture (ADR-0027 §3). In Touch,
@@ -162,6 +169,10 @@ struct ParameterChange {
     ParamId param = ParamId::Gain;
     float value = 0.0f;
     Gesture gesture = Gesture::Move;
+    // The send's model id for SendLevel, the aux bus's for AuxGain; `track`
+    // is ignored for them. An id, because a track's send changes strip
+    // index when the tracks are reordered.
+    uint64_t id = 0;
 };
 
 // A value moved in the plugin's own editor (ADR-0012 §8) comes from the

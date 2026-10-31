@@ -392,6 +392,11 @@ bool FakeEngine::connect(std::string& error) {
 
 const model::Snapshot& FakeEngine::document() const { return document_->current(); }
 
+float FakeEngine::live_level(model::Id id) const {
+    const auto it = rides_.find(id);
+    return it == rides_.end() ? -1.0f : it->second;
+}
+
 std::string FakeEngine::take_folder(int32_t take) const {
     const auto it = take_folders_.find(take);
     return it == take_folders_.end() ? std::string() : it->second;
@@ -588,6 +593,7 @@ void FakeEngine::carry_arms(const std::vector<model::Id>& before,
 
 void FakeEngine::apply_mix() {
     const model::Snapshot& doc = document_->current();
+    rides_.clear();
     const auto& tracks = doc.edit->tracks;
     // A track past the document's end keeps its fader and mute, as the real
     // engine's does: its old plan plays it until the swap.
@@ -1350,6 +1356,37 @@ void FakeEngine::handle(const std::string& bytes) {
     } else if (type == wire::Type::ParameterChange) {
         ParameterChange c;
         if (!wire::decode(bytes, c, error)) return;
+        // As the real engine: by model id, refused by name, and never a
+        // document change (ADR-0022 update of 2026-10-31).
+        const bool aux = c.param == ParamId::AuxGain;
+        if (aux || c.param == ParamId::SendLevel) {
+            const model::EditState& edit = *document_->current().edit;
+            bool found = false;
+            const auto has = [&](const std::vector<model::Send>& sends) {
+                for (const model::Send& sd : sends) found = found || sd.id == c.id;
+            };
+            const auto engine_tracks = std::min<std::size_t>(edit.tracks.size(), cfg_.tracks);
+            for (std::size_t i = 0; !aux && i < engine_tracks; ++i) has(edit.tracks[i]->sends);
+            for (std::size_t b = 0; b < edit.buses.size() && b < cfg_.max_buses; ++b) {
+                if (aux) {
+                    found = found || edit.buses[b].id == c.id;
+                } else {
+                    has(edit.buses[b].sends);
+                }
+            }
+            if (!(c.value >= 0.0f && c.value <= 4.0f)) {
+                reply(c.seq, DispatchResult::Failed,
+                      aux ? "aux gain must be from 0 to 4 (linear)"
+                          : "send level must be from 0 to 4 (linear)");
+            } else if (!found) {
+                reply(c.seq, DispatchResult::Failed,
+                      (aux ? "there is no aux bus " : "there is no send ") + std::to_string(c.id));
+            } else {
+                rides_[c.id] = c.value;
+                reply(c.seq, DispatchResult::Ok, "");
+            }
+            return;
+        }
         if (c.track >= cfg_.tracks) {
             reply(c.seq, DispatchResult::Failed,
                   "there is no track " + std::to_string(c.track + 1));

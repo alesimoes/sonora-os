@@ -454,6 +454,14 @@ public:
     // A solo left on a bus slot the document no longer has would mute the
     // rest while every replica shows none, as a track's does.
     void set_aux_solo(uint32_t bus, bool solo);
+    // A fader ride on a send or an aux return (ADR-0022 update of
+    // 2026-10-31): the level or gain alone, the rest of the strip's state
+    // left as the document set it. Out of range is ignored. Control thread.
+    void set_send_level(uint32_t strip, uint32_t slot, float level);
+    void set_aux_gain(uint32_t bus, float gain);
+    // What the audio thread reads next; 0 out of range. Any thread.
+    float send_level(uint32_t strip, uint32_t slot) const;
+    float aux_gain(uint32_t bus) const;
     uint32_t max_buses() const { return max_buses_; }
 
     // Monitor bus gain, linear. Mix state, ramped per block.

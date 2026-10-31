@@ -204,6 +204,54 @@ void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t
     session_.tracks()[track]->set_pan(m->pan);
 }
 
+PlaybackController::Ride PlaybackController::ride_send(const model::Snapshot& snapshot,
+                                                       model::Id send, float level) {
+    // Strips as apply_sends() numbers them.
+    const auto engine_tracks = static_cast<uint32_t>(session_.tracks().size());
+    const auto slot_of = [send](const std::vector<model::Send>& sends) -> const model::Send* {
+        for (const model::Send& sd : sends) {
+            if (sd.id == send) return &sd;
+        }
+        return nullptr;
+    };
+    const auto& tracks = snapshot.edit->tracks;
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        const model::Send* sd = slot_of(tracks[i]->sends);
+        if (!sd) continue;
+        if (i >= engine_tracks) return Ride::Missing;
+        if (!atoms_follow(snapshot)) return Ride::Dropped;
+        session_.set_send_level(static_cast<uint32_t>(i), sd->slot, level);
+        return Ride::Applied;
+    }
+    const auto& buses = snapshot.edit->buses;
+    for (std::size_t b = 0; b < buses.size() && b < session_.max_buses(); ++b) {
+        const model::Send* sd = slot_of(buses[b].sends);
+        if (!sd) continue;
+        session_.set_send_level(engine_tracks + static_cast<uint32_t>(b), sd->slot, level);
+        return Ride::Applied;
+    }
+    return Ride::Missing;
+}
+
+PlaybackController::Ride PlaybackController::ride_aux(const model::Snapshot& snapshot,
+                                                      model::Id bus, float gain) {
+    const auto& buses = snapshot.edit->buses;
+    for (std::size_t b = 0; b < buses.size() && b < session_.max_buses(); ++b) {
+        if (buses[b].id != bus) continue;
+        session_.set_aux_gain(static_cast<uint32_t>(b), gain);
+        return Ride::Applied;
+    }
+    return Ride::Missing;
+}
+
+void PlaybackController::restore_ride(const model::Snapshot& snapshot, model::Id id) {
+    if (const model::SendMix* m = snapshot.mix.find_send(id)) {
+        ride_send(snapshot, id, gain_of_db(m->level_db));
+    } else if (const model::BusMix* m = snapshot.mix.find_bus(id)) {
+        ride_aux(snapshot, id, gain_of_db(m->gain_db));
+    }
+}
+
 void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {
     if (!atoms_follow(snapshot)) return;
     const auto& tracks = snapshot.edit->tracks;

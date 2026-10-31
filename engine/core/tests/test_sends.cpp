@@ -7,7 +7,9 @@
 // wet paths, a plan with a send index out of range refused, and no heap
 // touched on the audio thread through any of it. Then #163's review: a send
 // reassigned to another bus ramps in, a first send keeps the dry path's
-// delay line, a kept send survives a swap, and the PDC line budget.
+// delay line, a kept send survives a swap, and the PDC line budget. And a
+// send's level and an aux's gain ridden alone, as live parameters.
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -219,6 +221,57 @@ int test_post_and_pre_fader() {
     s.set_send(0, 0, 0.25f, 1.0f, true, false, true);
     settle();
     CHECK(check(0.125f + 0.25f * 2.0f, 0.0f));
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// A send's level and an aux's gain ridden alone (ADR-0022 update of
+// 2026-10-31): each step is heard at the next block, ramped across it from
+// the last, and leaves the send's pan, pre and the return's pan as they
+// were. Nothing on the audio thread touches the heap.
+int test_level_and_gain_rides() {
+    Rig rig(1);
+    Session& s = *rig.session;
+    s.tracks()[0]->set_gain(0.5f);
+    s.tracks()[0]->set_pan(-1.0f);
+    // Pre-fader, panned hard right on its own.
+    s.set_send(0, 0, 0.25f, 1.0f, false, false, true);
+    s.set_aux(0, 2.0f, 0.0f, false);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    CHECK(rig.publish(rig.plan({}, {{0, 0, 0}}, 1, order, pool)));
+
+    reset_heap_counts();
+    rig.block();
+    rig.block();
+    const auto wet_is = [&](float from, float to) {
+        const int64_t at = rig.frame;
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float x = signal(at + i);
+            const float g = from + (to - from) * static_cast<float>(i + 1) / kBlock;
+            if (rig.out[0][i] != x * 0.5f || std::fabs(rig.out[1][i] - x * g) > 1e-5f) {
+                std::fprintf(stderr, "  frame %u: L %g want %g, R %g want %g\n", i,
+                             rig.out[0][i], x * 0.5f, rig.out[1][i], x * g);
+                return false;
+            }
+        }
+        return true;
+    };
+    CHECK(wet_is(0.5f, 0.5f));
+    s.set_send_level(0, 0, 0.5f);
+    CHECK(s.send_level(0, 0) == 0.5f);
+    CHECK(wet_is(0.5f, 1.0f));
+    CHECK(wet_is(1.0f, 1.0f));
+    s.set_aux_gain(0, 1.0f);
+    CHECK(s.aux_gain(0) == 1.0f);
+    CHECK(wet_is(1.0f, 0.5f));
+    CHECK(wet_is(0.5f, 0.5f));
+    // Out of range is ignored and reads 0.
+    s.set_send_level(0, sonora::kStripSendSlots, 3.0f);
+    s.set_aux_gain(s.max_buses(), 3.0f);
+    CHECK(s.send_level(0, sonora::kStripSendSlots) == 0.0f && s.aux_gain(s.max_buses()) == 0.0f);
+    CHECK(wet_is(0.5f, 0.5f));
     CHECK(heap_untouched());
     return 0;
 }
@@ -672,6 +725,7 @@ int main() {
         failed += f();
     };
     t(test_post_and_pre_fader);
+    t(test_level_and_gain_rides);
     t(test_bus_into_bus_and_order);
     t(test_block_split_invariance);
     t(test_new_send_ramps_in);
