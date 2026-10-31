@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -238,7 +239,9 @@ private:
     std::size_t sequences_written_ = 0;
     std::size_t states_written_ = 0;
     std::set<std::string> durable_states_;   // state files a folder sync has covered
-    std::set<std::string> autosaves_written_;   // by path, every folder's: never cleared
+    // By path, every folder's, never cleared; the hash of the bytes last written
+    // there, so an autosave another writer put at the path is not taken for ours.
+    std::map<std::string, std::size_t> autosaves_written_;
     std::string set_aside_;
     std::set<std::string> swept_;            // folders whose "Plugin State/" was swept
 };

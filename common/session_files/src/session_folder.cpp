@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <utility>
@@ -711,10 +712,11 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
     std::string there;
     const bool had = read_file(target, kMaxSessionBytes, there);
     if (had && there == bytes) {
-        autosaves_written_.insert(target.string());
+        autosaves_written_[target.string()] = std::hash<std::string>{}(bytes);
         return true;
     }
-    if (had && autosaves_written_.count(target.string()) == 0) {
+    const auto mine = autosaves_written_.find(target.string());
+    if (had && (mine == autosaves_written_.end() || mine->second != std::hash<std::string>{}(there))) {
         const std::string stem = target.filename().string().substr(
             0, target.filename().string().size() - std::string(".sonora").size());
         const std::string stamp = utc_stamp(clock_ != nullptr ? clock_() : now_seconds());
@@ -752,7 +754,7 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
         }
     }
     if (!save(target.string(), bytes, document, why, caution, state_source)) return false;
-    autosaves_written_.insert(target.string());
+    autosaves_written_[target.string()] = std::hash<std::string>{}(bytes);
     if (!set_aside_.empty()) {
         const std::string said = "the autosave of an earlier run is kept as " + set_aside_;
         caution = caution.empty() ? said : caution + "; " + said;

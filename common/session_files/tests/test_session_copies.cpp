@@ -388,6 +388,45 @@ int test_reopen_keeps_the_crash_autosave() {
     return 0;
 }
 
+// #172 review N1: a saver owns an autosave only while its bytes are the ones
+// it wrote. Engine A autosaves P, Save As moves it to Q, a second engine
+// opens P and autosaves its own edits; when A returns to P those edits are
+// moved aside, not overwritten.
+int test_returning_to_a_path_does_not_trust_a_foreign_autosave() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    const fs::path file = folder / "Mix.sonora";
+    const fs::path other = tmp.path / "Moved" / "Moved.sonora";
+    const fs::path autosave = sf::autosave_file_of(file.string());
+    const fs::path backups = folder / "Session File Backups";
+    std::string why, caution;
+    Audio a;
+    SessionFolder first;
+    first.set_clock(fake_clock);
+    CHECK(first.save(file.string(), a.bytes(7), a.h.current(), why, caution));
+    a.rename("A edits");
+    CHECK(first.autosave(file.string(), a.h.current(), "sonora-engine", folder.string(), why, caution));
+    CHECK(first.save(other.string(), a.bytes(7), a.h.current(), why, caution));
+
+    Audio b;
+    b.rename("Second engine");
+    SessionFolder second;
+    second.set_clock(fake_clock);
+    CHECK(second.autosave(file.string(), b.h.current(), "sonora-engine", folder.string(), why, caution));
+    const std::string foreign = read(autosave);
+    CHECK(foreign.find("\"Second engine\"") != std::string::npos);
+
+    a.rename("A again");
+    CHECK(first.autosave(file.string(), a.h.current(), "sonora-engine", folder.string(), why, caution));
+    CHECK(read(autosave).find("\"A again\"") != std::string::npos);
+    std::string kept;
+    for (const std::string& n : names(backups)) {
+        if (n != autosave.filename().string() && read(backups / n) == foreign) kept = n;
+    }
+    CHECK(!kept.empty());
+    return 0;
+}
+
 // #164 review B1: two session files in one folder (Pro Tools' habit of
 // "Song" and "Song alt") each have their own autosave.
 int test_each_session_file_has_its_own_autosave() {
@@ -721,6 +760,7 @@ int main() {
     t(test_symlinked_backups_folder);
     t(test_autosave);
     t(test_reopen_keeps_the_crash_autosave);
+    t(test_returning_to_a_path_does_not_trust_a_foreign_autosave);
     t(test_each_session_file_has_its_own_autosave);
     t(test_no_save_into_a_rotated_backup);
     t(test_save_as_links_media_and_leaves_the_source);
