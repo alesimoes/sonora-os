@@ -489,6 +489,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
   - [ ] Aux and Master meters in the state block (a layout bump), and the Master's output pair chosen in the Mix window (ADR-0024 section 5).
   - [ ] Show implicit solo on the strips, outlined as Pro Tools does (ADR-0024 section 5).
   - [ ] A rerouted strip's edge starts a fresh delay line, a cut at the swap: ramp it (ADR-0024 section 6).
+  - [ ] Session::process() loads every aux solo flag once for aux_solo and again in feeds_solo(); a solo cleared between the two loads mutes every unsoloed track for one block. Load the flags once per callback (#168 review)
+  - [ ] test_routing: add a PDC case for a latent insert on an intermediate bus (track -> bus A -> bus B -> Master against a dry track) (#168 review)
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
