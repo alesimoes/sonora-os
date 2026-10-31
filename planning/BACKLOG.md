@@ -522,9 +522,9 @@ playback can follow edits; it is in flight.
   - [ ] Mute, send level and send pan as `AutomationParam` values, and
         lanes on aux returns and the Master (strip-keyed, with ADR-0024's
         strips); a session format bump.
-- [ ] automation (ADR-0027) follow-ups, after #174 merges:
-  - [ ] `model.cpp` `automation_points_problem` refuses a point at `kMaxInteger`, or lets `EditAutomation`'s range reach it, so the whole-lane `EditAutomation` over `[0, kMaxInteger)` can always remove every point; today a lane loaded with a point at 2^53-1 can never be emptied (#174 review).
-  - [ ] `plan_builder.cpp` `gain_of_db()` calls core's `auto_gain_of_db()` (exposed in `playback_plan.h`) instead of duplicating it; `session.cpp` hard-codes -144 and 24, so a lane and a fader at one dB cannot drift apart (#174 review).
+- [x] automation (ADR-0027) follow-ups, after #174 merges:
+  - [x] `model.cpp` `automation_points_problem` refuses a point at `kMaxInteger`, or lets `EditAutomation`'s range reach it, so the whole-lane `EditAutomation` over `[0, kMaxInteger)` can always remove every point; today a lane loaded with a point at 2^53-1 can never be emptied (#174 review).
+  - [x] `plan_builder.cpp` `gain_of_db()` calls core's `auto_gain_of_db()` (exposed in `playback_plan.h`) instead of duplicating it; `session.cpp` hard-codes -144 and 24, so a lane and a fader at one dB cannot drift apart (#174 review).
 
 ### Track 3: UI (ui-engineer)
 

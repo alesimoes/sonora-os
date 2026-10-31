@@ -1004,22 +1004,6 @@ void pan_gains(float pan, bool stereo, float exponent, float& l, float& r) noexc
     r = std::pow((1.0f + pan) * 0.5f, exponent);
 }
 
-// A volume lane's dB as a linear gain, exactly as engine/control's
-// gain_of_db() makes a fader's, so a lane and a fader at the same dB play
-// the same. -144 and 24 are model::kMinGainDb and kMaxGainDb.
-float auto_gain_of_db(float db) noexcept SONORA_RT {
-    if (!(db >= -144.0f)) db = -144.0f;
-    if (db > 24.0f) db = 24.0f;
-    return std::pow(10.0f, db / 20.0f);
-}
-
-// Its inverse, clamped the same way: silence is the lane's floor.
-float auto_db_of_gain(float g) noexcept SONORA_RT {
-    if (!(g > 0.0f)) return -144.0f;
-    const float db = 20.0f * std::log10(g);
-    return db < -144.0f ? -144.0f : (db > 24.0f ? 24.0f : db);
-}
-
 // Region gain times its fades at timeline frame t. Frame i of an L-frame
 // fade in is at i / L, of a fade out at 1 - i / L, so the two sides of a
 // crossfade sum to one (linear, s-curve) or in power (equal power).

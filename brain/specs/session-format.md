@@ -359,8 +359,10 @@ not referenced by any region in any playlist is *unused*. It stays.
   `"write"`, `"trim"` are reserved for the write slice and refused), is mix
   state; the lanes are undoable: `[{"param": "volume" | "pan", "points":
   [[frame, value], ...]}]`, sorted by param, one lane each, never empty,
-  points sorted by frame with at most two at one frame (a step), volume in
-  dB from -144 to +24, pan from -1 to +1, at most 65,536 points a lane.
+  points sorted by frame from 0 to 2^53 - 2 (so the whole-lane edit
+  `[0, 2^53 - 1)` reaches each one) with at most two at one frame (a
+  step), volume in dB from -144 to +24, pan from -1 to +1, at most 65,536
+  points a lane.
 - `kind` (version 5, second key): `"audio"`, `"midi"` or `"instrument"`.
   The example above is an audio track. The key set depends on the kind,
   strictly: a MIDI track has no `channels`, `input`, `gain_db`, `pan` or

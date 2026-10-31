@@ -136,7 +136,8 @@ float pan_exponent_for(float pan_law_db);
 // 10 ^ (dB / 20), with dB clamped to [model::kMinGainDb, model::kMaxGainDb]
 // and NaN taken as the quiet end. The model refuses anything outside, but a
 // snapshot that never went through its validator must still put no inf, NaN
-// or subnormal coefficient on the audio thread.
+// or subnormal coefficient on the audio thread. It is core's
+// auto_gain_of_db(), so a fader and a volume lane at one dB play the same.
 float gain_of_db(float db);
 
 }  // namespace sonora

@@ -104,6 +104,21 @@ int test_refusals() {
     for (std::size_t i = 0; i < many.size(); ++i) many[i].at = static_cast<Frames>(i);
     CHECK(refused(h, whole(vox.track, AutomationParam::Volume, many), "at most"));
 
+    // A range is half open and ends at most at kMaxInteger, so a point at
+    // kMaxInteger could never be replaced and its lane never emptied (#174
+    // review). The last frame a point can sit on is one before.
+    CHECK(refused(h, whole(vox.track, AutomationParam::Volume, {{kMaxInteger, 0.0f}}),
+                  "2^53 - 2"));
+    CHECK(refused(h,
+                  (EditAutomation{vox.track, AutomationParam::Volume, kMaxInteger - 1,
+                                  kMaxInteger, {{kMaxInteger, 0.0f}}}),
+                  "2^53 - 2"));
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Volume,
+                         {{0, -6.0f}, {kMaxInteger - 1, 0.0f}, {kMaxInteger - 1, 3.0f}}));
+    CHECK(lane_of(h.current(), 0, AutomationParam::Volume)->points.size() == 3);
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Volume, {}));
+    CHECK(lane_of(h.current(), 0, AutomationParam::Volume) == nullptr);
+
     // The mode: every one but Trim, whose relative lane waits for its slice.
     TrackMix m = *h.current().mix.find(vox.track);
     CHECK(m.automation == AutomationMode::Read);
