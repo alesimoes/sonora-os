@@ -50,6 +50,14 @@ if(UNIX)
   target_link_libraries(test_platform_background PRIVATE sonora_platform Threads::Threads)
   add_test(NAME platform_background COMMAND test_platform_background)
 
+  # ChildProcess::exit_handle(), the pidfd plugin hosts are watched by
+  # (ADR-0012 §4). Linux only: elsewhere POSIX has no pidfd and it is -1.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test_platform_child_exit tests/test_child_exit.cpp)
+    target_link_libraries(test_platform_child_exit PRIVATE sonora_platform)
+    add_test(NAME platform_child_exit COMMAND test_platform_child_exit)
+  endif()
+
   # The unsupported stub claims no exclusion; the other holder is a fork.
   add_executable(test_platform_folder_lock tests/test_folder_lock.cpp)
   target_link_libraries(test_platform_folder_lock PRIVATE sonora_platform)
