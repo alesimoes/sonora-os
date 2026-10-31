@@ -359,8 +359,10 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // DuplicatePlaylist, SetPlaylistName and RemovePlaylist (ADR-0026) are
-    // version 31; Save As and Save Copy In (ModelAction::SaveAs) are version 29;
+    // EditAutomation and the track mix's automation mode (ADR-0027) are
+    // version 32; DuplicatePlaylist, SetPlaylistName and RemovePlaylist
+    // (ADR-0026) are version 31; Save As and Save Copy In
+    // (ModelAction::SaveAs) are version 29;
     // SetOutput and the bus solo (ADR-0024) are version 30, 29 being PR #164's;
     // RemoveTrack and DuplicateTrack (ADR-0023) are version 28, 26 never
     // used; sends and aux buses (ADR-0022) 27; the punch and roll commands
@@ -378,7 +380,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 31);
+    CHECK(kProtocolVersion == 32);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -386,13 +388,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 31 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 32 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 31"));
+                   "speaks version 32"));
 }
 
 void domains() {

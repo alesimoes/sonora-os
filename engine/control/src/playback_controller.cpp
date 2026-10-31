@@ -29,6 +29,14 @@ Track::Monitor monitor_of(model::MonitorMode m) {
     return Track::Monitor::Auto;
 }
 
+// The same six modes in the same order (ADR-0027 §1).
+Track::Automation automation_of(model::AutomationMode m) {
+    static_assert(static_cast<int>(model::AutomationMode::Trim) ==
+                      static_cast<int>(Track::Automation::Trim),
+                  "the model's automation modes and the engine's differ");
+    return static_cast<Track::Automation>(static_cast<uint8_t>(m));
+}
+
 float pan_of(float pan) {
     if (std::isnan(pan)) return 0.0f;
     return std::clamp(pan, -1.0f, 1.0f);
@@ -133,6 +141,7 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
         t.set_solo_safe(m->solo_safe);
+        t.set_automation(automation_of(m->automation));
         if (!(take && t.rec_armed())) {
             t.set_input(tracks[i]->kind == model::TrackKind::Audio && !m->input.empty()
                             ? m->input.front()
@@ -307,6 +316,7 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
         m.solo_safe = t.solo_safe();
         m.armed = false;
         m.monitor = static_cast<uint8_t>(t.monitor());
+        m.automation = static_cast<uint8_t>(t.automation());
         m.input = static_cast<uint32_t>(e);
         if (e >= tracks.size()) continue;
         const model::TrackEdit& doc = *tracks[e];
@@ -321,6 +331,7 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
         m.mute = x.mute;
         m.solo = x.solo;
         m.solo_safe = x.solo_safe;
+        m.automation = static_cast<uint8_t>(automation_of(x.automation));
         const Track::Monitor mon = !audio ? Track::Monitor::Off
                                    : !input_monitoring_ && m.armed ? Track::Monitor::Off
                                                                    : monitor_of(x.monitor);
@@ -354,6 +365,7 @@ void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
         t.set_muted(m.mute);
         t.set_soloed(m.solo);
         t.set_solo_safe(m.solo_safe);
+        t.set_automation(static_cast<Track::Automation>(m.automation));
         t.set_rec_armed(m.armed);
         t.set_monitor(static_cast<Track::Monitor>(m.monitor));
         t.set_input(m.input);

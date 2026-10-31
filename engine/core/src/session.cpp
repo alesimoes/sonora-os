@@ -325,6 +325,12 @@ Session::Session(SessionConfig cfg)
     track_open_.reset(new float[tracks + 1]());
     track_level_.reset(new float[tracks + 1]());
     track_pan_.reset(new float[tracks + 1]());
+    track_auto_.reset(new uint8_t[tracks + 1]());
+    track_auto_last_.reset(new uint8_t[tracks + 1]());
+    track_ramp_.reset(new uint8_t[tracks + 1]());
+    track_open_last_.reset(new float[tracks + 1]());
+    auto_level_.reset(new float[tracks + 1]());
+    auto_pan_.reset(new float[tracks + 1]());
     send_states_ = (tracks + max_buses_) * kStripSendSlots;
     sends_.reset(new SendState[send_states_ + 1]);
     aux_.reset(new AuxState[max_buses_ + 1]);
@@ -965,6 +971,15 @@ void pan_gains(float pan, bool stereo, float exponent, float& l, float& r) noexc
     r = std::pow((1.0f + pan) * 0.5f, exponent);
 }
 
+// A volume lane's dB as a linear gain, exactly as engine/control's
+// gain_of_db() makes a fader's, so a lane and a fader at the same dB play
+// the same. -144 and 24 are model::kMinGainDb and kMaxGainDb.
+float auto_gain_of_db(float db) noexcept SONORA_RT {
+    if (!(db >= -144.0f)) db = -144.0f;
+    if (db > 24.0f) db = 24.0f;
+    return std::pow(10.0f, db / 20.0f);
+}
+
 // Region gain times its fades at timeline frame t. Frame i of an L-frame
 // fade in is at i / L, of a fade out at 1 - i / L, so the two sides of a
 // crossfade sum to one (linear, s-curve) or in power (equal power).
@@ -1031,6 +1046,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         plan_valid_ = plan_in_bounds(*plan);
         adopt_param_order(*plan);
         snap_mix_ = plan->mix_serial != 0;
+        auto_new_plan_ = true;
         // The monitor ramps too: what an engine track was sending belonged
         // to the track that was on it.
         if (snap_mix_) {
@@ -1253,7 +1269,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t e = 0; e < tracks_.size(); ++e) any_solo = any_solo || mix_view(*plan, e).solo;
     // Soloing an aux solos what feeds it, through the plan being played, so a
     // reroute at a swap changes the implicit solo in the same callback
-    // (ADR-0024 �4).
+    // (ADR-0024 §4).
     bool aux_solo = false;
     for (uint32_t b = 0; b < max_buses_; ++b) {
         aux_solo = aux_solo || aux_[b].solo.load(std::memory_order_relaxed);
@@ -1280,6 +1296,13 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     if (snap_mix_) {
         for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
+    }
+    // Before the sends: they follow a lane's value at the callback's start
+    // (ADR-0027 §2).
+    if (plan_valid_) {
+        automation_targets(*plan, rolling, playhead);
+    } else {
+        std::memset(track_auto_.get(), 0, tracks_.size());
     }
     bus_target_ = bus_gain_.load(std::memory_order_relaxed);
     // Indices from a plan that is not in bounds are never followed.
@@ -1312,7 +1335,12 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         reseek_ = false;
         off += n;
     }
+    // An automated fader left its last applied coefficient in track_target_.
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
+    for (std::size_t e = 0; e < tracks_.size(); ++e) {
+        track_auto_last_[e] = track_auto_[e];
+        track_open_last_[e] = track_open_[e];
+    }
     bus_applied_ = bus_target_;
     if (plan_valid_) {
         for (uint32_t ei = 0; ei < plan->edge_count; ++ei) {
@@ -1341,6 +1369,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         transport_->advance(play_until_);
     }
     expected_playhead_ = next;
+    auto_next_ = next;
     // Release is enough here, not at entry: a stop() whose load reads this
     // value reads it before the next callback's seq_cst entry in the single
     // total order, so that callback's transport load sees Stopped.
@@ -1556,7 +1585,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const bool stereo =
                     render_source(plan, node, block, offset, n, rolling, recording, from, tb);
                 const float* const in[2] = {tb[0], tb[1]};
-                apply_fader(plan.tracks[node.track].engine_track, stereo, in, out, n);
+                apply_track_fader(plan, plan.tracks[node.track], stereo, in, out, n, from, 0);
                 continue;
             }
             case NodeKind::TrackSource: {
@@ -1605,10 +1634,14 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 continue;
             }
             case NodeKind::TrackFader: {
-                const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
-                const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
+                const PlanNode& chain = plan.nodes[plan.edges[node.first_input_edge].from_node];
+                const float* const in[2] = {scratch(chain.scratch_buffer, 0),
+                                            scratch(chain.scratch_buffer, 1)};
                 const PlanTrack& pt = plan.tracks[node.track];
-                apply_fader(pt.engine_track, pt.channels >= 2, in, out, n);
+                // The chain's output is its latency late: the lanes follow
+                // the audio they scale (ADR-0027 §2).
+                apply_track_fader(plan, pt, pt.channels >= 2, in, out, n, from,
+                                  chain.latency_frames);
                 continue;
             }
             case NodeKind::AuxSum: {
@@ -1800,6 +1833,138 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
     }
 }
 
+void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
+                                 uint64_t playhead) noexcept SONORA_RT {
+    const uint64_t start = rolling ? loop_frame(playhead, 0) : playhead;
+    const bool jumped = auto_new_plan_ || start != auto_next_;
+    auto_new_plan_ = false;
+    auto_start_ = start;
+    auto_rolling_ = rolling;
+    std::memset(track_auto_.get(), 0, tracks_.size());
+    for (uint32_t pi = 0; pi < plan.track_count; ++pi) {
+        const PlanTrack& pt = plan.tracks[pi];
+        const uint32_t e = pt.engine_track;
+        if (e >= tracks_.size()) continue;
+        // Write plays the live value, never the lane: the write slice's.
+        const Track::Automation mode = mix_view(plan, e).automation;
+        if (mode == Track::Automation::Off || mode == Track::Automation::Write) continue;
+        uint8_t flags = 0;
+        if (pt.auto_count[kAutoVolume] != 0) flags |= 1u << kAutoVolume;
+        if (pt.auto_count[kAutoPan] != 0) flags |= 1u << kAutoPan;
+        if (flags == 0) continue;
+        track_auto_[e] = flags;
+        auto_level_[e] = track_level_[e];
+        auto_pan_[e] = track_pan_[e];
+        // A moved track starts at its lane, as a static fader starts at its
+        // target (ADR-0023 §4).
+        track_ramp_[e] = !snap_mix_ && (jumped || flags != track_auto_last_[e] ||
+                                        track_open_[e] != track_open_last_[e]);
+        const auto t = static_cast<int64_t>(start);
+        if ((flags & (1u << kAutoVolume)) != 0) {
+            track_level_[e] = auto_gain_of_db(auto_lane_value(
+                plan.auto_points + pt.auto_first[kAutoVolume], pt.auto_count[kAutoVolume], t));
+        }
+        if ((flags & (1u << kAutoPan)) != 0) {
+            track_pan_[e] = auto_lane_value(plan.auto_points + pt.auto_first[kAutoPan],
+                                            pt.auto_count[kAutoPan], t);
+        }
+    }
+}
+
+void Session::auto_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, int64_t t,
+                         float& l, float& r) const noexcept SONORA_RT {
+    const uint8_t flags = track_auto_[e];
+    float level = auto_level_[e];
+    float pan = auto_pan_[e];
+    if ((flags & (1u << kAutoVolume)) != 0) {
+        level = auto_gain_of_db(auto_lane_value(plan.auto_points + pt.auto_first[kAutoVolume],
+                                                pt.auto_count[kAutoVolume], t));
+    }
+    if ((flags & (1u << kAutoPan)) != 0) {
+        pan = auto_lane_value(plan.auto_points + pt.auto_first[kAutoPan], pt.auto_count[kAutoPan],
+                              t);
+    }
+    // The pan law as the static fader takes it, so a flat lane plays what
+    // the same fader would.
+    pan_gains(pan, tracks_[e]->channels() >= 2, plan.pan_exponent, l, r);
+    l *= level;
+    r *= level;
+}
+
+void Session::apply_track_fader(const PlaybackPlan& plan, const PlanTrack& pt, bool stereo,
+                                const float* const in[2], float* const out[2], uint32_t n,
+                                uint64_t from, uint32_t lag) noexcept SONORA_RT {
+    const uint32_t e = pt.engine_track;
+    if (track_auto_[e] == 0) {
+        apply_fader(e, stereo, in, out, n);
+        return;
+    }
+    const auto loop_a = static_cast<int64_t>(loop_from_);
+    const auto loop_b = static_cast<int64_t>(loop_to_);
+    const bool looping = loop_b > loop_a;
+    // Stopped, every frame takes the lane at the playhead.
+    int64_t t = auto_rolling_ ? static_cast<int64_t>(from) : static_cast<int64_t>(auto_start_);
+    if (lag != 0) {
+        if (looping && auto_rolling_ && t >= loop_a && t < loop_b) {
+            // Back across the wrap: what plays L frames after A came from
+            // the end of the loop.
+            const int64_t len = loop_b - loop_a;
+            int64_t x = (t - loop_a - static_cast<int64_t>(lag)) % len;
+            if (x < 0) x += len;
+            t = loop_a + x;
+        } else {
+            t = t > static_cast<int64_t>(lag) ? t - static_cast<int64_t>(lag) : 0;
+        }
+    }
+    const bool ramp = track_ramp_[e] != 0;
+    const float open = track_open_[e];
+    const float inv_block = 1.0f / static_cast<float>(block_frames_);
+    const float l0 = track_gain_[2 * e];
+    const float r0 = track_gain_[2 * e + 1];
+    const float* right_in = stereo ? in[1] : in[0];
+    constexpr float kInvGrid = 1.0f / static_cast<float>(kAutoGridFrames);
+    int64_t grid = -1;
+    float c0l = 0.0f;
+    float c0r = 0.0f;
+    float c1l = 0.0f;
+    float c1r = 0.0f;
+    float tl = 0.0f;
+    float tr = 0.0f;
+    for (uint32_t i = 0; i < n; ++i) {
+        const int64_t g0 = t - t % kAutoGridFrames;
+        if (g0 != grid) {
+            // The same function of the same frame, so reusing the far end
+            // gives the bits a fresh evaluation would.
+            if (g0 == grid + kAutoGridFrames) {
+                c0l = c1l;
+                c0r = c1r;
+            } else {
+                auto_gains(plan, pt, e, g0, c0l, c0r);
+            }
+            auto_gains(plan, pt, e, g0 + kAutoGridFrames, c1l, c1r);
+            grid = g0;
+        }
+        const float x = static_cast<float>(t - g0) * kInvGrid;
+        tl = open * (c0l + (c1l - c0l) * x);
+        tr = open * (c0r + (c1r - c0r) * x);
+        float gl = tl;
+        float gr = tr;
+        if (ramp) {
+            const float a = static_cast<float>(block_done_ + i + 1) * inv_block;
+            gl = l0 + (tl - l0) * a;
+            gr = r0 + (tr - r0) * a;
+        }
+        out[0][i] = in[0][i] * gl;
+        out[1][i] = right_in[i] * gr;
+        if (auto_rolling_ && ++t == loop_b && looping) t = loop_a;
+    }
+    // Where the next callback's crossfade, if any, starts from.
+    if (n != 0 && block_done_ + n == block_frames_) {
+        track_target_[2 * e] = tl;
+        track_target_[2 * e + 1] = tr;
+    }
+}
+
 uint32_t Session::newest_punch(uint32_t take) const noexcept SONORA_RT {
     uint32_t found = punch_slots_;
     for (uint32_t k = 0; k < punch_slots_; ++k) {
@@ -1827,6 +1992,9 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
                         ? static_cast<Track::Monitor>(m.monitor)
                         : Track::Monitor::Off;
         v.input = m.input;
+        v.automation = m.automation <= static_cast<uint8_t>(Track::Automation::Trim)
+                           ? static_cast<Track::Automation>(m.automation)
+                           : Track::Automation::Off;
         return v;
     }
     v.gain = t.gain();
@@ -1837,6 +2005,7 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
     v.armed = t.rec_armed();
     v.monitor = t.monitor();
     v.input = t.input();
+    v.automation = t.automation();
     return v;
 }
 
@@ -1857,6 +2026,12 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
         if (pt.first_segment > plan.segment_count ||
             pt.segment_count > plan.segment_count - pt.first_segment) {
             return false;
+        }
+        for (uint32_t k = 0; k < kAutoParams; ++k) {
+            if (pt.auto_first[k] > plan.auto_point_count ||
+                pt.auto_count[k] > plan.auto_point_count - pt.auto_first[k]) {
+                return false;
+            }
         }
     }
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {

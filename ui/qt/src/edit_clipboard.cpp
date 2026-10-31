@@ -199,7 +199,7 @@ std::string step_text(const std::string& label) {
         {"RemoveTrack", "Delete Track"},  {"DuplicateTrack", "Duplicate Track"},
         {"SetOutput", "Set Output"},
         {"DuplicatePlaylist", "Duplicate Playlist"}, {"SetPlaylistName", "Rename Playlist"},
-        {"RemovePlaylist", "Delete Playlist"},
+        {"RemovePlaylist", "Delete Playlist"},       {"EditAutomation", "Automation Edit"},
     };
     const auto it = kWords.find(label);
     return it != kWords.end() ? it->second : label;

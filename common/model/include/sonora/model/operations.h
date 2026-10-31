@@ -487,6 +487,20 @@ struct SetOutput {
     Id output = kMasterOutput;
 };
 
+// --- automation (ADR-0027) --------------------------------------------------
+
+// Undoable: replaces the points of `track`'s `param` lane in [from, to)
+// with `points`, every one of which lies in that range, sorted, at most two
+// at a frame. [0, kMaxInteger) is the whole lane; a lane left with no point
+// is removed. Pencil, thin, cut, copy and paste are all this operation.
+struct EditAutomation {
+    Id track = 0;
+    AutomationParam param = AutomationParam::Volume;
+    Frames from = 0;
+    Frames to = 0;
+    std::vector<AutomationPoint> points;
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -499,7 +513,8 @@ using Member =
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist>;
+                 DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
+                 EditAutomation>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -534,7 +549,7 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 Compound>;
+                 EditAutomation, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

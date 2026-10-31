@@ -117,7 +117,11 @@ namespace sonora::api {
 // 31 (ADR-0026 playlists; follows 30): new operation kinds DuplicatePlaylist,
 //   SetPlaylistName and RemovePlaylist, which a version-28 peer's decoder
 //   refuses.
-constexpr uint32_t kProtocolVersion = 31;
+// 32 (ADR-0027; follows 31): the operation codec has EditAutomation, a
+//   TrackMix carries its automation mode, and a Snapshot's undo window is
+//   window format 10, with each track's automation lanes (session format
+//   13). A version-31 peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 32;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

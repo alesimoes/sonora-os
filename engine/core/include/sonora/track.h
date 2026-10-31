@@ -50,6 +50,12 @@ public:
     Monitor monitor() const { return monitor_.load(std::memory_order_relaxed); }
     void set_monitor(Monitor m) { monitor_.store(m, std::memory_order_relaxed); }
 
+    // model::AutomationMode, in its order (ADR-0027 §1). Off plays the
+    // static gain and pan; Read, Touch and Latch play the plan's lanes.
+    enum class Automation : uint8_t { Off = 0, Read = 1, Touch = 2, Latch = 3, Write = 4, Trim = 5 };
+    Automation automation() const { return automation_.load(std::memory_order_relaxed); }
+    void set_automation(Automation a) { automation_.store(a, std::memory_order_relaxed); }
+
     // The backend input this track meters, captures and monitors: its
     // document track's, so a track moved to another engine track keeps its
     // input (ADR-0023 §4). Its own index until the control thread sets it.
@@ -136,6 +142,7 @@ private:
     std::atomic<bool> soloed_{false};
     std::atomic<bool> solo_safe_{false};
     std::atomic<Monitor> monitor_{Monitor::Auto};
+    std::atomic<Automation> automation_{Automation::Read};
     std::atomic<uint32_t> input_;
     std::atomic<uint32_t> mix_serial_{0};
     std::atomic<float> peak_{0.0f};
@@ -143,6 +150,7 @@ private:
 };
 
 static_assert(std::atomic<Track::Monitor>::is_always_lock_free, "monitor_");
+static_assert(std::atomic<Track::Automation>::is_always_lock_free, "automation_");
 
 // The callback touches each of these every period; a lock behind any of
 // them would be a lock on the audio thread.

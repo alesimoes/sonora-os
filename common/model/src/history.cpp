@@ -66,7 +66,8 @@ std::size_t track_bytes(const TrackEdit& t) {
     std::size_t n = kNodeOverhead + sizeof(TrackEdit) + t.name.size() +
                     t.playlists.size() * sizeof(std::shared_ptr<const Playlist>) +
                     t.midi_playlists.size() * sizeof(std::shared_ptr<const MidiPlaylist>) +
-                    t.inserts.size() * sizeof(Insert);
+                    t.inserts.size() * sizeof(Insert) +
+                    t.automation.size() * sizeof(std::shared_ptr<const AutomationLane>);
     for (const Insert& in : t.inserts) {
         n += in.plugin.id.size() + in.plugin.name.size() + in.plugin.version.size();
     }
@@ -99,6 +100,7 @@ public:
         for (const auto& t : state.tracks) {
             objects_.insert(t.get());
             for (const auto& p : t->playlists) objects_.insert(p.get());
+            for (const auto& l : t->automation) objects_.insert(l.get());
             for (const auto& p : t->midi_playlists) {
                 if (!objects_.insert(p.get()).second) continue;
                 each_sequence(*p, [&](const MidiSequence& s) {
@@ -150,6 +152,11 @@ Own own(const EditState& state, const EditState& previous, std::string* oversize
         o.bytes += track_bytes(*t);
         for (const auto& p : t->playlists) {
             if (!shared.has(p.get()) && seen.insert(p.get()).second) o.bytes += playlist_bytes(*p);
+        }
+        for (const auto& l : t->automation) {
+            if (shared.has(l.get()) || !seen.insert(l.get()).second) continue;
+            o.bytes += kNodeOverhead + sizeof(AutomationLane) +
+                       l->points.size() * sizeof(AutomationPoint);
         }
         for (const auto& p : t->midi_playlists) {
             if (shared.has(p.get()) || !seen.insert(p.get()).second) continue;

@@ -593,6 +593,35 @@ struct Bus {
     }
 };
 
+// --- automation (ADR-0027) --------------------------------------------------
+
+// What a lane drives. Volume is in dB, kMinGainDb to kMaxGainDb; pan is
+// -1 (left) to +1 (right).
+enum class AutomationParam : std::uint8_t { Volume, Pan };
+// Off plays the static fader and pan; Read, Touch and Latch play the lanes
+// until a parameter is touched. Touch, Latch, Write and Trim come with the
+// write slice (ADR-0027 §3); until then a mix holding one is refused.
+enum class AutomationMode : std::uint8_t { Off, Read, Touch, Latch, Write, Trim };
+
+inline constexpr std::size_t kMaxAutomationPoints = 65536;
+
+struct AutomationPoint {
+    Frames at = 0;
+    float value = 0.0f;
+    bool operator==(const AutomationPoint& o) const { return at == o.at && value == o.value; }
+};
+
+// Points sorted by `at`, at most two at one frame (a step: the value before
+// it, then the value after), never empty. Linear between points in the
+// lane's unit, held before the first and after the last.
+struct AutomationLane {
+    AutomationParam param = AutomationParam::Volume;
+    std::vector<AutomationPoint> points;
+    bool operator==(const AutomationLane& o) const {
+        return param == o.param && points == o.points;
+    }
+};
+
 // The undoable part of a track. Input, monitor mode and the mix live in
 // TrackMix, because a fader move is not an edit.
 struct TrackEdit {
@@ -616,6 +645,12 @@ struct TrackEdit {
     // Where the track's fader feeds (ADR-0024 §2); a MIDI track's is the
     // Master, unused.
     Id output = kMasterOutput;
+    // Undoable, as Pro Tools' automation edits are (ADR-0027 §1). Sorted by
+    // param, one lane each; shared, so an undo step copies only the lanes
+    // it changes. A MIDI track holds none.
+    std::vector<std::shared_ptr<const AutomationLane>> automation;
+    // Nullptr when the track has no lane for `param`.
+    const AutomationLane* lane(AutomationParam param) const;
     bool operator==(const TrackEdit& o) const;
 };
 
@@ -716,6 +751,8 @@ struct TrackMix {
     bool solo_safe = false;
     // MIDI and instrument tracks; an audio track's is the default.
     MidiRouting midi;
+    // A strip setting, saved and not undone, as in Pro Tools (ADR-0027 §1).
+    AutomationMode automation = AutomationMode::Read;
     bool operator==(const TrackMix& o) const;
 };
 

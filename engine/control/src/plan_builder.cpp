@@ -334,7 +334,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         bind_sends(tracks[ti]->sends, static_cast<uint32_t>(ti));
     }
     for (uint32_t b = 0; b < bus_count; ++b) bind_sends(buses[b].sends, limits.engine_tracks + b);
-    // Outputs (ADR-0024 �6): an engine bus index, or kNoBus for the Master.
+    // Outputs (ADR-0024 §6): an engine bus index, or kNoBus for the Master.
     std::vector<uint32_t> track_outputs(limits.engine_tracks, kNoBus);
     std::vector<uint32_t> bus_outputs(bus_count, kNoBus);
     for (std::size_t ti = 0; ti < tracks.size() && ti < limits.engine_tracks; ++ti) {
@@ -399,6 +399,21 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     // moves tracks between engine tracks (ADR-0023 §4).
     sizes.track_mix = limits.engine_tracks;
     sizes.send_mix = limits.engine_tracks * kStripSendSlots;
+    // Each track's volume and pan lanes (ADR-0027 §2), copied whole: the
+    // plan stays one allocation the audio thread only reads.
+    const auto lane_of = [](const model::TrackEdit& t, uint32_t k) {
+        return t.lane(k == kAutoVolume ? model::AutomationParam::Volume
+                                       : model::AutomationParam::Pan);
+    };
+    std::size_t auto_total = 0;
+    for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
+        for (uint32_t k = 0; k < kAutoParams; ++k) {
+            if (const model::AutomationLane* l = lane_of(*tracks[ti], k)) {
+                auto_total += l->points.size();
+            }
+        }
+    }
+    sizes.auto_points = static_cast<uint32_t>(auto_total);
     PlaybackPlan* plan = create_plan(sizes);
     if (!plan) {
         error = "out of memory for a plan of " + str(segment_total) + " segments";
@@ -423,6 +438,19 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         pt.first_segment = at;
         pt.segment_count = static_cast<uint32_t>(per_track[t].size());
         for (const PlanSegment& s : per_track[t]) plan->segments[at++] = s;
+    }
+    uint32_t auto_at = 0;
+    for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
+        PlanTrack& pt = plan->tracks[ti];
+        for (uint32_t k = 0; k < kAutoParams; ++k) {
+            const model::AutomationLane* l = lane_of(*tracks[ti], k);
+            if (l == nullptr) continue;
+            pt.auto_first[k] = auto_at;
+            pt.auto_count[k] = static_cast<uint32_t>(l->points.size());
+            for (const model::AutomationPoint& p : l->points) {
+                plan->auto_points[auto_at++] = PlanAutoPoint{p.at, p.value};
+            }
+        }
     }
     layout_mix_graph(*plan, bindings.data(), mix);
     report.track_shortfall.assign(limits.engine_tracks, 0);

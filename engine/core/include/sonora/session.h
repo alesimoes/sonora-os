@@ -446,7 +446,7 @@ public:
     // Control thread.
     void set_send(uint32_t strip, uint32_t slot, float level, float pan, bool follow_pan,
                   bool mute, bool pre);
-    // `solo` solos what feeds the bus as well (ADR-0024 �4); the return itself
+    // `solo` solos what feeds the bus as well (ADR-0024 §4); the return itself
     // is never muted by a solo.
     void set_aux(uint32_t bus, float gain, float pan, bool mute, bool solo = false);
     // A solo left on a bus slot the document no longer has would mute the
@@ -657,6 +657,7 @@ private:
         bool armed = false;
         Track::Monitor monitor = Track::Monitor::Auto;
         uint32_t input = 0;
+        Track::Automation automation = Track::Automation::Read;
     };
     TrackMixView mix_view(const PlaybackPlan& plan, std::size_t e) const noexcept SONORA_RT;
     // Zeroes what render_track() put in `out` at or past play_until_.
@@ -664,6 +665,21 @@ private:
     // Step 3: the track's ramped gain and pan, from `in` into stereo `out`.
     void apply_fader(uint32_t engine_track, bool stereo, const float* const in[2],
                      float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // The fader of a track whose lanes play this callback (ADR-0027 §2):
+    // each frame's coefficient from the lanes at its timeline frame, `from`
+    // for the first, `lag` frames earlier for a fader behind an insert
+    // chain. Falls to apply_fader() for a track that is not automated.
+    void apply_track_fader(const PlaybackPlan& plan, const PlanTrack& pt, bool stereo,
+                           const float* const in[2], float* const out[2], uint32_t n,
+                           uint64_t from, uint32_t lag) noexcept SONORA_RT;
+    // The coefficients of engine track e at timeline frame t, L and R,
+    // before mute and solo.
+    void auto_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, int64_t t,
+                    float& l, float& r) const noexcept SONORA_RT;
+    // Each engine track's automated parameters this callback, and whether
+    // its fader crossfades from what it last applied (ADR-0027 §4).
+    void automation_targets(const PlaybackPlan& plan, bool rolling,
+                            uint64_t playhead) noexcept SONORA_RT;
     // Whether every index the audio thread follows in `plan` is in bounds:
     // nodes, edges, tracks, segments, scratch buffers. Run once per plan,
     // when the audio thread adopts it.
@@ -854,6 +870,22 @@ private:
     std::unique_ptr<float[]> track_open_;
     std::unique_ptr<float[]> track_level_;
     std::unique_ptr<float[]> track_pan_;
+    // Automation (ADR-0027 §2), per engine track. Bit kAutoVolume and bit
+    // kAutoPan: the parameter plays its lane this callback, and last
+    // callback; 1 when the fader crossfades this callback; the open state
+    // last callback; the static gain and pan an unautomated parameter keeps.
+    std::unique_ptr<uint8_t[]> track_auto_;
+    std::unique_ptr<uint8_t[]> track_auto_last_;
+    std::unique_ptr<uint8_t[]> track_ramp_;
+    std::unique_ptr<float[]> track_open_last_;
+    std::unique_ptr<float[]> auto_level_;
+    std::unique_ptr<float[]> auto_pan_;
+    // Where the next callback starts if it continues this one, looped, or
+    // the playhead, stopped; this callback's start; whether it rolls.
+    uint64_t auto_next_ = 0;
+    uint64_t auto_start_ = 0;
+    bool auto_rolling_ = false;
+    bool auto_new_plan_ = true;
 
     // Sends and aux returns (ADR-0022). The atomics are the control
     // thread's to write; the rest the audio thread's.
@@ -871,7 +903,7 @@ private:
         std::atomic<bool> solo{false};
     };
     // Which nodes and engine tracks feed a soloed aux this callback
-    // (ADR-0024 �4), sized when the session is created.
+    // (ADR-0024 §4), sized when the session is created.
     void feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT;
     std::unique_ptr<uint8_t[]> feeds_node_;    // per node
     std::unique_ptr<uint8_t[]> feeds_track_;   // per engine track
