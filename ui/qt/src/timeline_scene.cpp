@@ -153,6 +153,122 @@ void draw_crossfades(const Playlist& p, double lane_y, const ViewState& v, Scene
     }
 }
 
+// The points lane `l` of track `i` is drawn from: the lane's own, with the
+// gesture in the hand applied, so a breakpoint is seen where the release will
+// leave it before the button comes up. `dragged` is the index of the point
+// in the hand, -1 for none.
+std::vector<AutomationPoint> lane_points_as_drawn(const TrackEdit& t, int i, int l,
+                                                  const Drag& drag, int& dragged) {
+    const AutomationParam p = lane_param(l);
+    const AutomationLane* lane = t.lane(p);
+    std::vector<AutomationPoint> pts = lane ? lane->points : std::vector<AutomationPoint>{};
+    dragged = -1;
+    if (drag.track != i || drag.autolane != l) return pts;
+    if (drag.kind == Drag::Kind::Point) {
+        if (drag.point >= 0) {
+            if (static_cast<std::size_t>(drag.point) < pts.size()) {
+                pts[static_cast<std::size_t>(drag.point)] = drag.at_point;
+                dragged = drag.point;
+            }
+        } else {
+            pts.erase(std::remove_if(pts.begin(), pts.end(),
+                                     [&](const AutomationPoint& q) { return q.at == drag.at_point.at; }),
+                      pts.end());
+            const auto at = std::lower_bound(
+                pts.begin(), pts.end(), drag.at_point.at,
+                [](const AutomationPoint& q, Frames f) { return q.at < f; });
+            dragged = static_cast<int>(at - pts.begin());
+            pts.insert(at, drag.at_point);
+        }
+    } else if (drag.kind == Drag::Kind::Stroke) {
+        EditAutomation op;
+        if (stroke_op(t.id, p, drag.stroke, op)) {
+            std::vector<AutomationPoint> merged;
+            for (const AutomationPoint& q : pts) {
+                if (q.at < op.from) merged.push_back(q);
+            }
+            merged.insert(merged.end(), op.points.begin(), op.points.end());
+            for (const AutomationPoint& q : pts) {
+                if (q.at >= op.to) merged.push_back(q);
+            }
+            pts = std::move(merged);
+        }
+    }
+    return pts;
+}
+
+// One lane of automation: the curve the engine plays (lane_value_at, one
+// column a pixel), its breakpoints, the range selected on it and the value
+// of the breakpoint in the hand. A lane with no breakpoint draws the static
+// fader or pan as a dashed line, because that is what plays: a flat line
+// drawn solid would look like automation that is not there.
+void draw_autolane(const Snapshot& s, const TrackEdit& t, int i, int l, const ViewState& v,
+                   const Selection& sel, const Drag& drag, Scene& out) {
+    const AutomationParam p = lane_param(l);
+    const double top = v.y_of_autolane(i, l);
+    const TrackMix* mix = s.mix.find(t.id);
+    const bool off = mix != nullptr && mix->automation == AutomationMode::Off;
+    const uint32_t colour =
+        off ? theme::kTextTertiary
+            : (p == AutomationParam::Volume ? theme::kAutomationVolume : theme::kAutomationPan);
+    const double h = v.autolane_height;
+
+    const float unity = p == AutomationParam::Volume ? lane_position(p, 0.0f) : 0.5f;
+    add(out.rects, 0, std::floor(v.autolane_y(i, l, unity)), v.width, 1, theme::kAutomationGuide);
+
+    Frames ra = sel.start, rb = sel.end;
+    bool ranged = sel.autolane == l && sel.track == i && sel.has_range();
+    if (drag.kind == Drag::Kind::Range && drag.autolane == l && drag.track == i && drag.moved) {
+        ra = drag.start;
+        rb = drag.end;
+        ranged = rb > ra;
+    }
+    if (ranged) {
+        const double x0 = std::max(0.0, v.x_of(ra));
+        const double x1 = std::min(v.width, v.x_of(rb));
+        add(out.rects, x0, top, x1 - x0, h - 1, theme::kSelectionFill);
+    }
+
+    int dragged = -1;
+    const std::vector<AutomationPoint> pts = lane_points_as_drawn(t, i, l, drag, dragged);
+    const float fallback = mix == nullptr                    ? 0.0f
+                           : p == AutomationParam::Volume ? mix->gain_db
+                                                          : mix->pan;
+    if (pts.empty()) {
+        const double y = v.autolane_y(i, l, lane_position(p, fallback));
+        for (double px = 0; px < v.width; px += 9) add(out.rects, px, y - 0.75, 5, 1.5, colour);
+        return;
+    }
+    AutomationLane drawn;
+    drawn.param = p;
+    drawn.points = pts;
+    double prev = -1;
+    for (int px = 0; px < static_cast<int>(v.width); ++px) {
+        const Frames f = static_cast<Frames>(std::llround(v.scroll + (px + 0.5) * v.fpp));
+        const double y = v.autolane_y(i, l, lane_position(p, lane_value_at(&drawn, f, fallback)));
+        const double from = prev < 0 ? y : prev;
+        add(out.rects, px, std::min(from, y) - 0.75, 1.0, std::max(1.5, std::abs(y - from) + 1.5),
+            colour);
+        prev = y;
+    }
+    const bool lane_selected = sel.autolane == l && sel.track == i;
+    for (std::size_t k = 0; k < pts.size(); ++k) {
+        const double x = v.x_of(pts[k].at);
+        if (x < -6 || x > v.width + 6) continue;
+        const double y = v.autolane_y(i, l, lane_position(p, pts[k].value));
+        const bool picked = (drag.track == i && drag.autolane == l && dragged == static_cast<int>(k)) ||
+                            (lane_selected && dragged < 0 && sel.point == static_cast<int>(k));
+        const double r = picked ? 4.5 : 3.5;
+        if (picked) add(out.rects, x - r - 1.5, y - r - 1.5, 2 * r + 3, 2 * r + 3, theme::kAccent);
+        add(out.rects, x - r, y - r, 2 * r, 2 * r, picked ? theme::kPlayhead : colour);
+        if (picked) {
+            out.labels.push_back({static_cast<float>(x + 9), static_cast<float>(y - 16), 90.0f,
+                                  lane_value_text(p, pts[k].value), theme::kText,
+                                  theme::kTextCaption});
+        }
+    }
+}
+
 }  // namespace
 
 void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection& sel,
@@ -165,9 +281,15 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
     // Lanes.
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         const double y = v.y_of_track(static_cast<int>(i));
-        if (y + v.track_height < 0 || y > v.height) continue;
+        if (v.y_of_track(static_cast<int>(i) + 1) < 0 || y > v.height) continue;
         add(out.rects, 0, y, v.width, v.track_height, i % 2 ? theme::kLaneB : theme::kLaneA);
         add(out.rects, 0, y + v.track_height - 1, v.width, 1, theme::kBorderSubtle);
+        if (!v.autolanes_open(static_cast<int>(i))) continue;
+        for (int l = 0; l < kLaneCount; ++l) {
+            const double top = v.y_of_autolane(static_cast<int>(i), l);
+            add(out.rects, 0, top, v.width, v.autolane_height, theme::kSunken);
+            add(out.rects, 0, top + v.autolane_height - 1, v.width, 1, theme::kBorderSubtle);
+        }
     }
 
     // Grid: bar lines always, faintly; the grid value's lines in Grid mode.
@@ -254,6 +376,16 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         draw_crossfades(*p, y, v, out);
     }
 
+    // Automation lanes, over the grid and under the range.
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (!v.autolanes_open(static_cast<int>(i))) continue;
+        const double y = v.y_of_track(static_cast<int>(i));
+        if (v.y_of_track(static_cast<int>(i) + 1) < 0 || y > v.height) continue;
+        for (int l = 0; l < kLaneCount; ++l) {
+            draw_autolane(s, *tracks[i], static_cast<int>(i), l, v, sel, drag, out);
+        }
+    }
+
     // A time range on the selected tracks, or the one being dragged out.
     Frames ra = sel.start, rb = sel.end;
     int rt = sel.track, rn = sel.tracks;
@@ -263,11 +395,14 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         rt = std::min(drag.track, drag.track_end);
         rn = std::abs(drag.track_end - drag.track) + 1;
     }
-    if (rb > ra && rt >= 0 && sel.region == kNoId) {
+    // A range on an automation lane is drawn on the lane, not across the row.
+    const bool on_lane = drag.kind == Drag::Kind::Range && drag.moved ? drag.autolane >= 0
+                                                                     : sel.autolane >= 0;
+    if (rb > ra && rt >= 0 && sel.region == kNoId && !on_lane) {
         const double x0 = std::max(0.0, v.x_of(ra)), x1 = std::min(v.width, v.x_of(rb));
         // One band over all of them: the range is one selection, not one per
         // track.
-        add(out.rects, x0, v.y_of_track(rt), x1 - x0, v.track_height * rn,
+        add(out.rects, x0, v.y_of_track(rt), x1 - x0, v.y_of_track(rt + rn) - v.y_of_track(rt),
             theme::kSelectionFill);
     }
 }

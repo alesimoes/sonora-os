@@ -19,12 +19,15 @@
 // moved only one would be a mode that lies about what it did.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "automation_edit.h"
 #include "edit_clipboard.h"
 #include "time_format.h"
 #include "timeline_document.h"
@@ -32,10 +35,14 @@
 namespace sonora::ui {
 
 enum class EditMode { Shuffle, Slip, Spot, Grid };
-enum class Tool { Smart, Trim, Select, Grab };
+enum class Tool { Smart, Trim, Select, Grab, Pencil };
 
 const char* edit_mode_name(EditMode m);
 const char* tool_name(Tool t);
+
+// Between an automation lane's edges and the highest and lowest value it
+// draws, so a point at either end is not clipped.
+constexpr double kAutolaneInset = 5.0;
 
 struct ViewState {
     double fpp = 1200.0;    // frames per pixel: 40 px a second at 48 kHz
@@ -45,11 +52,42 @@ struct ViewState {
     double height = 0.0;
     double track_height = 72.0;
     float wave_scale = 1.0f;  // vertical zoom of the waveforms
+    // Automation lanes (ADR-0027) disclosed under a track make its row
+    // taller; "lane" elsewhere in this file is a track's row. `tops[i]` is
+    // track i's top in row pixels and `tops[n]` the end of the last; empty
+    // when no track discloses lanes, and every track is then `track_height`
+    // tall. `open[i]` says track i shows its lanes.
+    double autolane_height = 56.0;
+    std::vector<double> tops;
+    std::vector<std::uint8_t> open;
 
     double x_of(model::Frames f) const { return (static_cast<double>(f) - scroll) / fpp; }
     model::Frames frame_at(double x) const;
-    double y_of_track(int index) const { return index * track_height - scroll_y; }
+    double y_of_track(int index) const;
     int track_at(double y) const;  // -1 above or below the lanes is the caller's check
+    bool autolanes_open(int index) const {
+        return index >= 0 && static_cast<std::size_t>(index) < open.size() && open[index] != 0;
+    }
+    // The top of automation lane `lane` (0 .. kLaneCount - 1) under track `index`.
+    double y_of_autolane(int index, int lane) const {
+        return y_of_track(index) + track_height + lane * autolane_height;
+    }
+    // The automation lane under pixel `y` of track `index`'s block: -1 over
+    // the track's own row.
+    int autolane_at(int index, double y) const;
+    // A lane position (0 bottom to 1 top, automation_edit.h) as a y in
+    // lane `lane` of track `index`, and back.
+    double autolane_y(int index, int lane, float position) const {
+        return y_of_autolane(index, lane) + kAutolaneInset +
+               (1.0 - position) * (autolane_height - 2 * kAutolaneInset);
+    }
+    float autolane_position(int index, int lane, double y) const {
+        const double p = 1.0 - (y - y_of_autolane(index, lane) - kAutolaneInset) /
+                                   (autolane_height - 2 * kAutolaneInset);
+        return static_cast<float>(std::clamp(p, 0.0, 1.0));
+    }
+    // The height of `tracks` rows, automation lanes included.
+    double content_height(std::size_t tracks) const;
 };
 
 struct Selection {
@@ -62,16 +100,22 @@ struct Selection {
     model::Id region = kNoId;
     model::Frames insertion = 0;   // the edit cursor
     model::Frames start = 0, end = 0;  // a time range on those tracks; empty when equal
+    // Automation: the lane of `track` (an index into the lanes a track
+    // discloses) the range or the point belongs to, -1 for the track itself;
+    // and that lane's point selected, -1 for none.
+    int autolane = -1;
+    int point = -1;
 
     bool has_range() const { return end > start; }
     bool covers(int index) const { return index >= track && index < track + tracks; }
 };
 
 // FadeIn / FadeOut: the Smart Tool's top corners, as in Pro Tools.
-enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut };
+enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut, Automation };
 
 struct Hit {
     int track = -1;
+    int autolane = -1;   // with HitZone::Automation
     model::Id region = kNoId;
     HitZone zone = HitZone::None;
 };
@@ -79,12 +123,20 @@ struct Hit {
 // A gesture in progress: interface state, drawn outside the model until the
 // release turns it into one operation (timeline-model.md).
 struct Drag {
-    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut };
+    // Point: a breakpoint added or moved; Stroke: the Pencil's line.
+    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke };
     Kind kind = Kind::None;
+    // An automation gesture: its lane (-1 for the others); the point it
+    // holds (-1 for a new one) and where it would be left; or the stroke
+    // drawn so far.
+    int autolane = -1;
+    int point = -1;
+    model::AutomationPoint at_point;
+    std::vector<model::AutomationPoint> stroke;
     int track = -1;
     model::Id region = kNoId;
     model::Frames press_frame = 0;
-    double press_x = 0;
+    double press_x = 0, press_y = 0;
     model::Frames orig_start = 0, orig_end = 0;
     model::Frames start = 0, end = 0;  // the preview
     // A Range drag's other end: the lane under the pointer, so the range
@@ -110,7 +162,10 @@ public:
     const model::Snapshot& snapshot() const { return doc_.snapshot(); }
 
     // --- view ---
-    const ViewState& view() const { return view_; }
+    const ViewState& view() const {
+        refresh_rows();
+        return view_;
+    }
     void set_viewport(double width, double height);
     void set_track_height(double h);
     void zoom_in();
@@ -247,6 +302,25 @@ public:
     // is refused.
     bool undo_to(std::size_t depth, std::string& why);
 
+    // --- automation lanes (ADR-0027) ---
+    //
+    // A track discloses a lane for each parameter the model automates
+    // (kLaneCount, top to bottom) under its row; whether it does is how the
+    // operator looks at the session, so it is interface state, dropped when
+    // a session opens. Every edit below is one EditAutomation, so one undo
+    // step; a gesture with the mouse is previewed in the Drag and sent at the
+    // release. The Smart Tool and the Grabber add a breakpoint where the lane
+    // is pressed or move the one there; the Pencil draws freely (thinned at
+    // the release); the Selector selects a range of the lane, which Cut,
+    // Copy, Paste and Clear then act on instead of the regions. Clear on a
+    // selected breakpoint deletes it.
+    bool autolanes_shown(int track) const;
+    // Refused on a MIDI track, which has no audio to automate.
+    bool toggle_autolanes(int track, std::string& why);
+    // The lane under the selection: its track's edit state, or null.
+    const model::AutomationLane* selected_lane() const;
+    const AutomationClip& automation_clipboard() const { return auto_clip_; }
+
     // --- markers: Pro Tools' Memory Locations (edit_markers.cpp) ---
     //
     // A marker is session state: adding or clearing one is an operation and
@@ -380,7 +454,19 @@ private:
                          const char* nothing_was, std::string& why);
 
     TimelineDocument& doc_;
-    ViewState view_;
+    void refresh_rows() const;
+    bool autolane_selected() const { return sel_.autolane >= 0; }
+    // Cut, Copy, Paste and Clear on the selected lane's range.
+    bool automation_copy(bool cut, std::string& why);
+    bool automation_paste(std::string& why);
+    bool automation_clear(std::string& why);
+    bool press_autolane(const Hit& h, double x, double y, std::string& why);
+    bool release_autolane(const Drag& d, std::string& why);
+    void move_autolane(double x, double y);
+    // The lane value under pixel `y` of lane `lane` of track `index`.
+    float autolane_value_at(int index, int lane, double y) const;
+
+    mutable ViewState view_;
     ViewState saved_view_;
     bool has_saved_view_ = false;
     EditMode mode_ = EditMode::Slip;
@@ -391,6 +477,8 @@ private:
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
+    AutomationClip auto_clip_;
+    std::set<model::Id> autolanes_open_;
     int repeat_count_ = 1;
     Locator locate_;
     uint64_t clipboard_serial_ = 0;

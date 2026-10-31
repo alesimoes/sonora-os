@@ -176,6 +176,32 @@ int main(int argc, char** argv) {
     CHECK(is(img, 200, 90, kRecord));
     CHECK(is(img, 100, 90, kGridBeat));                   // the cursor gives way to the bar line
 
+    // --- more rectangles than one geometry node can hold ---
+    // A dozen tracks of regions draw about 14000 rectangles, past the 65535
+    // vertices a node is drawn up to; the last track's waveform must still
+    // reach the screen, as the first one's does.
+    {
+        QQuickWindow big;
+        big.setColor(QColor::fromRgb(kBlue));
+        big.resize(1000, 800);
+        ModelDocument many(make_demo_session(12, 48000));
+        FlatPeaks flat;
+        SessionModel crowded(many, flat, false);
+        auto* tall = new TimelineItem(big.contentItem());
+        tall->setPosition(QPointF(0, 0));
+        tall->setSize(QSizeF(1000, 800));
+        tall->setSession(&crowded);
+        big.show();
+        CHECK(QTest::qWaitForWindowExposed(&big));
+        const QImage shot = big.grabWindow();
+        const double row = crowded.controller().view().track_height;
+        // Mid-waveform of a track's first region: its lane + inset + name
+        // band + the middle of the area under it.
+        const auto wave_y = [&](int track) { return static_cast<int>(track * row + 39); };
+        CHECK(is(shot, 300, wave_y(0), region_wave(region_colour(0))));
+        CHECK(is(shot, 300, wave_y(11), region_wave(region_colour(11))));
+    }
+
     std::printf("ui render: all checks passed\n");
     return 0;
 }

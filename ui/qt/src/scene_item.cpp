@@ -37,8 +37,8 @@ void set_rect(QSGGeometry::ColoredPoint2D* v, const SceneRect& r) {
 
 // Fills `node` with `rects`. The vertex buffer grows when it must and is
 // reused otherwise; a rebuild is a copy, not an allocation.
-QSGGeometryNode* rect_node(QSGGeometryNode* node, const std::vector<SceneRect>& rects) {
-    const int need = static_cast<int>(rects.size()) * kVerticesPerRect;
+QSGGeometryNode* rect_node(QSGGeometryNode* node, const SceneRect* rects, std::size_t count) {
+    const int need = static_cast<int>(count) * kVerticesPerRect;
     if (node == nullptr) {
         node = new QSGGeometryNode;
         auto* g = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), need);
@@ -51,9 +51,33 @@ QSGGeometryNode* rect_node(QSGGeometryNode* node, const std::vector<SceneRect>& 
         node->geometry()->allocate(need);
     }
     auto* v = node->geometry()->vertexDataAsColoredPoint2D();
-    for (std::size_t i = 0; i < rects.size(); ++i) set_rect(v + i * kVerticesPerRect, rects[i]);
+    for (std::size_t i = 0; i < count; ++i) set_rect(v + i * kVerticesPerRect, rects[i]);
     node->markDirty(QSGNode::DirtyGeometry);
     return node;
+}
+
+// A geometry node with more than 65535 vertices is drawn only as far as that:
+// the scene graph indexes a batch with 16 bits. A session of a dozen tracks
+// passes it, and the tracks and lanes drawn last would be blank, so the
+// rectangles are split over nodes of at most 10000 (60000 vertices).
+constexpr std::size_t kRectsPerNode = 10000;
+
+void rect_group(QSGNode* group, const std::vector<SceneRect>& rects) {
+    const std::size_t nodes =
+        std::max<std::size_t>(1, (rects.size() + kRectsPerNode - 1) / kRectsPerNode);
+    while (static_cast<std::size_t>(group->childCount()) < nodes) {
+        group->appendChildNode(rect_node(nullptr, nullptr, 0));
+    }
+    while (static_cast<std::size_t>(group->childCount()) > nodes) {
+        QSGNode* extra = group->lastChild();
+        group->removeChildNode(extra);
+        delete extra;
+    }
+    for (std::size_t i = 0; i < nodes; ++i) {
+        const std::size_t first = i * kRectsPerNode;
+        rect_node(static_cast<QSGGeometryNode*>(group->childAtIndex(static_cast<int>(i))),
+                  rects.data() + first, std::min(kRectsPerNode, rects.size() - first));
+    }
 }
 
 QFont label_font(int px) {
@@ -169,21 +193,21 @@ QSGNode* SceneItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     QSGNode* root = old;
     if (root == nullptr) {
         root = new QSGNode;
-        root->appendChildNode(rect_node(nullptr, {}));
+        root->appendChildNode(new QSGNode);  // content
         root->appendChildNode(new QSGNode);  // labels
-        root->appendChildNode(rect_node(nullptr, {}));  // overlay
+        root->appendChildNode(new QSGNode);  // overlay
         content_uploaded_ = overlay_uploaded_ = false;
     }
-    auto* content = static_cast<QSGGeometryNode*>(root->childAtIndex(0));
+    QSGNode* content = root->childAtIndex(0);
     QSGNode* labels = root->childAtIndex(1);
-    auto* overlay = static_cast<QSGGeometryNode*>(root->childAtIndex(2));
+    QSGNode* overlay = root->childAtIndex(2);
     if (!content_uploaded_) {
-        rect_node(content, content_.rects);
+        rect_group(content, content_.rects);
         label_nodes(labels, window(), content_.labels);
         content_uploaded_ = true;
     }
     if (!overlay_uploaded_) {
-        rect_node(overlay, overlay_);
+        rect_group(overlay, overlay_);
         overlay_uploaded_ = true;
     }
     return root;

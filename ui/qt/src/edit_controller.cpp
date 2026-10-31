@@ -40,6 +40,7 @@ const char* tool_name(Tool t) {
         case Tool::Trim: return "Trim";
         case Tool::Select: return "Select";
         case Tool::Grab: return "Grab";
+        case Tool::Pencil: return "Pencil";
     }
     return "";
 }
@@ -48,9 +49,36 @@ Frames ViewState::frame_at(double x) const {
     return static_cast<Frames>(std::llround(scroll + x * fpp));
 }
 
+double ViewState::y_of_track(int index) const {
+    if (tops.empty() || index < 0 || static_cast<std::size_t>(index) >= tops.size()) {
+        return index * track_height - scroll_y;
+    }
+    return tops[static_cast<std::size_t>(index)] - scroll_y;
+}
+
 int ViewState::track_at(double y) const {
     if (track_height <= 0) return -1;
-    return static_cast<int>(std::floor((y + scroll_y) / track_height));
+    const double content = y + scroll_y;
+    if (tops.size() < 2) return static_cast<int>(std::floor(content / track_height));
+    if (content < 0) return -1;
+    if (content >= tops.back()) {
+        return static_cast<int>(tops.size() - 1) +
+               static_cast<int>(std::floor((content - tops.back()) / track_height));
+    }
+    const auto it = std::upper_bound(tops.begin(), tops.end(), content);
+    return static_cast<int>(it - tops.begin()) - 1;
+}
+
+int ViewState::autolane_at(int index, double y) const {
+    if (!autolanes_open(index)) return -1;
+    const double rel = y - y_of_track(index) - track_height;
+    if (rel < 0) return -1;
+    return std::min(kLaneCount - 1, static_cast<int>(rel / autolane_height));
+}
+
+double ViewState::content_height(std::size_t tracks) const {
+    if (tops.size() == tracks + 1) return tops.back();
+    return static_cast<double>(tracks) * track_height;
 }
 
 // --- fades -----------------------------------------------------------------
@@ -251,6 +279,7 @@ EditController::EditController(TimelineDocument& doc) : doc_(doc) {
 void EditController::document_replaced() {
     drag_ = Drag{};
     sel_ = Selection{};
+    autolanes_open_.clear();
     if (!snapshot().edit->tracks.empty()) sel_.track = 0;
     has_saved_view_ = false;
     view_.scroll = 0;
@@ -297,7 +326,8 @@ void EditController::set_track_height(double h) {
 }
 
 double EditController::max_scroll_y() const {
-    const double lanes = static_cast<double>(snapshot().edit->tracks.size()) * view_.track_height;
+    refresh_rows();
+    const double lanes = view_.content_height(snapshot().edit->tracks.size());
     return std::max(0.0, lanes - view_.height);
 }
 
@@ -421,6 +451,7 @@ void EditController::select_track(int index) {
     if (track(index) == nullptr) return;
     if (index != sel_.track || sel_.tracks != 1) {
         sel_.region = kNoId;
+        sel_.autolane = sel_.point = -1;
         sel_.start = sel_.end = sel_.insertion;
     }
     sel_.track = index;
@@ -428,6 +459,7 @@ void EditController::select_track(int index) {
 }
 
 bool EditController::select_next_track(int delta, std::string& why) {
+    refresh_rows();
     const int n = static_cast<int>(snapshot().edit->tracks.size());
     if (n == 0) {
         why = "the session has no tracks";
@@ -447,6 +479,7 @@ void EditController::set_insertion(Frames f) {
     sel_.insertion = std::max<Frames>(0, snapped(f));
     sel_.start = sel_.end = sel_.insertion;
     sel_.region = kNoId;
+    sel_.autolane = sel_.point = -1;
 }
 
 bool EditController::select_region(Id region) {
@@ -456,6 +489,7 @@ bool EditController::select_region(Id region) {
     sel_.track = track_index(snapshot(), t->id);
     sel_.tracks = 1;
     sel_.region = r->id;
+    sel_.autolane = sel_.point = -1;
     sel_.start = sel_.insertion = r->position;
     sel_.end = r->end();
     return true;
@@ -466,6 +500,7 @@ void EditController::select_range(int index, Frames a, Frames b, int count) {
     sel_.track = index;
     sel_.tracks = std::clamp(count, 1, static_cast<int>(snapshot().edit->tracks.size()) - index);
     sel_.region = kNoId;
+    sel_.autolane = sel_.point = -1;
     sel_.start = sel_.insertion = std::max<Frames>(0, std::min(a, b));
     sel_.end = std::max<Frames>(0, std::max(a, b));
 }
@@ -492,6 +527,7 @@ bool EditController::select_all(std::string& why) {
 
 void EditController::clear_selection() {
     sel_.region = kNoId;
+    sel_.autolane = sel_.point = -1;
     sel_.start = sel_.end = sel_.insertion;
 }
 
@@ -502,10 +538,16 @@ void EditController::clamp_selection() {
 // --- mouse ---
 
 Hit EditController::hit(double x, double y) const {
+    refresh_rows();
     Hit h;
     const int i = view_.track_at(y);
     if (track(i) == nullptr || x < 0 || x > view_.width) return h;
     h.track = i;
+    if (const int al = view_.autolane_at(i, y); al >= 0) {
+        h.autolane = al;
+        h.zone = HitZone::Automation;
+        return h;
+    }
     h.zone = HitZone::Lane;
     const Region* r = region_at(i, view_.frame_at(x));
     if (r == nullptr) return h;
@@ -528,6 +570,8 @@ bool EditController::press(double x, double y, std::string& why) {
     const Hit h = hit(x, y);
     if (h.track < 0) return true;
     select_track(h.track);
+    sel_.autolane = sel_.point = -1;
+    if (h.zone == HitZone::Automation) return press_autolane(h, x, y, why);
 
     Drag::Kind kind = Drag::Kind::Range;
     const bool in_region = h.region != kNoId;
@@ -549,7 +593,8 @@ bool EditController::press(double x, double y, std::string& why) {
                 kind = f - r->position < r->end() - f ? Drag::Kind::TrimStart : Drag::Kind::TrimEnd;
             }
             break;
-        case Tool::Select: break;
+        case Tool::Select:
+        case Tool::Pencil: break;  // the Pencil draws only on an automation lane
     }
 
     drag_.kind = kind;
@@ -601,7 +646,16 @@ bool EditController::press(double x, double y, std::string& why) {
 
 void EditController::move(double x, double y) {
     if (drag_.kind == Drag::Kind::None) return;
-    if (std::abs(x - drag_.press_x) >= kDragSlopPx) drag_.moved = true;
+    refresh_rows();
+    const bool automation = drag_.kind == Drag::Kind::Point || drag_.kind == Drag::Kind::Stroke;
+    if (std::abs(x - drag_.press_x) >= kDragSlopPx ||
+        (automation && std::abs(y - drag_.press_y) >= kDragSlopPx)) {
+        drag_.moved = true;
+    }
+    if (automation) {
+        move_autolane(x, y);
+        return;
+    }
     if (!drag_.moved) return;
     const Frames delta = view_.frame_at(x) - drag_.press_frame;
     const Snapshot& s = snapshot();
@@ -640,7 +694,9 @@ void EditController::move(double x, double y) {
             // Above or below the lanes is the first or the last track, so
             // a drag past the edge still reaches it.
             const int n = static_cast<int>(s.edit->tracks.size());
-            drag_.track_end = std::clamp(view_.track_at(y), 0, std::max(0, n - 1));
+            drag_.track_end = drag_.autolane >= 0
+                                  ? drag_.track
+                                  : std::clamp(view_.track_at(y), 0, std::max(0, n - 1));
             const Frames f = snapped(view_.frame_at(x));
             drag_.start = std::min(drag_.press_frame, f);
             drag_.end = std::max(drag_.press_frame, f);
@@ -663,6 +719,8 @@ void EditController::move(double x, double y) {
             }
             break;
         }
+        case Drag::Kind::Point:
+        case Drag::Kind::Stroke:
         case Drag::Kind::None: break;
     }
 }
@@ -671,11 +729,13 @@ bool EditController::release(double x, double y, std::string& why) {
     move(x, y);
     const Drag d = drag_;
     drag_ = Drag{};
+    if (d.kind == Drag::Kind::Point || d.kind == Drag::Kind::Stroke) return release_autolane(d, why);
     if (d.kind == Drag::Kind::None || !d.moved) return true;
     switch (d.kind) {
         case Drag::Kind::Range:
             select_span(std::min(d.track, d.track_end), std::abs(d.track_end - d.track) + 1,
                         d.start, d.end);
+            sel_.autolane = d.autolane;
             return true;
         case Drag::Kind::Move: {
             MoveRegion op;
@@ -702,6 +762,8 @@ bool EditController::release(double x, double y, std::string& why) {
                 return false;
             }
             break;
+        case Drag::Kind::Point:
+        case Drag::Kind::Stroke:
         case Drag::Kind::None: break;
     }
     if (const Region* r = find_region(snapshot(), d.region)) {
@@ -804,6 +866,7 @@ bool EditController::trim_end_to_insertion(std::string& why) {
 }
 
 bool EditController::clear(std::string& why) {
+    if (autolane_selected()) return automation_clear(why);
     bool fade = false;
     if (!clear_fade_at_selection(fade, why)) return false;
     if (fade) return true;
@@ -938,6 +1001,7 @@ void EditController::select_span(int first, int count, Frames a, Frames b) {
     sel_.track = first;
     sel_.tracks = count;
     sel_.region = kNoId;
+    sel_.autolane = sel_.point = -1;
     sel_.start = sel_.insertion = a;
     sel_.end = b;
 }
@@ -953,6 +1017,7 @@ bool EditController::submit_compound(std::vector<Member> members, const char* ge
 }
 
 bool EditController::copy(std::string& why) {
+    if (autolane_selected()) return automation_copy(false, why);
     Span e;
     Clipboard clip;
     if (!edit_range(e, "copied", why) || !copy_lanes(e, clip, "copied", why)) return false;
@@ -962,6 +1027,7 @@ bool EditController::copy(std::string& why) {
 }
 
 bool EditController::cut(std::string& why) {
+    if (autolane_selected()) return automation_copy(true, why);
     if (refuse_shuffle("Cut", "cut", why)) return false;
     Span e;
     Clipboard clip;
@@ -994,6 +1060,7 @@ std::string spoken_list(const std::vector<std::string>& names) {
 }  // namespace
 
 bool EditController::paste(std::string& why) {
+    if (autolane_selected()) return automation_paste(why);
     if (refuse_shuffle("Paste", "pasted", why)) return false;
     if (track(sel_.track) == nullptr) {
         why = "select a track first; nothing was pasted";

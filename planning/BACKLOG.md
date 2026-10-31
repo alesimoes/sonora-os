@@ -916,14 +916,25 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          behind modals, the primary-button rule, left-aligned menus with
          key equivalents from the active map, destructive actions labelled
          (F30 to F33).
-- [ ] `automation.lanes` UI (ADR-0027; the model and read playback landed
-      on `t4-automation`): a lane per automated parameter under each track
-      in the Edit window (Pro Tools' track view selector, Logic's lane
-      disclosure), the curve drawn from `TrackEdit::automation`; pencil
-      (free, line), breakpoints with the grabber and the Smart Tool, thin,
-      cut, copy and paste of automation, each one `EditAutomation` (a
-      `Compound` across lanes); key bindings `"verified": false` until
-      checked; screenshots.
+- [x] `automation.lanes` UI, first slice (ADR-0027; the model and read playback
+      landed on `t4-automation`): a disclosure triangle on each audio track
+      header opens a Volume and a Pan lane under the track in the Edit window
+      (lanes per track, Logic's; decided), the curve drawn from
+      `TrackEdit::automation` as the engine plays it, a lane with no
+      breakpoint drawn dashed at the static fader or pan, and a lane shown
+      dimmed when the track's mode is Off. Breakpoints with the Smart Tool and
+      the Grabber (click adds, drag moves and stops against its neighbours,
+      Clear deletes the picked one), the Pencil (`tool.pencil`, F10) draws
+      freely and is thinned at the release, the Selector selects a range of a
+      lane and Cut, Copy, Paste and Clear act on it; each gesture is one
+      `EditAutomation`, so one undo step. Screenshot `edit-automation`.
+- [ ] `automation.lanes` follow-ups: Thin as its own command on a range
+      (`automation.thin`, needs a command id and a key map entry),
+      a `Compound` of several lanes when a range spans tracks (the Selector is
+      one lane on one track for now), Trim mode's relative edit of a range,
+      the lane selector for plugin parameters (ADR-0027 §5), a lane height
+      that follows the vertical zoom, and key bindings `"verified": false`
+      until checked (none were added: `tool.pencil` was already F10).
 - [ ] `ui.mixer.automation` UI: the automation mode selector on each strip
       and track header (Off, Read now; Touch, Latch, Write, Trim once Track
       1's write slice lands), sent with `SetMix`; the fader and pan knob

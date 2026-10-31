@@ -41,7 +41,7 @@ bool same(const Selection& a, const Selection& b) {
 bool same(const ViewState& a, const ViewState& b) {
     return a.fpp == b.fpp && a.scroll == b.scroll && a.scroll_y == b.scroll_y &&
            a.width == b.width && a.height == b.height && a.track_height == b.track_height &&
-           a.wave_scale == b.wave_scale;
+           a.wave_scale == b.wave_scale && a.open == b.open && a.tops == b.tops;
 }
 
 bool same(const Drag& a, const Drag& b) {
@@ -97,6 +97,7 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("tool.trim", tool(Tool::Trim));
     simple("tool.select", tool(Tool::Select));
     simple("tool.grab", tool(Tool::Grab));
+    simple("tool.pencil", tool(Tool::Pencil));
     simple("tool.next", [this](const CommandContext&, Why&) {
         ctl_.next_tool();
         return true;
@@ -387,6 +388,7 @@ void SessionModel::sync() {
         emit contentChanged();
         emit mixChanged();
         emit markersChanged();
+        emit rowsChanged();
         if (dirty() != seen_dirty_) {
             seen_dirty_ = dirty();
             emit sessionChanged();
@@ -420,6 +422,7 @@ void SessionModel::sync() {
         seen_view_valid_ = true;
         content = overlay = true;
         emit viewChanged();
+        emit rowsChanged();
     }
     if (!same(seen_drag_, ctl_.drag())) {
         seen_drag_ = ctl_.drag();
@@ -699,6 +702,43 @@ QStringList SessionModel::trackNames() const {
     return out;
 }
 
+QVariantList SessionModel::trackRows() const {
+    const Snapshot& s = ctl_.snapshot();
+    const ViewState& v = ctl_.view();
+    QVariantList rows;
+    for (std::size_t i = 0; i < s.edit->tracks.size(); ++i) {
+        const TrackEdit& t = *s.edit->tracks[i];
+        QVariantMap row;
+        row[QStringLiteral("top")] = v.tops.size() > i ? v.tops[i] : static_cast<qreal>(i) * v.track_height;
+        row[QStringLiteral("shown")] = v.autolanes_open(static_cast<int>(i));
+        row[QStringLiteral("canShow")] = t.kind != TrackKind::Midi;
+        // What each lane is, said in the words of what the engine does with
+        // it: a lane the mode leaves unplayed is not "automation" to the ear.
+        const TrackMix* mix = s.mix.find(t.id);
+        const char* mode = "Read";
+        if (mix != nullptr) {
+            switch (mix->automation) {
+                case AutomationMode::Off: mode = "Off"; break;
+                case AutomationMode::Read: mode = "Read"; break;
+                case AutomationMode::Touch: mode = "Touch"; break;
+                case AutomationMode::Latch: mode = "Latch"; break;
+                case AutomationMode::Write: mode = "Write"; break;
+                case AutomationMode::Trim: mode = "Trim"; break;
+            }
+        }
+        QStringList captions;
+        for (int l = 0; l < kLaneCount; ++l) {
+            const AutomationLane* lane = t.lane(lane_param(l));
+            QString what = lane == nullptr ? QStringLiteral("static")
+                                           : QStringLiteral("%1 pts").arg(lane->points.size());
+            captions << what + QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ") + QString::fromLatin1(mode);
+        }
+        row[QStringLiteral("captions")] = captions;
+        rows.push_back(row);
+    }
+    return rows;
+}
+
 QStringList SessionModel::playlistNames() const {
     QStringList out;
     const int n = static_cast<int>(ctl_.snapshot().edit->tracks.size());
@@ -860,6 +900,11 @@ void SessionModel::rulerClick(qreal x) {
 void SessionModel::selectTrack(int index) {
     ctl_.select_track(index);
     sync();
+}
+
+void SessionModel::toggleAutolanes(int track) {
+    std::string why;
+    run(ctl_.toggle_autolanes(track, why), why);
 }
 
 void SessionModel::cycleGrid() {
