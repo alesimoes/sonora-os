@@ -98,11 +98,10 @@ float pan_exponent_for(float pan_law_db) {
     return static_cast<float>(pan_law_db / (20.0 * std::log10(0.5)));
 }
 
-float gain_of_db(float db) {
-    if (!(db >= model::kMinGainDb)) db = model::kMinGainDb;
-    if (db > model::kMaxGainDb) db = model::kMaxGainDb;
-    return std::pow(10.0f, db / 20.0f);
-}
+static_assert(kAutoMinGainDb == model::kMinGainDb && kAutoMaxGainDb == model::kMaxGainDb,
+              "a lane and a fader clamp to the same range");
+
+float gain_of_db(float db) { return auto_gain_of_db(db); }
 
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,

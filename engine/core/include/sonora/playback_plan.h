@@ -12,6 +12,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 
 #include "sonora/fade_curve.h"
@@ -289,6 +290,27 @@ inline float auto_lane_value(const PlanAutoPoint* p, uint32_t n, int64_t t) noex
     const PlanAutoPoint& b = p[hi];
     const double x = static_cast<double>(t - a.at) / static_cast<double>(b.at - a.at);
     return a.value + static_cast<float>(x * static_cast<double>(b.value - a.value));
+}
+
+// model::kMinGainDb and kMaxGainDb, which engine/core cannot include;
+// plan_builder.cpp asserts they agree.
+constexpr float kAutoMinGainDb = -144.0f;
+constexpr float kAutoMaxGainDb = 24.0f;
+
+// 10 ^ (dB / 20), dB clamped to the model's range and NaN taken as the
+// quiet end. A volume lane and engine/control's gain_of_db() for a fader
+// both use it, so the two at one dB cannot drift apart.
+inline float auto_gain_of_db(float db) noexcept SONORA_RT {
+    if (!(db >= kAutoMinGainDb)) db = kAutoMinGainDb;
+    if (db > kAutoMaxGainDb) db = kAutoMaxGainDb;
+    return std::pow(10.0f, db / 20.0f);
+}
+
+// Its inverse, clamped the same way: silence is the lane's floor.
+inline float auto_db_of_gain(float g) noexcept SONORA_RT {
+    if (!(g > 0.0f)) return kAutoMinGainDb;
+    const float db = 20.0f * std::log10(g);
+    return db < kAutoMinGainDb ? kAutoMinGainDb : (db > kAutoMaxGainDb ? kAutoMaxGainDb : db);
 }
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "chunk slots");

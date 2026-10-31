@@ -613,8 +613,9 @@ struct AutomationPoint {
 };
 
 // Points sorted by `at`, at most two at one frame (a step: the value before
-// it, then the value after), never empty. Linear between points in the
-// lane's unit, held before the first and after the last.
+// it, then the value after), never empty, each before kMaxInteger so the
+// whole-lane EditAutomation [0, kMaxInteger) reaches it. Linear between
+// points in the lane's unit, held before the first and after the last.
 struct AutomationLane {
     AutomationParam param = AutomationParam::Volume;
     std::vector<AutomationPoint> points;
