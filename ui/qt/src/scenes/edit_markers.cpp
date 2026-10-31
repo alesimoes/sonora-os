@@ -15,7 +15,7 @@ const ShotRegistrar registrar{[] {
     ShotScene s;
     s.name = QStringLiteral("edit-markers");
     s.take = false;
-    s.apply = [](ShotContext& c) {
+    s.apply = [](ShotContext& c0) { when_open(c0, [](ShotContext& c) {
         EditController& edit = c.session.controller();
         const double end = static_cast<double>(edit.session_end());
         const struct {
@@ -39,7 +39,7 @@ const ShotRegistrar registrar{[] {
         }
         c.session.recallMarker(2);
         c.model.invoke(QStringLiteral("window.memory_locations"), -1);
-    };
+    }); };
     return s;
 }()};
 

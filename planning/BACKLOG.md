@@ -535,6 +535,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [ ] Regenerate docs/images/sonora-ui-edit-markers.png with the narrowed Memory Locations columns; it still shows the old layout (PR #179 review).
 - [ ] Fold the edit-markers and edit-markers-timecode capture scenes into one scene with a counter-format parameter (PR #179 review).
 - [ ] Screenshot scenes edit-markers, edit-nudge and edit-repeat fail with "session is still opening" because they send commands before the engine answers Load: give ShotContext a shared wait-for-open helper instead of per-scene retries (PR #179 review).
+- [x] Capture scenes edit-markers, edit-nudge, edit-repeat failed with "session is still opening": ShotContext got a shared when_open() (screenshot_scene.h), used by them and by edit-tracks and edit-markers-timecode in place of the per-scene retries; edit-markers picture regenerated.
+- [ ] Same "still opening" refusal remains in the edit-undo-history scene (edit.repeat) and mix-solo-safe (solo safe); wrap their apply in when_open().
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [ ] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
   - [ ] Aux return meters, post-fader, in the state block (state layout bump); the aux strip shows none yet.
